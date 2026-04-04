@@ -34,6 +34,13 @@ fn config_table() -> &'static HandleTable<ConfigEntry> {
 // Internal helpers (used by tcp.rs in Task 6)
 // ---------------------------------------------------------------------------
 
+/// Insert a `ClientConfig` directly and return a handle.
+/// Used by the `insecure` feature in `tcp.rs`.
+#[allow(dead_code)]
+pub(crate) fn _insert_client_config(cfg: Arc<ClientConfig>) -> i32 {
+    config_table().insert(ConfigEntry::Client(cfg))
+}
+
 /// Retrieve a `ClientConfig` from the handle table.
 #[allow(dead_code)] // used by tcp.rs (Task 6)
 pub(crate) fn get_client_config(handle: i32) -> Option<Arc<ClientConfig>> {
