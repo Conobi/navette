@@ -11,6 +11,9 @@ TESTS=(
     test_varint
     test_packet_number
     test_initial_protection
+    test_cross_varint
+    test_cross_packet_number
+    test_cross_initial_crypto
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
