@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFORMANCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$CONFORMANCE_DIR/.." && pwd)"
 
+export LD_LIBRARY_PATH="$REPO_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 TESTS=(
     test_util_smoke
     test_cursor
@@ -14,6 +16,8 @@ TESTS=(
     test_cross_varint
     test_cross_packet_number
     test_cross_initial_crypto
+    test_rustls_initial
+    test_rustls_aead
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
