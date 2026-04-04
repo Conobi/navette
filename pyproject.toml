@@ -1,0 +1,16 @@
+[project]
+name = "mojo-net"
+version = "0.1.0"
+description = "Pure-Mojo networking stack: QUIC, HTTP/3, HTTP/2, HTTP/1.1"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mojox",
+    "cryptography>=44.0",
+]
+
+[tool.uv]
+package = false
