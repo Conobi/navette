@@ -1,65 +1,487 @@
 [
   {
-    "name": "decode_8bit_small_gap",
+    "name": "rfc9000_a3_16bit",
     "source": "rfc9000_appendix_a3",
     "operation": "decode",
     "input": {
-      "truncated_pn": 110,
-      "pn_nbits": 8,
-      "largest_pn": 100
+      "truncated_pn": 39730,
+      "pn_nbits": 16,
+      "largest_pn": 2821665002
     },
-    "expected": {"full_pn": 110}
+    "expected": {
+      "full_pn": 2821692210
+    }
   },
   {
-    "name": "decode_8bit_wraparound",
-    "source": "rfc9000_appendix_a3",
+    "name": "decode_first_packet",
+    "source": "gap_fill",
     "operation": "decode",
     "input": {
-      "truncated_pn": 124,
+      "truncated_pn": 0,
+      "pn_nbits": 8,
+      "largest_pn": 0
+    },
+    "expected": {
+      "full_pn": 0
+    }
+  },
+  {
+    "name": "decode_second_packet",
+    "source": "gap_fill",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 1,
+      "pn_nbits": 8,
+      "largest_pn": 0
+    },
+    "expected": {
+      "full_pn": 1
+    }
+  },
+  {
+    "name": "wrap_8bit_forward",
+    "source": "gap_fill",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 2,
       "pn_nbits": 8,
       "largest_pn": 255
     },
-    "expected": {"full_pn": 380}
+    "expected": {
+      "full_pn": 258
+    }
   },
   {
-    "name": "decode_16bit_small_gap",
-    "source": "rfc9000_appendix_a3",
+    "name": "wrap_8bit_backward",
+    "source": "gap_fill",
     "operation": "decode",
     "input": {
-      "truncated_pn": 44464,
-      "pn_nbits": 16,
-      "largest_pn": 100000
+      "truncated_pn": 254,
+      "pn_nbits": 8,
+      "largest_pn": 1
     },
-    "expected": {"full_pn": 110000}
+    "expected": {
+      "full_pn": 254
+    }
   },
   {
-    "name": "encode_small_gap",
+    "name": "decode_16bit_simple",
+    "source": "gap_fill",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 1000,
+      "pn_nbits": 16,
+      "largest_pn": 50000
+    },
+    "expected": {
+      "full_pn": 66536
+    }
+  },
+  {
+    "name": "decode_24bit_simple",
+    "source": "gap_fill",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 1000,
+      "pn_nbits": 24,
+      "largest_pn": 16777216
+    },
+    "expected": {
+      "full_pn": 16778216
+    }
+  },
+  {
+    "name": "decode_32bit_simple",
+    "source": "gap_fill",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 100000,
+      "pn_nbits": 32,
+      "largest_pn": 4294967296
+    },
+    "expected": {
+      "full_pn": 4295067296
+    }
+  },
+  {
+    "name": "decode_8bit_near_half_window",
+    "source": "gap_fill",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 127,
+      "pn_nbits": 8,
+      "largest_pn": 0
+    },
+    "expected": {
+      "full_pn": 127
+    }
+  },
+  {
+    "name": "random_decode_32bit_0",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 2212223671,
+      "pn_nbits": 32,
+      "largest_pn": 984494296032
+    },
+    "expected": {
+      "full_pn": 985759734455
+    }
+  },
+  {
+    "name": "random_decode_24bit_1",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 10717279,
+      "pn_nbits": 24,
+      "largest_pn": 351353318333
+    },
+    "expected": {
+      "full_pn": 351359174751
+    }
+  },
+  {
+    "name": "random_decode_32bit_2",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 1795254543,
+      "pn_nbits": 32,
+      "largest_pn": 611346720886
+    },
+    "expected": {
+      "full_pn": 611680610575
+    }
+  },
+  {
+    "name": "random_decode_16bit_3",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 7001,
+      "pn_nbits": 16,
+      "largest_pn": 224783961977
+    },
+    "expected": {
+      "full_pn": 224783965017
+    }
+  },
+  {
+    "name": "random_decode_32bit_4",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 2235373985,
+      "pn_nbits": 32,
+      "largest_pn": 786394408855
+    },
+    "expected": {
+      "full_pn": 788214389153
+    }
+  },
+  {
+    "name": "random_decode_24bit_5",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 16062974,
+      "pn_nbits": 24,
+      "largest_pn": 582413568515
+    },
+    "expected": {
+      "full_pn": 582420339198
+    }
+  },
+  {
+    "name": "random_decode_8bit_6",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 21,
+      "pn_nbits": 8,
+      "largest_pn": 1012451488720
+    },
+    "expected": {
+      "full_pn": 1012451488789
+    }
+  },
+  {
+    "name": "random_decode_8bit_7",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 90,
+      "pn_nbits": 8,
+      "largest_pn": 173424484627
+    },
+    "expected": {
+      "full_pn": 173424484698
+    }
+  },
+  {
+    "name": "random_decode_24bit_8",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 14858606,
+      "pn_nbits": 24,
+      "largest_pn": 798269952705
+    },
+    "expected": {
+      "full_pn": 798274795886
+    }
+  },
+  {
+    "name": "random_decode_16bit_9",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 55246,
+      "pn_nbits": 16,
+      "largest_pn": 153349968368
+    },
+    "expected": {
+      "full_pn": 153349969870
+    }
+  },
+  {
+    "name": "random_decode_16bit_10",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 19622,
+      "pn_nbits": 16,
+      "largest_pn": 638975463050
+    },
+    "expected": {
+      "full_pn": 638975495334
+    }
+  },
+  {
+    "name": "random_decode_8bit_11",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 149,
+      "pn_nbits": 8,
+      "largest_pn": 514774669862
+    },
+    "expected": {
+      "full_pn": 514774669973
+    }
+  },
+  {
+    "name": "random_decode_8bit_12",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 18,
+      "pn_nbits": 8,
+      "largest_pn": 611517985751
+    },
+    "expected": {
+      "full_pn": 611517985810
+    }
+  },
+  {
+    "name": "random_decode_24bit_13",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 13708396,
+      "pn_nbits": 24,
+      "largest_pn": 812447412969
+    },
+    "expected": {
+      "full_pn": 812450393196
+    }
+  },
+  {
+    "name": "random_decode_16bit_14",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 62330,
+      "pn_nbits": 16,
+      "largest_pn": 586993932708
+    },
+    "expected": {
+      "full_pn": 586993955706
+    }
+  },
+  {
+    "name": "random_decode_8bit_15",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 233,
+      "pn_nbits": 8,
+      "largest_pn": 540002487764
+    },
+    "expected": {
+      "full_pn": 540002487785
+    }
+  },
+  {
+    "name": "random_decode_32bit_16",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 3754733931,
+      "pn_nbits": 32,
+      "largest_pn": 594335235575
+    },
+    "expected": {
+      "full_pn": 596460220779
+    }
+  },
+  {
+    "name": "random_decode_16bit_17",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 19730,
+      "pn_nbits": 16,
+      "largest_pn": 715904966959
+    },
+    "expected": {
+      "full_pn": 715904994578
+    }
+  },
+  {
+    "name": "random_decode_8bit_18",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 31,
+      "pn_nbits": 8,
+      "largest_pn": 881823156220
+    },
+    "expected": {
+      "full_pn": 881823156255
+    }
+  },
+  {
+    "name": "random_decode_8bit_19",
+    "source": "random_generated",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 43,
+      "pn_nbits": 8,
+      "largest_pn": 465207999191
+    },
+    "expected": {
+      "full_pn": 465207999275
+    }
+  },
+  {
+    "name": "encode_1byte_small",
     "source": "gap_fill",
     "operation": "encode",
     "input": {
       "full_pn": 10,
       "largest_acked": 5
     },
-    "expected": {"pn_length": 1}
+    "expected": {
+      "pn_length": 1
+    }
   },
   {
-    "name": "encode_large_gap",
-    "source": "gap_fill",
-    "operation": "encode",
-    "input": {
-      "full_pn": 200,
-      "largest_acked": 0
-    },
-    "expected": {"pn_length": 2}
-  },
-  {
-    "name": "encode_no_acked",
+    "name": "encode_1byte_first",
     "source": "gap_fill",
     "operation": "encode",
     "input": {
       "full_pn": 0,
       "largest_acked": -1
     },
-    "expected": {"pn_length": 1}
+    "expected": {
+      "pn_length": 1
+    }
+  },
+  {
+    "name": "encode_1byte_boundary",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 127,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 1
+    }
+  },
+  {
+    "name": "encode_2byte_basic",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 200,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 2
+    }
+  },
+  {
+    "name": "encode_2byte_boundary",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 32767,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 2
+    }
+  },
+  {
+    "name": "encode_3byte_basic",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 8388608,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 3
+    }
+  },
+  {
+    "name": "encode_3byte_boundary",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 8388607,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 3
+    }
+  },
+  {
+    "name": "encode_4byte_basic",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 2147483648,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 4
+    }
+  },
+  {
+    "name": "encode_4byte_large",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 4294967295,
+      "largest_acked": 0
+    },
+    "expected": {
+      "pn_length": 4
+    }
   }
 ]

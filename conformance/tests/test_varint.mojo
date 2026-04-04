@@ -15,6 +15,7 @@ def main() raises:
     assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
 
     var vectors = load_vectors("vectors/rfc9000/varint.json")
+    assert_true(len(vectors) >= 100, "expected at least 100 varint vectors, got " + String(Int(py=len(vectors))))
     var count = 0
 
     for i in range(len(vectors)):
