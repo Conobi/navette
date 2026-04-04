@@ -1,0 +1,65 @@
+[
+  {
+    "name": "decode_8bit_small_gap",
+    "source": "rfc9000_appendix_a3",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 110,
+      "pn_nbits": 8,
+      "largest_pn": 100
+    },
+    "expected": {"full_pn": 110}
+  },
+  {
+    "name": "decode_8bit_wraparound",
+    "source": "rfc9000_appendix_a3",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 124,
+      "pn_nbits": 8,
+      "largest_pn": 255
+    },
+    "expected": {"full_pn": 380}
+  },
+  {
+    "name": "decode_16bit_small_gap",
+    "source": "rfc9000_appendix_a3",
+    "operation": "decode",
+    "input": {
+      "truncated_pn": 44464,
+      "pn_nbits": 16,
+      "largest_pn": 100000
+    },
+    "expected": {"full_pn": 110000}
+  },
+  {
+    "name": "encode_small_gap",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 10,
+      "largest_acked": 5
+    },
+    "expected": {"pn_length": 1}
+  },
+  {
+    "name": "encode_large_gap",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 200,
+      "largest_acked": 0
+    },
+    "expected": {"pn_length": 2}
+  },
+  {
+    "name": "encode_no_acked",
+    "source": "gap_fill",
+    "operation": "encode",
+    "input": {
+      "full_pn": 0,
+      "largest_acked": -1
+    },
+    "expected": {"pn_length": 1}
+  }
+]
