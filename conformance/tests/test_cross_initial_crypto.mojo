@@ -4,7 +4,9 @@
 # our Python `cryptography`-based code path AND aioquic's native
 # crypto functions, asserting both produce identical keys and both
 # match the expected values from the RFC 9001 A.1 vector.
-from lib.test_util import load_vectors, assert_true
+from lib.test_util import load_vectors, assert_true, hex_decode, hex_encode
+from lib.rustls import RustlsLibrary
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 from python import Python, PythonObject
 
 
@@ -37,7 +39,68 @@ fn hkdf_expand_label_our(
     return kdf.derive(secret)
 
 
-def test_key_derivation_cross(v: PythonObject) raises -> None:
+def rustls_derive_keys(
+    lib: RustlsLibrary,
+    dcid_hex: String,
+    is_client: Int32,
+) raises -> List[String]:
+    """Derive key, iv, hp via librustls_mojo.so. Returns list [key, iv, hp] as hex strings."""
+    var dcid_bytes = hex_decode(dcid_hex)
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid_bytes)).as_any_origin()
+    for i in range(len(dcid_bytes)):
+        dcid_ptr[i] = dcid_bytes[i]
+
+    var out_key = _heap_alloc[UInt8](32).as_any_origin()
+    var out_iv = _heap_alloc[UInt8](12).as_any_origin()
+    var out_hp = _heap_alloc[UInt8](32).as_any_origin()
+    var out_key_len = _heap_alloc[Int32](1).as_any_origin()
+    var out_iv_len = _heap_alloc[Int32](1).as_any_origin()
+    var out_hp_len = _heap_alloc[Int32](1).as_any_origin()
+
+    var rc = lib.initial_keys_raw(
+        Int32(1),  # QUIC v1
+        dcid_ptr,
+        Int32(len(dcid_bytes)),
+        is_client,
+        out_key, out_key_len,
+        out_iv, out_iv_len,
+        out_hp, out_hp_len,
+    )
+    assert_true(
+        Int(rc) == 0,
+        "rustls rlsm_initial_keys_raw failed: " + lib.last_error(),
+    )
+
+    var key_list = List[UInt8]()
+    for i in range(Int(out_key_len[])):
+        key_list.append(out_key[i])
+    var iv_list = List[UInt8]()
+    for i in range(Int(out_iv_len[])):
+        iv_list.append(out_iv[i])
+    var hp_list = List[UInt8]()
+    for i in range(Int(out_hp_len[])):
+        hp_list.append(out_hp[i])
+
+    var key_hex = hex_encode(key_list)
+    var iv_hex = hex_encode(iv_list)
+    var hp_hex = hex_encode(hp_list)
+
+    dcid_ptr.free()
+    out_key.free()
+    out_iv.free()
+    out_hp.free()
+    out_key_len.free()
+    out_iv_len.free()
+    out_hp_len.free()
+
+    var result = List[String]()
+    result.append(key_hex)
+    result.append(iv_hex)
+    result.append(hp_hex)
+    return result^
+
+
+def test_key_derivation_cross(v: PythonObject, lib: RustlsLibrary) raises -> None:
     """Cross-validate key derivation: our path vs aioquic, both vs JSON expected."""
 
     # ── Path A: our cryptography-based implementation ──────────────────────
@@ -172,6 +235,69 @@ def test_key_derivation_cross(v: PythonObject) raises -> None:
         "server_hp: our vs aioquic mismatch",
     )
 
+    # ── Path C: rustls via librustls_mojo.so ───────────────────────────
+    var dcid_hex = String(v["input"]["dcid"])
+    var rustls_client = rustls_derive_keys(lib, dcid_hex, Int32(1))
+    var rustls_client_key = rustls_client[0]
+    var rustls_client_iv = rustls_client[1]
+    var rustls_client_hp = rustls_client[2]
+    var rustls_server = rustls_derive_keys(lib, dcid_hex, Int32(0))
+    var rustls_server_key = rustls_server[0]
+    var rustls_server_iv = rustls_server[1]
+    var rustls_server_hp = rustls_server[2]
+
+    # ── Assert Path C vs Path A (rustls vs our Python crypto) ──────────
+    assert_true(
+        rustls_client_key == py_bytes_to_hex(our_client_key),
+        "client_key: rustls vs our mismatch",
+    )
+    assert_true(
+        rustls_client_iv == py_bytes_to_hex(our_client_iv),
+        "client_iv: rustls vs our mismatch",
+    )
+    assert_true(
+        rustls_client_hp == py_bytes_to_hex(our_client_hp),
+        "client_hp: rustls vs our mismatch",
+    )
+    assert_true(
+        rustls_server_key == py_bytes_to_hex(our_server_key),
+        "server_key: rustls vs our mismatch",
+    )
+    assert_true(
+        rustls_server_iv == py_bytes_to_hex(our_server_iv),
+        "server_iv: rustls vs our mismatch",
+    )
+    assert_true(
+        rustls_server_hp == py_bytes_to_hex(our_server_hp),
+        "server_hp: rustls vs our mismatch",
+    )
+
+    # ── Assert Path C vs Path B (rustls vs aioquic) ────────────────────
+    assert_true(
+        rustls_client_key == py_bytes_to_hex(aio_client_key),
+        "client_key: rustls vs aioquic mismatch",
+    )
+    assert_true(
+        rustls_client_iv == py_bytes_to_hex(aio_client_iv),
+        "client_iv: rustls vs aioquic mismatch",
+    )
+    assert_true(
+        rustls_client_hp == py_bytes_to_hex(aio_client_hp),
+        "client_hp: rustls vs aioquic mismatch",
+    )
+    assert_true(
+        rustls_server_key == py_bytes_to_hex(aio_server_key),
+        "server_key: rustls vs aioquic mismatch",
+    )
+    assert_true(
+        rustls_server_iv == py_bytes_to_hex(aio_server_iv),
+        "server_iv: rustls vs aioquic mismatch",
+    )
+    assert_true(
+        rustls_server_hp == py_bytes_to_hex(aio_server_hp),
+        "server_hp: rustls vs aioquic mismatch",
+    )
+
     # ── Assert both paths match the JSON vector expected values ─────────────
     var exp = v["expected"]
     assert_true(
@@ -251,6 +377,32 @@ def test_key_derivation_cross(v: PythonObject) raises -> None:
         "server_hp: aioquic vs expected mismatch",
     )
 
+    # Path C (rustls) vs expected
+    assert_true(
+        rustls_client_key == String(exp["client_key"]),
+        "client_key: rustls vs expected mismatch",
+    )
+    assert_true(
+        rustls_client_iv == String(exp["client_iv"]),
+        "client_iv: rustls vs expected mismatch",
+    )
+    assert_true(
+        rustls_client_hp == String(exp["client_hp"]),
+        "client_hp: rustls vs expected mismatch",
+    )
+    assert_true(
+        rustls_server_key == String(exp["server_key"]),
+        "server_key: rustls vs expected mismatch",
+    )
+    assert_true(
+        rustls_server_iv == String(exp["server_iv"]),
+        "server_iv: rustls vs expected mismatch",
+    )
+    assert_true(
+        rustls_server_hp == String(exp["server_hp"]),
+        "server_hp: rustls vs expected mismatch",
+    )
+
 
 def main() raises:
     # Verify assertions are working (guard against silent no-op)
@@ -261,6 +413,8 @@ def main() raises:
         _sentinel_ok = True
     assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
 
+    var lib = RustlsLibrary()
+
     var vectors = load_vectors("vectors/rfc9001/initial_protection.json")
     assert_true(len(vectors) >= 2, "expected at least 2 initial_protection vectors, got " + String(Int(py=len(vectors))))
     var count = 0
@@ -270,7 +424,8 @@ def main() raises:
         var operation = String(v["operation"])
 
         if operation == "key_derivation":
-            test_key_derivation_cross(v)
+            test_key_derivation_cross(v, lib)
             count += 1
 
-    print("test_cross_initial_crypto: all keys cross-validated")
+    _ = lib^
+    print("test_cross_initial_crypto: all keys cross-validated (cryptography + aioquic + rustls)")
