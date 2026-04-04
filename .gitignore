@@ -2,9 +2,9 @@
 *.mojopkg
 __pycache__/
 
-# Build artifacts
-lib/
-target/
+# Build artifacts (root level only, not conformance/lib/)
+/lib/
+/target/
 *.so
 *.dylib
 
