@@ -10,6 +10,7 @@ dependencies = []
 dev = [
     "mojox",
     "cryptography>=44.0",
+    "aioquic>=1.3.0",
 ]
 
 [tool.uv]
