@@ -5,8 +5,8 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-mod handles;
-mod error;
+pub mod handles;
+pub mod error;
 mod quic;
 mod config;
 mod tcp;
