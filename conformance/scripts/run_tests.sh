@@ -6,6 +6,8 @@ CONFORMANCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$CONFORMANCE_DIR/.." && pwd)"
 
 TESTS=(
+    test_util_smoke
+    test_cursor
     test_varint
     test_packet_number
     test_initial_protection
@@ -22,7 +24,7 @@ for t in "${TESTS[@]}"; do
     TOTAL=$((TOTAL + 1))
     echo "--- $t ---"
     cd "$CONFORMANCE_DIR"
-    rm -f *.mojopkg
+    rm -f ./*.mojopkg 2>/dev/null || true
     if uv run --project "$REPO_ROOT" mojo run -I "$CONFORMANCE_DIR" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
     else
