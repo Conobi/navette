@@ -11,8 +11,8 @@ cargo build --release
 
 mkdir -p "$LIB_DIR"
 case "$(uname -s)" in
-    Darwin*) cp target/release/librustls_mojo.dylib "$LIB_DIR/" ;;
-    *)       cp target/release/librustls_mojo.so "$LIB_DIR/" ;;
+    Darwin*) cp target/release/liblibrustls_mojo.dylib "$LIB_DIR/librustls_mojo.dylib" ;;
+    *)       cp target/release/liblibrustls_mojo.so "$LIB_DIR/librustls_mojo.so" ;;
 esac
 
 echo "librustls_mojo built and copied to $LIB_DIR/"
