@@ -38,3 +38,6 @@ pub use tcp::{
     rlsm_tls_conn_is_handshaking,
     rlsm_tls_conn_alpn,
 };
+
+#[cfg(feature = "insecure")]
+pub use tcp::rlsm_client_config_new_insecure;
