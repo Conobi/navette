@@ -73,6 +73,27 @@ def load_vectors(path: String) raises -> PythonObject:
     return data
 
 
+def assert_true(cond: Bool, msg: String) raises:
+    """Unconditional assertion. Always raises on failure, unlike debug_assert."""
+    if not cond:
+        print("ASSERTION FAILED: " + msg)
+        raise "assertion failed: " + msg
+
+
+def assert_equal(got: Int, expected: Int, msg: String) raises:
+    """Assert two integers are equal. Always raises on failure."""
+    if got != expected:
+        print(
+            "ASSERTION FAILED ["
+            + msg
+            + "]: got "
+            + String(got)
+            + " expected "
+            + String(expected)
+        )
+        raise "assertion failed: " + msg
+
+
 def assert_bytes_equal(
     got: List[UInt8], expected: List[UInt8], name: String
 ) raises:

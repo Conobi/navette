@@ -4,7 +4,7 @@
 # our Python `cryptography`-based code path AND aioquic's native
 # crypto functions, asserting both produce identical keys and both
 # match the expected values from the RFC 9001 A.1 vector.
-from lib.test_util import load_vectors
+from lib.test_util import load_vectors, assert_true
 from python import Python, PythonObject
 
 
@@ -132,127 +132,135 @@ def test_key_derivation_cross(v: PythonObject) raises -> None:
     var aio_server_hp = aio_server_tuple[2]
 
     # ── Assert Path A vs Path B (cross-validation) ─────────────────────────
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_initial_secret)
             == py_bytes_to_hex(aio_initial_secret),
         "initial_secret: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_secret)
             == py_bytes_to_hex(aio_client_secret),
         "client_initial_secret: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_key) == py_bytes_to_hex(aio_client_key),
         "client_key: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_iv) == py_bytes_to_hex(aio_client_iv),
         "client_iv: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_hp) == py_bytes_to_hex(aio_client_hp),
         "client_hp: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_secret)
             == py_bytes_to_hex(aio_server_secret),
         "server_initial_secret: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_key) == py_bytes_to_hex(aio_server_key),
         "server_key: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_iv) == py_bytes_to_hex(aio_server_iv),
         "server_iv: our vs aioquic mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_hp) == py_bytes_to_hex(aio_server_hp),
         "server_hp: our vs aioquic mismatch",
     )
 
     # ── Assert both paths match the JSON vector expected values ─────────────
     var exp = v["expected"]
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_initial_secret) == String(exp["initial_secret"]),
         "initial_secret: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_initial_secret) == String(exp["initial_secret"]),
         "initial_secret: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_secret)
             == String(exp["client_initial_secret"]),
         "client_initial_secret: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_client_secret)
             == String(exp["client_initial_secret"]),
         "client_initial_secret: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_key) == String(exp["client_key"]),
         "client_key: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_client_key) == String(exp["client_key"]),
         "client_key: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_iv) == String(exp["client_iv"]),
         "client_iv: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_client_iv) == String(exp["client_iv"]),
         "client_iv: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_client_hp) == String(exp["client_hp"]),
         "client_hp: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_client_hp) == String(exp["client_hp"]),
         "client_hp: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_secret)
             == String(exp["server_initial_secret"]),
         "server_initial_secret: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_server_secret)
             == String(exp["server_initial_secret"]),
         "server_initial_secret: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_key) == String(exp["server_key"]),
         "server_key: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_server_key) == String(exp["server_key"]),
         "server_key: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_iv) == String(exp["server_iv"]),
         "server_iv: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_server_iv) == String(exp["server_iv"]),
         "server_iv: aioquic vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(our_server_hp) == String(exp["server_hp"]),
         "server_hp: our vs expected mismatch",
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(aio_server_hp) == String(exp["server_hp"]),
         "server_hp: aioquic vs expected mismatch",
     )
 
 
 def main() raises:
+    # Verify assertions are working (guard against silent no-op)
+    var _sentinel_ok = False
+    try:
+        assert_true(False, "sentinel")
+    except:
+        _sentinel_ok = True
+    assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
+
     var vectors = load_vectors("vectors/rfc9001/initial_protection.json")
     var count = 0
 

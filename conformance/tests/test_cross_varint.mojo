@@ -1,11 +1,19 @@
 # conformance/tests/test_cross_varint.mojo
-from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors
+from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors, assert_true, assert_equal
 from lib.cursor import ByteWriter, ByteReader
 from lib.varint import varint_encode, varint_decode
 from python import Python, PythonObject
 
 
 def main() raises:
+    # Verify assertions are working (guard against silent no-op)
+    var _sentinel_ok = False
+    try:
+        assert_true(False, "sentinel")
+    except:
+        _sentinel_ok = True
+    assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
+
     var binascii = Python.import_module("binascii")
     var aioquic_buf = Python.import_module("aioquic._buffer")
 
@@ -32,16 +40,19 @@ def main() raises:
             var py_buf = aioquic_buf.Buffer(data=py_bytes)
             var aio_val = Int(py=py_buf.pull_uint_var())
 
-            debug_assert(
-                mojo_val == expected_val,
+            assert_equal(
+                mojo_val,
+                expected_val,
                 "FAIL [" + name + "]: mojo decode mismatch",
             )
-            debug_assert(
-                aio_val == expected_val,
+            assert_equal(
+                aio_val,
+                expected_val,
                 "FAIL [" + name + "]: aioquic decode mismatch",
             )
-            debug_assert(
-                mojo_val == aio_val,
+            assert_equal(
+                mojo_val,
+                aio_val,
                 "FAIL [" + name + "]: mojo vs aioquic decode mismatch",
             )
             count += 1
@@ -70,11 +81,11 @@ def main() raises:
             except:
                 aio_raised = True
 
-            debug_assert(
+            assert_true(
                 mojo_raised,
                 "FAIL [" + name + "]: mojo should raise on error vector",
             )
-            debug_assert(
+            assert_true(
                 aio_raised,
                 "FAIL [" + name + "]: aioquic should raise on error vector",
             )
@@ -109,8 +120,9 @@ def main() raises:
         # Test decode round-trip (mojo)
         var r2 = ByteReader(hex_decode(expected_hex))
         var decoded = varint_decode(r2)
-        debug_assert(
-            Int(decoded) == value,
+        assert_equal(
+            Int(decoded),
+            value,
             "FAIL [" + name + "_decode]: got " + String(Int(decoded)),
         )
 
@@ -118,14 +130,16 @@ def main() raises:
         var py_bytes2 = binascii.unhexlify(expected_hex)
         var py_buf2 = aioquic_buf.Buffer(data=py_bytes2)
         var aio_decoded = Int(py=py_buf2.pull_uint_var())
-        debug_assert(
-            aio_decoded == value,
+        assert_equal(
+            aio_decoded,
+            value,
             "FAIL [" + name + "_aioquic_decode]: got " + String(aio_decoded),
         )
 
         # Assert both decoders agree
-        debug_assert(
-            Int(decoded) == aio_decoded,
+        assert_equal(
+            Int(decoded),
+            aio_decoded,
             "FAIL [" + name + "_cross_decode]: mojo=" + String(Int(decoded)) + " aioquic=" + String(aio_decoded),
         )
 

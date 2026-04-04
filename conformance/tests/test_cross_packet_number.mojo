@@ -1,10 +1,18 @@
 # conformance/tests/test_cross_packet_number.mojo
-from lib.test_util import load_vectors
+from lib.test_util import load_vectors, assert_true, assert_equal
 from lib.packet import decode_packet_number
 from python import Python, PythonObject
 
 
 def main() raises:
+    # Verify assertions are working (guard against silent no-op)
+    var _sentinel_ok = False
+    try:
+        assert_true(False, "sentinel")
+    except:
+        _sentinel_ok = True
+    assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
+
     var aioquic_packet = Python.import_module("aioquic.quic.packet")
     var vectors = load_vectors("vectors/rfc9000/packet_number.json")
     var count = 0
@@ -32,8 +40,9 @@ def main() raises:
             )
         )
 
-        debug_assert(
-            mojo_result == aioquic_result,
+        assert_equal(
+            mojo_result,
+            aioquic_result,
             "FAIL ["
             + name
             + "]: mojo="

@@ -1,11 +1,19 @@
-from lib.test_util import hex_decode, hex_encode, assert_bytes_equal
+from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, assert_true, assert_equal
 
 
 def main() raises:
+    # Verify assertions are working (guard against silent no-op)
+    var _sentinel_ok = False
+    try:
+        assert_true(False, "sentinel")
+    except:
+        _sentinel_ok = True
+    assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
+
     # hex round-trip
     var bytes = hex_decode("deadbeef")
-    debug_assert(len(bytes) == 4, "should be 4 bytes")
-    debug_assert(hex_encode(bytes) == "deadbeef", "round-trip failed")
+    assert_equal(len(bytes), 4, "should be 4 bytes")
+    assert_true(hex_encode(bytes) == "deadbeef", "round-trip failed")
 
     # assert_bytes_equal - matching
     var a = hex_decode("0102")
@@ -13,7 +21,7 @@ def main() raises:
     assert_bytes_equal(a, b, "identity")
 
     # hex edge cases
-    debug_assert(len(hex_decode("")) == 0, "empty hex")
-    debug_assert(hex_encode(List[UInt8]()) == "", "empty encode")
+    assert_equal(len(hex_decode("")), 0, "empty hex")
+    assert_true(hex_encode(List[UInt8]()) == "", "empty encode")
 
     print("test_util_smoke: all passed")
