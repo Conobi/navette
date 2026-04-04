@@ -2,7 +2,7 @@
 #
 # RFC 9001 Appendix A.1–A.2 known-answer tests for QUIC initial packet
 # protection. Crypto is performed via Python's `cryptography` library.
-from lib.test_util import load_vectors, hex_encode, assert_bytes_equal
+from lib.test_util import load_vectors, hex_encode, assert_bytes_equal, assert_true
 from python import Python, PythonObject
 
 
@@ -68,7 +68,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var initial_secret = hmac_mod.new(salt, dcid, hashlib.sha256).digest()
 
     var exp = v["expected"]
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(initial_secret) == String(exp["initial_secret"]),
         "initial_secret mismatch",
     )
@@ -77,7 +77,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var client_secret = hkdf_expand_label(
         initial_secret, "client in", 32, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(client_secret)
             == String(exp["client_initial_secret"]),
         "client_initial_secret mismatch",
@@ -86,7 +86,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var client_key = hkdf_expand_label(
         client_secret, "quic key", 16, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(client_key) == String(exp["client_key"]),
         "client_key mismatch",
     )
@@ -94,7 +94,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var client_iv = hkdf_expand_label(
         client_secret, "quic iv", 12, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(client_iv) == String(exp["client_iv"]),
         "client_iv mismatch",
     )
@@ -102,7 +102,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var client_hp = hkdf_expand_label(
         client_secret, "quic hp", 16, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(client_hp) == String(exp["client_hp"]),
         "client_hp mismatch",
     )
@@ -111,7 +111,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var server_secret = hkdf_expand_label(
         initial_secret, "server in", 32, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(server_secret)
             == String(exp["server_initial_secret"]),
         "server_initial_secret mismatch",
@@ -120,7 +120,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var server_key = hkdf_expand_label(
         server_secret, "quic key", 16, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(server_key) == String(exp["server_key"]),
         "server_key mismatch",
     )
@@ -128,7 +128,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var server_iv = hkdf_expand_label(
         server_secret, "quic iv", 12, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(server_iv) == String(exp["server_iv"]),
         "server_iv mismatch",
     )
@@ -136,7 +136,7 @@ def test_key_derivation(v: PythonObject) raises -> None:
     var server_hp = hkdf_expand_label(
         server_secret, "quic hp", 16, HKDFExpand, SHA256, struct_mod
     )
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(server_hp) == String(exp["server_hp"]),
         "server_hp mismatch",
     )
@@ -167,13 +167,21 @@ def test_header_protection(v: PythonObject) raises -> None:
     var mask = mask_full[0:5]
 
     var exp = v["expected"]
-    debug_assert(
+    assert_true(
         py_bytes_to_hex(mask) == String(exp["mask"]),
         "header_protection mask mismatch",
     )
 
 
 def main() raises:
+    # Verify assertions are working (guard against silent no-op)
+    var _sentinel_ok = False
+    try:
+        assert_true(False, "sentinel")
+    except:
+        _sentinel_ok = True
+    assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
+
     var vectors = load_vectors("vectors/rfc9001/initial_protection.json")
     var count = 0
 

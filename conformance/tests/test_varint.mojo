@@ -1,11 +1,19 @@
 # conformance/tests/test_varint.mojo
-from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors
+from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors, assert_true, assert_equal
 from lib.cursor import ByteWriter, ByteReader
 from lib.varint import varint_encode, varint_decode
 from python import Python, PythonObject
 
 
 def main() raises:
+    # Verify assertions are working (guard against silent no-op)
+    var _sentinel_ok = False
+    try:
+        assert_true(False, "sentinel")
+    except:
+        _sentinel_ok = True
+    assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
+
     var vectors = load_vectors("vectors/rfc9000/varint.json")
     var count = 0
 
@@ -20,8 +28,9 @@ def main() raises:
             var r = ByteReader(input_bytes)
             var decoded = varint_decode(r)
             var expected_val = Int(py=v["expected"]["value"])
-            debug_assert(
-                Int(decoded) == expected_val,
+            assert_equal(
+                Int(decoded),
+                expected_val,
                 "FAIL [" + name + "]: decode mismatch",
             )
             count += 1
@@ -37,7 +46,7 @@ def main() raises:
                 _ = varint_decode(r)
             except:
                 raised = True
-            debug_assert(raised, "FAIL [" + name + "]: should raise")
+            assert_true(raised, "FAIL [" + name + "]: should raise")
             count += 1
             continue
 
@@ -53,8 +62,9 @@ def main() raises:
         # Test decode round-trip
         var r2 = ByteReader(hex_decode(String(v["expected"])))
         var decoded = varint_decode(r2)
-        debug_assert(
-            Int(decoded) == value,
+        assert_equal(
+            Int(decoded),
+            value,
             "FAIL [" + name + "_decode]: got " + String(Int(decoded)),
         )
         count += 1
