@@ -18,6 +18,7 @@ def main() raises:
     var aioquic_buf = Python.import_module("aioquic._buffer")
 
     var vectors = load_vectors("vectors/rfc9000/varint.json")
+    assert_true(len(vectors) >= 100, "expected at least 100 varint vectors, got " + String(Int(py=len(vectors))))
     var count = 0
 
     for i in range(len(vectors)):
@@ -145,4 +146,37 @@ def main() raises:
 
         count += 1
 
+    # Randomized cross-validation — inputs change every run, lookup tables impossible
+    var py_random = Python.import_module("random")
+    var random_count = 0
+
+    # Generate random values across all 4 size classes
+    var size_ranges = Python.evaluate("[(0, 63), (64, 16383), (16384, 1073741823), (1073741824, 4611686018427387903)]")
+    for cls_idx in range(4):
+        var lo = size_ranges[cls_idx][0]
+        var hi = size_ranges[cls_idx][1]
+        for _ in range(25):
+            var rand_val_py = py_random.randint(lo, hi)
+            var rand_val = Int(py=rand_val_py)
+
+            # Encode with our codec
+            var w = ByteWriter(capacity=8)
+            varint_encode(w, UInt64(rand_val))
+            var our_bytes = w.finish()
+
+            # Encode with aioquic
+            var aio_buf = aioquic_buf.Buffer(capacity=8)
+            aio_buf.push_uint_var(rand_val_py)
+            var aio_hex = String(binascii.hexlify(aio_buf.data).decode("ascii"))
+
+            # Compare
+            var our_hex = hex_encode(our_bytes)
+            assert_true(
+                our_hex == aio_hex,
+                "RANDOM varint encode mismatch: value=" + String(rand_val) + " ours=" + our_hex + " aioquic=" + aio_hex,
+            )
+
+            random_count += 1
+
+    print("  + " + String(random_count) + " random values cross-validated")
     print("test_cross_varint: all " + String(count) + " vectors cross-validated")

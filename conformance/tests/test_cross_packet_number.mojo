@@ -15,6 +15,7 @@ def main() raises:
 
     var aioquic_packet = Python.import_module("aioquic.quic.packet")
     var vectors = load_vectors("vectors/rfc9000/packet_number.json")
+    assert_true(len(vectors) >= 30, "expected at least 30 packet_number vectors, got " + String(Int(py=len(vectors))))
     var count = 0
 
     for i in range(len(vectors)):
@@ -52,6 +53,35 @@ def main() raises:
         )
         count += 1
 
+    # Randomized — generate random (largest_pn, truncated_pn, pn_nbits), decode with both
+    var py_random = Python.import_module("random")
+    var random_count = 0
+
+    for _ in range(50):
+        var pn_nbits_py = py_random.choice(Python.evaluate("[8, 16, 24, 32]"))
+        var pn_nbits = Int(py=pn_nbits_py)
+        var pn_win = 1 << pn_nbits
+        var largest_pn_py = py_random.randint(0, 1099511627776)  # 2**40
+        var largest_pn = Int(py=largest_pn_py)
+        var offset_py = py_random.randint(1, pn_win // 2 - 1)
+        var full_pn = largest_pn + Int(py=offset_py)
+        var truncated_pn = full_pn & (pn_win - 1)
+
+        # Our decode
+        var our_result = decode_packet_number(largest_pn, truncated_pn, pn_nbits)
+
+        # aioquic decode
+        var aio_result = Int(py=aioquic_packet.decode_packet_number(truncated_pn, pn_nbits, largest_pn + 1))
+
+        assert_equal(
+            our_result,
+            aio_result,
+            "RANDOM pn decode mismatch: largest=" + String(largest_pn) + " trunc=" + String(truncated_pn) + " nbits=" + String(pn_nbits),
+        )
+
+        random_count += 1
+
+    print("  + " + String(random_count) + " random decodes cross-validated")
     print(
         "test_cross_packet_number: all "
         + String(count)
