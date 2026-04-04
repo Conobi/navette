@@ -1,0 +1,24 @@
+# Mojo
+*.mojopkg
+__pycache__/
+
+# Build artifacts
+lib/
+target/
+*.so
+*.dylib
+
+# Python
+.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Plans and specs (kept in mojo-tquic for now)
+docs/superpowers/
+docs/plans/
