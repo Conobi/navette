@@ -1,0 +1,408 @@
+[
+  {
+    "id": "inject-crlf-obs-fold",
+    "category": "header-injection",
+    "rfc_section": "RFC 9112 §5.2",
+    "severity": "severe",
+    "description": "Obs-fold (CRLF followed by SP) in headers — used for header injection attacks, rejected in strict mode",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a582d466f6f3a206261720d0a2062617a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Obs-fold not allowed in strict mode"
+    }
+  },
+  {
+    "id": "inject-nul-in-value",
+    "category": "header-injection",
+    "rfc_section": "RFC 9110 §5.5",
+    "severity": "severe",
+    "description": "NUL byte (0x00) embedded in header value — can truncate strings in C-based parsers",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a582d4261643a206865006c6c6f0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "NUL byte in header field value"
+    }
+  },
+  {
+    "id": "inject-space-in-name",
+    "category": "header-injection",
+    "rfc_section": "RFC 9110 §5.6.2",
+    "severity": "severe",
+    "description": "Space character in header field name — violates token syntax",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a58204261643a2076616c75650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Space is not a valid token character in header name"
+    }
+  },
+  {
+    "id": "inject-del-in-name",
+    "category": "header-injection",
+    "rfc_section": "RFC 9110 §5.6.2",
+    "severity": "severe",
+    "description": "DEL byte (0x7F) in header field name — non-token character",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a582d42617f643a2076616c75650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "DEL (0x7F) is not a valid token character"
+    }
+  },
+  {
+    "id": "inject-bare-cr-in-value",
+    "category": "header-injection",
+    "rfc_section": "RFC 9112 §2.2",
+    "severity": "severe",
+    "description": "Bare CR (0x0D alone, not followed by LF) in header value — control character injection",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a582d466f6f3a206261720d62617a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Bare CR is a control character not allowed in header values"
+    }
+  },
+  {
+    "id": "inject-bare-lf-in-value",
+    "category": "header-injection",
+    "rfc_section": "RFC 9112 §2.2",
+    "severity": "severe",
+    "description": "Bare LF (0x0A alone, not preceded by CR) in header value — line terminator injection",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a582d466f6f3a206261720a62617a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Bare LF is a control character not allowed in header values"
+    }
+  },
+  {
+    "id": "inject-nul-in-name",
+    "category": "header-injection",
+    "rfc_section": "RFC 9110 §5.6.2",
+    "severity": "severe",
+    "description": "NUL byte (0x00) in header field name — non-token character that can truncate strings",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a582d420061643a2076616c75650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "NUL byte is not a valid token character in header name"
+    }
+  },
+  {
+    "id": "aws-edge-cases-non-compliant-character-does-not-shadow-bad-character",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Non-compliant character does not shadow bad character",
+    "input": {
+      "wire_hex": "505554202f666f6f2f62617220485454502f312e310d0a536f6d652d437573746f6d2d486561646572093a20111220427574207468656e2000207768696368206973206261640d0a5472616e736665722d456e636f64696e67093a206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-size-issue",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Size Issue",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a436f6e74656e742d4c656e6774683a2020340d0a582d746573743a2020780d5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-multiline-headers-are-deprecated",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Multiline headers are deprecated",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a536f6d652d437573746f6d2d4865616465723a204d756c74692d6c696e652076616c7565730d0a20617265200a20646570726563617465642e20452e672e206974206d617920636f6e7461696e200a205472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-multiline-headers-are-deprecated-with-n-only",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Multiline headers are deprecated (with \\n only)",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a536f6d652d437573746f6d2d4865616465723a204d756c74692d6c696e652076616c7565730a20617265200a20646570726563617465642e20452e672e206974206d617920636f6e7461696e200a205472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-http-engine-missed-cr",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Http Engine missed CR",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a536f6d652d437573746f6d2d4865616465723a20506172736572206572726f720d206d757374206e6f7420636f6e7461696e0d2073796d626f6c732e0d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-http-engine-missed-lf",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Http Engine missed LF",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a536f6d652d437573746f6d2d4865616465723a20506172736572206572726f720a206d757374206e6f7420636f6e7461696e0a2073796d626f6c732e0d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-r-in-name-is-bad",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\r in name is bad",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465720d3a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-n-in-name-is-bad",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\n in name is bad",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465720a3a20436f6e74656e742d4c656e6774683a313030300d0a205472616e736665722d456e636f64696e673a206368756e6b65640d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-0-in-name-is-bad",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\0 in name is bad",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d486561646572003a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-r-in-value-is-bad",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\r in value is bad",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465723a2076616c75650d636f6e74656e742d6c656e6774683a20313030300d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-n-in-value-is-bad",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\n in value is bad",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465723a2076616c75650a20636f6e74656e742d6c656e6774683a20313030300d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-0-in-value-is-bad",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\0 in value is bad",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465723a2076616c756500636f6e74656e742d6c656e6774683a20313030300d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-0-at-the-start-of-a-line",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\0 at the start of a line",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a00536f6d652d4261642d4865616465723a2076616c75650d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-0-at-the-start-of-a-value",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\0 at the start of a value",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465723a200076616c75650d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-0-at-the-end-of-a-value",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\0 at the end of a value",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d4261642d4865616465723a2076616c7565000d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-bad-method",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: Bad method",
+    "input": {
+      "wire_hex": "6261645f6d6574686f6401202f666f6f2f62617220485454502f312e310d0a486f73743a206c6f63616c686f73740d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadMethod",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-space-in-uri-resulted-in-a-bad-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "severity": "severe",
+    "description": "AWS desync: [space] in URI resulted in a bad version",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f6120485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadVersion",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-r-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "severe",
+    "description": "AWS desync: \\r in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f610d485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadUri",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-n-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "severe",
+    "description": "AWS desync: \\n in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f610a485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadUri",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-request-smuggling-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "severe",
+    "description": "AWS desync: Request Smuggling in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f6109485454502f312e310d0a486f73743a6c6f63616c686f73740d0a0d0a474554092f656e64706f696e745f620920485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadUri",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-0-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "severe",
+    "description": "AWS desync: \\0 in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f6100485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadUri",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-0-at-the-start-of-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "severe",
+    "description": "AWS desync: \\0 at the start of URI",
+    "input": {
+      "wire_hex": "47455420002f656e64706f696e745f61485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadUri",
+    "expected": {
+      "behavior": "reject"
+    }
+  }
+]

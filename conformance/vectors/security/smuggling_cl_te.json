@@ -1,0 +1,548 @@
+[
+  {
+    "id": "smuggle-cl-te-basic",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Basic POST with both Content-Length and Transfer-Encoding headers — the #1 HTTP smuggling vector",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict must always be rejected to prevent request smuggling"
+    }
+  },
+  {
+    "id": "smuggle-cl-before-te",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Content-Length appears before Transfer-Encoding with an intervening header",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a582d466f6f3a206261720d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict regardless of header ordering"
+    }
+  },
+  {
+    "id": "smuggle-te-before-cl",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Transfer-Encoding appears before Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict regardless of header ordering"
+    }
+  },
+  {
+    "id": "smuggle-cl-zero-te",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Content-Length: 0 with Transfer-Encoding: chunked — even zero-length CL conflicts with TE",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20300d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict even when CL is zero"
+    }
+  },
+  {
+    "id": "smuggle-cl-large-te",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Large Content-Length (1000) with Transfer-Encoding: chunked — CL size is irrelevant",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20313030300d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict regardless of CL value"
+    }
+  },
+  {
+    "id": "smuggle-cl-te-interspersed",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "CL and TE separated by multiple other headers to evade naive single-pass checks",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a582d466f6f3a206261720d0a582d4261723a2062617a0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict even with intervening headers"
+    }
+  },
+  {
+    "id": "smuggle-multi-cl-te",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Multiple identical Content-Length headers plus Transfer-Encoding: chunked",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a436f6e74656e742d4c656e6774683a20350d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict with duplicate CL headers"
+    }
+  },
+  {
+    "id": "smuggle-cl-te-empty-chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "CL: 0 and TE: chunked with a properly terminated empty chunked body",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20300d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "CL+TE conflict even with empty chunked body"
+    }
+  },
+  {
+    "id": "aws-ambiguous-both-transfer-encoding-chunked-and-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Both Transfer-Encoding:chunked and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-both-transfer-encoding-and-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Both Transfer-Encoding and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a20677a69700d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-transfer-encoding-white-space-and-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Transfer-Encoding[white-space] and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e67203a206368756e6b65640d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: SuspiciousHeader",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/SuspiciousHeader). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-white-space-transfer-encoding-and-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: [white-space]Transfer-Encoding and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a205472616e736665722d456e636f64696e673a206368756e6b65640d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: SuspiciousHeader",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/SuspiciousHeader). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-white-space-transfer-encoding-and-white-space-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: [white-space]Transfer-Encoding and [white-space]Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a205472616e736665722d456e636f64696e673a206368756e6b65640d0a20436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: SuspiciousHeader",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/SuspiciousHeader). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-transfer-encoding-white-space-and-content-length-white-space",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Transfer-Encoding[white-space] and Content-Length[white-space]",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e67203a206368756e6b65640d0a436f6e74656e742d4c656e677468203a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: SuspiciousHeader",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/SuspiciousHeader). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-header-name-starts-with",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Header name starts with :",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a3a536f6d654865616465723a5472616e736665722d456e636f64696e673a3a206368756e6b65640d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: EmptyHeader",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/EmptyHeader). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-content-length-x01-1000",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Content-Length: \\x01 1000",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a2001313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-content-length-1000-x01",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Content-Length: 1000\\x01 ",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a2031303030010d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-content-length-1000-xa0",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Content-Length: 1000\\xa0",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a2031303030a00d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-edge-cases-bad-non-essential-header-does-not-shadow-bad-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Bad non-essential header does not shadow bad Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d437573746f6d2d4865616465723a204e6f6e2d52666320436f6d706c69616e74120d0a436f6e74656e742d4c656e6774683a2031303030110d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-edge-cases-bad-header-does-not-shadow-other-bad-headers",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Bad header does not shadow other bad headers",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d437573746f6d2d4865616465723a201152666320436f6d706c69616e740d0a5472616e736665722d456e636f64696e673a206368756e6b6564800d0a436f6e74656e742d4c656e6774683a2024393030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-edge-cases-bad-uri-does-not-shadow-essential-bad-headers",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Bad URI does not shadow essential bad headers",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f6261725c742f62617a20485454502f312e310d0a536f6d652d437573746f6d2d4865616465723a201152666320436f6d706c69616e740d0a5472616e736665722d456e636f64696e673a206368756e6b6564800d0a436f6e74656e742d4c656e6774683a2024393030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-chunks-priority-on-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Chunks Priority on Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a436f6e74656e742d4c656e6774683a2020340d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-null-in-headers",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Null in Headers",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4261642d4163636570742d456e636f64696e673a2020677a69702c20006465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-crlf",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: CRLF",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a436f6e74656e742d4c656e6774683a2020340d0a005472616e736665722d456e636f64696e673a20206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-rcontent-length-without-te",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\rContent-Length without TE",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a0d436f6e74656e742d4c656e6774683a2020313030300d0a436f6e74656e742d4c656e6774683a20203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-transfer-encoding-identity-and-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Transfer-Encoding: identity and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a20206465666c6174650d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-multiple-transfer-encoding-headers-in-a-single-request",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Multiple transfer encoding headers in a single request",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a2020677a69700d0a5472616e736665722d456e636f64696e673a20206465666c6174650d0a5472616e736665722d456e636f64696e673a20206964656e746974790d0a5472616e736665722d456e636f64696e673a2020636f6d70726573730d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-mixed-case",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Mixed case",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a2020090909096368756e6b65643b637573746f6d5f706172616d3b090909090d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-chunks-priority-on-content-length-1",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Chunks Priority on Content-Length.1",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472416e536645722d456e436f44694e673a20204368556e4b65440d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-chunks-priority-on-content-length-2",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Chunks Priority on Content-Length.2",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a5472616e736665722d456e636f64696e673a2020636f770d0a436f6e74656e742d4c656e6774683a2020360d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-send-small-1614-bytes-request-transfer-encoded-request",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Send small (1614 bytes) request, transfer encoded request",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472416e536645722d456e436f44694e673a20204368556e4b65440d0a436f6e74656e742d4c656e6774683a2020360d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-multiple-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Multiple Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-bad-content-length-1000-1000",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Bad Content-Length: 1000,1000",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030302c313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-bad-content-length-64-bits-overflow",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Bad Content-Length (64-bits overflow)",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a2031383434363734343037333730393535313631360d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-bad-character-in-content-length-value-1000-x11",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Bad character in Content-Length value: 1000\\x11",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a2031303030110d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-content-length-white-space-and-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: Content-Length[white-space] and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e677468203a203130300d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-white-space-content-length-and-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "severe",
+    "description": "AWS desync: [white-space]Content-Length and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a20436f6e74656e742d4c656e6774683a203130300d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleContentLength",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-single-case-both-transfer-encoding-chunked-and-content-length",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Both Transfer-Encoding:chunked and Content-Length",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: BothTeClPresent",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/BothTeClPresent). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  }
+]
