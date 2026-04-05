@@ -316,6 +316,10 @@ def parse_request(
         if not config.strictness.allow_target_ctl and (tb <= 0x1F or tb == 0x7F):
             result.error = "control character in request target"
             return result^
+        # Reject non-ASCII bytes in strict mode (should be percent-encoded per RFC 3986)
+        if not config.strictness.allow_target_ctl and tb > 0x7E:
+            result.error = "non-ASCII byte in request target"
+            return result^
         ti += 1
 
     var target = _bytes_to_string(wire, target_start, target_end_pos)

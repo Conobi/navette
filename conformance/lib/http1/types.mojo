@@ -113,6 +113,47 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_duplicate_host = take.allow_duplicate_host
 
 
+def strict_mode() -> ParserStrictness:
+    """All flags False -- maximum RFC compliance."""
+    return ParserStrictness()
+
+
+def lenient_mode() -> ParserStrictness:
+    """Relaxes common legacy compatibility issues, keeps security checks."""
+    return ParserStrictness(
+        allow_bare_lf=True,
+        allow_obs_fold=True,
+        allow_space_before_colon=True,
+        allow_header_value_ctl=True,
+        allow_chunk_extensions=True,
+        allow_cl_leading_zeros=True,
+        allow_duplicate_cl=True,
+        allow_duplicate_host=True,
+    )
+
+
+def permissive_mode() -> ParserStrictness:
+    """Accepts nearly everything except security invariants. For debugging/WAF."""
+    return ParserStrictness(
+        allow_bare_lf=True,
+        allow_bare_cr_in_value=True,
+        allow_http_09=True,
+        allow_nonstandard_version=True,
+        allow_multiple_spaces=True,
+        allow_obs_fold=True,
+        allow_space_before_colon=True,
+        allow_header_value_ctl=True,
+        allow_target_ctl=True,
+        ignore_invalid_header_names=True,
+        allow_non_chunked_te=True,
+        allow_chunk_extensions=True,
+        allow_cl_leading_zeros=True,
+        allow_duplicate_cl=True,
+        allow_missing_host_11=True,
+        allow_duplicate_host=True,
+    )
+
+
 struct ParseConfig:
     """Controls parser behavior — limits and strictness."""
     var strictness: ParserStrictness
