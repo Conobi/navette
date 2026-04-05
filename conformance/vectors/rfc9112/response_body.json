@@ -1,0 +1,258 @@
+[
+  {
+    "id": "response-body-cl-exact",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 7: Content-Length determines body length \u2014 exactly 5 bytes",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-chunked",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 6: Transfer-Encoding chunked determines body length",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a350d0a68656c6c6f0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-read-until-close",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 8: No CL or TE \u2014 body read until connection close",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": true,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-cl-and-te",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Both Content-Length and Transfer-Encoding present \u2014 strict rejects, lenient uses TE chunked",
+    "mode_flag": "allow_response_cl_te",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a350d0a68656c6c6f0d0a300d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "response has both Content-Length and Transfer-Encoding"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-te-non-chunked",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "TE: gzip without chunked \u2014 strict rejects, lenient reads until close",
+    "mode_flag": "allow_non_chunked_te",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a20677a69700d0a0d0a68656c6c6f"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "Transfer-Encoding without chunked as final encoding"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "gzip"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": true,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-cl-less-than-available",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "CL says 3 but 10 bytes follow \u2014 parser reads only 3 bytes as body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20330d0a0d0a68656c6c6f776f726c64"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "3"
+        ]
+      ],
+      "body_hex": "68656c",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-cl-truncated",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "CL says 10 but only 3 bytes available \u2014 truncated body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a2031300d0a0d0a68656c"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "body shorter than Content-Length"
+    }
+  },
+  {
+    "id": "response-body-cl-mismatch",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Two Content-Length headers with different values \u2014 invariant violation",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a436f6e74656e742d4c656e6774683a2031300d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "multiple Content-Length values that differ"
+    }
+  },
+  {
+    "id": "response-body-cl-duplicate-identical",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Two Content-Length headers with identical values \u2014 strict rejects duplicate, lenient allows",
+    "mode_flag": "allow_duplicate_cl",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "duplicate Content-Length header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-body-cl-zero",
+    "category": "response-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Content-Length: 0 \u2014 valid empty body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  }
+]

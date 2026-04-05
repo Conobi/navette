@@ -1,0 +1,199 @@
+[
+  {
+    "id": "response-info-100-continue",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "100 Continue \u2014 informational response with no body, no extra headers",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false,
+      "bytes_consumed": 25
+    }
+  },
+  {
+    "id": "response-info-100-with-final",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "100 Continue followed by 200 OK \u2014 bytes_consumed only covers the informational response",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false,
+      "bytes_consumed": 25
+    }
+  },
+  {
+    "id": "response-info-101-upgrade",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "101 Switching Protocols \u2014 upgrade=true, no body",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a20776562736f636b65740d0a436f6e6e656374696f6e3a20557067726164650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 101,
+      "reason": "Switching Protocols",
+      "version": "1.1",
+      "headers": [
+        [
+          "Upgrade",
+          "websocket"
+        ],
+        [
+          "Connection",
+          "Upgrade"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": true,
+      "bytes_consumed": 77
+    }
+  },
+  {
+    "id": "response-info-103-early-hints",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "103 Early Hints with Link header \u2014 informational, no body",
+    "input": {
+      "wire_hex": "485454502f312e3120313033204561726c792048696e74730d0a4c696e6b3a203c2f7374796c652e6373733e3b2072656c3d7072656c6f61643b2061733d7374796c650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 103,
+      "reason": "Early Hints",
+      "version": "1.1",
+      "headers": [
+        [
+          "Link",
+          "</style.css>; rel=preload; as=style"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false,
+      "bytes_consumed": 71
+    }
+  },
+  {
+    "id": "response-info-100-with-te-reject",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "100 Continue with Transfer-Encoding \u2014 invariant violation, 1xx MUST NOT contain TE",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Transfer-Encoding in 1xx response"
+    }
+  },
+  {
+    "id": "response-info-100-with-cl-zero",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "100 Continue with Content-Length: 0 \u2014 CL in 1xx is not explicitly prohibited",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false,
+      "bytes_consumed": 44
+    }
+  },
+  {
+    "id": "response-info-199-unknown",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "199 unregistered informational status \u2014 valid 1xx, must be accepted",
+    "input": {
+      "wire_hex": "485454502f312e312031393920556e6b6e6f776e0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 199,
+      "reason": "Unknown",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false,
+      "bytes_consumed": 24
+    }
+  },
+  {
+    "id": "response-info-101-h2c-upgrade",
+    "category": "response-informational",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "101 Switching Protocols with h2c upgrade \u2014 upgrade=true",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a206832630d0a436f6e6e656374696f6e3a20557067726164650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 101,
+      "reason": "Switching Protocols",
+      "version": "1.1",
+      "headers": [
+        [
+          "Upgrade",
+          "h2c"
+        ],
+        [
+          "Connection",
+          "Upgrade"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": true,
+      "bytes_consumed": 71
+    }
+  }
+]

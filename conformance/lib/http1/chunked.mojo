@@ -74,6 +74,7 @@ def decode_chunked(
 
         if not found_crlf:
             result.error = "missing CRLF after chunk size"
+            result.bytes_consumed = pos
             return result^
 
         # The hex digits end at either the semicolon or the CRLF position.
@@ -83,12 +84,14 @@ def decode_chunked(
         if found_semi:
             if not config.strictness.allow_chunk_extensions:
                 result.error = "chunk extensions not allowed in strict mode"
+                result.bytes_consumed = pos
                 return result^
             # In lenient mode we simply ignore everything from ';' to CRLF.
 
         # ---- Step 4: Parse hex string to chunk_size ----
         if hex_end == hex_start:
             result.error = "empty chunk size"
+            result.bytes_consumed = pos
             return result^
 
         var chunk_size = 0
@@ -99,10 +102,12 @@ def decode_chunked(
             var v = _hex_char_value(data[hi])
             if v < 0:
                 result.error = "invalid hex digit in chunk size"
+                result.bytes_consumed = pos
                 return result^
             # Overflow check: chunk_size * 16 + v > MAX_SAFE
             if chunk_size > (MAX_SAFE - v) // 16:
                 result.error = "chunk size overflow"
+                result.bytes_consumed = pos
                 return result^
             chunk_size = chunk_size * 16 + v
             hi += 1
@@ -113,6 +118,7 @@ def decode_chunked(
         # ---- Step 5: Check max_chunk_size ----
         if chunk_size > config.max_chunk_size:
             result.error = "chunk size exceeds maximum"
+            result.bytes_consumed = pos
             return result^
 
         # ---- Step 6: Last chunk (size == 0) ----
@@ -135,6 +141,7 @@ def decode_chunked(
 
                 if not line_crlf:
                     result.error = "missing CRLF in trailer"
+                    result.bytes_consumed = pos
                     return result^
 
                 # Parse "Name: Value" from line_start..pos.
@@ -181,11 +188,13 @@ def decode_chunked(
 
                 pos += 2  # skip CRLF
 
+            result.bytes_consumed = pos
             return result^
 
         # ---- Step 7: Read chunk_size bytes of data ----
         if pos + chunk_size > data_len:
             result.error = "not enough data for chunk"
+            result.bytes_consumed = pos
             return result^
 
         var di = 0
@@ -197,9 +206,11 @@ def decode_chunked(
         # ---- Step 8: Expect CRLF after chunk data ----
         if pos + 2 > data_len:
             result.error = "missing CRLF after chunk data"
+            result.bytes_consumed = pos
             return result^
         if data[pos] != UInt8(ord("\r")) or data[pos + 1] != UInt8(ord("\n")):
             result.error = "missing CRLF after chunk data"
+            result.bytes_consumed = pos
             return result^
         pos += 2
 

@@ -22,6 +22,8 @@ TESTS=(
     test_h1_parser
     test_h1_security
     test_h1_cross_parser
+    test_h1_response
+    test_h1_response_cross
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
