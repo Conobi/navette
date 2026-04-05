@@ -39,6 +39,12 @@ struct ParserStrictness(Copyable, Movable):
     var allow_duplicate_cl: Bool
     var allow_missing_host_11: Bool
     var allow_duplicate_host: Bool
+    # Response-specific flags (HC-2a)
+    var allow_multiple_spaces_in_status_line: Bool
+    var allow_space_before_first_header: Bool
+    var allow_missing_crlf_after_chunk: Bool
+    var allow_missing_reason_sp: Bool
+    var allow_response_cl_te: Bool
 
     def __init__(
         out self,
@@ -58,6 +64,11 @@ struct ParserStrictness(Copyable, Movable):
         allow_duplicate_cl: Bool = False,
         allow_missing_host_11: Bool = False,
         allow_duplicate_host: Bool = False,
+        allow_multiple_spaces_in_status_line: Bool = False,
+        allow_space_before_first_header: Bool = False,
+        allow_missing_crlf_after_chunk: Bool = False,
+        allow_missing_reason_sp: Bool = False,
+        allow_response_cl_te: Bool = False,
     ):
         self.allow_bare_lf = allow_bare_lf
         self.allow_bare_cr_in_value = allow_bare_cr_in_value
@@ -75,6 +86,11 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_duplicate_cl = allow_duplicate_cl
         self.allow_missing_host_11 = allow_missing_host_11
         self.allow_duplicate_host = allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = allow_missing_reason_sp
+        self.allow_response_cl_te = allow_response_cl_te
 
     def __init__(out self, *, other: Self):
         self.allow_bare_lf = other.allow_bare_lf
@@ -93,6 +109,11 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_duplicate_cl = other.allow_duplicate_cl
         self.allow_missing_host_11 = other.allow_missing_host_11
         self.allow_duplicate_host = other.allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = other.allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = other.allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = other.allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = other.allow_missing_reason_sp
+        self.allow_response_cl_te = other.allow_response_cl_te
 
     def __init__(out self, *, deinit take: Self):
         self.allow_bare_lf = take.allow_bare_lf
@@ -111,6 +132,11 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_duplicate_cl = take.allow_duplicate_cl
         self.allow_missing_host_11 = take.allow_missing_host_11
         self.allow_duplicate_host = take.allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = take.allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = take.allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = take.allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = take.allow_missing_reason_sp
+        self.allow_response_cl_te = take.allow_response_cl_te
 
 
 def strict_mode() -> ParserStrictness:
@@ -129,6 +155,8 @@ def lenient_mode() -> ParserStrictness:
         allow_cl_leading_zeros=True,
         allow_duplicate_cl=True,
         allow_duplicate_host=True,
+        allow_missing_reason_sp=True,
+        allow_response_cl_te=True,
     )
 
 
@@ -151,6 +179,11 @@ def permissive_mode() -> ParserStrictness:
         allow_duplicate_cl=True,
         allow_missing_host_11=True,
         allow_duplicate_host=True,
+        allow_multiple_spaces_in_status_line=True,
+        allow_space_before_first_header=True,
+        allow_missing_crlf_after_chunk=True,
+        allow_missing_reason_sp=True,
+        allow_response_cl_te=True,
     )
 
 
@@ -217,21 +250,65 @@ struct ParsedRequest(Movable):
         return len(self.error) == 0
 
 
+struct ParsedResponse(Movable):
+    """Result of parsing an HTTP/1.1 response message."""
+    var status_code: Int
+    var reason: String
+    var version: String
+    var headers: List[Header]
+    var trailers: List[Header]
+    var body: List[UInt8]
+    var error: String
+    var body_terminated_by_close: Bool
+    var upgrade: Bool
+    var bytes_consumed: Int
+
+    def __init__(out self):
+        self.status_code = 0
+        self.reason = String("")
+        self.version = String("")
+        self.headers = List[Header]()
+        self.trailers = List[Header]()
+        self.body = List[UInt8]()
+        self.error = String("")
+        self.body_terminated_by_close = False
+        self.upgrade = False
+        self.bytes_consumed = 0
+
+    def __init__(out self, *, deinit take: Self):
+        self.status_code = take.status_code
+        self.reason = take.reason^
+        self.version = take.version^
+        self.headers = take.headers^
+        self.trailers = take.trailers^
+        self.body = take.body^
+        self.error = take.error^
+        self.body_terminated_by_close = take.body_terminated_by_close
+        self.upgrade = take.upgrade
+        self.bytes_consumed = take.bytes_consumed
+
+    def ok(self) -> Bool:
+        return len(self.error) == 0
+
+
 struct ChunkedResult(Movable):
     """Result of decoding a chunked transfer-encoded body."""
     var body: List[UInt8]
     var trailers: List[Header]
     var error: String
+    var bytes_consumed: Int
 
     def __init__(out self):
         self.body = List[UInt8]()
         self.trailers = List[Header]()
         self.error = String("")
+        self.bytes_consumed = 0
 
     def __init__(out self, *, deinit take: Self):
         self.body = take.body^
         self.trailers = take.trailers^
         self.error = take.error^
+        self.bytes_consumed = take.bytes_consumed
 
     def ok(self) -> Bool:
         return len(self.error) == 0

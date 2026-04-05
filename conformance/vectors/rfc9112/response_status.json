@@ -1,0 +1,254 @@
+[
+  {
+    "id": "response-status-200-ok",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Standard 200 OK response with Content-Length body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-404-not-found",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "404 Not Found response with Content-Length body",
+    "input": {
+      "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a436f6e74656e742d4c656e6774683a20390d0a0d0a6e6f7420666f756e64"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 404,
+      "reason": "Not Found",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "9"
+        ]
+      ],
+      "body_hex": "6e6f7420666f756e64",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-301-redirect",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "301 Moved Permanently with Location header and empty body",
+    "input": {
+      "wire_hex": "485454502f312e3120333031204d6f766564205065726d616e656e746c790d0a4c6f636174696f6e3a2068747470733a2f2f6578616d706c652e636f6d2f6e65770d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 301,
+      "reason": "Moved Permanently",
+      "version": "1.1",
+      "headers": [
+        [
+          "Location",
+          "https://example.com/new"
+        ],
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-http10",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "HTTP/1.0 response \u2014 version field is 1.0",
+    "input": {
+      "wire_hex": "485454502f312e3020323030204f4b0d0a436f6e74656e742d4c656e6774683a20320d0a0d0a6869"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.0",
+      "headers": [
+        [
+          "Content-Length",
+          "2"
+        ]
+      ],
+      "body_hex": "6869",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-empty-reason",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Empty reason phrase \u2014 SP present after status code but no text before CRLF",
+    "input": {
+      "wire_hex": "485454502f312e3120323030200d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-missing-reason-sp",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Missing SP after status code \u2014 no space or reason before CRLF",
+    "mode_flag": "allow_missing_reason_sp",
+    "input": {
+      "wire_hex": "485454502f312e31203230300d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing SP after status code"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-999",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Status code 999 \u2014 valid 3DIGIT per RFC grammar, even if unregistered",
+    "input": {
+      "wire_hex": "485454502f312e312039393920556e6b6e6f776e0d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 999,
+      "reason": "Unknown",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-status-099-reject",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Status code 099 \u2014 below 100, invalid per RFC 9110",
+    "input": {
+      "wire_hex": "485454502f312e312030393920546f6f204c6f770d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "status code below 100"
+    }
+  },
+  {
+    "id": "response-status-four-digits-reject",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Status code with 4 digits \u2014 ABNF requires exactly 3DIGIT",
+    "input": {
+      "wire_hex": "485454502f312e312030323030204f4b0d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "status code is not exactly 3 digits"
+    }
+  },
+  {
+    "id": "response-status-extra-spaces",
+    "category": "response-status",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a74",
+    "description": "Multiple spaces between version and status code, and between status code and reason",
+    "mode_flag": "allow_multiple_spaces_in_status_line",
+    "input": {
+      "wire_hex": "485454502f312e31202032303020204f4b0d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "extra whitespace in status line"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  }
+]

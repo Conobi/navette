@@ -1,0 +1,193 @@
+[
+  {
+    "id": "response-head-cl-no-body",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 1: HEAD response with CL: 500 \u2014 no body regardless of Content-Length",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a203530300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "500"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-te-chunked-no-body",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 1 beats Rule 6: HEAD response with TE chunked \u2014 no body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-cl-te-no-body",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 1 beats everything: HEAD response with both CL and TE \u2014 no body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a203530300d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "500"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-no-cl-no-te",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 1: HEAD response with no CL or TE \u2014 no body, NOT read-until-close",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-304-cl",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "HEAD 304 with CL: 1000 \u2014 no body (both Rule 1 and Rule 2 apply)",
+    "input": {
+      "wire_hex": "485454502f312e3120333034204e6f74204d6f6469666965640d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "1000"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-cl-extra-bytes",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "HEAD 200 with CL: 500 and trailing bytes \u2014 body still empty, extra bytes ignored",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a203530300d0a0d0a657874726164617461"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "500"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-204",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "HEAD 204 \u2014 no body (Rule 1 and Rule 2 both apply)",
+    "input": {
+      "wire_hex": "485454502f312e3120323034204e6f20436f6e74656e740d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-head-same-wire-get-reject",
+    "category": "response-head",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Same wire as test 1 but request_method=GET \u2014 CL: 500 with 0 body bytes is truncated",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a203530300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "body shorter than Content-Length"
+    }
+  }
+]

@@ -1,0 +1,207 @@
+[
+  {
+    "id": "response-framing-chunked-multi",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a77.1",
+    "description": "Chunked response with multiple valid chunks \u2014 body is concatenation of chunk data",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a370d0a4d6f7a696c6c610d0a390d0a446576656c6f7065720d0a370d0a4e6574776f726b0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "4d6f7a696c6c61446576656c6f7065724e6574776f726b",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-framing-chunked-trailers",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a77.1.2",
+    "description": "Chunked response with trailers after final chunk",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a547261696c65723a20436865636b73756d0d0a0d0a350d0a68656c6c6f0d0a300d0a436865636b73756d3a206162633132330d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ],
+        [
+          "Trailer",
+          "Checksum"
+        ]
+      ],
+      "body_hex": "68656c6c6f",
+      "trailers": [
+        [
+          "Checksum",
+          "abc123"
+        ]
+      ],
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-framing-cl-exact",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Content-Length framing with exact body match",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a2031330d0a0d0a48656c6c6f2c20576f726c6421"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "13"
+        ]
+      ],
+      "body_hex": "48656c6c6f2c20576f726c6421",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-framing-read-until-close",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "No CL or TE \u2014 body determined by connection close (Rule 8)",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a5468697320626f647920656e6473207768656e20636f6e6e656374696f6e20636c6f7365732e"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_hex": "5468697320626f647920656e6473207768656e20636f6e6e656374696f6e20636c6f7365732e",
+      "body_terminated_by_close": true,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-framing-cl-te-dual",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Both CL and TE present \u2014 strict rejects, lenient uses TE chunked",
+    "mode_flag": "allow_response_cl_te",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a2031310d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a620d0a68656c6c6f20776f726c640d0a300d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "response has both Content-Length and Transfer-Encoding"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "11"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "68656c6c6f20776f726c64",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-framing-malformed-chunk",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a77.1",
+    "description": "Malformed chunk size (ZZ is not valid hex) \u2014 reject",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a5a5a0d0a68656c6c6f0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "invalid chunk size"
+    }
+  },
+  {
+    "id": "response-framing-chunked-head-no-body",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "HEAD",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Rule 1: HEAD response with TE chunked \u2014 no body despite chunked framing",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-framing-cl-negative",
+    "category": "response-framing",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "Negative Content-Length \u2014 invalid, must reject",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a202d310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "invalid Content-Length value"
+    }
+  }
+]

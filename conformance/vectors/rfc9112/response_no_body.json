@@ -1,0 +1,179 @@
+[
+  {
+    "id": "response-no-body-204",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "204 No Content \u2014 Rule 2: no body regardless of headers",
+    "input": {
+      "wire_hex": "485454502f312e3120323034204e6f20436f6e74656e740d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-no-body-204-cl-zero",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "204 with Content-Length: 0 \u2014 acceptable, no body",
+    "input": {
+      "wire_hex": "485454502f312e3120323034204e6f20436f6e74656e740d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-no-body-204-te-reject",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "204 with Transfer-Encoding \u2014 MUST NOT have TE in responses that cannot have a body",
+    "input": {
+      "wire_hex": "485454502f312e3120323034204e6f20436f6e74656e740d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Transfer-Encoding in 204 response"
+    }
+  },
+  {
+    "id": "response-no-body-304-cl",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "304 with CL: 500 \u2014 Rule 2: no body, CL reflects what the full response would have",
+    "input": {
+      "wire_hex": "485454502f312e3120333034204e6f74204d6f6469666965640d0a436f6e74656e742d4c656e6774683a203530300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "500"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-no-body-304-te",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "GET",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "304 with TE: chunked \u2014 TE reflects the 200 response, no body. Not rejected since 304 is special.",
+    "input": {
+      "wire_hex": "485454502f312e3120333034204e6f74204d6f6469666965640d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": false
+    }
+  },
+  {
+    "id": "response-no-body-connect-200",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "CONNECT",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "CONNECT 200 \u2014 Rule 3: successful CONNECT, tunnel established, upgrade=true",
+    "input": {
+      "wire_hex": "485454502f312e312032303020436f6e6e656374696f6e2045737461626c69736865640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 200,
+      "reason": "Connection Established",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": true
+    }
+  },
+  {
+    "id": "response-no-body-connect-201",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "CONNECT",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "CONNECT 201 \u2014 any 2xx to CONNECT establishes tunnel, upgrade=true",
+    "input": {
+      "wire_hex": "485454502f312e312032303120437265617465640d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 201,
+      "reason": "Created",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "",
+      "body_terminated_by_close": false,
+      "upgrade": true
+    }
+  },
+  {
+    "id": "response-no-body-connect-404-has-body",
+    "category": "response-no-body",
+    "type": "response",
+    "request_method": "CONNECT",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "CONNECT 404 \u2014 not 2xx so Rule 3 does not apply, body via read-until-close",
+    "input": {
+      "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a0d0a6572726f722070616765"
+    },
+    "expected": {
+      "behavior": "accept",
+      "status_code": 404,
+      "reason": "Not Found",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "6572726f722070616765",
+      "body_terminated_by_close": true,
+      "upgrade": false
+    }
+  }
+]

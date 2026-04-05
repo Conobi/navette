@@ -107,3 +107,120 @@ def parse_with_httptools(wire_bytes: bytes) -> dict:
         return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---- Response oracles ----
+
+
+def parse_response_with_h11(wire_bytes: bytes, request_method: str = "GET") -> dict:
+    """Parse response with h11. Needs request_method for HEAD/CONNECT."""
+    try:
+        conn = h11.Connection(h11.CLIENT)
+        # Send synthetic request to set connection state
+        req = h11.Request(
+            method=request_method.encode("ascii"),
+            target=b"/",
+            headers=[(b"Host", b"x")],
+        )
+        conn.send(req)
+        conn.receive_data(wire_bytes)
+
+        event = conn.next_event()
+        if isinstance(event, h11.InformationalResponse):
+            headers = [
+                [
+                    h[0].decode("ascii", errors="replace"),
+                    h[1].decode("ascii", errors="replace"),
+                ]
+                for h in event.headers
+            ]
+            return {
+                "status_code": event.status_code,
+                "reason": event.reason.decode("ascii", errors="replace")
+                if event.reason
+                else "",
+                "version": event.http_version.decode("ascii", errors="replace"),
+                "headers": headers,
+                "body": b"",
+                "error": None,
+            }
+        elif isinstance(event, h11.Response):
+            headers = [
+                [
+                    h[0].decode("ascii", errors="replace"),
+                    h[1].decode("ascii", errors="replace"),
+                ]
+                for h in event.headers
+            ]
+            body = b""
+            while True:
+                ev = conn.next_event()
+                if isinstance(ev, h11.Data):
+                    body += ev.data
+                elif isinstance(ev, h11.EndOfMessage):
+                    break
+                elif ev is h11.NEED_DATA:
+                    break
+                else:
+                    break
+            return {
+                "status_code": event.status_code,
+                "reason": event.reason.decode("ascii", errors="replace")
+                if event.reason
+                else "",
+                "version": event.http_version.decode("ascii", errors="replace"),
+                "headers": headers,
+                "body": body,
+                "error": None,
+            }
+        else:
+            return {"error": f"unexpected event: {type(event).__name__}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class _HttpResponseCollector:
+    """Callback collector for httptools response parser."""
+
+    def __init__(self):
+        self.status_code = None
+        self.reason = None
+        self.version = None
+        self.headers = []
+        self.body = b""
+
+    def on_status(self, status: bytes):
+        self.reason = status.decode("ascii", errors="replace")
+
+    def on_header(self, name: bytes, value: bytes):
+        self.headers.append(
+            [
+                name.decode("ascii", errors="replace"),
+                value.decode("ascii", errors="replace"),
+            ]
+        )
+
+    def on_body(self, body: bytes):
+        self.body += body
+
+
+def parse_response_with_httptools(
+    wire_bytes: bytes, request_method: str = "GET"
+) -> dict:
+    """Parse response with httptools. Cannot model HEAD/CONNECT context."""
+    try:
+        c = _HttpResponseCollector()
+        parser = httptools.HttpResponseParser(c)
+        parser.feed_data(wire_bytes)
+        c.status_code = parser.get_status_code()
+        c.version = parser.get_http_version()
+        return {
+            "status_code": c.status_code,
+            "reason": c.reason or "",
+            "version": c.version or "",
+            "headers": c.headers,
+            "body": c.body,
+            "error": None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
