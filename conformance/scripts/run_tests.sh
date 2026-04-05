@@ -18,6 +18,10 @@ TESTS=(
     test_cross_initial_crypto
     test_rustls_initial
     test_rustls_aead
+    test_h1_chunked
+    test_h1_parser
+    test_h1_security
+    test_h1_cross_parser
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"

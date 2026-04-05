@@ -1,0 +1,1922 @@
+[
+  {
+    "id": "request-line-basic-get",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Basic GET request with valid request-line",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "request-line-post-with-body",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "POST request with Content-Length body",
+    "input": {
+      "wire_hex": "504f5354202f7375626d697420485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a2031330d0a0d0a48656c6c6f2c20576f726c6421"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/submit",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "13"
+        ]
+      ],
+      "body_hex": "48656c6c6f2c20576f726c6421"
+    }
+  },
+  {
+    "id": "request-line-head",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "HEAD request — valid method, no body expected in response",
+    "input": {
+      "wire_hex": "48454144202f696e6465782e68746d6c20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "HEAD",
+      "target": "/index.html",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "request-line-options-asterisk",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "OPTIONS request with asterisk-form target",
+    "input": {
+      "wire_hex": "4f5054494f4e53202a20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "OPTIONS",
+      "target": "*",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "request-line-delete",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "DELETE request with path target",
+    "input": {
+      "wire_hex": "44454c455445202f7265736f757263652f343220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "DELETE",
+      "target": "/resource/42",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "request-line-unknown-method",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Unknown method FOOBAR — methods are extensible per RFC 9110 §9",
+    "input": {
+      "wire_hex": "464f4f424152202f7465737420485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "FOOBAR",
+      "target": "/test",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "request-line-query-string",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "GET request with query string in target",
+    "input": {
+      "wire_hex": "474554202f7365617263683f713d68656c6c6f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/search?q=hello",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "request-line-missing-method",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Request-line starts with SP — no method token present",
+    "input": {
+      "wire_hex": "202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "empty method"
+    }
+  },
+  {
+    "id": "request-line-http09",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "description": "HTTP/0.9 simple request — no longer supported",
+    "input": {
+      "wire_hex": "474554202f0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "missing SP after target"
+    }
+  },
+  {
+    "id": "request-line-http20",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "description": "HTTP/2.0 version in request-line — HTTP/2 does not use textual request lines",
+    "input": {
+      "wire_hex": "474554202f20485454502f322e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    }
+  },
+  {
+    "id": "request-line-bare-lf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "Bare LF as line terminator instead of CRLF — must reject",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310a486f73743a20780a0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "missing CRLF"
+    }
+  },
+  {
+    "id": "request-line-tab-separator",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Tab character instead of SP between request-line tokens",
+    "input": {
+      "wire_hex": "474554092f09485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "invalid request line"
+    }
+  },
+  {
+    "id": "request-line-double-space",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Double space before request target — first SP produces empty token",
+    "input": {
+      "wire_hex": "47455420202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "empty target"
+    }
+  },
+  {
+    "id": "request-line-empty-crlf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Empty request — just CRLF with no request-line content",
+    "input": {
+      "wire_hex": "0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "invalid request line"
+    }
+  },
+  {
+    "id": "request-line-trailing-space-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Trailing space after HTTP-version in request-line",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e31200d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    }
+  },
+  {
+    "id": "llhttp-invalid-ice-protocol-and-get-method",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: ICE protocol and GET method",
+    "input": {
+      "wire_hex": "474554202f6d757369632f73776565742f6d75736963204943452f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected SOURCE method for ICE/x.x request"
+  },
+  {
+    "id": "llhttp-invalid-ice-protocol-but-not-really",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: ICE protocol, but not really",
+    "input": {
+      "wire_hex": "474554202f6d757369632f73776565742f6d757369632049485454502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected HTTP/, RTSP/ or ICE/"
+  },
+  {
+    "id": "llhttp-invalid-rtsp-protocol-and-put-method",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: RTSP protocol and PUT method",
+    "input": {
+      "wire_hex": "505554202f6d757369632f73776565742f6d7573696320525453502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid method for RTSP/x.x request"
+  },
+  {
+    "id": "llhttp-invalid-http-protocol-and-announce-method",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: HTTP protocol and ANNOUNCE method",
+    "input": {
+      "wire_hex": "414e4e4f554e4345202f6d757369632f73776565742f6d7573696320485454502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid method for HTTP/x.x request",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-invalid-headers-separated-by-cr",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Headers separated by CR",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a466f6f3a20310d4261723a20320d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Missing expected LF after header value"
+  },
+  {
+    "id": "llhttp-invalid-headers-separated-by-lf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Headers separated by LF",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206c6f63616c686f73743a353030300d0a783a780a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a310d0a410d0a300d0a0d0a"
+    },
+    "source_reason": "llhttp: Missing expected CR after header value",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "control character in header field value"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "localhost:5000"
+        ],
+        [
+          "x",
+          "x"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "41"
+    },
+    "mode_flag": "allow_bare_lf"
+  },
+  {
+    "id": "llhttp-invalid-headers-separated-by-dummy-characters",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Headers separated by dummy characters",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a436f6e6e656374696f6e3a20636c6f73650d0a486f73743a20610d0a0d5a474554202f6576696c3a20485454502f312e310d0a486f73743a20610d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected LF after headers"
+  },
+  {
+    "id": "llhttp-invalid-headers-separated-by-dummy-characters-lenient",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Headers separated by dummy characters (lenient)",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a436f6e6e656374696f6e3a20636c6f73650d0a486f73743a20610d0a0d5a474554202f6576696c3a20485454502f312e310d0a486f73743a20610d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-optional-lf-after-cr (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Data after `Connection: close`"
+  },
+  {
+    "id": "llhttp-invalid-empty-headers-separated-by-cr",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Empty headers separated by CR",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a436f6e6e656374696f6e3a20436c6f73650d0a486f73743a206c6f63616c686f73743a353030300d0a783a0d5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a310d0a410d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected LF after CR"
+  },
+  {
+    "id": "llhttp-invalid-empty-headers-separated-by-lf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Empty headers separated by LF",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206c6f63616c686f73743a353030300d0a783a0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a310d0a410d0a300d0a0d0a"
+    },
+    "source_reason": "llhttp: Invalid header value char",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "control character in header field value"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "localhost:5000"
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "41"
+    },
+    "mode_flag": "allow_bare_lf"
+  },
+  {
+    "id": "llhttp-invalid-invalid-header-token-1",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Invalid header token #1",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a466f403a204661696c7572650d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-invalid-invalid-header-token-2",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Invalid header token #2",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a466f6f5c3031096573743a204261720d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-invalid-invalid-header-token-3",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Invalid header token #3",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a3a204261720d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-invalid-invalid-method",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Invalid method",
+    "input": {
+      "wire_hex": "4d4b434f4c41202f20485454502f312e310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected space after method"
+  },
+  {
+    "id": "llhttp-invalid-illegal-header-field-name-line-folding",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Illegal header field name line folding",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a6e616d650d0a203a2076616c75650d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-invalid-corrupted-connection-header",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Corrupted Connection header",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a207777772e6578616d706c652e636f6d0d0a436f6e6e656374696f6e0d5c3033335c3036355c3332356565702d416c6976650d0a4163636570742d456e636f64696e673a20677a69700d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-invalid-corrupted-header-name",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Corrupted header name",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a207777772e6578616d706c652e636f6d0d0a582d536f6d652d4865616465720d5c3033335c3036355c3332356565702d416c6976650d0a4163636570742d456e636f64696e673a20677a69700d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-invalid-missing-cr-between-headers",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Missing CR between headers",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206c6f63616c686f73740d0a44756d6d793a20780a436f6e74656e742d4c656e6774683a2032330d0a0d0a474554202f20485454502f312e310d0a44756d6d793a20474554202f61646d696e20485454502f312e310d0a486f73743a206c6f63616c686f73740d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Missing expected CR after header value",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-invalid-invalid-http-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Invalid HTTP version",
+    "input": {
+      "wire_hex": "474554202f20485454502f352e360d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "source_reason": "llhttp: Invalid HTTP version",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "5.6",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_nonstandard_version"
+  },
+  {
+    "id": "llhttp-invalid-invalid-space-after-start-line",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Invalid space after start line",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a20486f73743a20666f6f0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Unexpected space after start line"
+  },
+  {
+    "id": "llhttp-invalid-only-lfs-present",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Only LFs present",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310a5472616e736665722d456e636f64696e673a206368756e6b65640a547261696c65723a2042617a0d0a466f6f3a206162630a4261723a206465660a0a310a410a313b6162630a420a313b6465663d6768690a430a313b6a6b6c3d226d6e6f220a440a300a0a42617a3a206768690a0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected CRLF after version"
+  },
+  {
+    "id": "llhttp-invalid-only-lfs-present-lenient",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Only LFs present (lenient)",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310a5472616e736665722d456e636f64696e673a206368756e6b65640a547261696c65723a2042617a0d0a466f6f3a206162630a4261723a206465660a0a310a410a313b6162630a420a313b6465663d6768690a430a313b6a6b6c3d226d6e6f220a440a300a0a42617a3a206768690a0a0d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-all (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "both oracles reject; cannot build expected_flagged"
+  },
+  {
+    "id": "llhttp-invalid-spaces-before-headers",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Spaces before headers",
+    "input": {
+      "wire_hex": "504f5354202f68656c6c6f20485454502f312e310d0a486f73743a206c6f63616c686f73740d0a466f6f3a206261720d0a20436f6e74656e742d4c656e6774683a2033380d0a0d0a474554202f62796520485454502f312e310d0a486f73743a206c6f63616c686f73740d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Unexpected whitespace after header value",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-invalid-spaces-before-headers-lenient",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Spaces before headers (lenient)",
+    "input": {
+      "wire_hex": "504f5354202f68656c6c6f20485454502f312e310d0a486f73743a206c6f63616c686f73740d0a466f6f3a206261720d0a20436f6e74656e742d4c656e6774683a2033380d0a0d0a474554202f62796520485454502f312e310d0a486f73743a206c6f63616c686f73740d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-headers (lenient mode)",
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Host",
+          "localhost"
+        ],
+        [
+          "Foo",
+          "bar"
+        ],
+        [
+          " Content-Length",
+          "38"
+        ]
+      ],
+      "method": "POST",
+      "target": "/hello",
+      "version": "1.1",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-lenient-version-invalid-http-version-lenient",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "description": "llhttp: Invalid HTTP version (lenient)",
+    "input": {
+      "wire_hex": "474554202f20485454502f352e360d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-version (lenient mode)",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "5.6",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_nonstandard_version"
+  },
+  {
+    "id": "llhttp-method-report-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: REPORT request",
+    "input": {
+      "wire_hex": "5245504f5254202f7465737420485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "REPORT",
+      "target": "/test",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-method-connect-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: CONNECT request",
+    "input": {
+      "wire_hex": "434f4e4e45435420302d686f6d65302e6e657473636170652e636f6d3a34343320485454502f312e300d0a557365722d6167656e743a204d6f7a696c6c612f312e314e0d0a50726f78792d617574686f72697a6174696f6e3a206261736963206147567362473836643239796247513d0d0a0d0a736f6d6520646174610d0a616e6420796574206576656e206d6f726520646174610d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Pause on CONNECT/Upgrade",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-method-connect-request-with-caps",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: CONNECT request with CAPS",
+    "input": {
+      "wire_hex": "434f4e4e45435420484f4d45302e4e455453434150452e434f4d3a34343320485454502f312e300d0a557365722d6167656e743a204d6f7a696c6c612f312e314e0d0a50726f78792d617574686f72697a6174696f6e3a206261736963206147567362473836643239796247513d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Pause on CONNECT/Upgrade",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-method-connect-with-body",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: CONNECT with body",
+    "input": {
+      "wire_hex": "434f4e4e45435420666f6f2e6261722e636f6d3a34343320485454502f312e300d0a557365722d6167656e743a204d6f7a696c6c612f312e314e0d0a50726f78792d617574686f72697a6174696f6e3a206261736963206147567362473836643239796247513d0d0a436f6e74656e742d4c656e6774683a2031300d0a0d0a626c6172666369636c65220d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Pause on CONNECT/Upgrade",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-method-m-search-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: M-SEARCH request",
+    "input": {
+      "wire_hex": "4d2d534541524348202a20485454502f312e310d0a484f53543a203233392e3235352e3235352e3235303a313930300d0a4d414e3a2022737364703a646973636f766572220d0a53543a2022737364703a616c6c220d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "M-SEARCH",
+      "target": "*",
+      "version": "1.1",
+      "headers": [
+        [
+          "HOST",
+          "239.255.255.250:1900"
+        ],
+        [
+          "MAN",
+          "\"ssdp:discover\""
+        ],
+        [
+          "ST",
+          "\"ssdp:all\""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-method-patch-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: PATCH request",
+    "input": {
+      "wire_hex": "5041544348202f66696c652e74787420485454502f312e310d0a486f73743a207777772e6578616d706c652e636f6d0d0a436f6e74656e742d547970653a206170706c69636174696f6e2f6578616d706c650d0a49662d4d617463683a2022653030323361613465220d0a436f6e74656e742d4c656e6774683a2031300d0a0d0a636363636363636363630d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "PATCH",
+      "target": "/file.txt",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "www.example.com"
+        ],
+        [
+          "Content-Type",
+          "application/example"
+        ],
+        [
+          "If-Match",
+          "\"e0023aa4e\""
+        ],
+        [
+          "Content-Length",
+          "10"
+        ]
+      ],
+      "body_hex": "63636363636363636363"
+    }
+  },
+  {
+    "id": "llhttp-method-purge-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: PURGE request",
+    "input": {
+      "wire_hex": "5055524745202f66696c652e74787420485454502f312e310d0a486f73743a207777772e6578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "PURGE",
+      "target": "/file.txt",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "www.example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-method-search-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: SEARCH request",
+    "input": {
+      "wire_hex": "534541524348202f20485454502f312e310d0a486f73743a207777772e6578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "SEARCH",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "www.example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-method-link-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: LINK request",
+    "input": {
+      "wire_hex": "4c494e4b202f696d616765732f6d795f646f672e6a706720485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a4c696e6b3a203c687474703a2f2f6578616d706c652e636f6d2f70726f66696c65732f6a6f653e3b2072656c3d22746167220d0a4c696e6b3a203c687474703a2f2f6578616d706c652e636f6d2f70726f66696c65732f73616c6c793e3b2072656c3d22746167220d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "LINK",
+      "target": "/images/my_dog.jpg",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Link",
+          "<http://example.com/profiles/joe>; rel=\"tag\""
+        ],
+        [
+          "Link",
+          "<http://example.com/profiles/sally>; rel=\"tag\""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-method-source-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: SOURCE request",
+    "input": {
+      "wire_hex": "534f55524345202f6d757369632f73776565742f6d7573696320485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "SOURCE",
+      "target": "/music/sweet/music",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-method-source-request-with-ice",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: SOURCE request with ICE",
+    "input": {
+      "wire_hex": "534f55524345202f6d757369632f73776565742f6d75736963204943452f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "method": "SOURCE",
+      "target": "/music/sweet/music",
+      "version": "1.0",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "could not determine controlling flag"
+  },
+  {
+    "id": "llhttp-method-options-request-with-rtsp",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: OPTIONS request with RTSP",
+    "input": {
+      "wire_hex": "4f5054494f4e53202f6d757369632f73776565742f6d7573696320525453502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "method": "OPTIONS",
+      "target": "/music/sweet/music",
+      "version": "1.0",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "could not determine controlling flag"
+  },
+  {
+    "id": "llhttp-method-announce-request-with-rtsp",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: ANNOUNCE request with RTSP",
+    "input": {
+      "wire_hex": "414e4e4f554e4345202f6d757369632f73776565742f6d7573696320525453502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "method": "ANNOUNCE",
+      "target": "/music/sweet/music",
+      "version": "1.0",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "could not determine controlling flag"
+  },
+  {
+    "id": "llhttp-method-pri-request-http2",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: PRI request HTTP2",
+    "input": {
+      "wire_hex": "505249202a20485454502f312e310d0a0d0a534d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Pause on PRI/Upgrade"
+  },
+  {
+    "id": "llhttp-method-query-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: QUERY request",
+    "input": {
+      "wire_hex": "5155455259202f636f6e746163747320485454502f312e310d0a486f73743a206578616d706c652e6f72670d0a436f6e74656e742d547970653a206578616d706c652f71756572790d0a4163636570743a20746578742f6373760d0a436f6e74656e742d4c656e6774683a2034310d0a0d0a73656c656374207375726e616d652c20676976656e6e616d652c20656d61696c206c696d69742031300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "QUERY",
+      "target": "/contacts",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.org"
+        ],
+        [
+          "Content-Type",
+          "example/query"
+        ],
+        [
+          "Accept",
+          "text/csv"
+        ],
+        [
+          "Content-Length",
+          "41"
+        ]
+      ],
+      "body_hex": "73656c656374207375726e616d652c20676976656e6e616d652c20656d61696c206c696d6974203130"
+    }
+  },
+  {
+    "id": "llhttp-sample-simple-request",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Simple request",
+    "input": {
+      "wire_hex": "4f5054494f4e53202f75726c20485454502f312e310d0a486561646572313a2056616c7565310d0a486561646572323a092056616c7565320d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "OPTIONS",
+      "target": "/url",
+      "version": "1.1",
+      "headers": [
+        [
+          "Header1",
+          "Value1"
+        ],
+        [
+          "Header2",
+          "Value2"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-request-with-method-starting-with-h",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Request with method starting with `H`",
+    "input": {
+      "wire_hex": "48454144202f75726c20485454502f312e310d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "HEAD",
+      "target": "/url",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-curl-get",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: curl GET",
+    "input": {
+      "wire_hex": "474554202f7465737420485454502f312e310d0a557365722d4167656e743a206375726c2f372e31382e302028693438362d70632d6c696e75782d676e7529206c69626375726c2f372e31382e30204f70656e53534c2f302e392e3867207a6c69622f312e322e332e33206c696269646e2f312e310d0a486f73743a20302e302e302e303d353030300d0a4163636570743a202a2f2a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/test",
+      "version": "1.1",
+      "headers": [
+        [
+          "User-Agent",
+          "curl/7.18.0 (i486-pc-linux-gnu) libcurl/7.18.0 OpenSSL/0.9.8g zlib/1.2.3.3 libidn/1.1"
+        ],
+        [
+          "Host",
+          "0.0.0.0=5000"
+        ],
+        [
+          "Accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-sample-firefox-get",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Firefox GET",
+    "input": {
+      "wire_hex": "474554202f66617669636f6e2e69636f20485454502f312e310d0a486f73743a20302e302e302e303d353030300d0a557365722d4167656e743a204d6f7a696c6c612f352e3020285831313b20553b204c696e757820693638363b20656e2d55533b2072763a312e3929204765636b6f2f323030383036313031352046697265666f782f332e300d0a4163636570743a20746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a20656e2d75732c656e3b713d302e350d0a4163636570742d456e636f64696e673a20677a69702c6465666c6174650d0a4163636570742d436861727365743a2049534f2d383835392d312c7574662d383b713d302e372c2a3b713d302e370d0a4b6565702d416c6976653a203330300d0a436f6e6e656374696f6e3a206b6565702d616c6976650d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/favicon.ico",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "0.0.0.0=5000"
+        ],
+        [
+          "User-Agent",
+          "Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9) Gecko/2008061015 Firefox/3.0"
+        ],
+        [
+          "Accept",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        ],
+        [
+          "Accept-Language",
+          "en-us,en;q=0.5"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip,deflate"
+        ],
+        [
+          "Accept-Charset",
+          "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
+        ],
+        [
+          "Keep-Alive",
+          "300"
+        ],
+        [
+          "Connection",
+          "keep-alive"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-sample-dumbpack",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: DUMBPACK",
+    "input": {
+      "wire_hex": "474554202f64756d627061636b20485454502f312e310d0a616161616161616161616161613a2b2b2b2b2b2b2b2b2b2b0d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/dumbpack",
+      "version": "1.1",
+      "headers": [
+        [
+          "aaaaaaaaaaaaa",
+          "++++++++++"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-no-headers-and-no-body",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: No headers and no body",
+    "input": {
+      "wire_hex": "474554202f6765745f6e6f5f686561646572735f6e6f5f626f64792f776f726c6420485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/get_no_headers_no_body/world",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-one-header-and-no-body",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: One header and no body",
+    "input": {
+      "wire_hex": "474554202f6765745f6f6e655f6865616465725f6e6f5f626f647920485454502f312e310d0a4163636570743a202a2f2a0d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/get_one_header_no_body",
+      "version": "1.1",
+      "headers": [
+        [
+          "Accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-apache-bench-get",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Apache bench GET",
+    "input": {
+      "wire_hex": "474554202f7465737420485454502f312e300d0a486f73743a20302e302e302e303a353030300d0a557365722d4167656e743a2041706163686542656e63682f322e330d0a4163636570743a202a2f2a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/test",
+      "version": "1.0",
+      "headers": [
+        [
+          "Host",
+          "0.0.0.0:5000"
+        ],
+        [
+          "User-Agent",
+          "ApacheBench/2.3"
+        ],
+        [
+          "Accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "llhttp-sample-prefix-newline",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Prefix newline",
+    "input": {
+      "wire_hex": "0d0a474554202f7465737420485454502f312e310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [],
+      "method": "GET",
+      "target": "/test",
+      "version": "1.1",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "could not determine controlling flag"
+  },
+  {
+    "id": "llhttp-sample-no-http-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: No HTTP version",
+    "input": {
+      "wire_hex": "474554202f0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [],
+      "method": "GET",
+      "target": "/",
+      "version": "0.9",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "could not determine controlling flag"
+  },
+  {
+    "id": "llhttp-sample-line-folding-in-header-value-with-crlf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Line folding in header value with CRLF",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a4c696e65313a2020206162630d0a096465660d0a206768690d0a09096a6b6c0d0a20206d6e6f200d0a0920097172730d0a4c696e65323a2009206c696e6532090d0a4c696e65333a0d0a206c696e65330d0a4c696e65343a200d0a200d0a436f6e6e656374696f6e3a0d0a20636c6f73650d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-headers (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "both oracles reject; cannot build expected_flagged"
+  },
+  {
+    "id": "llhttp-sample-line-folding-in-header-value-with-lf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Line folding in header value with LF",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a4c696e65313a2020206162630a096465660a206768690a09096a6b6c0a20206d6e6f200a0920097172730a4c696e65323a2009206c696e6532090a4c696e65333a0a206c696e65330a4c696e65343a200a200a436f6e6e656374696f6e3a0a20636c6f73650a0a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Missing expected CR after header value"
+  },
+  {
+    "id": "llhttp-sample-no-lf-after-cr",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: No LF after CR",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d4c696e653a20310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected CRLF after version"
+  },
+  {
+    "id": "llhttp-sample-no-lf-after-cr-lenient",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: No LF after CR (lenient)",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d4c696e653a20310d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-optional-lf-after-cr (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: incomplete parse (no message complete)"
+  },
+  {
+    "id": "llhttp-sample-request-starting-with-crlf",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Request starting with CRLF",
+    "input": {
+      "wire_hex": "0d0a474554202f75726c20485454502f312e310d0a486561646572313a2056616c7565310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Header1",
+          "Value1"
+        ]
+      ],
+      "method": "GET",
+      "target": "/url",
+      "version": "1.1",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "could not determine controlling flag"
+  },
+  {
+    "id": "llhttp-sample-extended-characters",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: Extended Characters",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a546573743a2044c3bc7373656c646f72660d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Test",
+          "DÃ¼sseldorf"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-255-ascii-in-header-value",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: 255 ASCII in header value",
+    "input": {
+      "wire_hex": "4f5054494f4e53202f75726c20485454502f312e310d0a486561646572313a2056616c7565310d0a486561646572323a205c78666656616c7565320d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "OPTIONS",
+      "target": "/url",
+      "version": "1.1",
+      "headers": [
+        [
+          "Header1",
+          "Value1"
+        ],
+        [
+          "Header2",
+          "\\xffValue2"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-sample-x-ssl-nonsense",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "llhttp: X-SSL-Nonsense",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a582d53534c2d4e6f6e73656e73653a2020202d2d2d2d2d424547494e2043455254494649434154452d2d2d2d2d0d0a094d49494662544343424657674177494241674943483463774451594a4b6f5a496876634e41514546425141776344454c4d416b474131554542684d43565573780d0a094554415042674e5642416f544347565459326c6c626d4e6c4d524977454159445651514c45776c426458526f62334a7064486b78437a414a42674e5642414d540d0a09416b4e424d5330774b77594a4b6f5a496876634e41516b424668356a595331766347567959585276636b426e636d6c6b4c584e3163484276636e517559574d750d0a09645773774868634e4d4459774e7a49334d5451784d7a49345768634e4d4463774e7a49334d5451784d7a4934576a42624d517377435159445651514745774a560d0a09537a45524d4138474131554543684d495a564e6a6157567559325578457a415242674e5642417354436b3168626d4e6f5a584e305a584978437a414a42674e560d0a09424163546d72736f677269714d574c416b31444d52637746515944565151444577357461574e6f5957567349484268636d51594a4b6f5a496876634e415145420d0a0942514144676745504144434341516f4367674542414e50455142676c3149614b645353315462684633684558536c373247394a2b57432f3152363466416345460d0a0957353172457946596949655a47782f42567a77586265426f4e554b34314f4b363573784775666c4d6f35674c666c62774a7448425249454b41665656703359520d0a09675737634d412f732f584b674c3147454337725177386c495a5438524170756b4347714f564853692f46315369466c5044787544666d64694e7a4c33312b734c0d0a093069774844644e6b476a79357079425342385937396473534a7443572f69614c42302f6e38536a37486776765a4a37783066722b52516a594f555566726550500d0a0975324d53704679662b394262432f615867615a7569437653522b38536e763378417051592b66554c4b2f78593868385561353169586f51356a726775325371520d0a09776741374255693347384c467a4d426c38465243445947554479374d365161485878315a574950574e4b73434177454141614f4341695177676749674d4177470d0a0941315564457745422f7751434d4141774551594a59495a4941596234516748545450415144416757674d41344741315564447745422f77514541774944364441730d0a0942676c67686b6742687668434151304548785964565573675a53315459326c6c626d4e6c4946567a5a5849675132567964476c6d61574e6864475577485159440d0a095652304f42425945464454742f73663950654d615a44486b55496c647244594d4e54425a4d49476142674e5648534d45675a497767592b41464149347178476a0d0a096c6f434c44644d564b77696c6a6a44617374716f6f58536b636a42774d517377435159445651514745774a56537a45524d4138474131554543684d495a564e6a0d0a096157567559325578456a415142674e56424173544355463164476876636d6c306554454c4d416b474131554541784d43513045784c54417242676b71686b69470d0a093977304243514557486d4e684c5739775a584a6864473979514764796157517463335677634739796443356859793531613449424144417042674e56485249450d0a09496a41676752356a595331766347567959585276636b426e636d6c6b4c584e3163484276636e517559574d75645773774751594456523067424249774544414f0d0a09426777724267454541646b7641514542415159775051594a59495a494159623451674545424441574c6d6830644841364c79396a5953356e636d6c6b4c584e310d0a0963484276636e517559574d75646d5434736f7077716c42577376634856694c324e796243396a59574e796243356a636d77775051594a59495a494159623451674544424441574c6d68300d0a09644841364c79396a5953356e636d6c6b4c584e3163484276636e517559574d7564577376634856694c324e796243396a59574e796243356a636d7777507759440d0a0956523066424467774e6a41306f444b674d4959756148523063446f764c324e684c6d64796157517435685979353161793977645749760d0a0959334a734c324e6859334a734c6d4e796244414e42676b71686b6947397730424151554641414f4341514541532f553469696f6f42454e47572f48776d6d64330d0a09584379365a72743038596a4b437a474e6a6f72543938673875477371596a5378762f686d6930716c6e6c48732b6b2f33496f6263334c6a5335414d5972354c380d0a09554f374f536b6746466c4c48517943394a7a50666d4c43417567767a45627976344f6c6e73723868627846314d624b5a6f5178555a744d56753239776a66586b0d0a09685465417042763765614b4357705370374d436276677a6d3734697a4b687533766c446b397736715672786550664767704b50716648694f6f4768466e62544b0d0a09775443366f327871357930715a30334a6f6e46374f4a737045643349357a4b5933452b6f76372f5a685736447154385546767341646a765162587968563845750d0a09596869787731614b45507a4e6a4e6f7775497365566f674b4f4c5878574935764169354867586453302f4553356744477341426f3466716f76554b6c676f70330d0a0952413d3d0d0a092d2d2d2d2d454e442043455254494649434154452d2d2d2d2d0d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-headers (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "both oracles reject; cannot build expected_flagged"
+  },
+  {
+    "id": "llhttp-uri-quotes-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Quotes in URI",
+    "input": {
+      "wire_hex": "474554202f776974685f226c6f76656c79225f71756f7465733f666f6f3d5c226261725c2220485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/with_\"lovely\"_quotes?foo=\\\"bar\\\"",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-query-url-with-question-mark",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Query URL with question mark",
+    "input": {
+      "wire_hex": "474554202f746573742e6367693f666f6f3d6261723f62617a20485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/test.cgi?foo=bar?baz",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-host-terminated-by-a-query-string",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Host terminated by a query string",
+    "input": {
+      "wire_hex": "47455420687474703a2f2f6879706e6f746f61642e6f72673f6861696c3d616c6c20485454502f312e310d0a0d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "http://hypnotoad.org?hail=all",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-host-port-terminated-by-a-query-string",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: `host:port` terminated by a query string",
+    "input": {
+      "wire_hex": "47455420687474703a2f2f6879706e6f746f61642e6f72673a313233343f6861696c3d616c6c20485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "http://hypnotoad.org:1234?hail=all",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-query-url-with-vertical-bar-character",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Query URL with vertical bar character",
+    "input": {
+      "wire_hex": "474554202f746573742e6367693f71756572793d7c20485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/test.cgi?query=|",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-host-port-terminated-by-a-space",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: `host:port` terminated by a space",
+    "input": {
+      "wire_hex": "47455420687474703a2f2f6879706e6f746f61642e6f72673a3132333420485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "http://hypnotoad.org:1234",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-disallow-utf-8-in-uri-path-in-strict-mode",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Disallow UTF-8 in URI path in strict mode",
+    "input": {
+      "wire_hex": "474554202fceb4c2b62fceb4742f706f70653f713d31236e61726620485454502f312e310d0a486f73743a206769746875622e636f6d0d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid char in url path"
+  },
+  {
+    "id": "llhttp-uri-fragment-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Fragment in URI",
+    "input": {
+      "wire_hex": "474554202f666f72756d732f312f746f706963732f323337353f706167653d3123706f7374732d313734303820485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/forums/1/topics/2375?page=1#posts-17408",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-underscore-in-hostname",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Underscore in hostname",
+    "input": {
+      "wire_hex": "434f4e4e45435420686f6d655f302e6e657473636170652e636f6d3a34343320485454502f312e300d0a557365722d6167656e743a204d6f7a696c6c612f312e314e0d0a50726f78792d617574686f72697a6174696f6e3a206261736963206147567362473836643239796247513d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Pause on CONNECT/Upgrade",
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-uri-host-port-and-basic-auth",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: `host:port` and basic auth",
+    "input": {
+      "wire_hex": "47455420687474703a2f2f612531323a6221262a24406879706e6f746f61642e6f72673a313233342f746f746f20485454502f312e310d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "http://a%12:b!&*$@hypnotoad.org:1234/toto",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "llhttp-uri-space-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "description": "llhttp: Space in URI",
+    "input": {
+      "wire_hex": "474554202f666f6f206261722f20485454502f312e310d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected HTTP/, RTSP/ or ICE/"
+  },
+  {
+    "id": "aws-acceptable-non-rfc-but-ok-http-0-9",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "severity": "acceptable",
+    "description": "AWS desync: Non-RFC, but OK HTTP/0.9",
+    "input": {
+      "wire_hex": "474554202f666f6f2f62617220485454502f302e390d0a582d4d792d4865616465723a20736f6d652076616c75650d0a0d0a"
+    },
+    "source_reason": "AWS tier=Acceptable: NonCompliantVersion",
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "X-My-Header",
+          "some value"
+        ]
+      ],
+      "method": "GET",
+      "target": "/foo/bar",
+      "version": "0.9",
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "aws-acceptable-empty-version-which-means-http-0-9",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "severity": "acceptable",
+    "description": "AWS desync: Empty version, which means HTTP/0.9",
+    "input": {
+      "wire_hex": "474554202f666f6f2f626172200d0a582d4d792d4865616465723a20736f6d652076616c75650d0a0d0a"
+    },
+    "source_reason": "AWS tier=Acceptable: NonCompliantVersion",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-acceptable-unknown-but-ok-http-1-2",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "severity": "acceptable",
+    "description": "AWS desync: Unknown but OK HTTP/1.2",
+    "input": {
+      "wire_hex": "474554202f666f6f2f62617220485454502f312e320d0a582d4d792d4865616465723a20736f6d652076616c75650d0a0d0a"
+    },
+    "source_reason": "AWS tier=Acceptable: NonCompliantVersion",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/foo/bar",
+      "version": "1.2",
+      "headers": [
+        [
+          "X-My-Header",
+          "some value"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_nonstandard_version"
+  },
+  {
+    "id": "aws-uri-specific-test-cases-t-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "ambiguous",
+    "description": "AWS desync: \\t in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f6109485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: AmbiguousUri",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/AmbiguousUri). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-extra-spaces-in-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "severity": "acceptable",
+    "description": "AWS desync: Extra spaces in version",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f6120485454502f312e31200d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Acceptable: NonCompliantVersion",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-x01-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "ambiguous",
+    "description": "AWS desync: \\x01 in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f6101485454502f312e3120485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: AmbiguousUri",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/AmbiguousUri). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-uri-specific-test-cases-space-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3.2",
+    "severity": "acceptable",
+    "description": "AWS desync: [space] in URI",
+    "input": {
+      "wire_hex": "474554202f656e64706f696e745f613f706172616d3d6e6f7420657363617065642073706163657320485454502f312e310d0a582d466f727761726465642d466f723a20312e312e312e310d0a0d0a"
+    },
+    "source_reason": "AWS tier=Acceptable: SpaceInUri",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "bare-lf-line-ending",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "Request using bare LF instead of CRLF",
+    "mode_flag": "allow_bare_lf",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310a486f73743a206578616d706c652e636f6d0a0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing CRLF"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "http-09-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "description": "Request with explicit HTTP/0.9 version string",
+    "mode_flag": "allow_http_09",
+    "input": {
+      "wire_hex": "474554202f20485454502f302e390d0a486f73743a20780d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "0.9",
+      "headers": [
+        [
+          "Host",
+          "x"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "nonstandard-http-version",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §2.3",
+    "description": "Request with nonstandard HTTP/2.0 version string",
+    "mode_flag": "allow_nonstandard_version",
+    "input": {
+      "wire_hex": "474554202f20485454502f322e300d0a486f73743a20780d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "2.0",
+      "headers": [
+        [
+          "Host",
+          "x"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "multiple-spaces-in-request-line",
+    "category": "request-line",
+    "rfc_section": "RFC 9112 §3",
+    "description": "Request line with double spaces between method/target/version",
+    "mode_flag": "allow_multiple_spaces",
+    "input": {
+      "wire_hex": "47455420202f2020485454502f312e310d0a486f73743a20780d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "empty target"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "x"
+        ]
+      ],
+      "body_hex": ""
+    }
+  }
+]

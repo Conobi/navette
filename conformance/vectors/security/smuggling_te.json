@@ -1,0 +1,402 @@
+[
+  {
+    "id": "smuggle-te-extra-space",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "Extra OWS before value is RFC-legal but after stripping the value is 'chunked' which matches. However strict mode checks the raw value before OWS stripping and finds ' chunked' (with leading space), which is caught by _strip_ows_bounds then compared exactly. Parser strips OWS then compares, so this actually passes strict. Reject rationale: defense-in-depth against TE obfuscation — but our parser correctly normalizes OWS.",
+    "description": "Transfer-Encoding with extra leading space before 'chunked'",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "reason": "OWS is stripped before value comparison, resulting in exact 'chunked' match"
+    }
+  },
+  {
+    "id": "smuggle-te-trailing-space",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "Trailing OWS after value is stripped by _strip_ows_bounds before the value is stored. After stripping, the value is exactly 'chunked', so strict comparison passes. Some strict parsers reject trailing whitespace as suspicious.",
+    "description": "Transfer-Encoding with trailing space after 'chunked'",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206368756e6b6564200d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "reason": "Trailing OWS is stripped before value comparison, resulting in exact 'chunked' match"
+    }
+  },
+  {
+    "id": "smuggle-te-capitalized",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "RFC says TE values are case-insensitive, but strict mode requires exact lowercase 'chunked' to prevent obfuscation. Capitalized 'Chunked' fails the exact string comparison in strict mode.",
+    "description": "Transfer-Encoding: Chunked (capitalized) — case variation used for desync attacks",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a204368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Strict mode requires exact lowercase 'chunked'"
+    }
+  },
+  {
+    "id": "smuggle-te-tab-before-value",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "HTAB is valid OWS per RFC 9110 and is stripped by _strip_ows_bounds. After stripping, value is exactly 'chunked'. Unusual formatting but RFC-legal.",
+    "description": "Transfer-Encoding with HTAB before 'chunked' instead of space",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a096368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "reason": "HTAB is valid OWS, stripped before comparison, value becomes exactly 'chunked'"
+    }
+  },
+  {
+    "id": "smuggle-te-identity",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "Transfer-Encoding: identity — obsoleted encoding used to confuse proxies",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206964656e746974790d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Strict mode only accepts exactly 'chunked' as TE value"
+    }
+  },
+  {
+    "id": "smuggle-te-double-chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "Multiple TE values in a single header ('chunked, chunked') do not match the exact string 'chunked'. RFC allows combining but strict rejects to prevent desync.",
+    "description": "Transfer-Encoding: chunked, chunked — duplicate value in single header",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206368756e6b65642c206368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Value 'chunked, chunked' does not match exact 'chunked'"
+    }
+  },
+  {
+    "id": "smuggle-te-gzip-chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "Multiple encodings ('gzip, chunked') — strict only accepts exactly 'chunked'. Some proxies handle only the first or last encoding, causing desync.",
+    "description": "Transfer-Encoding: gzip, chunked — multiple encodings",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a20677a69702c206368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Value 'gzip, chunked' does not match exact 'chunked'"
+    }
+  },
+  {
+    "id": "smuggle-te-space-before-colon",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §5.1",
+    "severity": "severe",
+    "description": "Space before colon in Transfer-Encoding header — invalid token boundary used for desync",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e67203a206368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Whitespace before colon violates header field syntax"
+    }
+  },
+  {
+    "id": "smuggle-te-duplicate-headers",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "notes": "Duplicate Transfer-Encoding headers — RFC 9110 says recipients may combine duplicate headers but this is unusual for TE. Our parser sees te_count=2 but uses the last value. Strict rejects because te_value='chunked' matches but the duplication itself is suspicious. Parser currently accepts since each individual TE value is 'chunked'.",
+    "description": "Duplicate Transfer-Encoding headers with identical values",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "reason": "Both TE headers have value 'chunked' which passes strict check; parser uses last value"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-transfer-encoding-x01chunked",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: \\x01chunked",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a20016368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-transfer-encoding-chunked-x01",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: chunked\\x01",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b6564010d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-transfer-encoding-xa0chunked",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: \\xa0chunked",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a20a06368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-bad-header-characters-transfer-encoding-chunked-xa0",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: chunked\\xa0",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b6564a00d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-edge-cases-bad-non-essential-header-does-not-shadow-bad-transfer-encodi",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Bad non-essential header does not shadow bad Transfer-Encoding",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a536f6d652d437573746f6d2d4865616465723a204e6f6e2d52666320436f6d706c69616e74110d0a5472616e736665722d456e636f64696e673a206368756e6b65647f0d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-two-identical-fields-te",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Two Identical Fields - TE",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a5472616e736665722d456e636f64696e673a20206368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleTransferEncodingChunked",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-transfer-encoding-tab-chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "ambiguous",
+    "description": "AWS desync: Transfer-Encoding[tab]: chunked",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e67093a20206368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: SuspiciousHeader",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/SuspiciousHeader). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-rtransfer-encoding-chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: \\rTransfer-Encoding: chunked",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a0d5472616e736665722d456e636f64696e673a20206368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-rtransfer-encoding-chunked-without-cl",
+    "category": "headers",
+    "rfc_section": "RFC 9112 §5",
+    "severity": "severe",
+    "description": "AWS desync: \\rTransfer-Encoding: chunked without CL",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a0d5472616e736665722d456e636f64696e673a20206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-transfer-encoding-chunk",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: chunk",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a20206368756e6b0d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-transfer-encoding-xchunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: xchunked",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a2020786368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-invalid-transfer-encoding",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Invalid Transfer-Encoding",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a20206368756e6b65642c6368756e6b65640d0a436f6e74656e742d4c656e6774683a2020340d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleTransferEncodingChunked",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-x00transfer-encoding-chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: \\x00Transfer-Encoding: chunked",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a436f6e74656e742d4c656e6774683a2020360d0a005472616e736665722d456e636f64696e673a20206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-transfer-encoding-x00chunked",
+    "category": "request-smuggling",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding: \\x00chunked",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a5472616e736665722d456e636f64696e673a2020006368756e6b65640d0a436f6e74656e742d4c656e6774683a2020360d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadHeader",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-unknown-transfer-encoding-xchunked",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Unknown Transfer-Encoding: xchunked",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a20786368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-bad-character-in-transfer-encoding-value-chunked-x11",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Bad character in Transfer-Encoding value: chunked\\x11",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b6564110d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: BadTransferEncoding",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-multiple-transfer-encoding-chunked",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Multiple Transfer-Encoding: chunked",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleTransferEncodingChunked",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-multiple-transfer-encoding-chunked-chunked",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Multiple Transfer-Encoding: chunked,chunked",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e673a206368756e6b65642c6368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleTransferEncodingChunked",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-severe-transfer-encoding-white-space-and-transfer-encoding",
+    "category": "chunked",
+    "rfc_section": "RFC 9112 §6.1",
+    "severity": "severe",
+    "description": "AWS desync: Transfer-Encoding[white-space] and Transfer-Encoding",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f312e310d0a5472616e736665722d456e636f64696e67203a206368756e6b65640d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a"
+    },
+    "source_reason": "AWS tier=Severe: MultipleTransferEncodingChunked",
+    "expected": {
+      "behavior": "reject"
+    }
+  }
+]

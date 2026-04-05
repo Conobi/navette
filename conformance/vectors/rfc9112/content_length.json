@@ -1,0 +1,654 @@
+[
+  {
+    "id": "content-length-exact",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length matches body length exactly",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a48656c6c6f"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  {
+    "id": "content-length-zero",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length: 0 with empty body",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "content-length-non-numeric",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length value is not a valid integer",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a206162630d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "invalid Content-Length value"
+    }
+  },
+  {
+    "id": "content-length-negative",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Negative Content-Length value",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a202d310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "invalid Content-Length value"
+    }
+  },
+  {
+    "id": "content-length-duplicate-identical",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Two Content-Length headers with identical values",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a436f6e74656e742d4c656e6774683a20350d0a0d0a48656c6c6f"
+    },
+    "mode_flag": "allow_duplicate_cl",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "multiple Content-Length headers"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  {
+    "id": "content-length-duplicate-different",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Two Content-Length headers with different values — request smuggling vector",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a436f6e74656e742d4c656e6774683a2031300d0a0d0a48656c6c6f576f726c64"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "multiple Content-Length headers with different values"
+    }
+  },
+  {
+    "id": "content-length-larger-than-body",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length declares 100 bytes but only 5 bytes present",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a48656c6c6f"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "truncated body"
+    }
+  },
+  {
+    "id": "content-length-leading-zeros",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length with leading zeros '005' — strict rejects, lenient accepts",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a203030350d0a0d0a48656c6c6f"
+    },
+    "mode_flag": "allow_cl_leading_zeros",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "Content-Length has leading zeros"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "005"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  {
+    "id": "content-length-overflow",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length value overflows integer representation",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a2039393939393939393939393939393939393939390d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject",
+      "reason": "Content-Length overflow"
+    }
+  },
+  {
+    "id": "content-length-excess-body",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Content-Length: 3 but 10 bytes follow — only first 3 bytes are the body",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20330d0a0d0a30313233343536373839"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "3"
+        ]
+      ],
+      "body_hex": "303132"
+    }
+  },
+  {
+    "id": "llhttp-content-length-content-length-with-zeroes",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: `Content-Length` with zeroes",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a203030330d0a0d0a6162630d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "multiple strictness issues or incomplete body"
+  },
+  {
+    "id": "llhttp-content-length-content-length-with-follow-up-headers",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: `Content-Length` with follow-up headers",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a203030330d0a4f6861693a20776f726c640d0a0d0a6162630d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "multiple strictness issues or incomplete body"
+  },
+  {
+    "id": "llhttp-content-length-error-on-content-length-overflow",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Error on `Content-Length` overflow",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030303030303030303030303030303030303030300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Content-Length overflow"
+  },
+  {
+    "id": "llhttp-content-length-error-on-duplicate-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Error on duplicate `Content-Length`",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a20310d0a436f6e74656e742d4c656e6774683a20320d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Duplicate Content-Length"
+  },
+  {
+    "id": "llhttp-content-length-error-on-simultaneous-content-length-and-transfer-encoding-identity",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Error on simultaneous `Content-Length` and `Transfer-Encoding: identity`",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a20310d0a5472616e736665722d456e636f64696e673a206964656e746974790d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Transfer-Encoding can't be present with Content-Length"
+  },
+  {
+    "id": "llhttp-content-length-invalid-whitespace-token-with-content-length-header-field",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Invalid whitespace token with `Content-Length` header field",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e6e656374696f6e3a20757067726164650d0a436f6e74656e742d4c656e677468203a20340d0a557067726164653a2077730d0a0d0a61626364656667680d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header field char"
+  },
+  {
+    "id": "llhttp-content-length-invalid-whitespace-token-with-content-length-header-field-lenient",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Invalid whitespace token with `Content-Length` header field (lenient)",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e6e656374696f6e3a20757067726164650d0a436f6e74656e742d4c656e677468203a20340d0a557067726164653a2077730d0a0d0a61626364656667680d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-headers (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Pause on CONNECT/Upgrade"
+  },
+  {
+    "id": "llhttp-content-length-no-error-on-simultaneous-content-length-and-transfer-encoding-identity-lenient",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: No error on simultaneous `Content-Length` and `Transfer-Encoding: identity` (lenient)",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a20310d0a5472616e736665722d456e636f64696e673a206964656e746974790d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-chunked-length (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: incomplete parse (no message complete)"
+  },
+  {
+    "id": "llhttp-content-length-funky-content-length-with-body",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Funky `Content-Length` with body",
+    "input": {
+      "wire_hex": "474554202f6765745f66756e6b795f636f6e74656e745f6c656e6774685f626f64795f68656c6c6f20485454502f312e300d0a636f6e54454e542d4c656e6774683a20350d0a0d0a48454c4c4f0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/get_funky_content_length_body_hello",
+      "version": "1.0",
+      "headers": [
+        [
+          "conTENT-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48454c4c4f"
+    }
+  },
+  {
+    "id": "llhttp-content-length-spaces-in-content-length-surrounding",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Spaces in `Content-Length` (surrounding)",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a436f6e74656e742d4c656e6774683a20203432200d0a0d0a"
+    },
+    "source_reason": "llhttp: incomplete parse (no message complete)",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "multiple strictness issues or incomplete body"
+  },
+  {
+    "id": "llhttp-content-length-tabs-in-content-length-surrounding",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Tabs in `Content-Length` (surrounding)",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a436f6e74656e742d4c656e6774683a0934320920200d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: incomplete parse (no message complete)"
+  },
+  {
+    "id": "llhttp-content-length-spaces-in-content-length-2",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Spaces in `Content-Length` #2",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a436f6e74656e742d4c656e6774683a203420320d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid character in Content-Length"
+  },
+  {
+    "id": "llhttp-content-length-spaces-in-content-length-3",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Spaces in `Content-Length` #3",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a436f6e74656e742d4c656e6774683a2031332033370d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid character in Content-Length"
+  },
+  {
+    "id": "llhttp-content-length-empty-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Empty `Content-Length`",
+    "input": {
+      "wire_hex": "504f5354202f20485454502f312e310d0a436f6e74656e742d4c656e6774683a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Empty Content-Length"
+  },
+  {
+    "id": "llhttp-content-length-content-length-with-cr-instead-of-dash",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: `Content-Length` with CR instead of dash",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e740d4c656e6774683a203030330d0a0d0a6162630d0a0d0a"
+    },
+    "notes": "noScan=true in llhttp",
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Invalid header token"
+  },
+  {
+    "id": "llhttp-content-length-content-length-reset-when-no-body-is-received",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Content-Length reset when no body is received",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a203132330d0a0d0a504f5354202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a203435360d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Content-Length",
+          "123"
+        ]
+      ],
+      "method": "PUT",
+      "target": "/url",
+      "version": "1.1",
+      "body_hex": "504f5354202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a203435360d0a0d0a"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "llhttp-content-length-missing-crlf-crlf-before-body",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Missing CRLF-CRLF before body",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a20330d0a0d6162630d0a0d0a"
+    },
+    "expected": {
+      "behavior": "reject"
+    },
+    "source_reason": "llhttp: Expected LF after headers"
+  },
+  {
+    "id": "llhttp-content-length-missing-crlf-crlf-before-body-lenient",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "llhttp: Missing CRLF-CRLF before body (lenient)",
+    "input": {
+      "wire_hex": "505554202f75726c20485454502f312e310d0a436f6e74656e742d4c656e6774683a20330d0a0d6162630d0a0d0a"
+    },
+    "notes": "llhttp meta type: request-lenient-optional-lf-after-cr (lenient mode)",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-acceptable-get-with-a-body-and-content-length-0",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "acceptable",
+    "description": "AWS desync: Get with a body and Content-Length:0",
+    "input": {
+      "wire_hex": "474554202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Acceptable: GetHeadZeroContentLength",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/foo/bar",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "mode_flag": "allow_missing_host_11"
+  },
+  {
+    "id": "aws-ambiguous-duplicate-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Duplicate Content-Length",
+    "input": {
+      "wire_hex": "505554202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: DuplicateContentLength",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/DuplicateContentLength). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-ambiguous-get-with-a-body-and-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Get with a body and Content-Length",
+    "input": {
+      "wire_hex": "474554202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "aws-ambiguous-head-with-a-body-and-content-length",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Head with a body and Content-Length",
+    "input": {
+      "wire_hex": "48454144202f666f6f2f62617220485454502f312e310d0a436f6e74656e742d4c656e6774683a20313030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "aws-ambiguous-content-length-for-http-0-9",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Content-Length for HTTP/0.9",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f62617220485454502f302e390d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "accept",
+      "headers": [
+        [
+          "Content-Length",
+          "100"
+        ]
+      ],
+      "method": "POST",
+      "target": "/foo/bar",
+      "version": "0.9",
+      "body_hex": ""
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "aws-ambiguous-content-length-for-empty-protocol-which-is-http-0-9",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Content-Length for empty protocol, which is HTTP/0.9",
+    "input": {
+      "wire_hex": "504f5354202f666f6f2f626172200d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-edge-cases-non-compliant-customer-header-does-not-shadow-ambiguous-cont",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Non-compliant customer header does not shadow ambiguous Content-Length for HEAD",
+    "input": {
+      "wire_hex": "48454144202f666f6f2f62617220485454502f312e310d0a536f6d652d437573746f6d2d4865616465723a204e6f6e2052666320436f6d706c69616e74010d0a436f6e74656e742d4c656e6774683a20393030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-edge-cases-bad-uri-does-not-shadow-essential-ambiguous-headers",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Bad URI does not shadow essential ambiguous headers",
+    "input": {
+      "wire_hex": "474554202f666f6f2f6261725c742f62617a20485454502f312e310d0a536f6d652d437573746f6d2d4865616465723a204e6f6e20526663202d436f6d706c69616e74010d0a436f6e74656e742d4c656e6774683a20393030300d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "aws-real-life-test-cases-has-a-cl-in-get",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Has a CL in GET",
+    "input": {
+      "wire_hex": "474554202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a436f6e74656e742d4c656e6774683a202032320d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    },
+    "deferred": "HC-2",
+    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+  },
+  {
+    "id": "aws-real-life-test-cases-two-identical-fields-cl",
+    "category": "content-length",
+    "rfc_section": "RFC 9112 §6.3",
+    "severity": "ambiguous",
+    "description": "AWS desync: Two Identical Fields - CL",
+    "input": {
+      "wire_hex": "504f5354202f746573742e68746d6c20485454502f312e310d0a557365722d4167656e743a20204d6f7a696c6c612f352e30202857696e646f7773204e542031302e303b2057696e36343b207836343b2072763a36382e3029204765636b6f2f32303130303130312046697265666f782f36382e300d0a4163636570743a2020746578742f68746d6c2c6170706c69636174696f6e2f7868746d6c2b786d6c2c6170706c69636174696f6e2f786d6c3b713d302e392c2a2f2a3b713d302e380d0a4163636570742d4c616e67756167653a2020656e2d55532c656e3b713d302e350d0a4163636570742d456e636f64696e673a2020677a69702c206465666c6174650d0a436f6e74656e742d547970653a20206170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465640d0a436f6e6e656374696f6e3a20206b6565702d616c6976650d0a557067726164652d496e7365637572652d52657175657374733a2020310d0a436f6e74656e742d4c656e6774683a2020350d0a436f6e74656e742d4c656e6774683a2020350d0a0d0a"
+    },
+    "source_reason": "AWS tier=Ambiguous: DuplicateContentLength",
+    "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/DuplicateContentLength). Strict parser rejects this as defense-in-depth.",
+    "expected": {
+      "behavior": "reject"
+    }
+  }
+]

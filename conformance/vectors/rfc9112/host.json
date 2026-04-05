@@ -1,0 +1,218 @@
+[
+  {
+    "id": "host-single-valid",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "HTTP/1.1 request with a single valid Host header",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-missing-http11",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "HTTP/1.1 request without Host header \u2014 required by spec",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a4163636570743a20746578742f68746d6c0d0a0d0a"
+    },
+    "mode_flag": "allow_missing_host_11",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Accept",
+          "text/html"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-duplicate-http11",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "HTTP/1.1 request with duplicate Host headers",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a486f73743a206f746865722e636f6d0d0a0d0a"
+    },
+    "mode_flag": "allow_duplicate_host",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "duplicate Host header"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Host",
+          "other.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-missing-http10",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "HTTP/1.0 request without Host header \u2014 not required in 1.0",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e300d0a4163636570743a20746578742f68746d6c0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.0",
+      "headers": [
+        [
+          "Accept",
+          "text/html"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-with-port",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "Host header includes port number",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a206578616d706c652e636f6d3a383038300d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com:8080"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-empty-value",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "Host header with empty value \u2014 valid for origin-form requests",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          ""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-ip-address",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "Host header with IPv4 address instead of hostname",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e310d0a486f73743a203132372e302e302e310d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-present-http10",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a73.2",
+    "description": "HTTP/1.0 request with Host header present \u2014 valid even though not required",
+    "input": {
+      "wire_hex": "474554202f20485454502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/",
+      "version": "1.0",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  {
+    "id": "host-http10-content-length-body",
+    "category": "host",
+    "rfc_section": "RFC 9112 \u00a76.3",
+    "description": "HTTP/1.0 POST with Content-Length body \u2014 valid combination",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e300d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a48656c6c6f"
+    },
+    "expected": {
+      "behavior": "accept",
+      "method": "POST",
+      "target": "/data",
+      "version": "1.0",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  }
+]
