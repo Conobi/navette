@@ -1602,16 +1602,58 @@
   {
     "id": "llhttp-uri-disallow-utf-8-in-uri-path-in-strict-mode",
     "category": "request-line",
-    "rfc_section": "RFC 9112 §3.2",
+    "rfc_section": "RFC 3986 §2",
     "description": "llhttp: Disallow UTF-8 in URI path in strict mode",
+    "notes": "noScan=true in llhttp",
+    "mode_flag": "allow_target_ctl",
     "input": {
       "wire_hex": "474554202fceb4c2b62fceb4742f706f70653f713d31236e61726620485454502f312e310d0a486f73743a206769746875622e636f6d0d0a0d0a"
     },
-    "notes": "noScan=true in llhttp",
-    "expected": {
-      "behavior": "reject"
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "non-ASCII byte in request target"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/\u00ce\u00b4\u00c2\u00b6/\u00ce\u00b4t/pope?q=1#narf",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "github.com"
+        ]
+      ],
+      "body_hex": ""
     },
     "source_reason": "llhttp: Invalid char in url path"
+  },
+  {
+    "id": "non-ascii-in-uri",
+    "category": "request-line",
+    "rfc_section": "RFC 3986 §2",
+    "description": "Raw UTF-8 bytes in URI path (should be percent-encoded)",
+    "mode_flag": "allow_target_ctl",
+    "input": {
+      "wire_hex": "474554202f636166c3a920485454502f312e310d0a486f73743a20780d0a0d0a"
+    },
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "non-ASCII byte in request target"
+    },
+    "expected_flagged": {
+      "behavior": "accept",
+      "method": "GET",
+      "target": "/caf\u00c3\u00a9",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "x"
+        ]
+      ],
+      "body_hex": ""
+    }
   },
   {
     "id": "llhttp-uri-fragment-in-uri",
@@ -1692,21 +1734,26 @@
     "rfc_section": "RFC 9112 §2.3",
     "severity": "acceptable",
     "description": "AWS desync: Non-RFC, but OK HTTP/0.9",
+    "mode_flag": "allow_http_09",
     "input": {
       "wire_hex": "474554202f666f6f2f62617220485454502f302e390d0a582d4d792d4865616465723a20736f6d652076616c75650d0a0d0a"
     },
     "source_reason": "AWS tier=Acceptable: NonCompliantVersion",
-    "expected": {
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
       "behavior": "accept",
+      "method": "GET",
+      "target": "/foo/bar",
+      "version": "0.9",
       "headers": [
         [
           "X-My-Header",
           "some value"
         ]
       ],
-      "method": "GET",
-      "target": "/foo/bar",
-      "version": "0.9",
       "body_hex": ""
     }
   },
