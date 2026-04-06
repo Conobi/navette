@@ -1,0 +1,178 @@
+[
+  {
+    "id": "conn-upgrade-101-websocket",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9112 §7.4",
+    "description": "101 Switching Protocols for WebSocket — connection enters UPGRADED phase",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a20776562736f636b65740d0a436f6e6e656374696f6e3a20557067726164650d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 101, "reason": "Switching Protocols", "version": "1.1", "headers": [["Upgrade", "websocket"], ["Connection", "Upgrade"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-upgrade-101-with-trailing-data",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9112 §7.4",
+    "description": "101 Switching Protocols with trailing WebSocket frame data — UPGRADED, trailing bytes preserved",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a20776562736f636b65740d0a436f6e6e656374696f6e3a20557067726164650d0a0d0a810568656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 101, "reason": "Switching Protocols", "version": "1.1", "headers": [["Upgrade", "websocket"], ["Connection", "Upgrade"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": false,
+      "trailing_data_hex": "810568656c6c6f"
+    }
+  },
+  {
+    "id": "conn-upgrade-connect-200",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["CONNECT"],
+    "rfc_section": "RFC 9110 §9.3.6",
+    "description": "CONNECT method with 200 OK — connection enters UPGRADED (tunnel established), no body",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-upgrade-connect-404",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["CONNECT"],
+    "rfc_section": "RFC 9110 §9.3.6",
+    "description": "CONNECT method with 404 Not Found — NOT upgraded, response has body per Content-Length",
+    "input": {
+      "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a436f6e74656e742d4c656e6774683a20390d0a0d0a4e6f7420466f756e64"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 404, "reason": "Not Found", "version": "1.1", "headers": [["Content-Length", "9"]], "body_hex": "4e6f7420466f756e64" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-upgrade-101-websocket-full",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9112 §7.4",
+    "description": "101 Switching Protocols with Upgrade + Sec-WebSocket-Accept headers — full WebSocket handshake response",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a20776562736f636b65740d0a436f6e6e656374696f6e3a20557067726164650d0a5365632d576562536f636b65742d4163636570743a20733370504c4d426954786151396b59477a7a685a52624b2b784f6f3d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 101, "reason": "Switching Protocols", "version": "1.1", "headers": [["Upgrade", "websocket"], ["Connection", "Upgrade"], ["Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-upgrade-101-h2c",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9112 §7.4",
+    "description": "101 Switching Protocols to h2c — connection enters UPGRADED for HTTP/2 cleartext",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a206832630d0a436f6e6e656374696f6e3a20557067726164650d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 101, "reason": "Switching Protocols", "version": "1.1", "headers": [["Upgrade", "h2c"], ["Connection", "Upgrade"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-upgrade-connect-200-with-tunnel-data",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["CONNECT"],
+    "rfc_section": "RFC 9110 §9.3.6",
+    "description": "CONNECT 200 OK with trailing tunnel data (TLS ClientHello-like) — UPGRADED, trailing data preserved",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a0d0a160301000568656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": "160301000568656c6c6f"
+    }
+  },
+  {
+    "id": "conn-upgrade-426-not-upgraded",
+    "category": "connection-upgrade",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9110 §15.5.27",
+    "description": "426 Upgrade Required — NOT an upgrade, normal response with body, connection stays IDLE",
+    "input": {
+      "wire_hex": "485454502f312e312034323620557067726164652052657175697265640d0a557067726164653a20485454502f322e300d0a436f6e74656e742d4c656e6774683a2031360d0a0d0a55706772616465207265717569726564"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 426, "reason": "Upgrade Required", "version": "1.1", "headers": [["Upgrade", "HTTP/2.0"], ["Content-Length", "16"]], "body_hex": "55706772616465207265717569726564" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  }
+]

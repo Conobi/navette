@@ -1,0 +1,123 @@
+[
+  {
+    "id": "conn-err-malformed-second-request",
+    "category": "connection-error",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "First GET valid, second request is malformed garbage — first message parsed, ERROR on second",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a424c415247480d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": true,
+      "error": "malformed request line in second message"
+    }
+  },
+  {
+    "id": "conn-err-truncated-second-request",
+    "category": "connection-error",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "First GET valid, second request is truncated mid-header — first message parsed, ERROR (incomplete)",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6220485454502f312e310d0a486f73743a206578"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": true,
+      "error": "incomplete second request (truncated headers)"
+    }
+  },
+  {
+    "id": "conn-err-empty-wire",
+    "category": "connection-error",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "Empty wire data — no messages, IDLE (empty input is valid, just no messages yet)",
+    "input": {
+      "wire_hex": ""
+    },
+    "expected_messages": [],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 0,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-err-bare-crlf",
+    "category": "connection-error",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "Single CRLF only — no valid request line, ERROR or IDLE depending on prefix CRLF tolerance",
+    "input": {
+      "wire_hex": "0d0a"
+    },
+    "expected_messages": [],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 0,
+      "informational_count": 0,
+      "keep_alive": true,
+      "error": "no valid request line found"
+    }
+  },
+  {
+    "id": "conn-err-malformed-second-response",
+    "category": "connection-error",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET", "GET"],
+    "rfc_section": "RFC 9112 §4",
+    "description": "First 200 OK valid, second response is non-HTTP garbage — first message parsed, ERROR on second",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20320d0a0d0a68694e4f54485454500d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "2"]], "body_hex": "6869" }
+    ],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": true,
+      "error": "malformed status line in second response"
+    }
+  },
+  {
+    "id": "conn-err-double-crlf-only",
+    "category": "connection-error",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §2.2",
+    "description": "Double CRLF (blank line) with no request line — ERROR, not a valid message",
+    "input": {
+      "wire_hex": "0d0a0d0a"
+    },
+    "expected_messages": [],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 0,
+      "informational_count": 0,
+      "keep_alive": true,
+      "error": "no valid request line found"
+    }
+  }
+]

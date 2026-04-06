@@ -1,0 +1,135 @@
+[
+  {
+    "id": "conn-smug-data-after-close",
+    "category": "connection-smuggling",
+    "type": "multi_message",
+    "direction": "request",
+    "severity": "severe",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "Smuggled request after Connection: close — parser must not process second request, strict mode ERRORs on trailing data",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a474554202f61646d696e20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "error": "data after Connection: close"
+    }
+  },
+  {
+    "id": "conn-smug-cl-overflow-smuggled-request",
+    "category": "connection-smuggling",
+    "type": "multi_message",
+    "direction": "request",
+    "severity": "severe",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "POST with CL:5 followed immediately by a smuggled GET — CL body is 'hello', overflow bytes form a second request that a naive parser might process",
+    "input": {
+      "wire_hex": "504f5354202f6c6f67696e20485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f474554202f61646d696e20485454502f312e310d0a486f73743a206576696c2e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "POST", "target": "/login", "version": "1.1", "headers": [["Host", "example.com"], ["Content-Length", "5"]], "body_hex": "68656c6c6f" },
+      { "index": 1, "behavior": "accept", "method": "GET", "target": "/admin", "version": "1.1", "headers": [["Host", "evil.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-smug-cl-zero-with-body",
+    "category": "connection-smuggling",
+    "type": "multi_message",
+    "direction": "request",
+    "severity": "severe",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "POST with Content-Length: 0 but actual data follows — the 'body' data is a smuggled request; a correct parser reads 0-byte body and sees the smuggled request as a second pipelined message",
+    "input": {
+      "wire_hex": "504f5354202f7061676520485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20300d0a0d0a474554202f61646d696e20485454502f312e310d0a486f73743a206576696c2e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "POST", "target": "/page", "version": "1.1", "headers": [["Host", "example.com"], ["Content-Length", "0"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "method": "GET", "target": "/admin", "version": "1.1", "headers": [["Host", "evil.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-smug-http10-no-keepalive-data-after",
+    "category": "connection-smuggling",
+    "type": "multi_message",
+    "direction": "request",
+    "severity": "severe",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "HTTP/1.0 GET without Connection: keep-alive followed by smuggled HTTP/1.1 request — 1.0 default is close, strict mode ERRORs on trailing data",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f61646d696e20485454502f312e310d0a486f73743a206576696c2e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.0", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "error": "data after Connection: close"
+    }
+  },
+  {
+    "id": "conn-smug-oversized-cl-body-overflow",
+    "category": "connection-smuggling",
+    "type": "multi_message",
+    "direction": "request",
+    "severity": "severe",
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "POST with CL:50 — body is exactly 50 bytes, followed by smuggled GET; the parser correctly consumes 50 bytes as body, then parses the next request",
+    "input": {
+      "wire_hex": "504f5354202f61706920485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a2035300d0a0d0a3031323334353637383930313233343536373839303132333435363738393031323334353637383930313233343536373839474554202f73656372657420485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "POST", "target": "/api", "version": "1.1", "headers": [["Host", "example.com"], ["Content-Length", "50"]], "body_hex": "3031323334353637383930313233343536373839303132333435363738393031323334353637383930313233343536373839" },
+      { "index": 1, "behavior": "accept", "method": "GET", "target": "/secret", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-smug-duplicate-content-length",
+    "category": "connection-smuggling",
+    "type": "multi_message",
+    "direction": "request",
+    "severity": "severe",
+    "rfc_section": "RFC 9110 §8.6",
+    "description": "POST with two different Content-Length headers (5 and 50) — MUST reject; duplicate CL with different values is a smuggling vector",
+    "input": {
+      "wire_hex": "504f5354202f6461746120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a436f6e74656e742d4c656e6774683a2035300d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 0,
+      "informational_count": 0,
+      "keep_alive": true,
+      "error": "duplicate Content-Length"
+    }
+  }
+]

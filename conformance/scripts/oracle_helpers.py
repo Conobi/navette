@@ -224,3 +224,177 @@ def parse_response_with_httptools(
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---- Connection oracle ----
+
+
+def parse_connection_with_h11(
+    wire_bytes: bytes, direction: str, request_methods: list = None
+) -> dict:
+    """Parse multi-message wire with h11's connection state machine.
+
+    h11 models the full HTTP/1.1 connection lifecycle. For requests (SERVER
+    role), after each request EndOfMessage we must send a synthetic response
+    and call start_next_cycle() so h11 transitions back to IDLE to accept
+    the next pipelined request.  For responses (CLIENT role), we send all
+    synthetic requests up front, then after each final-response EndOfMessage
+    we call start_next_cycle() and send the next synthetic request.
+
+    Returns: {
+        "messages": [{"type": "request"/"response", ...}],
+        "phase": "IDLE"/"MUST_CLOSE"/"UPGRADED"/"ERROR",
+        "error": None or str
+    }
+    """
+    if request_methods is None:
+        request_methods = []
+
+    try:
+        role = h11.SERVER if direction == "request" else h11.CLIENT
+        conn = h11.Connection(role)
+
+        if direction == "response":
+            # Send first synthetic request so h11 enters SEND_RESPONSE
+            if request_methods:
+                req = h11.Request(
+                    method=request_methods[0].encode("ascii"),
+                    target=b"/",
+                    headers=[(b"Host", b"x")],
+                )
+                conn.send(req)
+
+        conn.receive_data(wire_bytes)
+
+        messages = []
+        max_iterations = 500
+        iterations = 0
+        method_idx = 0  # tracks next request_methods index for responses
+
+        while iterations < max_iterations:
+            iterations += 1
+            event = conn.next_event()
+
+            if event is h11.NEED_DATA:
+                break
+            if isinstance(event, h11.ConnectionClosed):
+                break
+
+            # h11.PAUSED means both sides are DONE but not recycled yet
+            if type(event).__name__ == "Sentinel":
+                # NEED_DATA and PAUSED are sentinels
+                event_str = str(event)
+                if "PAUSED" in event_str:
+                    break
+                if "NEED_DATA" in event_str:
+                    break
+                break
+
+            if isinstance(event, h11.Request):
+                headers = [
+                    [
+                        h[0].decode("ascii", errors="replace"),
+                        h[1].decode("ascii", errors="replace"),
+                    ]
+                    for h in event.headers
+                ]
+                messages.append(
+                    {
+                        "type": "request",
+                        "method": event.method.decode("ascii", errors="replace"),
+                        "target": event.target.decode("ascii", errors="replace"),
+                        "version": event.http_version.decode(
+                            "ascii", errors="replace"
+                        ),
+                        "headers": headers,
+                        "body": b"",
+                    }
+                )
+            elif isinstance(event, (h11.Response, h11.InformationalResponse)):
+                headers = [
+                    [
+                        h[0].decode("ascii", errors="replace"),
+                        h[1].decode("ascii", errors="replace"),
+                    ]
+                    for h in event.headers
+                ]
+                messages.append(
+                    {
+                        "type": "response",
+                        "status_code": event.status_code,
+                        "reason": event.reason.decode("ascii", errors="replace")
+                        if event.reason
+                        else "",
+                        "version": event.http_version.decode(
+                            "ascii", errors="replace"
+                        ),
+                        "headers": headers,
+                        "body": b"",
+                    }
+                )
+            elif isinstance(event, h11.Data):
+                if messages:
+                    messages[-1]["body"] = messages[-1].get("body", b"") + event.data
+            elif isinstance(event, h11.EndOfMessage):
+                if direction == "request":
+                    # Server role: send synthetic response, cycle, to parse
+                    # next pipelined request
+                    try:
+                        conn.send(
+                            h11.Response(
+                                status_code=200,
+                                headers=[(b"Content-Length", b"0")],
+                            )
+                        )
+                        conn.send(h11.EndOfMessage())
+                        conn.start_next_cycle()
+                    except Exception:
+                        # Connection may be closing or in error
+                        break
+                else:
+                    # Client role: after final response, cycle and send next
+                    # synthetic request
+                    final_count = sum(
+                        1
+                        for m in messages
+                        if m["type"] == "response"
+                        and m.get("status_code", 0) >= 200
+                    )
+                    if final_count < len(request_methods):
+                        try:
+                            conn.start_next_cycle()
+                            method = request_methods[final_count]
+                            req = h11.Request(
+                                method=method.encode("ascii"),
+                                target=b"/",
+                                headers=[(b"Host", b"x")],
+                            )
+                            conn.send(req)
+                        except Exception:
+                            break
+                    else:
+                        break
+            else:
+                # Unknown event type — stop
+                break
+
+        # Map h11 state to our phase names
+        if direction == "request":
+            state = conn.their_state
+        else:
+            state = conn.our_state
+
+        state_str = str(state)
+        phase = "IDLE"
+        if "IDLE" in state_str or "DONE" in state_str:
+            phase = "IDLE"
+        elif "CLOSED" in state_str:
+            phase = "MUST_CLOSE"
+        elif "SWITCHED" in state_str:
+            phase = "UPGRADED"
+        elif "ERROR" in state_str:
+            phase = "ERROR"
+
+        return {"messages": messages, "phase": phase, "error": None}
+    except Exception as e:
+        return {"messages": [], "phase": "ERROR", "error": str(e)}

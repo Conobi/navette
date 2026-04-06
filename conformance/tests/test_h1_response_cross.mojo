@@ -334,7 +334,7 @@ def main() raises:
             var wire_hex = String(v["input"]["wire_hex"])
 
             # Skip dual-mode vectors
-            if _has_key(v, "mode_flag"):
+            if _has_key(v, "mode_flag") or _has_key(v, "mode_flags"):
                 skipped_dual += 1
                 continue
 

@@ -24,6 +24,8 @@ TESTS=(
     test_h1_cross_parser
     test_h1_response
     test_h1_response_cross
+    test_h1_connection
+    test_h1_connection_cross
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"

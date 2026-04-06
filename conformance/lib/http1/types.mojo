@@ -45,6 +45,10 @@ struct ParserStrictness(Copyable, Movable):
     var allow_missing_crlf_after_chunk: Bool
     var allow_missing_reason_sp: Bool
     var allow_response_cl_te: Bool
+    # Connection lifecycle flags (HC-2b)
+    var allow_data_after_close: Bool
+    var allow_lenient_keep_alive: Bool
+    var allow_prefix_crlf: Bool
 
     def __init__(
         out self,
@@ -69,6 +73,9 @@ struct ParserStrictness(Copyable, Movable):
         allow_missing_crlf_after_chunk: Bool = False,
         allow_missing_reason_sp: Bool = False,
         allow_response_cl_te: Bool = False,
+        allow_data_after_close: Bool = False,
+        allow_lenient_keep_alive: Bool = False,
+        allow_prefix_crlf: Bool = False,
     ):
         self.allow_bare_lf = allow_bare_lf
         self.allow_bare_cr_in_value = allow_bare_cr_in_value
@@ -91,6 +98,9 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_missing_crlf_after_chunk = allow_missing_crlf_after_chunk
         self.allow_missing_reason_sp = allow_missing_reason_sp
         self.allow_response_cl_te = allow_response_cl_te
+        self.allow_data_after_close = allow_data_after_close
+        self.allow_lenient_keep_alive = allow_lenient_keep_alive
+        self.allow_prefix_crlf = allow_prefix_crlf
 
     def __init__(out self, *, other: Self):
         self.allow_bare_lf = other.allow_bare_lf
@@ -114,6 +124,9 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_missing_crlf_after_chunk = other.allow_missing_crlf_after_chunk
         self.allow_missing_reason_sp = other.allow_missing_reason_sp
         self.allow_response_cl_te = other.allow_response_cl_te
+        self.allow_data_after_close = other.allow_data_after_close
+        self.allow_lenient_keep_alive = other.allow_lenient_keep_alive
+        self.allow_prefix_crlf = other.allow_prefix_crlf
 
     def __init__(out self, *, deinit take: Self):
         self.allow_bare_lf = take.allow_bare_lf
@@ -137,6 +150,9 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_missing_crlf_after_chunk = take.allow_missing_crlf_after_chunk
         self.allow_missing_reason_sp = take.allow_missing_reason_sp
         self.allow_response_cl_te = take.allow_response_cl_te
+        self.allow_data_after_close = take.allow_data_after_close
+        self.allow_lenient_keep_alive = take.allow_lenient_keep_alive
+        self.allow_prefix_crlf = take.allow_prefix_crlf
 
 
 def strict_mode() -> ParserStrictness:
@@ -157,6 +173,8 @@ def lenient_mode() -> ParserStrictness:
         allow_duplicate_host=True,
         allow_missing_reason_sp=True,
         allow_response_cl_te=True,
+        allow_lenient_keep_alive=True,
+        allow_prefix_crlf=True,
     )
 
 
@@ -184,6 +202,9 @@ def permissive_mode() -> ParserStrictness:
         allow_missing_crlf_after_chunk=True,
         allow_missing_reason_sp=True,
         allow_response_cl_te=True,
+        allow_data_after_close=True,
+        allow_lenient_keep_alive=True,
+        allow_prefix_crlf=True,
     )
 
 
@@ -216,7 +237,7 @@ struct ParseConfig:
         self.max_body_size = max_body_size
 
 
-struct ParsedRequest(Movable):
+struct ParsedRequest(Copyable, Movable):
     """Result of parsing an HTTP/1.1 request message."""
     var method: String
     var target: String
@@ -225,6 +246,7 @@ struct ParsedRequest(Movable):
     var trailers: List[Header]
     var body: List[UInt8]
     var error: String
+    var bytes_consumed: Int
 
     def __init__(out self):
         """Create an empty ParsedRequest (to be filled by the parser)."""
@@ -235,6 +257,17 @@ struct ParsedRequest(Movable):
         self.trailers = List[Header]()
         self.body = List[UInt8]()
         self.error = String("")
+        self.bytes_consumed = 0
+
+    def __init__(out self, *, other: Self):
+        self.method = other.method
+        self.target = other.target
+        self.version = other.version
+        self.headers = other.headers.copy()
+        self.trailers = other.trailers.copy()
+        self.body = other.body.copy()
+        self.error = other.error
+        self.bytes_consumed = other.bytes_consumed
 
     def __init__(out self, *, deinit take: Self):
         self.method = take.method^
@@ -244,13 +277,14 @@ struct ParsedRequest(Movable):
         self.trailers = take.trailers^
         self.body = take.body^
         self.error = take.error^
+        self.bytes_consumed = take.bytes_consumed
 
     def ok(self) -> Bool:
         """Returns True if parsing succeeded (no error)."""
         return len(self.error) == 0
 
 
-struct ParsedResponse(Movable):
+struct ParsedResponse(Copyable, Movable):
     """Result of parsing an HTTP/1.1 response message."""
     var status_code: Int
     var reason: String
@@ -274,6 +308,18 @@ struct ParsedResponse(Movable):
         self.body_terminated_by_close = False
         self.upgrade = False
         self.bytes_consumed = 0
+
+    def __init__(out self, *, other: Self):
+        self.status_code = other.status_code
+        self.reason = other.reason
+        self.version = other.version
+        self.headers = other.headers.copy()
+        self.trailers = other.trailers.copy()
+        self.body = other.body.copy()
+        self.error = other.error
+        self.body_terminated_by_close = other.body_terminated_by_close
+        self.upgrade = other.upgrade
+        self.bytes_consumed = other.bytes_consumed
 
     def __init__(out self, *, deinit take: Self):
         self.status_code = take.status_code
@@ -309,6 +355,65 @@ struct ChunkedResult(Movable):
         self.trailers = take.trailers^
         self.error = take.error^
         self.bytes_consumed = take.bytes_consumed
+
+    def ok(self) -> Bool:
+        return len(self.error) == 0
+
+
+struct ConnectionState(Copyable, Movable):
+    """Connection-level state for multi-message parsing."""
+    var phase: Int                  # IDLE=0, MUST_CLOSE=1, CLOSED=2, UPGRADED=3, ERROR=4
+    var keep_alive: Bool
+    var messages_parsed: Int
+    var informational_count: Int
+    var version: String
+
+    def __init__(out self):
+        self.phase = 0
+        self.keep_alive = True
+        self.messages_parsed = 0
+        self.informational_count = 0
+        self.version = String("")
+
+    def __init__(out self, *, other: Self):
+        self.phase = other.phase
+        self.keep_alive = other.keep_alive
+        self.messages_parsed = other.messages_parsed
+        self.informational_count = other.informational_count
+        self.version = other.version
+
+    def __init__(out self, *, deinit take: Self):
+        self.phase = take.phase
+        self.keep_alive = take.keep_alive
+        self.messages_parsed = take.messages_parsed
+        self.informational_count = take.informational_count
+        self.version = take.version^
+
+    def copy(self) -> Self:
+        return Self(other=self)
+
+
+struct ConnectionResult(Movable):
+    """Result of parsing multiple messages on a connection."""
+    var request_messages: List[ParsedRequest]
+    var response_messages: List[ParsedResponse]
+    var state: ConnectionState
+    var trailing_data: List[UInt8]
+    var error: String
+
+    def __init__(out self):
+        self.request_messages = List[ParsedRequest]()
+        self.response_messages = List[ParsedResponse]()
+        self.state = ConnectionState()
+        self.trailing_data = List[UInt8]()
+        self.error = String("")
+
+    def __init__(out self, *, deinit take: Self):
+        self.request_messages = take.request_messages^
+        self.response_messages = take.response_messages^
+        self.state = take.state^
+        self.trailing_data = take.trailing_data^
+        self.error = take.error^
 
     def ok(self) -> Bool:
         return len(self.error) == 0

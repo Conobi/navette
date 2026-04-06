@@ -47,3 +47,18 @@ def parse_response_with_httptools(wire: List[UInt8], request_method: String = "G
     var helpers = Python.import_module("oracle_helpers")
     var py_bytes = _wire_to_py_bytes(wire)
     return helpers.parse_response_with_httptools(py_bytes, request_method)
+
+
+def parse_connection_with_h11(
+    wire: List[UInt8], direction: String, request_methods: List[String],
+) raises -> PythonObject:
+    """Parse multi-message wire with h11's connection state machine."""
+    var sys = Python.import_module("sys")
+    sys.path.insert(0, "scripts")
+    var helpers = Python.import_module("oracle_helpers")
+    var py_bytes = _wire_to_py_bytes(wire)
+    var builtins = Python.import_module("builtins")
+    var py_methods = builtins.list()
+    for i in range(len(request_methods)):
+        py_methods.append(request_methods[i])
+    return helpers.parse_connection_with_h11(py_bytes, direction, py_methods)

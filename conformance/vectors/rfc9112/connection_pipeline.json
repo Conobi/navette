@@ -1,0 +1,187 @@
+[
+  {
+    "id": "conn-pipe-three-gets",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "Three pipelined GET requests — all three parsed in sequence, connection IDLE",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6320485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "method": "GET", "target": "/b", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 2, "behavior": "accept", "method": "GET", "target": "/c", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 3,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-get-post-cl-get",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "GET + POST with Content-Length body + GET — body framing correctly separates messages",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a504f5354202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f474554202f6320485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "method": "POST", "target": "/b", "version": "1.1", "headers": [["Host", "example.com"], ["Content-Length", "5"]], "body_hex": "68656c6c6f" },
+      { "index": 2, "behavior": "accept", "method": "GET", "target": "/c", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 3,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-get-chunked-post-get",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §7.1",
+    "description": "GET + chunked POST + GET — chunked encoding correctly terminates and next message follows",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a504f5354202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a350d0a68656c6c6f0d0a300d0a0d0a474554202f6320485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "method": "POST", "target": "/b", "version": "1.1", "headers": [["Host", "example.com"], ["Transfer-Encoding", "chunked"]], "body_hex": "68656c6c6f" },
+      { "index": 2, "behavior": "accept", "method": "GET", "target": "/c", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 3,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-response-two-200s",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET", "GET"],
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "Two 200 OK responses for two GET requests — both bodies correctly framed by Content-Length",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a776f726c64"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "776f726c64" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-response-head-then-get",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["HEAD", "GET"],
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "HEAD 200 (Content-Length present but no body) followed by GET 200 with body — HEAD body correctly suppressed",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a203130300d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "100"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-four-gets",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "Four pipelined GETs — deep pipeline, all four parsed, connection IDLE",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6320485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6420485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "method": "GET", "target": "/b", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 2, "behavior": "accept", "method": "GET", "target": "/c", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 3, "behavior": "accept", "method": "GET", "target": "/d", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 4,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-chunked-post-cl-post-get",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §7.1",
+    "description": "Chunked POST + Content-Length POST + GET — mixed body framing in pipeline, all parsed correctly",
+    "input": {
+      "wire_hex": "504f5354202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a330d0a6162630d0a300d0a0d0a504f5354202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e74656e742d4c656e6774683a20330d0a0d0a78797a474554202f6320485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "POST", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Transfer-Encoding", "chunked"]], "body_hex": "616263" },
+      { "index": 1, "behavior": "accept", "method": "POST", "target": "/b", "version": "1.1", "headers": [["Host", "example.com"], ["Content-Length", "3"]], "body_hex": "78797a" },
+      { "index": 2, "behavior": "accept", "method": "GET", "target": "/c", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 3,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-pipe-response-204-then-200",
+    "category": "connection-pipeline",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["DELETE", "GET"],
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "204 No Content (no body) followed by 200 OK with body — 204 correctly has zero-length body",
+    "input": {
+      "wire_hex": "485454502f312e3120323034204e6f20436f6e74656e740d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20340d0a0d0a64617461"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 204, "reason": "No Content", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "4"]], "body_hex": "64617461" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  }
+]
