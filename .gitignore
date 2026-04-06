@@ -19,6 +19,9 @@ __pycache__/
 # OS
 .DS_Store
 
+# Downloaded test vectors
+conformance/vectors/hpack-stories/
+
 # Plans and specs (kept in mojo-tquic for now)
 docs/superpowers/
 docs/plans/

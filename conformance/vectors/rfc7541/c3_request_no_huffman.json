@@ -1,0 +1,55 @@
+{
+  "id": "c3-request-no-huffman",
+  "type": "hpack_story",
+  "rfc_section": "RFC 7541 §C.3",
+  "description": "Request examples without Huffman coding",
+  "cases": [
+    {
+      "seqno": 0,
+      "wire_hex": "828684410f7777772e6578616d706c652e636f6d",
+      "expected_headers": [
+        [":method", "GET"],
+        [":scheme", "http"],
+        [":path", "/"],
+        [":authority", "www.example.com"]
+      ],
+      "expected_dynamic_table": [
+        [":authority", "www.example.com"]
+      ],
+      "expected_table_size": 57
+    },
+    {
+      "seqno": 1,
+      "wire_hex": "828684be58086e6f2d6361636865",
+      "expected_headers": [
+        [":method", "GET"],
+        [":scheme", "http"],
+        [":path", "/"],
+        [":authority", "www.example.com"],
+        ["cache-control", "no-cache"]
+      ],
+      "expected_dynamic_table": [
+        ["cache-control", "no-cache"],
+        [":authority", "www.example.com"]
+      ],
+      "expected_table_size": 110
+    },
+    {
+      "seqno": 2,
+      "wire_hex": "828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565",
+      "expected_headers": [
+        [":method", "GET"],
+        [":scheme", "https"],
+        [":path", "/index.html"],
+        [":authority", "www.example.com"],
+        ["custom-key", "custom-value"]
+      ],
+      "expected_dynamic_table": [
+        ["custom-key", "custom-value"],
+        ["cache-control", "no-cache"],
+        [":authority", "www.example.com"]
+      ],
+      "expected_table_size": 164
+    }
+  ]
+}

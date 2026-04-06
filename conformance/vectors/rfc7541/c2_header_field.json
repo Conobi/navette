@@ -1,0 +1,52 @@
+[
+  {
+    "id": "c2-1-indexed-header-field",
+    "type": "hpack_decode",
+    "rfc_section": "RFC 7541 §C.2.1",
+    "description": "Literal Header Field with Indexing",
+    "wire_hex": "400a637573746f6d2d6b65790d637573746f6d2d686561646572",
+    "expected_headers": [
+      ["custom-key", "custom-header"]
+    ],
+    "expected_dynamic_table": [
+      ["custom-key", "custom-header"]
+    ],
+    "expected_table_size": 55
+  },
+  {
+    "id": "c2-2-literal-without-indexing",
+    "type": "hpack_decode",
+    "rfc_section": "RFC 7541 §C.2.2",
+    "description": "Literal Header Field without Indexing",
+    "wire_hex": "040c2f73616d706c652f70617468",
+    "expected_headers": [
+      [":path", "/sample/path"]
+    ],
+    "expected_dynamic_table": [],
+    "expected_table_size": 0
+  },
+  {
+    "id": "c2-3-literal-never-indexed",
+    "type": "hpack_decode",
+    "rfc_section": "RFC 7541 §C.2.3",
+    "description": "Literal Header Field Never Indexed",
+    "wire_hex": "100870617373776f726406736563726574",
+    "expected_headers": [
+      ["password", "secret"]
+    ],
+    "expected_dynamic_table": [],
+    "expected_table_size": 0
+  },
+  {
+    "id": "c2-4-indexed-header-field",
+    "type": "hpack_decode",
+    "rfc_section": "RFC 7541 §C.2.4",
+    "description": "Indexed Header Field",
+    "wire_hex": "82",
+    "expected_headers": [
+      [":method", "GET"]
+    ],
+    "expected_dynamic_table": [],
+    "expected_table_size": 0
+  }
+]

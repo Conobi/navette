@@ -29,6 +29,12 @@ TESTS=(
     test_h2_frame
     test_h2_payloads_smoke
     test_h2_frame_cross
+    test_hpack_integer
+    test_hpack_huffman
+    test_hpack_decode
+    test_hpack_roundtrip
+    test_hpack_cross
+    test_hpack_security
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
