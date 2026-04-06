@@ -1,0 +1,198 @@
+[
+  {
+    "id": "conn-close-explicit",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "GET with Connection: close — 1 message parsed, MUST_CLOSE, keep_alive=false",
+    "input": {
+      "wire_hex": "474554202f7061676520485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/page", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "MUST_CLOSE",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-close-on-second-request",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "First GET normal, second GET with Connection: close — both parsed, MUST_CLOSE after second",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a474554202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "method": "GET", "target": "/b", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "MUST_CLOSE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-close-first-stops-parsing",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "First GET has Connection: close, second GET present on wire — only first is parsed, strict mode errors on trailing data",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a474554202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "ERROR",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "error": "data after Connection: close"
+    }
+  },
+  {
+    "id": "conn-close-data-after-close-dual-mode",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "request",
+    "mode_flag": "allow_data_after_close",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "Connection: close on first request with trailing data — default mode: ERROR; flagged mode: CLOSED with trailing_data",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a474554202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_default": {
+      "messages": [
+        { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+      ],
+      "connection": {
+        "final_phase": "ERROR",
+        "messages_parsed": 1
+      },
+      "error": "data after Connection: close"
+    },
+    "expected_flagged": {
+      "messages": [
+        { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+      ],
+      "connection": {
+        "final_phase": "CLOSED",
+        "messages_parsed": 1,
+        "keep_alive": false
+      },
+      "trailing_data_hex": "474554202f6220485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    }
+  },
+  {
+    "id": "conn-close-http10-default",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "request",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "HTTP/1.0 request without Connection header — default close semantics, MUST_CLOSE",
+    "input": {
+      "wire_hex": "474554202f7061676520485454502f312e300d0a486f73743a206578616d706c652e636f6d0d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "method": "GET", "target": "/page", "version": "1.0", "headers": [["Host", "example.com"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "MUST_CLOSE",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-close-response-explicit",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "200 OK response with Connection: close — 1 message parsed, MUST_CLOSE",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e6e656374696f6e3a20636c6f73650d0a436f6e74656e742d4c656e6774683a20320d0a0d0a6869"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Connection", "close"], ["Content-Length", "2"]], "body_hex": "6869" }
+    ],
+    "expected_connection": {
+      "final_phase": "MUST_CLOSE",
+      "messages_parsed": 1,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-close-garbage-after-close",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "request",
+    "mode_flag": "allow_data_after_close",
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "Connection: close request with non-HTTP garbage trailing — default: ERROR; flagged: CLOSED with trailing bytes",
+    "input": {
+      "wire_hex": "474554202f6120485454502f312e310d0a486f73743a206578616d706c652e636f6d0d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a67617262616765"
+    },
+    "expected_default": {
+      "messages": [
+        { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+      ],
+      "connection": {
+        "final_phase": "ERROR",
+        "messages_parsed": 1
+      },
+      "error": "data after Connection: close"
+    },
+    "expected_flagged": {
+      "messages": [
+        { "index": 0, "behavior": "accept", "method": "GET", "target": "/a", "version": "1.1", "headers": [["Host", "example.com"], ["Connection", "close"]], "body_hex": "" }
+      ],
+      "connection": {
+        "final_phase": "CLOSED",
+        "messages_parsed": 1,
+        "keep_alive": false
+      },
+      "trailing_data_hex": "67617262616765"
+    }
+  },
+  {
+    "id": "conn-close-response-second-has-close",
+    "category": "connection-close",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET", "GET"],
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "First 200 OK keep-alive, second 200 OK with Connection: close — both parsed, MUST_CLOSE",
+    "input": {
+      "wire_hex": "485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20320d0a0d0a6869485454502f312e3120323030204f4b0d0a436f6e6e656374696f6e3a20636c6f73650d0a436f6e74656e742d4c656e6774683a20330d0a0d0a627965"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "2"]], "body_hex": "6869" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Connection", "close"], ["Content-Length", "3"]], "body_hex": "627965" }
+    ],
+    "expected_connection": {
+      "final_phase": "MUST_CLOSE",
+      "messages_parsed": 2,
+      "informational_count": 0,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  }
+]

@@ -55,6 +55,36 @@ def _set_flag(flag: String) -> ParserStrictness:
         return ParserStrictness()
 
 
+def _set_flags(flags: List[String]) -> ParserStrictness:
+    """Create a ParserStrictness with multiple flags set to True."""
+    var s = ParserStrictness()
+    for i in range(len(flags)):
+        var f = flags[i]
+        if f == "allow_bare_lf": s.allow_bare_lf = True
+        elif f == "allow_bare_cr_in_value": s.allow_bare_cr_in_value = True
+        elif f == "allow_http_09": s.allow_http_09 = True
+        elif f == "allow_nonstandard_version": s.allow_nonstandard_version = True
+        elif f == "allow_multiple_spaces": s.allow_multiple_spaces = True
+        elif f == "allow_obs_fold": s.allow_obs_fold = True
+        elif f == "allow_space_before_colon": s.allow_space_before_colon = True
+        elif f == "allow_header_value_ctl": s.allow_header_value_ctl = True
+        elif f == "allow_target_ctl": s.allow_target_ctl = True
+        elif f == "ignore_invalid_header_names": s.ignore_invalid_header_names = True
+        elif f == "allow_non_chunked_te": s.allow_non_chunked_te = True
+        elif f == "allow_chunk_extensions": s.allow_chunk_extensions = True
+        elif f == "allow_cl_leading_zeros": s.allow_cl_leading_zeros = True
+        elif f == "allow_duplicate_cl": s.allow_duplicate_cl = True
+        elif f == "allow_missing_host_11": s.allow_missing_host_11 = True
+        elif f == "allow_duplicate_host": s.allow_duplicate_host = True
+        elif f == "allow_multiple_spaces_in_status_line": s.allow_multiple_spaces_in_status_line = True
+        elif f == "allow_space_before_first_header": s.allow_space_before_first_header = True
+        elif f == "allow_missing_crlf_after_chunk": s.allow_missing_crlf_after_chunk = True
+        elif f == "allow_missing_reason_sp": s.allow_missing_reason_sp = True
+        elif f == "allow_response_cl_te": s.allow_response_cl_te = True
+        else: print("ERROR: unknown flag: " + f)
+    return s^
+
+
 def check_accept(
     result_ref: ParsedRequest,
     expected: PythonObject,
@@ -229,6 +259,44 @@ def run_vector(v: PythonObject) raises -> Bool:
             check_accept(flagged_result, flagged_expected, vec_id + " [flagged:" + flag_name + "]")
         else:
             check_reject(flagged_result, flagged_expected, vec_id + " [flagged:" + flag_name + "]")
+    elif _has_key(v, "mode_flags"):
+        # Multi-flag dual-mode vector: test with default strictness, then with flags relaxed
+        var py_flags = v["mode_flags"]
+        var builtins2 = Python.import_module("builtins")
+        var flag_list = List[String]()
+        for fi in range(Int(py=builtins2.len(py_flags))):
+            flag_list.append(String(py_flags[fi]))
+
+        # Build label for diagnostics
+        var flags_label = String("")
+        for fi2 in range(len(flag_list)):
+            if fi2 > 0:
+                flags_label += "+"
+            flags_label += flag_list[fi2]
+
+        # Run with default strictness (all flags False = strict)
+        var mf_default_config = ParseConfig()
+        var mf_default_result = parse_request(wire, mf_default_config)
+        var mf_default_expected = v["expected_default"]
+        var mf_default_behavior = String(mf_default_expected["behavior"])
+
+        if mf_default_behavior == "accept":
+            check_accept(mf_default_result, mf_default_expected, vec_id + " [default]")
+        else:
+            check_reject(mf_default_result, mf_default_expected, vec_id + " [default]")
+
+        # Re-decode wire for flagged run
+        var mf_wire2 = hex_decode(wire_hex)
+        var mf_flagged_strictness = _set_flags(flag_list)
+        var mf_flagged_config = ParseConfig(strictness=mf_flagged_strictness)
+        var mf_flagged_result = parse_request(mf_wire2, mf_flagged_config)
+        var mf_flagged_expected = v["expected_flagged"]
+        var mf_flagged_behavior = String(mf_flagged_expected["behavior"])
+
+        if mf_flagged_behavior == "accept":
+            check_accept(mf_flagged_result, mf_flagged_expected, vec_id + " [flagged:" + flags_label + "]")
+        else:
+            check_reject(mf_flagged_result, mf_flagged_expected, vec_id + " [flagged:" + flags_label + "]")
     elif _has_key(v, "expected"):
         # Single-mode vector — use default strict config
         var expected = v["expected"]

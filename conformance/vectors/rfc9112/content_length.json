@@ -558,21 +558,27 @@
     },
     "source_reason": "AWS tier=Ambiguous: UndefinedContentLengthSemantics",
     "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedContentLengthSemantics). Strict parser rejects this as defense-in-depth.",
-    "expected": {
+    "mode_flags": [
+      "allow_http_09",
+      "allow_missing_host_11"
+    ],
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
       "behavior": "accept",
+      "method": "POST",
+      "target": "/foo/bar",
+      "version": "0.9",
       "headers": [
         [
           "Content-Length",
           "100"
         ]
       ],
-      "method": "POST",
-      "target": "/foo/bar",
-      "version": "0.9",
       "body_hex": ""
-    },
-    "deferred": "HC-2",
-    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+    }
   },
   {
     "id": "aws-ambiguous-content-length-for-empty-protocol-which-is-http-0-9",

@@ -1,0 +1,187 @@
+[
+  {
+    "id": "conn-info-100-then-200",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["POST"],
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "100 Continue followed by 200 OK — messages_parsed=1 (final only), informational_count=1",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 100, "reason": "Continue", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-103-early-hints-then-200",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 8297",
+    "description": "103 Early Hints with Link header followed by 200 OK — informational_count=1",
+    "input": {
+      "wire_hex": "485454502f312e3120313033204561726c792048696e74730d0a4c696e6b3a203c2f7374796c652e6373733e3b2072656c3d7072656c6f61640d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 103, "reason": "Early Hints", "version": "1.1", "headers": [["Link", "</style.css>; rel=preload"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-100-103-then-200",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["POST"],
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "100 Continue + 103 Early Hints + 200 OK — informational_count=2, messages_parsed=1",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a0d0a485454502f312e3120313033204561726c792048696e74730d0a4c696e6b3a203c2f7374796c652e6373733e3b2072656c3d7072656c6f61640d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 100, "reason": "Continue", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 103, "reason": "Early Hints", "version": "1.1", "headers": [["Link", "</style.css>; rel=preload"]], "body_hex": "" },
+      { "index": 2, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 2,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-101-terminal",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 9112 §7.4",
+    "description": "101 Switching Protocols — terminal informational, enters UPGRADED phase, no further messages parsed",
+    "input": {
+      "wire_hex": "485454502f312e312031303120537769746368696e672050726f746f636f6c730d0a557067726164653a20776562736f636b65740d0a436f6e6e656374696f6e3a20557067726164650d0a0d0a"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 101, "reason": "Switching Protocols", "version": "1.1", "headers": [["Upgrade", "websocket"], ["Connection", "Upgrade"]], "body_hex": "" }
+    ],
+    "expected_connection": {
+      "final_phase": "UPGRADED",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-100-close-ignored-then-200",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["POST"],
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "100 Continue with Connection: close (MUST be ignored on 1xx) followed by 200 OK — keep_alive still true",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 100, "reason": "Continue", "version": "1.1", "headers": [["Connection", "close"]], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-100-then-200-with-close",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["POST"],
+    "rfc_section": "RFC 9112 §9.3",
+    "description": "100 Continue then 200 OK with Connection: close — close applies to the final response, MUST_CLOSE",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a0d0a485454502f312e3120323030204f4b0d0a436f6e6e656374696f6e3a20636c6f73650d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 100, "reason": "Continue", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Connection", "close"], ["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "MUST_CLOSE",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": false,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-102-processing-then-200",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["GET"],
+    "rfc_section": "RFC 2518 §10.1",
+    "description": "102 Processing followed by 200 OK — informational_count=1, messages_parsed=1",
+    "input": {
+      "wire_hex": "485454502f312e31203130322050726f63657373696e670d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20340d0a0d0a646f6e65"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 102, "reason": "Processing", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "4"]], "body_hex": "646f6e65" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 1,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  },
+  {
+    "id": "conn-info-duplicate-100s-then-200",
+    "category": "connection-informational",
+    "type": "multi_message",
+    "direction": "response",
+    "request_methods": ["POST"],
+    "rfc_section": "RFC 9112 §6.3",
+    "description": "Two 100 Continue responses then 200 OK — informational_count=2, messages_parsed=1",
+    "input": {
+      "wire_hex": "485454502f312e312031303020436f6e74696e75650d0a0d0a485454502f312e312031303020436f6e74696e75650d0a0d0a485454502f312e3120323030204f4b0d0a436f6e74656e742d4c656e6774683a20350d0a0d0a68656c6c6f"
+    },
+    "expected_messages": [
+      { "index": 0, "behavior": "accept", "status_code": 100, "reason": "Continue", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 1, "behavior": "accept", "status_code": 100, "reason": "Continue", "version": "1.1", "headers": [], "body_hex": "" },
+      { "index": 2, "behavior": "accept", "status_code": 200, "reason": "OK", "version": "1.1", "headers": [["Content-Length", "5"]], "body_hex": "68656c6c6f" }
+    ],
+    "expected_connection": {
+      "final_phase": "IDLE",
+      "messages_parsed": 1,
+      "informational_count": 2,
+      "keep_alive": true,
+      "trailing_data_hex": ""
+    }
+  }
+]

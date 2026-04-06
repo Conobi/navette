@@ -279,6 +279,7 @@ def parse_request(
             result.trailers.append(
                 Header(chunk_result.trailers[ti2].name, chunk_result.trailers[ti2].value)
             )
+        result.bytes_consumed = pos + chunk_result.bytes_consumed
         _ = chunk_result^
     elif cl_count > 0:
         var cl_int = _parse_int(cl_value)
@@ -291,6 +292,9 @@ def parse_request(
         while bi < cl_int:
             result.body.append(wire[pos + bi])
             bi += 1
-    # else: no body
+        result.bytes_consumed = pos + cl_int
+    else:
+        # No body
+        result.bytes_consumed = pos
 
     return result^

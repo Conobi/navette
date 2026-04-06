@@ -799,21 +799,24 @@
     },
     "source_reason": "AWS tier=Ambiguous: UndefinedTransferEncodingSemantics",
     "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedTransferEncodingSemantics). Strict parser rejects this as defense-in-depth.",
-    "expected": {
+    "mode_flag": "allow_missing_host_11",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
       "behavior": "accept",
+      "method": "POST",
+      "target": "/foo/bar",
+      "version": "1.0",
       "headers": [
         [
           "Transfer-Encoding",
           "chunked"
         ]
       ],
-      "method": "POST",
-      "target": "/foo/bar",
-      "version": "1.0",
       "body_hex": ""
-    },
-    "deferred": "HC-2",
-    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+    }
   },
   {
     "id": "aws-ambiguous-transfer-encoding-for-http-0-9",
@@ -826,21 +829,27 @@
     },
     "source_reason": "AWS tier=Ambiguous: UndefinedTransferEncodingSemantics",
     "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedTransferEncodingSemantics). Strict parser rejects this as defense-in-depth.",
-    "expected": {
+    "mode_flags": [
+      "allow_http_09",
+      "allow_missing_host_11"
+    ],
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "unsupported HTTP version"
+    },
+    "expected_flagged": {
       "behavior": "accept",
+      "method": "POST",
+      "target": "/foo/bar",
+      "version": "0.9",
       "headers": [
         [
           "Transfer-Encoding",
           "chunked"
         ]
       ],
-      "method": "POST",
-      "target": "/foo/bar",
-      "version": "0.9",
       "body_hex": ""
-    },
-    "deferred": "HC-2",
-    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+    }
   },
   {
     "id": "aws-ambiguous-transfer-encoding-for-empty-protocol-which-is-http-0-9",
@@ -900,8 +909,16 @@
     },
     "source_reason": "AWS tier=Ambiguous: UndefinedTransferEncodingSemantics",
     "notes": "Auto-converted from AWS http-desync-guardian (Ambiguous/UndefinedTransferEncodingSemantics). Strict parser rejects this as defense-in-depth.",
-    "expected": {
+    "mode_flag": "allow_missing_host_11",
+    "expected_default": {
+      "behavior": "reject",
+      "reason": "missing Host header"
+    },
+    "expected_flagged": {
       "behavior": "accept",
+      "method": "POST",
+      "target": "/test.html",
+      "version": "1.0",
       "headers": [
         [
           "User-Agent",
@@ -936,12 +953,7 @@
           "chunked"
         ]
       ],
-      "method": "POST",
-      "target": "/test.html",
-      "version": "1.0",
       "body_hex": ""
-    },
-    "deferred": "HC-2",
-    "deferred_reason": "connection lifecycle / multi-message / body semantics"
+    }
   }
 ]
