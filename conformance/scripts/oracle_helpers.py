@@ -400,6 +400,89 @@ def parse_connection_with_h11(
         return {"messages": [], "phase": "ERROR", "error": str(e)}
 
 
+# ---- HPACK oracles ----
+
+
+def hpack_decode_with_python(wire_bytes: bytes) -> dict:
+    """Decode HPACK wire with Python hpack (stateless -- fresh decoder)."""
+    try:
+        import hpack as hpack_lib
+
+        decoder = hpack_lib.Decoder()
+        headers = decoder.decode(wire_bytes)
+        return {
+            "headers": [
+                [
+                    h[0].decode("ascii", errors="replace")
+                    if isinstance(h[0], bytes)
+                    else str(h[0]),
+                    h[1].decode("ascii", errors="replace")
+                    if isinstance(h[1], bytes)
+                    else str(h[1]),
+                ]
+                for h in headers
+            ],
+            "error": None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def hpack_encode_with_python(headers_list: list) -> dict:
+    """Encode headers with Python hpack (stateless -- fresh encoder)."""
+    try:
+        import hpack as hpack_lib
+
+        encoder = hpack_lib.Encoder()
+        wire = encoder.encode([(h[0], h[1]) for h in headers_list])
+        return {"wire_hex": wire.hex(), "error": None}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def hpack_story_decode_with_python(wire_hex_list: list) -> dict:
+    """Decode multiple HPACK blocks statefully with Python hpack."""
+    try:
+        import hpack as hpack_lib
+
+        decoder = hpack_lib.Decoder()
+        all_results = []
+        for wire_hex in wire_hex_list:
+            wire = bytes.fromhex(wire_hex)
+            headers = decoder.decode(wire)
+            all_results.append(
+                [
+                    [
+                        h[0].decode("ascii", errors="replace")
+                        if isinstance(h[0], bytes)
+                        else str(h[0]),
+                        h[1].decode("ascii", errors="replace")
+                        if isinstance(h[1], bytes)
+                        else str(h[1]),
+                    ]
+                    for h in headers
+                ]
+            )
+        return {"results": all_results, "error": None}
+    except Exception as e:
+        return {"results": [], "error": str(e)}
+
+
+def hpack_story_encode_with_python(headers_lists: list) -> dict:
+    """Encode multiple header blocks statefully with Python hpack."""
+    try:
+        import hpack as hpack_lib
+
+        encoder = hpack_lib.Encoder()
+        wire_hex_list = []
+        for headers in headers_lists:
+            wire = encoder.encode([(h[0], h[1]) for h in headers])
+            wire_hex_list.append(wire.hex())
+        return {"wire_hex_list": wire_hex_list, "error": None}
+    except Exception as e:
+        return {"wire_hex_list": [], "error": str(e)}
+
+
 # ---- HTTP/2 frame oracle ----
 
 

@@ -30,7 +30,17 @@ from .frame import (
     decode_frame,
     encode_frame,
 )
-from .oracles import decode_frame_with_hyperframe
+from .hpack import HpackEncoder, HpackDecoder, HpackConfig
+from .hpack_huffman import HuffmanCodec
+from .hpack_integer import encode_integer, decode_integer
+from .hpack_table import StaticTable, DynamicTable
+from .oracles import (
+    decode_frame_with_hyperframe,
+    hpack_decode_with_python,
+    hpack_encode_with_python,
+    hpack_story_decode_with_python,
+    hpack_story_encode_with_python,
+)
 from .payloads import (
     DataPayload,
     decode_data_payload,
