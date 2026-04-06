@@ -1,0 +1,53 @@
+[
+  {
+    "id": "h2fc-headers-normal-headers-frame",
+    "category": "headers",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.2",
+    "description": "normal headers frame",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000d010400000001746869732069732064756d6d79"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 13,
+      "frame_type": 1,
+      "flags": 4,
+      "stream_id": 1,
+      "payload_hex": "746869732069732064756d6d79"
+    }
+  },
+  {
+    "id": "h2fc-headers-normal-headers-frame-including-priority",
+    "category": "headers",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.2",
+    "description": "normal headers frame including priority",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000023012c00000003108000001409746869732069732064756d6d79546869732069732070616464696e672e"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 35,
+      "frame_type": 1,
+      "flags": 44,
+      "stream_id": 3,
+      "payload_hex": "108000001409746869732069732064756d6d79546869732069732070616464696e672e"
+    }
+  },
+  {
+    "id": "headers-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.2",
+    "description": "HEADERS frame roundtrip: encode then decode then compare, stream=1 END_HEADERS",
+    "input": {
+      "wire_hex": "0000020104000000018286"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]

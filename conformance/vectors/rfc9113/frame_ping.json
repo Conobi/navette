@@ -1,0 +1,34 @@
+[
+  {
+    "id": "h2fc-ping-normal-ping-frame",
+    "category": "ping",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.7",
+    "description": "normal ping frame",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "0000080600000000006465616462656566"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 8,
+      "frame_type": 6,
+      "flags": 0,
+      "stream_id": 0,
+      "payload_hex": "6465616462656566"
+    }
+  },
+  {
+    "id": "ping-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.7",
+    "description": "PING frame roundtrip: encode then decode then compare, 8 opaque bytes",
+    "input": {
+      "wire_hex": "0000080600000000000001020304050607"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]

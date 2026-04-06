@@ -1,0 +1,421 @@
+[
+  {
+    "id": "h2fc-error-data-frame-with-invalid-amount-of-padding",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.1",
+    "description": "data frame with invalid amount of padding",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000400080000000104aaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-data-frame-with-frame-size-error",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.1",
+    "description": "data frame with frame size error",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "0080000008000000020648656c6c6f2c20776f726c6421686f77647921"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-data-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.1",
+    "description": "data frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000001000000000000aa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-goaway-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.8",
+    "description": "goaway frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000407000000000000000002"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-goaway-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.8",
+    "description": "goaway frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "0000080700000000010000000200000003"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-headers-frame-with-invalid-amount-of-padding",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.2",
+    "description": "headers frame with invalid amount of padding",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000401080000000104aaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-headers-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.2",
+    "description": "headers frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000001010000000000aa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-ping-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.7",
+    "description": "ping frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000004060000000000aaaaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-ping-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.7",
+    "description": "ping frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000008060100000001aaaaaaaaaaaaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-priority-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.3",
+    "description": "priority frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000802000000000280000001ffaaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "stream",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-priority-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.3",
+    "description": "priority frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000005020000000000aaaaaaaabb"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-push-promise-frame-with-invalid-amount-of-padding",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.6",
+    "description": "push_promise frame with invalid amount of padding",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000405080000000104aaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1,
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR, FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-push-promise-frame-with-invalid-odd-numbered-promised-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.6",
+    "description": "push_promise frame with invalid (odd-numbered) promised stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000405000000000100000001"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-push-promise-frame-with-invalid-zero-promised-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.6",
+    "description": "push_promise frame with invalid (zero) promised stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000405000000000100000000"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-push-promise-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.6",
+    "description": "push_promise frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000405000000000077777777"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-rst-stream-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.4",
+    "description": "rst_stream frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000008030000000002aaaaaaaabbbbbbbb"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-rst-stream-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.4",
+    "description": "rst_stream frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000004030000000000aaaaaaaa"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-settings-ack-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.5",
+    "description": "settings ack frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000006040100000000aaaabbbbbbbb"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-settings-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.5",
+    "description": "settings frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000008040000000000aaaabbbbbbbbcccc"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-settings-frame-with-invalid-stream-identifier",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.5",
+    "description": "settings frame with invalid stream identifier",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000006040000000001aaaabbbbbbbb"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "connection",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-window-update-frame-with-invalid-window-size-increment",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.9",
+    "description": "window_update frame with invalid window size increment",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000408000000000100000000"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        1
+      ],
+      "error_scope": "stream",
+      "reason": "PROTOCOL_ERROR"
+    }
+  },
+  {
+    "id": "h2fc-error-window-update-frame-of-an-invalid-length",
+    "category": "error",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 §6.9",
+    "description": "window_update frame of an invalid length",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "0000020800000000015566"
+    },
+    "expected": {
+      "behavior": "reject",
+      "error_codes": [
+        6
+      ],
+      "error_scope": "connection",
+      "reason": "FRAME_SIZE_ERROR"
+    }
+  }
+]

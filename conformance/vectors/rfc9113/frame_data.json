@@ -1,0 +1,34 @@
+[
+  {
+    "id": "h2fc-data-normal-data-frame",
+    "category": "data",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.1",
+    "description": "normal data frame",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "0000140008000000020648656c6c6f2c20776f726c6421486f77647921"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 20,
+      "frame_type": 0,
+      "flags": 8,
+      "stream_id": 2,
+      "payload_hex": "0648656c6c6f2c20776f726c6421486f77647921"
+    }
+  },
+  {
+    "id": "data-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.1",
+    "description": "DATA frame roundtrip: encode then decode then compare, stream=1 END_STREAM body=hello",
+    "input": {
+      "wire_hex": "00000500010000000168656c6c6f"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]

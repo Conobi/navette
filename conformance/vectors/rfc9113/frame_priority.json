@@ -1,0 +1,34 @@
+[
+  {
+    "id": "h2fc-priority-normal-priority-frame",
+    "category": "priority",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.3",
+    "description": "normal priority frame",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "0000050200000000090000000b07"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 5,
+      "frame_type": 2,
+      "flags": 0,
+      "stream_id": 9,
+      "payload_hex": "0000000b07"
+    }
+  },
+  {
+    "id": "priority-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.3",
+    "description": "PRIORITY frame roundtrip: encode then decode then compare, stream=3 dep=1 weight=15",
+    "input": {
+      "wire_hex": "000005020000000003000000010e"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]

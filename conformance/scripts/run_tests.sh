@@ -26,6 +26,9 @@ TESTS=(
     test_h1_response_cross
     test_h1_connection
     test_h1_connection_cross
+    test_h2_frame
+    test_h2_payloads_smoke
+    test_h2_frame_cross
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
