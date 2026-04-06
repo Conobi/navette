@@ -1,0 +1,34 @@
+[
+  {
+    "id": "h2fc-push_promise-normal-push-promise-frame",
+    "category": "push_promise",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.6",
+    "description": "normal push promise frame",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000018050c0000000a060000000c746869732069732064756d6d79486f77647921"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 24,
+      "frame_type": 5,
+      "flags": 12,
+      "stream_id": 10,
+      "payload_hex": "060000000c746869732069732064756d6d79486f77647921"
+    }
+  },
+  {
+    "id": "push-promise-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.6",
+    "description": "PUSH_PROMISE frame roundtrip: encode then decode then compare, stream=1 promised=2 END_HEADERS",
+    "input": {
+      "wire_hex": "0000050504000000010000000282"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]

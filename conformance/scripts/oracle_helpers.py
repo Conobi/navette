@@ -1,7 +1,7 @@
-"""Oracle helpers for HTTP/1.1 cross-validation.
+"""Oracle helpers for HTTP/1.1 and HTTP/2 cross-validation.
 
-Wraps h11 and httptools to provide structured parse results for
-three-way comparison with our Mojo parser.
+Wraps h11, httptools, and hyperframe to provide structured parse results
+for cross-validation with our Mojo parsers.
 """
 import h11
 import httptools
@@ -398,3 +398,37 @@ def parse_connection_with_h11(
         return {"messages": messages, "phase": phase, "error": None}
     except Exception as e:
         return {"messages": [], "phase": "ERROR", "error": str(e)}
+
+
+# ---- HTTP/2 frame oracle ----
+
+
+def decode_frame_with_hyperframe(wire_bytes: bytes) -> dict:
+    """Decode one HTTP/2 frame with hyperframe. Returns structured dict.
+
+    The flags integer is read directly from wire byte 4 (the flags byte in
+    the 9-byte frame header) to avoid any mapping inconsistencies between
+    hyperframe's string-based flag names and our integer representation.
+    """
+    try:
+        import hyperframe.frame as hf
+
+        if len(wire_bytes) < 9:
+            return {"error": "wire too short for frame header"}
+
+        f, length = hf.Frame.parse_frame_header(memoryview(wire_bytes[:9]))
+        f.parse_body(memoryview(wire_bytes[9 : 9 + length]))
+
+        # Read flags directly from the wire header byte for exact comparison
+        flags_int = wire_bytes[4]
+
+        return {
+            "length": length,
+            "type": f.type if hasattr(f, "type") else -1,
+            "flags": flags_int,
+            "stream_id": f.stream_id,
+            "payload_hex": wire_bytes[9 : 9 + length].hex(),
+            "error": None,
+        }
+    except Exception as e:
+        return {"error": str(e)}

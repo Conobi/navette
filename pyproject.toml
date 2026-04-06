@@ -13,6 +13,7 @@ dev = [
     "aioquic>=1.3.0",
     "h11>=0.16.0",
     "httptools>=0.7.1",
+    "hyperframe>=6.0.0",
     "pyyaml>=6.0.3",
 ]
 

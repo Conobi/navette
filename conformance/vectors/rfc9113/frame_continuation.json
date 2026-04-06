@@ -1,0 +1,53 @@
+[
+  {
+    "id": "h2fc-continuation-normal-continuation-frame-without-header-block-fragment",
+    "category": "continuation",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.10",
+    "description": "normal continuation frame without header block fragment",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000d090000000032746869732069732064756d6d79"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 13,
+      "frame_type": 9,
+      "flags": 0,
+      "stream_id": 50,
+      "payload_hex": "746869732069732064756d6d79"
+    }
+  },
+  {
+    "id": "h2fc-continuation-normal",
+    "category": "continuation",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.10",
+    "description": "normal continuation frame without header block fragment",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "000000090000000032"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 0,
+      "frame_type": 9,
+      "flags": 0,
+      "stream_id": 50,
+      "payload_hex": ""
+    }
+  },
+  {
+    "id": "continuation-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.10",
+    "description": "CONTINUATION frame roundtrip: encode then decode then compare, stream=1 END_HEADERS",
+    "input": {
+      "wire_hex": "00000109040000000184"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]

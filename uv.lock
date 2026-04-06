@@ -241,6 +241,15 @@ wheels = [
 ]
 
 [[package]]
+name = "hyperframe"
+version = "6.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/e7/94f8232d4a74cc99514c13a9f995811485a6903d48e5d952771ef6322e30/hyperframe-6.1.0.tar.gz", hash = "sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08", size = 26566, upload-time = "2025-01-22T21:41:49.302Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/30/47d0bf6072f7252e6521f3447ccfa40b421b6824517f82854703d0f5a98b/hyperframe-6.1.0-py3-none-any.whl", hash = "sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5", size = 13007, upload-time = "2025-01-22T21:41:47.295Z" },
+]
+
+[[package]]
 name = "mojo-compiler"
 version = "0.26.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -272,6 +281,7 @@ dev = [
     { name = "cryptography" },
     { name = "h11" },
     { name = "httptools" },
+    { name = "hyperframe" },
     { name = "mojox" },
     { name = "pyyaml" },
 ]
@@ -284,6 +294,7 @@ dev = [
     { name = "cryptography", specifier = ">=44.0" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "httptools", specifier = ">=0.7.1" },
+    { name = "hyperframe", specifier = ">=6.0.0" },
     { name = "mojox" },
     { name = "pyyaml", specifier = ">=6.0.3" },
 ]

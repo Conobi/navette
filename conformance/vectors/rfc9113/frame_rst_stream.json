@@ -1,0 +1,34 @@
+[
+  {
+    "id": "h2fc-rst_stream-normal-rst-stream-frame",
+    "category": "rst_stream",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.4",
+    "description": "normal rst stream frame",
+    "source": "http2-frame-test-case",
+    "input": {
+      "wire_hex": "00000403000000000500000008"
+    },
+    "expected": {
+      "behavior": "accept",
+      "length": 4,
+      "frame_type": 3,
+      "flags": 0,
+      "stream_id": 5,
+      "payload_hex": "00000008"
+    }
+  },
+  {
+    "id": "rst-stream-roundtrip-001",
+    "category": "roundtrip",
+    "type": "h2_frame",
+    "rfc_section": "RFC 9113 \u00a76.4",
+    "description": "RST_STREAM frame roundtrip: encode then decode then compare, stream=1 error=CANCEL",
+    "input": {
+      "wire_hex": "00000403000000000100000008"
+    },
+    "expected": {
+      "behavior": "roundtrip"
+    }
+  }
+]
