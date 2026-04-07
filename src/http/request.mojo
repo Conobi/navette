@@ -129,3 +129,31 @@ struct Request(Movable):
         self.version = take.version^
         self.headers = take.headers^
         self.body = take.body^
+
+    def clone(self) raises -> Self:
+        """Deep-copy this Request. Raises if the body is a stream — streams
+        cannot be replayed; callers wanting retry support should hold a
+        buffered RequestBody. See `try_clone` for a non-raising variant."""
+        if self.body.is_stream():
+            raise Error("Request.clone: cannot clone a stream body; use try_clone")
+        var body_clone: RequestBody
+        if self.body.is_empty():
+            body_clone = self.body._clone_empty()
+        else:
+            body_clone = self.body._clone_buffered()
+        return Self(
+            method=Method(other=self.method),
+            target=self.target,
+            version=Version(other=self.version),
+            headers=Headers(other=self.headers),
+            body=body_clone^,
+        )
+
+    def try_clone(self) -> Optional[Self]:
+        """Best-effort clone. Returns None when the body is a stream."""
+        if self.body.is_stream():
+            return Optional[Self]()
+        try:
+            return Optional[Self](self.clone())
+        except:
+            return Optional[Self]()
