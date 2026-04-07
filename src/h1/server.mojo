@@ -60,3 +60,7 @@ struct ServerConnection(Movable):
 
     def wants_write(self) -> Bool:
         return self._inner.wants_write()
+
+
+# Re-export the runtime adapter so callers can `from src.h1.server import H1HandlerServer`.
+from src.h1.handler_server import H1HandlerServer
