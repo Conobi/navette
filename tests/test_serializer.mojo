@@ -3,6 +3,7 @@
 # Unit tests for the HTTP/1.1 serializer (src/h1/serializer.mojo).
 
 from src.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from src.http.request import RequestBody
 from src.h1.serializer import (
     serialize_request,
     serialize_response,
@@ -80,14 +81,12 @@ def test_serialize_post_request_with_body() raises:
     var msg_bytes = msg.as_bytes()
     for i in range(len(msg_bytes)):
         body_data.append(msg_bytes[i])
-    var body = List[BodyFrame]()
-    body.append(BodyFrame.data(body_data^))
     var req = Request(
         method=Method.post(),
         target="/submit",
         version=Version.http_1_1(),
         headers=Headers(),
-        body=body^,
+        body=RequestBody.buffered(body_data^),
     )
     var wire = serialize_request(req)
     _assert_bytes_eq(

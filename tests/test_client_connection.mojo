@@ -16,6 +16,7 @@ from src.http import (
 )
 from src.h1 import ParseConfig
 from src.h1.client import ClientConnection
+from src.http.request import RequestBody
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 
@@ -71,7 +72,7 @@ def test_client_basic_flow() raises:
         target=String("/"),
         version=Version.http_1_1(),
         headers=headers^,
-        body=List[BodyFrame](),
+        body=RequestBody.empty(),
     )
     conn.send_request(req^)
     assert_true(conn.wants_write(), "expected wants_write after send_request")
@@ -162,7 +163,7 @@ def test_client_state_transitions() raises:
         target=String("/"),
         version=Version.http_1_1(),
         headers=headers^,
-        body=List[BodyFrame](),
+        body=RequestBody.empty(),
     )
     conn.send_request(req^)
     assert_true(conn.wants_write(), "should want_write after send_request")

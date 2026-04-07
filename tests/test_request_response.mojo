@@ -2,6 +2,7 @@
 #
 # Unit tests for Request and Response types.
 from src.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from src.http.request import RequestBody
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 
@@ -11,17 +12,15 @@ def test_request_construction() raises:
     hdrs.add("Host", "example.com")
     hdrs.add("Accept", "text/html")
 
-    var body = List[BodyFrame]()
     var data = List[UInt8]()
     data.append(0x41)
-    body.append(BodyFrame.data(data^))
 
     var req = Request(
         method=Method.get(),
         target="/index.html",
         version=Version.http_1_1(),
         headers=hdrs^,
-        body=body^,
+        body=RequestBody.buffered(data^),
     )
 
     assert_true(req.method.is_get(), "method is GET")
@@ -29,7 +28,8 @@ def test_request_construction() raises:
     assert_true(req.version.is_http_1_1(), "version 1.1")
     assert_equal_int(len(req.headers), 2, "headers count")
     assert_equal_str(req.headers.get("host"), "example.com", "host header")
-    assert_equal_int(len(req.body), 1, "body frames")
+    assert_true(req.body.is_buffered(), "body is buffered")
+    assert_equal_int(len(req.body.bytes()), 1, "body bytes")
 
 
 def test_request_defaults() raises:
@@ -42,7 +42,7 @@ def test_request_defaults() raises:
     assert_equal_str(req.target, "/", "default target")
     assert_true(req.version.is_http_1_1(), "default version 1.1")
     assert_equal_int(len(req.headers), 0, "default no headers")
-    assert_equal_int(len(req.body), 0, "default no body")
+    assert_true(req.body.is_empty(), "default empty body")
 
 
 def test_request_move() raises:
@@ -124,8 +124,6 @@ def test_request_with_post_body() raises:
         body_bytes.append(payload_bytes[i])
 
     var payload_len = len(body_bytes)
-    var body = List[BodyFrame]()
-    body.append(BodyFrame.data(body_bytes^))
 
     var hdrs = Headers()
     hdrs.add("Content-Type", "application/x-www-form-urlencoded")
@@ -135,13 +133,12 @@ def test_request_with_post_body() raises:
         method=Method.post(),
         target="/submit",
         headers=hdrs^,
-        body=body^,
+        body=RequestBody.buffered(body_bytes^),
     )
 
     assert_true(req.method.is_post(), "POST method")
-    assert_equal_int(len(req.body), 1, "one body frame")
-    assert_true(req.body[0].is_data(), "body is data")
-    assert_equal_int(len(req.body[0].data()), 10, "body length")
+    assert_true(req.body.is_buffered(), "body is buffered")
+    assert_equal_int(len(req.body.bytes()), 10, "body length")
 
 
 def test_response_with_trailers() raises:

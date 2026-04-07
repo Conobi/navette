@@ -26,6 +26,23 @@ TESTS=(
     test_cross_validation
     test_tls_connection
     test_proxy_token
+    test_capabilities
+    test_stream_error
+    test_write_result
+    test_body_frame_v2
+    test_recv_body
+    test_send_body
+    test_handler_detach
+    test_response_writer
+    test_request_body
+    test_request_clone
+    test_handler_lifecycle
+    test_h3_extension
+    test_session_handle
+    test_mock_session
+    test_h1_server_handler
+    test_h1_client_session
+    test_reverse_proxy_refactor
 )
 
 FILTER="${TESTS_FILTER:-}"

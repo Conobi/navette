@@ -174,12 +174,12 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
 
 # --- Public entry points ---
 
-def serialize_request(request: Request) -> List[UInt8]:
+def serialize_request(request: Request) raises -> List[UInt8]:
     """Serialize a Request into HTTP/1.1 wire bytes.
 
-    Framing: chunked if the body has trailers, content-length if the body
-    has data without trailers, no framing header otherwise. The serializer
-    does not validate the user-supplied headers.
+    M2.5a: Request.body is a RequestBody. Buffered bodies are emitted with a
+    content-length header. Streaming bodies are not yet supported by the
+    sans-I/O serializer (the H1Session adapter handles streaming separately).
     """
     var buf = List[UInt8]()
 
@@ -191,23 +191,27 @@ def serialize_request(request: Request) -> List[UInt8]:
     _append_str(buf, _version_string(request.version))
     _append_crlf(buf)
 
-    var use_chunked = _has_trailers(request.body)
-    var body_len = _total_data_len(request.body)
+    if request.body.is_stream():
+        raise Error("serialize_request: streaming RequestBody not supported by sans-I/O serializer")
+
+    var body_len: Int
+    if request.body.is_buffered():
+        body_len = len(request.body.bytes())
+    else:
+        body_len = 0
 
     _serialize_headers(buf, request.headers)
-    if use_chunked:
-        _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
-    elif body_len > 0:
+    if body_len > 0:
         _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
 
     # End of header block.
     _append_crlf(buf)
 
     # Body.
-    if use_chunked:
-        _append_chunked_body(buf, request.body)
-    elif body_len > 0:
-        _append_data_frames(buf, request.body)
+    if body_len > 0:
+        ref chunk = request.body.bytes()
+        for j in range(len(chunk)):
+            buf.append(chunk[j])
 
     return buf^
 
