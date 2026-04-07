@@ -104,8 +104,18 @@ struct H1Connection(Movable):
 
     # --- Inbound API ---
 
-    def receive_data(mut self, data: Span[UInt8, _]):
-        """Append received bytes to the inbound buffer."""
+    def receive_data(mut self, data: Span[UInt8, _]) raises:
+        """Append received bytes to the inbound buffer.
+
+        Raises if the unconsumed inbound buffer would exceed the configured
+        cap (``max_body_size + max_headers_total``). This bounds the worst
+        case memory a peer can force us to buffer when bytes never form a
+        complete message.
+        """
+        var cap = self._config.max_body_size + self._config.max_headers_total
+        var pending = len(self._inbound_buf) - self._inbound_cursor
+        if pending + len(data) > cap:
+            raise "receive_data: inbound buffer would exceed cap"
         for i in range(len(data)):
             self._inbound_buf.append(data[i])
 
@@ -243,8 +253,12 @@ struct H1Connection(Movable):
         Content-Length) intact per RFC 9112 Section 6.3 rule 1.
         """
         var head_in_flight = False
+        var connect_in_flight = False
         if self._pending_method.__bool__():
             head_in_flight = self._pending_method.value().is_head()
+            connect_in_flight = self._pending_method.value().is_connect()
+
+        var status_int = Int(response.status.code())
 
         var pre_len = len(self._outbound_buf)
         var wire = serialize_response(response^)
@@ -253,6 +267,17 @@ struct H1Connection(Movable):
 
         if head_in_flight:
             self._truncate_outbound_to_headers(pre_len)
+
+        # 101 Switching Protocols flips the connection into the upgraded
+        # phase regardless of request method (RFC 9110 Section 15.2.2).
+        if status_int == 101:
+            self._phase = PHASE_UPGRADED
+            self._keep_alive = False
+        # CONNECT 2xx: tunnel — no more HTTP framing on this connection
+        # (RFC 9110 Section 9.3.6).
+        elif connect_in_flight and status_int >= 200 and status_int <= 299:
+            self._phase = PHASE_UPGRADED
+            self._keep_alive = False
 
         # The response satisfies the in-flight request: clear the pending
         # method so the next request gets a fresh tracking slot.
@@ -279,11 +304,17 @@ struct H1Connection(Movable):
     # --- Connection state queries ---
 
     def should_close(self) -> Bool:
-        """True if the transport should be closed after the current exchange."""
+        """True if the HTTP layer should not read/write further on the wire.
+
+        Includes ``PHASE_UPGRADED`` because once the connection has been
+        upgraded (101 Switching Protocols, or successful CONNECT) the bytes
+        on the transport are no longer HTTP messages.
+        """
         return (
             self._phase == PHASE_MUST_CLOSE
             or self._phase == PHASE_CLOSED
             or self._phase == PHASE_ERROR
+            or self._phase == PHASE_UPGRADED
         )
 
     def is_keep_alive(self) -> Bool:

@@ -431,6 +431,206 @@ def test_wants_read_write() raises:
     print("PASS: test_wants_read_write")
 
 
+def test_receive_data_bound() raises:
+    """A peer streaming garbage that never forms a complete message must be
+    bounded by the configured cap, not allowed to grow without limit."""
+    var conn = H1Connection(ParseConfig())
+
+    # Build a chunk just under max_headers_total so the first feed succeeds.
+    var first = List[UInt8]()
+    var first_len = 60000
+    for _ in range(first_len):
+        first.append(UInt8(ord("A")))
+    conn.receive_data(Span(first))
+    var req_opt = conn.next_request()
+    assert_true(not req_opt.__bool__(), "garbage must not parse as a request")
+
+    # Now flood with bytes well past max_body_size + max_headers_total.
+    # Default config: max_body_size=10MiB + max_headers_total=64KiB.
+    # Feeding ~12 MiB in one shot must raise.
+    var huge = List[UInt8]()
+    var huge_len = 12 * 1024 * 1024
+    for _ in range(huge_len):
+        huge.append(UInt8(ord("B")))
+
+    var raised = False
+    try:
+        conn.receive_data(Span(huge))
+    except e:
+        raised = True
+    assert_true(raised, "receive_data must raise when cap is exceeded")
+    print("PASS: test_receive_data_bound")
+
+
+def test_connect_upgrade() raises:
+    """A 2xx response to a CONNECT request flips the connection to UPGRADED."""
+    var conn = H1Connection(ParseConfig())
+
+    var wire = _str_to_bytes(
+        "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
+    )
+    conn.receive_data(Span(wire))
+
+    var req_opt = conn.next_request()
+    assert_true(req_opt.__bool__(), "expected a CONNECT request")
+    var req = req_opt.take()
+    assert_true(req.method.is_connect(), "expected CONNECT method")
+
+    var resp = Response(
+        status=StatusCode(200),
+        reason=String("Connection Established"),
+        version=Version.http_1_1(),
+        headers=Headers(),
+        body=List[BodyFrame](),
+    )
+    conn.send_response(resp^)
+
+    # On the server side a successful CONNECT means the HTTP layer is done:
+    # subsequent bytes are tunneled. We model that as should_close() == True
+    # since UPGRADED implies "no more HTTP framing on this connection".
+    assert_true(
+        conn.should_close() or not conn.wants_read(),
+        "after CONNECT 2xx the connection must not want more HTTP reads",
+    )
+    print("PASS: test_connect_upgrade")
+
+
+def test_101_switching_protocols() raises:
+    """A client receiving 101 transitions into the UPGRADED phase."""
+    var conn = H1Connection(ParseConfig())
+
+    var headers = Headers()
+    headers.add("Host", "example.com")
+    headers.add("Upgrade", "websocket")
+    headers.add("Connection", "Upgrade")
+    var req = Request(
+        method=Method.get(),
+        target=String("/chat"),
+        version=Version.http_1_1(),
+        headers=headers^,
+        body=List[BodyFrame](),
+    )
+    conn.send_request(req^)
+    _ = conn.drain()
+
+    var wire = _str_to_bytes(
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        + String("Upgrade: websocket\r\n")
+        + String("Connection: Upgrade\r\n\r\n")
+    )
+    conn.receive_data(Span(wire))
+
+    var resp_opt = conn.next_response(Method.get())
+    assert_true(resp_opt.__bool__(), "expected 101 response")
+    var resp = resp_opt.take()
+    assert_equal_int(Int(resp.status.code()), 101, "status 101")
+    assert_true(
+        conn.should_close(),
+        "should_close() must be True after upgrade (no more HTTP framing)",
+    )
+    print("PASS: test_101_switching_protocols")
+
+
+def test_head_response_chunked_suppression() raises:
+    """HEAD response with chunked body must drop chunk frames after headers."""
+    var conn = H1Connection(ParseConfig())
+
+    var wire = _str_to_bytes(
+        "HEAD /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    )
+    conn.receive_data(Span(wire))
+    var req_opt = conn.next_request()
+    assert_true(req_opt.__bool__(), "expected HEAD request")
+    var req = req_opt.take()
+    assert_true(req.method.is_head(), "expected HEAD")
+
+    var headers = Headers()
+    headers.add("Transfer-Encoding", "chunked")
+
+    var body = List[BodyFrame]()
+    var chunk = _str_to_bytes("Hello, world")
+    body.append(BodyFrame.data(chunk^))
+    body.append(BodyFrame.trailers(Headers()))
+
+    var resp = Response(
+        status=StatusCode(200),
+        reason=String("OK"),
+        version=Version.http_1_1(),
+        headers=headers^,
+        body=body^,
+    )
+    conn.send_response(resp^)
+
+    var out = conn.drain()
+    var out_str = _bytes_to_string(out)
+    assert_true(
+        _str_contains(out_str, "HTTP/1.1 200 OK"),
+        "missing status line: " + out_str,
+    )
+    assert_true(
+        not _str_contains(out_str, "Hello, world"),
+        "HEAD response must not contain body bytes, got: " + out_str,
+    )
+    var wire_bytes = out_str.as_bytes()
+    var n = len(wire_bytes)
+    assert_true(n >= 4, "wire too short")
+    assert_true(
+        wire_bytes[n - 4] == UInt8(0x0D)
+        and wire_bytes[n - 3] == UInt8(0x0A)
+        and wire_bytes[n - 2] == UInt8(0x0D)
+        and wire_bytes[n - 1] == UInt8(0x0A),
+        "wire must end with CRLF CRLF, got: " + out_str,
+    )
+    print("PASS: test_head_response_chunked_suppression")
+
+
+def test_head_response_empty_body() raises:
+    """HEAD response with Content-Length: 0 and empty body — wire stays clean."""
+    var conn = H1Connection(ParseConfig())
+
+    var wire = _str_to_bytes(
+        "HEAD /empty HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    )
+    conn.receive_data(Span(wire))
+    var req_opt = conn.next_request()
+    assert_true(req_opt.__bool__(), "expected HEAD request")
+    var req = req_opt.take()
+    assert_true(req.method.is_head(), "expected HEAD")
+
+    var headers = Headers()
+    headers.add("Content-Length", "0")
+    var resp = Response(
+        status=StatusCode(200),
+        reason=String("OK"),
+        version=Version.http_1_1(),
+        headers=headers^,
+        body=List[BodyFrame](),
+    )
+    conn.send_response(resp^)
+
+    var out = conn.drain()
+    var out_str = _bytes_to_string(out)
+    assert_true(
+        _str_contains(out_str, "HTTP/1.1 200 OK"),
+        "missing status line: " + out_str,
+    )
+    assert_true(
+        _str_contains(out_str, "content-length: 0"),
+        "expected Content-Length: 0, got: " + out_str,
+    )
+    var wire_bytes = out_str.as_bytes()
+    var n = len(wire_bytes)
+    assert_true(n >= 4, "wire too short")
+    assert_true(
+        wire_bytes[n - 4] == UInt8(0x0D)
+        and wire_bytes[n - 3] == UInt8(0x0A)
+        and wire_bytes[n - 2] == UInt8(0x0D)
+        and wire_bytes[n - 1] == UInt8(0x0A),
+        "wire must end with CRLF CRLF, got: " + out_str,
+    )
+    print("PASS: test_head_response_empty_body")
+
+
 def main() raises:
     test_basic_request_response_cycle()
     test_incremental_feeding()
@@ -448,4 +648,9 @@ def main() raises:
     test_head_response_body_suppression()
     test_malformed_request_error()
     test_wants_read_write()
+    test_receive_data_bound()
+    test_connect_upgrade()
+    test_101_switching_protocols()
+    test_head_response_chunked_suppression()
+    test_head_response_empty_body()
     print("\nAll H1Connection tests passed!")
