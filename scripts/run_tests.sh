@@ -23,6 +23,7 @@ TESTS=(
     test_h1_connection
     test_server_connection
     test_client_connection
+    test_cross_validation
 )
 
 FILTER="${TESTS_FILTER:-}"
@@ -35,7 +36,13 @@ for t in "${TESTS[@]}"; do
     fi
     TOTAL=$((TOTAL + 1))
     echo "--- $t ---"
-    if uv run mojo run -I . -D ASSERT=all "tests/$t.mojo"; then
+    # The cross-validation test imports both src.h1 and the conformance
+    # batch parser (lib.http1) so it needs an extra include path.
+    EXTRA_I=()
+    if [ "$t" = "test_cross_validation" ]; then
+        EXTRA_I=(-I conformance)
+    fi
+    if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
     else
         echo "FAILED: $t"
