@@ -548,7 +548,7 @@ struct ResponseWriter(Movable):
 # StreamHandler trait (§5.9)
 # ---------------------------------------------------------------------------
 
-trait StreamHandler(Movable):
+trait StreamHandler(Movable, ImplicitlyDestructible):
     """Server-side request handler. The runtime calls these methods as the
     request lifecycle progresses. Lifecycle order per stream:
 

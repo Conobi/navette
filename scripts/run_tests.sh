@@ -39,6 +39,7 @@ TESTS=(
     test_handler_lifecycle
     test_h3_extension
     test_session_handle
+    test_mock_session
 )
 
 FILTER="${TESTS_FILTER:-}"
