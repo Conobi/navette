@@ -5,3 +5,4 @@ from .headers import Headers
 from .body import BodyFrame
 from .request import Request
 from .response import Response
+from .priority import Priority

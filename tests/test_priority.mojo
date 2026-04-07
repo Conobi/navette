@@ -50,6 +50,34 @@ def test_parse_out_of_range_urgency_raises() raises:
     assert_true(raised, "out_of_range_raises")
 
 
+def test_serialize_default_omits_all() raises:
+    var p = Priority.default()
+    assert_equal_str(p.serialize_header(), String(""), "default.serialize")
+
+
+def test_serialize_non_default_urgency() raises:
+    var p = Priority(urgency=1, incremental=False)
+    assert_equal_str(p.serialize_header(), String("u=1"), "u1.serialize")
+
+
+def test_serialize_incremental_only() raises:
+    var p = Priority(urgency=3, incremental=True)
+    assert_equal_str(p.serialize_header(), String("i"), "i.serialize")
+
+
+def test_serialize_both() raises:
+    var p = Priority(urgency=5, incremental=True)
+    assert_equal_str(p.serialize_header(), String("u=5, i"), "u5i.serialize")
+
+
+def test_roundtrip_non_default() raises:
+    var original = Priority(urgency=2, incremental=True)
+    var encoded = original.serialize_header()
+    var parsed = Priority.parse_header(encoded)
+    assert_equal_int(parsed.urgency, 2, "roundtrip.urgency")
+    assert_true(parsed.incremental, "roundtrip.incremental")
+
+
 def main() raises:
     test_default_priority()
     test_parse_urgency_only()
@@ -58,4 +86,9 @@ def main() raises:
     test_parse_explicit_incremental_true()
     test_parse_empty_header_yields_defaults()
     test_parse_out_of_range_urgency_raises()
+    test_serialize_default_omits_all()
+    test_serialize_non_default_urgency()
+    test_serialize_incremental_only()
+    test_serialize_both()
+    test_roundtrip_non_default()
     print("test_priority: all tests passed")
