@@ -103,6 +103,19 @@ def test_reader_end_reports_is_end() raises:
     assert_true(reader.is_end(), "end.is_end")
 
 
+def test_reader_partial_event_at_end_discarded() raises:
+    # WHATWG §9.2: an incomplete event (no blank-line terminator) at the
+    # end of the stream is discarded rather than dispatched. is_end() must
+    # return True so callers stop polling.
+    var body = RecvBody()
+    body._push(BodyFrame.data(_bytes_from_str("data: partial\n")))
+    body._set_end()
+    var reader = EventStreamReader(body^.detach())
+    var ev_opt = reader.try_next_event()
+    assert_false(Bool(ev_opt), "partial.no_event")
+    assert_true(reader.is_end(), "partial.is_end")
+
+
 def test_write_simple_data_event_roundtrips() raises:
     var resp = ResponseWriter()
     resp.send_status(StatusCode(200), Headers())
@@ -164,6 +177,7 @@ def main() raises:
     test_reader_comment_line_ignored()
     test_reader_retry_parses_int()
     test_reader_end_reports_is_end()
+    test_reader_partial_event_at_end_discarded()
     test_write_simple_data_event_roundtrips()
     test_write_all_fields_roundtrips()
     print("test_sse: all tests passed")
