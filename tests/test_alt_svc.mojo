@@ -1,7 +1,7 @@
 # tests/test_alt_svc.mojo
 #
 # Unit tests for Alt-Svc (RFC 7838, M2.5b §7.2).
-from src.http.alt_svc import Origin, AltSvcEntry
+from src.http.alt_svc import Origin, AltSvcEntry, parse_alt_svc
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 
@@ -35,8 +35,44 @@ def test_alt_svc_entry_construction() raises:
     assert_false(e.persist, "entry.persist")
 
 
+def test_parse_single_entry_h3_default_host() raises:
+    var entries = parse_alt_svc(String("h3=\":443\"; ma=3600"))
+    assert_equal_int(len(entries), 1, "single.count")
+    assert_equal_str(entries[0].protocol, String("h3"), "single.protocol")
+    assert_equal_str(entries[0].host, String(""), "single.host_default")
+    assert_equal_int(Int(entries[0].port), 443, "single.port")
+    assert_equal_int(Int(entries[0].max_age_secs), 3600, "single.ma")
+    assert_false(entries[0].persist, "single.persist")
+
+
+def test_parse_multi_entry() raises:
+    var entries = parse_alt_svc(
+        String("h2=\"alt.example.com:443\"; ma=86400, h3=\":443\"; ma=3600")
+    )
+    assert_equal_int(len(entries), 2, "multi.count")
+    assert_equal_str(entries[0].protocol, String("h2"), "multi[0].proto")
+    assert_equal_str(entries[0].host, String("alt.example.com"), "multi[0].host")
+    assert_equal_int(Int(entries[0].port), 443, "multi[0].port")
+    assert_equal_int(Int(entries[1].max_age_secs), 3600, "multi[1].ma")
+
+
+def test_parse_clear_returns_empty_list() raises:
+    var entries = parse_alt_svc(String("clear"))
+    assert_equal_int(len(entries), 0, "clear.empty")
+
+
+def test_parse_persist_flag() raises:
+    var entries = parse_alt_svc(String("h3=\":443\"; ma=3600; persist=1"))
+    assert_equal_int(len(entries), 1, "persist.count")
+    assert_true(entries[0].persist, "persist.flag")
+
+
 def main() raises:
     test_origin_roundtrip()
     test_origin_equality()
     test_alt_svc_entry_construction()
+    test_parse_single_entry_h3_default_host()
+    test_parse_multi_entry()
+    test_parse_clear_returns_empty_list()
+    test_parse_persist_flag()
     print("test_alt_svc: all tests passed")
