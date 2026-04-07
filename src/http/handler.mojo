@@ -146,3 +146,48 @@ struct StreamError(Copyable, Movable):
     @staticmethod
     def protocol(code: UInt32, var message: String) -> Self:
         return Self(kind=STREAM_ERR_PROTOCOL, code=code, message=message^)
+
+
+# ---------------------------------------------------------------------------
+# WriteResult (§5.4)
+# ---------------------------------------------------------------------------
+
+comptime _WRITE_OK          = 0
+comptime _WRITE_WOULD_BLOCK = 1
+comptime _WRITE_CLOSED      = 2
+
+
+struct WriteResult(Copyable, Movable):
+    """Result of a backpressure-aware write. Tagged enum: Ok | WouldBlock | Closed."""
+
+    var tag: Int
+
+    def __init__(out self, *, tag: Int):
+        self.tag = tag
+
+    def __init__(out self, *, other: Self):
+        self.tag = other.tag
+
+    def __init__(out self, *, deinit take: Self):
+        self.tag = take.tag
+
+    @staticmethod
+    def ok() -> Self:
+        return Self(tag=_WRITE_OK)
+
+    @staticmethod
+    def would_block() -> Self:
+        return Self(tag=_WRITE_WOULD_BLOCK)
+
+    @staticmethod
+    def closed() -> Self:
+        return Self(tag=_WRITE_CLOSED)
+
+    def is_ok(self) -> Bool:
+        return self.tag == _WRITE_OK
+
+    def is_would_block(self) -> Bool:
+        return self.tag == _WRITE_WOULD_BLOCK
+
+    def is_closed(self) -> Bool:
+        return self.tag == _WRITE_CLOSED
