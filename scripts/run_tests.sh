@@ -26,6 +26,7 @@ TESTS=(
     test_cross_validation
     test_tls_connection
     test_proxy_token
+    test_capabilities
 )
 
 FILTER="${TESTS_FILTER:-}"
