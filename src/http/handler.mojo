@@ -85,3 +85,64 @@ struct Capabilities(Copyable, Movable):
         if self.alpn == ALPN_H3:
             return String("h3")
         return String("unknown")
+
+
+# ---------------------------------------------------------------------------
+# StreamError (§5.3)
+# ---------------------------------------------------------------------------
+
+# Stream error kinds. Public — handlers may pattern-match.
+comptime STREAM_ERR_PEER_CLOSED       = 0
+comptime STREAM_ERR_RST_STREAM        = 1
+comptime STREAM_ERR_PARSER            = 2
+comptime STREAM_ERR_LOCAL_ABORT       = 3
+comptime STREAM_ERR_CONNECTION_CLOSED = 4
+comptime STREAM_ERR_PROTOCOL          = 5
+
+
+struct StreamError(Copyable, Movable):
+    """Per-stream error. `code` is the protocol-specific error code (H2/H3
+    stream error code; 0 for H1 since H1 has no per-stream codes)."""
+
+    var kind: Int
+    var code: UInt32
+    var message: String
+
+    def __init__(out self, *, kind: Int, code: UInt32, var message: String):
+        self.kind = kind
+        self.code = code
+        self.message = message^
+
+    def __init__(out self, *, other: Self):
+        self.kind = other.kind
+        self.code = other.code
+        self.message = other.message.copy()
+
+    def __init__(out self, *, deinit take: Self):
+        self.kind = take.kind
+        self.code = take.code
+        self.message = take.message^
+
+    @staticmethod
+    def peer_closed() -> Self:
+        return Self(kind=STREAM_ERR_PEER_CLOSED, code=UInt32(0), message=String("peer closed"))
+
+    @staticmethod
+    def rst_stream(code: UInt32) -> Self:
+        return Self(kind=STREAM_ERR_RST_STREAM, code=code, message=String("rst_stream"))
+
+    @staticmethod
+    def parser(var message: String) -> Self:
+        return Self(kind=STREAM_ERR_PARSER, code=UInt32(0), message=message^)
+
+    @staticmethod
+    def local_abort(var message: String) -> Self:
+        return Self(kind=STREAM_ERR_LOCAL_ABORT, code=UInt32(0), message=message^)
+
+    @staticmethod
+    def connection_closed() -> Self:
+        return Self(kind=STREAM_ERR_CONNECTION_CLOSED, code=UInt32(0), message=String("connection closed"))
+
+    @staticmethod
+    def protocol(code: UInt32, var message: String) -> Self:
+        return Self(kind=STREAM_ERR_PROTOCOL, code=code, message=message^)

@@ -27,6 +27,7 @@ TESTS=(
     test_tls_connection
     test_proxy_token
     test_capabilities
+    test_stream_error
 )
 
 FILTER="${TESTS_FILTER:-}"
