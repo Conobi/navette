@@ -226,6 +226,31 @@ pub extern "C" fn rlsm_initial_keys_raw(
         rlsm_err!("rlsm_initial_keys_raw: null out_hp or out_hp_len"; return -1);
     }
 
+    // Treat *out_*_len as in/out: incoming value is the buffer capacity,
+    // outgoing value is the bytes actually written. Validate capacities
+    // BEFORE doing any work or any writes.
+    let key_cap = unsafe { *out_key_len };
+    let iv_cap = unsafe { *out_iv_len };
+    let hp_cap = unsafe { *out_hp_len };
+    if key_cap < 16 {
+        rlsm_err!(
+            "rlsm_initial_keys_raw: out_key capacity must be >= 16";
+            return -1
+        );
+    }
+    if iv_cap < 12 {
+        rlsm_err!(
+            "rlsm_initial_keys_raw: out_iv capacity must be >= 12";
+            return -1
+        );
+    }
+    if hp_cap < 16 {
+        rlsm_err!(
+            "rlsm_initial_keys_raw: out_hp capacity must be >= 16";
+            return -1
+        );
+    }
+
     let dcid = unsafe { std::slice::from_raw_parts(dcid_ptr, dcid_len as usize) };
 
     let (key, iv, hp) = match derive_raw_keys(version, dcid, is_client != 0) {
@@ -285,6 +310,13 @@ pub extern "C" fn rlsm_keys_local_encrypt(
     let header_len = header_len as usize;
     let payload_len = payload_len as usize;
     let buf_capacity = buf_capacity as usize;
+
+    if payload_len > buf_capacity {
+        rlsm_err!(
+            "rlsm_keys_local_encrypt: payload_len > buf_capacity";
+            return -1
+        );
+    }
 
     let header = unsafe { std::slice::from_raw_parts(header_ptr, header_len) };
     let buf = unsafe { std::slice::from_raw_parts_mut(payload_ptr, buf_capacity) };

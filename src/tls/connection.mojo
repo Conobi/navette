@@ -34,18 +34,21 @@ def _drain_write_tls(
     ref lib: RustlsLibrary,
     handle: Int32,
     mut out: List[UInt8],
-):
+) raises:
     """Drain all pending ciphertext from a connection into `out`.
 
     Loops `rlsm_tls_conn_write_tls` until the rustls write buffer reports
-    nothing more to send. Returns silently on error so callers (which only
-    invoke this from already-validated paths) don't have to special-case
-    drain failures.
+    nothing more to send. Raises if the underlying FFI returns a negative
+    value so TLS alerts and fatal handshake errors propagate up.
     """
     var buf = _heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin()
     while True:
         var n = lib.tls_conn_write_tls(handle, buf, Int32(_IO_BUF_SIZE))
-        if n <= 0:
+        if n < 0:
+            var err = lib.last_error()
+            buf.free()
+            raise "rlsm_tls_conn_write_tls failed: " + err
+        if n == 0:
             break
         for i in range(Int(n)):
             out.append(buf[i])
@@ -123,8 +126,14 @@ struct TlsConnection(Movable):
             raise "rlsm_tls_client_new failed: " + lib.last_error()
 
         # Drain the ClientHello immediately so the caller can send it.
+        # If draining fails, free the rustls handle before propagating to
+        # avoid leaking it (no destructor runs since construction failed).
         var ct_out = List[UInt8]()
-        _drain_write_tls(lib, handle, ct_out)
+        try:
+            _drain_write_tls(lib, handle, ct_out)
+        except e:
+            _ = lib.tls_conn_free(handle)
+            raise e.copy()
 
         return Self(
             _lib_addr=UInt64(Int(UnsafePointer(to=lib))),
@@ -161,6 +170,10 @@ struct TlsConnection(Movable):
         response are automatically drained into the internal
         ciphertext-out buffer so the caller can pick them up with
         `drain_ciphertext()`.
+
+        The Rust FFI loops `read_tls` + `process_new_packets` internally
+        until either the input is fully consumed or rustls' deframer cannot
+        make progress, so a single FFI call is sufficient here.
         """
         var n = len(ciphertext)
         if n == 0:
@@ -174,22 +187,25 @@ struct TlsConnection(Movable):
             self._handle, buf, Int32(n)
         )
         buf.free()
+
         if rc < 0:
             raise (
-                "rlsm_tls_conn_read_tls failed: " + self._lib()[].last_error()
+                "rlsm_tls_conn_read_tls failed: "
+                + self._lib()[].last_error()
             )
 
         _drain_write_tls(
             self._lib()[], self._handle, self._ciphertext_out
         )
 
-    def drain_plaintext(mut self) -> List[UInt8]:
+    def drain_plaintext(mut self) raises -> List[UInt8]:
         """Return any decrypted plaintext available after `receive_data`.
 
         Loops `rlsm_tls_conn_read_plaintext` until it returns 0 (no more
         decrypted data right now). Returns an empty list during the
         handshake or whenever the peer has not yet sent any application
-        data.
+        data. Raises on FFI errors so close_notify / fatal alerts surface
+        rather than being indistinguishable from "no data yet".
         """
         var buf = _heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin()
         var result = List[UInt8]()
@@ -198,7 +214,11 @@ struct TlsConnection(Movable):
             var n = self._lib()[].tls_conn_read_plaintext(
                 self._handle, buf, Int32(_IO_BUF_SIZE)
             )
-            if n <= 0:
+            if n < 0:
+                var err = self._lib()[].last_error()
+                buf.free()
+                raise "rlsm_tls_conn_read_plaintext failed: " + err
+            if n == 0:
                 break
             for i in range(Int(n)):
                 result.append(buf[i])

@@ -18,3 +18,9 @@ hex = "0.4"
 default = []
 skip-locks = []
 insecure = []
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

@@ -73,6 +73,7 @@ comptime _RECV_BUF_SIZE: Int = 8192
 comptime _CERT_DIR: String = "examples/reverse_proxy/certs"
 comptime _LISTEN_PORT: UInt16 = 8443
 comptime _BACKEND_PORT: UInt16 = 9443
+comptime _BACKEND_HOST: String = "localhost"
 
 
 # ---------------------------------------------------------------------------
@@ -264,17 +265,23 @@ def _is_hop_by_hop(name: String) -> Bool:
     )
 
 
-def rewrite_request_headers(mut request: Request, client_ip: String):
-    """Strip hop-by-hop from `request.headers` in place, then add
-    `Via` and `X-Forwarded-For`. Mutates the request's headers only;
-    method/target/version/body are left untouched.
+def rewrite_request_headers(
+    mut request: Request, client_ip: String, backend_host: String
+):
+    """Strip hop-by-hop from `request.headers` in place, replace `Host`
+    with `backend_host`, then add `Via` and `X-Forwarded-For`. Mutates
+    the request's headers only; method/target/version/body are left untouched.
     """
     var new_headers = Headers()
     for i in range(len(request.headers)):
         var name = request.headers.name_at(i)
         var value = request.headers.value_at(i)
-        if not _is_hop_by_hop(name):
-            new_headers.add(name, value)
+        if _is_hop_by_hop(name):
+            continue
+        if name == "host":
+            continue  # skip; we add the rewritten Host below
+        new_headers.add(name, value)
+    new_headers.add("host", backend_host)
     new_headers.add("via", "1.1 mojo-proxy")
     new_headers.add("x-forwarded-for", client_ip)
     request.headers = new_headers^
@@ -550,7 +557,7 @@ struct ProxyHandler(CompletionHandler):
             self.tls_lib, self.server_tls_config
         )
         var backend_tls = TlsConnection.new_client(
-            self.tls_lib, self.client_tls_config, "localhost"
+            self.tls_lib, self.client_tls_config, _BACKEND_HOST
         )
 
         # Build both H1 state machines with default config.
@@ -645,7 +652,7 @@ struct ProxyHandler(CompletionHandler):
         # later response parsing) before forwarding to the backend.
         var request = req_opt.take()
         self.connections[idx][].pending_method = Method(other=request.method)
-        rewrite_request_headers(request, "127.0.0.1")
+        rewrite_request_headers(request, "127.0.0.1", _BACKEND_HOST)
         self.connections[idx][].backend_http.send_request(request^)
 
         self.connections[idx][].phase = _PHASE_BACKEND_CONNECTING
@@ -941,7 +948,7 @@ def main() raises:
     var listener_fd = listener.raw()
 
     print("mojo-proxy: listening on https://127.0.0.1:" + String(_LISTEN_PORT))
-    print("mojo-proxy: backend at   https://127.0.0.1:" + String(_BACKEND_PORT))
+    print("mojo-proxy: backend at   https://" + _BACKEND_HOST + ":" + String(_BACKEND_PORT))
 
     # Build the handler + loop.
     var handler = ProxyHandler(
