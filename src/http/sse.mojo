@@ -246,3 +246,75 @@ def _try_parse_uint(s: String) -> Optional[UInt]:
         acc = acc * UInt(10) + UInt(c - 0x30)
         i += 1
     return Optional[UInt](acc)
+
+
+from src.http.handler import ResponseWriter, WriteResult
+
+
+def try_write_event(
+    mut resp: ResponseWriter,
+    event: ServerSentEvent,
+) raises -> WriteResult:
+    """Serialize `event` into the response body as a text/event-stream
+    frame. Stateless — the caller holds the ResponseWriter and passes it
+    in on each call. Returns the underlying `try_send_body` result so the
+    caller can observe backpressure.
+
+    Spec deviation note: the original §7.3 sketch proposed a stateful
+    EventStreamWriter struct wrapping an `UnsafePointer[ResponseWriter]`,
+    but that contradicts the sketch's own "does NOT take ownership" line
+    and adds lifetime risk in Mojo 0.26.2. SSE writers need no per-call
+    state, so a free function is both simpler and safer. HC-4/M5 can
+    promote this to a struct if a real use case for state emerges."""
+    var buf = String("")
+
+    if Bool(event.event):
+        buf += String("event: ")
+        buf += event.event.value()
+        buf += String("\n")
+
+    if Bool(event.id):
+        buf += String("id: ")
+        buf += event.id.value()
+        buf += String("\n")
+
+    if Bool(event.retry):
+        buf += String("retry: ")
+        buf += String(Int(event.retry.value()))
+        buf += String("\n")
+
+    # data: lines — split on '\n' so each chunk becomes its own "data:" line.
+    if len(event.data) > 0:
+        var data_bytes = event.data.as_bytes()
+        var n = len(data_bytes)
+        var start = 0
+        var i = 0
+        while i < n:
+            if data_bytes[i] == UInt8(0x0A):  # '\n'
+                buf += String("data: ")
+                var seg_i = start
+                while seg_i < i:
+                    buf += chr(Int(data_bytes[seg_i]))
+                    seg_i += 1
+                buf += String("\n")
+                start = i + 1
+            i += 1
+        # Final segment (after the last '\n' or the whole string if no '\n')
+        buf += String("data: ")
+        var seg_i = start
+        while seg_i < n:
+            buf += chr(Int(data_bytes[seg_i]))
+            seg_i += 1
+        buf += String("\n")
+
+    # Event terminator.
+    buf += String("\n")
+
+    # Convert to bytes and hand off to SendBody.
+    var bytes = List[UInt8]()
+    var as_bytes = buf.as_bytes()
+    var k = 0
+    while k < len(as_bytes):
+        bytes.append(as_bytes[k])
+        k += 1
+    return resp.try_send_body(BodyFrame.data(bytes^))
