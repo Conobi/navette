@@ -1,7 +1,7 @@
 # tests/test_alt_svc.mojo
 #
 # Unit tests for Alt-Svc (RFC 7838, M2.5b §7.2).
-from src.http.alt_svc import Origin, AltSvcEntry, parse_alt_svc
+from src.http.alt_svc import Origin, AltSvcEntry, parse_alt_svc, AltSvcCache
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 
@@ -67,6 +67,51 @@ def test_parse_persist_flag() raises:
     assert_true(entries[0].persist, "persist.flag")
 
 
+def test_cache_insert_and_lookup() raises:
+    var cache = AltSvcCache()
+    var origin = Origin(scheme=String("https"), host=String("example.com"), port=UInt16(443))
+    var entries = parse_alt_svc(String("h3=\":443\"; ma=3600"))
+    cache.insert(Origin(other=origin), entries^, UInt(1000))
+    var found = cache.lookup(origin, UInt(2000))
+    assert_equal_int(len(found), 1, "lookup.count")
+    assert_equal_str(found[0].protocol, String("h3"), "lookup.proto")
+
+
+def test_cache_lookup_expired_returns_empty() raises:
+    var cache = AltSvcCache()
+    var origin = Origin(scheme=String("https"), host=String("a.test"), port=UInt16(443))
+    var entries = parse_alt_svc(String("h3=\":443\"; ma=10"))
+    cache.insert(Origin(other=origin), entries^, UInt(1000))
+    # now = 2000, received_at = 1000, ma = 10 → expired
+    var found = cache.lookup(origin, UInt(2000))
+    assert_equal_int(len(found), 0, "expired.empty")
+
+
+def test_cache_clear() raises:
+    var cache = AltSvcCache()
+    var origin = Origin(scheme=String("https"), host=String("c.test"), port=UInt16(443))
+    var entries = parse_alt_svc(String("h3=\":443\"; ma=3600"))
+    cache.insert(Origin(other=origin), entries^, UInt(1000))
+    cache.clear(origin)
+    var found = cache.lookup(origin, UInt(1500))
+    assert_equal_int(len(found), 0, "clear.empty")
+
+
+def test_cache_clear_expired_prunes() raises:
+    var cache = AltSvcCache()
+    var fresh = Origin(scheme=String("https"), host=String("fresh.test"), port=UInt16(443))
+    var stale = Origin(scheme=String("https"), host=String("stale.test"), port=UInt16(443))
+    var fresh_entries = parse_alt_svc(String("h3=\":443\"; ma=3600"))
+    var stale_entries = parse_alt_svc(String("h3=\":443\"; ma=10"))
+    cache.insert(Origin(other=fresh), fresh_entries^, UInt(1000))
+    cache.insert(Origin(other=stale), stale_entries^, UInt(1000))
+    cache.clear_expired(UInt(2000))
+    var fresh_found = cache.lookup(fresh, UInt(2000))
+    var stale_found = cache.lookup(stale, UInt(2000))
+    assert_equal_int(len(fresh_found), 1, "fresh.present")
+    assert_equal_int(len(stale_found), 0, "stale.removed")
+
+
 def main() raises:
     test_origin_roundtrip()
     test_origin_equality()
@@ -75,4 +120,8 @@ def main() raises:
     test_parse_multi_entry()
     test_parse_clear_returns_empty_list()
     test_parse_persist_flag()
+    test_cache_insert_and_lookup()
+    test_cache_lookup_expired_returns_empty()
+    test_cache_clear()
+    test_cache_clear_expired_prunes()
     print("test_alt_svc: all tests passed")
