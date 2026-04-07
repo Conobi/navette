@@ -289,8 +289,10 @@ def _compare_request(
             )
             return False
 
-    # Body bytes.
-    var prod_body = _flatten_data_frames(prod.body)
+    # Body bytes. Request bodies are RequestBody (M2.5a §5.12).
+    var prod_body = List[UInt8]()
+    if prod.body.is_buffered():
+        prod_body = prod.body.bytes().copy()
     if not _bytes_equal(prod_body, batch.body):
         print(
             "MISMATCH ["
@@ -302,40 +304,10 @@ def _compare_request(
         )
         return False
 
-    # Trailers (chunked).
-    var prod_trailers = _extract_trailers(prod.body)
-    if len(prod_trailers) != len(batch.trailers):
-        print(
-            "MISMATCH ["
-            + vec_id
-            + "] trailer count: batch="
-            + String(len(batch.trailers))
-            + " prod="
-            + String(len(prod_trailers))
-        )
-        return False
-    for ti in range(len(batch.trailers)):
-        var bn2 = _to_lower(batch.trailers[ti].name)
-        var pn2 = prod_trailers[ti][0]
-        if bn2 != pn2:
-            print(
-                "MISMATCH ["
-                + vec_id
-                + "] trailer["
-                + String(ti)
-                + "] name"
-            )
-            return False
-        if batch.trailers[ti].value != prod_trailers[ti][1]:
-            print(
-                "MISMATCH ["
-                + vec_id
-                + "] trailer["
-                + String(ti)
-                + "] value"
-            )
-            return False
-
+    # Trailers (chunked) on requests are explicitly dropped by the M2.5a
+    # parser — see RequestBody design in spec §5.12. We do not compare
+    # trailers here. Vectors that carry request trailers will still match
+    # on body bytes, headers, method, and target.
     return True
 
 

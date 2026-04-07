@@ -289,7 +289,7 @@ struct H1Connection(Movable):
         for i in range(len(wire)):
             self._outbound_buf.append(wire[i])
 
-    def send_request(mut self, var request: Request):
+    def send_request(mut self, var request: Request) raises:
         """Serialize a request and append wire bytes to the outbound buffer."""
         var wire = serialize_request(request^)
         for i in range(len(wire)):

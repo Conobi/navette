@@ -28,7 +28,7 @@ struct ClientConnection(Movable):
 
     # --- Outbound API (client sends requests) ---
 
-    def send_request(mut self, var request: Request):
+    def send_request(mut self, var request: Request) raises:
         self._inner.send_request(request^)
 
     def drain(mut self) -> List[UInt8]:

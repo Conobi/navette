@@ -23,7 +23,7 @@ from src.http.status import StatusCode
 from src.http.version import Version
 from src.http.headers import Headers
 from src.http.body import BodyFrame
-from src.http.request import Request
+from src.http.request import Request, RequestBody
 from src.http.response import Response
 from src.h1.config import ParseConfig
 
@@ -815,7 +815,10 @@ def try_parse_request(
             return result^
 
     # --- Body framing (RFC 9112 Section 6, request side) ---
-    var body = List[BodyFrame]()
+    # M2.5a: Request.body is a RequestBody (buffered bytes or empty). Trailers
+    # on the request side are dropped here — see spec §5.12. Streaming variant
+    # is only produced by H1Session in M2.5a Task 19.
+    var body_bytes = List[UInt8]()
     var msg_end: Int
 
     if te_count > 0:
@@ -834,17 +837,13 @@ def try_parse_request(
             result.error = chunk_err^
             return result^
         var chunk_body = chunk_result[0].copy()
-        var chunk_trailers = chunk_result[1].copy()
         var chunk_consumed = chunk_result[2]
 
         if len(chunk_body) > config.max_body_size:
             result.error = String("chunked body exceeds max body size")
             return result^
 
-        if len(chunk_body) > 0:
-            body.append(BodyFrame.data(chunk_body^))
-        if len(chunk_trailers) > 0:
-            body.append(BodyFrame.trailers(chunk_trailers^))
+        body_bytes = chunk_body^
         msg_end = body_start + chunk_consumed
 
     elif cl_count > 0:
@@ -855,23 +854,27 @@ def try_parse_request(
             result.new_last_scanned = header_end
             return result^
         if cl_int > 0:
-            var body_bytes = List[UInt8]()
             var bi = 0
             while bi < cl_int:
                 body_bytes.append(buf[body_start + bi])
                 bi += 1
-            body.append(BodyFrame.data(body_bytes^))
         msg_end = body_start + cl_int
     else:
         # Rule 8: request without TE/CL has no body.
         msg_end = body_start
+
+    var req_body: RequestBody
+    if len(body_bytes) > 0:
+        req_body = RequestBody.buffered(body_bytes^)
+    else:
+        req_body = RequestBody.empty()
 
     var req = Request(
         method=Method.custom(method_str),
         target=target,
         version=version^,
         headers=headers^,
-        body=body^,
+        body=req_body^,
     )
     result.request = Optional[Request](req^)
     result.bytes_consumed = msg_end - cursor
