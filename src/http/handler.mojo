@@ -280,6 +280,11 @@ struct RecvBody(Movable):
     # --- Runtime-internal API ---
 
     def _push(mut self, var frame: BodyFrame):
+        # Drop pushes after the body has been terminated. This guards against
+        # cross-layer ordering bugs that would otherwise corrupt the
+        # "exactly one terminal frame" invariant.
+        if self._state != _BODY_OPEN:
+            return
         if frame.is_data():
             self._bytes_buffered += UInt(len(frame.data()))
             if not self._paused and self._bytes_buffered > self._high_water:
@@ -287,8 +292,8 @@ struct RecvBody(Movable):
         self._frames.append(frame^)
 
     def _set_end(mut self):
-        if self._state == _BODY_ERRORED:
-            return  # error wins
+        if self._state != _BODY_OPEN:
+            return  # idempotent: error wins, second end is a no-op
         self._state = _BODY_END
         self._frames.append(BodyFrame.end())
 
@@ -338,6 +343,9 @@ struct DetachedBody(Movable):
         return self._inner.bytes_buffered()
 
     def take_inner(deinit self) -> RecvBody:
+        """Consume the DetachedBody and return the underlying RecvBody. The
+        returned RecvBody MUST NOT be re-attached to the runtime — detach is
+        one-way and the runtime no longer holds a stable handle to it."""
         return self._inner^
 
     # --- Runtime-internal: forwarded so the runtime can keep pushing ---
@@ -407,6 +415,10 @@ struct SendBody(Movable):
             raise Error("SendBody.abort: already aborted")
         self._state = _SEND_ABORTED
         self._abort_code = code
+        # Drop any queued frames — abort means cancel: the runtime must not
+        # emit a half-body before the RST/close.
+        self._frames = Deque[BodyFrame]()
+        self._bytes_buffered = UInt(0)
 
     def bytes_buffered(self) -> UInt:
         return self._bytes_buffered
@@ -510,6 +522,21 @@ struct ResponseWriter(Movable):
     def _take_headers(mut self) -> Optional[Headers]:
         var h = self._captured_headers^
         self._captured_headers = Optional[Headers]()
+        return h^
+
+    def _take_informational(mut self) -> List[StatusCode]:
+        """Drain any captured informational (1xx) status codes. The H1 adapter
+        polls this after each handler invocation and pairs each entry with the
+        corresponding headers from `_take_informational_headers()`."""
+        var s = self._captured_informational^
+        self._captured_informational = List[StatusCode]()
+        return s^
+
+    def _take_informational_headers(mut self) -> List[Headers]:
+        """Drain any captured informational (1xx) headers. Order matches
+        `_take_informational()` and entries pair index-by-index."""
+        var h = self._captured_informational_headers^
+        self._captured_informational_headers = List[Headers]()
         return h^
 
     def _pop_body_frame(mut self) raises -> Optional[BodyFrame]:
