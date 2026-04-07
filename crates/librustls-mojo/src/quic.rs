@@ -189,7 +189,14 @@ pub extern "C" fn rlsm_initial_keys(
         last_local_pn: None,
     };
 
-    keys_table().insert(entry)
+    match keys_table().insert(entry) {
+        Some(h) => h,
+        None => {
+            rlsm_err!(
+                "rlsm_initial_keys: handle counter exhausted"; return -1
+            );
+        }
+    }
 }
 
 /// Derive raw QUIC Initial key material (key, IV, HP key) and write into caller buffers.
