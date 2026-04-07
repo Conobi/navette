@@ -2,9 +2,11 @@
 #
 # Unit tests for Server-Sent Events (WHATWG event-stream, M2.5b §7.3).
 from std.collections.optional import Optional
-from src.http.sse import ServerSentEvent, EventStreamReader
-from src.http.handler import RecvBody, DetachedBody
+from src.http.sse import ServerSentEvent, EventStreamReader, try_write_event
+from src.http.handler import RecvBody, DetachedBody, ResponseWriter
 from src.http.body import BodyFrame
+from src.http.headers import Headers
+from src.http.status import StatusCode
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 
@@ -101,6 +103,58 @@ def test_reader_end_reports_is_end() raises:
     assert_true(reader.is_end(), "end.is_end")
 
 
+def test_write_simple_data_event_roundtrips() raises:
+    var resp = ResponseWriter()
+    resp.send_status(StatusCode(200), Headers())
+    var ev = ServerSentEvent()
+    ev.data = String("hello world")
+    var r = try_write_event(resp, ev)
+    assert_true(r.is_ok(), "write.ok")
+
+    # Drain the written bytes through a RecvBody → EventStreamReader and
+    # confirm the event comes back out unchanged.
+    var recv = RecvBody()
+    while True:
+        var frame_opt = resp._pop_body_frame()
+        if not Bool(frame_opt):
+            break
+        var frame = frame_opt.value().copy()
+        if frame.is_data():
+            recv._push(BodyFrame.data(frame.data().copy()))
+    recv._set_end()
+    var reader = EventStreamReader(recv^.detach())
+    var decoded = reader.try_next_event().value().copy()
+    assert_equal_str(decoded.data, String("hello world"), "roundtrip.data")
+
+
+def test_write_all_fields_roundtrips() raises:
+    var resp = ResponseWriter()
+    resp.send_status(StatusCode(200), Headers())
+    var ev = ServerSentEvent()
+    ev.event = Optional[String](String("message"))
+    ev.data = String("line1\nline2")
+    ev.id = Optional[String](String("42"))
+    ev.retry = Optional[UInt](UInt(3000))
+    var r = try_write_event(resp, ev)
+    assert_true(r.is_ok(), "all.ok")
+
+    var recv = RecvBody()
+    while True:
+        var frame_opt = resp._pop_body_frame()
+        if not Bool(frame_opt):
+            break
+        var frame = frame_opt.value().copy()
+        if frame.is_data():
+            recv._push(BodyFrame.data(frame.data().copy()))
+    recv._set_end()
+    var reader = EventStreamReader(recv^.detach())
+    var decoded = reader.try_next_event().value().copy()
+    assert_equal_str(decoded.event.value(), String("message"), "all.event")
+    assert_equal_str(decoded.data, String("line1\nline2"), "all.data")
+    assert_equal_str(decoded.id.value(), String("42"), "all.id")
+    assert_equal_int(Int(decoded.retry.value()), 3000, "all.retry")
+
+
 def main() raises:
     test_event_default_fields()
     test_event_populated()
@@ -110,4 +164,6 @@ def main() raises:
     test_reader_comment_line_ignored()
     test_reader_retry_parses_int()
     test_reader_end_reports_is_end()
+    test_write_simple_data_event_roundtrips()
+    test_write_all_fields_roundtrips()
     print("test_sse: all tests passed")
