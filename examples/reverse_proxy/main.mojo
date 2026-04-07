@@ -34,7 +34,8 @@ from src.http import (
     Request,
     Response,
 )
-from src.h1 import ParseConfig, ServerConnection, ClientConnection
+from src.h1 import ParseConfig, ServerConnection, H1Session
+from src.http.session import RequestHandle
 from src.tls import (
     RustlsLibrary,
     TlsClientConfig,
@@ -156,10 +157,10 @@ struct ProxyConnection(Movable):
     var client_tls: TlsConnection
     var client_http: ServerConnection
     var backend_tls: TlsConnection
-    var backend_http: ClientConnection
+    var backend_session: H1Session  # Session-trait wrapper around ClientConnection (M2.5a §8.2)
+    var backend_request_handle: Optional[RequestHandle]
     var phase: UInt8
     var headers_committed: Bool
-    var pending_method: Method  # method of the in-flight request (for next_response)
     var client_recv_buf: List[UInt8]
     var backend_recv_buf: List[UInt8]
     # Per-direction send buffers. Each is the buffer currently "owned" by an
@@ -190,7 +191,7 @@ struct ProxyConnection(Movable):
         var client_tls: TlsConnection,
         var client_http: ServerConnection,
         var backend_tls: TlsConnection,
-        var backend_http: ClientConnection,
+        var backend_session: H1Session,
     ):
         self.conn_id = conn_id
         self.client_handle = client_handle^
@@ -199,10 +200,10 @@ struct ProxyConnection(Movable):
         self.client_tls = client_tls^
         self.client_http = client_http^
         self.backend_tls = backend_tls^
-        self.backend_http = backend_http^
+        self.backend_session = backend_session^
+        self.backend_request_handle = Optional[RequestHandle]()
         self.phase = _PHASE_CLIENT_TLS_HANDSHAKE
         self.headers_committed = False
-        self.pending_method = Method.get()
         self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
         for _ in range(_RECV_BUF_SIZE):
             self.client_recv_buf.append(0)
@@ -227,10 +228,10 @@ struct ProxyConnection(Movable):
         self.client_tls = take.client_tls^
         self.client_http = take.client_http^
         self.backend_tls = take.backend_tls^
-        self.backend_http = take.backend_http^
+        self.backend_session = take.backend_session^
+        self.backend_request_handle = take.backend_request_handle^
         self.phase = take.phase
         self.headers_committed = take.headers_committed
-        self.pending_method = take.pending_method^
         self.client_recv_buf = take.client_recv_buf^
         self.backend_recv_buf = take.backend_recv_buf^
         self.client_send_buf = take.client_send_buf^
@@ -560,9 +561,14 @@ struct ProxyHandler(CompletionHandler):
             self.tls_lib, self.client_tls_config, _BACKEND_HOST
         )
 
-        # Build both H1 state machines with default config.
+        # Build the H1 state machines. Server side stays a sans-I/O
+        # ServerConnection because we need explicit control over the
+        # request/response handoff (the proxy waits for a backend response
+        # before composing one for the client). Backend side uses H1Session
+        # so the per-request method tracking and submit/run_one lifecycle
+        # come from the Session trait surface.
         var client_http = ServerConnection(ParseConfig())
-        var backend_http = ClientConnection(ParseConfig())
+        var backend_session = H1Session()
 
         # Create the backend TCP socket up front so we have an fd to connect().
         var backend_handle = _sys_socket(
@@ -587,7 +593,7 @@ struct ProxyHandler(CompletionHandler):
             client_tls=client_tls^,
             client_http=client_http^,
             backend_tls=backend_tls^,
-            backend_http=backend_http^,
+            backend_session=backend_session^,
         )
 
         # Heap-allocate so the address is stable across any `connections`
@@ -648,12 +654,14 @@ struct ProxyHandler(CompletionHandler):
             self._queue_client_recv(idx)
             return
 
-        # Got a full request — rewrite headers and stash the method (for
-        # later response parsing) before forwarding to the backend.
+        # Got a full request — rewrite headers and submit to the backend
+        # session. H1Session.submit encodes the request, queues bytes in its
+        # outbuf, and returns a RequestHandle that we drive via run_one once
+        # the backend response arrives.
         var request = req_opt.take()
-        self.connections[idx][].pending_method = Method(other=request.method)
         rewrite_request_headers(request, "127.0.0.1", _BACKEND_HOST)
-        self.connections[idx][].backend_http.send_request(request^)
+        var handle = self.connections[idx][].backend_session.submit(request^)
+        self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
 
         self.connections[idx][].phase = _PHASE_BACKEND_CONNECTING
         self._queue_backend_connect(idx)
@@ -745,16 +753,17 @@ struct ProxyHandler(CompletionHandler):
             return
 
         # Backend TLS handshake is done — drain decrypted data into the
-        # client H1 state machine (for response parsing).
+        # backend H1 session (for response parsing).
         var plaintext = self.connections[idx][].backend_tls.drain_plaintext()
         if len(plaintext) > 0:
-            self.connections[idx][].backend_http.receive_data(Span(plaintext))
+            self.connections[idx][].backend_session.feed(Span(plaintext))
 
         # If we just finished the handshake and haven't flushed the request
-        # yet, do it now.
+        # yet, do it now. The bytes were already queued in H1Session._outbuf
+        # by submit() — we just need to drain them through TLS.
         if self.connections[idx][].phase == _PHASE_BACKEND_TLS_HANDSHAKE:
             self.connections[idx][].phase = _PHASE_BACKEND_SENDING_REQUEST
-            var req_bytes = self.connections[idx][].backend_http.drain()
+            var req_bytes = self.connections[idx][].backend_session.drain()
             if len(req_bytes) > 0:
                 self.connections[idx][].backend_tls.send_data(Span(req_bytes))
                 var ct2 = self.connections[idx][].backend_tls.drain_ciphertext()
@@ -763,15 +772,27 @@ struct ProxyHandler(CompletionHandler):
                 self._queue_backend_recv(idx)
             return
 
-        # Try to extract a complete response.
-        var method_copy = Method(other=self.connections[idx][].pending_method)
-        var resp_opt = self.connections[idx][].backend_http.next_response(method_copy^)
-        if not resp_opt:
+        # Try to extract a complete response by stepping the session against
+        # the in-flight handle. H1Session tracks the request method internally.
+        if not self.connections[idx][].backend_request_handle:
+            self._queue_backend_recv(idx)
+            return
+        # Move the handle out of the field so we can drive run_one against it.
+        # The Optional[RequestHandle] field is replaced with an empty one for
+        # the duration of the call; we put it back if the response isn't ready.
+        var handle_opt = Optional[RequestHandle]()
+        swap(handle_opt, self.connections[idx][].backend_request_handle)
+        var handle = handle_opt.take()
+        self.connections[idx][].backend_session.run_one(handle)
+        if not handle.is_complete():
+            # Response not ready yet; restore the handle and ask for more bytes.
+            self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
             self._queue_backend_recv(idx)
             return
 
-        # Got a full response — rewrite and hand to client HTTP engine.
-        var response = resp_opt.take()
+        # Got a full response — extract it from the handle, rewrite, hand to
+        # the client-side H1 engine.
+        var response = handle^.take_response()
         rewrite_response_headers(response)
         self.connections[idx][].client_http.send_response(response^)
 
