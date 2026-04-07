@@ -25,6 +25,7 @@ TESTS=(
     test_client_connection
     test_cross_validation
     test_tls_connection
+    test_proxy_token
 )
 
 FILTER="${TESTS_FILTER:-}"
@@ -42,6 +43,9 @@ for t in "${TESTS[@]}"; do
     EXTRA_I=()
     if [ "$t" = "test_cross_validation" ]; then
         EXTRA_I=(-I conformance)
+    fi
+    if [ "$t" = "test_proxy_token" ]; then
+        EXTRA_I=(-I examples/reverse_proxy)
     fi
     if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
