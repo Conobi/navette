@@ -21,6 +21,8 @@ TESTS=(
     test_phase_a_smoke
     test_serializer
     test_h1_connection
+    test_server_connection
+    test_client_connection
 )
 
 FILTER="${TESTS_FILTER:-}"
