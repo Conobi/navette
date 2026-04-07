@@ -3,7 +3,7 @@
 # HTTP version enum (version-agnostic, RFC 9110).
 
 
-struct Version(Copyable, Movable, Stringable):
+struct Version(Copyable, Movable, Writable):
     """HTTP protocol version.
 
     Represented as an Int tag:
@@ -58,13 +58,14 @@ struct Version(Copyable, Movable, Stringable):
     def is_http_3(self) -> Bool:
         return self._tag == 3
 
-    def __str__(self) -> String:
+    def write_to[W: Writer](self, mut writer: W):
         if self._tag == 0:
-            return "HTTP/1.0"
-        if self._tag == 1:
-            return "HTTP/1.1"
-        if self._tag == 2:
-            return "HTTP/2"
-        if self._tag == 3:
-            return "HTTP/3"
-        return "HTTP/unknown"
+            writer.write("HTTP/1.0")
+        elif self._tag == 1:
+            writer.write("HTTP/1.1")
+        elif self._tag == 2:
+            writer.write("HTTP/2")
+        elif self._tag == 3:
+            writer.write("HTTP/3")
+        else:
+            writer.write("HTTP/unknown")
