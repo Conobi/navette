@@ -38,7 +38,14 @@ fn config_table() -> &'static HandleTable<ConfigEntry> {
 /// Used by the `insecure` feature in `tcp.rs`.
 #[allow(dead_code)]
 pub(crate) fn _insert_client_config(cfg: Arc<ClientConfig>) -> i32 {
-    config_table().insert(ConfigEntry::Client(cfg))
+    match config_table().insert(ConfigEntry::Client(cfg)) {
+        Some(h) => h,
+        None => {
+            rlsm_err!(
+                "_insert_client_config: handle counter exhausted"; return -1
+            );
+        }
+    }
 }
 
 /// Retrieve a `ClientConfig` from the handle table.
@@ -85,7 +92,14 @@ pub extern "C" fn rlsm_client_config_new() -> i32 {
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
-    config_table().insert(ConfigEntry::Client(Arc::new(config)))
+    match config_table().insert(ConfigEntry::Client(Arc::new(config))) {
+        Some(h) => h,
+        None => {
+            rlsm_err!(
+                "rlsm_client_config_new: handle counter exhausted"; return -1
+            );
+        }
+    }
 }
 
 /// Create a TLS server config from a PEM certificate chain and PEM private key.
@@ -164,7 +178,14 @@ pub extern "C" fn rlsm_server_config_new(
         }
     };
 
-    config_table().insert(ConfigEntry::Server(Arc::new(config)))
+    match config_table().insert(ConfigEntry::Server(Arc::new(config))) {
+        Some(h) => h,
+        None => {
+            rlsm_err!(
+                "rlsm_server_config_new: handle counter exhausted"; return -1
+            );
+        }
+    }
 }
 
 /// Free a config handle.

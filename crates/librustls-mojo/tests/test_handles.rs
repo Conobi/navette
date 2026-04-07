@@ -3,7 +3,7 @@ use librustls_mojo::handles::HandleTable;
 #[test]
 fn insert_and_get() {
     let table: HandleTable<String> = HandleTable::new();
-    let h = table.insert(String::from("hello"));
+    let h = table.insert(String::from("hello")).unwrap();
     assert!(h > 0);
     table.with(h, |val| assert_eq!(val, &"hello")).unwrap();
 }
@@ -11,7 +11,7 @@ fn insert_and_get() {
 #[test]
 fn remove_and_get_fails() {
     let table: HandleTable<String> = HandleTable::new();
-    let h = table.insert(String::from("world"));
+    let h = table.insert(String::from("world")).unwrap();
     assert!(table.remove(h).is_some());
     assert!(table.with(h, |_| ()).is_none());
 }
@@ -19,7 +19,7 @@ fn remove_and_get_fails() {
 #[test]
 fn double_remove_returns_none() {
     let table: HandleTable<i32> = HandleTable::new();
-    let h = table.insert(42);
+    let h = table.insert(42).unwrap();
     assert!(table.remove(h).is_some());
     assert!(table.remove(h).is_none());
 }
@@ -33,15 +33,15 @@ fn invalid_handle_returns_none() {
 #[test]
 fn handles_are_unique() {
     let table: HandleTable<u8> = HandleTable::new();
-    let h1 = table.insert(1);
-    let h2 = table.insert(2);
+    let h1 = table.insert(1).unwrap();
+    let h2 = table.insert(2).unwrap();
     assert_ne!(h1, h2);
 }
 
 #[test]
 fn get_mut_works() {
     let table: HandleTable<String> = HandleTable::new();
-    let h = table.insert(String::from("before"));
+    let h = table.insert(String::from("before")).unwrap();
     table.with_mut(h, |val| *val = String::from("after")).unwrap();
     table.with(h, |val| assert_eq!(val, &"after")).unwrap();
 }
