@@ -8,6 +8,7 @@ from src.http.body import BodyFrame
 from src.http.config import DEFAULT_STREAM_WINDOW_HIGH, DEFAULT_STREAM_WINDOW_LOW
 from src.http.headers import Headers
 from src.http.status import StatusCode
+from src.http.request import Request
 
 comptime ALPN_H1 = 0
 comptime ALPN_H2 = 1
@@ -541,3 +542,57 @@ struct ResponseWriter(Movable):
 
     def _pop_body_frame(mut self) raises -> Optional[BodyFrame]:
         return self._send_body._pop()
+
+
+# ---------------------------------------------------------------------------
+# StreamHandler trait (§5.9)
+# ---------------------------------------------------------------------------
+
+trait StreamHandler(Movable):
+    """Server-side request handler. The runtime calls these methods as the
+    request lifecycle progresses. Lifecycle order per stream:
+
+        on_request                 (exactly once)
+        on_body_available*         (0..N, only if body NOT detached)
+        on_request_end             (exactly once after End frame, if not detached)
+        on_send_drained*           (0..N, after try_send_body returned WouldBlock)
+        on_reset                   (at most once, if the stream is reset)
+
+    If the handler calls body.detach() inside on_request, on_body_available
+    and on_request_end are NOT invoked for that stream — the handler is
+    responsible for draining the DetachedBody itself."""
+
+    def on_request(
+        mut self,
+        var req: Request,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+        caps: Capabilities,
+    ) raises:
+        ...
+
+    def on_body_available(
+        mut self,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+    ) raises:
+        ...
+
+    def on_request_end(
+        mut self,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+    ) raises:
+        ...
+
+    def on_send_drained(
+        mut self,
+        mut resp: ResponseWriter,
+    ) raises:
+        ...
+
+    def on_reset(
+        mut self,
+        error: StreamError,
+    ):
+        ...

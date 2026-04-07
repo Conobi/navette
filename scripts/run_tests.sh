@@ -36,6 +36,7 @@ TESTS=(
     test_response_writer
     test_request_body
     test_request_clone
+    test_handler_lifecycle
 )
 
 FILTER="${TESTS_FILTER:-}"
