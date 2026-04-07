@@ -219,6 +219,10 @@ def serialize_response(response: Response) -> List[UInt8]:
     phrase is empty (RFC 9112 Section 4). 1xx and 204 responses MUST NOT
     carry a body or framing headers; 304 MUST NOT carry a body but MAY
     keep a user-provided Content-Length.
+
+    NOTE: This serializer is method-agnostic. For HEAD-request responses,
+    the caller (H1Connection) MUST suppress the body bytes after this
+    function returns. The serializer does not see the request method.
     """
     var buf = List[UInt8]()
     var status_int = Int(response.status.code())
