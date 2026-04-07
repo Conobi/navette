@@ -38,6 +38,7 @@ TESTS=(
     test_request_clone
     test_handler_lifecycle
     test_h3_extension
+    test_session_handle
 )
 
 FILTER="${TESTS_FILTER:-}"
