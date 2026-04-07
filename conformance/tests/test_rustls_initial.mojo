@@ -26,6 +26,10 @@ def derive_and_check(
     var out_key_len = _heap_alloc[Int32](1).as_any_origin()
     var out_iv_len = _heap_alloc[Int32](1).as_any_origin()
     var out_hp_len = _heap_alloc[Int32](1).as_any_origin()
+    # rlsm_initial_keys_raw treats *out_*_len as in/out: caller writes capacity.
+    out_key_len[] = Int32(32)
+    out_iv_len[] = Int32(12)
+    out_hp_len[] = Int32(32)
 
     # Build dcid pointer from the List
     var dcid_ptr = _heap_alloc[UInt8](len(dcid_bytes)).as_any_origin()
