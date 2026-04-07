@@ -20,6 +20,7 @@ TESTS=(
     test_request_response
     test_phase_a_smoke
     test_serializer
+    test_h1_connection
 )
 
 FILTER="${TESTS_FILTER:-}"
