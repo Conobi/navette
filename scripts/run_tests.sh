@@ -32,6 +32,7 @@ TESTS=(
     test_body_frame_v2
     test_recv_body
     test_send_body
+    test_handler_detach
 )
 
 FILTER="${TESTS_FILTER:-}"

@@ -296,6 +296,58 @@ struct RecvBody(Movable):
         self._state = _BODY_ERRORED
         self._frames.append(BodyFrame.error(err^))
 
+    # --- Detach (§5.5, §5.7) ---
+
+    def detach(deinit self) -> DetachedBody:
+        """Move this RecvBody into a DetachedBody owned by the handler. The
+        runtime keeps a typed pointer to the detached body for continued
+        frame pushes. Detach is one-way: no resurrection."""
+        return DetachedBody(take_body=self^)
+
+
+# ---------------------------------------------------------------------------
+# DetachedBody (§5.5)
+# ---------------------------------------------------------------------------
+
+struct DetachedBody(Movable):
+    """Owned RecvBody that has been moved out of the runtime's per-stream
+    state. Once detached, the runtime stops invoking on_body_available /
+    on_request_end for this stream — the handler is fully responsible for
+    draining frames. Detach is one-way; resurrection is forbidden."""
+
+    var _inner: RecvBody
+
+    def __init__(out self, *, var take_body: RecvBody):
+        self._inner = take_body^
+
+    def __init__(out self, *, deinit take: Self):
+        self._inner = take._inner^
+
+    def try_read(mut self) raises -> Optional[BodyFrame]:
+        return self._inner.try_read()
+
+    def is_end(self) -> Bool:
+        return self._inner.is_end()
+
+    def is_errored(self) -> Bool:
+        return self._inner.is_errored()
+
+    def bytes_buffered(self) -> UInt:
+        return self._inner.bytes_buffered()
+
+    def take_inner(deinit self) -> RecvBody:
+        return self._inner^
+
+    # --- Runtime-internal: forwarded so the runtime can keep pushing ---
+    def _push(mut self, var frame: BodyFrame):
+        self._inner._push(frame^)
+
+    def _set_end(mut self):
+        self._inner._set_end()
+
+    def _set_error(mut self, var err: StreamError):
+        self._inner._set_error(err^)
+
 
 # ---------------------------------------------------------------------------
 # SendBody (§5.7)
