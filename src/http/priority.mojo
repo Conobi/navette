@@ -99,3 +99,22 @@ struct Priority(Copyable, Movable):
             # Unknown keys are silently ignored (forward compat).
 
         return Self(urgency=urgency, incremental=incremental)
+
+    def serialize_header(self) -> String:
+        """Render to an RFC 9218 §4 Priority header value. Defaults are
+        omitted — an empty string is returned when both fields are at their
+        defaults. Non-default urgency is rendered as `u=N`; incremental is
+        rendered as the bare token `i` when true."""
+        var parts = List[String]()
+        if self.urgency != DEFAULT_URGENCY:
+            parts.append(String("u=") + String(self.urgency))
+        if self.incremental:
+            parts.append(String("i"))
+
+        if len(parts) == 0:
+            return String("")
+        var out = parts[0]
+        for idx in range(1, len(parts)):
+            out += String(", ")
+            out += parts[idx]
+        return out
