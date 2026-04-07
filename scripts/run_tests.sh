@@ -28,6 +28,7 @@ TESTS=(
     test_proxy_token
     test_capabilities
     test_stream_error
+    test_write_result
 )
 
 FILTER="${TESTS_FILTER:-}"
