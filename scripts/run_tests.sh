@@ -24,6 +24,7 @@ TESTS=(
     test_server_connection
     test_client_connection
     test_cross_validation
+    test_tls_connection
 )
 
 FILTER="${TESTS_FILTER:-}"
