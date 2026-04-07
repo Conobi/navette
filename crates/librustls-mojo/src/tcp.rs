@@ -260,7 +260,14 @@ pub extern "C" fn rlsm_tls_client_new(
         }
     };
 
-    conn_table().insert(TlsConn::Client(conn))
+    match conn_table().insert(TlsConn::Client(conn)) {
+        Some(h) => h,
+        None => {
+            rlsm_err!(
+                "rlsm_tls_client_new: handle counter exhausted"; return -1
+            );
+        }
+    }
 }
 
 /// Create a new TLS server connection.
@@ -287,7 +294,14 @@ pub extern "C" fn rlsm_tls_server_new(config_handle: i32) -> i32 {
         }
     };
 
-    conn_table().insert(TlsConn::Server(conn))
+    match conn_table().insert(TlsConn::Server(conn)) {
+        Some(h) => h,
+        None => {
+            rlsm_err!(
+                "rlsm_tls_server_new: handle counter exhausted"; return -1
+            );
+        }
+    }
 }
 
 /// Free a TLS connection handle.
@@ -475,6 +489,15 @@ pub extern "C" fn rlsm_tls_conn_write_plaintext(
             }
             total += n;
         }
+        // Drive the state machine even on a write-only path so any
+        // post-handshake messages already buffered in rustls' deframer
+        // (NewSessionTicket, KeyUpdate, alerts, ...) are processed and
+        // acknowledged. Without this a long-lived write-only connection
+        // could drift out of sync with the peer's key schedule.
+        conn.process_new_packets()
+            .map_err(|e| format!(
+                "rlsm_tls_conn_write_plaintext: process_new_packets failed: {e}"
+            ))?;
         Ok(total as i32)
     }) {
         Some(Ok(n)) => n,
@@ -528,9 +551,14 @@ pub extern "C" fn rlsm_tls_conn_alpn(
         match conn.alpn_protocol() {
             None => Ok(0),
             Some(proto) => {
-                let to_copy = proto.len().min(buf.len());
-                buf[..to_copy].copy_from_slice(&proto[..to_copy]);
-                Ok(to_copy as i32)
+                if proto.len() > buf.len() {
+                    return Err(format!(
+                        "rlsm_tls_conn_alpn: buffer too small; need {} bytes",
+                        proto.len()
+                    ));
+                }
+                buf[..proto.len()].copy_from_slice(proto);
+                Ok(proto.len() as i32)
             }
         }
     }) {

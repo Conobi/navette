@@ -11,8 +11,20 @@ use std::sync::atomic::{AtomicI32, Ordering};
 /// Global counter that generates unique, positive handle IDs across all tables.
 static NEXT_HANDLE: AtomicI32 = AtomicI32::new(1);
 
-fn next_handle() -> i32 {
-    NEXT_HANDLE.fetch_add(1, Ordering::Relaxed)
+/// Returns the next positive handle, or `None` if the counter has been
+/// exhausted (would wrap to a non-positive value, colliding with the
+/// `-1` error sentinel and the `> 0` validity checks in callers).
+fn next_handle() -> Option<i32> {
+    let h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+    if h > 0 {
+        Some(h)
+    } else {
+        // Best-effort: pin the counter at i32::MAX so subsequent calls
+        // also return None instead of silently re-wrapping into the
+        // negative range.
+        NEXT_HANDLE.store(i32::MAX, Ordering::Relaxed);
+        None
+    }
 }
 
 // ── lock-full build ──────────────────────────────────────────────────────────
@@ -30,11 +42,12 @@ impl<T> HandleTable<T> {
         }
     }
 
-    /// Insert `value` and return a positive handle.
-    pub fn insert(&self, value: T) -> i32 {
-        let h = next_handle();
+    /// Insert `value` and return a positive handle, or `None` if the
+    /// global handle counter has been exhausted.
+    pub fn insert(&self, value: T) -> Option<i32> {
+        let h = next_handle()?;
         self.map.lock().unwrap().insert(h, value);
-        h
+        Some(h)
     }
 
     /// Call `f` with a shared reference to the object at `handle`.
@@ -85,11 +98,11 @@ impl<T> HandleTable<T> {
         }
     }
 
-    pub fn insert(&self, value: T) -> i32 {
-        let h = next_handle();
+    pub fn insert(&self, value: T) -> Option<i32> {
+        let h = next_handle()?;
         // SAFETY: caller guarantees exclusive access under skip-locks.
         unsafe { &mut *self.map.get() }.insert(h, value);
-        h
+        Some(h)
     }
 
     pub fn with<R>(&self, handle: i32, f: impl FnOnce(&T) -> R) -> Option<R> {

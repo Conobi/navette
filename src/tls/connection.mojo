@@ -27,7 +27,14 @@ from .config import TlsClientConfig, TlsServerConfig
 
 
 comptime _IO_BUF_SIZE = 16384
-comptime _ALPN_BUF_SIZE = 64
+# Ciphertext drain buffer must hold a full TLS record: up to 16384 bytes of
+# plaintext payload plus record header (5 B), AEAD tag (16 B), content type
+# (1 B), and a margin for any record-layer padding rustls may emit. We use
+# 18432 (16 KiB + 2 KiB headroom) so a single `write_tls` call can always
+# extract a full record without short-writing into the SliceWriter (which
+# would surface as a rustls WriteZero error).
+comptime _CIPHERTEXT_DRAIN_BUF_SIZE = 18432
+comptime _ALPN_BUF_SIZE = 256
 
 
 def _drain_write_tls(
@@ -41,9 +48,11 @@ def _drain_write_tls(
     nothing more to send. Raises if the underlying FFI returns a negative
     value so TLS alerts and fatal handshake errors propagate up.
     """
-    var buf = _heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin()
+    var buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_any_origin()
     while True:
-        var n = lib.tls_conn_write_tls(handle, buf, Int32(_IO_BUF_SIZE))
+        var n = lib.tls_conn_write_tls(
+            handle, buf, Int32(_CIPHERTEXT_DRAIN_BUF_SIZE)
+        )
         if n < 0:
             var err = lib.last_error()
             buf.free()
@@ -274,13 +283,23 @@ struct TlsConnection(Movable):
         """True if there is buffered ciphertext waiting to be sent."""
         return len(self._ciphertext_out) > 0
 
-    def alpn(self) -> Optional[String]:
-        """Return the negotiated ALPN protocol identifier, or None."""
+    def alpn(self) raises -> Optional[String]:
+        """Return the negotiated ALPN protocol identifier, or None.
+
+        The buffer is sized to fit any realistic ALPN identifier (256 B —
+        ALPN strings in practice are short tokens like "h2", "http/1.1",
+        "h3"). The Rust FFI returns -1 if it would have to truncate, so
+        any -1 here is a real error rather than silent data loss.
+        """
         var buf = _heap_alloc[UInt8](_ALPN_BUF_SIZE).as_any_origin()
         var n = self._lib()[].tls_conn_alpn(
             self._handle, buf, Int32(_ALPN_BUF_SIZE)
         )
-        if n <= 0:
+        if n < 0:
+            var err = self._lib()[].last_error()
+            buf.free()
+            raise "rlsm_tls_conn_alpn failed: " + err
+        if n == 0:
             buf.free()
             return Optional[String](None)
         var s = String()
