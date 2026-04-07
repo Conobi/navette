@@ -99,13 +99,13 @@ struct Request(Movable):
       target  Request-target (e.g., "/index.html").
       version HTTP version (defaults to HTTP/1.1).
       headers Header fields (no pseudo-headers).
-      body    List of body frames (Data or Trailers).
+      body    Request body — buffered bytes, streaming DetachedBody, or empty.
     """
     var method: Method
     var target: String
     var version: Version
     var headers: Headers
-    var body: List[BodyFrame]
+    var body: RequestBody
 
     def __init__(
         out self,
@@ -113,7 +113,7 @@ struct Request(Movable):
         target: String,
         var version: Version = Version.http_1_1(),
         var headers: Headers = Headers(),
-        var body: List[BodyFrame] = List[BodyFrame](),
+        var body: RequestBody = RequestBody.empty(),
     ):
         """Construct a Request with the given fields."""
         self.method = method^

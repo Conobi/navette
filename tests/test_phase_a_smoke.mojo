@@ -6,6 +6,7 @@
 # `src.h1` (ParseConfig / ParserStrictness) and exercises them together
 # to verify the whole Phase A surface is wired up and usable.
 from src import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from src.http.request import RequestBody
 from src.h1 import ParseConfig, ParserStrictness
 from tests._test_util import assert_true
 
@@ -34,9 +35,6 @@ def test_phase_a_cross_imports() raises:
     var payload = List[UInt8]()
     payload.append(0x68)  # 'h'
     payload.append(0x69)  # 'i'
-    var frames = List[BodyFrame]()
-    frames.append(BodyFrame.data(payload^))
-    assert_true(len(frames) == 1, "One BodyFrame in list")
 
     # Request
     var req = Request(
@@ -44,7 +42,7 @@ def test_phase_a_cross_imports() raises:
         target="/index.html",
         version=Version.http_1_1(),
         headers=hdrs^,
-        body=frames^,
+        body=RequestBody.buffered(payload^),
     )
     assert_true(req.target == "/index.html", "Request.target round-trips")
     assert_true(String(req.method) == "GET", "Request.method is GET")
