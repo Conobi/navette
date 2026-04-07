@@ -44,6 +44,7 @@ TESTS=(
     test_h1_client_session
     test_reverse_proxy_refactor
     test_priority
+    test_alt_svc
 )
 
 FILTER="${TESTS_FILTER:-}"
