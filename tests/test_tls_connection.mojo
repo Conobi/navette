@@ -10,21 +10,15 @@
 from src.tls import RustlsLibrary, TlsClientConfig, TlsServerConfig, TlsConnection
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 from std.memory import Span
-from std.python import Python, PythonObject
+from std.io.file import FileHandle
 
 
 def _read_file(path: String) raises -> List[UInt8]:
-    """Read a file into a byte list using Python builtins."""
-    var py_builtins = Python.import_module("builtins")
-    var f = py_builtins.open(path, "rb")
-    var data = f.read()
-    var py_bytes = py_builtins.bytes(data)
-    f.close()
-    var n = Int(py=py_builtins.len(py_bytes))
-    var result = List[UInt8]()
-    for i in range(n):
-        result.append(UInt8(Int(py=py_bytes[i])))
-    return result^
+    """Read a file into a byte list using native Mojo file I/O."""
+    var fh = FileHandle(path, "r")
+    var bytes = fh.read_bytes()
+    fh.close()
+    return bytes^
 
 
 def _bytes_to_string(bytes: List[UInt8]) -> String:
