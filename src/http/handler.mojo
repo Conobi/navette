@@ -6,6 +6,8 @@ from std.collections.deque import Deque
 from std.collections.optional import Optional
 from src.http.body import BodyFrame
 from src.http.config import DEFAULT_STREAM_WINDOW_HIGH, DEFAULT_STREAM_WINDOW_LOW
+from src.http.headers import Headers
+from src.http.status import StatusCode
 
 comptime ALPN_H1 = 0
 comptime ALPN_H2 = 1
@@ -429,3 +431,86 @@ struct SendBody(Movable):
         if frame.is_data():
             self._bytes_buffered -= UInt(len(frame.data()))
         return Optional[BodyFrame](frame^)
+
+
+# ---------------------------------------------------------------------------
+# ResponseWriter (§5.8)
+# ---------------------------------------------------------------------------
+
+struct ResponseWriter(Movable):
+    """Server-side outbound writer. Composes status/headers send with a
+    SendBody. send_status must be called before any try_send_body. The
+    runtime owns the actual byte emission for status/headers; M2.5a stores
+    them in _captured_status / _captured_headers and the H1 adapter polls
+    them after each handler invocation."""
+
+    var _status_sent: Bool
+    var _send_body: SendBody
+    var _captured_status: Optional[StatusCode]
+    var _captured_headers: Optional[Headers]
+    var _captured_informational: List[StatusCode]
+    var _captured_informational_headers: List[Headers]
+
+    def __init__(out self):
+        self._status_sent = False
+        self._send_body = SendBody()
+        self._captured_status = Optional[StatusCode]()
+        self._captured_headers = Optional[Headers]()
+        self._captured_informational = List[StatusCode]()
+        self._captured_informational_headers = List[Headers]()
+
+    def __init__(out self, *, deinit take: Self):
+        self._status_sent = take._status_sent
+        self._send_body = take._send_body^
+        self._captured_status = take._captured_status^
+        self._captured_headers = take._captured_headers^
+        self._captured_informational = take._captured_informational^
+        self._captured_informational_headers = take._captured_informational_headers^
+
+    def send_status(mut self, var status: StatusCode, var headers: Headers) raises:
+        if self._status_sent:
+            raise Error("ResponseWriter.send_status: already sent")
+        self._status_sent = True
+        self._captured_status = Optional[StatusCode](status^)
+        self._captured_headers = Optional[Headers](headers^)
+
+    def send_informational(mut self, var status: StatusCode, var headers: Headers) raises:
+        if self._status_sent:
+            raise Error("ResponseWriter.send_informational: status already sent")
+        if not status.is_informational():
+            raise Error("ResponseWriter.send_informational: status is not 1xx")
+        self._captured_informational.append(status^)
+        self._captured_informational_headers.append(headers^)
+
+    def try_send_body(mut self, var frame: BodyFrame) raises -> WriteResult:
+        if not self._status_sent:
+            raise Error("ResponseWriter.try_send_body: status not sent yet")
+        return self._send_body.try_write(frame^)
+
+    def end(mut self) raises:
+        if not self._status_sent:
+            raise Error("ResponseWriter.end: status not sent yet")
+        self._send_body.end()
+
+    def abort(mut self, code: UInt32) raises:
+        self._send_body.abort(code)
+
+    def bytes_buffered(self) -> UInt:
+        return self._send_body.bytes_buffered()
+
+    # --- Runtime-internal API (called by the H1 adapter) ---
+    def _has_status(self) -> Bool:
+        return self._status_sent
+
+    def _take_status(mut self) -> Optional[StatusCode]:
+        var s = self._captured_status^
+        self._captured_status = Optional[StatusCode]()
+        return s^
+
+    def _take_headers(mut self) -> Optional[Headers]:
+        var h = self._captured_headers^
+        self._captured_headers = Optional[Headers]()
+        return h^
+
+    def _pop_body_frame(mut self) raises -> Optional[BodyFrame]:
+        return self._send_body._pop()
