@@ -2,18 +2,7 @@
 #
 # Unit tests for BodyFrame type.
 from src.http import BodyFrame, Headers
-
-
-def assert_true(cond: Bool, msg: String) raises:
-    if not cond:
-        print("ASSERTION FAILED: " + msg)
-        raise "assertion failed: " + msg
-
-
-def assert_equal_int(got: Int, expected: Int, msg: String) raises:
-    if got != expected:
-        print("ASSERTION FAILED [" + msg + "]: got " + String(got) + " expected " + String(expected))
-        raise "assertion failed: " + msg
+from tests._test_util import assert_true, assert_equal_int
 
 
 def test_data_frame() raises:

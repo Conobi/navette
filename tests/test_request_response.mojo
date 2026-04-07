@@ -2,24 +2,7 @@
 #
 # Unit tests for Request and Response types.
 from src.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
-
-
-def assert_true(cond: Bool, msg: String) raises:
-    if not cond:
-        print("ASSERTION FAILED: " + msg)
-        raise "assertion failed: " + msg
-
-
-def assert_equal_int(got: Int, expected: Int, msg: String) raises:
-    if got != expected:
-        print("ASSERTION FAILED [" + msg + "]: got " + String(got) + " expected " + String(expected))
-        raise "assertion failed: " + msg
-
-
-def assert_equal_str(got: String, expected: String, msg: String) raises:
-    if got != expected:
-        print("ASSERTION FAILED [" + msg + "]: got '" + got + "' expected '" + expected + "'")
-        raise "assertion failed: " + msg
+from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 
 def test_request_construction() raises:

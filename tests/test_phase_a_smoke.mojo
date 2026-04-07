@@ -7,12 +7,7 @@
 # to verify the whole Phase A surface is wired up and usable.
 from src import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
 from src.h1 import ParseConfig, ParserStrictness
-
-
-def assert_true(cond: Bool, msg: String) raises:
-    if not cond:
-        print("ASSERTION FAILED: " + msg)
-        raise "assertion failed: " + msg
+from tests._test_util import assert_true
 
 
 def test_phase_a_cross_imports() raises:
@@ -27,7 +22,7 @@ def test_phase_a_cross_imports() raises:
 
     # Version
     var v = Version.http_1_1()
-    assert_true(v.__str__() == "HTTP/1.1", "Version.http_1_1() stringifies")
+    assert_true(String(v) == "HTTP/1.1", "Version.http_1_1() stringifies")
 
     # Headers
     var hdrs = Headers()

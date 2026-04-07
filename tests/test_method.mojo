@@ -2,40 +2,29 @@
 #
 # Unit tests for Method type.
 from src.http import Method
-
-
-def assert_true(cond: Bool, msg: String) raises:
-    if not cond:
-        print("ASSERTION FAILED: " + msg)
-        raise "assertion failed: " + msg
-
-
-def assert_equal(got: String, expected: String, msg: String) raises:
-    if got != expected:
-        print("ASSERTION FAILED [" + msg + "]: got '" + got + "' expected '" + expected + "'")
-        raise "assertion failed: " + msg
+from tests._test_util import assert_true, assert_equal_str
 
 
 def test_standard_methods() raises:
     """Each standard method has the correct string representation."""
-    assert_equal(String(Method.get()), "GET", "GET")
-    assert_equal(String(Method.post()), "POST", "POST")
-    assert_equal(String(Method.put()), "PUT", "PUT")
-    assert_equal(String(Method.delete()), "DELETE", "DELETE")
-    assert_equal(String(Method.head()), "HEAD", "HEAD")
-    assert_equal(String(Method.options()), "OPTIONS", "OPTIONS")
-    assert_equal(String(Method.patch()), "PATCH", "PATCH")
-    assert_equal(String(Method.connect()), "CONNECT", "CONNECT")
-    assert_equal(String(Method.trace()), "TRACE", "TRACE")
+    assert_equal_str(String(Method.get()), "GET", "GET")
+    assert_equal_str(String(Method.post()), "POST", "POST")
+    assert_equal_str(String(Method.put()), "PUT", "PUT")
+    assert_equal_str(String(Method.delete()), "DELETE", "DELETE")
+    assert_equal_str(String(Method.head()), "HEAD", "HEAD")
+    assert_equal_str(String(Method.options()), "OPTIONS", "OPTIONS")
+    assert_equal_str(String(Method.patch()), "PATCH", "PATCH")
+    assert_equal_str(String(Method.connect()), "CONNECT", "CONNECT")
+    assert_equal_str(String(Method.trace()), "TRACE", "TRACE")
 
 
 def test_custom_method() raises:
     """Custom method preserves the string exactly (case-sensitive)."""
     var m = Method.custom("PURGE")
-    assert_equal(String(m), "PURGE", "custom PURGE")
+    assert_equal_str(String(m), "PURGE", "custom PURGE")
 
     var m2 = Method.custom("WebDAV-PROPFIND")
-    assert_equal(String(m2), "WebDAV-PROPFIND", "custom WebDAV")
+    assert_equal_str(String(m2), "WebDAV-PROPFIND", "custom WebDAV")
 
 
 def test_equality_same_standard() raises:
@@ -87,7 +76,7 @@ def test_copy() raises:
     var m = Method.get()
     var m2 = Method(other=m)
     assert_true(m == m2, "copy equal")
-    assert_equal(String(m2), "GET", "copy str")
+    assert_equal_str(String(m2), "GET", "copy str")
 
 
 def main() raises:
