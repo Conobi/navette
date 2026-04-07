@@ -16,6 +16,7 @@ from src.http import (
 )
 from src.h1 import ParseConfig, ParserStrictness
 from src.h1.connection import H1Connection
+from src.http.request import RequestBody
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 
@@ -217,9 +218,8 @@ def test_content_length_body() raises:
     var req_opt = conn.next_request()
     assert_true(req_opt.__bool__(), "expected a request")
     var req = req_opt.take()
-    assert_true(len(req.body) > 0, "expected body frames")
-    assert_true(req.body[0].is_data(), "expected data frame")
-    assert_equal_int(len(req.body[0].data()), 5, "body length")
+    assert_true(req.body.is_buffered(), "expected buffered body")
+    assert_equal_int(len(req.body.bytes()), 5, "body length")
     print("PASS: test_content_length_body")
 
 
@@ -237,9 +237,8 @@ def test_chunked_body() raises:
     var req_opt = conn.next_request()
     assert_true(req_opt.__bool__(), "expected a request")
     var req = req_opt.take()
-    assert_true(len(req.body) > 0, "expected body frames")
-    assert_true(req.body[0].is_data(), "expected data frame")
-    assert_equal_int(len(req.body[0].data()), 5, "decoded chunk length")
+    assert_true(req.body.is_buffered(), "expected buffered body")
+    assert_equal_int(len(req.body.bytes()), 5, "decoded chunk length")
     print("PASS: test_chunked_body")
 
 
@@ -325,7 +324,7 @@ def test_send_request() raises:
         target=String("/"),
         version=Version.http_1_1(),
         headers=headers^,
-        body=List[BodyFrame](),
+        body=RequestBody.empty(),
     )
     conn.send_request(req^)
     var out_str = _bytes_to_string(conn.drain())
@@ -508,7 +507,7 @@ def test_101_switching_protocols() raises:
         target=String("/chat"),
         version=Version.http_1_1(),
         headers=headers^,
-        body=List[BodyFrame](),
+        body=RequestBody.empty(),
     )
     conn.send_request(req^)
     _ = conn.drain()
