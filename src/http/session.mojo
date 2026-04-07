@@ -97,7 +97,7 @@ struct RequestHandle(Movable):
 # Session trait (§5.11)
 # ---------------------------------------------------------------------------
 
-trait Session(Movable):
+trait Session(Movable, ImplicitlyDestructible):
     """Client-side connection session. Owns the underlying connection.
     Single-connection only; pooling lives in M6's HttpClient.
 

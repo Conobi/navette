@@ -86,7 +86,7 @@ struct H1HandlerServer[H: StreamHandler](Movable):
         var resp_writer = ResponseWriter()
         try:
             self.handler.on_request(
-                req^, body, resp_writer, Capabilities.for_h1(),
+                req^, body^, resp_writer, Capabilities.for_h1(),
             )
         except e:
             self.handler.on_reset(StreamError.local_abort(String(e)))

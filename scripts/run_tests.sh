@@ -42,6 +42,7 @@ TESTS=(
     test_mock_session
     test_h1_server_handler
     test_h1_client_session
+    test_reverse_proxy_refactor
 )
 
 FILTER="${TESTS_FILTER:-}"

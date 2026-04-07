@@ -39,7 +39,7 @@ struct CountingHandler(StreamHandler):
     def on_request(
         mut self,
         var req: Request,
-        mut body: RecvBody,
+        var body: RecvBody,
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
