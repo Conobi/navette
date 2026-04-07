@@ -159,8 +159,25 @@ struct ProxyConnection(Movable):
     var phase: UInt8
     var headers_committed: Bool
     var pending_method: Method  # method of the in-flight request (for next_response)
-    var recv_buf: List[UInt8]
-    var send_buf: List[UInt8]
+    var client_recv_buf: List[UInt8]
+    var backend_recv_buf: List[UInt8]
+    # Per-direction send buffers. Each is the buffer currently "owned" by an
+    # in-flight io_uring SEND operation; the kernel reads from its address
+    # until the corresponding completion arrives, so we MUST NOT reassign or
+    # free it before then.
+    var client_send_buf: List[UInt8]
+    var backend_send_buf: List[UInt8]
+    # Ciphertext that wants to go out while a send is already in flight.
+    # When the in-flight send completes we promote pending → send_buf and
+    # queue another send.
+    var client_send_pending: List[UInt8]
+    var backend_send_pending: List[UInt8]
+    # In-flight flags. While true, do NOT queue another op of the same kind
+    # on the same fd, and do NOT reassign the corresponding buffer.
+    var client_send_in_flight: Bool
+    var backend_send_in_flight: Bool
+    var client_recv_in_flight: Bool
+    var backend_recv_in_flight: Bool
     var closed: Bool
 
     def __init__(
@@ -185,10 +202,20 @@ struct ProxyConnection(Movable):
         self.phase = _PHASE_CLIENT_TLS_HANDSHAKE
         self.headers_committed = False
         self.pending_method = Method.get()
-        self.recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
+        self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
         for _ in range(_RECV_BUF_SIZE):
-            self.recv_buf.append(0)
-        self.send_buf = List[UInt8]()
+            self.client_recv_buf.append(0)
+        self.backend_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
+        for _ in range(_RECV_BUF_SIZE):
+            self.backend_recv_buf.append(0)
+        self.client_send_buf = List[UInt8]()
+        self.backend_send_buf = List[UInt8]()
+        self.client_send_pending = List[UInt8]()
+        self.backend_send_pending = List[UInt8]()
+        self.client_send_in_flight = False
+        self.backend_send_in_flight = False
+        self.client_recv_in_flight = False
+        self.backend_recv_in_flight = False
         self.closed = False
 
     def __init__(out self, *, deinit take: Self):
@@ -203,8 +230,16 @@ struct ProxyConnection(Movable):
         self.phase = take.phase
         self.headers_committed = take.headers_committed
         self.pending_method = take.pending_method^
-        self.recv_buf = take.recv_buf^
-        self.send_buf = take.send_buf^
+        self.client_recv_buf = take.client_recv_buf^
+        self.backend_recv_buf = take.backend_recv_buf^
+        self.client_send_buf = take.client_send_buf^
+        self.backend_send_buf = take.backend_send_buf^
+        self.client_send_pending = take.client_send_pending^
+        self.backend_send_pending = take.backend_send_pending^
+        self.client_send_in_flight = take.client_send_in_flight
+        self.backend_send_in_flight = take.backend_send_in_flight
+        self.client_recv_in_flight = take.client_recv_in_flight
+        self.backend_recv_in_flight = take.backend_recv_in_flight
         self.closed = take.closed
 
 
@@ -399,6 +434,9 @@ struct ProxyHandler(CompletionHandler):
         )
 
     def _queue_client_recv(mut self, idx: Int):
+        if self.connections[idx][].client_recv_in_flight:
+            return
+        self.connections[idx][].client_recv_in_flight = True
         self.pending_submits.append(
             PendingSubmit(
                 kind=_SUBMIT_RECV,
@@ -409,6 +447,14 @@ struct ProxyHandler(CompletionHandler):
         )
 
     def _queue_client_send(mut self, idx: Int):
+        # Caller is responsible for promoting client_send_pending into
+        # client_send_buf before calling this. We assert here that a send
+        # is not already in flight.
+        if self.connections[idx][].client_send_in_flight:
+            return
+        if len(self.connections[idx][].client_send_buf) == 0:
+            return
+        self.connections[idx][].client_send_in_flight = True
         self.pending_submits.append(
             PendingSubmit(
                 kind=_SUBMIT_SEND,
@@ -429,6 +475,9 @@ struct ProxyHandler(CompletionHandler):
         )
 
     def _queue_backend_recv(mut self, idx: Int):
+        if self.connections[idx][].backend_recv_in_flight:
+            return
+        self.connections[idx][].backend_recv_in_flight = True
         self.pending_submits.append(
             PendingSubmit(
                 kind=_SUBMIT_RECV,
@@ -439,6 +488,11 @@ struct ProxyHandler(CompletionHandler):
         )
 
     def _queue_backend_send(mut self, idx: Int):
+        if self.connections[idx][].backend_send_in_flight:
+            return
+        if len(self.connections[idx][].backend_send_buf) == 0:
+            return
+        self.connections[idx][].backend_send_in_flight = True
         self.pending_submits.append(
             PendingSubmit(
                 kind=_SUBMIT_SEND,
@@ -447,6 +501,36 @@ struct ProxyHandler(CompletionHandler):
                 op_kind=OP_BACKEND_SEND,
             )
         )
+
+    # --- Outbound staging helpers ------------------------------------------
+
+    def _stage_client_send(mut self, idx: Int, var ct: List[UInt8]):
+        """Stage `ct` to be sent to the client.
+
+        If no client send is currently in flight, swap it into
+        `client_send_buf` and queue a CLIENT_SEND. Otherwise append to
+        `client_send_pending`; the in-flight send's completion handler will
+        promote it later.
+        """
+        if len(ct) == 0:
+            return
+        if self.connections[idx][].client_send_in_flight:
+            for i in range(len(ct)):
+                self.connections[idx][].client_send_pending.append(ct[i])
+            return
+        self.connections[idx][].client_send_buf = ct^
+        self._queue_client_send(idx)
+
+    def _stage_backend_send(mut self, idx: Int, var ct: List[UInt8]):
+        """Stage `ct` to be sent to the backend (see _stage_client_send)."""
+        if len(ct) == 0:
+            return
+        if self.connections[idx][].backend_send_in_flight:
+            for i in range(len(ct)):
+                self.connections[idx][].backend_send_pending.append(ct[i])
+            return
+        self.connections[idx][].backend_send_buf = ct^
+        self._queue_backend_send(idx)
 
     # --- Accept handling ----------------------------------------------------
 
@@ -517,6 +601,10 @@ struct ProxyHandler(CompletionHandler):
     # --- Client RECV/SEND handlers -----------------------------------------
 
     def _handle_client_recv(mut self, idx: Int, result: Int32) raises:
+        # Mark the in-flight RECV as completed regardless of result; the
+        # buffer is now ours again to refill.
+        self.connections[idx][].client_recv_in_flight = False
+
         if result <= 0:
             # 0 = EOF; <0 = error. Close the connection.
             self._close_connection(idx)
@@ -526,15 +614,14 @@ struct ProxyHandler(CompletionHandler):
         var n = Int(result)
         var chunk = List[UInt8](capacity=n)
         for i in range(n):
-            chunk.append(self.connections[idx][].recv_buf[i])
+            chunk.append(self.connections[idx][].client_recv_buf[i])
         self.connections[idx][].client_tls.receive_data(Span(chunk))
 
         # If TLS has ciphertext to send (handshake reply / encrypted app data),
         # stage it for SEND.
         if self.connections[idx][].client_tls.wants_write():
             var ct = self.connections[idx][].client_tls.drain_ciphertext()
-            self.connections[idx][].send_buf = ct^
-            self._queue_client_send(idx)
+            self._stage_client_send(idx, ct^)
 
         if self.connections[idx][].client_tls.is_handshaking():
             # Need more handshake bytes from the client.
@@ -565,12 +652,31 @@ struct ProxyHandler(CompletionHandler):
         self._queue_backend_connect(idx)
 
     def _handle_client_send(mut self, idx: Int, result: Int32) raises:
+        # Mark in-flight send as done. The kernel is finished reading from
+        # client_send_buf so it is safe to drop or reassign now.
+        self.connections[idx][].client_send_in_flight = False
+
         if result < 0:
             self._close_connection(idx)
             return
         # Short-write case is intentionally unhandled in M2 (the plan scope
         # is a minimum-viable proxy). The send_buf is discarded.
-        self.connections[idx][].send_buf = List[UInt8]()
+        self.connections[idx][].client_send_buf = List[UInt8]()
+
+        # If more ciphertext was queued while we were in flight, promote it
+        # and immediately re-queue another send. This guarantees we never
+        # leave staged ciphertext stranded.
+        if len(self.connections[idx][].client_send_pending) > 0:
+            var n_pending = len(self.connections[idx][].client_send_pending)
+            var pending = List[UInt8](capacity=n_pending)
+            for i in range(n_pending):
+                pending.append(self.connections[idx][].client_send_pending[i])
+            self.connections[idx][].client_send_pending = List[UInt8]()
+            self.connections[idx][].client_send_buf = pending^
+            self._queue_client_send(idx)
+            # Don't transition phase yet — wait for this chained send to
+            # complete first.
+            return
 
         if self.connections[idx][].phase == _PHASE_DONE:
             self._close_connection(idx)
@@ -605,13 +711,14 @@ struct ProxyHandler(CompletionHandler):
         # construction time. Drain + send it.
         if self.connections[idx][].backend_tls.wants_write():
             var ct = self.connections[idx][].backend_tls.drain_ciphertext()
-            self.connections[idx][].send_buf = ct^
-            self._queue_backend_send(idx)
+            self._stage_backend_send(idx, ct^)
         else:
             # Unexpected — start reading anyway.
             self._queue_backend_recv(idx)
 
     def _handle_backend_recv(mut self, idx: Int, result: Int32) raises:
+        self.connections[idx][].backend_recv_in_flight = False
+
         if result <= 0:
             self._send_error_and_close(idx, 502, "Bad Gateway", "backend closed")
             return
@@ -619,13 +726,12 @@ struct ProxyHandler(CompletionHandler):
         var n = Int(result)
         var chunk = List[UInt8](capacity=n)
         for i in range(n):
-            chunk.append(self.connections[idx][].recv_buf[i])
+            chunk.append(self.connections[idx][].backend_recv_buf[i])
         self.connections[idx][].backend_tls.receive_data(Span(chunk))
 
         if self.connections[idx][].backend_tls.wants_write():
             var ct = self.connections[idx][].backend_tls.drain_ciphertext()
-            self.connections[idx][].send_buf = ct^
-            self._queue_backend_send(idx)
+            self._stage_backend_send(idx, ct^)
 
         if self.connections[idx][].backend_tls.is_handshaking():
             self._queue_backend_recv(idx)
@@ -645,8 +751,7 @@ struct ProxyHandler(CompletionHandler):
             if len(req_bytes) > 0:
                 self.connections[idx][].backend_tls.send_data(Span(req_bytes))
                 var ct2 = self.connections[idx][].backend_tls.drain_ciphertext()
-                self.connections[idx][].send_buf = ct2^
-                self._queue_backend_send(idx)
+                self._stage_backend_send(idx, ct2^)
             else:
                 self._queue_backend_recv(idx)
             return
@@ -668,17 +773,28 @@ struct ProxyHandler(CompletionHandler):
         if len(pt) > 0:
             self.connections[idx][].client_tls.send_data(Span(pt))
         var ct3 = self.connections[idx][].client_tls.drain_ciphertext()
-        self.connections[idx][].send_buf = ct3^
         self.connections[idx][].phase = _PHASE_CLIENT_SENDING_RESPONSE
         self.connections[idx][].headers_committed = True
-        self._queue_client_send(idx)
+        self._stage_client_send(idx, ct3^)
 
     def _handle_backend_send(mut self, idx: Int, result: Int32) raises:
+        self.connections[idx][].backend_send_in_flight = False
+
         if result < 0:
             self._send_error_and_close(idx, 502, "Bad Gateway", "backend send failed")
             return
 
-        self.connections[idx][].send_buf = List[UInt8]()
+        self.connections[idx][].backend_send_buf = List[UInt8]()
+
+        if len(self.connections[idx][].backend_send_pending) > 0:
+            var n_pending = len(self.connections[idx][].backend_send_pending)
+            var pending = List[UInt8](capacity=n_pending)
+            for i in range(n_pending):
+                pending.append(self.connections[idx][].backend_send_pending[i])
+            self.connections[idx][].backend_send_pending = List[UInt8]()
+            self.connections[idx][].backend_send_buf = pending^
+            self._queue_backend_send(idx)
+            return
 
         if self.connections[idx][].phase == _PHASE_BACKEND_TLS_HANDSHAKE:
             self._queue_backend_recv(idx)
@@ -705,10 +821,9 @@ struct ProxyHandler(CompletionHandler):
             if len(pt) > 0:
                 self.connections[idx][].client_tls.send_data(Span(pt))
             var ct = self.connections[idx][].client_tls.drain_ciphertext()
-            self.connections[idx][].send_buf = ct^
             self.connections[idx][].phase = _PHASE_DONE
             self.connections[idx][].headers_committed = True
-            self._queue_client_send(idx)
+            self._stage_client_send(idx, ct^)
         else:
             self._close_connection(idx)
 
@@ -749,21 +864,41 @@ def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
-            var raw_ptr = loop._handler.connections[idx][].recv_buf.unsafe_ptr()
+            var raw_addr: Int
+            if s.op_kind == OP_CLIENT_RECV:
+                raw_addr = Int(
+                    loop._handler.connections[idx][].client_recv_buf.unsafe_ptr()
+                )
+            else:
+                raw_addr = Int(
+                    loop._handler.connections[idx][].backend_recv_buf.unsafe_ptr()
+                )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=Int(raw_ptr)
+                unsafe_from_address=raw_addr
             )
             loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
         elif s.kind == _SUBMIT_SEND:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
-            var n = len(loop._handler.connections[idx][].send_buf)
-            if n == 0:
-                continue
-            var raw_ptr = loop._handler.connections[idx][].send_buf.unsafe_ptr()
+            var n: Int
+            var raw_addr: Int
+            if s.op_kind == OP_CLIENT_SEND:
+                n = len(loop._handler.connections[idx][].client_send_buf)
+                if n == 0:
+                    continue
+                raw_addr = Int(
+                    loop._handler.connections[idx][].client_send_buf.unsafe_ptr()
+                )
+            else:
+                n = len(loop._handler.connections[idx][].backend_send_buf)
+                if n == 0:
+                    continue
+                raw_addr = Int(
+                    loop._handler.connections[idx][].backend_send_buf.unsafe_ptr()
+                )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=Int(raw_ptr)
+                unsafe_from_address=raw_addr
             )
             loop.submit_send(s.fd, buf_ptr, UInt(n), token)
         elif s.kind == _SUBMIT_CONNECT:
