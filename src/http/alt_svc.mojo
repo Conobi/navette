@@ -275,6 +275,74 @@ def _parse_one_entry(entry: String) raises -> AltSvcEntry:
     )
 
 
+struct AltSvcCache(Movable):
+    """In-memory cache of Alt-Svc advertisements, keyed by Origin. Used by
+    M6's HttpClient during connection establishment to decide whether to
+    upgrade an HTTP/1.1 connection to H2 or H3. Not thread-safe — callers
+    that need concurrent access wrap it in a mutex at the M6 layer."""
+
+    var _entries: Dict[Origin, List[AltSvcEntry]]
+    var _received_at: Dict[Origin, UInt]   # when insert() was called
+
+    def __init__(out self):
+        self._entries = Dict[Origin, List[AltSvcEntry]]()
+        self._received_at = Dict[Origin, UInt]()
+
+    def __init__(out self, *, deinit take: Self):
+        self._entries = take._entries^
+        self._received_at = take._received_at^
+
+    def insert(
+        mut self,
+        var origin: Origin,
+        var entries: List[AltSvcEntry],
+        received_at: UInt,
+    ):
+        """Replace any existing entries for `origin` with the supplied list.
+        `received_at` is the wall-clock time (seconds since some epoch the
+        caller controls) when the Alt-Svc header was received; lookup uses
+        it together with each entry's max_age_secs to compute expiry."""
+        self._entries[Origin(other=origin)] = entries^
+        self._received_at[origin^] = received_at
+
+    def lookup(self, origin: Origin, now: UInt) raises -> List[AltSvcEntry]:
+        """Return all non-expired entries for `origin`. Returns an empty
+        list if the origin is unknown or every entry has expired."""
+        var out = List[AltSvcEntry]()
+        if origin not in self._entries:
+            return out^
+        var received_at = self._received_at[origin]
+        ref entries = self._entries[origin]
+        for i in range(len(entries)):
+            if received_at + entries[i].max_age_secs > now:
+                out.append(AltSvcEntry(other=entries[i]))
+        return out^
+
+    def clear(mut self, origin: Origin) raises:
+        """Drop all entries for `origin`, regardless of expiry."""
+        if origin in self._entries:
+            _ = self._entries.pop(Origin(other=origin))
+            _ = self._received_at.pop(Origin(other=origin))
+
+    def clear_expired(mut self, now: UInt) raises:
+        """Prune origins for which every entry has expired at `now`."""
+        var to_drop = List[Origin]()
+        for kv in self._entries.items():
+            var origin_copy = Origin(other=kv.key)
+            var received_at = self._received_at[kv.key]
+            var any_live = False
+            ref entries = kv.value
+            for i in range(len(entries)):
+                if received_at + entries[i].max_age_secs > now:
+                    any_live = True
+                    break
+            if not any_live:
+                to_drop.append(origin_copy^)
+        for j in range(len(to_drop)):
+            _ = self._entries.pop(Origin(other=to_drop[j]))
+            _ = self._received_at.pop(Origin(other=to_drop[j]))
+
+
 def parse_alt_svc(value: String) raises -> List[AltSvcEntry]:
     """Parse an Alt-Svc header value into a list of AltSvcEntry records.
     The special value `clear` returns an empty list (RFC 7838 §3).
