@@ -6,9 +6,10 @@ fn initial_keys_raw_client_rfc9001_a1() {
     let mut key = [0u8; 32];
     let mut iv = [0u8; 12];
     let mut hp = [0u8; 32];
-    let mut key_len: i32 = 0;
-    let mut iv_len: i32 = 0;
-    let mut hp_len: i32 = 0;
+    // out_*_len is in/out: caller sets capacity, callee writes actual length.
+    let mut key_len: i32 = key.len() as i32;
+    let mut iv_len: i32 = iv.len() as i32;
+    let mut hp_len: i32 = hp.len() as i32;
 
     let rc = rlsm_initial_keys_raw(
         1,
@@ -44,9 +45,9 @@ fn initial_keys_raw_server_rfc9001_a1() {
     let mut key = [0u8; 32];
     let mut iv = [0u8; 12];
     let mut hp = [0u8; 32];
-    let mut key_len: i32 = 0;
-    let mut iv_len: i32 = 0;
-    let mut hp_len: i32 = 0;
+    let mut key_len: i32 = key.len() as i32;
+    let mut iv_len: i32 = iv.len() as i32;
+    let mut hp_len: i32 = hp.len() as i32;
 
     let rc = rlsm_initial_keys_raw(
         1,

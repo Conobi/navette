@@ -56,6 +56,10 @@ def rustls_derive_keys(
     var out_key_len = _heap_alloc[Int32](1).as_any_origin()
     var out_iv_len = _heap_alloc[Int32](1).as_any_origin()
     var out_hp_len = _heap_alloc[Int32](1).as_any_origin()
+    # rlsm_initial_keys_raw treats *out_*_len as in/out: caller writes capacity.
+    out_key_len[] = Int32(32)
+    out_iv_len[] = Int32(12)
+    out_hp_len[] = Int32(32)
 
     var rc = lib.initial_keys_raw(
         Int32(1),  # QUIC v1

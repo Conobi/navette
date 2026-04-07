@@ -328,15 +328,29 @@ pub extern "C" fn rlsm_tls_conn_read_tls(
     let data = unsafe { std::slice::from_raw_parts(ciphertext_ptr, ct_len as usize) };
 
     match conn_table().with_mut(handle, |conn: &mut TlsConn| -> Result<i32, String> {
+        // Loop read_tls + process_new_packets until either the input slice is
+        // fully consumed or rustls' deframer makes no progress (returns 0).
+        // This pulls the partial-consumption handling into the FFI so callers
+        // get atomic semantics: a single call processes all bytes possible.
         let mut reader = SliceReader { data, pos: 0 };
-        let consumed = conn
-            .read_tls(&mut reader)
-            .map_err(|e| format!("rlsm_tls_conn_read_tls: read_tls failed: {e}"))?;
-
-        conn.process_new_packets()
-            .map_err(|e| format!("rlsm_tls_conn_read_tls: process_new_packets failed: {e}"))?;
-
-        Ok(consumed as i32)
+        loop {
+            let consumed = conn
+                .read_tls(&mut reader)
+                .map_err(|e| format!("rlsm_tls_conn_read_tls: read_tls failed: {e}"))?;
+            // Always advance the state machine after buffering bytes so the
+            // deframer can release space for the next iteration.
+            conn.process_new_packets()
+                .map_err(|e| format!("rlsm_tls_conn_read_tls: process_new_packets failed: {e}"))?;
+            if consumed == 0 {
+                // Either the SliceReader is exhausted or the deframer is full
+                // and could not make progress — bail out.
+                break;
+            }
+            if reader.pos >= reader.data.len() {
+                break;
+            }
+        }
+        Ok(reader.pos as i32)
     }) {
         Some(Ok(n)) => n,
         Some(Err(msg)) => {
@@ -448,9 +462,20 @@ pub extern "C" fn rlsm_tls_conn_write_plaintext(
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
 
     match conn_table().with_mut(handle, |conn: &mut TlsConn| -> Result<i32, String> {
-        conn.write_plaintext(data)
-            .map(|n| n as i32)
-            .map_err(|e| format!("rlsm_tls_conn_write_plaintext: writer failed: {e}"))
+        // Loop write_plaintext until all bytes are consumed or the writer
+        // refuses further input (returns 0). This gives callers atomic
+        // "all or fail" semantics for plaintext writes.
+        let mut total: usize = 0;
+        while total < data.len() {
+            let n = conn
+                .write_plaintext(&data[total..])
+                .map_err(|e| format!("rlsm_tls_conn_write_plaintext: writer failed: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
+        Ok(total as i32)
     }) {
         Some(Ok(n)) => n,
         Some(Err(msg)) => {
