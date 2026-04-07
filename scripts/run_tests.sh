@@ -33,6 +33,7 @@ TESTS=(
     test_recv_body
     test_send_body
     test_handler_detach
+    test_response_writer
 )
 
 FILTER="${TESTS_FILTER:-}"
