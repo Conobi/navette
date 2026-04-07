@@ -29,6 +29,7 @@ TESTS=(
     test_capabilities
     test_stream_error
     test_write_result
+    test_body_frame_v2
 )
 
 FILTER="${TESTS_FILTER:-}"
