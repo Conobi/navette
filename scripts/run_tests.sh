@@ -19,6 +19,7 @@ TESTS=(
     test_body
     test_request_response
     test_phase_a_smoke
+    test_serializer
 )
 
 FILTER="${TESTS_FILTER:-}"
