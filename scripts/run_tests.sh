@@ -40,6 +40,7 @@ TESTS=(
     test_h3_extension
     test_session_handle
     test_mock_session
+    test_h1_server_handler
 )
 
 FILTER="${TESTS_FILTER:-}"
