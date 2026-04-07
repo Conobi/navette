@@ -295,3 +295,85 @@ struct RecvBody(Movable):
             return
         self._state = _BODY_ERRORED
         self._frames.append(BodyFrame.error(err^))
+
+
+# ---------------------------------------------------------------------------
+# SendBody (§5.7)
+# ---------------------------------------------------------------------------
+
+comptime _SEND_OPEN    = 0
+comptime _SEND_ENDED   = 1
+comptime _SEND_ABORTED = 2
+
+
+struct SendBody(Movable):
+    """Outbound body stream. Handlers write frames; the runtime drains them."""
+
+    var _frames: Deque[BodyFrame]
+    var _state: Int
+    var _bytes_buffered: UInt
+    var _high_water: UInt
+    var _low_water: UInt
+    var _abort_code: UInt32
+
+    def __init__(out self):
+        self._frames = Deque[BodyFrame]()
+        self._state = _SEND_OPEN
+        self._bytes_buffered = UInt(0)
+        self._high_water = UInt(DEFAULT_STREAM_WINDOW_HIGH)
+        self._low_water = UInt(DEFAULT_STREAM_WINDOW_LOW)
+        self._abort_code = UInt32(0)
+
+    def __init__(out self, *, deinit take: Self):
+        self._frames = take._frames^
+        self._state = take._state
+        self._bytes_buffered = take._bytes_buffered
+        self._high_water = take._high_water
+        self._low_water = take._low_water
+        self._abort_code = take._abort_code
+
+    def try_write(mut self, var frame: BodyFrame) -> WriteResult:
+        if self._state != _SEND_OPEN:
+            return WriteResult.closed()
+        if frame.is_data():
+            self._bytes_buffered += UInt(len(frame.data()))
+        self._frames.append(frame^)
+        if self._bytes_buffered > self._high_water:
+            return WriteResult.would_block()
+        return WriteResult.ok()
+
+    def end(mut self) raises:
+        if self._state != _SEND_OPEN:
+            raise Error("SendBody.end: stream is not open")
+        self._state = _SEND_ENDED
+        self._frames.append(BodyFrame.end())
+
+    def abort(mut self, code: UInt32) raises:
+        if self._state == _SEND_ABORTED:
+            raise Error("SendBody.abort: already aborted")
+        self._state = _SEND_ABORTED
+        self._abort_code = code
+
+    def bytes_buffered(self) -> UInt:
+        return self._bytes_buffered
+
+    def set_watermarks(mut self, *, high: UInt, low: UInt):
+        self._high_water = high
+        self._low_water = low
+
+    def is_ended(self) -> Bool:
+        return self._state == _SEND_ENDED
+
+    def is_aborted(self) -> Bool:
+        return self._state == _SEND_ABORTED
+
+    def abort_code(self) -> UInt32:
+        return self._abort_code
+
+    def _pop(mut self) raises -> Optional[BodyFrame]:
+        if len(self._frames) == 0:
+            return Optional[BodyFrame]()
+        var frame = self._frames.popleft()
+        if frame.is_data():
+            self._bytes_buffered -= UInt(len(frame.data()))
+        return Optional[BodyFrame](frame^)

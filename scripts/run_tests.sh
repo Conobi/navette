@@ -31,6 +31,7 @@ TESTS=(
     test_write_result
     test_body_frame_v2
     test_recv_body
+    test_send_body
 )
 
 FILTER="${TESTS_FILTER:-}"
