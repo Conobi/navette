@@ -41,3 +41,42 @@ struct Origin(KeyElement):
 
     def __ne__(self, rhs: Self) -> Bool:
         return not (self == rhs)
+
+
+struct AltSvcEntry(Copyable, Movable):
+    """One alternative service advertisement from an Alt-Svc header."""
+
+    var protocol: String       # e.g. "h3", "h2", "h2c", "http/1.1"
+    var host: String           # empty = same as origin
+    var port: UInt16
+    var max_age_secs: UInt     # RFC 7838 §3 — default 24h per RFC
+    var persist: Bool          # "persist=1" parameter
+
+    def __init__(
+        out self,
+        *,
+        protocol: String,
+        host: String,
+        port: UInt16,
+        max_age_secs: UInt,
+        persist: Bool,
+    ):
+        self.protocol = protocol
+        self.host = host
+        self.port = port
+        self.max_age_secs = max_age_secs
+        self.persist = persist
+
+    def __init__(out self, *, other: Self):
+        self.protocol = other.protocol.copy()
+        self.host = other.host.copy()
+        self.port = other.port
+        self.max_age_secs = other.max_age_secs
+        self.persist = other.persist
+
+    def __init__(out self, *, deinit take: Self):
+        self.protocol = take.protocol^
+        self.host = take.host^
+        self.port = take.port
+        self.max_age_secs = take.max_age_secs
+        self.persist = take.persist
