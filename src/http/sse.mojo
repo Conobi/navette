@@ -95,6 +95,13 @@ struct EventStreamReader(Movable):
         # 2. Scan the buffer for a complete event (blank line terminated).
         var boundary = _find_event_boundary(self._buffer)
         if boundary < 0:
+            # If the body has ended and no complete event remains, discard
+            # any trailing partial event per WHATWG §9.2 (the dispatch step
+            # only fires on a blank-line boundary). Clearing the buffer lets
+            # is_end() return True so callers exit their poll loop instead
+            # of spinning forever.
+            if self._body_ended:
+                self._buffer = List[UInt8]()
             return Optional[ServerSentEvent]()
 
         # 3. Parse the prefix (up to but not including the blank line).
