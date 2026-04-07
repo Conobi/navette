@@ -41,6 +41,7 @@ TESTS=(
     test_session_handle
     test_mock_session
     test_h1_server_handler
+    test_h1_client_session
 )
 
 FILTER="${TESTS_FILTER:-}"

@@ -55,3 +55,7 @@ struct ClientConnection(Movable):
 
     def wants_write(self) -> Bool:
         return self._inner.wants_write()
+
+
+# Re-export the Session implementation.
+from src.h1.h1_session import H1Session

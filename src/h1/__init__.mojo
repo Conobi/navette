@@ -16,3 +16,4 @@ from .connection import H1Connection
 from .server import ServerConnection
 from .client import ClientConnection
 from .handler_server import H1HandlerServer
+from .h1_session import H1Session
