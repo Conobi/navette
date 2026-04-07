@@ -57,11 +57,11 @@ def test_equality_custom() raises:
 
 
 def test_equality_standard_vs_custom() raises:
-    """Standard method != custom method even if string matches.
+    """The custom() factory canonicalizes known method names to standard tags.
 
-    RFC 9110: methods are case-sensitive. GET is a known tag; custom("GET")
-    would have a different internal representation, but we want them to
-    compare equal for correctness.
+    Method.custom("GET") returns the same internal representation as
+    Method.get(), so they compare equal. This avoids subtle bugs when
+    code receives a method name as a string and constructs a Method.
     """
     assert_true(Method.get() == Method.custom("GET"), "GET == custom(GET)")
     assert_true(Method.custom("POST") == Method.post(), "custom(POST) == POST")

@@ -150,7 +150,7 @@ struct Method(Copyable, Movable, Writable):
 
     # --- String ---
 
-    fn write_to[W: Writer](self, mut writer: W):
+    def write_to[W: Writer](self, mut writer: W):
         if self._tag == _GET:
             writer.write("GET")
         elif self._tag == _POST:
