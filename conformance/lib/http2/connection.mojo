@@ -177,3 +177,177 @@ struct H2Settings(Copyable, Movable):
         self.max_frame_size = take.max_frame_size
         self.max_header_list_size = take.max_header_list_size
         self.enable_connect_protocol = take.enable_connect_protocol
+
+
+# ---------------------------------------------------------------------------
+# H2Event kind constants
+# ---------------------------------------------------------------------------
+comptime H2_EVT_REQUEST_RECEIVED = 0
+comptime H2_EVT_RESPONSE_RECEIVED = 1
+comptime H2_EVT_DATA_RECEIVED = 2
+comptime H2_EVT_TRAILERS_RECEIVED = 3
+comptime H2_EVT_STREAM_ENDED = 4
+comptime H2_EVT_STREAM_RESET = 5
+comptime H2_EVT_SETTINGS_ACKNOWLEDGED = 6
+comptime H2_EVT_PING_RECEIVED = 7
+comptime H2_EVT_PING_ACKNOWLEDGED = 8
+comptime H2_EVT_GOAWAY_RECEIVED = 9
+comptime H2_EVT_WINDOW_UPDATED = 10
+comptime H2_EVT_CONNECTION_TERMINATED = 11
+comptime H2_EVT_SETTINGS_CHANGED = 12
+
+
+# ---------------------------------------------------------------------------
+# H2Event — tagged union for connection events
+# ---------------------------------------------------------------------------
+struct H2Event(Copyable, Movable):
+    var kind: Int
+    var stream_id: UInt32
+    var headers: List[Header]
+    var data: List[UInt8]
+    var error_code: UInt32
+    var stream_ended: Bool
+    var last_stream_id: UInt32
+    var window_increment: UInt32
+    var flow_controlled_length: Int
+    var message: String
+
+    def __init__(out self):
+        self.kind = 0
+        self.stream_id = UInt32(0)
+        self.headers = List[Header]()
+        self.data = List[UInt8]()
+        self.error_code = UInt32(0)
+        self.stream_ended = False
+        self.last_stream_id = UInt32(0)
+        self.window_increment = UInt32(0)
+        self.flow_controlled_length = 0
+        self.message = String("")
+
+    def __init__(out self, *, other: Self):
+        self.kind = other.kind
+        self.stream_id = other.stream_id
+        self.headers = other.headers.copy()
+        self.data = other.data.copy()
+        self.error_code = other.error_code
+        self.stream_ended = other.stream_ended
+        self.last_stream_id = other.last_stream_id
+        self.window_increment = other.window_increment
+        self.flow_controlled_length = other.flow_controlled_length
+        self.message = other.message
+
+    def __init__(out self, *, deinit take: Self):
+        self.kind = take.kind
+        self.stream_id = take.stream_id
+        self.headers = take.headers^
+        self.data = take.data^
+        self.error_code = take.error_code
+        self.stream_ended = take.stream_ended
+        self.last_stream_id = take.last_stream_id
+        self.window_increment = take.window_increment
+        self.flow_controlled_length = take.flow_controlled_length
+        self.message = take.message^
+
+    @staticmethod
+    def settings_acknowledged() -> Self:
+        var e = Self()
+        e.kind = H2_EVT_SETTINGS_ACKNOWLEDGED
+        return e^
+
+    @staticmethod
+    def settings_changed() -> Self:
+        var e = Self()
+        e.kind = H2_EVT_SETTINGS_CHANGED
+        return e^
+
+    @staticmethod
+    def ping_received(opaque_data: List[UInt8]) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_PING_RECEIVED
+        e.data = opaque_data.copy()
+        return e^
+
+    @staticmethod
+    def ping_acknowledged(opaque_data: List[UInt8]) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_PING_ACKNOWLEDGED
+        e.data = opaque_data.copy()
+        return e^
+
+    @staticmethod
+    def goaway_received(last_stream_id: UInt32, error_code: UInt32, debug_data: List[UInt8]) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_GOAWAY_RECEIVED
+        e.last_stream_id = last_stream_id
+        e.error_code = error_code
+        e.data = debug_data.copy()
+        return e^
+
+    @staticmethod
+    def window_updated(stream_id: UInt32, increment: UInt32) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_WINDOW_UPDATED
+        e.stream_id = stream_id
+        e.window_increment = increment
+        return e^
+
+    @staticmethod
+    def connection_terminated(last_stream_id: UInt32, error_code: UInt32, message: String) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_CONNECTION_TERMINATED
+        e.last_stream_id = last_stream_id
+        e.error_code = error_code
+        e.message = message
+        return e^
+
+    @staticmethod
+    def request_received(stream_id: UInt32, headers: List[Header], stream_ended: Bool) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_REQUEST_RECEIVED
+        e.stream_id = stream_id
+        e.headers = headers.copy()
+        e.stream_ended = stream_ended
+        return e^
+
+    @staticmethod
+    def response_received(stream_id: UInt32, headers: List[Header], stream_ended: Bool) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_RESPONSE_RECEIVED
+        e.stream_id = stream_id
+        e.headers = headers.copy()
+        e.stream_ended = stream_ended
+        return e^
+
+    @staticmethod
+    def data_received(stream_id: UInt32, data: List[UInt8], flow_controlled_length: Int, stream_ended: Bool) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_DATA_RECEIVED
+        e.stream_id = stream_id
+        e.data = data.copy()
+        e.flow_controlled_length = flow_controlled_length
+        e.stream_ended = stream_ended
+        return e^
+
+    @staticmethod
+    def stream_reset(stream_id: UInt32, error_code: UInt32) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_STREAM_RESET
+        e.stream_id = stream_id
+        e.error_code = error_code
+        return e^
+
+    @staticmethod
+    def make_stream_ended(stream_id: UInt32) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_STREAM_ENDED
+        e.stream_id = stream_id
+        return e^
+
+    @staticmethod
+    def trailers_received(stream_id: UInt32, headers: List[Header]) -> Self:
+        var e = Self()
+        e.kind = H2_EVT_TRAILERS_RECEIVED
+        e.stream_id = stream_id
+        e.headers = headers.copy()
+        e.stream_ended = True
+        return e^
