@@ -176,6 +176,45 @@ def test_server_preface() raises:
     assert_equal(Int(data[4]), 0, "SETTINGS flags = 0")
 
 
+def test_server_receives_client_preface() raises:
+    """Server receives client preface, validates magic, processes SETTINGS, sends ACK."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var client_preface = client.data_to_send()
+
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    _ = server.data_to_send()  # drain server's own SETTINGS
+    var events = server.receive_data(client_preface)
+
+    # Should emit SettingsChanged (remote settings updated)
+    assert_true(len(events) >= 1, "server emitted >= 1 event")
+    assert_equal(events[0].kind, H2_EVT_SETTINGS_CHANGED, "first event is SETTINGS_CHANGED")
+
+    # Server should have queued a SETTINGS ACK
+    var ack_data = server.data_to_send()
+    assert_true(len(ack_data) >= 9, "server sent SETTINGS ACK")
+    assert_equal(Int(ack_data[3]), FRAME_SETTINGS, "ACK frame type")
+    assert_equal(Int(ack_data[4]), 1, "ACK flag set (FLAG_ACK=0x01)")
+    var ack_len = (Int(ack_data[0]) << 16) | (Int(ack_data[1]) << 8) | Int(ack_data[2])
+    assert_equal(ack_len, 0, "ACK payload length = 0")
+
+
+def test_server_rejects_bad_magic() raises:
+    """Server rejects invalid client magic with GOAWAY."""
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    _ = server.data_to_send()
+    var bad_magic = List[UInt8]()
+    for i in range(24):
+        bad_magic.append(UInt8(0))
+    var events = server.receive_data(bad_magic)
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+    assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+    assert_true(server.is_closed(), "connection closed")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -185,4 +224,6 @@ def main() raises:
     test_stream_state_and_constants()
     test_client_preface()
     test_server_preface()
-    print("test_h2_connection: 8 tests passed")
+    test_server_receives_client_preface()
+    test_server_rejects_bad_magic()
+    print("test_h2_connection: 10 tests passed")
