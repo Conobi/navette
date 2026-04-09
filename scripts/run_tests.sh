@@ -33,6 +33,7 @@ TESTS=(
     test_recv_body
     test_send_body
     test_handler_detach
+    test_handler_try_detach
     test_response_writer
     test_request_body
     test_request_clone

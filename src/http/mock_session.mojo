@@ -40,7 +40,7 @@ struct MockServer[H: StreamHandler](Movable):
         var body = RecvBody()
         body._set_end()  # mock has no streaming inbound bodies in v1
         var resp_writer = ResponseWriter()
-        self.handler.on_request(req^, body^, resp_writer, Capabilities(other=self.caps))
+        self.handler.on_request(req^, body, resp_writer, Capabilities(other=self.caps))
         # Drain captured status/headers into a Response. Body frames are
         # accessible via _pop_body_frame; the mock discards them since
         # Response.body is List[BodyFrame] and trait conformance tests only
