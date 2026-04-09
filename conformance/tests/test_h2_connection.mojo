@@ -15,6 +15,10 @@ from lib.http2.connection import (
     H2_EVT_CONNECTION_TERMINATED,
     H2_EVT_REQUEST_RECEIVED,
     H2_EVT_STREAM_RESET,
+    StreamState,
+    STREAM_IDLE, STREAM_OPEN, STREAM_HALF_CLOSED_LOCAL,
+    STREAM_HALF_CLOSED_REMOTE, STREAM_CLOSED,
+    CONN_IDLE, CONN_OPEN, CONN_GOAWAY, CONN_CLOSED,
 )
 from lib.http2.frame import (
     H2_NO_ERROR,
@@ -117,10 +121,30 @@ def test_h2event_factory_methods() raises:
     assert_equal(Int(e6.error_code), 1, "connection_terminated error_code")
 
 
+def test_stream_state_and_constants() raises:
+    """StreamState initializes correctly; lifecycle constants have expected values."""
+    assert_equal(STREAM_IDLE, 0, "STREAM_IDLE")
+    assert_equal(STREAM_OPEN, 1, "STREAM_OPEN")
+    assert_equal(STREAM_HALF_CLOSED_LOCAL, 2, "STREAM_HALF_CLOSED_LOCAL")
+    assert_equal(STREAM_HALF_CLOSED_REMOTE, 3, "STREAM_HALF_CLOSED_REMOTE")
+    assert_equal(STREAM_CLOSED, 4, "STREAM_CLOSED")
+    assert_equal(CONN_IDLE, 0, "CONN_IDLE")
+    assert_equal(CONN_OPEN, 1, "CONN_OPEN")
+    assert_equal(CONN_GOAWAY, 2, "CONN_GOAWAY")
+    assert_equal(CONN_CLOSED, 3, "CONN_CLOSED")
+    var s = StreamState()
+    assert_equal(s.lifecycle, STREAM_IDLE, "default lifecycle")
+    assert_equal(s.send_window, 65535, "default send_window")
+    assert_equal(s.recv_window, 65535, "default recv_window")
+    assert_true(not s.expects_continuation, "default expects_continuation")
+    assert_equal(len(s.header_block_buffer), 0, "default header_block_buffer")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
     test_h2settings_defaults()
     test_h2settings_from_config()
     test_h2event_factory_methods()
-    print("test_h2_connection: 5 tests passed")
+    test_stream_state_and_constants()
+    print("test_h2_connection: 6 tests passed")

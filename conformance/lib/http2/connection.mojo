@@ -351,3 +351,72 @@ struct H2Event(Copyable, Movable):
         e.headers = headers.copy()
         e.stream_ended = True
         return e^
+
+
+# ---------------------------------------------------------------------------
+# Connection state constants
+# ---------------------------------------------------------------------------
+comptime CONN_IDLE = 0
+comptime CONN_OPEN = 1
+comptime CONN_GOAWAY = 2
+comptime CONN_CLOSED = 3
+
+# ---------------------------------------------------------------------------
+# Stream lifecycle constants (RFC 9113 §5.1, no RESERVED — push is disabled)
+# ---------------------------------------------------------------------------
+comptime STREAM_IDLE = 0
+comptime STREAM_OPEN = 1
+comptime STREAM_HALF_CLOSED_LOCAL = 2
+comptime STREAM_HALF_CLOSED_REMOTE = 3
+comptime STREAM_CLOSED = 4
+
+# ---------------------------------------------------------------------------
+# Client connection preface magic (RFC 9113 §3.4)
+# ---------------------------------------------------------------------------
+comptime H2_CLIENT_MAGIC_LEN = 24
+
+
+def _client_magic() -> List[UInt8]:
+    """'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n' — 24 bytes."""
+    var m = List[UInt8]()
+    var s = String("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+    var b = s.as_bytes()
+    for i in range(len(s)):
+        m.append(b[i])
+    return m^
+
+
+# ---------------------------------------------------------------------------
+# StreamState
+# ---------------------------------------------------------------------------
+struct StreamState(Copyable, Movable):
+    var lifecycle: Int
+    var send_window: Int
+    var recv_window: Int
+    var recv_window_consumed: Int
+    var expects_continuation: Bool
+    var header_block_buffer: List[UInt8]
+
+    def __init__(out self, *, lifecycle: Int = STREAM_IDLE, send_window: Int = DEFAULT_INITIAL_WINDOW_SIZE, recv_window: Int = DEFAULT_INITIAL_WINDOW_SIZE):
+        self.lifecycle = lifecycle
+        self.send_window = send_window
+        self.recv_window = recv_window
+        self.recv_window_consumed = 0
+        self.expects_continuation = False
+        self.header_block_buffer = List[UInt8]()
+
+    def __init__(out self, *, other: Self):
+        self.lifecycle = other.lifecycle
+        self.send_window = other.send_window
+        self.recv_window = other.recv_window
+        self.recv_window_consumed = other.recv_window_consumed
+        self.expects_continuation = other.expects_continuation
+        self.header_block_buffer = other.header_block_buffer.copy()
+
+    def __init__(out self, *, deinit take: Self):
+        self.lifecycle = take.lifecycle
+        self.send_window = take.send_window
+        self.recv_window = take.recv_window
+        self.recv_window_consumed = take.recv_window_consumed
+        self.expects_continuation = take.expects_continuation
+        self.header_block_buffer = take.header_block_buffer^
