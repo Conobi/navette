@@ -41,6 +41,7 @@ from lib.http2.frame import (
     H2_INADEQUATE_SECURITY,
     H2_HTTP_1_1_REQUIRED,
     FRAME_SETTINGS,
+    FRAME_PING,
 )
 
 
@@ -271,6 +272,55 @@ def test_settings_invalid_initial_window() raises:
     assert_equal(Int(events[0].error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
 
 
+def test_ping_roundtrip() raises:
+    """Send PING, receive auto-ACK with PingReceived event."""
+    # Establish connection
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    var s_ack = server.data_to_send()
+    _ = client.receive_data(sp)
+    var c_ack = client.data_to_send()
+    _ = client.receive_data(s_ack)
+    _ = server.receive_data(c_ack)
+
+    # Client sends PING
+    var ping_data = List[UInt8]()
+    ping_data.append(UInt8(1))
+    ping_data.append(UInt8(2))
+    ping_data.append(UInt8(3))
+    ping_data.append(UInt8(4))
+    ping_data.append(UInt8(5))
+    ping_data.append(UInt8(6))
+    ping_data.append(UInt8(7))
+    ping_data.append(UInt8(8))
+    client.send_ping(ping_data)
+    var ping_wire = client.data_to_send()
+
+    # Server receives PING → auto-ACK + PingReceived event
+    var events = server.receive_data(ping_wire)
+    assert_true(len(events) >= 1, "server got event")
+    assert_equal(events[0].kind, H2_EVT_PING_RECEIVED, "PingReceived")
+    assert_equal(len(events[0].data), 8, "ping data length")
+    for i in range(8):
+        assert_equal(Int(events[0].data[i]), i + 1, "ping data byte " + String(i))
+
+    # Server queued a PING ACK
+    var pong_wire = server.data_to_send()
+    assert_true(len(pong_wire) == 17, "PING ACK is 17 bytes (9 header + 8 payload)")
+    assert_equal(Int(pong_wire[3]), FRAME_PING, "type is PING")
+    assert_equal(Int(pong_wire[4]), 1, "ACK flag set")
+
+    # Client receives PING ACK → PingAcknowledged event
+    var events2 = client.receive_data(pong_wire)
+    assert_true(len(events2) >= 1, "client got event")
+    assert_equal(events2[0].kind, H2_EVT_PING_ACKNOWLEDGED, "PingAcknowledged")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -284,4 +334,5 @@ def main() raises:
     test_server_rejects_bad_magic()
     test_settings_ack_roundtrip()
     test_settings_invalid_initial_window()
-    print("test_h2_connection: 12 tests passed")
+    test_ping_roundtrip()
+    print("test_h2_connection: 13 tests passed")
