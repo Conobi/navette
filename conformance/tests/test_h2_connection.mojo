@@ -2,7 +2,20 @@
 #
 # HC-4a: HTTP/2 connection state machine tests.
 from lib.test_util import assert_true, assert_equal, hex_decode, hex_encode
-from lib.http2.connection import H2Config, H2Settings
+from lib.http2.connection import (
+    H2Config,
+    H2Settings,
+    H2Event,
+    H2_EVT_SETTINGS_ACKNOWLEDGED,
+    H2_EVT_SETTINGS_CHANGED,
+    H2_EVT_PING_RECEIVED,
+    H2_EVT_PING_ACKNOWLEDGED,
+    H2_EVT_GOAWAY_RECEIVED,
+    H2_EVT_WINDOW_UPDATED,
+    H2_EVT_CONNECTION_TERMINATED,
+    H2_EVT_REQUEST_RECEIVED,
+    H2_EVT_STREAM_RESET,
+)
 from lib.http2.frame import (
     H2_NO_ERROR,
     H2_PROTOCOL_ERROR,
@@ -70,9 +83,44 @@ def test_h2settings_from_config() raises:
     assert_equal(Int(s.max_header_list_size), 16384, "from_config max_header_list_size")
 
 
+def test_h2event_factory_methods() raises:
+    """H2Event factory methods set correct kind and fields."""
+    var e1 = H2Event.settings_acknowledged()
+    assert_equal(e1.kind, H2_EVT_SETTINGS_ACKNOWLEDGED, "settings_acknowledged kind")
+
+    var e2 = H2Event.settings_changed()
+    assert_equal(e2.kind, H2_EVT_SETTINGS_CHANGED, "settings_changed kind")
+
+    var ping_data = List[UInt8]()
+    ping_data.append(UInt8(1))
+    ping_data.append(UInt8(2))
+    ping_data.append(UInt8(3))
+    ping_data.append(UInt8(4))
+    ping_data.append(UInt8(5))
+    ping_data.append(UInt8(6))
+    ping_data.append(UInt8(7))
+    ping_data.append(UInt8(8))
+    var e3 = H2Event.ping_received(ping_data)
+    assert_equal(e3.kind, H2_EVT_PING_RECEIVED, "ping_received kind")
+    assert_equal(len(e3.data), 8, "ping_received data length")
+
+    var e4 = H2Event.goaway_received(UInt32(3), UInt32(0), List[UInt8]())
+    assert_equal(e4.kind, H2_EVT_GOAWAY_RECEIVED, "goaway_received kind")
+    assert_equal(Int(e4.last_stream_id), 3, "goaway last_stream_id")
+
+    var e5 = H2Event.window_updated(UInt32(0), UInt32(1024))
+    assert_equal(e5.kind, H2_EVT_WINDOW_UPDATED, "window_updated kind")
+    assert_equal(Int(e5.window_increment), 1024, "window_updated increment")
+
+    var e6 = H2Event.connection_terminated(UInt32(0), UInt32(1), String("test"))
+    assert_equal(e6.kind, H2_EVT_CONNECTION_TERMINATED, "connection_terminated kind")
+    assert_equal(Int(e6.error_code), 1, "connection_terminated error_code")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
     test_h2settings_defaults()
     test_h2settings_from_config()
-    print("test_h2_connection: 4 tests passed")
+    test_h2event_factory_methods()
+    print("test_h2_connection: 5 tests passed")
