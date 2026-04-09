@@ -758,7 +758,61 @@ struct H2Connection(Movable):
         pass
 
     def _handle_headers(mut self, frame: Frame, mut events: List[H2Event]):
-        pass
+        """Process inbound HEADERS: create stream, start CONTINUATION if needed."""
+        var stream_id = frame.stream_id
+        # Validate stream ID parity
+        if not self._client_side:
+            if stream_id % 2 == 0:
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("Even stream ID from client"))
+                return
+        else:
+            if stream_id % 2 != 0:
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("Odd stream ID from server"))
+                return
+        # Must be monotonically increasing
+        if stream_id <= Int(self._last_recv_stream_id):
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream ID not increasing"))
+            return
+        # Max concurrent streams
+        if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Exceeds MAX_CONCURRENT_STREAMS"))
+            return
+        self._last_recv_stream_id = UInt32(stream_id)
+        var stream = StreamState(
+            lifecycle=STREAM_OPEN,
+            send_window=Int(self._remote_settings.initial_window_size),
+            recv_window=Int(self._local_settings.initial_window_size),
+        )
+        var hp = decode_headers_payload(frame)
+        if not hp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid HEADERS: " + hp.error))
+            return
+        if frame.flags & FLAG_END_HEADERS != 0:
+            # Header block complete (HC-4b: HPACK decode + event here)
+            self._streams[stream_id] = stream^
+            self._active_stream_count += 1
+        else:
+            # Buffer fragment, wait for CONTINUATION
+            for i in range(len(hp.headers_block)):
+                stream.header_block_buffer.append(hp.headers_block[i])
+            stream.expects_continuation = True
+            self._streams[stream_id] = stream^
+            self._active_stream_count += 1
+            self._expecting_continuation_for = UInt32(stream_id)
+
+    def stream_state(self, stream_id: UInt32) raises -> Int:
+        """Return STREAM_* lifecycle constant. Raises for unknown streams."""
+        try:
+            return self._streams[Int(stream_id)].lifecycle
+        except:
+            raise Error("Unknown stream: " + String(Int(stream_id)))
+
+    def _has_stream(self, stream_id: Int) -> Bool:
+        try:
+            _ = self._streams[stream_id]
+            return True
+        except:
+            return False
 
     def _handle_continuation(mut self, frame: Frame, mut events: List[H2Event]):
         pass

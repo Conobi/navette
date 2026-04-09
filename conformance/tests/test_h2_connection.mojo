@@ -43,7 +43,21 @@ from lib.http2.frame import (
     FRAME_SETTINGS,
     FRAME_PING,
     FRAME_GOAWAY,
+    FRAME_HEADERS,
 )
+
+
+def _build_headers_frame(stream_id: Int, end_headers: Bool = True, end_stream: Bool = False) -> List[UInt8]:
+    """Build a minimal HEADERS frame with a dummy header block."""
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x82))  # indexed: :method GET (static table index 2)
+    var flags = 0
+    if end_headers:
+        flags = flags | 0x04  # END_HEADERS
+    if end_stream:
+        flags = flags | 0x01  # END_STREAM
+    var frame = Frame(len(payload), FRAME_HEADERS, flags, stream_id, payload)
+    return encode_frame(frame)
 
 
 def test_error_codes() raises:
@@ -359,6 +373,95 @@ def test_goaway_send_draining() raises:
     assert_equal(Int(data[3]), FRAME_GOAWAY, "frame type GOAWAY")
 
 
+def test_stream_creation() raises:
+    """HEADERS creates a stream in OPEN state."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    var headers_wire = _build_headers_frame(1)
+    _ = server.receive_data(headers_wire)
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_OPEN, "stream 1 is OPEN")
+    assert_equal(server.open_stream_count(), 1, "open stream count = 1")
+
+
+def test_stream_id_must_be_odd_for_server() raises:
+    """Server rejects even stream ID from client."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    var headers_wire = _build_headers_frame(2)
+    var events = server.receive_data(headers_wire)
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+    assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+
+
+def test_stream_id_must_increase() raises:
+    """Stream IDs must be monotonically increasing."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    var h3 = _build_headers_frame(3)
+    _ = server.receive_data(h3)
+    var h1 = _build_headers_frame(1)
+    var events = server.receive_data(h1)
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+
+
+def test_max_concurrent_streams() raises:
+    """Exceeding MAX_CONCURRENT_STREAMS triggers connection error."""
+    var config = H2Config(client_side=False)
+    config.max_concurrent_streams = UInt32(2)
+    var server = H2Connection(client_side=False, config=config)
+    server.initiate_connection()
+    _ = server.data_to_send()
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var cp = client.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+
+    _ = server.receive_data(_build_headers_frame(1))
+    _ = server.receive_data(_build_headers_frame(3))
+    assert_equal(server.open_stream_count(), 2, "2 open streams")
+
+    var events = server.receive_data(_build_headers_frame(5))
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -375,4 +478,8 @@ def main() raises:
     test_ping_roundtrip()
     test_goaway_receive()
     test_goaway_send_draining()
-    print("test_h2_connection: 15 tests passed")
+    test_stream_creation()
+    test_stream_id_must_be_odd_for_server()
+    test_stream_id_must_increase()
+    test_max_concurrent_streams()
+    print("test_h2_connection: 19 tests passed")
