@@ -42,6 +42,7 @@ from lib.http2.frame import (
     H2_HTTP_1_1_REQUIRED,
     FRAME_SETTINGS,
     FRAME_PING,
+    FRAME_GOAWAY,
 )
 
 
@@ -321,6 +322,43 @@ def test_ping_roundtrip() raises:
     assert_equal(events2[0].kind, H2_EVT_PING_ACKNOWLEDGED, "PingAcknowledged")
 
 
+def test_goaway_receive() raises:
+    """Receive GOAWAY → GoawayReceived event, connection enters draining."""
+    # Establish connection
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+
+    # Server sends GOAWAY
+    server.send_goaway(UInt32(0), UInt32(H2_NO_ERROR))
+    var goaway_wire = server.data_to_send()
+
+    # Client receives GOAWAY
+    var events = client.receive_data(goaway_wire)
+    assert_true(len(events) >= 1, "client got event")
+    assert_equal(events[0].kind, H2_EVT_GOAWAY_RECEIVED, "GoawayReceived")
+    assert_equal(Int(events[0].last_stream_id), 0, "last_stream_id")
+    assert_equal(Int(events[0].error_code), H2_NO_ERROR, "error_code")
+
+
+def test_goaway_send_draining() raises:
+    """send_goaway puts connection in GOAWAY (draining) state."""
+    var conn = H2Connection(client_side=True)
+    conn.initiate_connection()
+    _ = conn.data_to_send()
+    conn.send_goaway(UInt32(0), UInt32(H2_NO_ERROR))
+    var data = conn.data_to_send()
+    assert_true(len(data) >= 17, "GOAWAY frame sent (9 header + 8 payload)")
+    assert_equal(Int(data[3]), FRAME_GOAWAY, "frame type GOAWAY")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -335,4 +373,6 @@ def main() raises:
     test_settings_ack_roundtrip()
     test_settings_invalid_initial_window()
     test_ping_roundtrip()
-    print("test_h2_connection: 13 tests passed")
+    test_goaway_receive()
+    test_goaway_send_draining()
+    print("test_h2_connection: 15 tests passed")

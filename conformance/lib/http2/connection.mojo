@@ -712,7 +712,47 @@ struct H2Connection(Movable):
         self._queue_frame(frame)
 
     def _handle_goaway(mut self, frame: Frame, mut events: List[H2Event]):
-        pass
+        """Process inbound GOAWAY frame."""
+        var gp = decode_goaway_payload(frame)
+        if not gp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid GOAWAY"))
+            return
+        self._state = CONN_GOAWAY
+        events.append(H2Event.goaway_received(
+            UInt32(gp.last_stream_id), UInt32(gp.error_code), gp.debug_data.copy()
+        ))
+
+    def send_goaway(mut self, last_stream_id: UInt32, error_code: UInt32) raises:
+        """Send GOAWAY frame. Connection enters draining state."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        var payload = List[UInt8]()
+        var lsid = Int(last_stream_id)
+        payload.append(UInt8((lsid >> 24) & 0x7F))
+        payload.append(UInt8((lsid >> 16) & 0xFF))
+        payload.append(UInt8((lsid >> 8) & 0xFF))
+        payload.append(UInt8(lsid & 0xFF))
+        var ec = Int(error_code)
+        payload.append(UInt8((ec >> 24) & 0xFF))
+        payload.append(UInt8((ec >> 16) & 0xFF))
+        payload.append(UInt8((ec >> 8) & 0xFF))
+        payload.append(UInt8(ec & 0xFF))
+        var frame = Frame(len(payload), FRAME_GOAWAY, 0, 0, payload)
+        self._queue_frame(frame)
+        self._state = CONN_GOAWAY
+
+    def send_rst_stream(mut self, stream_id: UInt32, error_code: UInt32) raises:
+        """Send RST_STREAM frame for the given stream."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        var payload = List[UInt8]()
+        var ec = Int(error_code)
+        payload.append(UInt8((ec >> 24) & 0xFF))
+        payload.append(UInt8((ec >> 16) & 0xFF))
+        payload.append(UInt8((ec >> 8) & 0xFF))
+        payload.append(UInt8(ec & 0xFF))
+        var frame = Frame(4, FRAME_RST_STREAM, 0, Int(stream_id), payload)
+        self._queue_frame(frame)
 
     def _handle_window_update(mut self, frame: Frame, mut events: List[H2Event]):
         pass
