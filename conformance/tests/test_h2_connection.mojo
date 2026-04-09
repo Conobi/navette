@@ -19,8 +19,11 @@ from lib.http2.connection import (
     STREAM_IDLE, STREAM_OPEN, STREAM_HALF_CLOSED_LOCAL,
     STREAM_HALF_CLOSED_REMOTE, STREAM_CLOSED,
     CONN_IDLE, CONN_OPEN, CONN_GOAWAY, CONN_CLOSED,
+    H2Connection,
 )
 from lib.http2.frame import (
+    Frame,
+    encode_frame,
     H2_NO_ERROR,
     H2_PROTOCOL_ERROR,
     H2_INTERNAL_ERROR,
@@ -35,6 +38,7 @@ from lib.http2.frame import (
     H2_ENHANCE_YOUR_CALM,
     H2_INADEQUATE_SECURITY,
     H2_HTTP_1_1_REQUIRED,
+    FRAME_SETTINGS,
 )
 
 
@@ -140,6 +144,38 @@ def test_stream_state_and_constants() raises:
     assert_equal(len(s.header_block_buffer), 0, "default header_block_buffer")
 
 
+def test_client_preface() raises:
+    """Client initiate_connection emits magic + SETTINGS."""
+    var conn = H2Connection(client_side=True)
+    conn.initiate_connection()
+    var data = conn.data_to_send()
+    # First 24 bytes must be the connection preface magic
+    assert_true(len(data) >= 24, "client preface >= 24 bytes")
+    var magic = String("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+    var mb = magic.as_bytes()
+    for i in range(len(magic)):
+        assert_equal(Int(data[i]), Int(mb[i]), "magic byte " + String(i))
+    # Bytes 24+ must be a SETTINGS frame (type=4, stream_id=0, no ACK)
+    assert_true(len(data) >= 33, "client preface has SETTINGS frame")
+    assert_equal(Int(data[27]), FRAME_SETTINGS, "frame type is SETTINGS")
+    assert_equal(Int(data[28]), 0, "SETTINGS flags = 0 (no ACK)")
+    # Stream ID = 0
+    var sid = (Int(data[29]) << 24) | (Int(data[30]) << 16) | (Int(data[31]) << 8) | Int(data[32])
+    assert_equal(sid, 0, "SETTINGS stream_id = 0")
+    assert_true(not conn.is_closed(), "connection is not closed")
+
+
+def test_server_preface() raises:
+    """Server initiate_connection emits SETTINGS (no magic)."""
+    var conn = H2Connection(client_side=False)
+    conn.initiate_connection()
+    var data = conn.data_to_send()
+    # First byte should be start of SETTINGS frame, not magic
+    assert_true(len(data) >= 9, "server preface >= 9 bytes")
+    assert_equal(Int(data[3]), FRAME_SETTINGS, "frame type is SETTINGS")
+    assert_equal(Int(data[4]), 0, "SETTINGS flags = 0")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -147,4 +183,6 @@ def main() raises:
     test_h2settings_from_config()
     test_h2event_factory_methods()
     test_stream_state_and_constants()
-    print("test_h2_connection: 6 tests passed")
+    test_client_preface()
+    test_server_preface()
+    print("test_h2_connection: 8 tests passed")

@@ -4,6 +4,8 @@
 # Sans-I/O: receive_data(bytes) -> List[H2Event], data_to_send() -> List[UInt8].
 # Mirrors Python h2 API for oracle cross-validation.
 
+from std.collections import Dict
+
 from .frame import (
     Frame,
     decode_frame,
@@ -420,3 +422,171 @@ struct StreamState(Copyable, Movable):
         self.recv_window_consumed = take.recv_window_consumed
         self.expects_continuation = take.expects_continuation
         self.header_block_buffer = take.header_block_buffer^
+
+
+# ---------------------------------------------------------------------------
+# Helper: append a 6-byte SETTINGS entry to a payload
+# ---------------------------------------------------------------------------
+def _append_setting(mut payload: List[UInt8], id: Int, value: Int):
+    payload.append(UInt8((id >> 8) & 0xFF))
+    payload.append(UInt8(id & 0xFF))
+    payload.append(UInt8((value >> 24) & 0xFF))
+    payload.append(UInt8((value >> 16) & 0xFF))
+    payload.append(UInt8((value >> 8) & 0xFF))
+    payload.append(UInt8(value & 0xFF))
+
+
+# ---------------------------------------------------------------------------
+# H2Connection — sans-I/O HTTP/2 connection state machine
+# ---------------------------------------------------------------------------
+struct H2Connection(Movable):
+    var _config: H2Config
+    var _state: Int
+    var _client_side: Bool
+    var _local_settings: H2Settings
+    var _remote_settings: H2Settings
+    var _settings_acked: Bool
+    var _inbuf: List[UInt8]
+    var _outbuf: List[UInt8]
+    var _streams: Dict[Int, StreamState]
+    var _next_stream_id: UInt32
+    var _last_recv_stream_id: UInt32
+    var _active_stream_count: Int
+    var _send_window: Int
+    var _recv_window: Int
+    var _recv_window_consumed: Int
+    var _hpack_encoder: HpackEncoder
+    var _hpack_decoder: HpackDecoder
+    var _expecting_continuation_for: UInt32
+    var _client_magic_validated: Bool
+    var _closed_stream_count: Int
+
+    def __init__(out self, *, client_side: Bool, config: H2Config = H2Config()):
+        self._config = H2Config(other=config)
+        self._config.client_side = client_side
+        self._state = CONN_IDLE
+        self._client_side = client_side
+        self._local_settings = H2Settings.from_config(self._config)
+        self._remote_settings = H2Settings.defaults()
+        self._settings_acked = False
+        self._inbuf = List[UInt8]()
+        self._outbuf = List[UInt8]()
+        self._streams = Dict[Int, StreamState]()
+        self._next_stream_id = UInt32(1) if client_side else UInt32(2)
+        self._last_recv_stream_id = UInt32(0)
+        self._active_stream_count = 0
+        self._send_window = DEFAULT_CONNECTION_WINDOW
+        self._recv_window = DEFAULT_CONNECTION_WINDOW
+        self._recv_window_consumed = 0
+        var hpack_config = HpackConfig()
+        hpack_config.max_header_list_size = Int(self._config.max_header_list_size)
+        hpack_config.max_header_table_size = Int(self._config.header_table_size)
+        self._hpack_encoder = HpackEncoder(hpack_config)
+        self._hpack_decoder = HpackDecoder(hpack_config)
+        self._expecting_continuation_for = UInt32(0)
+        self._client_magic_validated = client_side
+        self._closed_stream_count = 0
+
+    def __init__(out self, *, deinit take: Self):
+        self._config = take._config^
+        self._state = take._state
+        self._client_side = take._client_side
+        self._local_settings = take._local_settings^
+        self._remote_settings = take._remote_settings^
+        self._settings_acked = take._settings_acked
+        self._inbuf = take._inbuf^
+        self._outbuf = take._outbuf^
+        self._streams = take._streams^
+        self._next_stream_id = take._next_stream_id
+        self._last_recv_stream_id = take._last_recv_stream_id
+        self._active_stream_count = take._active_stream_count
+        self._send_window = take._send_window
+        self._recv_window = take._recv_window
+        self._recv_window_consumed = take._recv_window_consumed
+        self._hpack_encoder = take._hpack_encoder^
+        self._hpack_decoder = take._hpack_decoder^
+        self._expecting_continuation_for = take._expecting_continuation_for
+        self._client_magic_validated = take._client_magic_validated
+        self._closed_stream_count = take._closed_stream_count
+
+    def initiate_connection(mut self) raises:
+        """Send connection preface. Must be called before any other operation."""
+        if self._state != CONN_IDLE:
+            raise Error("Connection already initiated")
+        if self._client_side:
+            var magic = _client_magic()
+            for i in range(len(magic)):
+                self._outbuf.append(magic[i])
+        self._queue_settings_frame()
+        self._state = CONN_OPEN
+
+    def data_to_send(mut self) -> List[UInt8]:
+        """Drain outbound buffer."""
+        var data = self._outbuf^
+        self._outbuf = List[UInt8]()
+        return data^
+
+    def is_closed(self) -> Bool:
+        return self._state == CONN_CLOSED
+
+    def open_stream_count(self) -> Int:
+        return self._active_stream_count
+
+    def local_settings(self) -> H2Settings:
+        return H2Settings(other=self._local_settings)
+
+    def remote_settings(self) -> H2Settings:
+        return H2Settings(other=self._remote_settings)
+
+    # --- Internal helpers ---
+
+    def _queue_settings_frame(mut self):
+        """Build and queue initial SETTINGS frame."""
+        var payload = List[UInt8]()
+        _append_setting(payload, SETTINGS_ENABLE_PUSH, 0)
+        _append_setting(payload, SETTINGS_MAX_CONCURRENT_STREAMS, Int(self._config.max_concurrent_streams))
+        _append_setting(payload, SETTINGS_MAX_HEADER_LIST_SIZE, Int(self._config.max_header_list_size))
+        if Int(self._config.initial_window_size) != DEFAULT_INITIAL_WINDOW_SIZE:
+            _append_setting(payload, SETTINGS_INITIAL_WINDOW_SIZE, Int(self._config.initial_window_size))
+        if Int(self._config.max_frame_size) != DEFAULT_MAX_FRAME_SIZE:
+            _append_setting(payload, SETTINGS_MAX_FRAME_SIZE, Int(self._config.max_frame_size))
+        if Int(self._config.header_table_size) != DEFAULT_HEADER_TABLE_SIZE:
+            _append_setting(payload, SETTINGS_HEADER_TABLE_SIZE, Int(self._config.header_table_size))
+        if self._config.enable_connect_protocol:
+            _append_setting(payload, SETTINGS_ENABLE_CONNECT_PROTOCOL, 1)
+        var frame = Frame(len(payload), FRAME_SETTINGS, 0, 0, payload)
+        self._queue_frame(frame)
+
+    def _queue_frame(mut self, frame: Frame):
+        """Encode frame and append to outbound buffer."""
+        var encoded = encode_frame(frame)
+        for i in range(len(encoded)):
+            self._outbuf.append(encoded[i])
+
+    def _trim_inbuf(mut self, count: Int):
+        """Remove first `count` bytes from the inbound buffer."""
+        if count <= 0:
+            return
+        var new_buf = List[UInt8]()
+        for i in range(count, len(self._inbuf)):
+            new_buf.append(self._inbuf[i])
+        self._inbuf = new_buf^
+
+    def _connection_error(mut self, mut events: List[H2Event], error_code: Int, message: String):
+        """Send GOAWAY and emit ConnectionTerminated event."""
+        var payload = List[UInt8]()
+        var lsid = Int(self._last_recv_stream_id)
+        payload.append(UInt8((lsid >> 24) & 0x7F))
+        payload.append(UInt8((lsid >> 16) & 0xFF))
+        payload.append(UInt8((lsid >> 8) & 0xFF))
+        payload.append(UInt8(lsid & 0xFF))
+        payload.append(UInt8((error_code >> 24) & 0xFF))
+        payload.append(UInt8((error_code >> 16) & 0xFF))
+        payload.append(UInt8((error_code >> 8) & 0xFF))
+        payload.append(UInt8(error_code & 0xFF))
+        var frame = Frame(len(payload), FRAME_GOAWAY, 0, 0, payload)
+        self._queue_frame(frame)
+        events.append(H2Event.connection_terminated(
+            UInt32(lsid), UInt32(error_code), message
+        ))
+        self._state = CONN_CLOSED
