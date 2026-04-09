@@ -81,10 +81,11 @@ def h2_server_receive(wire: List[UInt8]) raises -> PythonObject:
     var sys = Python.import_module("sys")
     sys.path.insert(0, "scripts")
     var helpers = Python.import_module("oracle_helpers")
-    var py_list = PythonObject([])
+    var builtins = Python.import_module("builtins")
+    var py_list = builtins.list()
     for i in range(len(wire)):
         py_list.append(Int(wire[i]))
-    var ba = Python.import_module("builtins").bytes(py_list)
+    var ba = builtins.bytes(py_list)
     return helpers.h2_server_receive(ba)
 
 
@@ -93,10 +94,11 @@ def h2_client_receive(wire: List[UInt8]) raises -> PythonObject:
     var sys = Python.import_module("sys")
     sys.path.insert(0, "scripts")
     var helpers = Python.import_module("oracle_helpers")
-    var py_list = PythonObject([])
+    var builtins = Python.import_module("builtins")
+    var py_list = builtins.list()
     for i in range(len(wire)):
         py_list.append(Int(wire[i]))
-    var ba = Python.import_module("builtins").bytes(py_list)
+    var ba = builtins.bytes(py_list)
     return helpers.h2_client_receive(ba)
 
 
@@ -106,10 +108,10 @@ def h2_ping_scenario(client_preface: List[UInt8], ping_frame: List[UInt8]) raise
     sys.path.insert(0, "scripts")
     var helpers = Python.import_module("oracle_helpers")
     var builtins = Python.import_module("builtins")
-    var cp_list = PythonObject([])
+    var cp_list = builtins.list()
     for i in range(len(client_preface)):
         cp_list.append(Int(client_preface[i]))
-    var pf_list = PythonObject([])
+    var pf_list = builtins.list()
     for i in range(len(ping_frame)):
         pf_list.append(Int(ping_frame[i]))
     return helpers.h2_ping_scenario(builtins.bytes(cp_list), builtins.bytes(pf_list))
