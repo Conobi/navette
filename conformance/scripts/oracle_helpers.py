@@ -486,6 +486,7 @@ def hpack_story_encode_with_python(headers_lists: list) -> dict:
 # ---- HTTP/2 frame oracle ----
 
 
+
 def decode_frame_with_hyperframe(wire_bytes: bytes) -> dict:
     """Decode one HTTP/2 frame with hyperframe. Returns structured dict.
 
@@ -515,3 +516,108 @@ def decode_frame_with_hyperframe(wire_bytes: bytes) -> dict:
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# HTTP/2 connection oracle (Python h2)
+# ---------------------------------------------------------------------------
+
+def _h2_event_to_dict(event):
+    """Convert h2 event to a serializable dict."""
+    import h2.events
+    result = {"type": type(event).__name__}
+    if isinstance(event, h2.events.RemoteSettingsChanged):
+        result["changed_settings"] = {
+            int(k): {"original_value": v.original_value, "new_value": v.new_value}
+            for k, v in event.changed_settings.items()
+        }
+    elif isinstance(event, h2.events.SettingsAcknowledged):
+        result["changed_settings"] = {}
+    elif isinstance(event, h2.events.PingReceived):
+        result["ping_data"] = event.ping_data.hex()
+    elif isinstance(event, h2.events.PingAckReceived):
+        result["ping_data"] = event.ping_data.hex() if hasattr(event, "ping_data") else ""
+    elif isinstance(event, h2.events.ConnectionTerminated):
+        result["error_code"] = event.error_code
+        result["last_stream_id"] = event.last_stream_id
+        result["additional_data"] = (
+            event.additional_data.hex() if event.additional_data else ""
+        )
+    elif isinstance(event, h2.events.WindowUpdated):
+        result["stream_id"] = event.stream_id
+        result["delta"] = event.delta
+    elif isinstance(event, h2.events.StreamReset):
+        result["stream_id"] = event.stream_id
+        result["error_code"] = event.error_code
+    return result
+
+
+def h2_server_receive(wire_bytes):
+    """Create h2 server, initiate, feed wire_bytes, return result dict."""
+    import h2.connection, h2.config
+    config = h2.config.H2Configuration(client_side=False)
+    conn = h2.connection.H2Connection(config=config)
+    conn.initiate_connection()
+    preface = conn.data_to_send()
+    try:
+        events = conn.receive_data(wire_bytes)
+        response = conn.data_to_send()
+        return {
+            "preface_hex": preface.hex(),
+            "events": [_h2_event_to_dict(e) for e in events],
+            "response_hex": response.hex(),
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "preface_hex": preface.hex(),
+            "events": [],
+            "response_hex": "",
+            "error": str(e),
+        }
+
+
+def h2_client_receive(wire_bytes):
+    """Create h2 client, initiate, feed wire_bytes, return result dict."""
+    import h2.connection, h2.config
+    config = h2.config.H2Configuration(client_side=True)
+    conn = h2.connection.H2Connection(config=config)
+    conn.initiate_connection()
+    preface = conn.data_to_send()
+    try:
+        events = conn.receive_data(wire_bytes)
+        response = conn.data_to_send()
+        return {
+            "preface_hex": preface.hex(),
+            "events": [_h2_event_to_dict(e) for e in events],
+            "response_hex": response.hex(),
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "preface_hex": preface.hex(),
+            "events": [],
+            "response_hex": "",
+            "error": str(e),
+        }
+
+
+def h2_ping_scenario(client_preface_bytes, ping_frame_bytes):
+    """Establish h2 server with client preface, then feed PING frame."""
+    import h2.connection, h2.config
+    config = h2.config.H2Configuration(client_side=False)
+    conn = h2.connection.H2Connection(config=config)
+    conn.initiate_connection()
+    _ = conn.data_to_send()
+    conn.receive_data(client_preface_bytes)
+    _ = conn.data_to_send()
+    try:
+        events = conn.receive_data(ping_frame_bytes)
+        data = conn.data_to_send()
+        return {
+            "events": [_h2_event_to_dict(e) for e in events],
+            "data_to_send_hex": data.hex(),
+            "error": None,
+        }
+    except Exception as e:
+        return {"events": [], "data_to_send_hex": "", "error": str(e)}
