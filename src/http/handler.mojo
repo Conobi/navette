@@ -305,6 +305,32 @@ struct RecvBody(Movable):
         self._state = _BODY_ERRORED
         self._frames.append(BodyFrame.error(err^))
 
+    def try_detach(mut self) -> Optional[DetachedBody]:
+        """Non-consuming detach. Swaps internals into a new DetachedBody,
+        leaves self as a _BODY_DETACHED tombstone. Returns None if body is
+        not in _BODY_OPEN state. Use Optional.unsafe_take() to extract —
+        Optional.value() copies, which fails for move-only DetachedBody."""
+        if self._state != _BODY_OPEN:
+            return Optional[DetachedBody]()
+        # Move frames out of self into a fresh RecvBody for the DetachedBody.
+        # self._frames^ moves the Deque; immediate reinit satisfies the
+        # compiler's use-after-move check.
+        var inner = RecvBody()
+        inner._frames = self._frames^
+        self._frames = Deque[BodyFrame]()
+        inner._state = self._state
+        inner._bytes_buffered = self._bytes_buffered
+        inner._high_water = self._high_water
+        inner._low_water = self._low_water
+        inner._paused = self._paused
+        inner._terminal_consumed = self._terminal_consumed
+        # Tombstone: _BODY_DETACHED makes _push/_set_end/_set_error no-ops
+        self._state = _BODY_DETACHED
+        self._bytes_buffered = UInt(0)
+        self._paused = False
+        self._terminal_consumed = False
+        return Optional[DetachedBody](DetachedBody(take_body=inner^))
+
     # --- Detach (§5.5, §5.7) ---
 
     def detach(deinit self) -> DetachedBody:
