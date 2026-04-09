@@ -8,8 +8,18 @@
 # ---------------------------------------------------------------------------
 comptime H2_NO_ERROR: Int = 0
 comptime H2_PROTOCOL_ERROR: Int = 1
+comptime H2_INTERNAL_ERROR: Int = 2
 comptime H2_FLOW_CONTROL_ERROR: Int = 3
+comptime H2_SETTINGS_TIMEOUT: Int = 4
+comptime H2_STREAM_CLOSED: Int = 5
 comptime H2_FRAME_SIZE_ERROR: Int = 6
+comptime H2_REFUSED_STREAM: Int = 7
+comptime H2_CANCEL: Int = 8
+comptime H2_COMPRESSION_ERROR: Int = 9
+comptime H2_CONNECT_ERROR: Int = 10
+comptime H2_ENHANCE_YOUR_CALM: Int = 11
+comptime H2_INADEQUATE_SECURITY: Int = 12
+comptime H2_HTTP_1_1_REQUIRED: Int = 13
 
 # ---------------------------------------------------------------------------
 # Error scopes
