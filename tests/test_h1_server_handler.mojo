@@ -27,7 +27,7 @@ struct HelloHandler(StreamHandler):
     def on_request(
         mut self,
         var req: Request,
-        var body: RecvBody,
+        mut body: RecvBody,
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
