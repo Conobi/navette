@@ -204,9 +204,10 @@ struct WriteResult(Copyable, Movable):
 # RecvBody (§5.6)
 # ---------------------------------------------------------------------------
 
-comptime _BODY_OPEN    = 0
-comptime _BODY_END     = 1
-comptime _BODY_ERRORED = 2
+comptime _BODY_OPEN     = 0
+comptime _BODY_END      = 1
+comptime _BODY_ERRORED  = 2
+comptime _BODY_DETACHED = 3
 
 
 struct RecvBody(Movable):
@@ -299,7 +300,7 @@ struct RecvBody(Movable):
         self._frames.append(BodyFrame.end())
 
     def _set_error(mut self, var err: StreamError):
-        if self._state == _BODY_ERRORED:
+        if self._state == _BODY_ERRORED or self._state == _BODY_DETACHED:
             return
         self._state = _BODY_ERRORED
         self._frames.append(BodyFrame.error(err^))
