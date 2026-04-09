@@ -44,6 +44,8 @@ from lib.http2.frame import (
     FRAME_PING,
     FRAME_GOAWAY,
     FRAME_HEADERS,
+    FRAME_CONTINUATION,
+    FLAG_END_HEADERS,
 )
 
 
@@ -462,6 +464,74 @@ def test_max_concurrent_streams() raises:
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
 
 
+def test_continuation_assembly() raises:
+    """HEADERS without END_HEADERS + CONTINUATION with END_HEADERS assembles block."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    # HEADERS without END_HEADERS on stream 1
+    var h_payload = List[UInt8]()
+    h_payload.append(UInt8(0x82))
+    h_payload.append(UInt8(0x84))
+    var h_frame = Frame(len(h_payload), FRAME_HEADERS, 0, 1, h_payload)
+    var h_wire = encode_frame(h_frame)
+    _ = server.receive_data(h_wire)
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_OPEN, "stream 1 OPEN while awaiting CONTINUATION")
+
+    # CONTINUATION with END_HEADERS
+    var c_payload = List[UInt8]()
+    c_payload.append(UInt8(0x86))
+    var c_frame = Frame(len(c_payload), FRAME_CONTINUATION, FLAG_END_HEADERS, 1, c_payload)
+    var c_wire = encode_frame(c_frame)
+    _ = server.receive_data(c_wire)
+    assert_equal(server.stream_state(UInt32(1)), STREAM_OPEN, "stream 1 still OPEN after CONTINUATION")
+
+
+def test_continuation_interleave_rejected() raises:
+    """Non-CONTINUATION frame during CONTINUATION sequence → PROTOCOL_ERROR."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    # HEADERS without END_HEADERS
+    var h_payload = List[UInt8]()
+    h_payload.append(UInt8(0x82))
+    var h_frame = Frame(len(h_payload), FRAME_HEADERS, 0, 1, h_payload)
+    var h_wire = encode_frame(h_frame)
+    _ = server.receive_data(h_wire)
+
+    # PING interleaves → PROTOCOL_ERROR (the interleave check is in receive_data loop)
+    var ping_payload = List[UInt8]()
+    for _ in range(8):
+        ping_payload.append(UInt8(0))
+    var ping_frame = Frame(8, FRAME_PING, 0, 0, ping_payload)
+    var ping_wire = encode_frame(ping_frame)
+    var events = server.receive_data(ping_wire)
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+    assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -482,4 +552,6 @@ def main() raises:
     test_stream_id_must_be_odd_for_server()
     test_stream_id_must_increase()
     test_max_concurrent_streams()
-    print("test_h2_connection: 19 tests passed")
+    test_continuation_assembly()
+    test_continuation_interleave_rejected()
+    print("test_h2_connection: 21 tests passed")

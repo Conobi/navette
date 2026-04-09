@@ -815,4 +815,27 @@ struct H2Connection(Movable):
             return False
 
     def _handle_continuation(mut self, frame: Frame, mut events: List[H2Event]):
-        pass
+        """Process inbound CONTINUATION: append fragment, finalize if END_HEADERS."""
+        var stream_id = frame.stream_id
+        if Int(self._expecting_continuation_for) == 0:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Unexpected CONTINUATION"))
+            return
+        if stream_id != Int(self._expecting_continuation_for):
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("CONTINUATION on wrong stream"))
+            return
+        var cp = decode_continuation_payload(frame)
+        if not cp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid CONTINUATION"))
+            return
+        # Read-modify-write for Dict value
+        try:
+            var stream = self._streams[stream_id].copy()
+            for i in range(len(cp.headers_block)):
+                stream.header_block_buffer.append(cp.headers_block[i])
+            if frame.flags & FLAG_END_HEADERS != 0:
+                # Assembly complete (HC-4b: HPACK decode + event emission here)
+                stream.expects_continuation = False
+                self._expecting_continuation_for = UInt32(0)
+            self._streams[stream_id] = stream^
+        except:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream not found for CONTINUATION"))
