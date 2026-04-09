@@ -300,7 +300,7 @@ struct RecvBody(Movable):
         self._frames.append(BodyFrame.end())
 
     def _set_error(mut self, var err: StreamError):
-        if self._state == _BODY_ERRORED or self._state == _BODY_DETACHED:
+        if self._state != _BODY_OPEN:
             return
         self._state = _BODY_ERRORED
         self._frames.append(BodyFrame.error(err^))
