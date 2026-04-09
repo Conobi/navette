@@ -688,9 +688,28 @@ struct H2Connection(Movable):
         self._queue_frame(ack)
         events.append(H2Event.settings_changed())
 
-    # Stub handlers — replaced in later tasks
     def _handle_ping(mut self, frame: Frame, mut events: List[H2Event]):
-        pass
+        """Process inbound PING frame."""
+        var pp = decode_ping_payload(frame)
+        if not pp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid PING"))
+            return
+        if pp.ack:
+            events.append(H2Event.ping_acknowledged(pp.opaque_data.copy()))
+            return
+        # Auto-ACK: send PING with ACK flag and same opaque data
+        var ack_frame = Frame(8, FRAME_PING, FLAG_ACK, 0, pp.opaque_data.copy())
+        self._queue_frame(ack_frame)
+        events.append(H2Event.ping_received(pp.opaque_data.copy()))
+
+    def send_ping(mut self, opaque_data: List[UInt8]) raises:
+        """Send a PING frame with the given 8-byte opaque data."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        if len(opaque_data) != 8:
+            raise Error("PING opaque data must be exactly 8 bytes")
+        var frame = Frame(8, FRAME_PING, 0, 0, opaque_data)
+        self._queue_frame(frame)
 
     def _handle_goaway(mut self, frame: Frame, mut events: List[H2Event]):
         pass
