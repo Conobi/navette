@@ -35,6 +35,8 @@ TESTS=(
     test_hpack_roundtrip
     test_hpack_cross
     test_hpack_security
+    test_h2_connection
+    test_h2_connection_cross
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
