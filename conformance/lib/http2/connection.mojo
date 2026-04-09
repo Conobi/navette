@@ -754,8 +754,60 @@ struct H2Connection(Movable):
         var frame = Frame(4, FRAME_RST_STREAM, 0, Int(stream_id), payload)
         self._queue_frame(frame)
 
+    def acknowledge_received_data(mut self, size: Int, stream_id: UInt32) raises:
+        """Application consumed `size` bytes. Emits WINDOW_UPDATE when threshold met."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        self._recv_window_consumed += size
+        # Auto WINDOW_UPDATE when > half the window is consumed
+        if self._recv_window_consumed > DEFAULT_CONNECTION_WINDOW // 2:
+            self._send_window_update_frame(UInt32(0), UInt32(self._recv_window_consumed))
+            self._recv_window += self._recv_window_consumed
+            self._recv_window_consumed = 0
+
+    def send_window_update(mut self, stream_id: UInt32, increment: UInt32) raises:
+        """Manually send a WINDOW_UPDATE frame."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        self._send_window_update_frame(stream_id, increment)
+
+    def _send_window_update_frame(mut self, stream_id: UInt32, increment: UInt32):
+        """Queue a WINDOW_UPDATE frame."""
+        var inc = Int(increment)
+        var payload = List[UInt8]()
+        payload.append(UInt8((inc >> 24) & 0x7F))
+        payload.append(UInt8((inc >> 16) & 0xFF))
+        payload.append(UInt8((inc >> 8) & 0xFF))
+        payload.append(UInt8(inc & 0xFF))
+        var wu_frame = Frame(4, FRAME_WINDOW_UPDATE, 0, Int(stream_id), payload)
+        self._queue_frame(wu_frame)
+
     def _handle_window_update(mut self, frame: Frame, mut events: List[H2Event]):
-        pass
+        """Process inbound WINDOW_UPDATE on stream 0 or a specific stream."""
+        var wp = decode_window_update_payload(frame)
+        if not wp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid WINDOW_UPDATE"))
+            return
+        if frame.stream_id == 0:
+            # Connection-level: check overflow
+            if self._send_window + wp.window_increment > 2147483647:
+                self._connection_error(events, H2_FLOW_CONTROL_ERROR, String("Connection window overflow"))
+                return
+            self._send_window += wp.window_increment
+            events.append(H2Event.window_updated(UInt32(0), UInt32(wp.window_increment)))
+        else:
+            # Stream-level
+            if self._has_stream(frame.stream_id):
+                try:
+                    var stream = self._streams[frame.stream_id].copy()
+                    if stream.send_window + wp.window_increment > 2147483647:
+                        events.append(H2Event.stream_reset(UInt32(frame.stream_id), UInt32(H2_FLOW_CONTROL_ERROR)))
+                        return
+                    stream.send_window += wp.window_increment
+                    self._streams[frame.stream_id] = stream^
+                    events.append(H2Event.window_updated(UInt32(frame.stream_id), UInt32(wp.window_increment)))
+                except:
+                    pass
 
     def _handle_headers(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound HEADERS: create stream, start CONTINUATION if needed."""
@@ -809,7 +861,7 @@ struct H2Connection(Movable):
 
     def _has_stream(self, stream_id: Int) -> Bool:
         try:
-            _ = self._streams[stream_id]
+            _ = self._streams[stream_id].copy()
             return True
         except:
             return False

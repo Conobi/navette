@@ -45,6 +45,7 @@ from lib.http2.frame import (
     FRAME_GOAWAY,
     FRAME_HEADERS,
     FRAME_CONTINUATION,
+    FRAME_WINDOW_UPDATE,
     FLAG_END_HEADERS,
 )
 
@@ -532,6 +533,84 @@ def test_continuation_interleave_rejected() raises:
     assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
 
 
+def test_window_update_connection() raises:
+    """WINDOW_UPDATE on stream 0 adjusts connection send window."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    # Build WINDOW_UPDATE on stream 0 with increment=1024
+    var payload = List[UInt8]()
+    payload.append(UInt8(0))
+    payload.append(UInt8(0))
+    payload.append(UInt8(0x04))
+    payload.append(UInt8(0x00))  # increment = 1024
+    var wu_frame = Frame(4, FRAME_WINDOW_UPDATE, 0, 0, payload)
+    var wu_wire = encode_frame(wu_frame)
+    var events = server.receive_data(wu_wire)
+    assert_true(len(events) >= 1, "server got event")
+    assert_equal(events[0].kind, H2_EVT_WINDOW_UPDATED, "WindowUpdated")
+    assert_equal(Int(events[0].window_increment), 1024, "increment is 1024")
+    assert_equal(Int(events[0].stream_id), 0, "stream_id 0")
+
+
+def test_window_update_overflow() raises:
+    """WINDOW_UPDATE that overflows 2^31-1 → FLOW_CONTROL_ERROR."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var cp = client.data_to_send()
+    var sp = server.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+    _ = client.receive_data(sp)
+    _ = client.data_to_send()
+    _ = client.receive_data(server.data_to_send())
+    _ = server.receive_data(client.data_to_send())
+
+    # Current window = 65535. Send increment = 2^31 - 1 → would overflow
+    var overflow_inc = 2147483647
+    var payload = List[UInt8]()
+    payload.append(UInt8((overflow_inc >> 24) & 0x7F))
+    payload.append(UInt8((overflow_inc >> 16) & 0xFF))
+    payload.append(UInt8((overflow_inc >> 8) & 0xFF))
+    payload.append(UInt8(overflow_inc & 0xFF))
+    var wu_frame = Frame(4, FRAME_WINDOW_UPDATE, 0, 0, payload)
+    var wu_wire = encode_frame(wu_frame)
+    var events = server.receive_data(wu_wire)
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+    assert_equal(Int(events[0].error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
+
+
+def test_acknowledge_received_data() raises:
+    """acknowledge_received_data tracks consumption and emits WINDOW_UPDATE."""
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    _ = server.data_to_send()
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var cp = client.data_to_send()
+    _ = server.receive_data(cp)
+    _ = server.data_to_send()
+
+    # Simulate consuming 40000 bytes (> half of 65535 → triggers WINDOW_UPDATE)
+    server.acknowledge_received_data(40000, UInt32(0))
+    var data = server.data_to_send()
+    assert_true(len(data) >= 13, "WINDOW_UPDATE emitted (9 header + 4 payload)")
+    assert_equal(Int(data[3]), FRAME_WINDOW_UPDATE, "frame type WINDOW_UPDATE")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -554,4 +633,7 @@ def main() raises:
     test_max_concurrent_streams()
     test_continuation_assembly()
     test_continuation_interleave_rejected()
-    print("test_h2_connection: 21 tests passed")
+    test_window_update_connection()
+    test_window_update_overflow()
+    test_acknowledge_received_data()
+    print("test_h2_connection: 24 tests passed")
