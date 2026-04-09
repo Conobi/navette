@@ -20,6 +20,8 @@ from lib.http2.connection import (
     STREAM_HALF_CLOSED_REMOTE, STREAM_CLOSED,
     CONN_IDLE, CONN_OPEN, CONN_GOAWAY, CONN_CLOSED,
     H2Connection,
+    _append_setting,
+    SETTINGS_INITIAL_WINDOW_SIZE,
 )
 from lib.http2.frame import (
     Frame,
@@ -215,6 +217,60 @@ def test_server_rejects_bad_magic() raises:
     assert_true(server.is_closed(), "connection closed")
 
 
+def test_settings_ack_roundtrip() raises:
+    """Full preface exchange: client and server both get SettingsAcknowledged."""
+    var client = H2Connection(client_side=True)
+    var server = H2Connection(client_side=False)
+    client.initiate_connection()
+    server.initiate_connection()
+    var client_preface = client.data_to_send()
+    var server_preface = server.data_to_send()
+
+    # Server processes client preface → SettingsChanged + queues ACK
+    var server_events = server.receive_data(client_preface)
+    assert_true(len(server_events) >= 1, "server got events")
+    assert_equal(server_events[0].kind, H2_EVT_SETTINGS_CHANGED, "server got SETTINGS_CHANGED")
+    var server_ack = server.data_to_send()
+
+    # Client processes server preface → SettingsChanged
+    var client_events_1 = client.receive_data(server_preface)
+    assert_true(len(client_events_1) >= 1, "client got events from server preface")
+    assert_equal(client_events_1[0].kind, H2_EVT_SETTINGS_CHANGED, "client got SETTINGS_CHANGED")
+    var client_ack = client.data_to_send()
+
+    # Client processes server's ACK → SettingsAcknowledged
+    var client_events_2 = client.receive_data(server_ack)
+    assert_true(len(client_events_2) >= 1, "client got events from server ACK")
+    assert_equal(client_events_2[0].kind, H2_EVT_SETTINGS_ACKNOWLEDGED, "client got SETTINGS_ACKNOWLEDGED")
+
+    # Server processes client's ACK → SettingsAcknowledged
+    var server_events_2 = server.receive_data(client_ack)
+    assert_true(len(server_events_2) >= 1, "server got events from client ACK")
+    assert_equal(server_events_2[0].kind, H2_EVT_SETTINGS_ACKNOWLEDGED, "server got SETTINGS_ACKNOWLEDGED")
+
+
+def test_settings_invalid_initial_window() raises:
+    """SETTINGS with INITIAL_WINDOW_SIZE > 2^31-1 triggers FLOW_CONTROL_ERROR."""
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    _ = server.data_to_send()
+    # Exchange preface first
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var good_preface = client.data_to_send()
+    _ = server.receive_data(good_preface)
+    _ = server.data_to_send()
+    # Now send a SETTINGS with bad INITIAL_WINDOW_SIZE (2^31 = 2147483648)
+    var payload = List[UInt8]()
+    _append_setting(payload, SETTINGS_INITIAL_WINDOW_SIZE, 2147483648)
+    var frame = Frame(len(payload), FRAME_SETTINGS, 0, 0, payload)
+    var wire = encode_frame(frame)
+    var events = server.receive_data(wire)
+    assert_true(len(events) >= 1, "server emitted event")
+    assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
+    assert_equal(Int(events[0].error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
+
+
 def main() raises:
     test_error_codes()
     test_h2config_defaults()
@@ -226,4 +282,6 @@ def main() raises:
     test_server_preface()
     test_server_receives_client_preface()
     test_server_rejects_bad_magic()
-    print("test_h2_connection: 10 tests passed")
+    test_settings_ack_roundtrip()
+    test_settings_invalid_initial_window()
+    print("test_h2_connection: 12 tests passed")
