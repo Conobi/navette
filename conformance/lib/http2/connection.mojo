@@ -590,3 +590,116 @@ struct H2Connection(Movable):
             UInt32(lsid), UInt32(error_code), message
         ))
         self._state = CONN_CLOSED
+
+    def receive_data(mut self, data: List[UInt8]) raises -> List[H2Event]:
+        """Feed wire bytes, decode frames, return events."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        for i in range(len(data)):
+            self._inbuf.append(data[i])
+        var events = List[H2Event]()
+        var pos = 0
+        # Server: validate client magic
+        if not self._client_magic_validated:
+            if len(self._inbuf) < H2_CLIENT_MAGIC_LEN:
+                return events^
+            var magic = _client_magic()
+            for i in range(H2_CLIENT_MAGIC_LEN):
+                if self._inbuf[i] != magic[i]:
+                    self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid connection preface"))
+                    self._trim_inbuf(len(self._inbuf))
+                    return events^
+            self._client_magic_validated = True
+            pos = H2_CLIENT_MAGIC_LEN
+        # Parse frames
+        while pos < len(self._inbuf):
+            var result = decode_frame(self._inbuf, pos)
+            var frame = result[0].copy()
+            var consumed = result[1]
+            if consumed == 0:
+                break
+            if not frame.ok():
+                self._connection_error(events, frame.error_code, String(frame.error))
+                pos += consumed
+                break
+            # CONTINUATION interleave check
+            if self._expecting_continuation_for != UInt32(0) and frame.frame_type != FRAME_CONTINUATION:
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("Expected CONTINUATION"))
+                pos += consumed
+                break
+            # Dispatch
+            if frame.frame_type == FRAME_SETTINGS:
+                self._handle_settings(frame, events)
+            elif frame.frame_type == FRAME_PING:
+                self._handle_ping(frame, events)
+            elif frame.frame_type == FRAME_GOAWAY:
+                self._handle_goaway(frame, events)
+            elif frame.frame_type == FRAME_WINDOW_UPDATE:
+                self._handle_window_update(frame, events)
+            elif frame.frame_type == FRAME_HEADERS:
+                self._handle_headers(frame, events)
+            elif frame.frame_type == FRAME_CONTINUATION:
+                self._handle_continuation(frame, events)
+            elif frame.frame_type == FRAME_PRIORITY:
+                pass  # Accept and ignore (RFC 9113 §5.3.2)
+            pos += consumed
+            if self._state == CONN_CLOSED:
+                break
+        self._trim_inbuf(pos)
+        return events^
+
+    def _handle_settings(mut self, frame: Frame, mut events: List[H2Event]):
+        """Process inbound SETTINGS frame."""
+        var sp = decode_settings_payload(frame)
+        if not sp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid SETTINGS: " + sp.error))
+            return
+        if sp.ack:
+            if not self._settings_acked:
+                self._settings_acked = True
+                events.append(H2Event.settings_acknowledged())
+            return
+        # Apply remote settings
+        for i in range(len(sp.settings)):
+            var s = sp.settings[i].copy()
+            if s.id == SETTINGS_HEADER_TABLE_SIZE:
+                self._remote_settings.header_table_size = UInt32(s.value)
+                self._hpack_encoder.set_max_table_size(s.value)
+            elif s.id == SETTINGS_ENABLE_PUSH:
+                self._remote_settings.enable_push = s.value != 0
+            elif s.id == SETTINGS_MAX_CONCURRENT_STREAMS:
+                self._remote_settings.max_concurrent_streams = UInt32(s.value)
+            elif s.id == SETTINGS_INITIAL_WINDOW_SIZE:
+                if s.value > 2147483647:
+                    self._connection_error(events, H2_FLOW_CONTROL_ERROR, String("INITIAL_WINDOW_SIZE > 2^31-1"))
+                    return
+                self._remote_settings.initial_window_size = UInt32(s.value)
+            elif s.id == SETTINGS_MAX_FRAME_SIZE:
+                if s.value < 16384 or s.value > 16777215:
+                    self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid MAX_FRAME_SIZE"))
+                    return
+                self._remote_settings.max_frame_size = UInt32(s.value)
+            elif s.id == SETTINGS_MAX_HEADER_LIST_SIZE:
+                self._remote_settings.max_header_list_size = UInt32(s.value)
+            elif s.id == SETTINGS_ENABLE_CONNECT_PROTOCOL:
+                self._remote_settings.enable_connect_protocol = s.value != 0
+        # Send ACK
+        var ack = Frame(0, FRAME_SETTINGS, FLAG_ACK, 0, List[UInt8]())
+        self._queue_frame(ack)
+        events.append(H2Event.settings_changed())
+
+    # Stub handlers — replaced in later tasks
+    def _handle_ping(mut self, frame: Frame, mut events: List[H2Event]):
+        pass
+
+    def _handle_goaway(mut self, frame: Frame, mut events: List[H2Event]):
+        pass
+
+    def _handle_window_update(mut self, frame: Frame, mut events: List[H2Event]):
+        pass
+
+    def _handle_headers(mut self, frame: Frame, mut events: List[H2Event]):
+        pass
+
+    def _handle_continuation(mut self, frame: Frame, mut events: List[H2Event]):
+        pass
