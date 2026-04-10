@@ -223,9 +223,12 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         # Invoke handler with local mut borrows.
         self.handler.on_request(req^, body, resp, Capabilities.for_h2())
 
+        # Check if handler detached the body (try_detach sets _state to 3).
+        # RecvBody._state == 3 means _BODY_DETACHED (not publicly exported).
+        var detached = body._state == 3
+
         # If stream already ended and handler didn't detach, fire on_request_end.
-        # We can check detached directly on body (detach changes its state).
-        if stream_ended:
+        if stream_ended and not detached:
             self.handler.on_request_end(body, resp)
 
         # Now allocate stream context on the heap and move locals in.
@@ -233,6 +236,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var ctx = _StreamCtx()
         ctx.recv_body = body^
         ctx.resp_writer = resp^
+        ctx.detached = detached
         ctx.request_ended = stream_ended
         ctx_ptr.init_pointee_move(ctx^)
 
