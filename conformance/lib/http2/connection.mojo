@@ -798,6 +798,53 @@ struct H2Connection(Movable):
                 self._queue_frame(cont_frame)
                 offset = end
 
+    def send_data(mut self, stream_id: UInt32, data: List[UInt8], *, end_stream: Bool = False) raises:
+        """Send DATA frame(s). Fragments to max_frame_size. Checks send windows."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        var sid = Int(stream_id)
+        if not self._has_stream(sid):
+            raise Error("Unknown stream: " + String(sid))
+        var stream: StreamState
+        try:
+            stream = self._streams[sid].copy()
+        except:
+            raise Error("Stream not found: " + String(sid))
+        if stream.lifecycle != STREAM_OPEN and stream.lifecycle != STREAM_HALF_CLOSED_REMOTE:
+            raise Error("Cannot send on stream in state " + String(stream.lifecycle))
+        var total = len(data)
+        if total > self._send_window:
+            raise Error("Flow control error: connection send window exhausted")
+        if total > stream.send_window:
+            raise Error("Flow control error: stream send window exhausted")
+        var max_size = Int(self._remote_settings.max_frame_size)
+        var offset = 0
+        while offset < total or (offset == 0 and total == 0):
+            var end = offset + max_size
+            if end > total:
+                end = total
+            var chunk = List[UInt8]()
+            for i in range(offset, end):
+                chunk.append(data[i])
+            var flags = 0
+            var is_last = (end >= total)
+            if end_stream and is_last:
+                flags = FLAG_END_STREAM
+            var frame = Frame(len(chunk), FRAME_DATA, flags, sid, chunk)
+            self._queue_frame(frame)
+            offset = end
+            if offset == 0 and total == 0:
+                break
+        self._send_window -= total
+        stream.send_window -= total
+        if end_stream:
+            if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                stream.lifecycle = STREAM_CLOSED
+                self._active_stream_count -= 1
+            else:
+                stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+        self._streams[sid] = stream^
+
     def _handle_goaway(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound GOAWAY frame."""
         var gp = decode_goaway_payload(frame)
