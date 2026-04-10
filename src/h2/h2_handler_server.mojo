@@ -244,16 +244,81 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._streams[stream_id] = _StreamPtr(UInt64(Int(ctx_ptr)))
 
     def _on_data_received(mut self, evt: H2Event) raises:
-        """Handle DATA_RECEIVED — stub for Task 6."""
-        pass
+        """Handle DATA_RECEIVED: push data into RecvBody, manage flow control,
+        notify handler via on_body_available.  If the event carries
+        END_STREAM, also mark the body ended and invoke on_request_end."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr = self._streams[sid].ptr()
+        # take_pointee moves the entire _StreamCtx out of the heap so we can
+        # get mut borrows on body/resp without going through UnsafePointer.
+        var ctx = ctx_ptr.take_pointee()
+        # Push data into RecvBody
+        if len(evt.data) > 0:
+            var data_copy = evt.data.copy()
+            ctx.recv_body._push(BodyFrame.data(data_copy^))
+        # Flow control: acknowledge unless paused
+        if not ctx.recv_body.is_paused():
+            self._conn.acknowledge_received_data(
+                evt.flow_controlled_length, evt.stream_id
+            )
+        else:
+            ctx.unacked_bytes += evt.flow_controlled_length
+        # Notify handler (if body not detached)
+        if not ctx.detached:
+            self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)
+        # Check if paused state cleared after handler consumed
+        if ctx.unacked_bytes > 0 and not ctx.recv_body.is_paused():
+            self._conn.acknowledge_received_data(
+                ctx.unacked_bytes, evt.stream_id
+            )
+            ctx.unacked_bytes = 0
+        # If END_STREAM was set on the DATA frame, mark body ended and
+        # fire on_request_end.
+        if evt.stream_ended and not ctx.request_ended:
+            ctx.request_ended = True
+            ctx.recv_body._set_end()
+            if not ctx.detached:
+                self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
+        # Move back into the heap
+        ctx_ptr.init_pointee_move(ctx^)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
-        """Handle TRAILERS_RECEIVED — stub for Task 6."""
-        pass
+        """Handle TRAILERS_RECEIVED: convert headers, push as trailer BodyFrame.
+        Trailers always carry END_STREAM (enforced by H2Connection), so also
+        notify via on_body_available, mark body ended, fire on_request_end."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr = self._streams[sid].ptr()
+        var trailer_headers = headers_from_h2(evt.headers)
+        # take_pointee to get mut access to recv_body/resp_writer
+        var ctx = ctx_ptr.take_pointee()
+        ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
+        # Notify handler that new body frames (trailers) are available
+        if not ctx.detached:
+            self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)
+        # Trailers always carry END_STREAM — mark body ended
+        if not ctx.request_ended:
+            ctx.request_ended = True
+            ctx.recv_body._set_end()
+            if not ctx.detached:
+                self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
+        ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
-        """Handle STREAM_ENDED — stub for Task 6."""
-        pass
+        """Handle STREAM_ENDED: mark the body as ended, notify handler via
+        on_request_end if not detached."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr = self._streams[sid].ptr()
+        # Read request_ended through the pointer (Bool is trivially copyable)
+        if ctx_ptr[].request_ended:
+            return  # already ended (e.g. END_STREAM on HEADERS)
+        # take_pointee to get mut access to body/resp
+        var ctx = ctx_ptr.take_pointee()
+        ctx.request_ended = True
+        ctx.recv_body._set_end()
+        if not ctx.detached:
+            self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
+        # Move back into the heap
+        ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET — stub for Task 7."""

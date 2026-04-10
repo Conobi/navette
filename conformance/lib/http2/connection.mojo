@@ -775,8 +775,9 @@ struct H2Connection(Movable):
                 stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
             self._streams[sid] = stream^
             self._active_stream_count += 1
-        elif not self._client_side and self._has_stream(sid):
-            # Server sending response on existing stream
+        elif self._has_stream(sid):
+            # Existing stream: server sending response OR client/server
+            # sending trailers.  Trailers MUST carry END_STREAM.
             if end_stream:
                 try:
                     var stream = self._streams[sid].copy()
