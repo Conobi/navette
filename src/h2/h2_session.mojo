@@ -30,7 +30,7 @@ from src.http.headers import Headers
 from src.http.version import Version
 from src.http.status import StatusCode
 from src.http.body import BodyFrame
-from src.h2.pseudo_headers import request_to_h2_headers
+from src.h2.pseudo_headers import request_to_h2_headers, response_from_h2_headers
 from src.h2.config import h2_production_config
 
 
@@ -145,15 +145,30 @@ struct H2Session(Session):
         self._stream_ctxs = take._stream_ctxs^
         self._handle_to_stream = take._handle_to_stream^
 
+    fn __del__(deinit self):
+        """Free all heap-allocated client stream contexts."""
+        var keys = List[Int]()
+        for key in self._stream_ctxs.keys():
+            keys.append(key)
+        for i in range(len(keys)):
+            try:
+                var p = self._stream_ctxs[keys[i]].ptr()
+                p.destroy_pointee()
+                p.free()
+            except:
+                pass
+
     # --- Session trait API ---------------------------------------------------
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
+        if req.body.is_stream():
+            raise Error("H2Session.submit: streaming request bodies not supported in v1")
         self._next_handle_id += UInt64(1)
         var handle_id = self._next_handle_id
         var stream_id = self._conn.next_stream_id()
         var h2_headers = request_to_h2_headers(req)
         var has_body = req.body.is_buffered() and len(req.body.bytes()) > 0
-        var end_stream = not has_body and not req.body.is_stream()
+        var end_stream = not has_body
         self._conn.send_headers(stream_id, h2_headers^, end_stream=end_stream)
         if has_body:
             self._conn.send_data(
@@ -309,19 +324,11 @@ struct H2Session(Session):
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
             return
-        # Parse :status from pseudo-headers and extract regular headers
-        var status_code = -1
-        var headers = Headers()
-        for j in range(len(evt.headers)):
-            var name = evt.headers[j].name
-            var value = evt.headers[j].value
-            if name == ":status":
-                status_code = atol(value)
-            else:
-                headers.add(name, value)
+        # Use the canonical pseudo-header parser for validation
+        var resp = response_from_h2_headers(evt.headers)
         var ctx = ctx_ptr.take_pointee()
-        ctx.status_code = status_code
-        ctx.headers = headers^
+        ctx.status_code = Int(resp.status.code())
+        ctx.headers = Headers(other=resp.headers)
         if evt.stream_ended:
             ctx.complete = True
         ctx_ptr.init_pointee_move(ctx^)
