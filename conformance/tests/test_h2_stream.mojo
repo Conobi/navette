@@ -66,6 +66,138 @@ def test_stream_state_new_fields() raises:
     assert_true(not s3.data_received, "move data_received")
 
 
+def _server_conn_after_preface() raises -> H2Connection:
+    """Create a server conn that has received client preface."""
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    _ = server.data_to_send()
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var client_preface = client.data_to_send()
+    var events = server.receive_data(client_preface)
+    _ = server.data_to_send()
+    return server^
+
+
+def _build_hpack_headers_frame(stream_id: Int, headers: List[Header], end_headers: Bool = True, end_stream: Bool = False) -> List[UInt8]:
+    """Build a HEADERS frame with HPACK-encoded header block."""
+    var encoder = HpackEncoder(HpackConfig(use_huffman=False))
+    var block = encoder.encode(headers)
+    var flags = 0
+    if end_headers:
+        flags = flags | 0x04  # END_HEADERS
+    if end_stream:
+        flags = flags | 0x01  # END_STREAM
+    var frame = Frame(len(block), FRAME_HEADERS, flags, stream_id, block)
+    return encode_frame(frame)
+
+
+def test_hpack_decode_request_received() raises:
+    """Server decodes HPACK headers from HEADERS frame, emits RequestReceived."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "GET"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var frame_bytes = _build_hpack_headers_frame(1, req_headers)
+    var events = server.receive_data(frame_bytes)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_REQUEST_RECEIVED:
+            found = True
+            assert_equal(Int(events[i].stream_id), 1, "stream_id")
+            assert_equal(len(events[i].headers), 4, "header count")
+            assert_true(events[i].headers[0].name == ":method", "h0 name")
+            assert_true(events[i].headers[0].value == "GET", "h0 value")
+            assert_true(events[i].headers[1].name == ":path", "h1 name")
+            assert_true(events[i].headers[1].value == "/", "h1 value")
+            assert_true(not events[i].stream_ended, "stream_ended=False")
+    assert_true(found, "RequestReceived event emitted")
+
+
+def test_hpack_decode_end_stream_half_close() raises:
+    """HEADERS with END_STREAM transitions stream to HALF_CLOSED_REMOTE."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "GET"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var frame_bytes = _build_hpack_headers_frame(1, req_headers, end_stream=True)
+    var events = server.receive_data(frame_bytes)
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_HALF_CLOSED_REMOTE, "half-closed remote after END_STREAM")
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_REQUEST_RECEIVED:
+            assert_true(events[i].stream_ended, "stream_ended=True")
+
+
+def test_hpack_decode_compression_error() raises:
+    """Invalid HPACK block triggers COMPRESSION_ERROR."""
+    var server = _server_conn_after_preface()
+    # Invalid HPACK: overlong integer that never terminates
+    var bad_block = List[UInt8]()
+    bad_block.append(UInt8(0xFF))
+    bad_block.append(UInt8(0xFF))
+    bad_block.append(UInt8(0xFF))
+    bad_block.append(UInt8(0xFF))
+    bad_block.append(UInt8(0xFF))
+    bad_block.append(UInt8(0x0F))
+    var flags = 0x04  # END_HEADERS only
+    var frame = Frame(len(bad_block), FRAME_HEADERS, flags, 1, bad_block)
+    var frame_bytes = encode_frame(frame)
+    var events = server.receive_data(frame_bytes)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_CONNECTION_TERMINATED:
+            found = True
+            assert_equal(Int(events[i].error_code), H2_COMPRESSION_ERROR, "COMPRESSION_ERROR")
+    assert_true(found, "connection terminated on HPACK error")
+
+
+def test_hpack_decode_continuation_assembly() raises:
+    """HEADERS + CONTINUATION decoded after assembly, emits RequestReceived."""
+    var server = _server_conn_after_preface()
+    var encoder = HpackEncoder(HpackConfig(use_huffman=False))
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "GET"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var block = encoder.encode(req_headers)
+    # Split block: first 3 bytes in HEADERS, rest in CONTINUATION
+    var split_point = 3
+    var first_part = List[UInt8]()
+    for i in range(split_point):
+        first_part.append(block[i])
+    var second_part = List[UInt8]()
+    for i in range(split_point, len(block)):
+        second_part.append(block[i])
+    # HEADERS without END_HEADERS
+    var hdr_frame = Frame(len(first_part), FRAME_HEADERS, 0, 1, first_part)
+    var wire = encode_frame(hdr_frame)
+    # CONTINUATION with END_HEADERS
+    var cont_frame = Frame(len(second_part), FRAME_CONTINUATION, 0x04, 1, second_part)
+    var cont_wire = encode_frame(cont_frame)
+    for i in range(len(cont_wire)):
+        wire.append(cont_wire[i])
+    var events = server.receive_data(wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_REQUEST_RECEIVED:
+            found = True
+            assert_equal(Int(events[i].stream_id), 1, "stream_id")
+            assert_equal(len(events[i].headers), 4, "header count after assembly")
+            assert_true(events[i].headers[0].name == ":method", "h0 name")
+            assert_true(events[i].headers[0].value == "GET", "h0 value")
+    assert_true(found, "RequestReceived after CONTINUATION assembly")
+
+
 def main() raises:
     test_stream_state_new_fields()
+    test_hpack_decode_request_received()
+    test_hpack_decode_end_stream_half_close()
+    test_hpack_decode_compression_error()
+    test_hpack_decode_continuation_assembly()
     print("All tests passed.")

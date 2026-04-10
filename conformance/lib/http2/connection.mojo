@@ -848,14 +848,28 @@ struct H2Connection(Movable):
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid HEADERS: " + hp.error))
             return
         if frame.flags & FLAG_END_HEADERS != 0:
-            # Header block complete (HC-4b: HPACK decode + event here)
+            # HPACK decode the complete header block
+            var decode_result = self._hpack_decoder.decode(hp.headers_block)
+            var decoded_headers = decode_result[0].copy()
+            var decode_error = decode_result[1]
+            if len(decode_error) > 0:
+                self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
+                return
+            var end_stream = (frame.flags & FLAG_END_STREAM) != 0
+            if end_stream:
+                stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
             self._streams[stream_id] = stream^
             self._active_stream_count += 1
+            if not self._client_side:
+                events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))
+            else:
+                events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
         else:
             # Buffer fragment, wait for CONTINUATION
             for i in range(len(hp.headers_block)):
                 stream.header_block_buffer.append(hp.headers_block[i])
             stream.expects_continuation = True
+            stream.headers_end_stream = (frame.flags & FLAG_END_STREAM) != 0
             self._streams[stream_id] = stream^
             self._active_stream_count += 1
             self._expecting_continuation_for = UInt32(stream_id)
@@ -893,9 +907,26 @@ struct H2Connection(Movable):
             for i in range(len(cp.headers_block)):
                 stream.header_block_buffer.append(cp.headers_block[i])
             if frame.flags & FLAG_END_HEADERS != 0:
-                # Assembly complete (HC-4b: HPACK decode + event emission here)
+                # Assembly complete — HPACK decode
                 stream.expects_continuation = False
                 self._expecting_continuation_for = UInt32(0)
+                var decode_result = self._hpack_decoder.decode(stream.header_block_buffer)
+                var decoded_headers = decode_result[0].copy()
+                var decode_error = decode_result[1]
+                if len(decode_error) > 0:
+                    self._streams[stream_id] = stream^
+                    self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
+                    return
+                var end_stream = stream.headers_end_stream
+                if end_stream:
+                    stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
+                stream.header_block_buffer = List[UInt8]()  # clear buffer
+                self._streams[stream_id] = stream^
+                if not self._client_side:
+                    events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))
+                else:
+                    events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
+                return  # Don't fall through to the else branch's stream write
             self._streams[stream_id] = stream^
         except:
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream not found for CONTINUATION"))
