@@ -502,6 +502,44 @@ def test_stream_flow_control_window_update() raises:
     assert_true(stream_wu, "stream-level WINDOW_UPDATE emitted")
 
 
+def test_inbound_trailers() raises:
+    """Server receives trailer HEADERS after DATA, emits TrailersReceived."""
+    var server = _server_conn_after_preface()
+    # HEADERS (no END_STREAM)
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "POST"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var headers_wire = _build_hpack_headers_frame(1, req_headers)
+    _ = server.receive_data(headers_wire)
+    _ = server.data_to_send()
+    # DATA
+    var body = List[UInt8]()
+    body.append(UInt8(0x68))
+    var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
+    var data_wire = encode_frame(data_frame)
+    _ = server.receive_data(data_wire)
+    _ = server.data_to_send()
+    # Trailer HEADERS (END_STREAM + END_HEADERS)
+    var trailer_headers = List[Header]()
+    trailer_headers.append(Header("x-checksum", "abc123"))
+    var trailer_wire = _build_hpack_headers_frame(1, trailer_headers, end_stream=True)
+    var events = server.receive_data(trailer_wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_TRAILERS_RECEIVED:
+            found = True
+            assert_equal(Int(events[i].stream_id), 1, "stream_id")
+            assert_equal(len(events[i].headers), 1, "trailer count")
+            assert_true(events[i].headers[0].name == "x-checksum", "trailer name")
+            assert_true(events[i].headers[0].value == "abc123", "trailer value")
+            assert_true(events[i].stream_ended, "stream_ended=True on trailers")
+    assert_true(found, "TrailersReceived event emitted")
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_HALF_CLOSED_REMOTE, "half-closed remote after trailers")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -517,4 +555,5 @@ def main() raises:
     test_send_data()
     test_send_data_window_exhaustion()
     test_stream_flow_control_window_update()
+    test_inbound_trailers()
     print("All tests passed.")

@@ -1056,8 +1056,38 @@ struct H2Connection(Movable):
             self._expecting_continuation_for = UInt32(stream_id)
 
     def _handle_trailer_headers(mut self, frame: Frame, stream: StreamState, mut events: List[H2Event]):
-        """Process trailer HEADERS on an existing stream. (Stub — Task 8)"""
-        self._connection_error(events, H2_PROTOCOL_ERROR, String("Trailers not yet implemented"))
+        """Process trailer HEADERS on an existing stream with data_received=True."""
+        var stream_id = frame.stream_id
+        var hp = decode_headers_payload(frame.copy())
+        if not hp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid trailer HEADERS: " + hp.error))
+            return
+        if frame.flags & FLAG_END_HEADERS != 0:
+            var decode_result = self._hpack_decoder.decode(hp.headers_block)
+            var decoded_headers = decode_result[0].copy()
+            var decode_error = decode_result[1]
+            if len(decode_error) > 0:
+                self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
+                return
+            var end_stream = (frame.flags & FLAG_END_STREAM) != 0
+            var s = StreamState(other=stream)
+            if end_stream:
+                if s.lifecycle == STREAM_HALF_CLOSED_LOCAL:
+                    s.lifecycle = STREAM_CLOSED
+                    self._active_stream_count -= 1
+                else:
+                    s.lifecycle = STREAM_HALF_CLOSED_REMOTE
+            self._streams[stream_id] = s^
+            events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
+        else:
+            # CONTINUATION assembly for trailers
+            var s = StreamState(other=stream)
+            for i in range(len(hp.headers_block)):
+                s.header_block_buffer.append(hp.headers_block[i])
+            s.expects_continuation = True
+            s.headers_end_stream = (frame.flags & FLAG_END_STREAM) != 0
+            self._streams[stream_id] = s^
+            self._expecting_continuation_for = UInt32(stream_id)
 
     def stream_state(self, stream_id: UInt32) raises -> Int:
         """Return STREAM_* lifecycle constant. Raises for unknown streams."""
@@ -1106,10 +1136,15 @@ struct H2Connection(Movable):
                 if end_stream:
                     stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
                 stream.header_block_buffer = List[UInt8]()  # clear buffer
-                self._streams[stream_id] = stream^
-                if not self._client_side:
+                if stream.data_received:
+                    # Trailers
+                    self._streams[stream_id] = stream^
+                    events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
+                elif not self._client_side:
+                    self._streams[stream_id] = stream^
                     events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))
                 else:
+                    self._streams[stream_id] = stream^
                     events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
                 return  # Don't fall through to the else branch's stream write
             self._streams[stream_id] = stream^
