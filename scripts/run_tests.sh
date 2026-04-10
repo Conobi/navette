@@ -48,6 +48,7 @@ TESTS=(
     test_alt_svc
     test_sse
     test_h2_pseudo_headers
+    test_h2_handler
 )
 
 FILTER="${TESTS_FILTER:-}"
