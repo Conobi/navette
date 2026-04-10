@@ -676,6 +676,16 @@ def test_settings_max_frame_size_invalid() raises:
     assert_true(found, "connection error on invalid MAX_FRAME_SIZE")
 
 
+def test_oracle_roundtrip_smoke() raises:
+    """H2_roundtrip oracle returns valid result dict."""
+    from lib.http2.oracles import h2_roundtrip
+    var result = h2_roundtrip()
+    var error = String(result["error"])
+    assert_true(error == "None", "no oracle error")
+    var server_events = result["server_events"]
+    assert_true(len(server_events) > 0, "server has events")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -697,4 +707,5 @@ def main() raises:
     test_send_rst_stream_closes_stream()
     test_settings_initial_window_size_adjusts_streams()
     test_settings_max_frame_size_invalid()
+    test_oracle_roundtrip_smoke()
     print("All tests passed.")

@@ -102,6 +102,26 @@ def h2_client_receive(wire: List[UInt8]) raises -> PythonObject:
     return helpers.h2_client_receive(ba)
 
 
+def h2_roundtrip() raises -> PythonObject:
+    """Run a full GET round-trip through Python h2."""
+    var helpers = _get_helpers()
+    return helpers.h2_roundtrip()
+
+
+def h2_stream_data_scenario(headers: List[Header], body: List[UInt8], end_stream: Bool = True) raises -> PythonObject:
+    """Send HEADERS + DATA through Python h2, return server events."""
+    var helpers = _get_helpers()
+    var builtins = Python.import_module("builtins")
+    var py_headers = builtins.list()
+    for i in range(len(headers)):
+        var pair = builtins.tuple([headers[i].name, headers[i].value])
+        py_headers.append(pair)
+    var py_body = builtins.bytearray()
+    for i in range(len(body)):
+        py_body.append(Int(body[i]))
+    return helpers.h2_stream_data_scenario(py_headers, builtins.bytes(py_body), end_stream)
+
+
 def h2_ping_scenario(client_preface: List[UInt8], ping_frame: List[UInt8]) raises -> PythonObject:
     """Run PING scenario through h2 server, return result dict."""
     var sys = Python.import_module("sys")

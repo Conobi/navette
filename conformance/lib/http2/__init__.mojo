@@ -53,6 +53,8 @@ from .oracles import (
     h2_server_receive,
     h2_client_receive,
     h2_ping_scenario,
+    h2_roundtrip,
+    h2_stream_data_scenario,
 )
 from .payloads import (
     DataPayload,

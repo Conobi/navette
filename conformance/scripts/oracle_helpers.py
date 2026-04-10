@@ -549,6 +549,27 @@ def _h2_event_to_dict(event):
     elif isinstance(event, h2.events.StreamReset):
         result["stream_id"] = event.stream_id
         result["error_code"] = event.error_code
+    elif isinstance(event, h2.events.RequestReceived):
+        result["stream_id"] = event.stream_id
+        result["headers"] = [[h[0] if isinstance(h[0], str) else h[0].decode("ascii", errors="replace"),
+                               h[1] if isinstance(h[1], str) else h[1].decode("ascii", errors="replace")]
+                              for h in event.headers]
+    elif isinstance(event, h2.events.ResponseReceived):
+        result["stream_id"] = event.stream_id
+        result["headers"] = [[h[0] if isinstance(h[0], str) else h[0].decode("ascii", errors="replace"),
+                               h[1] if isinstance(h[1], str) else h[1].decode("ascii", errors="replace")]
+                              for h in event.headers]
+    elif isinstance(event, h2.events.DataReceived):
+        result["stream_id"] = event.stream_id
+        result["data_hex"] = event.data.hex()
+        result["flow_controlled_length"] = event.flow_controlled_length
+    elif isinstance(event, h2.events.TrailersReceived):
+        result["stream_id"] = event.stream_id
+        result["headers"] = [[h[0] if isinstance(h[0], str) else h[0].decode("ascii", errors="replace"),
+                               h[1] if isinstance(h[1], str) else h[1].decode("ascii", errors="replace")]
+                              for h in event.headers]
+    elif isinstance(event, h2.events.StreamEnded):
+        result["stream_id"] = event.stream_id
     return result
 
 
@@ -621,3 +642,100 @@ def h2_ping_scenario(client_preface_bytes, ping_frame_bytes):
         }
     except Exception as e:
         return {"events": [], "data_to_send_hex": "", "error": str(e)}
+
+
+def h2_roundtrip():
+    """Full request/response round-trip through Python h2.
+    Client sends GET /, server responds with 200 + "hello".
+    Returns dict with server_events, client_events.
+    """
+    import h2.connection, h2.config, h2.events
+
+    client_config = h2.config.H2Configuration(client_side=True)
+    client = h2.connection.H2Connection(config=client_config)
+    client.initiate_connection()
+    client_preface = client.data_to_send()
+
+    server_config = h2.config.H2Configuration(client_side=False)
+    server = h2.connection.H2Connection(config=server_config)
+    server.initiate_connection()
+    server_preface = server.data_to_send()
+
+    try:
+        client.receive_data(server_preface)
+        client_ack = client.data_to_send()
+        server.receive_data(client_preface)
+        server_ack = server.data_to_send()
+        client.receive_data(server_ack)
+        _ = client.data_to_send()
+        server.receive_data(client_ack)
+        _ = server.data_to_send()
+
+        client.send_headers(1, [
+            (":method", "GET"), (":path", "/"),
+            (":scheme", "https"), (":authority", "example.com"),
+        ], end_stream=True)
+        request_wire = client.data_to_send()
+
+        server_events = server.receive_data(request_wire)
+        _ = server.data_to_send()
+
+        server.send_headers(1, [
+            (":status", "200"), ("content-type", "text/plain"),
+        ], end_stream=False)
+        server.send_data(1, b"hello", end_stream=True)
+        response_wire = server.data_to_send()
+
+        client_events = client.receive_data(response_wire)
+        _ = client.data_to_send()
+
+        return {
+            "server_events": [_h2_event_to_dict(e) for e in server_events],
+            "client_events": [_h2_event_to_dict(e) for e in client_events],
+            "request_wire_hex": request_wire.hex(),
+            "response_wire_hex": response_wire.hex(),
+            "error": None,
+        }
+    except Exception as e:
+        return {"server_events": [], "client_events": [],
+                "request_wire_hex": "", "response_wire_hex": "", "error": str(e)}
+
+
+def h2_stream_data_scenario(headers_list, body_bytes, end_stream=True):
+    """Client sends HEADERS + DATA, server receives. Returns events."""
+    import h2.connection, h2.config
+
+    client_config = h2.config.H2Configuration(client_side=True)
+    client = h2.connection.H2Connection(config=client_config)
+    client.initiate_connection()
+    client_preface = client.data_to_send()
+
+    server_config = h2.config.H2Configuration(client_side=False)
+    server = h2.connection.H2Connection(config=server_config)
+    server.initiate_connection()
+    server_preface = server.data_to_send()
+
+    try:
+        client.receive_data(server_preface)
+        client_ack = client.data_to_send()
+        server.receive_data(client_preface)
+        server_ack = server.data_to_send()
+        client.receive_data(server_ack)
+        _ = client.data_to_send()
+        server.receive_data(client_ack)
+        _ = server.data_to_send()
+
+        client.send_headers(1, headers_list, end_stream=False)
+        client.send_data(1, body_bytes, end_stream=end_stream)
+        wire = client.data_to_send()
+
+        events = server.receive_data(wire)
+        _ = server.data_to_send()
+
+        return {
+            "events": [_h2_event_to_dict(e) for e in events],
+            "wire_hex": wire.hex(),
+            "error": None,
+        }
+    except Exception as e:
+        return {"events": [], "wire_hex": "", "error": str(e)}
