@@ -51,6 +51,7 @@ TESTS=(
     test_h2_handler
     test_h2_session
     test_h2_e2e
+    test_h2_tls_alpn
 )
 
 FILTER="${TESTS_FILTER:-}"
