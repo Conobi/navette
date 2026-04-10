@@ -202,3 +202,76 @@ pub extern "C" fn rlsm_config_free(handle: i32) -> i32 {
         }
     }
 }
+
+/// Set ALPN protocol preferences on a config.
+///
+/// `protocols` is a length-prefixed wire format buffer:
+///   `[len1, proto1_bytes..., len2, proto2_bytes..., ...]`
+/// For example, `["h2", "http/1.1"]` encodes as:
+///   `[2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1']`
+///
+/// Must be called before any connection is created from this config.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn rlsm_config_set_alpn_protocols(
+    config_handle: i32,
+    protocols: *const u8,
+    protocols_len: i32,
+) -> i32 {
+    clear_last_error();
+
+    if protocols.is_null() {
+        rlsm_err!("rlsm_config_set_alpn_protocols: null protocols pointer"; return -1);
+    }
+    if protocols_len < 0 {
+        rlsm_err!("rlsm_config_set_alpn_protocols: negative protocols_len"; return -1);
+    }
+
+    // SAFETY: caller guarantees the pointer is valid for `protocols_len` bytes.
+    let raw = unsafe { std::slice::from_raw_parts(protocols, protocols_len as usize) };
+
+    // Parse length-prefixed protocol list.
+    let mut alpn_list: Vec<Vec<u8>> = Vec::new();
+    let mut pos = 0usize;
+    while pos < raw.len() {
+        let proto_len = raw[pos] as usize;
+        pos += 1;
+        if pos + proto_len > raw.len() {
+            rlsm_err!("rlsm_config_set_alpn_protocols: truncated protocol entry"; return -1);
+        }
+        alpn_list.push(raw[pos..pos + proto_len].to_vec());
+        pos += proto_len;
+    }
+
+    // Modify the config entry to set ALPN protocols.
+    config_table()
+        .with_mut(config_handle, |entry| match entry {
+            ConfigEntry::Client(arc) => {
+                if let Some(cfg) = Arc::get_mut(arc) {
+                    cfg.alpn_protocols = alpn_list.clone();
+                    0
+                } else {
+                    set_last_error(
+                        "rlsm_config_set_alpn_protocols: config already shared (connection created?)"
+                            .to_string(),
+                    );
+                    -1
+                }
+            }
+            ConfigEntry::Server(arc) => {
+                if let Some(cfg) = Arc::get_mut(arc) {
+                    cfg.alpn_protocols = alpn_list;
+                    0
+                } else {
+                    set_last_error(
+                        "rlsm_config_set_alpn_protocols: config already shared (connection created?)"
+                            .to_string(),
+                    );
+                    -1
+                }
+            }
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_config_set_alpn_protocols: invalid config handle"; return -1);
+        })
+}
