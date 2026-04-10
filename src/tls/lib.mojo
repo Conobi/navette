@@ -207,3 +207,21 @@ struct RustlsLibrary(Movable):
         return self._handle.call["rlsm_tls_conn_alpn", Int32](
             handle, out_buf, buf_len,
         )
+
+    # -- Config: ALPN ----------------------------------------------------------
+
+    @always_inline
+    def config_set_alpn_protocols(
+        self,
+        config_handle: Int32,
+        protocols: UnsafePointer[UInt8, MutAnyOrigin],
+        protocols_len: Int32,
+    ) -> Int32:
+        """Set ALPN protocol preferences on a config handle.
+
+        protocols is a length-prefixed wire format buffer.
+        Returns 0 on success, -1 on error.
+        """
+        return self._handle.call["rlsm_config_set_alpn_protocols", Int32](
+            config_handle, protocols, protocols_len,
+        )
