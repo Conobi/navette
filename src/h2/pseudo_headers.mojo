@@ -94,9 +94,9 @@ def request_from_h2_headers(
     if not method.is_connect() and not has_path:
         raise Error("missing required :path pseudo-header")
 
-    # Map :authority -> host header
-    if has_authority:
-        headers.set("host", authority_val)
+    # Map :authority -> host header if no host already present
+    if has_authority and not headers.has("host"):
+        headers.add("host", authority_val)
 
     # Map :scheme -> x-h2-scheme synthetic header
     if has_scheme:
