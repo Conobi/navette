@@ -191,8 +191,28 @@ struct H2Session(Session):
         except:
             return
         var ctx_ptr = ctx_wrap.ptr()
-        if ctx_ptr[].status_code >= 0 and not handle.has_headers():
-            # Build Response and deliver to handle
+
+        # Handle error-before-response: RST_STREAM arrived before any
+        # RESPONSE_RECEIVED, so status_code is still -1.
+        if ctx_ptr[].errored and not handle.is_complete():
+            handle._set_error(
+                StreamError.rst_stream(ctx_ptr[].error_code)
+            )
+            # Cleanup
+            ctx_ptr.destroy_pointee()
+            ctx_ptr.free()
+            try:
+                _ = self._stream_ctxs.pop(stream_id)
+                _ = self._handle_to_stream.pop(hid)
+            except:
+                pass
+            return
+
+        # Only deliver response when the stream is complete (all data
+        # received). This avoids the second-branch data-loss issue where
+        # body data arriving after the initial _set_response would be
+        # silently dropped.
+        if ctx_ptr[].status_code >= 0 and ctx_ptr[].complete and not handle.has_headers():
             var ctx = ctx_ptr.take_pointee()
             var resp = Response(
                 status=StatusCode(ctx.status_code),
@@ -205,27 +225,18 @@ struct H2Session(Session):
                 var body_copy = ctx.body_data^
                 resp.body.append(BodyFrame.data(body_copy^))
                 ctx.body_data = List[UInt8]()
-            ctx.headers = Headers()  # reinit after move
+            ctx.headers = Headers()
             handle._set_response(resp^)
-            if ctx.complete:
-                if ctx.errored:
-                    handle._set_error(
-                        StreamError.rst_stream(ctx.error_code)
-                    )
-                else:
-                    handle._mark_complete()
+            handle._mark_complete()
+            # Cleanup — free heap allocation and remove from Dicts
             ctx_ptr.init_pointee_move(ctx^)
-        elif handle.has_headers() and not handle.is_complete():
-            # Response already delivered; check for completion
-            if ctx_ptr[].complete:
-                if len(ctx_ptr[].body_data) > 0:
-                    var ctx = ctx_ptr.take_pointee()
-                    var body_copy = ctx.body_data^
-                    ctx.body_data = List[UInt8]()
-                    ctx_ptr.init_pointee_move(ctx^)
-                    # Note: additional body data after initial response is not
-                    # deliverable via _set_response; mark complete only
-                handle._mark_complete()
+            ctx_ptr.destroy_pointee()
+            ctx_ptr.free()
+            try:
+                _ = self._stream_ctxs.pop(stream_id)
+                _ = self._handle_to_stream.pop(hid)
+            except:
+                pass
 
     def capabilities(self) -> Capabilities:
         return Capabilities.for_h2()
