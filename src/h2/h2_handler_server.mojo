@@ -288,6 +288,9 @@ struct H2HandlerServer[H: StreamHandler](Movable):
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         # Move back into the heap
         ctx_ptr.init_pointee_move(ctx^)
+        # Check if both sides are done — if so, free the context
+        if evt.stream_ended:
+            self._maybe_cleanup_stream(sid)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
         """Handle TRAILERS_RECEIVED: convert headers, push as trailer BodyFrame.
@@ -311,6 +314,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             if not ctx.detached:
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         ctx_ptr.init_pointee_move(ctx^)
+        # Trailers carry END_STREAM — check if both sides done
+        self._maybe_cleanup_stream(sid)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """Handle STREAM_ENDED: mark the body as ended, notify handler via
@@ -330,6 +335,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         # Move back into the heap
         ctx_ptr.init_pointee_move(ctx^)
+        # Check if both sides done — if response already finished, free now
+        self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET: notify handler, clean up stream context."""
