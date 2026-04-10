@@ -369,6 +369,76 @@ def test_inbound_data_end_stream() raises:
             assert_true(events[i].stream_ended, "stream_ended=True")
 
 
+def test_send_data() raises:
+    """Client sends DATA after HEADERS, wire contains DATA frame."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var client_preface = client.data_to_send()
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    var server_preface = server.data_to_send()
+    _ = client.receive_data(server_preface)
+    _ = client.data_to_send()
+    _ = server.receive_data(client_preface)
+    _ = server.data_to_send()
+    var headers = List[Header]()
+    headers.append(Header(":method", "POST"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "example.com"))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+    _ = client.data_to_send()
+    var body = List[UInt8]()
+    for i in range(5):
+        body.append(UInt8(0x41 + i))  # ABCDE
+    client.send_data(UInt32(1), body^, end_stream=True)
+    var wire = client.data_to_send()
+    var r = decode_frame(wire, 0)
+    var f = r[0].copy()
+    assert_equal(f.frame_type, FRAME_DATA, "frame type")
+    assert_equal(f.stream_id, 1, "stream_id")
+    assert_true((f.flags & FLAG_END_STREAM) != 0, "END_STREAM set")
+    assert_equal(len(f.payload), 5, "payload length")
+    var state = client.stream_state(UInt32(1))
+    assert_equal(state, STREAM_HALF_CLOSED_LOCAL, "half-closed local")
+
+
+def test_send_data_window_exhaustion() raises:
+    """Send_data raises when send window is exhausted."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var client_preface = client.data_to_send()
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    var server_preface = server.data_to_send()
+    _ = client.receive_data(server_preface)
+    _ = client.data_to_send()
+    _ = server.receive_data(client_preface)
+    _ = server.data_to_send()
+    var headers = List[Header]()
+    headers.append(Header(":method", "POST"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "example.com"))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+    _ = client.data_to_send()
+    # Fill connection window (65535 bytes default)
+    var body = List[UInt8]()
+    for _ in range(65535):
+        body.append(UInt8(0x42))
+    client.send_data(UInt32(1), body^, end_stream=False)
+    _ = client.data_to_send()
+    # Next send should fail
+    var small_body = List[UInt8]()
+    small_body.append(UInt8(0x43))
+    var raised = False
+    try:
+        client.send_data(UInt32(1), small_body^, end_stream=False)
+    except:
+        raised = True
+    assert_true(raised, "send_data raises on window exhaustion")
+
+
 def test_inbound_data_on_unknown_stream() raises:
     """DATA on unknown stream triggers connection error."""
     var server = _server_conn_after_preface()
@@ -396,4 +466,6 @@ def main() raises:
     test_inbound_data_received()
     test_inbound_data_end_stream()
     test_inbound_data_on_unknown_stream()
+    test_send_data()
+    test_send_data_window_exhaustion()
     print("All tests passed.")
