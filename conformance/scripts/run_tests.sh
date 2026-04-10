@@ -37,6 +37,8 @@ TESTS=(
     test_hpack_security
     test_h2_connection
     test_h2_connection_cross
+    test_h2_stream
+    test_h2_stream_cross
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
