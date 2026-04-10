@@ -1,5 +1,6 @@
 from .config import h2_production_config
 from .h2_handler_server import H2HandlerServer
+from .h2_session import H2Session
 from .pseudo_headers import (
     request_from_h2_headers,
     request_to_h2_headers,
