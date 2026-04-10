@@ -1,7 +1,7 @@
 # mojo-net — Project Context
 
 **Last updated:** 2026-04-10
-**Current phase:** done (HC-4b)
+**Current phase:** done (M5.5)
 
 ## Why this exists
 
@@ -55,6 +55,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 | done | `specs/2026-04-09-hc4-h2-connection-layer.md` → `plans/2026-04-09-hc4-phase0-trait-change.md` | HC-4 Phase 0 (prep commit: mut body + try_detach). 4 commits (`50b890e..f07a0f6`). 34/34 src + 27/27 conformance + e2e green. Final cross-cutting review: CLEAN. |
 | done | `specs/2026-04-09-hc4-h2-connection-layer.md` → `plans/2026-04-09-hc4a-connection-core.md` | HC-4a connection core. 15 TDD commits (`64338e3..9955b95`). 24 unit + 3 cross-validation tests. 29/29 conformance + 34/34 src + e2e green. Retrospective: `plans/2026-04-09-hc4a-connection-core-retrospective.md`. Pushed to origin/main on 2026-04-10. |
 | done | `specs/2026-04-09-hc4-h2-connection-layer.md` → `plans/2026-04-10-hc4b-stream-data-path.md` | HC-4b stream data path. 13 TDD tasks + 2 review fixes (`0e7108c..a1ff9d8`). 21 unit + 3 cross-validation tests. 31/31 conformance + 34/34 src + e2e green. Final cross-cutting review: CLEAN after 2 fix rounds. Pushed to origin/main on 2026-04-10. |
+| done | `specs/2026-04-10-m55-h2-client-server.md` → `plans/2026-04-10-m55-h2-client-server.md` | M5.5 — HTTP/2 client/server + TLS/ALPN. 19 commits (`41b1e1d..90bf233`). H2HandlerServer (7 handler tests) + H2Session (7 session tests) + 3 e2e tests + 2 TLS ALPN tests. 39/39 src + 31/31 conformance + e2e green. Final cross-cutting review (opus): 3 important issues fixed (missing __del__, streaming body rejection, canonical response parser). |
 
 ## Constraints
 
@@ -63,7 +64,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 - **I/O:** boucle from `~/Projets/perso/boucle/` (CompletionLoop / ReadinessLoop)
 - **Test runners:**
   - `bash conformance/scripts/run_tests.sh` (31/31)
-  - `bash scripts/run_tests.sh` (34/34 src tests)
+  - `bash scripts/run_tests.sh` (39/39 src tests)
   - `bash scripts/test_reverse_proxy.sh` (TLS+io_uring e2e via Python backend)
 
 ## Milestone state (post-M2)
@@ -72,7 +73,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 - **M2.5a — Unified HTTP API trait surface (HC-4 unblocker):** ✅ shipped, merged to main as `c93aaf9` and pushed to origin 2026-04-07
 - **M2.5b — Helpers (priority, alt_svc, sse) (M6 unblocker):** ✅ shipped, merged to main as `3eb7b47` on 2026-04-09
 - **HC-4 — HTTP/2 connection layer:** ✅ done — Phase 0 + HC-4a (connection core) + HC-4b (stream data path) all on main. 31/31 conformance tests. M5.5 unblocked.
-- **M5.5 — HTTP/2 client/server:** pending; depends on HC-4
+- **M5.5 — HTTP/2 client/server + TLS/ALPN:** ✅ done — H2HandlerServer + H2Session + TLS ALPN. 39/39 src tests. 19 commits.
 - **librustls Wave 2 — QUIC handshake lifecycle:** pending (blocks M3)
 - **M3 — QUIC transport core:** pending
 - **M4 — Loss recovery + congestion control:** pending
@@ -97,3 +98,4 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 - 2026-04-09 — `~/.claude/projects/-home-donokami-Projets-perso-mojo-net/9056decb-c699-4631-911d-55d872232f4b.jsonl` — HC-4 brainstorming + Phase 0 implementation. Brainstorming: researched 5 questions in parallel. Decided Approach A (mut body + try_detach). Spec written + reviewed. Phase 0: 4 commits (`50b890e..f07a0f6`). Per-task + final reviews CLEAN. 34/34 src + 27/27 conformance + e2e green.
 - 2026-04-09 — `~/.claude/projects/-home-donokami-Projets-perso-mojo-net/c5dc73e4-853c-4e68-8229-71315aebd2a9.jsonl` — HC-4a plan written + implemented. 15 TDD commits (`64338e3..9955b95`). H2Connection sans-I/O state machine (~870 LoC): preface, SETTINGS, PING, GOAWAY, stream table, CONTINUATION assembly, connection-level flow control. Oracle: Python h2 4.3.0. Tests: 24 unit + 3 cross-validation. Mojo deviations: Dict[Int, StreamState], make_stream_ended rename, .copy() workarounds.
 - 2026-04-10 — same session — HC-4a pushed to origin/main. HC-4b plan written + implemented. 13 TDD tasks + 2 review fixes (`0e7108c..a1ff9d8`). Stream data path: HPACK decode/encode wiring, send_headers with CONTINUATION splitting, client response HEADERS, inbound DATA dispatch with recv window checks, send_data with fragmentation + send window checks, stream-level flow control (auto WINDOW_UPDATE), inbound trailers with END_STREAM validation, RST_STREAM handling (inbound + outbound stream close), SETTINGS INITIAL_WINDOW_SIZE window adjustment. Oracle extensions: h2_roundtrip, h2_stream_data_scenario. Tests: 21 unit + 3 cross-validation. 31/31 conformance + 34/34 src + e2e green. Final cross-cutting review (opus): 2 issues fixed (CONTINUATION trailer half-close transition, inbound DATA flow control check, trailer END_STREAM validation). Re-review: CLEAN.
+- 2026-04-10 — `~/.claude/projects/-home-donokami-Projets-perso-mojo-net/c5dc73e4-853c-4e68-8229-71315aebd2a9.jsonl` — M5.5 brainstorming + planning + implementation. Brainstorming: decided wrap pattern, full scope (server + client + TLS/ALPN), UnsafePointer per-stream state, drain-on-feed, separate ALPN setter FFI. Spec reviewed (opus): 3 blocking + 9 important resolved. Plan: 14 tasks across 5 phases. Implementation: 19 commits (`41b1e1d..90bf233`). H2HandlerServer wraps H2Connection with StreamHandler dispatch (7 tests). H2Session implements Session trait with concurrent handles (7 tests). 3 e2e client↔server tests. TLS ALPN: Rust FFI + Mojo wrappers + 2 negotiation tests. Final cross-cutting review (opus): 3 important issues fixed (missing __del__, streaming body rejection, canonical response parser). 39/39 src + 31/31 conformance + e2e green.
