@@ -269,6 +269,51 @@ def test_send_headers_continuation_split() raises:
     assert_true(last_is_end, "last CONTINUATION has END_HEADERS")
 
 
+def test_client_receives_response_headers() raises:
+    """Client receives ResponseReceived when server sends HEADERS on existing stream."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var client_preface = client.data_to_send()
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    var server_preface = server.data_to_send()
+    _ = client.receive_data(server_preface)
+    _ = client.data_to_send()
+    _ = server.receive_data(client_preface)
+    _ = server.data_to_send()
+    # Client sends request
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "GET"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    client.send_headers(UInt32(1), req_headers^, end_stream=True)
+    var request_wire = client.data_to_send()
+    # Server receives request
+    _ = server.receive_data(request_wire)
+    _ = server.data_to_send()
+    # Server sends response
+    var resp_headers = List[Header]()
+    resp_headers.append(Header(":status", "200"))
+    resp_headers.append(Header("content-type", "text/plain"))
+    server.send_headers(UInt32(1), resp_headers^, end_stream=True)
+    var response_wire = server.data_to_send()
+    # Client receives response
+    var cli_events = client.receive_data(response_wire)
+    var found = False
+    for i in range(len(cli_events)):
+        if cli_events[i].kind == H2_EVT_RESPONSE_RECEIVED:
+            found = True
+            assert_equal(Int(cli_events[i].stream_id), 1, "stream_id")
+            assert_true(cli_events[i].headers[0].name == ":status", "status header name")
+            assert_true(cli_events[i].headers[0].value == "200", "status header value")
+            assert_true(cli_events[i].stream_ended, "stream_ended=True")
+    assert_true(found, "ResponseReceived event emitted")
+    # Stream should be closed (both sides sent END_STREAM)
+    var state = client.stream_state(UInt32(1))
+    assert_equal(state, STREAM_CLOSED, "stream closed after both END_STREAM")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -277,4 +322,5 @@ def main() raises:
     test_hpack_decode_continuation_assembly()
     test_send_headers_client_request()
     test_send_headers_continuation_split()
+    test_client_receives_response_headers()
     print("All tests passed.")
