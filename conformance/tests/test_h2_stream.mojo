@@ -454,6 +454,54 @@ def test_inbound_data_on_unknown_stream() raises:
     assert_true(found, "connection error on DATA to unknown stream")
 
 
+def test_stream_flow_control_window_update() raises:
+    """Acknowledge_received_data emits stream-level WINDOW_UPDATE."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "POST"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var headers_wire = _build_hpack_headers_frame(1, req_headers)
+    _ = server.receive_data(headers_wire)
+    _ = server.data_to_send()
+    # Send multiple DATA frames totalling 40000 bytes (each <= 16384 max frame size)
+    var total_sent = 0
+    var chunk_size = 16384
+    while total_sent < 40000:
+        var this_chunk = chunk_size
+        if total_sent + this_chunk > 40000:
+            this_chunk = 40000 - total_sent
+        var body = List[UInt8]()
+        for _ in range(this_chunk):
+            body.append(UInt8(0x41))
+        var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
+        var data_wire = encode_frame(data_frame)
+        _ = server.receive_data(data_wire)
+        _ = server.data_to_send()
+        total_sent += this_chunk
+    # Acknowledge the data
+    server.acknowledge_received_data(40000, UInt32(1))
+    var wire = server.data_to_send()
+    # Should contain WINDOW_UPDATE frames (connection + stream)
+    var conn_wu = False
+    var stream_wu = False
+    var pos = 0
+    while pos < len(wire):
+        var r = decode_frame(wire, pos)
+        var f = r[0].copy()
+        if r[1] == 0:
+            break
+        if f.frame_type == FRAME_WINDOW_UPDATE:
+            if f.stream_id == 0:
+                conn_wu = True
+            elif f.stream_id == 1:
+                stream_wu = True
+        pos += r[1]
+    assert_true(conn_wu, "connection-level WINDOW_UPDATE emitted")
+    assert_true(stream_wu, "stream-level WINDOW_UPDATE emitted")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -468,4 +516,5 @@ def main() raises:
     test_inbound_data_on_unknown_stream()
     test_send_data()
     test_send_data_window_exhaustion()
+    test_stream_flow_control_window_update()
     print("All tests passed.")

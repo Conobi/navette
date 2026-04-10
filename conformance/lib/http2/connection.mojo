@@ -892,12 +892,26 @@ struct H2Connection(Movable):
         """Application consumed `size` bytes. Emits WINDOW_UPDATE when threshold met."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
+        # Connection-level tracking
         self._recv_window_consumed += size
-        # Auto WINDOW_UPDATE when > half the window is consumed
         if self._recv_window_consumed > DEFAULT_CONNECTION_WINDOW // 2:
             self._send_window_update_frame(UInt32(0), UInt32(self._recv_window_consumed))
             self._recv_window += self._recv_window_consumed
             self._recv_window_consumed = 0
+        # Stream-level tracking
+        var sid = Int(stream_id)
+        if self._has_stream(sid):
+            try:
+                var stream = self._streams[sid].copy()
+                stream.recv_window_consumed += size
+                var stream_threshold = Int(self._local_settings.initial_window_size) // 2
+                if stream.recv_window_consumed > stream_threshold:
+                    self._send_window_update_frame(stream_id, UInt32(stream.recv_window_consumed))
+                    stream.recv_window += stream.recv_window_consumed
+                    stream.recv_window_consumed = 0
+                self._streams[sid] = stream^
+            except:
+                pass
 
     def send_window_update(mut self, stream_id: UInt32, increment: UInt32) raises:
         """Manually send a WINDOW_UPDATE frame."""
