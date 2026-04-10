@@ -689,7 +689,12 @@ struct H2Connection(Movable):
                 if s.value > 2147483647:
                     self._connection_error(events, H2_FLOW_CONTROL_ERROR, String("INITIAL_WINDOW_SIZE > 2^31-1"))
                     return
-                self._remote_settings.initial_window_size = UInt32(s.value)
+                var old_value = Int(self._remote_settings.initial_window_size)
+                var new_value = s.value
+                var delta = new_value - old_value
+                self._remote_settings.initial_window_size = UInt32(new_value)
+                if delta != 0:
+                    self._adjust_stream_send_windows(delta)
             elif s.id == SETTINGS_MAX_FRAME_SIZE:
                 if s.value < 16384 or s.value > 16777215:
                     self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid MAX_FRAME_SIZE"))
@@ -703,6 +708,20 @@ struct H2Connection(Movable):
         var ack = Frame(0, FRAME_SETTINGS, FLAG_ACK, 0, List[UInt8]())
         self._queue_frame(ack)
         events.append(H2Event.settings_changed())
+
+    def _adjust_stream_send_windows(mut self, delta: Int):
+        """Adjust send window of all open/half-closed streams by delta."""
+        var stream_ids = List[Int]()
+        for key in self._streams.keys():
+            stream_ids.append(key)
+        for i in range(len(stream_ids)):
+            try:
+                var s = self._streams[stream_ids[i]].copy()
+                if s.lifecycle == STREAM_OPEN or s.lifecycle == STREAM_HALF_CLOSED_LOCAL or s.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                    s.send_window += delta
+                    self._streams[stream_ids[i]] = s^
+            except:
+                pass
 
     def _handle_ping(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound PING frame."""
