@@ -540,6 +540,78 @@ def test_inbound_trailers() raises:
     assert_equal(state, STREAM_HALF_CLOSED_REMOTE, "half-closed remote after trailers")
 
 
+def test_inbound_rst_stream() raises:
+    """Server receives RST_STREAM, emits StreamReset, closes stream."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "GET"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var headers_wire = _build_hpack_headers_frame(1, req_headers)
+    _ = server.receive_data(headers_wire)
+    _ = server.data_to_send()
+    assert_equal(server.open_stream_count(), 1, "1 active before RST")
+    # Send RST_STREAM for stream 1 with CANCEL (error code 8)
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x00))
+    payload.append(UInt8(0x00))
+    payload.append(UInt8(0x00))
+    payload.append(UInt8(0x08))  # H2_CANCEL = 8
+    var rst_frame = Frame(4, FRAME_RST_STREAM, 0, 1, payload)
+    var rst_wire = encode_frame(rst_frame)
+    var events = server.receive_data(rst_wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_STREAM_RESET:
+            found = True
+            assert_equal(Int(events[i].stream_id), 1, "stream_id")
+            assert_equal(Int(events[i].error_code), 8, "error_code=CANCEL")
+    assert_true(found, "StreamReset event emitted")
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_CLOSED, "stream closed")
+    assert_equal(server.open_stream_count(), 0, "0 active after RST")
+
+
+def test_rst_stream_on_idle() raises:
+    """RST_STREAM on idle stream triggers connection error."""
+    var server = _server_conn_after_preface()
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x00))
+    payload.append(UInt8(0x00))
+    payload.append(UInt8(0x00))
+    payload.append(UInt8(0x00))
+    var rst_frame = Frame(4, FRAME_RST_STREAM, 0, 1, payload)
+    var rst_wire = encode_frame(rst_frame)
+    var events = server.receive_data(rst_wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_CONNECTION_TERMINATED:
+            found = True
+            assert_equal(Int(events[i].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+    assert_true(found, "connection error on RST_STREAM to idle stream")
+
+
+def test_send_rst_stream_closes_stream() raises:
+    """Send_rst_stream closes the stream and decrements active count."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "GET"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var headers_wire = _build_hpack_headers_frame(1, req_headers)
+    _ = server.receive_data(headers_wire)
+    _ = server.data_to_send()
+    assert_equal(server.open_stream_count(), 1, "1 active before RST")
+    server.send_rst_stream(UInt32(1), UInt32(8))  # CANCEL
+    var wire = server.data_to_send()
+    assert_true(len(wire) > 0, "RST_STREAM frame queued")
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_CLOSED, "stream closed")
+    assert_equal(server.open_stream_count(), 0, "0 active after RST")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -556,4 +628,7 @@ def main() raises:
     test_send_data_window_exhaustion()
     test_stream_flow_control_window_update()
     test_inbound_trailers()
+    test_inbound_rst_stream()
+    test_rst_stream_on_idle()
+    test_send_rst_stream_closes_stream()
     print("All tests passed.")
