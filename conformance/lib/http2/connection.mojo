@@ -59,6 +59,8 @@ from .payloads import (
     decode_continuation_payload,
     DataPayload,
     decode_data_payload,
+    RstStreamPayload,
+    decode_rst_stream_payload,
 )
 from .hpack import HpackEncoder, HpackDecoder, HpackConfig
 from lib.http1.types import Header
@@ -652,6 +654,8 @@ struct H2Connection(Movable):
                 self._handle_continuation(frame, events)
             elif frame.frame_type == FRAME_DATA:
                 self._handle_data(frame, events)
+            elif frame.frame_type == FRAME_RST_STREAM:
+                self._handle_rst_stream(frame, events)
             elif frame.frame_type == FRAME_PRIORITY:
                 pass  # Accept and ignore (RFC 9113 §5.3.2)
             pos += consumed
@@ -885,8 +889,19 @@ struct H2Connection(Movable):
         payload.append(UInt8((ec >> 16) & 0xFF))
         payload.append(UInt8((ec >> 8) & 0xFF))
         payload.append(UInt8(ec & 0xFF))
-        var frame = Frame(4, FRAME_RST_STREAM, 0, Int(stream_id), payload)
+        var sid = Int(stream_id)
+        var frame = Frame(4, FRAME_RST_STREAM, 0, sid, payload)
         self._queue_frame(frame)
+        # Close the stream
+        if self._has_stream(sid):
+            try:
+                var stream = self._streams[sid].copy()
+                if stream.lifecycle == STREAM_OPEN or stream.lifecycle == STREAM_HALF_CLOSED_LOCAL or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                    self._active_stream_count -= 1
+                stream.lifecycle = STREAM_CLOSED
+                self._streams[sid] = stream^
+            except:
+                pass
 
     def acknowledge_received_data(mut self, size: Int, stream_id: UInt32) raises:
         """Application consumed `size` bytes. Emits WINDOW_UPDATE when threshold met."""
@@ -1207,3 +1222,26 @@ struct H2Connection(Movable):
             events.append(H2Event.data_received(UInt32(stream_id), dp.data, fcl, end_stream))
         except:
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream error processing DATA"))
+
+    def _handle_rst_stream(mut self, frame: Frame, mut events: List[H2Event]):
+        """Process inbound RST_STREAM frame."""
+        var stream_id = frame.stream_id
+        if stream_id == 0:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("RST_STREAM on stream 0"))
+            return
+        if not self._has_stream(stream_id):
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("RST_STREAM on idle stream"))
+            return
+        var rp = decode_rst_stream_payload(frame.copy())
+        if not rp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid RST_STREAM"))
+            return
+        try:
+            var stream = self._streams[stream_id].copy()
+            if stream.lifecycle == STREAM_OPEN or stream.lifecycle == STREAM_HALF_CLOSED_LOCAL or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                self._active_stream_count -= 1
+            stream.lifecycle = STREAM_CLOSED
+            self._streams[stream_id] = stream^
+        except:
+            pass
+        events.append(H2Event.stream_reset(UInt32(stream_id), UInt32(rp.error_code)))
