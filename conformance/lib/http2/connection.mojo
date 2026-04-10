@@ -1096,6 +1096,10 @@ struct H2Connection(Movable):
         if not hp.ok():
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid trailer HEADERS: " + hp.error))
             return
+        # Trailers MUST have END_STREAM (RFC 9113 §8.1)
+        if (frame.flags & FLAG_END_STREAM) == 0:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Trailers must have END_STREAM"))
+            return
         if frame.flags & FLAG_END_HEADERS != 0:
             var decode_result = self._hpack_decoder.decode(hp.headers_block)
             var decoded_headers = decode_result[0].copy()
@@ -1103,14 +1107,12 @@ struct H2Connection(Movable):
             if len(decode_error) > 0:
                 self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                 return
-            var end_stream = (frame.flags & FLAG_END_STREAM) != 0
             var s = StreamState(other=stream)
-            if end_stream:
-                if s.lifecycle == STREAM_HALF_CLOSED_LOCAL:
-                    s.lifecycle = STREAM_CLOSED
-                    self._active_stream_count -= 1
-                else:
-                    s.lifecycle = STREAM_HALF_CLOSED_REMOTE
+            if s.lifecycle == STREAM_HALF_CLOSED_LOCAL:
+                s.lifecycle = STREAM_CLOSED
+                self._active_stream_count -= 1
+            else:
+                s.lifecycle = STREAM_HALF_CLOSED_REMOTE
             self._streams[stream_id] = s^
             events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
         else:
@@ -1119,7 +1121,7 @@ struct H2Connection(Movable):
             for i in range(len(hp.headers_block)):
                 s.header_block_buffer.append(hp.headers_block[i])
             s.expects_continuation = True
-            s.headers_end_stream = (frame.flags & FLAG_END_STREAM) != 0
+            s.headers_end_stream = True  # already validated above
             self._streams[stream_id] = s^
             self._expecting_continuation_for = UInt32(stream_id)
 
