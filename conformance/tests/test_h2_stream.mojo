@@ -314,6 +314,76 @@ def test_client_receives_response_headers() raises:
     assert_equal(state, STREAM_CLOSED, "stream closed after both END_STREAM")
 
 
+def test_inbound_data_received() raises:
+    """Server receives DATA after HEADERS, emits DataReceived."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "POST"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var headers_wire = _build_hpack_headers_frame(1, req_headers)
+    _ = server.receive_data(headers_wire)
+    _ = server.data_to_send()
+    # Send DATA with body "hello"
+    var body = List[UInt8]()
+    body.append(UInt8(0x68))  # h
+    body.append(UInt8(0x65))  # e
+    body.append(UInt8(0x6C))  # l
+    body.append(UInt8(0x6C))  # l
+    body.append(UInt8(0x6F))  # o
+    var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
+    var data_wire = encode_frame(data_frame)
+    var events = server.receive_data(data_wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_DATA_RECEIVED:
+            found = True
+            assert_equal(Int(events[i].stream_id), 1, "stream_id")
+            assert_equal(len(events[i].data), 5, "data length")
+            assert_equal(events[i].flow_controlled_length, 5, "flow_controlled_length")
+            assert_true(not events[i].stream_ended, "stream_ended=False")
+    assert_true(found, "DataReceived event emitted")
+
+
+def test_inbound_data_end_stream() raises:
+    """DATA with END_STREAM transitions to HALF_CLOSED_REMOTE."""
+    var server = _server_conn_after_preface()
+    var req_headers = List[Header]()
+    req_headers.append(Header(":method", "POST"))
+    req_headers.append(Header(":path", "/"))
+    req_headers.append(Header(":scheme", "https"))
+    req_headers.append(Header(":authority", "example.com"))
+    var headers_wire = _build_hpack_headers_frame(1, req_headers)
+    _ = server.receive_data(headers_wire)
+    _ = server.data_to_send()
+    var body = List[UInt8]()
+    body.append(UInt8(0x68))
+    var data_frame = Frame(len(body), FRAME_DATA, FLAG_END_STREAM, 1, body)
+    var data_wire = encode_frame(data_frame)
+    var events = server.receive_data(data_wire)
+    var state = server.stream_state(UInt32(1))
+    assert_equal(state, STREAM_HALF_CLOSED_REMOTE, "half-closed remote")
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_DATA_RECEIVED:
+            assert_true(events[i].stream_ended, "stream_ended=True")
+
+
+def test_inbound_data_on_unknown_stream() raises:
+    """DATA on unknown stream triggers connection error."""
+    var server = _server_conn_after_preface()
+    var body = List[UInt8]()
+    body.append(UInt8(0x00))
+    var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
+    var data_wire = encode_frame(data_frame)
+    var events = server.receive_data(data_wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_CONNECTION_TERMINATED:
+            found = True
+    assert_true(found, "connection error on DATA to unknown stream")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -323,4 +393,7 @@ def main() raises:
     test_send_headers_client_request()
     test_send_headers_continuation_split()
     test_client_receives_response_headers()
+    test_inbound_data_received()
+    test_inbound_data_end_stream()
+    test_inbound_data_on_unknown_stream()
     print("All tests passed.")

@@ -57,6 +57,8 @@ from .payloads import (
     decode_headers_payload,
     ContinuationPayload,
     decode_continuation_payload,
+    DataPayload,
+    decode_data_payload,
 )
 from .hpack import HpackEncoder, HpackDecoder, HpackConfig
 from lib.http1.types import Header
@@ -648,6 +650,8 @@ struct H2Connection(Movable):
                 self._handle_headers(frame, events)
             elif frame.frame_type == FRAME_CONTINUATION:
                 self._handle_continuation(frame, events)
+            elif frame.frame_type == FRAME_DATA:
+                self._handle_data(frame, events)
             elif frame.frame_type == FRAME_PRIORITY:
                 pass  # Accept and ignore (RFC 9113 §5.3.2)
             pos += consumed
@@ -1050,3 +1054,60 @@ struct H2Connection(Movable):
             self._streams[stream_id] = stream^
         except:
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream not found for CONTINUATION"))
+
+    def _stream_error(mut self, mut events: List[H2Event], stream_id: Int, error_code: Int):
+        """Send RST_STREAM and emit StreamReset event for a single stream."""
+        var ec = error_code
+        var payload = List[UInt8]()
+        payload.append(UInt8((ec >> 24) & 0xFF))
+        payload.append(UInt8((ec >> 16) & 0xFF))
+        payload.append(UInt8((ec >> 8) & 0xFF))
+        payload.append(UInt8(ec & 0xFF))
+        var frame = Frame(4, FRAME_RST_STREAM, 0, stream_id, payload)
+        self._queue_frame(frame)
+        events.append(H2Event.stream_reset(UInt32(stream_id), UInt32(error_code)))
+        if self._has_stream(stream_id):
+            try:
+                var stream = self._streams[stream_id].copy()
+                if stream.lifecycle == STREAM_OPEN or stream.lifecycle == STREAM_HALF_CLOSED_LOCAL or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                    self._active_stream_count -= 1
+                stream.lifecycle = STREAM_CLOSED
+                self._streams[stream_id] = stream^
+            except:
+                pass
+
+    def _handle_data(mut self, frame: Frame, mut events: List[H2Event]):
+        """Process inbound DATA frame."""
+        var stream_id = frame.stream_id
+        if stream_id == 0:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on stream 0"))
+            return
+        if not self._has_stream(stream_id):
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on unknown stream"))
+            return
+        try:
+            var stream = self._streams[stream_id].copy()
+            if stream.lifecycle != STREAM_OPEN and stream.lifecycle != STREAM_HALF_CLOSED_LOCAL:
+                self._stream_error(events, stream_id, H2_STREAM_CLOSED)
+                return
+            var dp = decode_data_payload(frame.copy())
+            if not dp.ok():
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid DATA: " + dp.error))
+                return
+            # Flow controlled length = total payload including padding
+            var fcl = len(frame.payload)
+            # Decrement recv windows
+            self._recv_window -= fcl
+            stream.recv_window -= fcl
+            stream.data_received = True
+            var end_stream = (frame.flags & FLAG_END_STREAM) != 0
+            if end_stream:
+                if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL:
+                    stream.lifecycle = STREAM_CLOSED
+                    self._active_stream_count -= 1
+                else:
+                    stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
+            self._streams[stream_id] = stream^
+            events.append(H2Event.data_received(UInt32(stream_id), dp.data, fcl, end_stream))
+        except:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream error processing DATA"))
