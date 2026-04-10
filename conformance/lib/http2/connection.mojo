@@ -544,6 +544,10 @@ struct H2Connection(Movable):
     def open_stream_count(self) -> Int:
         return self._active_stream_count
 
+    def next_stream_id(self) -> UInt32:
+        """Return the next stream ID that will be allocated."""
+        return self._next_stream_id
+
     def local_settings(self) -> H2Settings:
         return H2Settings(other=self._local_settings)
 
