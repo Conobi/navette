@@ -612,6 +612,70 @@ def test_send_rst_stream_closes_stream() raises:
     assert_equal(server.open_stream_count(), 0, "0 active after RST")
 
 
+def test_settings_initial_window_size_adjusts_streams() raises:
+    """SETTINGS INITIAL_WINDOW_SIZE change adjusts open stream send windows."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    var client_preface = client.data_to_send()
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    var server_preface = server.data_to_send()
+    _ = client.receive_data(server_preface)
+    _ = client.data_to_send()
+    _ = server.receive_data(client_preface)
+    _ = server.data_to_send()
+    # Client creates stream 1 (no END_STREAM, stays OPEN)
+    var headers = List[Header]()
+    headers.append(Header(":method", "POST"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "example.com"))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+    _ = client.data_to_send()
+    # Feed SETTINGS from server with smaller INITIAL_WINDOW_SIZE (100)
+    var settings_payload = List[UInt8]()
+    _append_setting(settings_payload, SETTINGS_INITIAL_WINDOW_SIZE, 100)
+    var settings_frame = Frame(len(settings_payload), FRAME_SETTINGS, 0, 0, settings_payload)
+    var settings_wire = encode_frame(settings_frame)
+    _ = client.receive_data(settings_wire)
+    _ = client.data_to_send()
+    # Stream 1 send_window was 65535, delta = 100 - 65535 = -65435
+    # New send_window = 65535 + (-65435) = 100
+    # Try sending 101 bytes — should fail (stream window)
+    var body_101 = List[UInt8]()
+    for _ in range(101):
+        body_101.append(UInt8(0x41))
+    var raised = False
+    try:
+        client.send_data(UInt32(1), body_101, end_stream=False)
+    except:
+        raised = True
+    assert_true(raised, "send_data fails when stream window < data size after SETTINGS adjustment")
+    # But 100 bytes should succeed
+    var body_100 = List[UInt8]()
+    for _ in range(100):
+        body_100.append(UInt8(0x41))
+    client.send_data(UInt32(1), body_100, end_stream=False)
+    # No exception = pass
+
+
+def test_settings_max_frame_size_invalid() raises:
+    """SETTINGS MAX_FRAME_SIZE outside valid range triggers PROTOCOL_ERROR."""
+    var server = _server_conn_after_preface()
+    # Send MAX_FRAME_SIZE = 100 (below 16384 minimum)
+    var settings_payload = List[UInt8]()
+    _append_setting(settings_payload, 5, 100)  # SETTINGS_MAX_FRAME_SIZE = id 5
+    var settings_frame = Frame(len(settings_payload), FRAME_SETTINGS, 0, 0, settings_payload)
+    var settings_wire = encode_frame(settings_frame)
+    var events = server.receive_data(settings_wire)
+    var found = False
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_CONNECTION_TERMINATED:
+            found = True
+            assert_equal(Int(events[i].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR for invalid MAX_FRAME_SIZE")
+    assert_true(found, "connection error on invalid MAX_FRAME_SIZE")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
@@ -631,4 +695,6 @@ def main() raises:
     test_inbound_rst_stream()
     test_rst_stream_on_idle()
     test_send_rst_stream_closes_stream()
+    test_settings_initial_window_size_adjusts_streams()
+    test_settings_max_frame_size_invalid()
     print("All tests passed.")
