@@ -47,6 +47,7 @@ TESTS=(
     test_priority
     test_alt_svc
     test_sse
+    test_h2_pseudo_headers
 )
 
 FILTER="${TESTS_FILTER:-}"
@@ -67,6 +68,9 @@ for t in "${TESTS[@]}"; do
     fi
     if [ "$t" = "test_proxy_token" ]; then
         EXTRA_I=(-I examples/reverse_proxy)
+    fi
+    if [[ "$t" == test_h2_* ]]; then
+        EXTRA_I=(-I conformance)
     fi
     if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
