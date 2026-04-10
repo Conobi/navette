@@ -34,6 +34,7 @@ from src.h2.pseudo_headers import (
     request_from_h2_headers,
     response_to_h2_headers,
     headers_from_h2,
+    headers_to_h2,
 )
 
 
@@ -181,6 +182,10 @@ struct H2HandlerServer[H: StreamHandler](Movable):
 
     # --- Internal -----------------------------------------------------------
 
+    def _has_stream(self, sid: Int) -> Bool:
+        """Check whether stream ID is present in the streams dict."""
+        return sid in self._streams
+
     def _flush_outbound(mut self):
         """Move pending outbound bytes from the H2Connection into our buffer."""
         var pending = self._conn.data_to_send()
@@ -248,6 +253,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         notify handler via on_body_available.  If the event carries
         END_STREAM, also mark the body ended and invoke on_request_end."""
         var sid = Int(evt.stream_id)
+        if not self._has_stream(sid):
+            return
         var ctx_ptr = self._streams[sid].ptr()
         # take_pointee moves the entire _StreamCtx out of the heap so we can
         # get mut borrows on body/resp without going through UnsafePointer.
@@ -287,6 +294,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         Trailers always carry END_STREAM (enforced by H2Connection), so also
         notify via on_body_available, mark body ended, fire on_request_end."""
         var sid = Int(evt.stream_id)
+        if not self._has_stream(sid):
+            return
         var ctx_ptr = self._streams[sid].ptr()
         var trailer_headers = headers_from_h2(evt.headers)
         # take_pointee to get mut access to recv_body/resp_writer
@@ -307,6 +316,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         """Handle STREAM_ENDED: mark the body as ended, notify handler via
         on_request_end if not detached."""
         var sid = Int(evt.stream_id)
+        if not self._has_stream(sid):
+            return
         var ctx_ptr = self._streams[sid].ptr()
         # Read request_ended through the pointer (Bool is trivially copyable)
         if ctx_ptr[].request_ended:
@@ -321,10 +332,93 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
-        """Handle STREAM_RESET — stub for Task 7."""
-        pass
+        """Handle STREAM_RESET: notify handler, clean up stream context."""
+        var sid = Int(evt.stream_id)
+        if not self._has_stream(sid):
+            return
+        var ctx_ptr = self._streams[sid].ptr()
+        var ctx = ctx_ptr.take_pointee()
+        var err = StreamError.rst_stream(evt.error_code)
+        ctx.recv_body._set_error(StreamError(other=err))
+        self.handler.on_reset(err)
+        # Free heap memory — both directions are dead after RST.
+        # ctx was already taken out; just free the allocation.
+        ctx_ptr.free()
+        # Remove from Dict.
+        _ = self._streams.pop(sid)
+
+    def _maybe_cleanup_stream(mut self, stream_id: Int) raises:
+        """Free stream context if both request and response sides are done."""
+        if not self._has_stream(stream_id):
+            return
+        var ctx_ptr = self._streams[stream_id].ptr()
+        # Read through pointer — Bool is trivially copyable
+        if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
+            ctx_ptr.destroy_pointee()
+            ctx_ptr.free()
+            _ = self._streams.pop(stream_id)
 
     def _drain_responses(mut self) raises:
         """Drain pending response data from stream contexts into the H2
-        connection (stub — does nothing).  Will be filled in by later tasks."""
-        pass
+        connection.  For each open stream, send response headers if ready,
+        then drain body frames (data, trailers, end)."""
+        # Snapshot stream IDs to avoid mutating dict while iterating
+        var stream_ids = List[Int]()
+        for key in self._streams.keys():
+            stream_ids.append(key)
+        for i in range(len(stream_ids)):
+            var sid = stream_ids[i]
+            if not self._has_stream(sid):
+                continue
+            var ctx_ptr = self._streams[sid].ptr()
+            # Use take_pointee to get mut access
+            var ctx = ctx_ptr.take_pointee()
+            var made_progress = False
+            # Skip if response not started
+            if not ctx.headers_sent and not ctx.resp_writer._has_status():
+                ctx_ptr.init_pointee_move(ctx^)
+                continue
+            # Send response headers if not yet sent
+            if not ctx.headers_sent and ctx.resp_writer._has_status():
+                var status_opt = ctx.resp_writer._take_status()
+                var headers_opt = ctx.resp_writer._take_headers()
+                var status = status_opt.unsafe_take()
+                var resp_headers: Headers
+                if Bool(headers_opt):
+                    resp_headers = headers_opt.unsafe_take()
+                else:
+                    resp_headers = Headers()
+                var h2_hdrs = response_to_h2_headers(status^, resp_headers^)
+                self._conn.send_headers(UInt32(sid), h2_hdrs^, end_stream=False)
+                ctx.headers_sent = True
+                made_progress = True
+            # Drain body frames
+            while True:
+                var f_opt = ctx.resp_writer._pop_body_frame()
+                if not Bool(f_opt):
+                    break
+                var f = f_opt.unsafe_take()
+                if f.is_data():
+                    self._conn.send_data(
+                        UInt32(sid), f.data().copy(), end_stream=False
+                    )
+                    made_progress = True
+                elif f.is_end():
+                    self._conn.send_data(
+                        UInt32(sid), List[UInt8](), end_stream=True
+                    )
+                    ctx.response_ended = True
+                    made_progress = True
+                    break
+                elif f.is_trailers():
+                    var trailer_h2 = headers_to_h2(f.trailers())
+                    self._conn.send_headers(
+                        UInt32(sid), trailer_h2^, end_stream=True
+                    )
+                    ctx.response_ended = True
+                    made_progress = True
+                    break
+            # Move back into the heap and maybe cleanup
+            ctx_ptr.init_pointee_move(ctx^)
+            if made_progress:
+                self._maybe_cleanup_stream(sid)
