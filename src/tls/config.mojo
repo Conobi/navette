@@ -58,6 +58,31 @@ struct TlsClientConfig(Movable):
         """Return the raw config handle (borrowed; do not free)."""
         return self._handle
 
+    def set_alpn_protocols(mut self, ref lib: RustlsLibrary, protocols: List[String]) raises:
+        """Set ALPN protocol preferences. Call before creating connections.
+
+        Protocols are ordered by preference (e.g., ["h2", "http/1.1"]).
+        Encoded to length-prefixed wire format for the Rust FFI.
+        """
+        # Encode to length-prefixed wire format
+        var buf = List[UInt8]()
+        for i in range(len(protocols)):
+            var proto = protocols[i]
+            var proto_bytes = proto.as_bytes()
+            var proto_len = len(proto_bytes)
+            buf.append(UInt8(proto_len))
+            for j in range(proto_len):
+                buf.append(proto_bytes[j])
+        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_any_origin()
+        for i in range(len(buf)):
+            buf_ptr[i] = buf[i]
+        var rc = lib.config_set_alpn_protocols(
+            self._handle, buf_ptr, Int32(len(buf))
+        )
+        buf_ptr.free()
+        if rc < 0:
+            raise "set_alpn_protocols failed: " + lib.last_error()
+
 
 struct TlsServerConfig(Movable):
     """RAII wrapper for a rustls server config handle."""
@@ -123,3 +148,28 @@ struct TlsServerConfig(Movable):
     def handle(self) -> Int32:
         """Return the raw config handle (borrowed; do not free)."""
         return self._handle
+
+    def set_alpn_protocols(mut self, ref lib: RustlsLibrary, protocols: List[String]) raises:
+        """Set ALPN protocol preferences. Call before creating connections.
+
+        Protocols are ordered by preference (e.g., ["h2", "http/1.1"]).
+        Encoded to length-prefixed wire format for the Rust FFI.
+        """
+        # Encode to length-prefixed wire format
+        var buf = List[UInt8]()
+        for i in range(len(protocols)):
+            var proto = protocols[i]
+            var proto_bytes = proto.as_bytes()
+            var proto_len = len(proto_bytes)
+            buf.append(UInt8(proto_len))
+            for j in range(proto_len):
+                buf.append(proto_bytes[j])
+        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_any_origin()
+        for i in range(len(buf)):
+            buf_ptr[i] = buf[i]
+        var rc = lib.config_set_alpn_protocols(
+            self._handle, buf_ptr, Int32(len(buf))
+        )
+        buf_ptr.free()
+        if rc < 0:
+            raise "set_alpn_protocols failed: " + lib.last_error()
