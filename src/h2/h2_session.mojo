@@ -10,6 +10,7 @@ from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from lib.http1.types import Header
 from lib.http2.connection import (
     H2Connection,
     H2Config,
@@ -18,12 +19,18 @@ from lib.http2.connection import (
     H2_EVT_DATA_RECEIVED,
     H2_EVT_STREAM_ENDED,
     H2_EVT_STREAM_RESET,
+    H2_EVT_TRAILERS_RECEIVED,
     H2_NO_ERROR,
 )
 from src.http.handler import Capabilities, ALPN_H2, StreamError
 from src.http.session import Session, RequestHandle
 from src.http.request import Request
+from src.http.response import Response
 from src.http.headers import Headers
+from src.http.version import Version
+from src.http.status import StatusCode
+from src.http.body import BodyFrame
+from src.h2.pseudo_headers import request_to_h2_headers
 from src.h2.config import h2_production_config
 
 
@@ -141,13 +148,84 @@ struct H2Session(Session):
     # --- Session trait API ---------------------------------------------------
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
-        raise Error("H2Session.submit: not implemented")
+        self._next_handle_id += UInt64(1)
+        var handle_id = self._next_handle_id
+        var stream_id = self._conn.next_stream_id()
+        var h2_headers = request_to_h2_headers(req)
+        var has_body = req.body.is_buffered() and len(req.body.bytes()) > 0
+        var end_stream = not has_body and not req.body.is_stream()
+        self._conn.send_headers(stream_id, h2_headers^, end_stream=end_stream)
+        if has_body:
+            self._conn.send_data(
+                stream_id, req.body.bytes().copy(), end_stream=True
+            )
+        # Flush pending frames to outbuf
+        self._flush_outbound()
+        # Allocate client context on heap
+        var ctx_ptr = _heap_alloc[_ClientCtx](1).as_any_origin()
+        var ctx = _ClientCtx(handle_id=handle_id)
+        ctx_ptr.init_pointee_move(ctx^)
+        self._stream_ctxs[Int(stream_id)] = _ClientStreamPtr(
+            UInt64(Int(ctx_ptr))
+        )
+        self._handle_to_stream[Int(handle_id)] = Int(stream_id)
+        return RequestHandle(id=handle_id)
 
     def run_until(mut self, mut handle_ids: Deque[UInt64]) raises:
-        raise Error("H2Session.run_until: not implemented")
+        # For H2 with multiplexing, events are already processed in feed().
+        # The caller drives the transport byte pump externally.
+        pass
 
     def run_one(mut self, mut handle: RequestHandle) raises:
-        raise Error("H2Session.run_one: not implemented")
+        var hid = Int(handle.id())
+        # Look up the stream for this handle
+        var stream_id: Int
+        try:
+            stream_id = self._handle_to_stream[hid]
+        except:
+            return
+        # Look up the per-stream context
+        var ctx_wrap: _ClientStreamPtr
+        try:
+            ctx_wrap = _ClientStreamPtr(other=self._stream_ctxs[stream_id])
+        except:
+            return
+        var ctx_ptr = ctx_wrap.ptr()
+        if ctx_ptr[].status_code >= 0 and not handle.has_headers():
+            # Build Response and deliver to handle
+            var ctx = ctx_ptr.take_pointee()
+            var resp = Response(
+                status=StatusCode(ctx.status_code),
+                reason=String(""),
+                version=Version.http_2(),
+                headers=ctx.headers^,
+                body=List[BodyFrame](),
+            )
+            if len(ctx.body_data) > 0:
+                var body_copy = ctx.body_data^
+                resp.body.append(BodyFrame.data(body_copy^))
+                ctx.body_data = List[UInt8]()
+            ctx.headers = Headers()  # reinit after move
+            handle._set_response(resp^)
+            if ctx.complete:
+                if ctx.errored:
+                    handle._set_error(
+                        StreamError.rst_stream(ctx.error_code)
+                    )
+                else:
+                    handle._mark_complete()
+            ctx_ptr.init_pointee_move(ctx^)
+        elif handle.has_headers() and not handle.is_complete():
+            # Response already delivered; check for completion
+            if ctx_ptr[].complete:
+                if len(ctx_ptr[].body_data) > 0:
+                    var ctx = ctx_ptr.take_pointee()
+                    var body_copy = ctx.body_data^
+                    ctx.body_data = List[UInt8]()
+                    ctx_ptr.init_pointee_move(ctx^)
+                    # Note: additional body data after initial response is not
+                    # deliverable via _set_response; mark complete only
+                handle._mark_complete()
 
     def capabilities(self) -> Capabilities:
         return Capabilities.for_h2()
@@ -198,6 +276,101 @@ struct H2Session(Session):
             self._outbuf.append(pending[i])
 
     def _dispatch_client_events(mut self, mut events: List[H2Event]) raises:
-        """Dispatch H2 events for client-side processing.  STUB — will be
-        implemented in a future task."""
-        pass
+        """Dispatch H2 events for client-side processing."""
+        for i in range(len(events)):
+            var evt = H2Event(other=events[i])
+            if evt.kind == H2_EVT_RESPONSE_RECEIVED:
+                self._on_response_received(evt)
+            elif evt.kind == H2_EVT_DATA_RECEIVED:
+                self._on_data_received(evt)
+            elif evt.kind == H2_EVT_TRAILERS_RECEIVED:
+                self._on_trailers_received(evt)
+            elif evt.kind == H2_EVT_STREAM_ENDED:
+                self._on_stream_ended(evt)
+            elif evt.kind == H2_EVT_STREAM_RESET:
+                self._on_stream_reset(evt)
+
+    def _on_response_received(mut self, evt: H2Event) raises:
+        """Handle RESPONSE_RECEIVED: extract :status and headers, store on ctx."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
+        try:
+            ctx_ptr = self._stream_ctxs[sid].ptr()
+        except:
+            return
+        # Parse :status from pseudo-headers and extract regular headers
+        var status_code = -1
+        var headers = Headers()
+        for j in range(len(evt.headers)):
+            var name = evt.headers[j].name
+            var value = evt.headers[j].value
+            if name == ":status":
+                status_code = atol(value)
+            else:
+                headers.add(name, value)
+        var ctx = ctx_ptr.take_pointee()
+        ctx.status_code = status_code
+        ctx.headers = headers^
+        if evt.stream_ended:
+            ctx.complete = True
+        ctx_ptr.init_pointee_move(ctx^)
+
+    def _on_data_received(mut self, evt: H2Event) raises:
+        """Handle DATA_RECEIVED: append data to ctx, acknowledge for flow control."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
+        try:
+            ctx_ptr = self._stream_ctxs[sid].ptr()
+        except:
+            return
+        var ctx = ctx_ptr.take_pointee()
+        for j in range(len(evt.data)):
+            ctx.body_data.append(evt.data[j])
+        ctx_ptr.init_pointee_move(ctx^)
+        # Acknowledge received data for flow control
+        if evt.flow_controlled_length > 0:
+            self._conn.acknowledge_received_data(
+                evt.flow_controlled_length, evt.stream_id
+            )
+        if evt.stream_ended:
+            var ctx2 = ctx_ptr.take_pointee()
+            ctx2.complete = True
+            ctx_ptr.init_pointee_move(ctx2^)
+
+    def _on_trailers_received(mut self, evt: H2Event) raises:
+        """Handle TRAILERS_RECEIVED: trailers imply stream ended."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
+        try:
+            ctx_ptr = self._stream_ctxs[sid].ptr()
+        except:
+            return
+        var ctx = ctx_ptr.take_pointee()
+        ctx.complete = True
+        ctx_ptr.init_pointee_move(ctx^)
+
+    def _on_stream_ended(mut self, evt: H2Event) raises:
+        """Handle STREAM_ENDED: mark ctx complete."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
+        try:
+            ctx_ptr = self._stream_ctxs[sid].ptr()
+        except:
+            return
+        var ctx = ctx_ptr.take_pointee()
+        ctx.complete = True
+        ctx_ptr.init_pointee_move(ctx^)
+
+    def _on_stream_reset(mut self, evt: H2Event) raises:
+        """Handle STREAM_RESET: mark ctx errored."""
+        var sid = Int(evt.stream_id)
+        var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
+        try:
+            ctx_ptr = self._stream_ctxs[sid].ptr()
+        except:
+            return
+        var ctx = ctx_ptr.take_pointee()
+        ctx.errored = True
+        ctx.error_code = evt.error_code
+        ctx.complete = True
+        ctx_ptr.init_pointee_move(ctx^)
