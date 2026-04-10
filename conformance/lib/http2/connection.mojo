@@ -398,6 +398,8 @@ struct StreamState(Copyable, Movable):
     var recv_window_consumed: Int
     var expects_continuation: Bool
     var header_block_buffer: List[UInt8]
+    var headers_end_stream: Bool
+    var data_received: Bool
 
     def __init__(out self, *, lifecycle: Int = STREAM_IDLE, send_window: Int = DEFAULT_INITIAL_WINDOW_SIZE, recv_window: Int = DEFAULT_INITIAL_WINDOW_SIZE):
         self.lifecycle = lifecycle
@@ -406,6 +408,8 @@ struct StreamState(Copyable, Movable):
         self.recv_window_consumed = 0
         self.expects_continuation = False
         self.header_block_buffer = List[UInt8]()
+        self.headers_end_stream = False
+        self.data_received = False
 
     def __init__(out self, *, other: Self):
         self.lifecycle = other.lifecycle
@@ -414,6 +418,8 @@ struct StreamState(Copyable, Movable):
         self.recv_window_consumed = other.recv_window_consumed
         self.expects_continuation = other.expects_continuation
         self.header_block_buffer = other.header_block_buffer.copy()
+        self.headers_end_stream = other.headers_end_stream
+        self.data_received = other.data_received
 
     def __init__(out self, *, deinit take: Self):
         self.lifecycle = take.lifecycle
@@ -422,6 +428,8 @@ struct StreamState(Copyable, Movable):
         self.recv_window_consumed = take.recv_window_consumed
         self.expects_continuation = take.expects_continuation
         self.header_block_buffer = take.header_block_buffer^
+        self.headers_end_stream = take.headers_end_stream
+        self.data_received = take.data_received
 
 
 # ---------------------------------------------------------------------------
