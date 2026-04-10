@@ -194,10 +194,87 @@ def test_hpack_decode_continuation_assembly() raises:
     assert_true(found, "RequestReceived after CONTINUATION assembly")
 
 
+def test_send_headers_client_request() raises:
+    """Client send_headers encodes HPACK, queues HEADERS frame, creates stream."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    _ = client.data_to_send()
+    # Build server preface and feed to client
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    var server_preface = server.data_to_send()
+    _ = client.receive_data(server_preface)
+    _ = client.data_to_send()  # drain SETTINGS ACK
+    var headers = List[Header]()
+    headers.append(Header(":method", "GET"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "example.com"))
+    client.send_headers(UInt32(1), headers^, end_stream=True)
+    var wire = client.data_to_send()
+    # Decode the HEADERS frame
+    assert_true(len(wire) > 9, "wire has frame header")
+    var result = decode_frame(wire, 0)
+    var frame = result[0].copy()
+    assert_equal(frame.frame_type, FRAME_HEADERS, "frame type")
+    assert_equal(frame.stream_id, 1, "stream_id")
+    assert_true((frame.flags & FLAG_END_HEADERS) != 0, "END_HEADERS set")
+    assert_true((frame.flags & FLAG_END_STREAM) != 0, "END_STREAM set")
+    # Stream should exist and be half-closed local
+    var state = client.stream_state(UInt32(1))
+    assert_equal(state, STREAM_HALF_CLOSED_LOCAL, "half-closed local")
+    assert_equal(client.open_stream_count(), 1, "1 active stream")
+
+
+def test_send_headers_continuation_split() raises:
+    """Large header block splits into HEADERS + CONTINUATION frames."""
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    _ = client.data_to_send()
+    var server = H2Connection(client_side=False)
+    server.initiate_connection()
+    var server_preface = server.data_to_send()
+    _ = client.receive_data(server_preface)
+    _ = client.data_to_send()
+    # Build headers large enough to exceed max_frame_size (16384)
+    var headers = List[Header]()
+    headers.append(Header(":method", "GET"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "example.com"))
+    for i in range(200):
+        headers.append(Header("x-custom-" + String(i), "v" * 100))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+    var wire = client.data_to_send()
+    # First frame should be HEADERS without END_HEADERS
+    var pos = 0
+    var r1 = decode_frame(wire, pos)
+    var f1 = r1[0].copy()
+    assert_equal(f1.frame_type, FRAME_HEADERS, "first frame is HEADERS")
+    assert_true((f1.flags & FLAG_END_HEADERS) == 0, "first frame lacks END_HEADERS")
+    pos += r1[1]
+    # There should be at least one CONTINUATION
+    var last_is_end = False
+    var cont_count = 0
+    while pos < len(wire):
+        var r = decode_frame(wire, pos)
+        var f = r[0].copy()
+        assert_equal(f.frame_type, FRAME_CONTINUATION, "subsequent frames are CONTINUATION")
+        assert_equal(f.stream_id, 1, "CONTINUATION stream_id")
+        cont_count += 1
+        if (f.flags & FLAG_END_HEADERS) != 0:
+            last_is_end = True
+        pos += r[1]
+    assert_true(cont_count >= 1, "at least 1 CONTINUATION")
+    assert_true(last_is_end, "last CONTINUATION has END_HEADERS")
+
+
 def main() raises:
     test_stream_state_new_fields()
     test_hpack_decode_request_received()
     test_hpack_decode_end_stream_half_close()
     test_hpack_decode_compression_error()
     test_hpack_decode_continuation_assembly()
+    test_send_headers_client_request()
+    test_send_headers_continuation_split()
     print("All tests passed.")

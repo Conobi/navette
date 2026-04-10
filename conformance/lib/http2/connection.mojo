@@ -719,6 +719,81 @@ struct H2Connection(Movable):
         var frame = Frame(8, FRAME_PING, 0, 0, opaque_data)
         self._queue_frame(frame)
 
+    def send_headers(mut self, stream_id: UInt32, var headers: List[Header], *, end_stream: Bool = False) raises:
+        """Encode headers via HPACK, queue HEADERS (+ CONTINUATION if needed)."""
+        if self._state == CONN_CLOSED:
+            raise Error("Connection is closed")
+        if self._state == CONN_GOAWAY and self._client_side:
+            raise Error("Connection is draining")
+        var sid = Int(stream_id)
+        # Client creating a new stream
+        if self._client_side and not self._has_stream(sid):
+            if sid != Int(self._next_stream_id):
+                raise Error("Stream ID must be " + String(Int(self._next_stream_id)))
+            if sid % 2 == 0:
+                raise Error("Client stream IDs must be odd")
+            if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
+                raise Error("Exceeds MAX_CONCURRENT_STREAMS")
+            self._next_stream_id = UInt32(sid + 2)
+            var stream = StreamState(
+                lifecycle=STREAM_OPEN,
+                send_window=Int(self._remote_settings.initial_window_size),
+                recv_window=Int(self._local_settings.initial_window_size),
+            )
+            if end_stream:
+                stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+            self._streams[sid] = stream^
+            self._active_stream_count += 1
+        elif not self._client_side and self._has_stream(sid):
+            # Server sending response on existing stream
+            if end_stream:
+                try:
+                    var stream = self._streams[sid].copy()
+                    if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                        stream.lifecycle = STREAM_CLOSED
+                        self._active_stream_count -= 1
+                    else:
+                        stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+                    self._streams[sid] = stream^
+                except:
+                    raise Error("Stream not found: " + String(sid))
+        else:
+            raise Error("Invalid send_headers: stream_id=" + String(sid))
+        # HPACK encode
+        var block = self._hpack_encoder.encode(headers)
+        var max_size = Int(self._remote_settings.max_frame_size)
+        if len(block) <= max_size:
+            # Single HEADERS frame with END_HEADERS
+            var flags = FLAG_END_HEADERS
+            if end_stream:
+                flags = flags | FLAG_END_STREAM
+            var hdr_frame = Frame(len(block), FRAME_HEADERS, flags, sid, block)
+            self._queue_frame(hdr_frame)
+        else:
+            # Split: HEADERS (first chunk) + CONTINUATION frames
+            var first_chunk = List[UInt8]()
+            for i in range(max_size):
+                first_chunk.append(block[i])
+            var flags = 0
+            if end_stream:
+                flags = flags | FLAG_END_STREAM
+            var hdr_frame = Frame(len(first_chunk), FRAME_HEADERS, flags, sid, first_chunk)
+            self._queue_frame(hdr_frame)
+            var offset = max_size
+            while offset < len(block):
+                var end = offset + max_size
+                if end > len(block):
+                    end = len(block)
+                var chunk = List[UInt8]()
+                for i in range(offset, end):
+                    chunk.append(block[i])
+                var cont_flags = 0
+                if end == len(block):
+                    cont_flags = FLAG_END_HEADERS
+                var cont_frame = Frame(len(chunk), FRAME_CONTINUATION, cont_flags, sid, chunk)
+                self._queue_frame(cont_frame)
+                offset = end
+
     def _handle_goaway(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound GOAWAY frame."""
         var gp = decode_goaway_payload(frame)
