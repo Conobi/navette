@@ -1168,7 +1168,11 @@ struct H2Connection(Movable):
                     return
                 var end_stream = stream.headers_end_stream
                 if end_stream:
-                    stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
+                    if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL:
+                        stream.lifecycle = STREAM_CLOSED
+                        self._active_stream_count -= 1
+                    else:
+                        stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
                 stream.header_block_buffer = List[UInt8]()  # clear buffer
                 if stream.data_received:
                     # Trailers
@@ -1226,6 +1230,13 @@ struct H2Connection(Movable):
                 return
             # Flow controlled length = total payload including padding
             var fcl = len(frame.payload)
+            # Check recv window violations (RFC 9113 §6.9.1)
+            if fcl > self._recv_window:
+                self._connection_error(events, H2_FLOW_CONTROL_ERROR, String("Connection recv window exceeded"))
+                return
+            if fcl > stream.recv_window:
+                self._stream_error(events, stream_id, H2_FLOW_CONTROL_ERROR)
+                return
             # Decrement recv windows
             self._recv_window -= fcl
             stream.recv_window -= fcl
