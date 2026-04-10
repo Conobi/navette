@@ -144,13 +144,15 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._streams = take._streams^
 
     fn __del__(deinit self):
-        """Free all heap-allocated stream contexts."""
+        """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
         for i in range(len(keys)):
             try:
-                self._streams[keys[i]].ptr().free()
+                var p = self._streams[keys[i]].ptr()
+                p.destroy_pointee()
+                p.free()
             except:
                 pass
 
