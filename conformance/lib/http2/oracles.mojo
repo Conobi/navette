@@ -114,8 +114,10 @@ def h2_stream_data_scenario(headers: List[Header], body: List[UInt8], end_stream
     var builtins = Python.import_module("builtins")
     var py_headers = builtins.list()
     for i in range(len(headers)):
-        var pair = builtins.tuple([headers[i].name, headers[i].value])
-        py_headers.append(pair)
+        var pair = builtins.list()
+        pair.append(headers[i].name)
+        pair.append(headers[i].value)
+        py_headers.append(builtins.tuple(pair))
     var py_body = builtins.bytearray()
     for i in range(len(body)):
         py_body.append(Int(body[i]))
