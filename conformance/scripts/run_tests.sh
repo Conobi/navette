@@ -39,6 +39,8 @@ TESTS=(
     test_h2_connection_cross
     test_h2_stream
     test_h2_stream_cross
+    test_cross_quic_hs_keys
+    test_cross_quic_packet_header
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
