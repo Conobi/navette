@@ -578,6 +578,111 @@ pub extern "C" fn rlsm_quic_conn_take_next_keys(
     })
 }
 
+// ---------------------------------------------------------------------------
+// §5 State queries
+// ---------------------------------------------------------------------------
+
+/// Returns 1 if handshaking, 0 if complete, -1 on invalid handle.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_is_handshaking(conn_handle: i32) -> i32 {
+    clear_last_error();
+    quic_conn_table()
+        .with(conn_handle, |entry| {
+            let v = match &entry.conn {
+                QuicConn::Client(c) => c.is_handshaking(),
+                QuicConn::Server(c) => c.is_handshaking(),
+            };
+            if v { 1 } else { 0 }
+        })
+        .unwrap_or(-1)
+}
+
+/// Copy peer's transport parameters into out_buf.
+/// Returns 0=available, 1=not yet available, -1=error.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_transport_params(
+    conn_handle:  i32,
+    out_buf:      *mut u8,  out_capacity: i32,
+    out_written:  *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if out_buf.is_null()     { rlsm_err!("rlsm_quic_conn_transport_params: null out_buf";    return -1); }
+    if out_written.is_null() { rlsm_err!("rlsm_quic_conn_transport_params: null out_written"; return -1); }
+    if out_capacity < 0      { rlsm_err!("rlsm_quic_conn_transport_params: negative capacity"; return -1); }
+
+    quic_conn_table()
+        .with(conn_handle, |entry| {
+            let params = match &entry.conn {
+                QuicConn::Client(c) => c.quic_transport_parameters(),
+                QuicConn::Server(c) => c.quic_transport_parameters(),
+            };
+            match params {
+                None => { unsafe { *out_written = 0; } 1 }
+                Some(p) => {
+                    if p.len() > out_capacity as usize {
+                        set_last_error(format!(
+                            "rlsm_quic_conn_transport_params: buffer too small \
+                             (need {}, have {})", p.len(), out_capacity
+                        ));
+                        return -1;
+                    }
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(p.as_ptr(), out_buf, p.len());
+                        *out_written = p.len() as i32;
+                    }
+                    0
+                }
+            }
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_transport_params: invalid conn handle"; return -1)
+        })
+}
+
+/// Copy negotiated ALPN bytes into out_buf.
+/// Returns 0=available, 1=not yet available, -1=error.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_alpn(
+    conn_handle:  i32,
+    out_buf:      *mut u8,  out_capacity: i32,
+    out_written:  *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if out_buf.is_null()     { rlsm_err!("rlsm_quic_conn_alpn: null out_buf";    return -1); }
+    if out_written.is_null() { rlsm_err!("rlsm_quic_conn_alpn: null out_written"; return -1); }
+    if out_capacity < 0      { rlsm_err!("rlsm_quic_conn_alpn: negative capacity"; return -1); }
+
+    quic_conn_table()
+        .with(conn_handle, |entry| {
+            let proto = match &entry.conn {
+                QuicConn::Client(c) => c.alpn_protocol(),
+                QuicConn::Server(c) => c.alpn_protocol(),
+            };
+            match proto {
+                None => { unsafe { *out_written = 0; } 1 }
+                Some(p) => {
+                    if p.len() > out_capacity as usize {
+                        set_last_error(format!(
+                            "rlsm_quic_conn_alpn: buffer too small (need {}, have {})",
+                            p.len(), out_capacity
+                        ));
+                        return -1;
+                    }
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(p.as_ptr(), out_buf, p.len());
+                        *out_written = p.len() as i32;
+                    }
+                    0
+                }
+            }
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_alpn: invalid conn handle"; return -1)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,6 +841,182 @@ mod tests {
         // Second take_keys without a new key change → -1
         let mut keys_h2: i32 = 0;
         assert_eq!(rlsm_quic_conn_take_keys(server_h, &mut keys_h2), -1);
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    /// Drive a full in-memory handshake to completion.
+    /// Returns (client_1rtt_keys, server_1rtt_keys) handles.
+    fn run_handshake(client_h: i32, server_h: i32) -> (i32, i32) {
+        let mut buf = vec![0u8; 4096];
+        let mut written: i32 = 0;
+        let mut kc: u8 = 0;
+        let mut client_1rtt: i32 = 0;
+        let mut server_1rtt: i32 = 0;
+
+        for _round in 0..20 {
+            let mut progress = false;
+
+            // Client → Server
+            written = 0; kc = 0;
+            assert_eq!(
+                rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc),
+                0, "client write_hs failed"
+            );
+            if kc != 0 {
+                let mut kh: i32 = 0;
+                assert_eq!(rlsm_quic_conn_take_keys(client_h, &mut kh), 0);
+                if kc == 2 { client_1rtt = kh; }
+            }
+            if written > 0 {
+                progress = true;
+                assert_eq!(
+                    rlsm_quic_conn_read_hs(server_h, buf.as_ptr(), written),
+                    0, "server read_hs failed"
+                );
+            }
+
+            // Server → Client
+            written = 0; kc = 0;
+            assert_eq!(
+                rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc),
+                0, "server write_hs failed"
+            );
+            if kc != 0 {
+                let mut kh: i32 = 0;
+                assert_eq!(rlsm_quic_conn_take_keys(server_h, &mut kh), 0);
+                if kc == 2 { server_1rtt = kh; }
+            }
+            if written > 0 {
+                progress = true;
+                assert_eq!(
+                    rlsm_quic_conn_read_hs(client_h, buf.as_ptr(), written),
+                    0, "client read_hs failed"
+                );
+            }
+
+            let client_done = rlsm_quic_conn_is_handshaking(client_h) == 0;
+            let server_done = rlsm_quic_conn_is_handshaking(server_h) == 0;
+            if client_done && server_done {
+                return (client_1rtt, server_1rtt);
+            }
+            assert!(progress, "handshake stalled with no progress");
+        }
+        panic!("handshake did not complete in 20 rounds");
+    }
+
+    // T7: transport_params returns 1 (unavailable) before peer's hello
+    #[test]
+    fn test_transport_params_unavailable_before_hello() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let mut tp_buf = [0u8; 256];
+        let mut tp_written: i32 = 0;
+        // Before any handshake data — server has not seen ClientHello
+        let rc = rlsm_quic_conn_transport_params(server_h, tp_buf.as_mut_ptr(), 256, &mut tp_written);
+        assert_eq!(rc, 1, "expected 1 (unavailable) before hello");
+        assert_eq!(tp_written, 0);
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    // T1/T8: full handshake completes + transport_params available
+    #[test]
+    fn test_full_handshake_client_server() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+
+        let (client_1rtt, server_1rtt) = run_handshake(client_h, server_h);
+
+        assert!(client_1rtt > 0, "client 1-RTT keys not materialized");
+        assert!(server_1rtt > 0, "server 1-RTT keys not materialized");
+
+        // Both done
+        assert_eq!(rlsm_quic_conn_is_handshaking(client_h), 0);
+        assert_eq!(rlsm_quic_conn_is_handshaking(server_h), 0);
+
+        // ALPN = "h3" on both sides
+        let mut alpn_buf = [0u8; 32];
+        let mut alpn_written: i32 = 0;
+        assert_eq!(rlsm_quic_conn_alpn(client_h, alpn_buf.as_mut_ptr(), 32, &mut alpn_written), 0);
+        assert_eq!(&alpn_buf[..alpn_written as usize], b"h3");
+        alpn_written = 0;
+        assert_eq!(rlsm_quic_conn_alpn(server_h, alpn_buf.as_mut_ptr(), 32, &mut alpn_written), 0);
+        assert_eq!(&alpn_buf[..alpn_written as usize], b"h3");
+
+        // Transport params available (T8)
+        let mut tp_buf = [0u8; 1024];
+        let mut tp_written: i32 = 0;
+        assert_eq!(rlsm_quic_conn_transport_params(client_h, tp_buf.as_mut_ptr(), 1024, &mut tp_written), 0);
+        // server sent empty transport params → tp_written may be 0; just verify return is 0
+        tp_written = 0;
+        assert_eq!(rlsm_quic_conn_transport_params(server_h, tp_buf.as_mut_ptr(), 1024, &mut tp_written), 0);
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    // T2: Handshake keys from take_keys work with Wave 1 encrypt
+    #[test]
+    fn test_handshake_keys_available() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let mut buf = vec![0u8; 4096];
+        let mut written: i32 = 0;
+        let mut kc: u8 = 0;
+
+        // Client writes ClientHello
+        rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        let client_hello = buf[..written as usize].to_vec();
+
+        // Server reads ClientHello
+        rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32);
+
+        // Server writes → key_change=1
+        written = 0; kc = 0;
+        rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(kc, 1, "expected Handshake key change");
+
+        // take_keys → handle is positive
+        let mut hs_keys: i32 = 0;
+        assert_eq!(rlsm_quic_conn_take_keys(server_h, &mut hs_keys), 0);
+        assert!(hs_keys > 0, "expected positive keys handle");
+
+        // Wave 1 encrypt succeeds with this handle
+        let header = b"\xc0\x00\x00\x00\x01";
+        let mut payload = vec![0xAAu8; 32];
+        let tag_space = vec![0u8; 16];
+        let full_len = payload.len() + tag_space.len();
+        payload.extend_from_slice(&tag_space);
+        let rc = crate::quic::rlsm_keys_local_encrypt(
+            hs_keys, 0,
+            header.as_ptr(), header.len() as i32,
+            payload.as_mut_ptr(), 32,
+            full_len as i32,
+        );
+        assert!(rc > 0, "Wave 1 encrypt should succeed with Handshake keys, got {rc}");
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    // T3: 1-RTT keys from take_keys work with Wave 1 encrypt
+    #[test]
+    fn test_1rtt_keys_available() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let (client_1rtt, _server_1rtt) = run_handshake(client_h, server_h);
+        assert!(client_1rtt > 0, "expected client 1-RTT keys handle");
+
+        let header = b"\x40\x00";
+        let mut payload = vec![0xBBu8; 16];
+        let tag_space = vec![0u8; 16];
+        let full_len = payload.len() + tag_space.len();
+        payload.extend_from_slice(&tag_space);
+        let rc = crate::quic::rlsm_keys_local_encrypt(
+            client_1rtt, 0,
+            header.as_ptr(), header.len() as i32,
+            payload.as_mut_ptr(), 16,
+            full_len as i32,
+        );
+        assert!(rc > 0, "Wave 1 encrypt should succeed with 1-RTT keys, got {rc}");
 
         let _ = rlsm_quic_conn_free(client_h);
         let _ = rlsm_quic_conn_free(server_h);
