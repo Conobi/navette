@@ -17,6 +17,7 @@
 #   - _drain_pending_submits      : free function that re-issues ops to the loop
 #   - main                        : bind listener, build handler, run loop
 
+from std.collections import Dict
 from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
@@ -34,6 +35,7 @@ from src.http import (
 from src.http.request import RequestBody
 from src.http.session import RequestHandle
 from src.h2.h2_session import H2Session
+from src.h2.h2_coro_server import H2CoroServer, CoroStreamCtx
 from src.h2.pseudo_headers import request_from_h2_headers
 from src.h2.config import h2_production_config
 from lib.http2.connection import (
@@ -54,6 +56,7 @@ from src.tls import (
 )
 
 from boucle import CompletionLoop, CompletionHandler
+from boucle.stackful import CoroYielder
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
@@ -359,6 +362,203 @@ def _read_file(path: String) raises -> List[UInt8]:
     var bytes = fh.read_bytes()
     fh.close()
     return bytes^
+
+
+# ---------------------------------------------------------------------------
+# _BackendWork — queued backend request from a stream coroutine
+# ---------------------------------------------------------------------------
+
+
+struct _BackendWork(Copyable, Movable):
+    """A backend request queued by a stream coroutine.  The coroutine
+    heap-allocates the Request and stores its address here so the event
+    loop can take_pointee + free after submitting to the backend session."""
+
+    var client_stream_id: Int
+    var request_addr: UInt64  # address of heap-allocated Request
+
+    def __init__(out self, client_stream_id: Int, request_addr: UInt64):
+        self.client_stream_id = client_stream_id
+        self.request_addr = request_addr
+
+    def __init__(out self, *, other: Self):
+        self.client_stream_id = other.client_stream_id
+        self.request_addr = other.request_addr
+
+    def __init__(out self, *, deinit take: Self):
+        self.client_stream_id = take.client_stream_id
+        self.request_addr = take.request_addr
+
+    def request_ptr(self) -> UnsafePointer[Request, MutAnyOrigin]:
+        return UnsafePointer[Request, MutAnyOrigin](
+            unsafe_from_address=Int(self.request_addr)
+        )
+
+
+# ---------------------------------------------------------------------------
+# ProxyShared — shared state between stream coroutines and event loop
+# ---------------------------------------------------------------------------
+
+
+struct ProxyShared(Movable):
+    """Shared state between per-stream coroutines and the event loop.
+
+    - pending_backend: coroutines append _BackendWork here and yield.
+    - completed_responses: event loop stores heap-allocated Response addresses
+      here keyed by client stream_id.
+    - handle_to_stream: maps backend RequestHandle.id() -> client stream_id.
+    """
+
+    var pending_backend: List[_BackendWork]
+    var completed_responses: Dict[Int, UInt64]
+    var handle_to_stream: Dict[Int, Int]
+
+    def __init__(out self):
+        self.pending_backend = List[_BackendWork]()
+        self.completed_responses = Dict[Int, UInt64]()
+        self.handle_to_stream = Dict[Int, Int]()
+
+    def __init__(out self, *, deinit take: Self):
+        self.pending_backend = take.pending_backend^
+        self.completed_responses = take.completed_responses^
+        self.handle_to_stream = take.handle_to_stream^
+
+    fn __del__(deinit self):
+        """Free any remaining heap-allocated Requests and Responses."""
+        for i in range(len(self.pending_backend)):
+            var p = self.pending_backend[i].request_ptr()
+            p.destroy_pointee()
+            p.free()
+        var resp_keys = List[Int]()
+        for key in self.completed_responses.keys():
+            resp_keys.append(key)
+        for i in range(len(resp_keys)):
+            try:
+                var addr = self.completed_responses[resp_keys[i]]
+                var p = UnsafePointer[Response, MutAnyOrigin](
+                    unsafe_from_address=Int(addr)
+                )
+                p.destroy_pointee()
+                p.free()
+            except:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# proxy_stream_body — per-stream coroutine body for the reverse proxy
+# ---------------------------------------------------------------------------
+
+
+fn proxy_stream_body(mut yielder: CoroYielder) raises:
+    """Per-stream coroutine body for the H2 reverse proxy.
+
+    1. Read the entire client request body (yield when no data available).
+    2. Build a backend Request, heap-allocate it, queue in ProxyShared, yield.
+    3. After resume — read the completed response and forward to the client.
+    """
+    # --- Recover pointers from yielder ---
+    var ctx_ptr = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(yielder.user_data())
+    )
+    var proxy_ptr = UnsafePointer[ProxyShared, MutAnyOrigin](
+        unsafe_from_address=Int(ctx_ptr[].extra_data)
+    )
+    var stream_id = Int(ctx_ptr[].stream_id)
+
+    # ── Step 1: Read entire client request body ──
+    var body_bytes = List[UInt8]()
+    while True:
+        var ctx = ctx_ptr.take_pointee()
+        var frame_opt = ctx.recv_body.try_read()
+        ctx_ptr.init_pointee_move(ctx^)
+        if not Bool(frame_opt):
+            # No data available yet — yield and wait for more
+            yielder.yield_to_caller()
+            continue
+        var frame = frame_opt.unsafe_take()
+        if frame.is_data():
+            var data = frame.data().copy()
+            for j in range(len(data)):
+                body_bytes.append(data[j])
+        elif frame.is_end():
+            break
+        elif frame.is_error():
+            # Stream error — nothing to forward
+            return
+
+    # ── Step 2: Build backend Request, queue in ProxyShared ──
+    var ctx2 = ctx_ptr.take_pointee()
+    var req_body: RequestBody
+    if len(body_bytes) > 0:
+        req_body = RequestBody.buffered(body_bytes^)
+    else:
+        req_body = RequestBody.empty()
+
+    var request = Request(
+        method=Method.custom(String(ctx2.request.method)),
+        target=ctx2.request.target,
+        version=Version.http_2(),
+        headers=Headers(other=ctx2.request.headers),
+        body=req_body^,
+    )
+    ctx_ptr.init_pointee_move(ctx2^)
+
+    rewrite_request_headers(request, "127.0.0.1", _BACKEND_HOST)
+
+    # Heap-allocate the Request for the event loop to consume
+    var req_heap = _heap_alloc[Request](1).as_any_origin()
+    req_heap.init_pointee_move(request^)
+
+    var work = _BackendWork(
+        client_stream_id=stream_id,
+        request_addr=UInt64(Int(req_heap)),
+    )
+    proxy_ptr[].pending_backend.append(work^)
+
+    # Yield — the event loop will submit to backend and resume us
+    yielder.yield_to_caller()
+
+    # ── Step 3: Forward backend response to client ──
+    # The event loop has placed the response in completed_responses
+    if stream_id not in proxy_ptr[].completed_responses:
+        # No response — should not happen, but guard
+        return
+
+    var resp_addr = proxy_ptr[].completed_responses[stream_id]
+    _ = proxy_ptr[].completed_responses.pop(stream_id)
+    var resp_ptr = UnsafePointer[Response, MutAnyOrigin](
+        unsafe_from_address=Int(resp_addr)
+    )
+    var response = resp_ptr.take_pointee()
+    resp_ptr.free()
+
+    # Build response headers, stripping hop-by-hop and adding Via
+    var resp_headers = Headers()
+    for i in range(len(response.headers)):
+        var name = response.headers.name_at(i)
+        var value = response.headers.value_at(i)
+        if not _is_hop_by_hop(name):
+            resp_headers.add(name, value)
+    resp_headers.add("via", "2.0 mojo-proxy")
+
+    # Extract body data
+    var resp_body = List[UInt8]()
+    for i in range(len(response.body)):
+        var frame = response.body[i].copy()
+        if frame.is_data():
+            var data = frame.data().copy()
+            for j in range(len(data)):
+                resp_body.append(data[j])
+
+    # Send through ResponseWriter
+    var ctx3 = ctx_ptr.take_pointee()
+    ctx3.resp_writer.send_status(
+        StatusCode(other=response.status), resp_headers^
+    )
+    if len(resp_body) > 0:
+        _ = ctx3.resp_writer.try_send_body(BodyFrame.data(resp_body^))
+    ctx3.resp_writer.end()
+    ctx_ptr.init_pointee_move(ctx3^)
 
 
 # ---------------------------------------------------------------------------
