@@ -42,6 +42,7 @@ pub use tcp::{
 
 pub use quic_hs::{
     rlsm_quic_client_config_new,
+    rlsm_quic_client_config_with_ca,
     rlsm_quic_server_config_new,
     rlsm_quic_client_conn_new,
     rlsm_quic_server_conn_new,
