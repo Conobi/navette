@@ -172,6 +172,153 @@ pub extern "C" fn rlsm_quic_client_config_new(
     }
 }
 
+// ---------------------------------------------------------------------------
+// §2 Connection lifecycle
+// ---------------------------------------------------------------------------
+
+/// Create a new QUIC client connection.
+///
+/// config_handle: from rlsm_quic_client_config_new.
+/// version: 1=QUIC v1, 2=QUIC v2.
+/// server_name/name_len: UTF-8 SNI hostname (no NUL terminator).
+/// transport_params/tp_len: RFC 9000 §18 wire-encoded transport parameters.
+/// On success: *out_handle is a positive connection handle.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_client_conn_new(
+    config_handle: i32,
+    version:       i32,
+    server_name:   *const u8, name_len: i32,
+    transport_params: *const u8, tp_len: i32,
+    out_handle:    *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if server_name.is_null() { rlsm_err!("rlsm_quic_client_conn_new: null server_name"; return -1); }
+    if out_handle.is_null()  { rlsm_err!("rlsm_quic_client_conn_new: null out_handle";  return -1); }
+    if name_len < 0          { rlsm_err!("rlsm_quic_client_conn_new: negative name_len"; return -1); }
+    if tp_len < 0            { rlsm_err!("rlsm_quic_client_conn_new: negative tp_len";  return -1); }
+    if tp_len > 0 && transport_params.is_null() {
+        rlsm_err!("rlsm_quic_client_conn_new: null transport_params with tp_len > 0"; return -1);
+    }
+
+    let ver = match to_quic_version(version) {
+        Ok(v) => v,
+        Err(e) => { set_last_error(e); return -1; }
+    };
+
+    let name_bytes = unsafe { std::slice::from_raw_parts(server_name, name_len as usize) };
+    let tp_bytes   = if tp_len == 0 { &[] } else {
+        unsafe { std::slice::from_raw_parts(transport_params, tp_len as usize) }
+    };
+
+    let name_str = match std::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("rlsm_quic_client_conn_new: invalid UTF-8 in server_name: {e}"));
+            return -1;
+        }
+    };
+
+    let sni = match ServerName::try_from(name_str.to_owned()) {
+        Ok(n) => n,
+        Err(e) => {
+            set_last_error(format!("rlsm_quic_client_conn_new: invalid server name '{name_str}': {e}"));
+            return -1;
+        }
+    };
+
+    let config = match quic_client_cfg_table().with(config_handle, Arc::clone) {
+        Some(c) => c,
+        None => { rlsm_err!("rlsm_quic_client_conn_new: invalid config handle"; return -1); }
+    };
+
+    let conn = match ClientConnection::new(config, ver, sni, tp_bytes.to_vec()) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(format!("rlsm_quic_client_conn_new: connection error: {e}"));
+            return -1;
+        }
+    };
+
+    let entry = QuicConnEntry {
+        conn: QuicConn::Client(conn),
+        pending: None,
+        next_secrets: None,
+        alert_cache: None,
+    };
+
+    match quic_conn_table().insert(entry) {
+        Some(h) => { unsafe { *out_handle = h; } 0 }
+        None => { rlsm_err!("rlsm_quic_client_conn_new: handle counter exhausted"; return -1); }
+    }
+}
+
+/// Create a new QUIC server connection.
+///
+/// config_handle: from rlsm_quic_server_config_new.
+/// transport_params/tp_len: RFC 9000 §18 wire-encoded transport parameters.
+/// On success: *out_handle is a positive connection handle.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_server_conn_new(
+    config_handle: i32,
+    version:       i32,
+    transport_params: *const u8, tp_len: i32,
+    out_handle:    *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if out_handle.is_null() { rlsm_err!("rlsm_quic_server_conn_new: null out_handle"; return -1); }
+    if tp_len < 0           { rlsm_err!("rlsm_quic_server_conn_new: negative tp_len"; return -1); }
+    if tp_len > 0 && transport_params.is_null() {
+        rlsm_err!("rlsm_quic_server_conn_new: null transport_params with tp_len > 0"; return -1);
+    }
+
+    let ver = match to_quic_version(version) {
+        Ok(v) => v,
+        Err(e) => { set_last_error(e); return -1; }
+    };
+
+    let tp_bytes = if tp_len == 0 { &[] } else {
+        unsafe { std::slice::from_raw_parts(transport_params, tp_len as usize) }
+    };
+
+    let config = match quic_server_cfg_table().with(config_handle, Arc::clone) {
+        Some(c) => c,
+        None => { rlsm_err!("rlsm_quic_server_conn_new: invalid config handle"; return -1); }
+    };
+
+    let conn = match ServerConnection::new(config, ver, tp_bytes.to_vec()) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(format!("rlsm_quic_server_conn_new: connection error: {e}"));
+            return -1;
+        }
+    };
+
+    let entry = QuicConnEntry {
+        conn: QuicConn::Server(conn),
+        pending: None,
+        next_secrets: None,
+        alert_cache: None,
+    };
+
+    match quic_conn_table().insert(entry) {
+        Some(h) => { unsafe { *out_handle = h; } 0 }
+        None => { rlsm_err!("rlsm_quic_server_conn_new: handle counter exhausted"; return -1); }
+    }
+}
+
+/// Free a QUIC connection handle. Drops any buffered pending key change.
+/// Returns 0 on success, -1 if the handle is not found.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_free(conn_handle: i32) -> i32 {
+    clear_last_error();
+    match quic_conn_table().remove(conn_handle) {
+        Some(_) => 0,
+        None => { rlsm_err!("rlsm_quic_conn_free: invalid conn handle"; return -1); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +350,54 @@ mod tests {
         quic_client_cfg_table()
             .insert(Arc::new(config))
             .expect("handle counter exhausted")
+    }
+
+    /// Shared setup: server config handle + root DER for client trust.
+    fn make_server_cfg(alpn: &[u8]) -> (i32, Vec<u8>) {
+        let (cert_pem, key_pem, cert_der) = gen_test_cert();
+        let mut h: i32 = 0;
+        let rc = rlsm_quic_server_config_new(
+            cert_pem.as_ptr(), cert_pem.len() as i32,
+            key_pem.as_ptr(),  key_pem.len()  as i32,
+            alpn.as_ptr(),     alpn.len()      as i32,
+            &mut h,
+        );
+        assert_eq!(rc, 0);
+        (h, cert_der)
+    }
+
+    fn make_conn_pair(alpn: &[u8]) -> (i32, i32) {
+        let (server_cfg, root_der) = make_server_cfg(alpn);
+        let client_cfg = make_test_client_config(&root_der, alpn);
+        let tp: &[u8] = &[];
+        let server_name = b"localhost";
+        let mut client_h: i32 = 0;
+        let mut server_h: i32 = 0;
+        let rc = rlsm_quic_client_conn_new(
+            client_cfg, 1,
+            server_name.as_ptr(), server_name.len() as i32,
+            tp.as_ptr(), 0,
+            &mut client_h,
+        );
+        assert_eq!(rc, 0, "client conn new failed");
+        let rc = rlsm_quic_server_conn_new(
+            server_cfg, 1,
+            tp.as_ptr(), 0,
+            &mut server_h,
+        );
+        assert_eq!(rc, 0, "server conn new failed");
+        (client_h, server_h)
+    }
+
+    // T10
+    #[test]
+    fn test_conn_free_with_pending_key_returns_ok() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        // Free both connections — even with no pending key change, must return 0
+        assert_eq!(rlsm_quic_conn_free(client_h), 0);
+        assert_eq!(rlsm_quic_conn_free(server_h), 0);
+        // Handles are gone — double-free returns -1
+        assert_eq!(rlsm_quic_conn_free(client_h), -1);
     }
 
     #[test]
