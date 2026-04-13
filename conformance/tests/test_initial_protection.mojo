@@ -221,6 +221,114 @@ def test_aead(v: PythonObject) raises -> None:
         raise "test_aead: unexpected operation: " + op
 
 
+def test_full_packet(v: PythonObject) raises -> None:
+    """Test full QUIC Initial packet HP protect/unprotect via Python cryptography."""
+    var aesgcm_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.aead")
+    var ciphers_mod = Python.import_module("cryptography.hazmat.primitives.ciphers")
+    var alg_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.algorithms")
+    var modes_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.modes")
+    var binascii = Python.import_module("binascii")
+    var AESGCM = aesgcm_mod.AESGCM
+    var builtins = Python.import_module("builtins")
+
+    var op      = String(v["operation"])
+    var name    = String(v["name"])
+    var key     = binascii.unhexlify(String(v["input"]["key"]))
+    var iv_py   = binascii.unhexlify(String(v["input"]["iv"]))
+    var hp_key  = binascii.unhexlify(String(v["input"]["hp_key"]))
+    var pn_off  = Int(py=v["input"]["pn_offset"])
+    var pn_len  = Int(py=v["input"]["pn_length"])
+
+    if op == "full_packet_protect":
+        var header  = binascii.unhexlify(String(v["input"]["header"]))
+        var payload = binascii.unhexlify(String(v["input"]["payload"]))
+        var expected_hex = String(v["expected"]["protected_packet"])
+
+        # nonce = IV XOR PN (PN=0 for all our test vectors)
+        var nonce = iv_py
+        # AEAD: AAD = full unprotected header (including PN byte)
+        var ct_and_tag = AESGCM(key).encrypt(nonce, payload, header)
+
+        # HP sample: starts at pn_offset + 4 within the full packet
+        # Full packet = header || ct_and_tag; header length = pn_off + pn_len
+        var header_len = Int(py=builtins.len(header))
+        var sample_start = pn_off + 4 - header_len
+        var sample = ct_and_tag[sample_start : sample_start + 16]
+
+        # AES-ECB mask
+        var cipher = ciphers_mod.Cipher(alg_mod.AES(hp_key), modes_mod.ECB())
+        var enc = cipher.encryptor()
+        var mask = enc.update(sample) + enc.finalize()
+
+        # Protect first byte (bits 0-3 for long header = 0x0f mask)
+        var ba0 = builtins.bytearray(1)
+        ba0[0] = builtins.ord(header[0:1]) ^ (builtins.ord(mask[0:1]) & 0x0f)
+        var pb0 = builtins.bytes(ba0)
+
+        # Protect PN bytes
+        var protected_pn_parts = builtins.bytearray(pn_len)
+        for i in range(pn_len):
+            protected_pn_parts[i] = (
+                builtins.ord(header[pn_off + i : pn_off + i + 1]) ^ builtins.ord(mask[1 + i : 2 + i])
+            )
+        var protected_pn = builtins.bytes(protected_pn_parts)
+
+        var protected_packet = (
+            pb0
+            + header[1:pn_off]
+            + protected_pn
+            + ct_and_tag
+        )
+        var got_hex = String(binascii.hexlify(protected_packet).decode("ascii"))
+        assert_true(
+            got_hex == expected_hex,
+            "FAIL [" + name + "]: protect mismatch",
+        )
+
+    elif op == "full_packet_unprotect":
+        var pkt     = binascii.unhexlify(String(v["input"]["protected_packet"]))
+        var exp_hdr = String(v["expected"]["header"])
+        var exp_pt  = String(v["expected"]["plaintext"])
+
+        # HP sample: at pn_offset + 4 within the protected packet
+        var sample2 = pkt[pn_off + 4 : pn_off + 4 + 16]
+
+        # AES-ECB mask
+        var cipher2 = ciphers_mod.Cipher(alg_mod.AES(hp_key), modes_mod.ECB())
+        var enc2 = cipher2.encryptor()
+        var mask2 = enc2.update(sample2) + enc2.finalize()
+
+        # Recover first byte
+        var first_byte_val = builtins.ord(pkt[0:1]) ^ (builtins.ord(mask2[0:1]) & 0x0f)
+        var ba_first = builtins.bytearray(1)
+        ba_first[0] = first_byte_val
+        var rec_first = builtins.bytes(ba_first)
+
+        # Recover PN bytes
+        var rec_pn_parts = builtins.bytearray(pn_len)
+        for i in range(pn_len):
+            rec_pn_parts[i] = (
+                builtins.ord(pkt[pn_off + i : pn_off + i + 1]) ^ builtins.ord(mask2[1 + i : 2 + i])
+            )
+        var rec_pn = builtins.bytes(rec_pn_parts)
+
+        # Reconstruct unprotected header
+        var rec_header = rec_first + pkt[1:pn_off] + rec_pn
+        var nonce2 = iv_py  # PN=0, nonce = IV XOR 0 = IV
+
+        # AEAD decrypt: ciphertext_and_tag = everything after the header
+        var header_len2 = pn_off + pn_len
+        var ct_and_tag2 = pkt[header_len2:]
+        var pt2 = AESGCM(key).decrypt(nonce2, ct_and_tag2, rec_header)
+
+        var got_hdr_hex = String(binascii.hexlify(rec_header).decode("ascii"))
+        var got_pt_hex  = String(binascii.hexlify(pt2).decode("ascii"))
+        assert_true(got_hdr_hex == exp_hdr, "FAIL [" + name + "]: header mismatch")
+        assert_true(got_pt_hex  == exp_pt,  "FAIL [" + name + "]: plaintext mismatch")
+    else:
+        raise "test_full_packet: unexpected operation: " + op
+
+
 def main() raises:
     # Verify assertions are working (guard against silent no-op)
     var _sentinel_ok = False
@@ -246,6 +354,9 @@ def main() raises:
             count += 1
         elif operation == "aead_encrypt" or operation == "aead_decrypt":
             test_aead(v)
+            count += 1
+        elif operation == "full_packet_protect" or operation == "full_packet_unprotect":
+            test_full_packet(v)
             count += 1
 
     print("test_initial_protection: all " + String(count) + " vectors passed")
