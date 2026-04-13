@@ -369,8 +369,118 @@ def test_resume_stream() raises:
     print("PASS test_resume_stream")
 
 
+def test_multiple_streams() raises:
+    """Create H2CoroServer with _yield_for_external, send two GET requests
+    on streams 1 and 3.  Both coroutines consume body and yield for
+    "backend I/O".  Resume stream 3 first, verify only stream 3 responds.
+    Then resume stream 1, verify stream 1 responds.  Both should carry
+    x-signal: 99."""
+    # --- Set up server + client ---
+    var signal_ptr = _heap_alloc[Int](1)
+    signal_ptr.init_pointee_move(99)
+    var extra = UnsafePointer[NoneType, MutExternalOrigin](
+        unsafe_from_address=Int(signal_ptr)
+    )
+    var server = H2CoroServer(body_fn=_yield_for_external, extra_data=extra)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+
+    # --- Preface exchange ---
+    _do_preface(server, client)
+
+    # --- Send two GET requests on streams 1 and 3, both with END_STREAM ---
+    var headers1 = List[Header]()
+    headers1.append(Header(":method", "GET"))
+    headers1.append(Header(":path", "/"))
+    headers1.append(Header(":scheme", "https"))
+    headers1.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(1), headers1^, end_stream=True)
+
+    var headers3 = List[Header]()
+    headers3.append(Header(":method", "GET"))
+    headers3.append(Header(":path", "/"))
+    headers3.append(Header(":scheme", "https"))
+    headers3.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(3), headers3^, end_stream=True)
+
+    var req_data = client.data_to_send()
+
+    # Feed both requests to server — both coroutines read body (END_STREAM
+    # on HEADERS) and yield for "backend I/O"
+    server.feed(Span(req_data))
+    var server_out0 = server.drain()
+
+    # Verify NO response yet for either stream
+    if len(server_out0) > 0:
+        var events0 = client.receive_data(server_out0)
+        for i in range(len(events0)):
+            if events0[i].kind == H2_EVT_RESPONSE_RECEIVED:
+                raise Error(
+                    "expected NO response before resume_stream, but got"
+                    " one on stream "
+                    + String(events0[i].stream_id)
+                )
+
+    # --- Resume stream 3 first (reverse order) ---
+    server.resume_stream(3)
+    var server_out3 = server.drain()
+    var events3 = client.receive_data(server_out3)
+
+    var got_response_s3 = False
+    var signal_s3 = String("")
+    for i in range(len(events3)):
+        if events3[i].kind == H2_EVT_RESPONSE_RECEIVED:
+            if events3[i].stream_id == 3:
+                got_response_s3 = True
+                for j in range(len(events3[i].headers)):
+                    if events3[i].headers[j].name == "x-signal":
+                        signal_s3 = events3[i].headers[j].value
+            elif events3[i].stream_id == 1:
+                raise Error(
+                    "stream 1 should NOT have responded yet"
+                )
+
+    if not got_response_s3:
+        raise Error(
+            "expected RESPONSE_RECEIVED on stream 3 after resume_stream(3)"
+        )
+    if signal_s3 != "99":
+        raise Error(
+            "expected x-signal '99' on stream 3, got '" + signal_s3 + "'"
+        )
+
+    # --- Resume stream 1 ---
+    server.resume_stream(1)
+    var server_out1 = server.drain()
+    var events1 = client.receive_data(server_out1)
+
+    var got_response_s1 = False
+    var signal_s1 = String("")
+    for i in range(len(events1)):
+        if events1[i].kind == H2_EVT_RESPONSE_RECEIVED:
+            if events1[i].stream_id == 1:
+                got_response_s1 = True
+                for j in range(len(events1[i].headers)):
+                    if events1[i].headers[j].name == "x-signal":
+                        signal_s1 = events1[i].headers[j].value
+
+    if not got_response_s1:
+        raise Error(
+            "expected RESPONSE_RECEIVED on stream 1 after resume_stream(1)"
+        )
+    if signal_s1 != "99":
+        raise Error(
+            "expected x-signal '99' on stream 1, got '" + signal_s1 + "'"
+        )
+
+    signal_ptr.destroy_pointee()
+    signal_ptr.free()
+    print("PASS test_multiple_streams")
+
+
 def main() raises:
     test_single_complete_request()
     test_body_yield()
     test_resume_stream()
+    test_multiple_streams()
     print("All H2CoroServer tests passed.")
