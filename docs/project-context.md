@@ -1,7 +1,7 @@
 # mojo-net — Project Context
 
-**Last updated:** 2026-04-10
-**Current phase:** done (M5.5)
+**Last updated:** 2026-04-13
+**Current phase:** done
 
 ## Why this exists
 
@@ -30,7 +30,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 
 ## Key architectural decisions
 
-- **Sans-I/O at every protocol layer.** Application code composes the protocol layer with an I/O loop (boucle in examples). No I/O imports inside `src/`.
+- **Sans-I/O at every protocol layer.** Application code composes the protocol layer with an I/O loop (boucle in examples). No I/O imports inside `src/`. Exception: `boucle.stackful` (CoroHandle, CoroYielder) is allowed in `src/` because it is a control-flow mechanism with no I/O dependency. Only boucle's I/O primitives (`boucle.net.*`, `CompletionLoop`, `CompletionHandler`) are restricted to examples.
 - **Strict-by-default parsing** with opt-in leniency via per-rule flags (24 flags in HTTP/1.1 ParserStrictness).
 - **Conformance-driven development.** Each milestone has its own conformance suite with test vectors and oracle cross-validation before production code is written.
 - **Test oracles:** h11 + httptools (HTTP/1.1), hyperframe (H2 frames), Python `hpack` (HPACK), hyper-h2 (HC-4 future), aioquic + quiche (H3/QUIC future).
@@ -56,6 +56,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 | done | `specs/2026-04-09-hc4-h2-connection-layer.md` → `plans/2026-04-09-hc4a-connection-core.md` | HC-4a connection core. 15 TDD commits (`64338e3..9955b95`). 24 unit + 3 cross-validation tests. 29/29 conformance + 34/34 src + e2e green. Retrospective: `plans/2026-04-09-hc4a-connection-core-retrospective.md`. Pushed to origin/main on 2026-04-10. |
 | done | `specs/2026-04-09-hc4-h2-connection-layer.md` → `plans/2026-04-10-hc4b-stream-data-path.md` | HC-4b stream data path. 13 TDD tasks + 2 review fixes (`0e7108c..a1ff9d8`). 21 unit + 3 cross-validation tests. 31/31 conformance + 34/34 src + e2e green. Final cross-cutting review: CLEAN after 2 fix rounds. Pushed to origin/main on 2026-04-10. |
 | done | `specs/2026-04-10-m55-h2-client-server.md` → `plans/2026-04-10-m55-h2-client-server.md` | M5.5 — HTTP/2 client/server + TLS/ALPN. 19 commits (`41b1e1d..90bf233`). H2HandlerServer (7 handler tests) + H2Session (7 session tests) + 3 e2e tests + 2 TLS ALPN tests. 39/39 src + 31/31 conformance + e2e green. Final cross-cutting review (opus): 3 important issues fixed (missing __del__, streaming body rejection, canonical response parser). |
+| done | `specs/2026-04-13-m26-h2-coro-server.md` → `plans/2026-04-13-m26-h2-coro-server.md` | M2.6 — H2CoroServer + coroutine-based reverse proxy. 10 commits (`b11b815..18324fa`). H2CoroServer adapter (581 LoC) + 6 unit tests + proxy refactor (-231 lines net). 40/40 src + e2e green. Final review: 1 important issue fixed (concurrent backend handles). |
 
 ## Constraints
 
@@ -79,12 +80,12 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 - **M4 — Loss recovery + congestion control:** pending
 - **M5 — HTTP/3 + QPACK:** pending
 - **M6 — Unified HTTP client:** pending; depends on M5.5 + M5 + M2.5b
-- **M2.6 — AsyncBody adapter (candidate):** ❌ blocked-on-Modular per `research/mojo-async-executor.md` (Mojo 0.26.2 has no public waker API). Re-evaluate when Mojo 0.27 ships.
+- **M2.6 — H2CoroServer (async handlers via ucontext):** ✅ done — 10 commits (`b11b815..18324fa`). H2CoroServer adapter + proxy refactor. Supersedes blocked M2.6 (AsyncBody adapter). 40/40 src + e2e green.
 
 ## Open follow-ups (post-M2.5a)
 
 - **HC-4 design pass.** The HC-4a/4b/4c split was sketched before M2.5a's trait surface was concrete. Worth re-walking the spec against the now-shipped types — particularly `StreamHandler.on_request` taking `var body` (cross-callback streaming bodies need either `body.try_detach()` on a `mut` ref or splitting into `on_request_headers` + `on_request_body`), `Session.run_until` taking `Deque[UInt64]`, and `RequestBody` having no trailer slot.
-- **Async executor re-spike.** Check Mojo changelog for `Waker` / `Executor` / `co.resume` exposure when 0.27 lands.
+- **Mojo native async re-spike.** Check Mojo changelog for `Waker` / `Executor` / `co.resume` exposure when 0.27 lands. If shipped, could replace ucontext-based coroutines with native ones (drop-in via CoroHandle API).
 - **Reverse proxy main.mojo deeper refactor.** The example uses `H1Session` for the backend now (`68973f3`), but the client side still uses `ServerConnection` directly because `H1HandlerServer`'s synchronous `StreamHandler` model can't wait for an async backend response. A full `StreamHandler`-based refactor needs an async backend-response callback in the trait surface — natural HC-4 work.
 
 ## Session history
@@ -99,3 +100,4 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 - 2026-04-09 — `~/.claude/projects/-home-donokami-Projets-perso-mojo-net/c5dc73e4-853c-4e68-8229-71315aebd2a9.jsonl` — HC-4a plan written + implemented. 15 TDD commits (`64338e3..9955b95`). H2Connection sans-I/O state machine (~870 LoC): preface, SETTINGS, PING, GOAWAY, stream table, CONTINUATION assembly, connection-level flow control. Oracle: Python h2 4.3.0. Tests: 24 unit + 3 cross-validation. Mojo deviations: Dict[Int, StreamState], make_stream_ended rename, .copy() workarounds.
 - 2026-04-10 — same session — HC-4a pushed to origin/main. HC-4b plan written + implemented. 13 TDD tasks + 2 review fixes (`0e7108c..a1ff9d8`). Stream data path: HPACK decode/encode wiring, send_headers with CONTINUATION splitting, client response HEADERS, inbound DATA dispatch with recv window checks, send_data with fragmentation + send window checks, stream-level flow control (auto WINDOW_UPDATE), inbound trailers with END_STREAM validation, RST_STREAM handling (inbound + outbound stream close), SETTINGS INITIAL_WINDOW_SIZE window adjustment. Oracle extensions: h2_roundtrip, h2_stream_data_scenario. Tests: 21 unit + 3 cross-validation. 31/31 conformance + 34/34 src + e2e green. Final cross-cutting review (opus): 2 issues fixed (CONTINUATION trailer half-close transition, inbound DATA flow control check, trailer END_STREAM validation). Re-review: CLEAN.
 - 2026-04-10 — `~/.claude/projects/-home-donokami-Projets-perso-mojo-net/c5dc73e4-853c-4e68-8229-71315aebd2a9.jsonl` — M5.5 brainstorming + planning + implementation. Brainstorming: decided wrap pattern, full scope (server + client + TLS/ALPN), UnsafePointer per-stream state, drain-on-feed, separate ALPN setter FFI. Spec reviewed (opus): 3 blocking + 9 important resolved. Plan: 14 tasks across 5 phases. Implementation: 19 commits (`41b1e1d..90bf233`). H2HandlerServer wraps H2Connection with StreamHandler dispatch (7 tests). H2Session implements Session trait with concurrent handles (7 tests). 3 e2e client↔server tests. TLS ALPN: Rust FFI + Mojo wrappers + 2 negotiation tests. Final cross-cutting review (opus): 3 important issues fixed (missing __del__, streaming body rejection, canonical response parser). 39/39 src + 31/31 conformance + e2e green.
+- 2026-04-13 — `~/.claude/projects/-home-donokami-Projets-perso-mojo-net/bafe4277-bf40-4f56-8897-927600684a50.jsonl` — M2.6 full cycle (brainstorm + plan + implement + finish). Reviewed boucle stackful coroutines (ucontext FFI, commit `0877862`) — all tests pass, feedback given and addressed (mprotect raw syscall, __del__ assert, unchecked swapcontext comment, 3 new tests). Decided: new H2CoroServer adapter alongside H2HandlerServer (not modifying existing code), bare CoroBody function (not trait), handler-level coroutines only (I/O layer stays event-driven). Two blocking review issues resolved: (1) boucle.stackful allowed in src/ (control-flow, not I/O); (2) M2.6 label supersedes blocked AsyncBody adapter. Spec written + independently reviewed: 2 blocking + 5 important + 3 minor findings resolved. Spec: `specs/2026-04-13-m26-h2-coro-server.md`. Plan: `plans/2026-04-13-m26-h2-coro-server.md` — 10 tasks across 3 phases. Implementation: 10 commits (`b11b815..18324fa`) on main. H2CoroServer adapter (581 LoC, `src/h2/h2_coro_server.mojo`) + 6 unit tests (615 LoC) + proxy refactor (`examples/h2_reverse_proxy/main.mojo` 1165→1151 lines). Key deviation: `backend_handles: Dict[Int, UInt64]` replaces singular `Optional[RequestHandle]` to support concurrent backend submissions (review-caught bug). Key verification: mut method calls through UnsafePointer dereference work in Mojo 0.26.2. 40/40 src + e2e green. Retrospective: `plans/2026-04-13-m26-h2-coro-server-retrospective.md`.
