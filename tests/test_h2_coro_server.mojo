@@ -76,6 +76,35 @@ fn _echo_body(mut y: CoroYielder) raises:
 
 
 # ---------------------------------------------------------------------------
+# _read_body_then_echo — coroutine that reads the full body, then responds
+# ---------------------------------------------------------------------------
+
+
+fn _read_body_then_echo(mut y: CoroYielder) raises:
+    """Read full body (yielding when empty), then respond with body length."""
+    var ctx = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(y.user_data())
+    )
+    var total = 0
+    while True:
+        var frame = ctx[].recv_body.try_read()
+        if not frame:
+            y.yield_to_caller()
+            continue
+        var f = frame.unsafe_take()
+        if f.is_data():
+            total += len(f.data())
+        elif f.is_end():
+            break
+        elif f.is_error():
+            return
+    var resp_headers = Headers()
+    resp_headers.add("x-body-length", String(total))
+    ctx[].resp_writer.send_status(StatusCode.ok(), resp_headers^)
+    ctx[].resp_writer.end()
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -142,6 +171,86 @@ def test_single_complete_request() raises:
     print("PASS test_single_complete_request")
 
 
+def test_body_yield() raises:
+    """Create H2CoroServer with _read_body_then_echo, send POST /upload
+    WITHOUT end_stream, verify NO response yet (coroutine yielded), then
+    send DATA "hello world" + end_stream=True, verify response arrives
+    with x-body-length header = "11"."""
+    # --- Set up server + client ---
+    var server = H2CoroServer(body_fn=_read_body_then_echo)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+
+    # --- Preface exchange ---
+    _do_preface(server, client)
+
+    # --- Send HEADERS for POST /upload WITHOUT end_stream ---
+    var headers = List[Header]()
+    headers.append(Header(":method", "POST"))
+    headers.append(Header(":path", "/upload"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+    var req_data = client.data_to_send()
+
+    # Feed HEADERS to server — coroutine should yield (no body yet)
+    server.feed(Span(req_data))
+    var server_out1 = server.drain()
+
+    # Feed server output to client and check: NO response yet
+    if len(server_out1) > 0:
+        var events1 = client.receive_data(server_out1)
+        for i in range(len(events1)):
+            if events1[i].kind == H2_EVT_RESPONSE_RECEIVED:
+                raise Error(
+                    "expected NO response after HEADERS-only, but got one"
+                )
+
+    # --- Send DATA "hello world" + end_stream=True ---
+    var body_str = String("hello world")
+    var body_bytes = List[UInt8]()
+    var sbytes = body_str.as_bytes()
+    for i in range(len(sbytes)):
+        body_bytes.append(sbytes[i])
+    client.send_data(UInt32(1), body_bytes^, end_stream=True)
+    var data_frame = client.data_to_send()
+
+    # Feed DATA to server — coroutine should complete and send response
+    server.feed(Span(data_frame))
+    var server_out2 = server.drain()
+
+    # Feed server output to client and parse events
+    var events2 = client.receive_data(server_out2)
+
+    # --- Verify ---
+    var got_response = False
+    var got_stream_ended = False
+    var body_length_value = String("")
+
+    for i in range(len(events2)):
+        if events2[i].kind == H2_EVT_RESPONSE_RECEIVED:
+            got_response = True
+            for j in range(len(events2[i].headers)):
+                if events2[i].headers[j].name == "x-body-length":
+                    body_length_value = events2[i].headers[j].value
+        elif events2[i].kind == H2_EVT_STREAM_ENDED:
+            got_stream_ended = True
+        elif events2[i].kind == H2_EVT_DATA_RECEIVED:
+            if events2[i].stream_ended:
+                got_stream_ended = True
+
+    if not got_response:
+        raise Error("expected RESPONSE_RECEIVED event")
+    if body_length_value != "11":
+        raise Error(
+            "expected x-body-length '11', got '" + body_length_value + "'"
+        )
+    if not got_stream_ended:
+        raise Error("expected stream_ended flag")
+    print("PASS test_body_yield")
+
+
 def main() raises:
     test_single_complete_request()
+    test_body_yield()
     print("All H2CoroServer tests passed.")
