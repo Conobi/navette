@@ -40,5 +40,23 @@ pub use tcp::{
     rlsm_tls_conn_alpn,
 };
 
+pub use quic_hs::{
+    rlsm_quic_client_config_new,
+    rlsm_quic_server_config_new,
+    rlsm_quic_client_conn_new,
+    rlsm_quic_server_conn_new,
+    rlsm_quic_conn_free,
+    rlsm_quic_conn_write_hs,
+    rlsm_quic_conn_read_hs,
+    rlsm_quic_conn_alert,
+    rlsm_quic_conn_take_keys,
+    rlsm_quic_conn_take_next_keys,
+    rlsm_quic_conn_is_handshaking,
+    rlsm_quic_conn_transport_params,
+    rlsm_quic_conn_alpn,
+    rlsm_quic_conn_zero_rtt_keys,
+    rlsm_quic_conn_is_early_data_accepted,
+};
+
 #[cfg(feature = "insecure")]
 pub use tcp::rlsm_client_config_new_insecure;

@@ -685,6 +685,107 @@ pub extern "C" fn rlsm_quic_conn_alpn(
         })
 }
 
+// ---------------------------------------------------------------------------
+// §6 0-RTT stubs (not exercised in M3)
+// ---------------------------------------------------------------------------
+
+/// Write client-side 0-RTT DirectionalKeys into KEYS_TABLE if available.
+/// Returns 0=available, 1=not available (fresh session), -1=error.
+/// Only valid on client connections before any write_hs calls.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_zero_rtt_keys(
+    conn_handle:    i32,
+    out_keys_handle: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if out_keys_handle.is_null() {
+        rlsm_err!("rlsm_quic_conn_zero_rtt_keys: null out_keys_handle"; return -1);
+    }
+
+    quic_conn_table()
+        .with(conn_handle, |entry| {
+            let dk: Option<DirectionalKeys> = match &entry.conn {
+                QuicConn::Client(c) => c.zero_rtt_keys(),
+                QuicConn::Server(_) => {
+                    set_last_error("rlsm_quic_conn_zero_rtt_keys: not supported on server connections");
+                    return -1;
+                }
+            };
+            match dk {
+                None => { unsafe { *out_keys_handle = 0; } 1 }
+                Some(local_dk) => {
+                    // 0-RTT only has local (encrypt) keys; remote keys are not provided.
+                    // Wrap remote in a no-op that errors if used.
+                    struct NoOpPacketKey;
+                    impl rustls::quic::PacketKey for NoOpPacketKey {
+                        fn encrypt_in_place(
+                            &self, _pn: u64, _hdr: &[u8], _payload: &mut [u8],
+                        ) -> Result<rustls::quic::Tag, rustls::Error> {
+                            Err(rustls::Error::General("0-RTT: no remote packet key".into()))
+                        }
+                        fn decrypt_in_place<'a>(
+                            &self, _pn: u64, _hdr: &[u8], _payload: &'a mut [u8],
+                        ) -> Result<&'a [u8], rustls::Error> {
+                            Err(rustls::Error::General("0-RTT: no remote packet key".into()))
+                        }
+                        fn tag_len(&self) -> usize { 16 }
+                        fn confidentiality_limit(&self) -> u64 { 0 }
+                        fn integrity_limit(&self) -> u64 { 0 }
+                    }
+                    struct NoOpHpKey2;
+                    impl rustls::quic::HeaderProtectionKey for NoOpHpKey2 {
+                        fn encrypt_in_place(&self, _: &[u8], _: &mut u8, _: &mut [u8]) -> Result<(), rustls::Error> {
+                            Err(rustls::Error::General("0-RTT: no remote HP key".into()))
+                        }
+                        fn decrypt_in_place(&self, _: &[u8], _: &mut u8, _: &mut [u8]) -> Result<(), rustls::Error> {
+                            Err(rustls::Error::General("0-RTT: no remote HP key".into()))
+                        }
+                        fn sample_len(&self) -> usize { 16 }
+                    }
+                    let new_entry = KeysEntry {
+                        local: local_dk,
+                        remote: DirectionalKeys {
+                            header: Box::new(NoOpHpKey2),
+                            packet: Box::new(NoOpPacketKey),
+                        },
+                        last_local_pn: None,
+                    };
+                    match keys_table().insert(new_entry) {
+                        Some(kh) => { unsafe { *out_keys_handle = kh; } 0 }
+                        None => {
+                            set_last_error("rlsm_quic_conn_zero_rtt_keys: handle exhausted");
+                            -1
+                        }
+                    }
+                }
+            }
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_zero_rtt_keys: invalid conn handle"; return -1)
+        })
+}
+
+/// Returns 1 if server accepted early data (0-RTT), 0 otherwise, -1 on error.
+/// Valid only on client connections after the handshake completes.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_is_early_data_accepted(conn_handle: i32) -> i32 {
+    clear_last_error();
+    quic_conn_table()
+        .with(conn_handle, |entry| match &entry.conn {
+            QuicConn::Client(c) => if c.is_early_data_accepted() { 1 } else { 0 },
+            QuicConn::Server(_) => {
+                set_last_error(
+                    "rlsm_quic_conn_is_early_data_accepted: not applicable to server connections"
+                );
+                -1
+            }
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_is_early_data_accepted: invalid conn handle"; return -1)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,5 +1169,17 @@ mod tests {
         );
         assert_eq!(rc, 0, "server config creation failed");
         assert!(handle_out > 0, "expected positive handle");
+    }
+
+    // T9: zero_rtt_keys returns 1 (unavailable) on a fresh (non-resumed) session
+    #[test]
+    fn test_0rtt_keys_unavailable_fresh_session() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let mut keys_h: i32 = 0;
+        let rc = rlsm_quic_conn_zero_rtt_keys(client_h, &mut keys_h);
+        assert_eq!(rc, 1, "expected 1 (unavailable) on fresh session, got {rc}");
+        assert_eq!(keys_h, 0, "keys handle should remain 0 when unavailable");
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
     }
 }
