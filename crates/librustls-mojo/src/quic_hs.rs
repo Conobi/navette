@@ -594,7 +594,9 @@ pub extern "C" fn rlsm_quic_conn_is_handshaking(conn_handle: i32) -> i32 {
             };
             if v { 1 } else { 0 }
         })
-        .unwrap_or(-1)
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_is_handshaking: invalid conn handle"; return -1)
+        })
 }
 
 /// Copy peer's transport parameters into out_buf.
@@ -867,7 +869,12 @@ mod tests {
             if kc != 0 {
                 let mut kh: i32 = 0;
                 assert_eq!(rlsm_quic_conn_take_keys(client_h, &mut kh), 0);
-                if kc == 2 { client_1rtt = kh; }
+                if kc == 2 {
+                    client_1rtt = kh;
+                } else {
+                    // Handshake keys — not needed after handshake; free from KEYS_TABLE
+                    crate::quic::rlsm_keys_free(kh);
+                }
             }
             if written > 0 {
                 progress = true;
@@ -886,7 +893,12 @@ mod tests {
             if kc != 0 {
                 let mut kh: i32 = 0;
                 assert_eq!(rlsm_quic_conn_take_keys(server_h, &mut kh), 0);
-                if kc == 2 { server_1rtt = kh; }
+                if kc == 2 {
+                    server_1rtt = kh;
+                } else {
+                    // Handshake keys — not needed after handshake; free from KEYS_TABLE
+                    crate::quic::rlsm_keys_free(kh);
+                }
             }
             if written > 0 {
                 progress = true;
@@ -964,15 +976,24 @@ mod tests {
         let mut kc: u8 = 0;
 
         // Client writes ClientHello
-        rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(
+            rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc),
+            0, "client write_hs (ClientHello) failed"
+        );
         let client_hello = buf[..written as usize].to_vec();
 
         // Server reads ClientHello
-        rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32);
+        assert_eq!(
+            rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32),
+            0, "server read_hs (ClientHello) failed"
+        );
 
         // Server writes → key_change=1
         written = 0; kc = 0;
-        rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(
+            rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc),
+            0, "server write_hs failed"
+        );
         assert_eq!(kc, 1, "expected Handshake key change");
 
         // take_keys → handle is positive
