@@ -4,14 +4,16 @@
 # (H2Connection + H2Session) with the boucle io_uring CompletionLoop.
 #
 # Single hardcoded backend, TLS on both sides, single-threaded.
-# Frontend uses raw H2Connection (server-side) for direct response timing.
+# Frontend uses H2CoroServer with per-stream coroutines.
 # Backend uses H2Session (client adapter) to exercise the Session trait.
 #
 # Layout of this file:
 #   - Token encoding helpers
 #   - Phase constants
 #   - PendingSubmit               : queued I/O op for post-poll drain
-#   - ProxyConnection             : per-client state
+#   - _BackendWork / ProxyShared  : shared state between coroutines & event loop
+#   - proxy_stream_body           : per-stream coroutine body
+#   - ProxyConnection             : per-client state (uses H2CoroServer)
 #   - header rewriting helpers
 #   - ProxyHandler                : CompletionHandler implementation
 #   - _drain_pending_submits      : free function that re-issues ops to the loop
@@ -36,18 +38,6 @@ from src.http.request import RequestBody
 from src.http.session import RequestHandle
 from src.h2.h2_session import H2Session
 from src.h2.h2_coro_server import H2CoroServer, CoroStreamCtx
-from src.h2.pseudo_headers import request_from_h2_headers
-from src.h2.config import h2_production_config
-from lib.http2.connection import (
-    H2Connection,
-    H2Event,
-    H2_EVT_REQUEST_RECEIVED,
-    H2_EVT_DATA_RECEIVED,
-    H2_EVT_STREAM_ENDED,
-    H2_EVT_GOAWAY_RECEIVED,
-    H2_EVT_CONNECTION_TERMINATED,
-)
-from lib.http1.types import Header
 from src.tls import (
     RustlsLibrary,
     TlsClientConfig,
@@ -138,64 +128,6 @@ struct PendingSubmit(Copyable, Movable):
 
 
 # ---------------------------------------------------------------------------
-# _PendingRequest — captured client H2 request waiting for backend response
-# ---------------------------------------------------------------------------
-
-
-struct _PendingRequest(Movable):
-    """A client request that has been captured from H2 events, waiting to
-    be forwarded to the backend."""
-
-    var client_stream_id: UInt32
-    var method: String
-    var target: String
-    var headers: Headers
-    var body: List[UInt8]
-    var stream_ended: Bool
-
-    def __init__(
-        out self,
-        client_stream_id: UInt32,
-        method: String,
-        target: String,
-        var headers: Headers,
-    ):
-        self.client_stream_id = client_stream_id
-        self.method = method
-        self.target = target
-        self.headers = headers^
-        self.body = List[UInt8]()
-        self.stream_ended = False
-
-    def __init__(out self, *, deinit take: Self):
-        self.client_stream_id = take.client_stream_id
-        self.method = take.method^
-        self.target = take.target^
-        self.headers = take.headers^
-        self.body = take.body^
-        self.stream_ended = take.stream_ended
-
-
-# Wrapper to store _PendingRequest pointers in a List (needs Copyable).
-struct _PendingReqPtr(Copyable, Movable):
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[_PendingRequest, MutAnyOrigin]:
-        return UnsafePointer[_PendingRequest, MutAnyOrigin](
-            unsafe_from_address=Int(self.addr)
-        )
-
-
-# ---------------------------------------------------------------------------
 # ProxyConnection — per-client proxied state
 # ---------------------------------------------------------------------------
 
@@ -203,7 +135,7 @@ struct _PendingReqPtr(Copyable, Movable):
 struct ProxyConnection(Movable):
     """Per-client proxy state for H2 reverse proxy.
 
-    Frontend: raw H2Connection (server-side) for direct event control.
+    Frontend: H2CoroServer with per-stream coroutines.
     Backend:  H2Session (client adapter) for Session trait validation.
     """
 
@@ -212,16 +144,11 @@ struct ProxyConnection(Movable):
     var backend_handle: OwnedHandle
     var backend_addr_stor: SocketAddrStorV4
     var client_tls: TlsConnection
-    var client_h2: H2Connection       # server-side H2 (raw)
-    var client_h2_initiated: Bool     # True after initiate_connection()
+    var client_coro_server: H2CoroServer  # server-side H2 (coroutine)
     var backend_tls: TlsConnection
     var backend_session: H2Session    # client-side H2 (Session adapter)
     var backend_request_handle: Optional[RequestHandle]
-    # Map: backend_handle_id -> client_stream_id
-    var handle_to_client_stream: List[UInt64]  # parallel arrays
-    var handle_client_streams: List[UInt32]
-    # Pending requests from client H2 events
-    var pending_requests: List[_PendingReqPtr]
+    var proxy_shared_ptr: UnsafePointer[ProxyShared, MutAnyOrigin]
     var phase: UInt8
     var client_recv_buf: List[UInt8]
     var backend_recv_buf: List[UInt8]
@@ -242,23 +169,21 @@ struct ProxyConnection(Movable):
         var backend_handle: OwnedHandle,
         backend_addr_stor: SocketAddrStorV4,
         var client_tls: TlsConnection,
-        var client_h2: H2Connection,
+        var client_coro_server: H2CoroServer,
         var backend_tls: TlsConnection,
         var backend_session: H2Session,
+        proxy_shared_ptr: UnsafePointer[ProxyShared, MutAnyOrigin],
     ):
         self.conn_id = conn_id
         self.client_handle = client_handle^
         self.backend_handle = backend_handle^
         self.backend_addr_stor = backend_addr_stor
         self.client_tls = client_tls^
-        self.client_h2 = client_h2^
-        self.client_h2_initiated = False
+        self.client_coro_server = client_coro_server^
         self.backend_tls = backend_tls^
         self.backend_session = backend_session^
         self.backend_request_handle = Optional[RequestHandle]()
-        self.handle_to_client_stream = List[UInt64]()
-        self.handle_client_streams = List[UInt32]()
-        self.pending_requests = List[_PendingReqPtr]()
+        self.proxy_shared_ptr = proxy_shared_ptr
         self.phase = _PHASE_CLIENT_TLS_HANDSHAKE
         self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
         for _ in range(_RECV_BUF_SIZE):
@@ -282,14 +207,11 @@ struct ProxyConnection(Movable):
         self.backend_handle = take.backend_handle^
         self.backend_addr_stor = take.backend_addr_stor
         self.client_tls = take.client_tls^
-        self.client_h2 = take.client_h2^
-        self.client_h2_initiated = take.client_h2_initiated
+        self.client_coro_server = take.client_coro_server^
         self.backend_tls = take.backend_tls^
         self.backend_session = take.backend_session^
         self.backend_request_handle = take.backend_request_handle^
-        self.handle_to_client_stream = take.handle_to_client_stream^
-        self.handle_client_streams = take.handle_client_streams^
-        self.pending_requests = take.pending_requests^
+        self.proxy_shared_ptr = take.proxy_shared_ptr
         self.phase = take.phase
         self.client_recv_buf = take.client_recv_buf^
         self.backend_recv_buf = take.backend_recv_buf^
@@ -304,11 +226,9 @@ struct ProxyConnection(Movable):
         self.closed = take.closed
 
     fn __del__(deinit self):
-        """Free heap-allocated pending requests."""
-        for i in range(len(self.pending_requests)):
-            var p = self.pending_requests[i].ptr()
-            p.destroy_pointee()
-            p.free()
+        """Free heap-allocated ProxyShared."""
+        self.proxy_shared_ptr.destroy_pointee()
+        self.proxy_shared_ptr.free()
 
 
 # ---------------------------------------------------------------------------
@@ -763,11 +683,16 @@ struct ProxyHandler(CompletionHandler):
             self.tls_lib, self.client_tls_config, _BACKEND_HOST
         )
 
-        # Server-side H2Connection for the frontend (not initiated yet;
-        # we wait until after TLS handshake completes).
-        var client_h2 = H2Connection(
-            client_side=False,
-            config=h2_production_config(client_side=False),
+        # Heap-allocate ProxyShared for stable address across moves
+        var proxy_shared_ptr = _heap_alloc[ProxyShared](1).as_any_origin()
+        proxy_shared_ptr.init_pointee_move(ProxyShared())
+        var noneptr = UnsafePointer[NoneType, MutExternalOrigin](
+            unsafe_from_address=Int(proxy_shared_ptr)
+        )
+
+        # Server-side H2CoroServer for the frontend (coroutine-based)
+        var client_coro_server = H2CoroServer(
+            body_fn=proxy_stream_body, extra_data=noneptr
         )
 
         # Client-side H2Session for the backend.
@@ -789,9 +714,10 @@ struct ProxyHandler(CompletionHandler):
             backend_handle=backend_handle^,
             backend_addr_stor=backend_addr_stor,
             client_tls=client_tls^,
-            client_h2=client_h2^,
+            client_coro_server=client_coro_server^,
             backend_tls=backend_tls^,
             backend_session=backend_session^,
+            proxy_shared_ptr=proxy_shared_ptr,
         )
 
         var conn_ptr = _heap_alloc[ProxyConnection](1).as_any_origin()
@@ -828,42 +754,33 @@ struct ProxyHandler(CompletionHandler):
         # TLS handshake done — drain plaintext
         var plaintext = self.connections[idx][].client_tls.drain_plaintext()
 
-        # If we haven't initiated the server-side H2 connection yet, do so now.
-        if not self.connections[idx][].client_h2_initiated:
-            self.connections[idx][].client_h2.initiate_connection()
-            self.connections[idx][].client_h2_initiated = True
-            # Flush the server preface (SETTINGS frame) to the client
-            var preface_bytes = self.connections[idx][].client_h2.data_to_send()
+        # H2CoroServer already called initiate_connection() in its constructor.
+        # On first post-TLS recv, flush the server preface to the client.
+        if self.connections[idx][].phase == _PHASE_CLIENT_TLS_HANDSHAKE:
+            var preface_bytes = self.connections[idx][].client_coro_server.drain()
             if len(preface_bytes) > 0:
                 self.connections[idx][].client_tls.send_data(Span(preface_bytes))
                 var ct2 = self.connections[idx][].client_tls.drain_ciphertext()
                 self._stage_client_send(idx, ct2^)
             self.connections[idx][].phase = _PHASE_CLIENT_H2_READY
 
-        # Feed plaintext into the server-side H2 connection
+        # Feed plaintext into the H2CoroServer (dispatches to coroutines)
         if len(plaintext) > 0:
-            var pt_list = List[UInt8]()
-            for i in range(len(plaintext)):
-                pt_list.append(plaintext[i])
-            var events = self.connections[idx][].client_h2.receive_data(pt_list)
-            self._process_client_h2_events(idx, events)
-
-            # Flush any H2 frames generated (e.g. SETTINGS ACK, WINDOW_UPDATE)
-            var h2_out = self.connections[idx][].client_h2.data_to_send()
+            self.connections[idx][].client_coro_server.feed(Span(plaintext))
+            var h2_out = self.connections[idx][].client_coro_server.drain()
             if len(h2_out) > 0:
                 self.connections[idx][].client_tls.send_data(Span(h2_out))
                 var ct3 = self.connections[idx][].client_tls.drain_ciphertext()
                 self._stage_client_send(idx, ct3^)
 
-        # If we have pending requests ready to forward, either start the
-        # backend connection or submit them immediately if already connected.
-        if self._has_ready_requests(idx):
+        # If coroutines queued backend work, either start the backend
+        # connection or process pending work immediately if already connected.
+        if len(self.connections[idx][].proxy_shared_ptr[].pending_backend) > 0:
             if self.connections[idx][].phase == _PHASE_CLIENT_H2_READY:
                 self.connections[idx][].phase = _PHASE_BACKEND_CONNECTING
                 self._queue_backend_connect(idx)
             elif self.connections[idx][].phase == _PHASE_PROXYING:
-                self._submit_pending_requests(idx)
-                self._check_backend_responses(idx)
+                self._process_pending_backend(idx)
 
         # Keep reading from the client
         self._queue_client_recv(idx)
@@ -963,9 +880,9 @@ struct ProxyHandler(CompletionHandler):
                     var ct4 = self.connections[idx][].backend_tls.drain_ciphertext()
                     self._stage_backend_send(idx, ct4^)
 
-            # Transition to PROXYING and submit pending requests
+            # Transition to PROXYING and process pending backend work
             self.connections[idx][].phase = _PHASE_PROXYING
-            self._submit_pending_requests(idx)
+            self._process_pending_backend(idx)
             self._queue_backend_recv(idx)
             return
 
@@ -979,8 +896,8 @@ struct ProxyHandler(CompletionHandler):
                 var ct5 = self.connections[idx][].backend_tls.drain_ciphertext()
                 self._stage_backend_send(idx, ct5^)
 
-        # Check for completed backend responses
-        self._check_backend_responses(idx)
+        # Deliver completed backend responses to stream coroutines
+        self._deliver_backend_responses(idx)
         self._queue_backend_recv(idx)
 
     def _handle_backend_send(mut self, idx: Int, result: Int32) raises:
@@ -1010,142 +927,38 @@ struct ProxyHandler(CompletionHandler):
             self._queue_backend_recv(idx)
             return
 
-    # --- H2 event processing (client side) ------------------------------------
+    # --- Pending backend work (coroutine → event loop) -------------------------
 
-    def _process_client_h2_events(
-        mut self, idx: Int, mut events: List[H2Event]
-    ) raises:
-        """Process H2 events from the client connection and capture requests."""
-        for i in range(len(events)):
-            var evt = H2Event(other=events[i])
-            if evt.kind == H2_EVT_REQUEST_RECEIVED:
-                self._on_client_request(idx, evt)
-            elif evt.kind == H2_EVT_DATA_RECEIVED:
-                self._on_client_data(idx, evt)
-            elif evt.kind == H2_EVT_STREAM_ENDED:
-                self._on_client_stream_ended(idx, evt)
-            elif evt.kind == H2_EVT_GOAWAY_RECEIVED:
-                pass  # Client is shutting down
-            elif evt.kind == H2_EVT_CONNECTION_TERMINATED:
-                self._close_connection(idx)
-                return
-
-    def _on_client_request(
-        mut self, idx: Int, evt: H2Event
-    ) raises:
-        """Capture an incoming H2 request from the client."""
-        var req = request_from_h2_headers(evt.stream_id, evt.headers)
-        var pending = _PendingRequest(
-            client_stream_id=evt.stream_id,
-            method=String(req.method),
-            target=req.target,
-            headers=Headers(other=req.headers),
-        )
-        if evt.stream_ended:
-            pending.stream_ended = True
-        var ptr = _heap_alloc[_PendingRequest](1).as_any_origin()
-        ptr.init_pointee_move(pending^)
-        self.connections[idx][].pending_requests.append(
-            _PendingReqPtr(UInt64(Int(ptr)))
-        )
-
-    def _on_client_data(
-        mut self, idx: Int, evt: H2Event
-    ) raises:
-        """Append body data to the pending request for this stream."""
-        var sid = evt.stream_id
-        for i in range(len(self.connections[idx][].pending_requests)):
-            var pr = self.connections[idx][].pending_requests[i].ptr()
-            if pr[].client_stream_id == sid:
-                for j in range(len(evt.data)):
-                    pr[].body.append(evt.data[j])
-                if evt.stream_ended:
-                    pr[].stream_ended = True
-                break
-        # Acknowledge received data for flow control
-        if evt.flow_controlled_length > 0:
-            self.connections[idx][].client_h2.acknowledge_received_data(
-                evt.flow_controlled_length, evt.stream_id
+    def _process_pending_backend(mut self, idx: Int) raises:
+        """Drain pending backend work queued by stream coroutines, submit to
+        the backend H2Session, and send outbound frames through TLS."""
+        var proxy = self.connections[idx][].proxy_shared_ptr
+        while len(proxy[].pending_backend) > 0:
+            var work = proxy[].pending_backend.pop(0)
+            # Take the heap-allocated Request
+            var req_ptr = UnsafePointer[Request, MutAnyOrigin](
+                unsafe_from_address=Int(work.request_addr)
             )
-
-    def _on_client_stream_ended(
-        mut self, idx: Int, evt: H2Event
-    ) raises:
-        """Mark the pending request for this stream as ready."""
-        var sid = evt.stream_id
-        for i in range(len(self.connections[idx][].pending_requests)):
-            var pr = self.connections[idx][].pending_requests[i].ptr()
-            if pr[].client_stream_id == sid:
-                pr[].stream_ended = True
-                break
-
-    # --- Request forwarding ---------------------------------------------------
-
-    def _has_ready_requests(self, idx: Int) -> Bool:
-        """Check if there are requests ready to forward."""
-        for i in range(len(self.connections[idx][].pending_requests)):
-            var pr = self.connections[idx][].pending_requests[i].ptr()
-            if pr[].stream_ended:
-                return True
-        return False
-
-    def _submit_pending_requests(mut self, idx: Int) raises:
-        """Submit all ready pending requests to the backend H2Session."""
-        var remaining = List[_PendingReqPtr]()
-        var n = len(self.connections[idx][].pending_requests)
-        for i in range(n):
-            var wrap = _PendingReqPtr(
-                other=self.connections[idx][].pending_requests[i]
-            )
-            var pr = wrap.ptr()
-            if not pr[].stream_ended:
-                remaining.append(wrap.copy())
-                continue
-
-            # Build a Request and submit to the backend session
-            var client_stream_id = pr[].client_stream_id
-            var body_data = List[UInt8]()
-            for j in range(len(pr[].body)):
-                body_data.append(pr[].body[j])
-            var req_body: RequestBody
-            if len(body_data) > 0:
-                req_body = RequestBody.buffered(body_data^)
-            else:
-                req_body = RequestBody.empty()
-
-            var request = Request(
-                method=Method.custom(pr[].method),
-                target=pr[].target,
-                version=Version.http_2(),
-                headers=Headers(other=pr[].headers),
-                body=req_body^,
-            )
-            rewrite_request_headers(request, "127.0.0.1", _BACKEND_HOST)
-            var handle = self.connections[idx][].backend_session.submit(request^)
-            var handle_id = handle.id()
-
-            # Track the mapping from backend handle to client stream
-            self.connections[idx][].handle_to_client_stream.append(handle_id)
-            self.connections[idx][].handle_client_streams.append(client_stream_id)
+            var req = req_ptr.take_pointee()
+            req_ptr.free()
+            # Submit to backend
+            var handle = self.connections[idx][].backend_session.submit(req^)
+            var handle_id = Int(handle.id())
+            proxy[].handle_to_stream[handle_id] = work.client_stream_id
             self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
-
-            # Free the pending request
-            pr.destroy_pointee()
-            pr.free()
-
-        self.connections[idx][].pending_requests = remaining^
-
-        # Drain outbound H2 frames from the session and send via TLS
+        # Drain backend session through TLS
         var out_bytes = self.connections[idx][].backend_session.drain()
         if len(out_bytes) > 0:
             self.connections[idx][].backend_tls.send_data(Span(out_bytes))
             var ct = self.connections[idx][].backend_tls.drain_ciphertext()
             self._stage_backend_send(idx, ct^)
 
-    # --- Backend response handling --------------------------------------------
+    # --- Backend response delivery (event loop → coroutine) -------------------
 
-    def _check_backend_responses(mut self, idx: Int) raises:
-        """Check if backend responses are ready and forward to client."""
+    def _deliver_backend_responses(mut self, idx: Int) raises:
+        """Drive a pending backend RequestHandle via run_one.  When complete,
+        heap-allocate the Response, store in ProxyShared, and resume the
+        stream coroutine so it can forward the response to the client."""
         if not self.connections[idx][].backend_request_handle:
             return
 
@@ -1160,66 +973,22 @@ struct ProxyHandler(CompletionHandler):
             self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
             return
 
-        # Response is ready — find the client stream ID
-        var handle_id = handle.id()
-        var client_stream_id = UInt32(0)
-        var found = False
-        for i in range(len(self.connections[idx][].handle_to_client_stream)):
-            if self.connections[idx][].handle_to_client_stream[i] == handle_id:
-                client_stream_id = self.connections[idx][].handle_client_streams[i]
-                found = True
-                # Remove from tracking (swap-remove)
-                var last = len(self.connections[idx][].handle_to_client_stream) - 1
-                if i != last:
-                    self.connections[idx][].handle_to_client_stream[i] = self.connections[idx][].handle_to_client_stream[last]
-                    self.connections[idx][].handle_client_streams[i] = self.connections[idx][].handle_client_streams[last]
-                _ = self.connections[idx][].handle_to_client_stream.pop()
-                _ = self.connections[idx][].handle_client_streams.pop()
-                break
-
-        if not found:
+        var handle_id = Int(handle.id())
+        var proxy = self.connections[idx][].proxy_shared_ptr
+        if handle_id not in proxy[].handle_to_stream:
             return
+        var client_stream_id = proxy[].handle_to_stream[handle_id]
+        _ = proxy[].handle_to_stream.pop(handle_id)
 
-        # Extract response from the handle
+        # Heap-allocate Response for the coroutine
         var response = handle^.take_response()
+        var resp_heap = _heap_alloc[Response](1).as_any_origin()
+        resp_heap.init_pointee_move(response^)
+        proxy[].completed_responses[client_stream_id] = UInt64(Int(resp_heap))
 
-        # Build H2 response headers for client
-        var resp_headers = List[Header]()
-        resp_headers.append(Header(":status", String(response.status)))
-
-        # Add response headers, stripping hop-by-hop and adding Via
-        for i in range(len(response.headers)):
-            var name = response.headers.name_at(i)
-            var value = response.headers.value_at(i)
-            if not _is_hop_by_hop(name):
-                resp_headers.append(Header(name, value))
-        resp_headers.append(Header("via", "2.0 mojo-proxy"))
-
-        # Extract body data
-        var body_data = List[UInt8]()
-        for i in range(len(response.body)):
-            var frame = response.body[i].copy()
-            if frame.is_data():
-                var data = frame.data().copy()
-                for j in range(len(data)):
-                    body_data.append(data[j])
-
-        var has_body = len(body_data) > 0
-        var end_stream = not has_body
-
-        # Send response headers to client via H2
-        self.connections[idx][].client_h2.send_headers(
-            client_stream_id, resp_headers^, end_stream=end_stream
-        )
-
-        # Send body data if present
-        if has_body:
-            self.connections[idx][].client_h2.send_data(
-                client_stream_id, body_data^, end_stream=True
-            )
-
-        # Flush H2 frames through TLS to the client
-        var h2_out = self.connections[idx][].client_h2.data_to_send()
+        # Resume the stream coroutine so it can read the response
+        self.connections[idx][].client_coro_server.resume_stream(client_stream_id)
+        var h2_out = self.connections[idx][].client_coro_server.drain()
         if len(h2_out) > 0:
             self.connections[idx][].client_tls.send_data(Span(h2_out))
             var ct = self.connections[idx][].client_tls.drain_ciphertext()
