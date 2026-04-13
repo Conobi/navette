@@ -142,6 +142,36 @@ pub extern "C" fn rlsm_quic_server_config_new(
     }
 }
 
+/// Create a QUIC client TLS config (TLS 1.3 only, webpki-roots CA bundle).
+///
+/// alpn_ptr/alpn_len: raw protocol bytes (e.g. b"h3").
+/// On success: *out_handle is a positive config handle.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_client_config_new(
+    alpn_ptr:   *const u8, alpn_len:   i32,
+    out_handle: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if alpn_ptr.is_null()  { rlsm_err!("rlsm_quic_client_config_new: null alpn_ptr";  return -1); }
+    if out_handle.is_null(){ rlsm_err!("rlsm_quic_client_config_new: null out_handle"; return -1); }
+    if alpn_len < 0        { rlsm_err!("rlsm_quic_client_config_new: negative alpn_len"; return -1); }
+
+    let alpn_bytes = unsafe { std::slice::from_raw_parts(alpn_ptr, alpn_len as usize) };
+
+    let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![alpn_bytes.to_vec()];
+
+    match quic_client_cfg_table().insert(Arc::new(config)) {
+        Some(h) => { unsafe { *out_handle = h; } 0 }
+        None => { rlsm_err!("rlsm_quic_client_config_new: handle counter exhausted"; return -1); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +184,37 @@ mod tests {
         let key_pem  = cert.serialize_private_key_pem().into_bytes();
         let cert_der = cert.serialize_der().unwrap();
         (cert_pem, key_pem, cert_der)
+    }
+
+    /// Create a client config that trusts a specific root cert DER.
+    /// Inserts directly into the handle table (bypasses production FFI
+    /// which uses webpki-roots — not useful for self-signed test certs).
+    fn make_test_client_config(root_cert_der: &[u8], alpn: &[u8]) -> i32 {
+        let mut root_store = RootCertStore::empty();
+        root_store
+            .add(rustls::pki_types::CertificateDer::from(root_cert_der.to_vec()))
+            .unwrap();
+
+        let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![alpn.to_vec()];
+
+        quic_client_cfg_table()
+            .insert(Arc::new(config))
+            .expect("handle counter exhausted")
+    }
+
+    #[test]
+    fn test_client_config_new_returns_handle() {
+        let alpn = b"h3";
+        let mut handle_out: i32 = -1;
+        let rc = rlsm_quic_client_config_new(
+            alpn.as_ptr(), alpn.len() as i32,
+            &mut handle_out,
+        );
+        assert_eq!(rc, 0, "client config creation failed");
+        assert!(handle_out > 0, "expected positive handle");
     }
 
     #[test]
