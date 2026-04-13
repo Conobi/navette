@@ -147,7 +147,7 @@ struct ProxyConnection(Movable):
     var client_coro_server: H2CoroServer  # server-side H2 (coroutine)
     var backend_tls: TlsConnection
     var backend_session: H2Session    # client-side H2 (Session adapter)
-    var backend_request_handle: Optional[RequestHandle]
+    var backend_handles: Dict[Int, UInt64]  # handle_id → heap RequestHandle addr
     var proxy_shared_ptr: UnsafePointer[ProxyShared, MutAnyOrigin]
     var phase: UInt8
     var client_recv_buf: List[UInt8]
@@ -182,7 +182,7 @@ struct ProxyConnection(Movable):
         self.client_coro_server = client_coro_server^
         self.backend_tls = backend_tls^
         self.backend_session = backend_session^
-        self.backend_request_handle = Optional[RequestHandle]()
+        self.backend_handles = Dict[Int, UInt64]()
         self.proxy_shared_ptr = proxy_shared_ptr
         self.phase = _PHASE_CLIENT_TLS_HANDSHAKE
         self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
@@ -210,7 +210,7 @@ struct ProxyConnection(Movable):
         self.client_coro_server = take.client_coro_server^
         self.backend_tls = take.backend_tls^
         self.backend_session = take.backend_session^
-        self.backend_request_handle = take.backend_request_handle^
+        self.backend_handles = take.backend_handles^
         self.proxy_shared_ptr = take.proxy_shared_ptr
         self.phase = take.phase
         self.client_recv_buf = take.client_recv_buf^
@@ -945,7 +945,10 @@ struct ProxyHandler(CompletionHandler):
             var handle = self.connections[idx][].backend_session.submit(req^)
             var handle_id = Int(handle.id())
             proxy[].handle_to_stream[handle_id] = work.client_stream_id
-            self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
+            # Heap-allocate the handle (RequestHandle is Movable-only)
+            var h_ptr = _heap_alloc[RequestHandle](1)
+            h_ptr.init_pointee_move(handle^)
+            self.connections[idx][].backend_handles[handle_id] = UInt64(Int(h_ptr))
         # Drain backend session through TLS
         var out_bytes = self.connections[idx][].backend_session.drain()
         if len(out_bytes) > 0:
@@ -956,43 +959,57 @@ struct ProxyHandler(CompletionHandler):
     # --- Backend response delivery (event loop → coroutine) -------------------
 
     def _deliver_backend_responses(mut self, idx: Int) raises:
-        """Drive a pending backend RequestHandle via run_one.  When complete,
-        heap-allocate the Response, store in ProxyShared, and resume the
-        stream coroutine so it can forward the response to the client."""
-        if not self.connections[idx][].backend_request_handle:
+        """Drive all pending backend RequestHandles via run_one.  When one
+        completes, heap-allocate the Response, store in ProxyShared, and
+        resume the stream coroutine so it can forward the response."""
+        if len(self.connections[idx][].backend_handles) == 0:
             return
 
-        # Move the handle out so we can drive run_one
-        var handle_opt = Optional[RequestHandle]()
-        swap(handle_opt, self.connections[idx][].backend_request_handle)
-        var handle = handle_opt.take()
-        self.connections[idx][].backend_session.run_one(handle)
+        # Snapshot handle IDs to avoid mutating dict while iterating
+        var handle_ids = List[Int]()
+        for key in self.connections[idx][].backend_handles.keys():
+            handle_ids.append(key)
 
-        if not handle.is_complete():
-            # Not ready yet, put the handle back
-            self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
-            return
+        for i in range(len(handle_ids)):
+            var hid = handle_ids[i]
+            if hid not in self.connections[idx][].backend_handles:
+                continue
+            # Take handle from heap
+            var h_addr = self.connections[idx][].backend_handles[hid]
+            var h_ptr = UnsafePointer[RequestHandle, MutAnyOrigin](
+                unsafe_from_address=Int(h_addr)
+            )
+            self.connections[idx][].backend_session.run_one(h_ptr[])
 
-        var handle_id = Int(handle.id())
-        var proxy = self.connections[idx][].proxy_shared_ptr
-        if handle_id not in proxy[].handle_to_stream:
-            return
-        var client_stream_id = proxy[].handle_to_stream[handle_id]
-        _ = proxy[].handle_to_stream.pop(handle_id)
+            if not h_ptr[].is_complete():
+                continue  # not ready yet, leave in dict
 
-        # Heap-allocate Response for the coroutine
-        var response = handle^.take_response()
-        var resp_heap = _heap_alloc[Response](1).as_any_origin()
-        resp_heap.init_pointee_move(response^)
-        proxy[].completed_responses[client_stream_id] = UInt64(Int(resp_heap))
+            # Complete — take it out
+            var handle = h_ptr.take_pointee()
+            h_ptr.free()
+            _ = self.connections[idx][].backend_handles.pop(hid)
 
-        # Resume the stream coroutine so it can read the response
-        self.connections[idx][].client_coro_server.resume_stream(client_stream_id)
-        var h2_out = self.connections[idx][].client_coro_server.drain()
-        if len(h2_out) > 0:
-            self.connections[idx][].client_tls.send_data(Span(h2_out))
-            var ct = self.connections[idx][].client_tls.drain_ciphertext()
-            self._stage_client_send(idx, ct^)
+            var proxy = self.connections[idx][].proxy_shared_ptr
+            if hid not in proxy[].handle_to_stream:
+                continue
+            var client_stream_id = proxy[].handle_to_stream[hid]
+            _ = proxy[].handle_to_stream.pop(hid)
+
+            # Heap-allocate Response for the coroutine
+            var response = handle^.take_response()
+            var resp_heap = _heap_alloc[Response](1).as_any_origin()
+            resp_heap.init_pointee_move(response^)
+            proxy[].completed_responses[client_stream_id] = UInt64(Int(resp_heap))
+
+            # Resume the stream coroutine so it can read the response
+            self.connections[idx][].client_coro_server.resume_stream(
+                client_stream_id
+            )
+            var h2_out = self.connections[idx][].client_coro_server.drain()
+            if len(h2_out) > 0:
+                self.connections[idx][].client_tls.send_data(Span(h2_out))
+                var ct = self.connections[idx][].client_tls.drain_ciphertext()
+                self._stage_client_send(idx, ct^)
 
     # --- Close helper ---------------------------------------------------------
 
