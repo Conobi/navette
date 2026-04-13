@@ -8,6 +8,7 @@
 pub mod handles;
 pub mod error;
 mod quic;
+mod quic_hs;
 mod config;
 mod tcp;
 

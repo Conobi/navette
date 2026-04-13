@@ -17,16 +17,16 @@ use crate::rlsm_err;
 // Internal types
 // ---------------------------------------------------------------------------
 
-struct KeysEntry {
-    local: DirectionalKeys,
-    remote: DirectionalKeys,
+pub(crate) struct KeysEntry {
+    pub(crate) local: DirectionalKeys,
+    pub(crate) remote: DirectionalKeys,
     /// Monotonic nonce-reuse check for local encryption.
-    last_local_pn: Option<u64>,
+    pub(crate) last_local_pn: Option<u64>,
 }
 
 static KEYS_TABLE: OnceLock<HandleTable<KeysEntry>> = OnceLock::new();
 
-fn keys_table() -> &'static HandleTable<KeysEntry> {
+pub(crate) fn keys_table() -> &'static HandleTable<KeysEntry> {
     KEYS_TABLE.get_or_init(HandleTable::new)
 }
 
