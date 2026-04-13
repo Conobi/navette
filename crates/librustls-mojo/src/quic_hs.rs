@@ -454,6 +454,130 @@ pub extern "C" fn rlsm_quic_conn_alert(conn_handle: i32) -> i32 {
         })
 }
 
+// ---------------------------------------------------------------------------
+// §4 Key materialization
+// ---------------------------------------------------------------------------
+
+/// Move the pending Keys into Wave 1's KEYS_TABLE.
+/// Returns the new keys handle in *out_keys_handle.
+/// Returns -1 if no pending key change exists or handle is invalid.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_take_keys(
+    conn_handle:    i32,
+    out_keys_handle: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if out_keys_handle.is_null() {
+        rlsm_err!("rlsm_quic_conn_take_keys: null out_keys_handle"; return -1);
+    }
+
+    quic_conn_table().with_mut(conn_handle, |entry| {
+        let (_kind, keys) = match entry.pending.take() {
+            Some(p) => p,
+            None => {
+                set_last_error("rlsm_quic_conn_take_keys: no pending key change");
+                return -1;
+            }
+        };
+
+        let new_entry = KeysEntry {
+            local: keys.local,
+            remote: keys.remote,
+            last_local_pn: None,
+        };
+
+        match keys_table().insert(new_entry) {
+            Some(kh) => {
+                unsafe { *out_keys_handle = kh; }
+                0
+            }
+            None => {
+                set_last_error("rlsm_quic_conn_take_keys: KEYS_TABLE handle counter exhausted");
+                -1
+            }
+        }
+    })
+    .unwrap_or_else(|| {
+        rlsm_err!("rlsm_quic_conn_take_keys: invalid conn handle"; return -1)
+    })
+}
+
+/// Derive next 1-RTT packet keys from the stored Secrets (RFC 9001 §6).
+/// Returns -1 if no OneRtt key change has been processed yet.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_take_next_keys(
+    conn_handle:    i32,
+    out_keys_handle: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if out_keys_handle.is_null() {
+        rlsm_err!("rlsm_quic_conn_take_next_keys: null out_keys_handle"; return -1);
+    }
+
+    quic_conn_table().with_mut(conn_handle, |entry| {
+        let mut secrets = match entry.next_secrets.take() {
+            Some(s) => s,
+            None => {
+                set_last_error(
+                    "rlsm_quic_conn_take_next_keys: no 1-RTT Secrets available \
+                     (OneRtt key change not yet processed, or already consumed)"
+                );
+                return -1;
+            }
+        };
+
+        let pks = secrets.next_packet_keys();
+
+        // PacketKeySet has only packet keys (no header protection keys).
+        // Wrap in a no-op HeaderProtectionKey that errors loudly if called.
+        struct NoOpHpKey;
+        impl rustls::quic::HeaderProtectionKey for NoOpHpKey {
+            fn encrypt_in_place(
+                &self, _sample: &[u8], _first: &mut u8, _packet_number: &mut [u8],
+            ) -> Result<(), rustls::Error> {
+                Err(rustls::Error::General(
+                    "key update: header protection key not available — \
+                     HP keys do not rotate (RFC 9001 §6.3)".into()
+                ))
+            }
+            fn decrypt_in_place(
+                &self, _sample: &[u8], _first: &mut u8, _packet_number: &mut [u8],
+            ) -> Result<(), rustls::Error> {
+                Err(rustls::Error::General(
+                    "key update: header protection key not available — \
+                     HP keys do not rotate (RFC 9001 §6.3)".into()
+                ))
+            }
+            fn sample_len(&self) -> usize { 16 }
+        }
+
+        let new_entry = KeysEntry {
+            local: DirectionalKeys {
+                header: Box::new(NoOpHpKey),
+                packet: pks.local,
+            },
+            remote: DirectionalKeys {
+                header: Box::new(NoOpHpKey),
+                packet: pks.remote,
+            },
+            last_local_pn: None,
+        };
+
+        match keys_table().insert(new_entry) {
+            Some(kh) => { unsafe { *out_keys_handle = kh; } 0 }
+            None => {
+                set_last_error("rlsm_quic_conn_take_next_keys: KEYS_TABLE handle counter exhausted");
+                -1
+            }
+        }
+    })
+    .unwrap_or_else(|| {
+        rlsm_err!("rlsm_quic_conn_take_next_keys: invalid conn handle"; return -1)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +705,37 @@ mod tests {
         // Alert is cleared on read — second call returns -1
         let alert2 = rlsm_quic_conn_alert(server_h);
         assert_eq!(alert2, -1, "alert should be cleared after reading");
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    // T4: calling take_keys twice without an intervening key change → -1
+    #[test]
+    fn test_double_take_keys_returns_error() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let mut buf = vec![0u8; 4096];
+        let mut written: i32 = 0;
+        let mut kc: u8 = 0;
+
+        // Generate ClientHello from client, feed to server
+        rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        let client_hello = buf[..written as usize].to_vec();
+        rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32);
+
+        // Server writes → key_change=1
+        written = 0; kc = 0;
+        rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(kc, 1);
+
+        // First take_keys → ok
+        let mut keys_h: i32 = 0;
+        assert_eq!(rlsm_quic_conn_take_keys(server_h, &mut keys_h), 0);
+        assert!(keys_h > 0);
+
+        // Second take_keys without a new key change → -1
+        let mut keys_h2: i32 = 0;
+        assert_eq!(rlsm_quic_conn_take_keys(server_h, &mut keys_h2), -1);
 
         let _ = rlsm_quic_conn_free(client_h);
         let _ = rlsm_quic_conn_free(server_h);
