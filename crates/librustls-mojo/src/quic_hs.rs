@@ -417,10 +417,11 @@ pub extern "C" fn rlsm_quic_conn_read_hs(
             Ok(()) => 0,
             Err(e) => {
                 // Cache the alert code for rlsm_quic_conn_alert.
-                // QUIC connections don't send TLS Alert records — they use CONNECTION_CLOSE
-                // instead — so conn.alert() often returns None even on genuine errors.
-                // Fall back to decode_error (50) so the caller always gets a non-negative
-                // code when read_hs fails.
+                // NOTE: QUIC connections don't send TLS Alert records (RFC 9001 uses CONNECTION_CLOSE
+                // instead), so conn.alert() often returns None even on genuine TLS errors.
+                // When None, we fall back to decode_error (50) so the caller always receives a
+                // non-negative code. The returned code may be synthetic — use rlsm_last_error()
+                // for the authoritative error string.
                 let alert_code = match &entry.conn {
                     QuicConn::Client(c) => c.alert().map(|a| u8::from(a)),
                     QuicConn::Server(c) => c.alert().map(|a| u8::from(a)),
@@ -437,7 +438,10 @@ pub extern "C" fn rlsm_quic_conn_read_hs(
 }
 
 /// Return the cached TLS AlertDescription code set by the last read_hs failure.
-/// Clears the cache on read. Returns -1 if no alert is cached or handle is invalid.
+/// The code may be synthetic (decode_error/50) when the underlying rustls connection
+/// did not emit a TLS Alert record (common for QUIC). Use rlsm_last_error() for the
+/// authoritative error message. Clears the cache on read.
+/// Returns -1 if no alert is cached or handle is invalid.
 #[no_mangle]
 pub extern "C" fn rlsm_quic_conn_alert(conn_handle: i32) -> i32 {
     clear_last_error();
@@ -445,7 +449,9 @@ pub extern "C" fn rlsm_quic_conn_alert(conn_handle: i32) -> i32 {
         .with_mut(conn_handle, |entry| {
             entry.alert_cache.take().map(|a| a as i32).unwrap_or(-1)
         })
-        .unwrap_or(-1)
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_alert: invalid conn handle"; return -1)
+        })
 }
 
 #[cfg(test)]
@@ -562,7 +568,7 @@ mod tests {
     // T6: bad data → read_hs returns -1, alert returns a non-negative code
     #[test]
     fn test_alert_on_bad_read_hs() {
-        let (_, server_h) = make_conn_pair(b"h3");
+        let (client_h, server_h) = make_conn_pair(b"h3");
         // Feed garbage to server before it has seen ClientHello
         let garbage = b"not valid TLS handshake data at all \x00\xff";
         let rc = rlsm_quic_conn_read_hs(server_h, garbage.as_ptr(), garbage.len() as i32);
@@ -576,6 +582,7 @@ mod tests {
         let alert2 = rlsm_quic_conn_alert(server_h);
         assert_eq!(alert2, -1, "alert should be cleared after reading");
 
+        let _ = rlsm_quic_conn_free(client_h);
         let _ = rlsm_quic_conn_free(server_h);
     }
 
