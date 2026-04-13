@@ -146,6 +146,40 @@ fn _yield_for_external(mut y: CoroYielder) raises:
 
 
 # ---------------------------------------------------------------------------
+# _raising_body — coroutine that immediately raises "handler error"
+# ---------------------------------------------------------------------------
+
+
+fn _raising_body(mut y: CoroYielder) raises:
+    raise Error("handler error")
+
+
+# ---------------------------------------------------------------------------
+# _check_error_body — reads recv_body in a loop, exits on error or end frame
+# ---------------------------------------------------------------------------
+
+
+fn _check_error_body(mut y: CoroYielder) raises:
+    """Read body frames in a loop (yielding when empty), exit cleanly when
+    an error frame or end frame is received."""
+    var ctx = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(y.user_data())
+    )
+    while True:
+        var frame = ctx[].recv_body.try_read()
+        if not frame:
+            y.yield_to_caller()
+            continue
+        var f = frame.unsafe_take()
+        if f.is_error():
+            return
+        elif f.is_end():
+            return
+        elif f.is_data():
+            pass  # consume data
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -478,9 +512,104 @@ def test_multiple_streams() raises:
     print("PASS test_multiple_streams")
 
 
+def test_error_propagation() raises:
+    """Create H2CoroServer with _raising_body, send GET / with END_STREAM.
+    The coroutine immediately raises, so the server should send RST_STREAM
+    with error_code=2 (INTERNAL_ERROR).  The connection should survive."""
+    # --- Set up server + client ---
+    var server = H2CoroServer(body_fn=_raising_body)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+
+    # --- Preface exchange ---
+    _do_preface(server, client)
+
+    # --- Send GET / with END_STREAM ---
+    var headers = List[Header]()
+    headers.append(Header(":method", "GET"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(1), headers^, end_stream=True)
+    var req_data = client.data_to_send()
+
+    # Feed request to server — coroutine raises, server sends RST_STREAM
+    server.feed(Span(req_data))
+    var server_out = server.drain()
+
+    # Feed server output to client and parse events
+    var events = client.receive_data(server_out)
+
+    # --- Verify RST_STREAM with INTERNAL_ERROR ---
+    var got_reset = False
+    var reset_error_code = UInt32(0)
+    for i in range(len(events)):
+        if events[i].kind == H2_EVT_STREAM_RESET:
+            got_reset = True
+            reset_error_code = events[i].error_code
+
+    if not got_reset:
+        raise Error("expected H2_EVT_STREAM_RESET event")
+    if reset_error_code != UInt32(2):
+        raise Error(
+            "expected error_code 2 (INTERNAL_ERROR), got "
+            + String(reset_error_code)
+        )
+
+    # --- Verify connection survives ---
+    if server.should_close():
+        raise Error("expected should_close() to be False after stream reset")
+    print("PASS test_error_propagation")
+
+
+def test_stream_reset() raises:
+    """Create H2CoroServer with _check_error_body, send POST / without
+    END_STREAM (coroutine starts reading body, yields).  Then send
+    RST_STREAM(stream_id=1, error_code=8 CANCEL).  The server should
+    handle the reset gracefully — the coroutine exits cleanly and the
+    connection survives."""
+    # --- Set up server + client ---
+    var server = H2CoroServer(body_fn=_check_error_body)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+
+    # --- Preface exchange ---
+    _do_preface(server, client)
+
+    # --- Send HEADERS for POST / without END_STREAM ---
+    var headers = List[Header]()
+    headers.append(Header(":method", "POST"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+    var req_data = client.data_to_send()
+
+    # Feed HEADERS to server — coroutine starts, try_read() empty, yields
+    server.feed(Span(req_data))
+    _ = server.drain()
+
+    # --- Send RST_STREAM(stream_id=1, error_code=8 CANCEL) ---
+    client.send_rst_stream(UInt32(1), UInt32(8))
+    var rst_data = client.data_to_send()
+
+    # Feed RST_STREAM to server — coroutine sees error frame, exits cleanly
+    server.feed(Span(rst_data))
+    _ = server.drain()
+
+    # --- Verify connection survives ---
+    if server.should_close():
+        raise Error(
+            "expected should_close() to be False after client RST_STREAM"
+        )
+    print("PASS test_stream_reset")
+
+
 def main() raises:
     test_single_complete_request()
     test_body_yield()
     test_resume_stream()
     test_multiple_streams()
+    test_error_propagation()
+    test_stream_reset()
     print("All H2CoroServer tests passed.")
