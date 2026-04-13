@@ -319,6 +319,119 @@ pub extern "C" fn rlsm_quic_conn_free(conn_handle: i32) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// §3 Handshake data exchange
+// ---------------------------------------------------------------------------
+
+/// Drain outgoing TLS bytes into caller's buffer.
+///
+/// *out_key_change_type: 0=none, 1=Handshake, 2=OneRtt.
+/// After non-zero kind, caller MUST call rlsm_quic_conn_take_keys before
+/// the next write_hs call. Calling write_hs with a pending key change → -1.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_write_hs(
+    conn_handle:        i32,
+    out_buf:            *mut u8,  out_capacity:    i32,
+    out_written:        *mut i32,
+    out_key_change_type: *mut u8,
+) -> i32 {
+    clear_last_error();
+
+    if out_buf.is_null()            { rlsm_err!("rlsm_quic_conn_write_hs: null out_buf";            return -1); }
+    if out_written.is_null()        { rlsm_err!("rlsm_quic_conn_write_hs: null out_written";        return -1); }
+    if out_key_change_type.is_null(){ rlsm_err!("rlsm_quic_conn_write_hs: null out_key_change_type"; return -1); }
+    if out_capacity < 0             { rlsm_err!("rlsm_quic_conn_write_hs: negative out_capacity";   return -1); }
+
+    quic_conn_table().with_mut(conn_handle, |entry| {
+        // Guard: pending key change must be consumed before writing more
+        if entry.pending.is_some() {
+            set_last_error(
+                "rlsm_quic_conn_write_hs: pending key change not consumed — call take_keys first"
+            );
+            return -1;
+        }
+
+        let mut vec: Vec<u8> = Vec::new();
+        let key_change = match &mut entry.conn {
+            QuicConn::Client(c) => c.write_hs(&mut vec),
+            QuicConn::Server(c) => c.write_hs(&mut vec),
+        };
+
+        if vec.len() > out_capacity as usize {
+            set_last_error(format!(
+                "rlsm_quic_conn_write_hs: output buffer too small (need {}, have {})",
+                vec.len(), out_capacity
+            ));
+            return -1;
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(vec.as_ptr(), out_buf, vec.len());
+            *out_written = vec.len() as i32;
+        }
+
+        let kind: u8 = match key_change {
+            None => 0,
+            Some(KeyChange::Handshake { keys }) => {
+                entry.pending = Some((1, keys));
+                1
+            }
+            Some(KeyChange::OneRtt { keys, next }) => {
+                entry.pending = Some((2, keys));
+                entry.next_secrets = Some(next);
+                2
+            }
+        };
+
+        unsafe { *out_key_change_type = kind; }
+        0
+    })
+    .unwrap_or_else(|| {
+        rlsm_err!("rlsm_quic_conn_write_hs: invalid conn handle"; return -1)
+    })
+}
+
+/// Feed CRYPTO frame payload to the TLS state machine.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_read_hs(
+    conn_handle: i32,
+    data:        *const u8, len: i32,
+) -> i32 {
+    clear_last_error();
+
+    if data.is_null() && len > 0 {
+        rlsm_err!("rlsm_quic_conn_read_hs: null data with len > 0"; return -1);
+    }
+    if len < 0 { rlsm_err!("rlsm_quic_conn_read_hs: negative len"; return -1); }
+
+    let slice = if len == 0 { &[] } else {
+        unsafe { std::slice::from_raw_parts(data, len as usize) }
+    };
+
+    quic_conn_table().with_mut(conn_handle, |entry| {
+        let result = match &mut entry.conn {
+            QuicConn::Client(c) => c.read_hs(slice),
+            QuicConn::Server(c) => c.read_hs(slice),
+        };
+        match result {
+            Ok(()) => 0,
+            Err(e) => {
+                // Cache the alert code for rlsm_quic_conn_alert
+                let alert_code = match &entry.conn {
+                    QuicConn::Client(c) => c.alert().map(|a| u8::from(a)),
+                    QuicConn::Server(c) => c.alert().map(|a| u8::from(a)),
+                };
+                entry.alert_cache = alert_code;
+                set_last_error(format!("rlsm_quic_conn_read_hs: TLS error: {e}"));
+                -1
+            }
+        }
+    })
+    .unwrap_or_else(|| {
+        rlsm_err!("rlsm_quic_conn_read_hs: invalid conn handle"; return -1)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +500,36 @@ mod tests {
         );
         assert_eq!(rc, 0, "server conn new failed");
         (client_h, server_h)
+    }
+
+    // T5: write_hs with a pending key returns -1
+    #[test]
+    fn test_write_hs_with_pending_key_returns_error() {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let mut buf = vec![0u8; 4096];
+        let mut written: i32 = 0;
+        let mut kc: u8 = 0;
+
+        // Client writes ClientHello (no key change)
+        let rc = rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(rc, 0);
+        let client_hello = buf[..written as usize].to_vec();
+
+        // Server reads ClientHello, then writes (should produce key_change=1)
+        let rc = rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32);
+        assert_eq!(rc, 0);
+        written = 0; kc = 0;
+        let rc = rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(rc, 0);
+        assert_eq!(kc, 1, "expected Handshake key change after ClientHello");
+
+        // Now write_hs again WITHOUT calling take_keys → must return -1
+        written = 0; kc = 0;
+        let rc = rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
+        assert_eq!(rc, -1, "write_hs with pending key should fail");
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
     }
 
     // T10
