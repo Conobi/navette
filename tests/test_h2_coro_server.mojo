@@ -3,6 +3,7 @@
 # Tests for H2CoroServer (M2.6 Tasks 2-3).
 
 from std.memory import Span, UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.stackful import CoroYielder
 
@@ -100,6 +101,46 @@ fn _read_body_then_echo(mut y: CoroYielder) raises:
             return
     var resp_headers = Headers()
     resp_headers.add("x-body-length", String(total))
+    ctx[].resp_writer.send_status(StatusCode.ok(), resp_headers^)
+    ctx[].resp_writer.end()
+
+
+# ---------------------------------------------------------------------------
+# _yield_for_external — coroutine that reads body, yields for "backend I/O",
+# then reads extra_data and responds with x-signal header
+# ---------------------------------------------------------------------------
+
+
+fn _yield_for_external(mut y: CoroYielder) raises:
+    """Read body until END_STREAM (yielding when queue empty), then yield a
+    second time simulating waiting for backend I/O.  After second resume,
+    read extra_data as UnsafePointer[Int], get the value, respond with
+    header x-signal: <value>."""
+    var ctx = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(y.user_data())
+    )
+    # 1. Read body until END_STREAM
+    while True:
+        var frame = ctx[].recv_body.try_read()
+        if not frame:
+            y.yield_to_caller()
+            continue
+        var f = frame.unsafe_take()
+        if f.is_data():
+            pass  # consume data
+        elif f.is_end():
+            break
+        elif f.is_error():
+            return
+    # 2. Yield a second time — simulating "waiting for backend I/O"
+    y.yield_to_caller()
+    # 3. After second resume: read extra_data as pointer to Int
+    var int_ptr = UnsafePointer[Int, MutAnyOrigin](
+        unsafe_from_address=Int(ctx[].extra_data)
+    )
+    var value = int_ptr[]
+    var resp_headers = Headers()
+    resp_headers.add("x-signal", String(value))
     ctx[].resp_writer.send_status(StatusCode.ok(), resp_headers^)
     ctx[].resp_writer.end()
 
@@ -250,7 +291,86 @@ def test_body_yield() raises:
     print("PASS test_body_yield")
 
 
+def test_resume_stream() raises:
+    """Create H2CoroServer with _yield_for_external, send GET / with
+    END_STREAM.  After feed+drain the coroutine has consumed the body and
+    yielded for "backend I/O" — verify NO response yet.  Then call
+    resume_stream(1), drain, and verify response arrives with x-signal=42."""
+    # --- Set up server + client ---
+    var signal_ptr = _heap_alloc[Int](1)
+    signal_ptr.init_pointee_move(42)
+    var extra = UnsafePointer[NoneType, MutExternalOrigin](
+        unsafe_from_address=Int(signal_ptr)
+    )
+    var server = H2CoroServer(body_fn=_yield_for_external, extra_data=extra)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+
+    # --- Preface exchange ---
+    _do_preface(server, client)
+
+    # --- Send GET / with END_STREAM ---
+    var headers = List[Header]()
+    headers.append(Header(":method", "GET"))
+    headers.append(Header(":path", "/"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(1), headers^, end_stream=True)
+    var req_data = client.data_to_send()
+
+    # Feed request to server — coroutine reads body (END_STREAM on HEADERS),
+    # then yields for "backend I/O"
+    server.feed(Span(req_data))
+    var server_out1 = server.drain()
+
+    # Verify NO response yet (coroutine is suspended waiting for resume)
+    if len(server_out1) > 0:
+        var events1 = client.receive_data(server_out1)
+        for i in range(len(events1)):
+            if events1[i].kind == H2_EVT_RESPONSE_RECEIVED:
+                raise Error(
+                    "expected NO response before resume_stream, but got one"
+                )
+
+    # --- Resume stream 1 (external resume) ---
+    server.resume_stream(1)
+    var server_out2 = server.drain()
+
+    # Feed server output to client and parse events
+    var events2 = client.receive_data(server_out2)
+
+    # --- Verify ---
+    var got_response = False
+    var got_stream_ended = False
+    var signal_value = String("")
+
+    for i in range(len(events2)):
+        if events2[i].kind == H2_EVT_RESPONSE_RECEIVED:
+            got_response = True
+            for j in range(len(events2[i].headers)):
+                if events2[i].headers[j].name == "x-signal":
+                    signal_value = events2[i].headers[j].value
+        elif events2[i].kind == H2_EVT_STREAM_ENDED:
+            got_stream_ended = True
+        elif events2[i].kind == H2_EVT_DATA_RECEIVED:
+            if events2[i].stream_ended:
+                got_stream_ended = True
+
+    if not got_response:
+        raise Error("expected RESPONSE_RECEIVED event after resume_stream")
+    if signal_value != "42":
+        raise Error(
+            "expected x-signal '42', got '" + signal_value + "'"
+        )
+    if not got_stream_ended:
+        raise Error("expected stream_ended flag")
+    signal_ptr.destroy_pointee()
+    signal_ptr.free()
+    print("PASS test_resume_stream")
+
+
 def main() raises:
     test_single_complete_request()
     test_body_yield()
+    test_resume_stream()
     print("All H2CoroServer tests passed.")
