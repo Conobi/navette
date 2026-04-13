@@ -856,6 +856,28 @@ mod tests {
         (client_h, server_h)
     }
 
+    fn make_conn_pair_with_tp(alpn: &[u8], tp: &[u8]) -> (i32, i32) {
+        let (server_cfg, root_der) = make_server_cfg(alpn);
+        let client_cfg = make_test_client_config(&root_der, alpn);
+        let server_name = b"localhost";
+        let mut client_h: i32 = 0;
+        let mut server_h: i32 = 0;
+        let rc = rlsm_quic_client_conn_new(
+            client_cfg, 1,
+            server_name.as_ptr(), server_name.len() as i32,
+            tp.as_ptr(), tp.len() as i32,
+            &mut client_h,
+        );
+        assert_eq!(rc, 0, "client conn new (with tp) failed");
+        let rc = rlsm_quic_server_conn_new(
+            server_cfg, 1,
+            tp.as_ptr(), tp.len() as i32,
+            &mut server_h,
+        );
+        assert_eq!(rc, 0, "server conn new (with tp) failed");
+        (client_h, server_h)
+    }
+
     // T5: write_hs with a pending key returns -1
     #[test]
     fn test_write_hs_with_pending_key_returns_error() {
@@ -886,15 +908,42 @@ mod tests {
         let _ = rlsm_quic_conn_free(server_h);
     }
 
-    // T10
+    // T10: freeing a connection with a buffered pending key change drops it cleanly
     #[test]
     fn test_conn_free_with_pending_key_returns_ok() {
         let (client_h, server_h) = make_conn_pair(b"h3");
-        // Free both connections — even with no pending key change, must return 0
-        assert_eq!(rlsm_quic_conn_free(client_h), 0);
+        let mut buf = vec![0u8; 4096];
+        let mut written: i32 = 0;
+        let mut kc: u8 = 0;
+
+        // Client writes ClientHello
+        assert_eq!(
+            rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc),
+            0, "client write_hs failed"
+        );
+        let client_hello = buf[..written as usize].to_vec();
+
+        // Server reads ClientHello
+        assert_eq!(
+            rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32),
+            0, "server read_hs failed"
+        );
+
+        // Server writes → kc=1 (Handshake key change pending)
+        written = 0; kc = 0;
+        assert_eq!(
+            rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc),
+            0, "server write_hs failed"
+        );
+        assert_eq!(kc, 1, "expected Handshake key change");
+
+        // Free the server with a pending key change — must return 0 (drop is safe)
         assert_eq!(rlsm_quic_conn_free(server_h), 0);
-        // Handles are gone — double-free returns -1
-        assert_eq!(rlsm_quic_conn_free(client_h), -1);
+        // Double-free returns -1
+        assert_eq!(rlsm_quic_conn_free(server_h), -1);
+
+        // Free client normally
+        assert_eq!(rlsm_quic_conn_free(client_h), 0);
     }
 
     // T6: bad data → read_hs returns -1, alert returns a non-negative code
@@ -953,8 +1002,8 @@ mod tests {
     /// Returns (client_1rtt_keys, server_1rtt_keys) handles.
     fn run_handshake(client_h: i32, server_h: i32) -> (i32, i32) {
         let mut buf = vec![0u8; 4096];
-        let mut written: i32 = 0;
-        let mut kc: u8 = 0;
+        let mut written: i32;
+        let mut kc: u8;
         let mut client_1rtt: i32 = 0;
         let mut server_1rtt: i32 = 0;
 
@@ -1036,7 +1085,9 @@ mod tests {
     // T1/T8: full handshake completes + transport_params available
     #[test]
     fn test_full_handshake_client_server() {
-        let (client_h, server_h) = make_conn_pair(b"h3");
+        // Use non-empty transport params so T8 can verify they are available post-handshake
+        let tp = [0x01u8, 0x02, 0x40, 0x64]; // max_idle_timeout = 100ms
+        let (client_h, server_h) = make_conn_pair_with_tp(b"h3", &tp);
 
         let (client_1rtt, server_1rtt) = run_handshake(client_h, server_h);
 
@@ -1056,13 +1107,14 @@ mod tests {
         assert_eq!(rlsm_quic_conn_alpn(server_h, alpn_buf.as_mut_ptr(), 32, &mut alpn_written), 0);
         assert_eq!(&alpn_buf[..alpn_written as usize], b"h3");
 
-        // Transport params available (T8)
+        // Transport params available (T8) — both peers echoed the non-empty tp bytes
         let mut tp_buf = [0u8; 1024];
         let mut tp_written: i32 = 0;
         assert_eq!(rlsm_quic_conn_transport_params(client_h, tp_buf.as_mut_ptr(), 1024, &mut tp_written), 0);
-        // server sent empty transport params → tp_written may be 0; just verify return is 0
+        assert!(tp_written > 0, "client should see non-empty server transport params");
         tp_written = 0;
         assert_eq!(rlsm_quic_conn_transport_params(server_h, tp_buf.as_mut_ptr(), 1024, &mut tp_written), 0);
+        assert!(tp_written > 0, "server should see non-empty client transport params");
 
         let _ = rlsm_quic_conn_free(client_h);
         let _ = rlsm_quic_conn_free(server_h);
