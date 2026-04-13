@@ -1,0 +1,370 @@
+[
+  {
+    "id": "qc1-pkt-initial-dcid8-scid0-no-token",
+    "category": "long-header-initial",
+    "rfc_section": "RFC 9000 §17.2.2",
+    "description": "Initial, DCID=8, SCID=0, no token",
+    "input": {
+      "wire_hex": "c000000001088394c8f03e515708000015000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "initial",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 38
+    }
+  },
+  {
+    "id": "qc1-pkt-initial-dcid8-scid8-no-token",
+    "category": "long-header-initial",
+    "rfc_section": "RFC 9000 §17.2.2",
+    "description": "Initial, DCID=8, SCID=8, no token",
+    "input": {
+      "wire_hex": "c000000001088394c8f03e5157080801020304050607080015000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "initial",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "0102030405060708",
+      "token_hex": "",
+      "packet_length": 46
+    }
+  },
+  {
+    "id": "qc1-pkt-initial-dcid8-scid8-token4",
+    "category": "long-header-initial",
+    "rfc_section": "RFC 9000 §17.2.2",
+    "description": "Initial, DCID=8, SCID=8, token=4B",
+    "input": {
+      "wire_hex": "c000000001088394c8f03e51570808010203040506070804cafebabe15000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "initial",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "0102030405060708",
+      "token_hex": "cafebabe",
+      "packet_length": 50
+    }
+  },
+  {
+    "id": "qc1-pkt-initial-dcid4-scid0-no-token",
+    "category": "long-header-initial",
+    "rfc_section": "RFC 9000 §17.2.2",
+    "description": "Initial, DCID=4, SCID=0, no token",
+    "input": {
+      "wire_hex": "c00000000104deadbeef000015000000000000000000000000000000000000000000",
+      "host_cid_length": 4
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "initial",
+      "destination_cid_hex": "deadbeef",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 34
+    }
+  },
+  {
+    "id": "qc1-pkt-initial-dcid0-scid0-no-token",
+    "category": "long-header-initial",
+    "rfc_section": "RFC 9000 §17.2.2",
+    "description": "Initial, DCID=0, SCID=0, no token",
+    "input": {
+      "wire_hex": "c00000000100000015000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "initial",
+      "destination_cid_hex": "",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 30
+    }
+  },
+  {
+    "id": "qc1-pkt-handshake-dcid8-scid8",
+    "category": "long-header-handshake",
+    "rfc_section": "RFC 9000 §17.2.4",
+    "description": "Handshake, DCID=8, SCID=8",
+    "input": {
+      "wire_hex": "e000000001088394c8f03e51570808010203040506070815000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "handshake",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "0102030405060708",
+      "token_hex": "",
+      "packet_length": 45
+    }
+  },
+  {
+    "id": "qc1-pkt-handshake-dcid8-scid0",
+    "category": "long-header-handshake",
+    "rfc_section": "RFC 9000 §17.2.4",
+    "description": "Handshake, DCID=8, SCID=0",
+    "input": {
+      "wire_hex": "e000000001088394c8f03e5157080015000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "handshake",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 37
+    }
+  },
+  {
+    "id": "qc1-pkt-handshake-dcid4-scid4",
+    "category": "long-header-handshake",
+    "rfc_section": "RFC 9000 §17.2.4",
+    "description": "Handshake, DCID=4, SCID=4",
+    "input": {
+      "wire_hex": "e00000000104deadbeef04deadbeef15000000000000000000000000000000000000000000",
+      "host_cid_length": 4
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "handshake",
+      "destination_cid_hex": "deadbeef",
+      "source_cid_hex": "deadbeef",
+      "token_hex": "",
+      "packet_length": 37
+    }
+  },
+  {
+    "id": "qc1-pkt-zero-rtt-dcid8-scid8",
+    "category": "long-header-zero-rtt",
+    "rfc_section": "RFC 9000 §17.2.3",
+    "description": "0-RTT, DCID=8, SCID=8",
+    "input": {
+      "wire_hex": "d000000001088394c8f03e51570808010203040506070815000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "zero_rtt",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "0102030405060708",
+      "token_hex": "",
+      "packet_length": 45
+    }
+  },
+  {
+    "id": "qc1-pkt-zero-rtt-dcid8-scid0",
+    "category": "long-header-zero-rtt",
+    "rfc_section": "RFC 9000 §17.2.3",
+    "description": "0-RTT, DCID=8, SCID=0",
+    "input": {
+      "wire_hex": "d000000001088394c8f03e5157080015000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "zero_rtt",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 37
+    }
+  },
+  {
+    "id": "qc1-pkt-zero-rtt-dcid4-scid4",
+    "category": "long-header-zero-rtt",
+    "rfc_section": "RFC 9000 §17.2.3",
+    "description": "0-RTT, DCID=4, SCID=4",
+    "input": {
+      "wire_hex": "d00000000104deadbeef04deadbeef15000000000000000000000000000000000000000000",
+      "host_cid_length": 4
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "zero_rtt",
+      "destination_cid_hex": "deadbeef",
+      "source_cid_hex": "deadbeef",
+      "token_hex": "",
+      "packet_length": 37
+    }
+  },
+  {
+    "id": "qc1-pkt-retry-dcid8-scid8-token4",
+    "category": "long-header-retry",
+    "rfc_section": "RFC 9000 §17.2.5",
+    "description": "Retry, DCID=8, SCID=8, token=4B",
+    "input": {
+      "wire_hex": "f000000001088394c8f03e515708080102030405060708cafebabe00000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "retry",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "0102030405060708",
+      "token_hex": "cafebabe",
+      "packet_length": 43
+    }
+  },
+  {
+    "id": "qc1-pkt-retry-dcid8-scid4-token8",
+    "category": "long-header-retry",
+    "rfc_section": "RFC 9000 §17.2.5",
+    "description": "Retry, DCID=8, SCID=4, token=8B",
+    "input": {
+      "wire_hex": "f000000001088394c8f03e51570804deadbeef000000000000000000000000000000000000000000000000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": true,
+      "version": 1,
+      "packet_type": "retry",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "deadbeef",
+      "token_hex": "0000000000000000",
+      "packet_length": 43
+    }
+  },
+  {
+    "id": "qc1-pkt-short-dcid8-kp0-spin0",
+    "category": "short-header-one-rtt",
+    "rfc_section": "RFC 9000 §17.3.1",
+    "description": "1-RTT, DCID=8, key_phase=0, spin=0",
+    "input": {
+      "wire_hex": "408394c8f03e51570800",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": false,
+      "version": 0,
+      "packet_type": "one_rtt",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 10
+    }
+  },
+  {
+    "id": "qc1-pkt-short-dcid8-kp1-spin0",
+    "category": "short-header-one-rtt",
+    "rfc_section": "RFC 9000 §17.3.1",
+    "description": "1-RTT, DCID=8, key_phase=1, spin=0",
+    "input": {
+      "wire_hex": "448394c8f03e51570800",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": false,
+      "version": 0,
+      "packet_type": "one_rtt",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 10
+    }
+  },
+  {
+    "id": "qc1-pkt-short-dcid8-kp0-spin1",
+    "category": "short-header-one-rtt",
+    "rfc_section": "RFC 9000 §17.3.1",
+    "description": "1-RTT, DCID=8, key_phase=0, spin=1",
+    "input": {
+      "wire_hex": "608394c8f03e51570800",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "is_long_header": false,
+      "version": 0,
+      "packet_type": "one_rtt",
+      "destination_cid_hex": "8394c8f03e515708",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 10
+    }
+  },
+  {
+    "id": "qc1-pkt-short-dcid0-kp0-spin0",
+    "category": "short-header-one-rtt",
+    "rfc_section": "RFC 9000 §17.3.1",
+    "description": "1-RTT, DCID=0, key_phase=0, spin=0",
+    "input": {
+      "wire_hex": "4000",
+      "host_cid_length": 0
+    },
+    "expected": {
+      "is_long_header": false,
+      "version": 0,
+      "packet_type": "one_rtt",
+      "destination_cid_hex": "",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 2
+    }
+  },
+  {
+    "id": "qc1-pkt-short-dcid4-kp0-spin0",
+    "category": "short-header-one-rtt",
+    "rfc_section": "RFC 9000 §17.3.1",
+    "description": "1-RTT, DCID=4, key_phase=0, spin=0",
+    "input": {
+      "wire_hex": "40deadbeef00",
+      "host_cid_length": 4
+    },
+    "expected": {
+      "is_long_header": false,
+      "version": 0,
+      "packet_type": "one_rtt",
+      "destination_cid_hex": "deadbeef",
+      "source_cid_hex": "",
+      "token_hex": "",
+      "packet_length": 6
+    }
+  },
+  {
+    "id": "qc1-pkt-truncated-3-bytes",
+    "category": "error",
+    "rfc_section": "RFC 9000 §17.2",
+    "description": "Truncated — only 3 bytes [oracle parse failed]",
+    "input": {
+      "wire_hex": "c00000",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "behavior": "reject"
+    }
+  },
+  {
+    "id": "qc1-pkt-truncated-initial-mid-dcid",
+    "category": "error",
+    "rfc_section": "RFC 9000 §17.2",
+    "description": "Truncated long header — mid-DCID [oracle parse failed]",
+    "input": {
+      "wire_hex": "c000000001084444",
+      "host_cid_length": 8
+    },
+    "expected": {
+      "behavior": "reject"
+    }
+  }
+]
