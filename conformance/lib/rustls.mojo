@@ -134,3 +134,108 @@ struct RustlsLibrary(Movable):
     def keys_free(self, keys_handle: Int32) -> Int32:
         """Free keys. Returns 0 on success, -1 if handle not found."""
         return self._handle.call["rlsm_keys_free", Int32](keys_handle)
+
+    # -- QUIC Wave 2 config lifecycle -----------------------------------------
+
+    @always_inline
+    def quic_server_config_new(
+        self,
+        cert_pem: UnsafePointer[UInt8, MutAnyOrigin], cert_len: Int32,
+        key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
+        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC server TLS config. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_server_config_new", Int32](
+            cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len, out_handle,
+        )
+
+    @always_inline
+    def quic_client_config_with_ca(
+        self,
+        ca_pem:   UnsafePointer[UInt8, MutAnyOrigin], ca_len:   Int32,
+        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC client TLS config trusting ca_pem (test helper). Returns 0."""
+        return self._handle.call["rlsm_quic_client_config_with_ca", Int32](
+            ca_pem, ca_len, alpn_ptr, alpn_len, out_handle,
+        )
+
+    # -- QUIC Wave 2 connection lifecycle -------------------------------------
+
+    @always_inline
+    def quic_client_conn_new(
+        self,
+        config_handle: Int32,
+        version: Int32,
+        server_name: UnsafePointer[UInt8, MutAnyOrigin], name_len: Int32,
+        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC client connection. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_client_conn_new", Int32](
+            config_handle, version, server_name, name_len, tp, tp_len, out_handle,
+        )
+
+    @always_inline
+    def quic_server_conn_new(
+        self,
+        config_handle: Int32,
+        version: Int32,
+        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC server connection. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_server_conn_new", Int32](
+            config_handle, version, tp, tp_len, out_handle,
+        )
+
+    @always_inline
+    def quic_conn_free(self, conn_handle: Int32) -> Int32:
+        """Free QUIC connection handle. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_conn_free", Int32](conn_handle)
+
+    # -- QUIC Wave 2 handshake exchange ---------------------------------------
+
+    @always_inline
+    def quic_conn_write_hs(
+        self,
+        conn_handle: Int32,
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_capacity: Int32,
+        out_written: UnsafePointer[Int32, MutAnyOrigin],
+        out_kc: UnsafePointer[UInt8, MutAnyOrigin],
+    ) -> Int32:
+        """Drain outgoing TLS bytes. out_kc: 0=none, 1=Handshake, 2=OneRtt. Returns 0."""
+        return self._handle.call["rlsm_quic_conn_write_hs", Int32](
+            conn_handle, out_buf, out_capacity, out_written, out_kc,
+        )
+
+    @always_inline
+    def quic_conn_read_hs(
+        self,
+        conn_handle: Int32,
+        data: UnsafePointer[UInt8, MutAnyOrigin],
+        data_len: Int32,
+    ) -> Int32:
+        """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_conn_read_hs", Int32](
+            conn_handle, data, data_len,
+        )
+
+    @always_inline
+    def quic_conn_take_keys(
+        self,
+        conn_handle: Int32,
+        out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Move pending Keys into Wave 1 KEYS_TABLE. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_conn_take_keys", Int32](
+            conn_handle, out_keys_handle,
+        )
+
+    @always_inline
+    def quic_conn_is_handshaking(self, conn_handle: Int32) -> Int32:
+        """Returns 1 if handshaking, 0 if complete, -1 on invalid handle."""
+        return self._handle.call["rlsm_quic_conn_is_handshaking", Int32](conn_handle)

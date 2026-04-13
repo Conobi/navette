@@ -172,6 +172,56 @@ pub extern "C" fn rlsm_quic_client_config_new(
     }
 }
 
+/// Create a QUIC client TLS config (TLS 1.3 only) trusting a single CA cert PEM.
+/// Test helper — use in conformance tests to trust a self-signed server cert.
+/// Production code uses `rlsm_quic_client_config_new` (webpki-roots bundle).
+#[no_mangle]
+pub extern "C" fn rlsm_quic_client_config_with_ca(
+    ca_pem:     *const u8, ca_len:    i32,
+    alpn_ptr:   *const u8, alpn_len:  i32,
+    out_handle: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if ca_pem.is_null()    { rlsm_err!("rlsm_quic_client_config_with_ca: null ca_pem";    return -1); }
+    if alpn_ptr.is_null()  { rlsm_err!("rlsm_quic_client_config_with_ca: null alpn_ptr";  return -1); }
+    if out_handle.is_null(){ rlsm_err!("rlsm_quic_client_config_with_ca: null out_handle"; return -1); }
+    if ca_len < 0          { rlsm_err!("rlsm_quic_client_config_with_ca: negative ca_len"; return -1); }
+    if alpn_len < 0        { rlsm_err!("rlsm_quic_client_config_with_ca: negative alpn_len"; return -1); }
+
+    let ca_bytes   = unsafe { std::slice::from_raw_parts(ca_pem,   ca_len   as usize) };
+    let alpn_bytes = unsafe { std::slice::from_raw_parts(alpn_ptr, alpn_len as usize) };
+
+    let mut root_store = RootCertStore::empty();
+    {
+        let mut r = BufReader::new(ca_bytes);
+        let certs: Vec<_> = match rustls_pemfile::certs(&mut r).collect::<Result<Vec<_>, _>>() {
+            Ok(v) if !v.is_empty() => v,
+            Ok(_) => { rlsm_err!("rlsm_quic_client_config_with_ca: no certs in ca_pem"; return -1); }
+            Err(e) => {
+                set_last_error(format!("rlsm_quic_client_config_with_ca: ca parse error: {e}"));
+                return -1;
+            }
+        };
+        for cert in certs {
+            if let Err(e) = root_store.add(cert) {
+                set_last_error(format!("rlsm_quic_client_config_with_ca: add root cert error: {e}"));
+                return -1;
+            }
+        }
+    }
+
+    let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![alpn_bytes.to_vec()];
+
+    match quic_client_cfg_table().insert(Arc::new(config)) {
+        Some(h) => { unsafe { *out_handle = h; } 0 }
+        None => { rlsm_err!("rlsm_quic_client_config_with_ca: handle counter exhausted"; return -1); }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // §2 Connection lifecycle
 // ---------------------------------------------------------------------------
