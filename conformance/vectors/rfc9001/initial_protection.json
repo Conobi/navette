@@ -91,5 +91,41 @@
     "expected": {
       "plaintext": "7163312d616561642d636f6e666f726d616e63652d74657374"
     }
+  },
+  {
+    "name": "client_initial_v1_full_packet_protect",
+    "source": "computed_from_rfc9001_keys",
+    "version": "v1",
+    "operation": "full_packet_protect",
+    "input": {
+      "key": "1f369613dd76d5467730efcbe3b1a22d",
+      "iv": "fa044b2f42a3fd3b46fb255c",
+      "hp_key": "9f50449e04a0e810283a1e9933adedd2",
+      "header": "c000000001088394c8f03e5157080000001d00",
+      "payload": "7163312d66756c6c2d706b74",
+      "pn_offset": 18,
+      "pn_length": 1
+    },
+    "expected": {
+      "protected_packet": "cb00000001088394c8f03e5157080000001d7f31d720f7fc09cf4beed624e1e413fde67327dc8029f27b753fcd8d07"
+    }
+  },
+  {
+    "name": "client_initial_v1_full_packet_unprotect",
+    "source": "computed_from_rfc9001_keys",
+    "version": "v1",
+    "operation": "full_packet_unprotect",
+    "input": {
+      "key": "1f369613dd76d5467730efcbe3b1a22d",
+      "iv": "fa044b2f42a3fd3b46fb255c",
+      "hp_key": "9f50449e04a0e810283a1e9933adedd2",
+      "protected_packet": "cb00000001088394c8f03e5157080000001d7f31d720f7fc09cf4beed624e1e413fde67327dc8029f27b753fcd8d07",
+      "pn_offset": 18,
+      "pn_length": 1
+    },
+    "expected": {
+      "header": "c000000001088394c8f03e5157080000001d00",
+      "plaintext": "7163312d66756c6c2d706b74"
+    }
   }
 ]
