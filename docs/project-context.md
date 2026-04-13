@@ -1,7 +1,7 @@
 # mojo-net — Project Context
 
 **Last updated:** 2026-04-13
-**Current phase:** reviewing
+**Current phase:** done
 
 ## Why this exists
 
