@@ -173,6 +173,54 @@ def test_header_protection(v: PythonObject) raises -> None:
     )
 
 
+def test_aead(v: PythonObject) raises -> None:
+    """Test AEAD encrypt/decrypt using Python cryptography.AESGCM."""
+    var aesgcm_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.aead")
+    var binascii = Python.import_module("binascii")
+    var AESGCM = aesgcm_mod.AESGCM
+
+    var key_hex  = String(v["input"]["key"])
+    var iv_hex   = String(v["input"]["iv"])
+    var aad_hex  = String(v["input"]["aad"])
+    var op       = String(v["operation"])
+    var name     = String(v["name"])
+
+    var key_bytes = binascii.unhexlify(key_hex)
+    var iv_bytes  = binascii.unhexlify(iv_hex)
+    var aad_bytes = binascii.unhexlify(aad_hex)
+
+    # nonce = iv (PN=0 → IV XOR 0 = IV; all test vectors use PN=0)
+    var nonce = iv_bytes
+    var aes = AESGCM(key_bytes)
+
+    if op == "aead_encrypt":
+        var pt_hex = String(v["input"]["plaintext"])
+        var expected_ct_hex = String(v["expected"]["ciphertext"])
+        var pt_bytes = binascii.unhexlify(pt_hex)
+        var ct_bytes = aes.encrypt(nonce, pt_bytes, aad_bytes)
+        var ct_hex_obj = binascii.hexlify(ct_bytes).decode("ascii")
+        var ct_hex = String(ct_hex_obj)
+        assert_true(
+            ct_hex == expected_ct_hex,
+            "FAIL [" + name + "]: aead_encrypt ciphertext mismatch\n"
+                + "  expected: " + expected_ct_hex + "\n"
+                + "  got:      " + ct_hex,
+        )
+    elif op == "aead_decrypt":
+        var ct_hex2 = String(v["input"]["ciphertext"])
+        var expected_pt_hex = String(v["expected"]["plaintext"])
+        var ct_bytes2 = binascii.unhexlify(ct_hex2)
+        var pt_bytes2 = aes.decrypt(nonce, ct_bytes2, aad_bytes)
+        var pt_hex_obj = binascii.hexlify(pt_bytes2).decode("ascii")
+        var pt_hex2 = String(pt_hex_obj)
+        assert_true(
+            pt_hex2 == expected_pt_hex,
+            "FAIL [" + name + "]: aead_decrypt plaintext mismatch",
+        )
+    else:
+        raise "test_aead: unexpected operation: " + op
+
+
 def main() raises:
     # Verify assertions are working (guard against silent no-op)
     var _sentinel_ok = False
@@ -195,6 +243,9 @@ def main() raises:
             count += 1
         elif operation == "header_protection":
             test_header_protection(v)
+            count += 1
+        elif operation == "aead_encrypt" or operation == "aead_decrypt":
+            test_aead(v)
             count += 1
 
     print("test_initial_protection: all " + String(count) + " vectors passed")
