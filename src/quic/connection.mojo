@@ -1941,8 +1941,8 @@ struct QuicConnection(Movable):
                 # NEW_CONNECTION_ID frame on the next send opportunity.
                 self.cid_mgr.clear_advertised(rec.cid_seq)
             elif rec.kind == SSF_RETIRE_CID:
-                # Re-queue the retirement if possible.
-                self.cid_mgr.retire_queue.append(rec.cid_seq)
+                # Re-queue the retirement if possible (respects cap).
+                self.cid_mgr.requeue_retire(rec.cid_seq)
 
     # ── Timers ───────────────────────────────────────────────────────
 

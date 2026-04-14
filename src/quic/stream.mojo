@@ -444,8 +444,10 @@ struct SendBuf(Copyable, Movable):
         self.fin_offset = take.fin_offset^
         self.fin_acked = take.fin_acked
 
-    def write(mut self, new_data: Span[UInt8, _], set_fin: Bool):
+    def write(mut self, new_data: Span[UInt8, _], set_fin: Bool) raises:
         """Append data to the outgoing buffer and optionally set the FIN flag."""
+        if self.fin and len(new_data) > 0:
+            raise "STREAM_STATE_ERROR: write after FIN queued"
         for i in range(len(new_data)):
             self.data.append(new_data[i])
         if set_fin:
