@@ -165,11 +165,20 @@ struct RecvBuf(Copyable, Movable):
         return new_bytes
 
     def _count_new_bytes(self, offset: UInt64, end_offset: UInt64) -> UInt64:
-        """Count bytes in [offset, end_offset) not covered by existing segments."""
+        """Count bytes in [offset, end_offset) not covered by existing segments.
+
+        Bytes below read_offset are already consumed and treated as covered.
+        """
         if offset >= end_offset:
             return UInt64(0)
+        # Entirely below read_offset: already consumed, no new bytes
+        if end_offset <= self.read_offset:
+            return UInt64(0)
         var new_bytes = UInt64(0)
+        # Clamp start to read_offset (treat already-read bytes as covered)
         var cur = offset
+        if self.read_offset > cur:
+            cur = self.read_offset
         for i in range(len(self.seg_offsets)):
             var rs = self.seg_offsets[i]
             var re = self._seg_end(i)
@@ -189,27 +198,51 @@ struct RecvBuf(Copyable, Movable):
         return new_bytes
 
     def _would_create_gap(self, offset: UInt64, end_offset: UInt64) -> Bool:
-        """True if inserting [offset, end_offset) would create a new gap."""
+        """True if inserting [offset, end_offset) would create a new gap.
+
+        read_offset acts as the implicit left boundary of already-received data,
+        so no gap is created if the incoming range abuts or overlaps read_offset.
+        """
+        # Clamp the effective start to read_offset (bytes below are already covered)
+        var eff_start = offset
+        if self.read_offset > eff_start:
+            eff_start = self.read_offset
         if len(self.seg_offsets) == 0:
-            return offset > self.read_offset
+            return eff_start > self.read_offset
         for i in range(len(self.seg_offsets)):
             var rs = self.seg_offsets[i]
             var re = self._seg_end(i)
-            # Adjacent or overlapping
-            if offset <= re and end_offset >= rs:
+            # Adjacent or overlapping (using clamped start)
+            if eff_start <= re and end_offset >= rs:
                 return False
+        # Check adjacency with read_offset itself
+        if eff_start <= self.read_offset:
+            return False
         return True
 
     def _insert(mut self, offset: UInt64, data: Span[UInt8, _]):
         """Insert [offset, offset+len(data)) with accept-first-copy semantics.
 
         Merges overlapping and adjacent segments, preserving existing data.
+        Bytes below read_offset are never inserted (already consumed).
         """
         if len(data) == 0:
             return
 
+        var end = offset + UInt64(len(data))
+        # Entirely below read_offset: nothing to store
+        if end <= self.read_offset:
+            return
+
+        # Clamp start to read_offset, trimming already-consumed prefix
         var new_start = offset
-        var new_end = offset + UInt64(len(data))
+        var data_skip = Int(0)
+        if self.read_offset > new_start:
+            data_skip = Int(self.read_offset - new_start)
+            new_start = self.read_offset
+        var new_end = end
+        # Use a clamped view of data (skip already-consumed prefix bytes)
+        var clamped = data[data_skip:]
 
         # Find all segments that overlap or are adjacent to [new_start, new_end)
         var first_affected = -1
@@ -224,9 +257,9 @@ struct RecvBuf(Copyable, Movable):
 
         if first_affected == -1:
             # No overlap: insert as a new segment at sorted position
-            var new_seg = List[UInt8](capacity=len(data))
-            for i in range(len(data)):
-                new_seg.append(data[i])
+            var new_seg = List[UInt8](capacity=len(clamped))
+            for i in range(len(clamped)):
+                new_seg.append(clamped[i])
             # Find insertion point
             var insert_pos = len(self.seg_offsets)
             for i in range(len(self.seg_offsets)):
@@ -278,10 +311,10 @@ struct RecvBuf(Copyable, Movable):
 
             # Then: copy new data only for positions not yet written
             var dst_base = Int(new_start - merged_start)
-            for j in range(len(data)):
+            for j in range(len(clamped)):
                 var dst_idx = dst_base + j
                 if dst_idx >= 0 and dst_idx < merged_len and not written[dst_idx]:
-                    merged[dst_idx] = data[j]
+                    merged[dst_idx] = clamped[j]
                     written[dst_idx] = True
 
             # Rebuild seg lists replacing first..last with the merged segment
