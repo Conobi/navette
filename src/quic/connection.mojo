@@ -472,48 +472,57 @@ struct QuicConnection(Movable):
             for i in range(pkt_len):
                 pkt_buf.append(remaining[i])
 
-            # 6. Unprotect header.
-            var hp_result = self.protect.unprotect_header(
-                space_idx, pkt_buf, header.pn_offset
-            )
-            var first_byte = hp_result[0]
-            var pn_length = hp_result[1]
-
-            # 7. Decode packet number.
-            var truncated_pn = UInt64(0)
-            for i in range(pn_length):
-                truncated_pn = (truncated_pn << 8) | UInt64(
-                    pkt_buf[header.pn_offset + i]
+            # 6-12. Decrypt and process. On failure, stop processing
+            # remaining coalesced packets (RFC 9000 §12.2).
+            var decrypt_ok = True
+            try:
+                # 6. Unprotect header.
+                var hp_result = self.protect.unprotect_header(
+                    space_idx, pkt_buf, header.pn_offset
                 )
-            var largest = UInt64(0)
-            if self.spaces[space_idx].largest_recv_pn >= 0:
-                largest = UInt64(self.spaces[space_idx].largest_recv_pn)
-            var full_pn = pn_decode(truncated_pn, pn_length, largest)
+                var first_byte = hp_result[0]
+                var pn_length = hp_result[1]
 
-            # 8. Decrypt payload.
-            var header_len = header.pn_offset + pn_length
-            var plaintext = self.protect.decrypt_payload(
-                space_idx, full_pn, header_len, pkt_buf
-            )
+                # 7. Decode packet number.
+                var truncated_pn = UInt64(0)
+                for i in range(pn_length):
+                    truncated_pn = (truncated_pn << 8) | UInt64(
+                        pkt_buf[header.pn_offset + i]
+                    )
+                var largest = UInt64(0)
+                if self.spaces[space_idx].largest_recv_pn >= 0:
+                    largest = UInt64(self.spaces[space_idx].largest_recv_pn)
+                var full_pn = pn_decode(truncated_pn, pn_length, largest)
 
-            # 9. Server validates address on first Handshake decrypt.
-            if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
-                self.state = self.state | CONN_ADDR_VALIDATED
+                # 8. Decrypt payload.
+                var header_len = header.pn_offset + pn_length
+                var plaintext = self.protect.decrypt_payload(
+                    space_idx, full_pn, header_len, pkt_buf
+                )
 
-            # 10. Parse and dispatch frames.
-            var reader = ByteReader(Span(plaintext))
-            var frames = parse_frames(reader)
-            var ack_eliciting = False
-            for i in range(len(frames)):
-                if frames[i].is_ack_eliciting():
-                    ack_eliciting = True
-                self._dispatch_frame(frames[i], space_idx, now)
+                # 9. Server validates address on first Handshake decrypt.
+                if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
+                    self.state = self.state | CONN_ADDR_VALIDATED
 
-            # 11. Update PN space.
-            self.spaces[space_idx].on_packet_received(full_pn, ack_eliciting)
+                # 10. Parse and dispatch frames.
+                var reader = ByteReader(Span(plaintext))
+                var frames = parse_frames(reader)
+                var ack_eliciting = False
+                for i in range(len(frames)):
+                    if frames[i].is_ack_eliciting():
+                        ack_eliciting = True
+                    self._dispatch_frame(frames[i], space_idx, now)
 
-            # 12. Drive handshake after CRYPTO processing.
-            self._drive_handshake(now)
+                # 11. Update PN space.
+                self.spaces[space_idx].on_packet_received(full_pn, ack_eliciting)
+
+                # 12. Drive handshake after CRYPTO processing.
+                self._drive_handshake(now)
+            except:
+                decrypt_ok = False
+
+            if not decrypt_ok:
+                break  # Stop processing coalesced packets
 
             offset += pkt_len
 
@@ -841,9 +850,13 @@ struct QuicConnection(Movable):
             self.send_handshake_done = True
             self.events.append(QuicEvent.handshake_complete())
         else:
-            # Client: wait for HANDSHAKE_DONE frame from server.
-            # Discard Initial space now since we have Handshake keys.
+            # Client: discard Initial. If handshake_confirmed (via 1-RTT ACK),
+            # also set ESTABLISHED and discard Handshake.
             self._discard_initial_space()
+            if self.handshake_confirmed:
+                self.state = self.state | CONN_ESTABLISHED
+                self._discard_handshake_space()
+                self.events.append(QuicEvent.handshake_complete())
 
     # ── Space discard helpers ────────────────────────────────────────
 
@@ -907,9 +920,10 @@ struct QuicConnection(Movable):
             if len(frames) == 0:
                 continue
 
-            # For Initial packets, add PADDING frames inside the AEAD-protected
+            # For client Initial packets, add PADDING frames inside the AEAD-protected
             # payload so the datagram reaches MIN_INITIAL_PACKET_SIZE (1200).
-            if space_idx == 0:
+            # Server does NOT pad (spec §6).
+            if space_idx == 0 and not self.is_server:
                 # Estimate header overhead: long header + PN + AEAD tag.
                 # Long header ≈ 1+4+1+DCID+1+SCID+varint(token_len)+token+varint(payload_len)
                 # Conservative estimate: 7 + len(peer_cid) + len(local_cid) + 2 + 4
@@ -984,6 +998,13 @@ struct QuicConnection(Movable):
         """Collect frames to send for a given PN space."""
         var frames = List[Frame]()
 
+        # When CLOSING, only send CONNECTION_CLOSE (RFC 9000 §10.2.1).
+        if (self.state & CONN_CLOSING) != 0 and self.pending_close:
+            frames.append(
+                Frame.connection_close(self.pending_close.value())
+            )
+            return frames^
+
         # ACK frame (if needed).
         var maybe_ack = self.spaces[space_idx].build_ack_frame(UInt64(0))
         if maybe_ack:
@@ -1007,12 +1028,6 @@ struct QuicConnection(Movable):
         if self.send_handshake_done and space_idx == 2 and self.is_server:
             frames.append(Frame.handshake_done())
             self.send_handshake_done = False
-
-        # CONNECTION_CLOSE (if closing).
-        if (self.state & CONN_CLOSING) != 0 and self.pending_close:
-            frames.append(
-                Frame.connection_close(self.pending_close.value())
-            )
 
         return frames^
 
@@ -1234,6 +1249,40 @@ struct QuicConnection(Movable):
                 self.events.append(
                     QuicEvent.connection_closed(UInt64(0), String("idle timeout"))
                 )
+                return
+
+        # PTO fire: resend CRYPTO or send PING.
+        if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return
+        # Skip PTO when server is amplification-limited.
+        if self.is_server and (self.state & CONN_ADDR_VALIDATED) == 0:
+            return
+        var max_ack_delay_us = UInt64(0)
+        if self.handshake_confirmed:
+            max_ack_delay_us = self.local_params.max_ack_delay * 1000
+        var pto = self.recovery.pto_timeout(max_ack_delay_us)
+        var pto_deadline = self.last_ack_eliciting_send_time + pto
+        # Client anti-deadlock: arm PTO even with no in-flight packets.
+        if not self.is_server and self.recovery.bytes_in_flight == 0 and (self.state & CONN_HANDSHAKING) != 0:
+            pto_deadline = self.idle_timer + pto
+        if self.last_ack_eliciting_send_time > 0 or (not self.is_server and (self.state & CONN_HANDSHAKING) != 0):
+            if now >= pto_deadline:
+                self.recovery.pto_count += 1
+                # Find highest space with unacked CRYPTO to resend.
+                var pto_space = -1
+                for s in range(3):
+                    if self.protect.has_keys(s) and len(self.crypto_streams[s].send_buf) > 0:
+                        pto_space = s
+                if pto_space >= 0:
+                    # Re-queue CRYPTO frames by leaving send_buf intact.
+                    # They'll be picked up by next _build_frames_for_space.
+                    pass
+                else:
+                    # Send PING in highest available space.
+                    for s in range(2, -1, -1):
+                        if self.protect.has_keys(s):
+                            self.spaces[s].ack_needed = True  # Force a packet
+                            break
 
     # ── Public API ───────────────────────────────────────────────────
 
