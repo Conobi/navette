@@ -196,6 +196,8 @@ def parse_packet_header[
 
     else:
         # Short header (1-RTT).
+        if (first_byte & UInt8(0x40)) == UInt8(0):
+            raise "short header: fixed bit not set"
         header.packet_type = PacketType.one_rtt()
         header.is_long_header = False
         header.version = UInt32(0)
