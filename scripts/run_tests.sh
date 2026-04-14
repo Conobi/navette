@@ -62,6 +62,9 @@ TESTS=(
     test_quic_pn_space
     test_quic_recovery
     test_quic_retry
+    test_quic_flow_control
+    test_quic_stream
+    test_quic_stream_map
     test_quic_connection
 )
 

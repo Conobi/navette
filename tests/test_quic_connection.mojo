@@ -15,6 +15,7 @@ from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
 from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.stream import SEND_RESET_SENT
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.retry import (
     generate_retry_token,
@@ -141,6 +142,95 @@ def _default_params() -> TransportParams:
     params.initial_max_stream_data_bidi_remote = UInt64(65_536)
     params.initial_max_streams_bidi = UInt64(100)
     return params^
+
+
+def _establish_handshake(
+    mut client: QuicConnection,
+    mut server: QuicConnection,
+    mut now: UInt64,
+) raises -> UInt64:
+    """Drive the handshake loop until both sides are established.
+
+    Returns the advanced `now` value so callers can continue with monotonic
+    timestamps.  Drains post-handshake event queues so tests only observe
+    events produced by their own actions.
+    """
+    var established = False
+    for _ in range(20):
+        now += UInt64(10_000)
+        var c_dg = client.send(now)
+        for i in range(len(c_dg)):
+            try:
+                server.recv(Span(c_dg[i]), now)
+            except:
+                pass
+        var s_dg = server.send(now)
+        for i in range(len(s_dg)):
+            try:
+                client.recv(Span(s_dg[i]), now)
+            except:
+                pass
+        if client.is_established() and server.is_established():
+            established = True
+            break
+    assert_true(established, "handshake did not complete")
+    return now
+
+
+def _pump(
+    mut a: QuicConnection,
+    mut b: QuicConnection,
+    mut now: UInt64,
+    rounds: Int = 3,
+) raises -> UInt64:
+    """Exchange datagrams between `a` and `b` for a few rounds.
+
+    Used after the handshake to propagate application-level frames (STREAM,
+    RESET_STREAM, STOP_SENDING, NEW_CONNECTION_ID …) in both directions.
+    """
+    for _ in range(rounds):
+        now += UInt64(10_000)
+        var a_dg = a.send(now)
+        for i in range(len(a_dg)):
+            try:
+                b.recv(Span(a_dg[i]), now)
+            except:
+                pass
+        var b_dg = b.send(now)
+        for i in range(len(b_dg)):
+            try:
+                a.recv(Span(b_dg[i]), now)
+            except:
+                pass
+    return now
+
+
+def _drain_events(mut conn: QuicConnection):
+    """Drain and discard all queued events on `conn`."""
+    while True:
+        var ev = conn.poll()
+        if not ev:
+            break
+
+
+def _bytes_equal(data: List[UInt8], expected: String) -> Bool:
+    """Compare a byte list against an ASCII string literal."""
+    var exp_bytes = expected.as_bytes()
+    if len(data) != len(exp_bytes):
+        return False
+    for i in range(len(data)):
+        if data[i] != exp_bytes[i]:
+            return False
+    return True
+
+
+def _to_bytes(s: String) -> List[UInt8]:
+    """Encode an ASCII string as List[UInt8]."""
+    var src = s.as_bytes()
+    var out = List[UInt8](capacity=len(src))
+    for i in range(len(src)):
+        out.append(src[i])
+    return out^
 
 
 # ── Tests ────────────────────────────────────────────────────────────────
@@ -760,6 +850,405 @@ def test_anti_amplification() raises:
     print("  test_anti_amplification: PASS")
 
 
+def test_stream_data_transfer() raises:
+    """Client <-> server bidi stream echo: "hello" -> "world"."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Client opens a bidi stream (id 0) and sends "hello" with FIN.
+    var sid = client.open_stream(True)
+    assert_equal_int(Int(sid), 0, "first client-initiated bidi stream id")
+    var hello = _to_bytes("hello")
+    client.send_stream_data(sid, Span(hello), True)
+
+    now = _pump(client, server, now, 3)
+
+    # Server observes the stream and reads its data.
+    var server_saw_stream = False
+    while True:
+        var ev = server.poll()
+        if not ev:
+            break
+        var e = ev.value().copy()
+        if e.type_id == QuicEvent.STREAM_OPENED and e.stream_id == sid:
+            server_saw_stream = True
+        if e.type_id == QuicEvent.STREAM_READABLE and e.stream_id == sid:
+            server_saw_stream = True
+    assert_true(server_saw_stream, "server missed STREAM_OPENED/READABLE event")
+
+    var srv_read = server.recv_stream_data(sid)
+    assert_true(_bytes_equal(srv_read[0], "hello"), "server did not read 'hello'")
+    assert_true(srv_read[1], "server did not see FIN on stream")
+
+    # Server echoes "world" back with FIN.
+    var world = _to_bytes("world")
+    server.send_stream_data(sid, Span(world), True)
+
+    _ = _pump(server, client, now, 3)
+
+    var client_saw_readable = False
+    while True:
+        var ev = client.poll()
+        if not ev:
+            break
+        var e = ev.value().copy()
+        if e.type_id == QuicEvent.STREAM_READABLE and e.stream_id == sid:
+            client_saw_readable = True
+    assert_true(client_saw_readable, "client missed STREAM_READABLE event")
+
+    var cli_read = client.recv_stream_data(sid)
+    assert_true(_bytes_equal(cli_read[0], "world"), "client did not read 'world'")
+    assert_true(cli_read[1], "client did not see FIN on stream")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_stream_data_transfer: PASS")
+
+
+def test_multi_stream() raises:
+    """Three concurrent bidi streams retain independent data."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var sid_a = client.open_stream(True)
+    var sid_b = client.open_stream(True)
+    var sid_c = client.open_stream(True)
+    assert_equal_int(Int(sid_a), 0, "stream a id")
+    assert_equal_int(Int(sid_b), 4, "stream b id")
+    assert_equal_int(Int(sid_c), 8, "stream c id")
+
+    var data_a = _to_bytes("AAAA")
+    var data_b = _to_bytes("BBBB")
+    var data_c = _to_bytes("CCCC")
+    client.send_stream_data(sid_a, Span(data_a), True)
+    client.send_stream_data(sid_b, Span(data_b), True)
+    client.send_stream_data(sid_c, Span(data_c), True)
+
+    # Several rounds so round-robin + ACK cycles flush all three streams.
+    _ = _pump(client, server, now, 5)
+    _drain_events(server)
+
+    var srv_a = server.recv_stream_data(sid_a)
+    var srv_b = server.recv_stream_data(sid_b)
+    var srv_c = server.recv_stream_data(sid_c)
+    assert_true(_bytes_equal(srv_a[0], "AAAA"), "stream a data mismatch")
+    assert_true(srv_a[1], "stream a missing FIN")
+    assert_true(_bytes_equal(srv_b[0], "BBBB"), "stream b data mismatch")
+    assert_true(srv_b[1], "stream b missing FIN")
+    assert_true(_bytes_equal(srv_c[0], "CCCC"), "stream c data mismatch")
+    assert_true(srv_c[1], "stream c missing FIN")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_multi_stream: PASS")
+
+
+def test_unidirectional_stream() raises:
+    """Client and server each open a uni stream and deliver data once."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Client-initiated uni stream: id 2.
+    var cli_sid = client.open_stream(False)
+    assert_equal_int(Int(cli_sid), 2, "first client uni stream id")
+    var uni_data = _to_bytes("uni-data")
+    client.send_stream_data(cli_sid, Span(uni_data), True)
+
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+
+    var srv_read = server.recv_stream_data(cli_sid)
+    assert_true(
+        _bytes_equal(srv_read[0], "uni-data"),
+        "server did not read 'uni-data' on uni stream",
+    )
+    assert_true(srv_read[1], "server missed FIN on client uni stream")
+
+    # Server-initiated uni stream: id 3.
+    var srv_sid = server.open_stream(False)
+    assert_equal_int(Int(srv_sid), 3, "first server uni stream id")
+    var srv_uni = _to_bytes("server-uni")
+    server.send_stream_data(srv_sid, Span(srv_uni), True)
+
+    _ = _pump(server, client, now, 3)
+    _drain_events(client)
+
+    var cli_read = client.recv_stream_data(srv_sid)
+    assert_true(
+        _bytes_equal(cli_read[0], "server-uni"),
+        "client did not read 'server-uni' on server uni stream",
+    )
+    assert_true(cli_read[1], "client missed FIN on server uni stream")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_unidirectional_stream: PASS")
+
+
+def test_reset_stream() raises:
+    """Client resets a stream mid-transfer; server observes STREAM_RESET."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var sid = client.open_stream(True)
+    var partial = _to_bytes("partial")
+    client.send_stream_data(sid, Span(partial), False)  # no FIN
+
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+
+    var srv_read = server.recv_stream_data(sid)
+    assert_true(
+        _bytes_equal(srv_read[0], "partial"),
+        "server did not read 'partial' before reset",
+    )
+    assert_false(srv_read[1], "server saw FIN before reset")
+
+    # Client resets the stream.
+    client.reset_stream(sid, UInt64(42))
+
+    _ = _pump(client, server, now, 3)
+
+    var saw_reset = False
+    while True:
+        var ev = server.poll()
+        if not ev:
+            break
+        var e = ev.value().copy()
+        if e.type_id == QuicEvent.STREAM_RESET and e.stream_id == sid:
+            saw_reset = True
+            assert_equal_int(Int(e.error_code), 42, "reset error_code")
+            assert_equal_int(Int(e.final_size), 7, "reset final_size (len('partial'))")
+    assert_true(saw_reset, "server missed STREAM_RESET event")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_reset_stream: PASS")
+
+
+def test_stop_sending() raises:
+    """Server STOP_SENDING triggers client RESET_STREAM; server sees STREAM_RESET."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var sid = client.open_stream(True)
+    var data = _to_bytes("first-bytes")
+    client.send_stream_data(sid, Span(data), False)
+
+    # Deliver some data so the server has a live stream to stop.
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+    _ = server.recv_stream_data(sid)
+
+    # Server asks client to stop.
+    server.stop_sending(sid, UInt64(99))
+
+    # Server -> client delivers STOP_SENDING; client sends RESET_STREAM back.
+    now = _pump(server, client, now, 3)
+
+    var saw_stopped = False
+    while True:
+        var ev = client.poll()
+        if not ev:
+            break
+        var e = ev.value().copy()
+        if e.type_id == QuicEvent.STREAM_STOPPED and e.stream_id == sid:
+            saw_stopped = True
+            assert_equal_int(Int(e.error_code), 99, "stop_sending error_code")
+    assert_true(saw_stopped, "client missed STREAM_STOPPED event")
+
+    # Client send-side should have transitioned to RESET_SENT.
+    var key = Int(sid)
+    assert_true(
+        key in client.stream_map.streams,
+        "client stream entry missing after stop_sending",
+    )
+    var cli_stream = client.stream_map.get_stream(key)
+    assert_true(
+        Bool(cli_stream.send_state),
+        "client stream lost send_state after stop_sending",
+    )
+    assert_equal_int(
+        Int(cli_stream.send_state.value()),
+        Int(SEND_RESET_SENT),
+        "client send_state should be RESET_SENT after stop_sending",
+    )
+
+    # Client -> server flushes RESET_STREAM; server fires STREAM_RESET.
+    _ = _pump(client, server, now, 3)
+
+    var saw_reset = False
+    while True:
+        var ev = server.poll()
+        if not ev:
+            break
+        var e = ev.value().copy()
+        if e.type_id == QuicEvent.STREAM_RESET and e.stream_id == sid:
+            saw_reset = True
+    assert_true(saw_reset, "server missed STREAM_RESET after stop_sending")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_stop_sending: PASS")
+
+
+def test_cid_issuance() raises:
+    """Both endpoints issue a new CID (seq=1) post-handshake via NEW_CONNECTION_ID."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # A few post-handshake rounds so each side ships its NEW_CONNECTION_ID
+    # frame and sees the peer's.
+    _ = _pump(client, server, now, 4)
+
+    assert_true(
+        client.cid_mgr.active_remote_count() >= 2,
+        "client: expected >=2 active remote CIDs, got "
+        + String(client.cid_mgr.active_remote_count()),
+    )
+    assert_true(
+        server.cid_mgr.active_remote_count() >= 2,
+        "server: expected >=2 active remote CIDs, got "
+        + String(server.cid_mgr.active_remote_count()),
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_cid_issuance: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -772,4 +1261,10 @@ def main() raises:
     test_handshake_with_retry()
     test_coalesced_packets()
     test_anti_amplification()
+    test_stream_data_transfer()
+    test_multi_stream()
+    test_unidirectional_stream()
+    test_reset_stream()
+    test_stop_sending()
+    test_cid_issuance()
     print("All test_quic_connection tests passed.")
