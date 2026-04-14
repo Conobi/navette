@@ -55,7 +55,7 @@ struct ByteReader[origin: Origin]:
         for i in range(n):
             result.append(self._buf[self.pos + i])
         self.pos += n
-        return result
+        return result^
 
     def skip(mut self, n: Int) raises:
         if self.pos + n > len(self._buf):
