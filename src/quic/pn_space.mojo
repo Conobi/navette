@@ -347,9 +347,9 @@ struct PacketNumberSpace(Movable):
             if prev_smallest < gap + 2:
                 raise "ACK range underflow"
             largest = prev_smallest - gap - 2
+            if ack_range > largest:
+                raise "ACK range exceeds available PNs"
             smallest = largest - ack_range
-
-            # Security: check range doesn't go below 0 in a way that wraps.
             pn = smallest
             while pn <= largest:
                 acked_pns.append(Int(pn))
