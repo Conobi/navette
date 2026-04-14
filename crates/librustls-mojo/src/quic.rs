@@ -4,6 +4,7 @@
 
 use std::sync::OnceLock;
 
+use aws_lc_rs::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256;
 use rustls::crypto::tls13::{HkdfExpander, OkmBlock};
 use rustls::quic::{DirectionalKeys, Keys, Version as QuicVersion};
@@ -552,4 +553,215 @@ pub extern "C" fn rlsm_keys_free(keys_handle: i32) -> i32 {
             rlsm_err!("rlsm_keys_free: invalid keys handle"; return -1);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Raw AES-GCM-128 seal / open (for Retry tokens, etc.)
+// ---------------------------------------------------------------------------
+
+/// Encrypt with raw AES-128-GCM. Output is ciphertext || 16-byte tag.
+///
+/// `out_ptr` must have capacity >= `plaintext_len + 16`.
+/// `*out_len_ptr` is set to the number of bytes written on success.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn rlsm_aes_gcm_128_seal(
+    key_ptr: *const u8,
+    key_len: i32,
+    nonce_ptr: *const u8,
+    nonce_len: i32,
+    aad_ptr: *const u8,
+    aad_len: i32,
+    plaintext_ptr: *const u8,
+    plaintext_len: i32,
+    out_ptr: *mut u8,
+    out_len_ptr: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    // --- parameter validation ---
+    if key_len != 16 {
+        rlsm_err!("rlsm_aes_gcm_128_seal: key_len must be 16"; return -1);
+    }
+    if key_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_seal: null key pointer"; return -1);
+    }
+    if nonce_len != 12 {
+        rlsm_err!("rlsm_aes_gcm_128_seal: nonce_len must be 12"; return -1);
+    }
+    if nonce_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_seal: null nonce pointer"; return -1);
+    }
+    if aad_len < 0 {
+        rlsm_err!("rlsm_aes_gcm_128_seal: negative aad_len"; return -1);
+    }
+    if aad_len > 0 && aad_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_seal: null aad pointer with non-zero aad_len"; return -1);
+    }
+    if plaintext_len < 0 {
+        rlsm_err!("rlsm_aes_gcm_128_seal: negative plaintext_len"; return -1);
+    }
+    if plaintext_len > 0 && plaintext_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_seal: null plaintext pointer with non-zero plaintext_len"; return -1);
+    }
+    if out_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_seal: null out pointer"; return -1);
+    }
+    if out_len_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_seal: null out_len pointer"; return -1);
+    }
+
+    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, 16) };
+    let nonce_bytes = unsafe { std::slice::from_raw_parts(nonce_ptr, 12) };
+    let aad_bytes = if aad_len > 0 {
+        unsafe { std::slice::from_raw_parts(aad_ptr, aad_len as usize) }
+    } else {
+        &[]
+    };
+    let plaintext_bytes = if plaintext_len > 0 {
+        unsafe { std::slice::from_raw_parts(plaintext_ptr, plaintext_len as usize) }
+    } else {
+        &[]
+    };
+
+    // Build the key
+    let unbound = match UnboundKey::new(&aead::AES_128_GCM, key_bytes) {
+        Ok(k) => k,
+        Err(e) => {
+            set_last_error(format!("rlsm_aes_gcm_128_seal: UnboundKey::new failed: {e}"));
+            return -1;
+        }
+    };
+    let less_safe = LessSafeKey::new(unbound);
+
+    let nonce = match Nonce::try_assume_unique_for_key(nonce_bytes) {
+        Ok(n) => n,
+        Err(e) => {
+            set_last_error(format!("rlsm_aes_gcm_128_seal: bad nonce: {e}"));
+            return -1;
+        }
+    };
+
+    // Copy plaintext into a Vec, then seal in place (appends tag)
+    let mut buf = Vec::with_capacity(plaintext_bytes.len() + aead::AES_128_GCM.tag_len());
+    buf.extend_from_slice(plaintext_bytes);
+
+    match less_safe.seal_in_place_append_tag(nonce, Aad::from(aad_bytes), &mut buf) {
+        Ok(()) => {}
+        Err(e) => {
+            set_last_error(format!("rlsm_aes_gcm_128_seal: seal failed: {e}"));
+            return -1;
+        }
+    }
+
+    // Copy result to caller's buffer
+    let total = buf.len(); // plaintext_len + 16
+    unsafe {
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), out_ptr, total);
+        *out_len_ptr = total as i32;
+    }
+
+    0
+}
+
+/// Decrypt with raw AES-128-GCM. `ciphertext` includes the 16-byte tag.
+///
+/// `out_ptr` must have capacity >= `ciphertext_len - 16`.
+/// `*out_len_ptr` is set to the plaintext length on success.
+///
+/// Returns 0 on success, -1 on error (including authentication failure).
+#[no_mangle]
+pub extern "C" fn rlsm_aes_gcm_128_open(
+    key_ptr: *const u8,
+    key_len: i32,
+    nonce_ptr: *const u8,
+    nonce_len: i32,
+    aad_ptr: *const u8,
+    aad_len: i32,
+    ciphertext_ptr: *const u8,
+    ciphertext_len: i32,
+    out_ptr: *mut u8,
+    out_len_ptr: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    // --- parameter validation ---
+    if key_len != 16 {
+        rlsm_err!("rlsm_aes_gcm_128_open: key_len must be 16"; return -1);
+    }
+    if key_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_open: null key pointer"; return -1);
+    }
+    if nonce_len != 12 {
+        rlsm_err!("rlsm_aes_gcm_128_open: nonce_len must be 12"; return -1);
+    }
+    if nonce_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_open: null nonce pointer"; return -1);
+    }
+    if aad_len < 0 {
+        rlsm_err!("rlsm_aes_gcm_128_open: negative aad_len"; return -1);
+    }
+    if aad_len > 0 && aad_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_open: null aad pointer with non-zero aad_len"; return -1);
+    }
+    if ciphertext_len < 16 {
+        rlsm_err!("rlsm_aes_gcm_128_open: ciphertext_len must be >= 16 (tag size)"; return -1);
+    }
+    if ciphertext_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_open: null ciphertext pointer"; return -1);
+    }
+    if out_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_open: null out pointer"; return -1);
+    }
+    if out_len_ptr.is_null() {
+        rlsm_err!("rlsm_aes_gcm_128_open: null out_len pointer"; return -1);
+    }
+
+    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, 16) };
+    let nonce_bytes = unsafe { std::slice::from_raw_parts(nonce_ptr, 12) };
+    let aad_bytes = if aad_len > 0 {
+        unsafe { std::slice::from_raw_parts(aad_ptr, aad_len as usize) }
+    } else {
+        &[]
+    };
+    let ciphertext_bytes =
+        unsafe { std::slice::from_raw_parts(ciphertext_ptr, ciphertext_len as usize) };
+
+    // Build the key
+    let unbound = match UnboundKey::new(&aead::AES_128_GCM, key_bytes) {
+        Ok(k) => k,
+        Err(e) => {
+            set_last_error(format!("rlsm_aes_gcm_128_open: UnboundKey::new failed: {e}"));
+            return -1;
+        }
+    };
+    let less_safe = LessSafeKey::new(unbound);
+
+    let nonce = match Nonce::try_assume_unique_for_key(nonce_bytes) {
+        Ok(n) => n,
+        Err(e) => {
+            set_last_error(format!("rlsm_aes_gcm_128_open: bad nonce: {e}"));
+            return -1;
+        }
+    };
+
+    // Copy ciphertext into a Vec, then open in place
+    let mut buf = ciphertext_bytes.to_vec();
+
+    let plaintext = match less_safe.open_in_place(nonce, Aad::from(aad_bytes), &mut buf) {
+        Ok(pt) => pt,
+        Err(e) => {
+            set_last_error(format!("rlsm_aes_gcm_128_open: open failed: {e}"));
+            return -1;
+        }
+    };
+
+    let pt_len = plaintext.len();
+    unsafe {
+        std::ptr::copy_nonoverlapping(plaintext.as_ptr(), out_ptr, pt_len);
+        *out_len_ptr = pt_len as i32;
+    }
+
+    0
 }

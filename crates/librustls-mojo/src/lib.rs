@@ -22,6 +22,8 @@ pub use quic::{
     rlsm_keys_remote_header_unprotect,
     rlsm_keys_tag_len,
     rlsm_keys_free,
+    rlsm_aes_gcm_128_seal,
+    rlsm_aes_gcm_128_open,
 };
 pub use config::{
     rlsm_client_config_new,
