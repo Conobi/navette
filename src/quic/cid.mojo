@@ -311,6 +311,15 @@ struct CidManager(Movable):
                 self.local_cids[i].advertised = True
                 return
 
+    def clear_advertised(mut self, sequence: UInt64):
+        """Clear the advertised flag for a local CID, allowing retransmission on loss."""
+        for i in range(len(self.local_cids)):
+            if self.local_cids[i].sequence == sequence:
+                # Only clear if still Active (not retired)
+                if self.local_cids[i].state == CID_ACTIVE:
+                    self.local_cids[i].advertised = False
+                return
+
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 

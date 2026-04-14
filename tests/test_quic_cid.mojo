@@ -372,6 +372,25 @@ def test_pending_new_cid_entries() raises:
     print("  test_pending_new_cid_entries: PASS")
 
 
+# ── 13. test_clear_advertised ─────────────────────────────────────────────────
+
+
+def test_clear_advertised() raises:
+    """Clear_advertised allows a CID to be re-advertised on loss."""
+    var local = _make_cid(UInt8(0x01))
+    var remote = _make_cid(UInt8(0x03))
+    var mgr = CidManager(local^, remote^, UInt64(2), UInt64(2))
+    var entry = mgr.issue_new_cid()
+    assert_true(entry.__bool__(), "issued seq=1")
+    mgr.mark_advertised(UInt64(1))
+    var pending_before = mgr.pending_new_cid_entries()
+    assert_true(len(pending_before) == 0, "nothing pending after mark_advertised")
+    mgr.clear_advertised(UInt64(1))
+    var pending_after = mgr.pending_new_cid_entries()
+    assert_true(len(pending_after) == 1, "pending after clear_advertised")
+    print("  test_clear_advertised: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -390,5 +409,6 @@ def main() raises:
     test_on_retire_connection_id()
     test_retire_triggers_replacement()
     test_pending_new_cid_entries()
+    test_clear_advertised()
 
     print("All test_quic_cid tests passed.")

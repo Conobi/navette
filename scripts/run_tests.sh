@@ -53,6 +53,7 @@ TESTS=(
     test_h2_e2e
     test_h2_tls_alpn
     test_h2_coro_server
+    test_quic_cid
     test_quic_codec
     test_quic_frame
     test_quic_packet

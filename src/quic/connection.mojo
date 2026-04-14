@@ -1548,6 +1548,11 @@ struct QuicConnection(Movable):
             self.cid_mgr.mark_advertised(entry.sequence)
 
         # 2. RETIRE_CONNECTION_ID frames drain cid_mgr's retirement queue.
+        # Safety invariant: pending_retire_frames() drains the queue here, before
+        # the packet is committed.  This is safe because no code path between this
+        # call and on_packet_sent can raise — so the drain is always paired with a
+        # committed packet.  If a lost packet is detected later, _on_app_pkt_lost
+        # re-appends the seq numbers to retire_queue so they are retransmitted.
         var pending_retire = self.cid_mgr.pending_retire_frames()
         for i in range(len(pending_retire)):
             var seq = pending_retire[i]
@@ -1637,16 +1642,24 @@ struct QuicConnection(Movable):
                 self.stream_map.set_stream(sid, stream^)
 
         # 6. STREAM frames from sendable streams (round-robin snapshot).
+        # Snapshot sendable IDs to avoid mutation-during-iteration.
         var sendable = List[Int]()
         for i in range(len(self.stream_map.sendable_ids)):
             sendable.append(self.stream_map.sendable_ids[i])
 
         var max_bytes_per_frame = 1200
-        for i in range(len(sendable)):
+        var n = len(sendable)
+        # Rotate starting point for fairness: low-ID streams don't always win.
+        var start = 0
+        if n > 0:
+            start = self.stream_map.send_index % n
+            self.stream_map.send_index = (self.stream_map.send_index + 1) % n
+        for i in range(n):
             var conn_avail = self.stream_map.conn_fc_send.available()
             if conn_avail == 0:
                 break
-            var sid = sendable[i]
+            var idx = (start + i) % n
+            var sid = sendable[idx]
             if sid not in self.stream_map.streams:
                 continue
             var stream = self.stream_map.get_stream(sid)
@@ -1924,9 +1937,9 @@ struct QuicConnection(Movable):
             elif rec.kind == SSF_MAX_STREAMS_UNI:
                 self.stream_map.needs_max_streams_uni = True
             elif rec.kind == SSF_NEW_CID:
-                # M3c: skip retransmit; NEW_CID is rare and CID exchange tolerates
-                # the current CID continuing to work.  TODO: clear advertised flag.
-                pass
+                # Clear advertised flag so the CID is re-queued for a new
+                # NEW_CONNECTION_ID frame on the next send opportunity.
+                self.cid_mgr.clear_advertised(rec.cid_seq)
             elif rec.kind == SSF_RETIRE_CID:
                 # Re-queue the retirement if possible.
                 self.cid_mgr.retire_queue.append(rec.cid_seq)
