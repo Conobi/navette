@@ -28,6 +28,7 @@ struct CidEntry(Copyable, Movable):
     var sequence: UInt64          # sequence number
     var reset_token: List[UInt8]  # 16-byte stateless reset token
     var state: UInt8              # CID_ACTIVE / CID_PENDING_RETIRE / CID_RETIRED
+    var advertised: Bool          # True once a NEW_CONNECTION_ID frame has been sent
 
     def __init__(
         out self,
@@ -35,23 +36,27 @@ struct CidEntry(Copyable, Movable):
         sequence: UInt64,
         reset_token: List[UInt8],
         state: UInt8,
+        advertised: Bool = False,
     ):
         self.cid = List[UInt8](copy=cid)
         self.sequence = sequence
         self.reset_token = List[UInt8](copy=reset_token)
         self.state = state
+        self.advertised = advertised
 
     def __init__(out self, *, other: Self):
         self.cid = List[UInt8](copy=other.cid)
         self.sequence = other.sequence
         self.reset_token = List[UInt8](copy=other.reset_token)
         self.state = other.state
+        self.advertised = other.advertised
 
     def __init__(out self, *, deinit take: Self):
         self.cid = take.cid^
         self.sequence = take.sequence
         self.reset_token = take.reset_token^
         self.state = take.state
+        self.advertised = take.advertised
 
 
 # ── CidManager ────────────────────────────────────────────────────────────────
@@ -99,11 +104,13 @@ struct CidManager(Movable):
             self.server_secret.append(UInt8(Int(py=rand_bytes[i])))
 
         # Build initial local CID entry (seq=0, Active) with a reset token.
+        # Mark as advertised=True: the initial CID is conveyed in the handshake,
+        # not via a NEW_CONNECTION_ID frame, so no advertisement is pending.
         var local_token = _hmac_sha256_truncate16(
             Span(self.server_secret), Span(initial_local_cid)
         )
         var local_entry = CidEntry(
-            initial_local_cid, UInt64(0), local_token, CID_ACTIVE
+            initial_local_cid, UInt64(0), local_token, CID_ACTIVE, True
         )
 
         self.local_cids = List[CidEntry]()
@@ -232,7 +239,11 @@ struct CidManager(Movable):
     def on_retire_connection_id(mut self, sequence: UInt64) raises:
         """Handle a RETIRE_CONNECTION_ID frame from the peer.
 
-        Marks the identified local CID as Retired.
+        Marks the identified local CID as Retired.  Per RFC 9000 §5.1.1, if
+        the number of active local CIDs then drops below peer_active_limit, a
+        replacement CID is issued automatically so the connection layer can
+        advertise it in a NEW_CONNECTION_ID frame.
+
         Raises if the sequence number is not found.
         """
         var found = False
@@ -243,6 +254,10 @@ struct CidManager(Movable):
                 break
         if not found:
             raise "RETIRE_CONNECTION_ID: unknown sequence " + String(Int(sequence))
+
+        # Replace the retired CID if the active count dropped below the limit.
+        if self.active_local_count() < Int(self.peer_active_limit):
+            _ = self.issue_new_cid()
 
     # ── Drain retirement queue ────────────────────────────────────────────────
 
@@ -276,6 +291,25 @@ struct CidManager(Movable):
     def needs_new_cid(self) -> Bool:
         """True if a new local CID should be issued (count below peer_active_limit)."""
         return UInt64(self.active_local_count()) < self.peer_active_limit
+
+    def pending_new_cid_entries(self) -> List[CidEntry]:
+        """Return Active local CIDs that have not yet been advertised.
+
+        The connection send path calls this to discover which CIDs need a
+        NEW_CONNECTION_ID frame, then calls mark_advertised() after sending.
+        """
+        var result = List[CidEntry]()
+        for i in range(len(self.local_cids)):
+            if self.local_cids[i].state == CID_ACTIVE and not self.local_cids[i].advertised:
+                result.append(CidEntry(other=self.local_cids[i]))
+        return result^
+
+    def mark_advertised(mut self, sequence: UInt64):
+        """Mark a local CID as advertised after its NEW_CONNECTION_ID frame is sent."""
+        for i in range(len(self.local_cids)):
+            if self.local_cids[i].sequence == sequence:
+                self.local_cids[i].advertised = True
+                return
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

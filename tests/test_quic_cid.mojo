@@ -325,6 +325,53 @@ def test_on_retire_connection_id() raises:
     print("  test_on_retire_connection_id: PASS")
 
 
+# ── 11. test_retire_triggers_replacement ─────────────────────────────────────
+
+
+def test_retire_triggers_replacement() raises:
+    """RFC 9000 §5.1.1: retiring a local CID below peer_active_limit issues a replacement."""
+    # peer_active_limit=2; start with seq=0 (1 active). Issue seq=1 → 2 active.
+    var local_cid = _make_cid(UInt8(0xAA))
+    var remote_cid = _make_cid(UInt8(0xBB))
+    var mgr = CidManager(local_cid, remote_cid, UInt64(4), UInt64(2))
+
+    _ = mgr.issue_new_cid()  # seq=1; now 2 active == peer_active_limit
+    assert_equal_int(mgr.active_local_count(), 2, "2 active before retire")
+
+    # Peer retires seq=0 → active drops to 1 (< 2) → replacement seq=2 issued
+    mgr.on_retire_connection_id(UInt64(0))
+
+    assert_equal_int(mgr.active_local_count(), 2, "active count restored to 2 after replacement")
+    assert_equal_int(Int(mgr.local_next_seq), 3, "local_next_seq advanced to 3")
+
+    print("  test_retire_triggers_replacement: PASS")
+
+
+# ── 12. test_pending_new_cid_entries ─────────────────────────────────────────
+
+
+def test_pending_new_cid_entries() raises:
+    """Verify pending_new_cid_entries returns Active CIDs not yet advertised."""
+    var mgr = _make_manager()
+
+    # Initial seq=0 is marked advertised=True (handshake CID, no frame needed).
+    var pending0 = mgr.pending_new_cid_entries()
+    assert_equal_int(len(pending0), 0, "no pending entries initially (seq=0 is pre-advertised)")
+
+    # Issue seq=1; it should appear as pending.
+    _ = mgr.issue_new_cid()
+    var pending1 = mgr.pending_new_cid_entries()
+    assert_equal_int(len(pending1), 1, "one pending entry after issue_new_cid")
+    assert_equal_int(Int(pending1[0].sequence), 1, "pending entry is seq=1")
+
+    # Mark seq=1 advertised; pending list becomes empty.
+    mgr.mark_advertised(UInt64(1))
+    var pending2 = mgr.pending_new_cid_entries()
+    assert_equal_int(len(pending2), 0, "no pending entries after mark_advertised")
+
+    print("  test_pending_new_cid_entries: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -341,5 +388,7 @@ def main() raises:
     test_retirement_queue_cap()
     test_late_arriving_cid()
     test_on_retire_connection_id()
+    test_retire_triggers_replacement()
+    test_pending_new_cid_entries()
 
     print("All test_quic_cid tests passed.")

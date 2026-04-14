@@ -91,6 +91,21 @@ def test_blocked_at_tracking() raises:
     print("PASS: test_blocked_at_tracking")
 
 
+def test_should_update_no_underflow() raises:
+    """Guard: should_update() must not wrap on UInt64 when consumed >= limit."""
+    # consumed == limit: remaining would be 0, which is < window//2, so True
+    var fc = FlowControl(limit=500, window=1000)
+    fc.add_consumed(500)
+    assert_true(fc.should_update(), "should update when consumed == limit")
+
+    # consumed > limit (pathological / bug state): without the guard this would
+    # wrap to a huge UInt64 and return False incorrectly.
+    var fc2 = FlowControl(limit=500, window=1000)
+    fc2.add_consumed(600)  # consumed > limit
+    assert_true(fc2.should_update(), "should update when consumed > limit (no underflow)")
+    print("PASS: test_should_update_no_underflow")
+
+
 def main() raises:
     test_initial_state()
     test_add_received_and_available()
@@ -101,4 +116,5 @@ def main() raises:
     test_received_consumed_split()
     test_phantom_bytes()
     test_blocked_at_tracking()
+    test_should_update_no_underflow()
     print("All flow_control tests passed.")
