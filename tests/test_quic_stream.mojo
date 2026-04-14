@@ -540,6 +540,86 @@ def test_stream_remote_bidi() raises:
     print("  test_stream_remote_bidi: PASS")
 
 
+def test_send_buf_fin_loss_retransmit() raises:
+    # Regression: FIN must be re-included in the retransmitted frame after loss.
+    var buf = SendBuf()
+
+    var data = List[UInt8]()
+    for i in range(5):
+        data.append(UInt8(i))
+    buf.write(Span(data), True)
+
+    # First make_frame — should include FIN
+    var frame1_opt = buf.make_frame(UInt64(0), 100)
+    assert_true(frame1_opt.__bool__(), "fin loss retransmit: first frame returned")
+    var frame1 = frame1_opt.value().copy()
+    assert_true(frame1.fin, "fin loss retransmit: first frame has fin=True")
+    assert_true(buf.fin_offset.__bool__(), "fin loss retransmit: fin_offset set after first frame")
+
+    # Simulate loss of the entire frame (covers FIN)
+    buf.on_loss(UInt64(0), UInt64(5))
+
+    # fin_offset must be cleared so make_frame re-includes FIN
+    assert_false(buf.fin_offset.__bool__(), "fin loss retransmit: fin_offset cleared after loss")
+    assert_false(buf.fin_acked, "fin loss retransmit: fin_acked reset to False")
+
+    # Second make_frame — must re-include FIN
+    var frame2_opt = buf.make_frame(UInt64(0), 100)
+    assert_true(frame2_opt.__bool__(), "fin loss retransmit: retransmit frame returned")
+    var frame2 = frame2_opt.value().copy()
+    assert_true(frame2.fin, "fin loss retransmit: retransmit frame has fin=True")
+    assert_true(buf.fin_offset.__bool__(), "fin loss retransmit: fin_offset set again after retransmit")
+
+    print("  test_send_buf_fin_loss_retransmit: PASS")
+
+
+def test_recv_buf_is_complete_after_read() raises:
+    # Regression: is_complete() must remain True after partial reads consume segments.
+    var fin_offset = Optional[UInt64](None)
+    var buf = RecvBuf(UInt64(65536))
+
+    # Write [0,5) — no fin
+    var data0 = List[UInt8]()
+    for i in range(5):
+        data0.append(UInt8(i))
+    _ = buf.write(UInt64(0), Span(data0), False, fin_offset)
+
+    # Write [5,10) with fin=True
+    var data1 = List[UInt8]()
+    for i in range(5, 10):
+        data1.append(UInt8(i))
+    _ = buf.write(UInt64(5), Span(data1), True, fin_offset)
+
+    # All data received — is_complete should be True
+    assert_true(buf.is_complete(fin_offset), "is_complete after read: True before any read")
+
+    # Perform a read (consumes and removes the first segment)
+    var result = buf.read(fin_offset)
+    _ = result[0].copy()
+
+    # After the read, is_complete must still be True
+    assert_true(buf.is_complete(fin_offset), "is_complete after read: True after partial read")
+
+    print("  test_recv_buf_is_complete_after_read: PASS")
+
+
+def test_stream_urgency_default() raises:
+    # All factory methods must default urgency to 127 (lowest priority per spec).
+    var s1 = Stream.new_local_bidi(UInt64(0), UInt64(65536), UInt64(65536), UInt64(65536))
+    assert_equal_int(Int(s1.urgency), 127, "urgency default: new_local_bidi = 127")
+
+    var s2 = Stream.new_remote_bidi(UInt64(1), UInt64(65536), UInt64(65536), UInt64(65536))
+    assert_equal_int(Int(s2.urgency), 127, "urgency default: new_remote_bidi = 127")
+
+    var s3 = Stream.new_local_uni(UInt64(2), UInt64(65536))
+    assert_equal_int(Int(s3.urgency), 127, "urgency default: new_local_uni = 127")
+
+    var s4 = Stream.new_remote_uni(UInt64(3), UInt64(65536), UInt64(65536))
+    assert_equal_int(Int(s4.urgency), 127, "urgency default: new_remote_uni = 127")
+
+    print("  test_stream_urgency_default: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -572,5 +652,9 @@ def main() raises:
     test_stream_fully_closed_bidi()
     test_stream_fully_closed_uni()
     test_stream_remote_bidi()
+
+    test_send_buf_fin_loss_retransmit()
+    test_recv_buf_is_complete_after_read()
+    test_stream_urgency_default()
 
     print("All test_quic_stream tests passed.")
