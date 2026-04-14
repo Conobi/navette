@@ -27,6 +27,9 @@ from src.quic.frame import (
     StreamFrame,
     ResetStreamFrame,
     StopSendingFrame,
+    MaxStreamDataFrame,
+    MaxStreamsFrame,
+    NewConnectionIdFrame,
     parse_frames,
     serialize_frames,
     FRAME_PADDING,
@@ -105,6 +108,62 @@ comptime _AEAD_TAG_LEN: Int = 16
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
 comptime _MAX_CRYPTO_FRAME_SIZE: Int = 1200
+
+
+# ── SentStreamFrame ──────────────────────────────────────────────────
+#
+# Per-packet record of stream/flow-control/CID frames sent in the Application
+# space, used for ACK and loss processing (M3c).  STREAM/CRYPTO retransmission
+# for Initial/Handshake is still handled via SentPacket.frames (M3b).
+
+comptime SSF_STREAM: UInt8 = 0
+comptime SSF_RESET_STREAM: UInt8 = 1
+comptime SSF_STOP_SENDING: UInt8 = 2
+comptime SSF_MAX_DATA: UInt8 = 3
+comptime SSF_MAX_STREAM_DATA: UInt8 = 4
+comptime SSF_MAX_STREAMS_BIDI: UInt8 = 5
+comptime SSF_MAX_STREAMS_UNI: UInt8 = 6
+comptime SSF_NEW_CID: UInt8 = 7
+comptime SSF_RETIRE_CID: UInt8 = 8
+
+
+struct SentStreamFrame(Copyable, Movable):
+    """Record of a stream-layer frame sent in the Application space.
+
+    Used to re-apply state on ACK (confirm transitions, release FC credit)
+    and on loss (re-queue data, clear `advertised`/`needs_*` flags).
+    """
+
+    var kind: UInt8
+    var stream_id: UInt64
+    var offset: UInt64
+    var length: UInt64
+    var fin: Bool
+    var cid_seq: UInt64
+
+    def __init__(out self):
+        self.kind = UInt8(0)
+        self.stream_id = UInt64(0)
+        self.offset = UInt64(0)
+        self.length = UInt64(0)
+        self.fin = False
+        self.cid_seq = UInt64(0)
+
+    def __init__(out self, *, other: Self):
+        self.kind = other.kind
+        self.stream_id = other.stream_id
+        self.offset = other.offset
+        self.length = other.length
+        self.fin = other.fin
+        self.cid_seq = other.cid_seq
+
+    def __init__(out self, *, deinit take: Self):
+        self.kind = take.kind
+        self.stream_id = take.stream_id
+        self.offset = take.offset
+        self.length = take.length
+        self.fin = take.fin
+        self.cid_seq = take.cid_seq
 
 
 # ── QuicEvent ────────────────────────────────────────────────────────
@@ -241,6 +300,9 @@ struct QuicConnection(Movable):
     var last_ack_eliciting_send_time: UInt64
     var stream_map: StreamMap
     var cid_mgr: CidManager
+    # Maps Application-space packet number -> list of stream-layer frames
+    # sent in that packet, for ACK/loss processing (M3c).
+    var app_frames_sent: Dict[Int, List[SentStreamFrame]]
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -271,6 +333,7 @@ struct QuicConnection(Movable):
         self.last_ack_eliciting_send_time = take.last_ack_eliciting_send_time
         self.stream_map = take.stream_map^
         self.cid_mgr = take.cid_mgr^
+        self.app_frames_sent = take.app_frames_sent^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -332,6 +395,7 @@ struct QuicConnection(Movable):
             local_active_limit=UInt64(2),
             peer_active_limit=UInt64(2),
         )
+        self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
 
     # ── Destructor ───────────────────────────────────────────────────
 
@@ -995,6 +1059,11 @@ struct QuicConnection(Movable):
         if len(acked) == 0:
             return
 
+        # Process stream-layer frames for acked Application-space packets (M3c).
+        if space_idx == 2:
+            for i in range(len(acked)):
+                self._on_app_pkt_acked(Int(acked[i].pn))
+
         # Update RTT from the largest newly acked packet.
         var largest_acked_pn = ack_frame.largest_ack
         # Find the sent packet matching largest_ack for RTT.
@@ -1077,6 +1146,10 @@ struct QuicConnection(Movable):
                             self.crypto_streams[space_idx].requeue(
                                 cf.offset, Span(cf.data)
                             )
+
+                # Re-apply stream-layer loss handling for Application space (M3c).
+                if space_idx == 2:
+                    self._on_app_pkt_lost(pn_key)
 
                 _ = self.spaces[space_idx].sent_packets.pop(pn_key)
 
@@ -1320,7 +1393,8 @@ struct QuicConnection(Movable):
                 if self.bytes_sent + UInt64(len(datagram)) + 100 > 3 * self.bytes_received:
                     break
 
-            var frames = self._build_frames_for_space(space_idx, now)
+            var sent_records = List[SentStreamFrame]()
+            var frames = self._build_frames_for_space(space_idx, now, sent_records)
             if len(frames) == 0:
                 continue
 
@@ -1384,6 +1458,11 @@ struct QuicConnection(Movable):
             self.spaces[space_idx].on_packet_sent(sent)
             self.recovery.on_packet_sent(pkt_size, True)
 
+            # Register stream-layer frame records for this Application-space packet
+            # so ACK / loss handlers can re-apply state (M3c).
+            if space_idx == 2 and len(sent_records) > 0:
+                self.app_frames_sent[Int(pn)] = sent_records^
+
             # Track last ack-eliciting send time for PTO.
             if is_ack_eliciting:
                 self.last_ack_eliciting_send_time = now
@@ -1397,9 +1476,15 @@ struct QuicConnection(Movable):
     # ── Frame building ───────────────────────────────────────────────
 
     def _build_frames_for_space(
-        mut self, space_idx: Int, now: UInt64
+        mut self, space_idx: Int, now: UInt64,
+        mut sent_records: List[SentStreamFrame],
     ) raises -> List[Frame]:
-        """Collect frames to send for a given PN space."""
+        """Collect frames to send for a given PN space.
+
+        `sent_records` is populated for Application-space stream-layer frames
+        (STREAM/RESET/STOP/MAX_*/NEW_CID/RETIRE_CID) so the caller can track
+        them by packet number for ACK/loss processing.
+        """
         var frames = List[Frame]()
 
         # When CLOSING, only send CONNECTION_CLOSE (RFC 9000 §10.2.1).
@@ -1433,7 +1518,192 @@ struct QuicConnection(Movable):
             frames.append(Frame.handshake_done())
             self.send_handshake_done = False
 
+        # Application-space stream-layer frames (M3c).
+        if space_idx == 2:
+            self._build_app_frames(frames, sent_records)
+
         return frames^
+
+    def _build_app_frames(
+        mut self,
+        mut frames: List[Frame],
+        mut sent_records: List[SentStreamFrame],
+    ) raises:
+        """Append Application-space stream / FC / CID frames and record them."""
+
+        # 1. NEW_CONNECTION_ID frames for unadvertised local CIDs.
+        var pending_new = self.cid_mgr.pending_new_cid_entries()
+        for i in range(len(pending_new)):
+            var entry = CidEntry(other=pending_new[i])
+            var ncid = NewConnectionIdFrame()
+            ncid.sequence = entry.sequence
+            ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
+            ncid.cid = List[UInt8](copy=entry.cid)
+            ncid.stateless_reset_token = List[UInt8](copy=entry.reset_token)
+            frames.append(Frame.new_connection_id(ncid))
+            var rec = SentStreamFrame()
+            rec.kind = SSF_NEW_CID
+            rec.cid_seq = entry.sequence
+            sent_records.append(rec^)
+            self.cid_mgr.mark_advertised(entry.sequence)
+
+        # 2. RETIRE_CONNECTION_ID frames drain cid_mgr's retirement queue.
+        var pending_retire = self.cid_mgr.pending_retire_frames()
+        for i in range(len(pending_retire)):
+            var seq = pending_retire[i]
+            frames.append(Frame.retire_connection_id(seq))
+            var rec = SentStreamFrame()
+            rec.kind = SSF_RETIRE_CID
+            rec.cid_seq = seq
+            sent_records.append(rec^)
+
+        # 3. Connection-level MAX_DATA.
+        if self.stream_map.conn_fc_recv.should_update() or self.stream_map.needs_max_data:
+            var new_limit = self.stream_map.conn_fc_recv.update_limit()
+            frames.append(Frame.max_data(new_limit))
+            self.stream_map.needs_max_data = False
+            var rec = SentStreamFrame()
+            rec.kind = SSF_MAX_DATA
+            sent_records.append(rec^)
+
+        # 4. MAX_STREAMS (bidi / uni).
+        if self.stream_map.needs_max_streams_bidi:
+            var ms = MaxStreamsFrame(self.stream_map.local_max_streams_bidi, True)
+            frames.append(Frame.max_streams(ms))
+            self.stream_map.needs_max_streams_bidi = False
+            var rec = SentStreamFrame()
+            rec.kind = SSF_MAX_STREAMS_BIDI
+            sent_records.append(rec^)
+        if self.stream_map.needs_max_streams_uni:
+            var ms = MaxStreamsFrame(self.stream_map.local_max_streams_uni, False)
+            frames.append(Frame.max_streams(ms))
+            self.stream_map.needs_max_streams_uni = False
+            var rec = SentStreamFrame()
+            rec.kind = SSF_MAX_STREAMS_UNI
+            sent_records.append(rec^)
+
+        # 5. Per-stream control frames (MAX_STREAM_DATA, RESET_STREAM, STOP_SENDING).
+        # Snapshot stream IDs so we can safely mutate the Dict while iterating.
+        var all_ids = List[Int]()
+        for key in self.stream_map.streams.keys():
+            all_ids.append(key)
+        for i in range(len(all_ids)):
+            var sid = all_ids[i]
+            if sid not in self.stream_map.streams:
+                continue
+            var stream = self.stream_map.get_stream(sid)
+            var changed = False
+
+            # MAX_STREAM_DATA
+            if stream.needs_max_stream_data and stream.fc_recv:
+                var fc = stream.fc_recv.value().copy()
+                var new_limit = fc.update_limit()
+                stream.fc_recv = fc^
+                stream.needs_max_stream_data = False
+                frames.append(Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit)))
+                var rec = SentStreamFrame()
+                rec.kind = SSF_MAX_STREAM_DATA
+                rec.stream_id = stream.id
+                sent_records.append(rec^)
+                changed = True
+
+            # RESET_STREAM
+            if stream.needs_reset_stream:
+                var rs_f = ResetStreamFrame(
+                    stream.id,
+                    stream.reset_stream_error,
+                    stream.reset_stream_final_size,
+                )
+                frames.append(Frame.reset_stream(rs_f))
+                stream.needs_reset_stream = False
+                var rec = SentStreamFrame()
+                rec.kind = SSF_RESET_STREAM
+                rec.stream_id = stream.id
+                sent_records.append(rec^)
+                changed = True
+
+            # STOP_SENDING
+            if stream.needs_stop_sending:
+                var ss_f = StopSendingFrame(stream.id, stream.stop_sending_error)
+                frames.append(Frame.stop_sending(ss_f))
+                stream.needs_stop_sending = False
+                var rec = SentStreamFrame()
+                rec.kind = SSF_STOP_SENDING
+                rec.stream_id = stream.id
+                sent_records.append(rec^)
+                changed = True
+
+            if changed:
+                self.stream_map.set_stream(sid, stream^)
+
+        # 6. STREAM frames from sendable streams (round-robin snapshot).
+        var sendable = List[Int]()
+        for i in range(len(self.stream_map.sendable_ids)):
+            sendable.append(self.stream_map.sendable_ids[i])
+
+        var max_bytes_per_frame = 1200
+        for i in range(len(sendable)):
+            var conn_avail = self.stream_map.conn_fc_send.available()
+            if conn_avail == 0:
+                break
+            var sid = sendable[i]
+            if sid not in self.stream_map.streams:
+                continue
+            var stream = self.stream_map.get_stream(sid)
+            if not stream.send_state or not stream.send_buf or not stream.fc_send:
+                continue
+            var ss = stream.send_state.value()
+            if ss != SEND_READY and ss != SEND_SEND:
+                continue
+            var sb = stream.send_buf.value().copy()
+            var fc = stream.fc_send.value().copy()
+            var stream_avail = fc.available()
+            if stream_avail == 0 and not (sb.fin and not sb.fin_offset):
+                continue
+            var limit = Int(conn_avail)
+            if Int(stream_avail) < limit:
+                limit = Int(stream_avail)
+            if max_bytes_per_frame < limit:
+                limit = max_bytes_per_frame
+            # If the only work is a standalone FIN, limit can be 0: make_frame
+            # handles this via fin-only emission.
+            var maybe_frame = sb.make_frame(stream.id, limit)
+            if not maybe_frame:
+                # Nothing to send from this stream; drop from sendable list.
+                stream.send_buf = sb^
+                stream.fc_send = fc^
+                self.stream_map.set_stream(sid, stream^)
+                self.stream_map.remove_sendable(sid)
+                continue
+            var sf = maybe_frame.value().copy()
+            var frame_len = UInt64(len(sf.data))
+            var frame_offset = sf.offset
+            var frame_fin = sf.fin
+            frames.append(Frame._stream_move(sf))
+            # Flow-control accounting (only "new" bytes past received mark).
+            var prev_end = frame_offset + frame_len
+            if prev_end > fc.received:
+                var delta = prev_end - fc.received
+                fc.add_received(delta)
+                self.stream_map.conn_fc_send.add_received(delta)
+            # Send-state transitions.
+            if ss == SEND_READY:
+                stream.send_state = Optional[UInt8](SEND_SEND)
+            if frame_fin and sb.fin_offset:
+                stream.send_state = Optional[UInt8](SEND_DATA_SENT)
+            stream.send_buf = sb^
+            stream.fc_send = fc^
+            var rec = SentStreamFrame()
+            rec.kind = SSF_STREAM
+            rec.stream_id = stream.id
+            rec.offset = frame_offset
+            rec.length = frame_len
+            rec.fin = frame_fin
+            sent_records.append(rec^)
+            var still_pending = stream.send_buf.value().has_pending()
+            self.stream_map.set_stream(sid, stream^)
+            if not still_pending:
+                self.stream_map.remove_sendable(sid)
 
     # ── Packet building ──────────────────────────────────────────────
 
@@ -1549,6 +1819,117 @@ struct QuicConnection(Movable):
             )
 
             return packet^
+
+    # ── Application-space frame ACK/loss handling (M3c) ─────────────
+
+    def _on_app_pkt_acked(mut self, pn: Int) raises:
+        """Apply ACK side-effects for stream-layer frames in the acked packet."""
+        if pn not in self.app_frames_sent:
+            return
+        var records = self.app_frames_sent[pn].copy()
+        _ = self.app_frames_sent.pop(pn)
+        for i in range(len(records)):
+            var rec = SentStreamFrame(other=records[i])
+            if rec.kind == SSF_STREAM:
+                var key = Int(rec.stream_id)
+                if key not in self.stream_map.streams:
+                    continue
+                var stream = self.stream_map.get_stream(key)
+                if stream.send_buf:
+                    var sb = stream.send_buf.value().copy()
+                    sb.on_ack(rec.offset, rec.length)
+                    var fully = sb.is_fully_acked()
+                    stream.send_buf = sb^
+                    if fully and stream.send_state:
+                        var ss = stream.send_state.value()
+                        if ss == SEND_DATA_SENT:
+                            stream.send_state = Optional[UInt8](SEND_DATA_RECVD)
+                    self.stream_map.set_stream(key, stream^)
+                    _ = self.stream_map.maybe_cleanup(key)
+                else:
+                    self.stream_map.set_stream(key, stream^)
+            elif rec.kind == SSF_RESET_STREAM:
+                var key = Int(rec.stream_id)
+                if key not in self.stream_map.streams:
+                    continue
+                var stream = self.stream_map.get_stream(key)
+                if stream.send_state:
+                    var ss = stream.send_state.value()
+                    if ss == SEND_RESET_SENT:
+                        stream.send_state = Optional[UInt8](SEND_RESET_RECVD)
+                self.stream_map.set_stream(key, stream^)
+                _ = self.stream_map.maybe_cleanup(key)
+            elif rec.kind == SSF_STOP_SENDING:
+                # STOP_SENDING ACK does not change recv state; peer must send
+                # RESET_STREAM for that. Nothing to do.
+                pass
+            elif rec.kind == SSF_MAX_DATA:
+                pass
+            elif rec.kind == SSF_MAX_STREAM_DATA:
+                pass
+            elif rec.kind == SSF_MAX_STREAMS_BIDI:
+                pass
+            elif rec.kind == SSF_MAX_STREAMS_UNI:
+                pass
+            elif rec.kind == SSF_NEW_CID:
+                pass
+            elif rec.kind == SSF_RETIRE_CID:
+                pass
+
+    def _on_app_pkt_lost(mut self, pn: Int) raises:
+        """Re-queue stream-layer frames for retransmission on packet loss."""
+        if pn not in self.app_frames_sent:
+            return
+        var records = self.app_frames_sent[pn].copy()
+        _ = self.app_frames_sent.pop(pn)
+        for i in range(len(records)):
+            var rec = SentStreamFrame(other=records[i])
+            if rec.kind == SSF_STREAM:
+                var key = Int(rec.stream_id)
+                if key not in self.stream_map.streams:
+                    continue
+                var stream = self.stream_map.get_stream(key)
+                if stream.send_buf:
+                    var sb = stream.send_buf.value().copy()
+                    sb.on_loss(rec.offset, rec.length)
+                    var has_pending = sb.has_pending()
+                    stream.send_buf = sb^
+                    self.stream_map.set_stream(key, stream^)
+                    if has_pending:
+                        self.stream_map.add_sendable(key)
+                else:
+                    self.stream_map.set_stream(key, stream^)
+            elif rec.kind == SSF_RESET_STREAM:
+                var key = Int(rec.stream_id)
+                if key in self.stream_map.streams:
+                    var stream = self.stream_map.get_stream(key)
+                    stream.needs_reset_stream = True
+                    self.stream_map.set_stream(key, stream^)
+            elif rec.kind == SSF_STOP_SENDING:
+                var key = Int(rec.stream_id)
+                if key in self.stream_map.streams:
+                    var stream = self.stream_map.get_stream(key)
+                    stream.needs_stop_sending = True
+                    self.stream_map.set_stream(key, stream^)
+            elif rec.kind == SSF_MAX_DATA:
+                self.stream_map.needs_max_data = True
+            elif rec.kind == SSF_MAX_STREAM_DATA:
+                var key = Int(rec.stream_id)
+                if key in self.stream_map.streams:
+                    var stream = self.stream_map.get_stream(key)
+                    stream.needs_max_stream_data = True
+                    self.stream_map.set_stream(key, stream^)
+            elif rec.kind == SSF_MAX_STREAMS_BIDI:
+                self.stream_map.needs_max_streams_bidi = True
+            elif rec.kind == SSF_MAX_STREAMS_UNI:
+                self.stream_map.needs_max_streams_uni = True
+            elif rec.kind == SSF_NEW_CID:
+                # M3c: skip retransmit; NEW_CID is rare and CID exchange tolerates
+                # the current CID continuing to work.  TODO: clear advertised flag.
+                pass
+            elif rec.kind == SSF_RETIRE_CID:
+                # Re-queue the retirement if possible.
+                self.cid_mgr.retire_queue.append(rec.cid_seq)
 
     # ── Timers ───────────────────────────────────────────────────────
 
@@ -1741,6 +2122,120 @@ struct QuicConnection(Movable):
     def is_draining(self) -> Bool:
         """True if the connection is in the draining state."""
         return (self.state & CONN_DRAINING) != 0
+
+    # ── Stream public API (M3c) ──────────────────────────────────────
+
+    def open_stream(mut self, bidi: Bool) raises -> UInt64:
+        """Open a new locally-initiated stream.  Returns the stream ID."""
+        if (self.state & CONN_CLOSING) != 0 or (self.state & CONN_CLOSED) != 0:
+            raise "connection closing/closed"
+        if (self.state & CONN_DRAINING) != 0:
+            raise "connection draining"
+        return self.stream_map.open_stream(bidi)
+
+    def send_stream_data(
+        mut self, stream_id: UInt64, data: Span[UInt8, _], fin: Bool
+    ) raises:
+        """Queue data for sending on a stream (and optionally mark FIN)."""
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            raise "unknown stream"
+        var stream = self.stream_map.get_stream(key)
+        if not stream.send_state or not stream.send_buf:
+            raise "STREAM_STATE_ERROR: no send side"
+        var ss = stream.send_state.value()
+        if (ss == SEND_DATA_SENT or ss == SEND_DATA_RECVD
+                or ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD):
+            raise "STREAM_STATE_ERROR: send side terminal or FIN already queued"
+        var sb = stream.send_buf.value().copy()
+        sb.write(data, fin)
+        var has_pending = sb.has_pending()
+        stream.send_buf = sb^
+        self.stream_map.set_stream(key, stream^)
+        if has_pending:
+            self.stream_map.add_sendable(key)
+
+    def recv_stream_data(
+        mut self, stream_id: UInt64
+    ) raises -> Tuple[List[UInt8], Bool]:
+        """Read available contiguous bytes from a stream's recv buffer.
+
+        Returns (bytes, fin_reached). Consumes FC credit for the drained bytes
+        and flags MAX_DATA / MAX_STREAM_DATA updates as needed.
+        """
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            raise "unknown stream"
+        var stream = self.stream_map.get_stream(key)
+        if not stream.recv_buf or not stream.fc_recv:
+            raise "STREAM_STATE_ERROR: no recv side"
+        var rb = stream.recv_buf.value().copy()
+        var result = rb.read(stream.fin_offset)
+        var data = result[0].copy()
+        var fin_reached = result[1]
+        var drained = UInt64(len(data))
+        var fc = stream.fc_recv.value().copy()
+        if drained > 0:
+            fc.add_consumed(drained)
+            self.stream_map.conn_fc_recv.add_consumed(drained)
+        if fc.should_update():
+            stream.needs_max_stream_data = True
+        if self.stream_map.conn_fc_recv.should_update():
+            self.stream_map.needs_max_data = True
+        stream.recv_buf = rb^
+        stream.fc_recv = fc^
+        if stream.recv_state:
+            var rs = stream.recv_state.value()
+            if rs == RECV_DATA_RECVD and fin_reached:
+                stream.recv_state = Optional[UInt8](RECV_DATA_READ)
+        self.stream_map.set_stream(key, stream^)
+        _ = self.stream_map.maybe_cleanup(key)
+        return (data^, fin_reached)
+
+    def reset_stream(mut self, stream_id: UInt64, error_code: UInt64) raises:
+        """Abort the send side of a stream with the given error code."""
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            raise "unknown stream"
+        var stream = self.stream_map.get_stream(key)
+        if not stream.send_state:
+            raise "STREAM_STATE_ERROR: no send side"
+        var ss = stream.send_state.value()
+        if (ss == SEND_DATA_RECVD or ss == SEND_RESET_SENT
+                or ss == SEND_RESET_RECVD):
+            self.stream_map.set_stream(key, stream^)
+            return
+        var final_size: UInt64 = 0
+        if stream.send_buf:
+            var sb = stream.send_buf.value().copy()
+            if sb.fin_offset:
+                final_size = sb.fin_offset.value()
+            else:
+                final_size = sb.unsent_offset
+        stream.send_state = Optional[UInt8](SEND_RESET_SENT)
+        stream.needs_reset_stream = True
+        stream.reset_stream_error = error_code
+        stream.reset_stream_final_size = final_size
+        self.stream_map.remove_sendable(key)
+        self.stream_map.set_stream(key, stream^)
+
+    def stop_sending(mut self, stream_id: UInt64, error_code: UInt64) raises:
+        """Request the peer to stop sending on a stream."""
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            raise "unknown stream"
+        var stream = self.stream_map.get_stream(key)
+        if not stream.recv_state:
+            raise "STREAM_STATE_ERROR: no recv side"
+        var rs = stream.recv_state.value()
+        if (rs == RECV_DATA_READ or rs == RECV_RESET_READ
+                or rs == RECV_RESET_RECVD):
+            self.stream_map.set_stream(key, stream^)
+            return
+        stream.recv_state = Optional[UInt8](RECV_STOP_SENDING_SENT)
+        stream.needs_stop_sending = True
+        stream.stop_sending_error = error_code
+        self.stream_map.set_stream(key, stream^)
 
     # ── Internal helpers ─────────────────────────────────────────────
 
