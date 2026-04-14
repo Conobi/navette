@@ -445,6 +445,14 @@ def test_pn_decode_unsigned_boundary() raises:
     var got2 = pn_decode(UInt64(0), 1, UInt64(255))
     assert_equal_int(Int(got2), 256, "pn_decode(0,1,255) wrap-forward")
 
+    # expected_pn=1, candidate=0, wrap-down guard when expected < pn_hwin
+    var got3 = pn_decode(UInt64(0), 1, UInt64(0))
+    assert_equal_int(Int(got3), 0, "pn_decode(0,1,0) boundary")
+
+    # 2-byte boundary: expected_pn=1 < pn_hwin=32768
+    var got4 = pn_decode(UInt64(100), 2, UInt64(0))
+    assert_equal_int(Int(got4), 100, "pn_decode(100,2,0) 2-byte boundary")
+
     print("  pn_decode_unsigned_boundary: PASS")
 
 

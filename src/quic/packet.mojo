@@ -346,6 +346,7 @@ def pn_decode(truncated_pn: UInt64, pn_length: Int, largest_pn: UInt64) -> UInt6
 
     if s_candidate <= s_expected - s_pn_hwin and s_candidate < (1 << 62) - s_pn_win:
         candidate += pn_win
+        s_candidate = Int(candidate)  # Refresh after adjustment
     if s_candidate > s_expected + s_pn_hwin and candidate >= pn_win:
         candidate -= pn_win
     return candidate
