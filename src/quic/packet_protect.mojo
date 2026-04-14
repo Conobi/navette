@@ -201,6 +201,7 @@ struct PacketProtect(Movable):
         Returns:
             The decrypted plaintext (without AEAD tag).
         """
+        self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
             raise "no keys for level " + str(level)
@@ -266,6 +267,7 @@ struct PacketProtect(Movable):
         Returns:
             The ciphertext including the 16-byte AEAD tag.
         """
+        self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
             raise "no keys for level " + str(level)
@@ -330,6 +332,7 @@ struct PacketProtect(Movable):
             pn_offset: Byte offset where the packet number starts.
             pn_length: Length of the encoded packet number (1..4).
         """
+        self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
             raise "no keys for level " + str(level)
