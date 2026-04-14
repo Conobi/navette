@@ -950,10 +950,13 @@ struct QuicConnection(Movable):
                     var stream = self.stream_map.get_stream(key)
                     if stream.fc_send:
                         var fc = stream.fc_send.value().copy()
+                        var old_limit = fc.limit
                         fc.ensure_limit(msd.maximum)
+                        var grew = fc.limit > old_limit
                         stream.fc_send = fc^
                         self.stream_map.set_stream(key, stream^)
-                        self.events.append(QuicEvent.stream_writable(msd.stream_id))
+                        if grew:
+                            self.events.append(QuicEvent.stream_writable(msd.stream_id))
             return
 
         if tid == FRAME_MAX_STREAMS_BIDI:
