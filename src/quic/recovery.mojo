@@ -105,12 +105,20 @@ struct Recovery(Movable):
     def on_packet_acked(mut self, size: Int, in_flight: Bool):
         """Release bytes when a packet is acknowledged."""
         if in_flight:
-            self.bytes_in_flight -= UInt64(size)
+            var s = UInt64(size)
+            if s > self.bytes_in_flight:
+                self.bytes_in_flight = 0
+            else:
+                self.bytes_in_flight -= s
 
     def on_packet_lost(mut self, size: Int, in_flight: Bool):
         """Release bytes when a packet is declared lost."""
         if in_flight:
-            self.bytes_in_flight -= UInt64(size)
+            var s = UInt64(size)
+            if s > self.bytes_in_flight:
+                self.bytes_in_flight = 0
+            else:
+                self.bytes_in_flight -= s
 
     def on_ack_received(mut self):
         """Reset PTO backoff on ACK receipt."""
