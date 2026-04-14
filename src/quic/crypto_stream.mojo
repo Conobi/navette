@@ -23,7 +23,7 @@ struct CryptoFragment(Copyable, Movable):
         self.data = take.data^
 
 
-struct CryptoStream(Movable):
+struct CryptoStream(Copyable, Movable):
     var recv_offset: UInt64
     var recv_buf: List[UInt8]
     var pending_fragments: List[CryptoFragment]
@@ -36,6 +36,13 @@ struct CryptoStream(Movable):
         self.pending_fragments = List[CryptoFragment]()
         self.send_offset = UInt64(0)
         self.send_buf = List[UInt8]()
+
+    def __init__(out self, *, other: Self):
+        self.recv_offset = other.recv_offset
+        self.recv_buf = List[UInt8](copy=other.recv_buf)
+        self.pending_fragments = List[CryptoFragment](copy=other.pending_fragments)
+        self.send_offset = other.send_offset
+        self.send_buf = List[UInt8](copy=other.send_buf)
 
     def __init__(out self, *, deinit take: Self):
         self.recv_offset = take.recv_offset

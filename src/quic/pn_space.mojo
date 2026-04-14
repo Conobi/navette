@@ -134,7 +134,7 @@ struct SentPacket(Copyable, Movable):
 # ── PacketNumberSpace ────────────────────────────────────────────────
 
 
-struct PacketNumberSpace(Movable):
+struct PacketNumberSpace(Copyable, Movable):
     """Per-encryption-level PN space with send/receive tracking."""
     var level: EncryptionLevel
     var next_pn: UInt64                    # Starts at 0
@@ -156,6 +156,17 @@ struct PacketNumberSpace(Movable):
         self.ack_needed = False
         self.sent_packets = Dict[Int, SentPacket]()
         self.keys_handle = Int32(-1)
+
+    def __init__(out self, *, other: Self):
+        self.level = EncryptionLevel(other=other.level)
+        self.next_pn = other.next_pn
+        self.largest_recv_pn = other.largest_recv_pn
+        self.largest_acked_pn = other.largest_acked_pn
+        self.ack_ranges = List[AckRangeEntry](copy=other.ack_ranges)
+        self.ack_eliciting_since_last_ack = other.ack_eliciting_since_last_ack
+        self.ack_needed = other.ack_needed
+        self.sent_packets = other.sent_packets.copy()
+        self.keys_handle = other.keys_handle
 
     def __init__(out self, *, deinit take: Self):
         self.level = take.level
