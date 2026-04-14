@@ -432,6 +432,22 @@ def test_initial_packet_needs_padding() raises:
     print("  initial_packet_needs_padding: PASS")
 
 
+# === Section 7: PN unsigned boundary edge cases ===
+
+
+def test_pn_decode_unsigned_boundary() raises:
+    # When expected_pn (1) < pn_hwin (128), unsigned subtraction would underflow.
+    var got1 = pn_decode(UInt64(5), 1, UInt64(0))
+    assert_equal_int(Int(got1), 5, "pn_decode(5,1,0) unsigned boundary")
+
+    # Wrap-forward near 1-byte boundary: largest_pn=255 -> expected_pn=256,
+    # candidate should wrap forward to 256.
+    var got2 = pn_decode(UInt64(0), 1, UInt64(255))
+    assert_equal_int(Int(got2), 256, "pn_decode(0,1,255) wrap-forward")
+
+    print("  pn_decode_unsigned_boundary: PASS")
+
+
 # === Main ===
 
 
@@ -461,5 +477,8 @@ def main() raises:
 
     # 6. Padding utility
     test_initial_packet_needs_padding()
+
+    # 7. PN unsigned boundary edge cases
+    test_pn_decode_unsigned_boundary()
 
     print("All test_quic_packet tests passed.")
