@@ -14,6 +14,7 @@
 from std.collections import Dict, Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.python import Python
 
 from src.tls.lib import RustlsLibrary
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
@@ -339,8 +340,8 @@ struct QuicConnection(Movable):
         lib_addr: UInt64,
         config_handle: Int32,
         local_params: TransportParams,
-        orig_dcid: Span[UInt8],
-        client_dcid: Span[UInt8],
+        orig_dcid: Span[UInt8, _],
+        client_dcid: Span[UInt8, _],
         now: UInt64,
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
@@ -425,7 +426,7 @@ struct QuicConnection(Movable):
 
     # ── Receive path ─────────────────────────────────────────────────
 
-    def recv(mut self, datagram: Span[UInt8], now: UInt64) raises:
+    def recv(mut self, datagram: Span[UInt8, _], now: UInt64) raises:
         """Process an incoming UDP datagram.
 
         Parses coalesced packets, decrypts payloads, dispatches frames,
@@ -445,8 +446,8 @@ struct QuicConnection(Movable):
             var header_result = parse_packet_header(
                 Span(remaining), len(self.local_cid)
             )
-            var header = header_result.get[0, PacketHeader]()
-            var header_end = header_result.get[1, Int]()
+            var header = header_result[0].copy()
+            var header_end = header_result[1]
 
             # 3. Map to PN space.
             var space_idx = packet_type_to_space(header.packet_type)
@@ -475,8 +476,8 @@ struct QuicConnection(Movable):
             var hp_result = self.protect.unprotect_header(
                 space_idx, pkt_buf, header.pn_offset
             )
-            var first_byte = hp_result.get[0, UInt8]()
-            var pn_length = hp_result.get[1, Int]()
+            var first_byte = hp_result[0]
+            var pn_length = hp_result[1]
 
             # 7. Decode packet number.
             var truncated_pn = UInt64(0)
@@ -535,14 +536,14 @@ struct QuicConnection(Movable):
         # ACK
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
             if frame._ack:
-                var ack_frame = frame._ack.value()
+                var ack_frame = frame._ack.value().copy()
                 self._handle_ack(ack_frame, space_idx, now)
             return
 
         # CRYPTO
         if tid == FRAME_CRYPTO:
             if frame._crypto:
-                var cf = frame._crypto.value()
+                var cf = frame._crypto.value().copy()
                 self.crypto_streams[space_idx].receive(
                     cf.offset, Span(cf.data)
                 )
@@ -551,7 +552,7 @@ struct QuicConnection(Movable):
         # CONNECTION_CLOSE
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
             if frame._conn_close:
-                var cc = frame._conn_close.value()
+                var cc = frame._conn_close.value().copy()
                 self.state = self.state | CONN_DRAINING
                 # Start drain timer: 3 * PTO.
                 var pto = self.recovery.pto_timeout(
@@ -676,7 +677,7 @@ struct QuicConnection(Movable):
                 for f in range(len(lost_pkt.frames)):
                     if lost_pkt.frames[f].is_crypto():
                         if lost_pkt.frames[f]._crypto:
-                            var cf = lost_pkt.frames[f]._crypto.value()
+                            var cf = lost_pkt.frames[f]._crypto.value().copy()
                             self.crypto_streams[space_idx].write(Span(cf.data))
 
                 _ = self.spaces[space_idx].sent_packets.pop(pn_key)
@@ -741,8 +742,21 @@ struct QuicConnection(Movable):
             var kc = out_kc[0]
             var written = Int(out_written[0])
 
-            # Handle key change BEFORE processing the data.
+            # The data output in this write_hs call belongs to the CURRENT
+            # level (before any key change). Capture it first, then install
+            # new keys.
+            #
             # kc: 0=none, 1=Handshake keys ready, 2=1-RTT keys ready.
+
+            # Write TLS bytes at the CURRENT level before advancing.
+            if written > 0:
+                var target_level = self.current_level
+                var tls_data = List[UInt8](capacity=written)
+                for i in range(written):
+                    tls_data.append(out_buf[i])
+                self.crypto_streams[target_level].write(Span(tls_data))
+
+            # Now handle key change AFTER writing data.
             if kc != UInt8(0):
                 var keys_handle_buf = _heap_alloc[Int32](1).as_any_origin()
                 keys_handle_buf[0] = Int32(-1)
@@ -771,16 +785,8 @@ struct QuicConnection(Movable):
                     self.protect.set_keys(2, new_keys)
                     self.current_level = 2
 
-            # Append TLS bytes to the NEW level's crypto_stream send_buf.
-            if written > 0:
-                # Determine which level these bytes target.
-                var target_level = self.current_level
-                var tls_data = List[UInt8](capacity=written)
-                for i in range(written):
-                    tls_data.append(out_buf[i])
-                self.crypto_streams[target_level].write(Span(tls_data))
-            else:
-                break  # No more TLS output
+            if written == 0 and kc == UInt8(0):
+                break  # No more TLS output and no key change
 
         out_buf.free()
         out_written.free()
@@ -876,11 +882,13 @@ struct QuicConnection(Movable):
         datagram when possible. Pads Initial datagrams to 1200 bytes.
         """
         var datagrams = List[List[UInt8]]()
+
+        # Check timers first — drain/close timers must fire even when
+        # the connection is draining (otherwise we never reach CLOSED).
+        self._check_timers(now)
+
         if (self.state & CONN_DRAINING) != 0 or (self.state & CONN_CLOSED) != 0:
             return datagrams^
-
-        # Check timers.
-        self._check_timers(now)
 
         # Build one datagram with coalesced packets.
         var datagram = List[UInt8]()
@@ -1233,10 +1241,10 @@ struct QuicConnection(Movable):
         """Return the next pending event, or None."""
         if len(self.events) > 0:
             # Pop the first event.
-            var ev = self.events[0]
+            var ev = self.events[0].copy()
             var new_events = List[QuicEvent]()
             for i in range(1, len(self.events)):
-                new_events.append(self.events[i]^)
+                new_events.append(self.events[i].copy())
             self.events = new_events^
             return ev^
         return None
@@ -1303,7 +1311,7 @@ def _generate_random_cid() raises -> List[UInt8]:
     var rand_bytes = os.urandom(8)
     var cid = List[UInt8](capacity=8)
     for i in range(8):
-        cid.append(UInt8(Int(rand_bytes[i])))
+        cid.append(UInt8(Int(py=rand_bytes[i])))
     return cid^
 
 

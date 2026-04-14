@@ -78,7 +78,7 @@ struct PacketProtect(Movable):
             _ = self._lib()[].keys_free(self.keys[level])
             self.keys[level] = Int32(-1)
 
-    def derive_initial_keys(mut self, dcid: Span[UInt8], is_client: Bool) raises:
+    def derive_initial_keys(mut self, dcid: Span[UInt8, _], is_client: Bool) raises:
         """Derive QUIC v1 Initial keys from a destination connection ID.
 
         Stores the resulting keys handle at level 0 (Initial). Raises if
@@ -131,7 +131,7 @@ struct PacketProtect(Movable):
         self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
-            raise "no keys for level " + str(level)
+            raise "no keys for level " + String(level)
 
         # Need at least pn_offset + 4 (max PN) + 16 (HP sample).
         if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > len(packet_buf):
@@ -204,7 +204,7 @@ struct PacketProtect(Movable):
         self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
-            raise "no keys for level " + str(level)
+            raise "no keys for level " + String(level)
 
         var total_len = len(packet_buf)
         if header_len >= total_len:
@@ -253,8 +253,8 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         pn: UInt64,
-        header: Span[UInt8],
-        plaintext: Span[UInt8],
+        header: Span[UInt8, _],
+        plaintext: Span[UInt8, _],
     ) raises -> List[UInt8]:
         """Encrypt a QUIC payload with AEAD.
 
@@ -270,7 +270,7 @@ struct PacketProtect(Movable):
         self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
-            raise "no keys for level " + str(level)
+            raise "no keys for level " + String(level)
 
         var pt_len = len(plaintext)
         var capacity = pt_len + _AEAD_TAG_LEN
@@ -335,7 +335,7 @@ struct PacketProtect(Movable):
         self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
-            raise "no keys for level " + str(level)
+            raise "no keys for level " + String(level)
 
         # HP sample starts 4 bytes after pn_offset (into the ciphertext).
         if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > len(packet_buf):
