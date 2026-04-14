@@ -526,7 +526,13 @@ struct QuicConnection(Movable):
                 # Track lowest processed space for retransmission logic.
                 if space_idx < lowest_recv_space:
                     lowest_recv_space = space_idx
-            except:
+            except e:
+                # Decryption or frame processing failed for this packet.
+                # Per RFC 9000 §12.2, stop processing remaining coalesced
+                # packets (they may use keys we don't have yet).
+                # Note: this also catches non-decrypt errors (frame dispatch,
+                # handshake driver). If debugging, inspect `e` here.
+                _ = e
                 decrypt_ok = False
 
             if not decrypt_ok:
@@ -939,7 +945,6 @@ struct QuicConnection(Movable):
 
         # Build one datagram with coalesced packets.
         var datagram = List[UInt8]()
-        var has_initial = False
 
         for space_idx in range(3):
             if not self.protect.has_keys(space_idx):
@@ -1205,23 +1210,9 @@ struct QuicConnection(Movable):
                 earliest = pto_deadline
 
         # Idle timer — use effective min(local, peer) (M8).
-        var local_idle = self.local_params.max_idle_timeout
-        var peer_idle = UInt64(0)
-        if self.peer_params:
-            peer_idle = self.peer_params.value().max_idle_timeout
-        var effective_idle = UInt64(0)
-        if local_idle == 0 and peer_idle == 0:
-            effective_idle = UInt64(0)  # disabled
-        elif local_idle == 0:
-            effective_idle = peer_idle
-        elif peer_idle == 0:
-            effective_idle = local_idle
-        else:
-            effective_idle = local_idle
-            if peer_idle < effective_idle:
-                effective_idle = peer_idle
-        if effective_idle > 0:
-            var idle_deadline = self.idle_timer + effective_idle * 1000
+        var idle_effective = self._effective_idle_timeout()
+        if idle_effective > 0:
+            var idle_deadline = self.idle_timer + idle_effective * 1000
             if earliest:
                 if idle_deadline < earliest.value():
                     earliest = idle_deadline
@@ -1246,6 +1237,22 @@ struct QuicConnection(Movable):
 
         return earliest^
 
+    def _effective_idle_timeout(self) -> UInt64:
+        """Compute effective idle timeout per RFC 9000 §10.1."""
+        var local_idle = self.local_params.max_idle_timeout
+        var peer_idle = UInt64(0)
+        if self.peer_params:
+            peer_idle = self.peer_params.value().max_idle_timeout
+        if local_idle == 0 and peer_idle == 0:
+            return UInt64(0)
+        if local_idle == 0:
+            return peer_idle
+        if peer_idle == 0:
+            return local_idle
+        if peer_idle < local_idle:
+            return peer_idle
+        return local_idle
+
     def _check_timers(mut self, now: UInt64):
         """Check and handle expired timers."""
         # Drain timer.
@@ -1261,23 +1268,9 @@ struct QuicConnection(Movable):
             return
 
         # Idle timeout — use effective min(local, peer).
-        var local_idle = self.local_params.max_idle_timeout
-        var peer_idle = UInt64(0)
-        if self.peer_params:
-            peer_idle = self.peer_params.value().max_idle_timeout
-        var effective_idle = UInt64(0)
-        if local_idle == 0 and peer_idle == 0:
-            effective_idle = UInt64(0)
-        elif local_idle == 0:
-            effective_idle = peer_idle
-        elif peer_idle == 0:
-            effective_idle = local_idle
-        else:
-            effective_idle = local_idle
-            if peer_idle < effective_idle:
-                effective_idle = peer_idle
-        if effective_idle > 0:
-            var idle_deadline = self.idle_timer + effective_idle * 1000
+        var idle_effective = self._effective_idle_timeout()
+        if idle_effective > 0:
+            var idle_deadline = self.idle_timer + idle_effective * 1000
             if now >= idle_deadline:
                 self.state = self.state | CONN_CLOSED
                 self.events.append(
