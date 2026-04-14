@@ -234,6 +234,14 @@ struct CidManager(Movable):
         )
         self.remote_cids.append(entry^)
 
+    # ── Loss-recovery re-queue ────────────────────────────────────────────────
+
+    def requeue_retire(mut self, sequence: UInt64) raises:
+        """Re-queue a lost RETIRE_CONNECTION_ID. Respects retire_queue_cap."""
+        if len(self.retire_queue) >= self.retire_queue_cap:
+            raise "PROTOCOL_VIOLATION: retire_queue cap exceeded on re-queue"
+        self.retire_queue.append(sequence)
+
     # ── Local CID retirement (peer sends RETIRE_CONNECTION_ID) ────────────────
 
     def on_retire_connection_id(mut self, sequence: UInt64) raises:

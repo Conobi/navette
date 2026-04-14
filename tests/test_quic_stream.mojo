@@ -683,6 +683,31 @@ def test_recv_buf_is_complete_not_premature() raises:
     print("  test_recv_buf_is_complete_not_premature: PASS")
 
 
+def test_send_buf_write_after_fin() raises:
+    """After FIN is queued, additional writes must raise."""
+    var sb = SendBuf()
+    var data = List[UInt8](capacity=3)
+    data.append(UInt8(1))
+    data.append(UInt8(2))
+    data.append(UInt8(3))
+    sb.write(Span(data), True)  # FIN queued
+
+    # Zero-length write after FIN: OK (no data to append)
+    var empty = List[UInt8]()
+    sb.write(Span(empty), False)
+
+    # Non-empty write after FIN: must raise
+    var more = List[UInt8](capacity=1)
+    more.append(UInt8(9))
+    var raised = False
+    try:
+        sb.write(Span(more), False)
+    except:
+        raised = True
+    assert_true(raised, "write after FIN must raise")
+    print("  test_send_buf_write_after_fin: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -722,5 +747,7 @@ def main() raises:
 
     test_recv_buf_duplicate_after_read()
     test_recv_buf_is_complete_not_premature()
+
+    test_send_buf_write_after_fin()
 
     print("All test_quic_stream tests passed.")
