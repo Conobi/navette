@@ -457,13 +457,13 @@ struct RustlsLibrary(Movable):
         nonce: UnsafePointer[UInt8, MutAnyOrigin], nonce_len: Int32,
         aad: UnsafePointer[UInt8, MutAnyOrigin], aad_len: Int32,
         plaintext: UnsafePointer[UInt8, MutAnyOrigin], pt_len: Int32,
-        out: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
         out_len: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
-        """AES-GCM-128 encrypt. out must hold pt_len + 16 bytes. Returns 0 or -1."""
+        """AES-GCM-128 encrypt. out_buf must hold pt_len + 16 bytes. Returns 0 or -1."""
         return self._handle.call["rlsm_aes_gcm_128_seal", Int32](
             key, key_len, nonce, nonce_len, aad, aad_len,
-            plaintext, pt_len, out, out_len,
+            plaintext, pt_len, out_buf, out_len,
         )
 
     @always_inline
@@ -473,11 +473,11 @@ struct RustlsLibrary(Movable):
         nonce: UnsafePointer[UInt8, MutAnyOrigin], nonce_len: Int32,
         aad: UnsafePointer[UInt8, MutAnyOrigin], aad_len: Int32,
         ciphertext: UnsafePointer[UInt8, MutAnyOrigin], ct_len: Int32,
-        out: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
         out_len: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """AES-GCM-128 decrypt. ct_len includes 16-byte tag. Returns 0 or -1."""
         return self._handle.call["rlsm_aes_gcm_128_open", Int32](
             key, key_len, nonce, nonce_len, aad, aad_len,
-            ciphertext, ct_len, out, out_len,
+            ciphertext, ct_len, out_buf, out_len,
         )
