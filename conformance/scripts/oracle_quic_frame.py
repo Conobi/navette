@@ -540,7 +540,7 @@ wire = (
 add_vector(
     "connection-close-transport",
     "CONNECTION_CLOSE",
-    "CONNECTION_CLOSE (transport): error=0x0A (FLOW_CONTROL_ERROR), frame_type=CRYPTO, reason='test'",
+    "CONNECTION_CLOSE (transport): error=0x0A (PROTOCOL_VIOLATION), frame_type=CRYPTO, reason='test'",
     wire,
     {
         "close_type": "transport",
@@ -628,31 +628,24 @@ add_vector(
     "error",
 )
 
-# NEW_CONNECTION_ID with CID length 0
-# RFC 9000 §19.15: "the sequence number used for the initial connection ID is 0"
-# but CID length 0 with seq > 0 is actually valid per the RFC.
-# However, a zero-length CID in NEW_CONNECTION_ID is legal per the wire format.
+# NEW_CONNECTION_ID with CID length 0 — error case
+# RFC 9000 §19.15: CID in NEW_CONNECTION_ID must be 1-20 bytes.
+# Zero-length CID is only valid for the initial CID, not via NEW_CONNECTION_ID.
 wire = (
     ByteWriter()
     .varint(0x18)
     .varint(1)                 # sequence_number
     .varint(0)                 # retire_prior_to
-    .byte(0)                   # CID length = 0
-    .raw(bytes(16))            # 16-byte reset token (still required)
+    .byte(0)                   # CID length = 0 (invalid)
+    .raw(bytes(16))            # 16-byte reset token
     .bytes()
 )
 add_vector(
     "new-connection-id-cid-len-0",
     "NEW_CONNECTION_ID",
-    "NEW_CONNECTION_ID with CID length 0 (valid wire format but questionable)",
+    "NEW_CONNECTION_ID with CID length 0 (must be 1-20)",
     wire,
-    {
-        "sequence_number": 1,
-        "retire_prior_to": 0,
-        "connection_id_length": 0,
-        "connection_id_hex": "",
-        "stateless_reset_token_hex": bytes(16).hex(),
-    },
+    "error",
 )
 
 # NEW_CONNECTION_ID with retire_prior_to > sequence_number
