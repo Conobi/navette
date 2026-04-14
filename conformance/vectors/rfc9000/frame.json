@@ -1,0 +1,403 @@
+[
+  {
+    "id": "padding-single",
+    "frame_type": "PADDING",
+    "description": "Single PADDING frame (one zero byte)",
+    "wire_hex": "00",
+    "expected": {
+      "frame_type_value": 0
+    }
+  },
+  {
+    "id": "ping",
+    "frame_type": "PING",
+    "description": "PING frame (single byte 0x01)",
+    "wire_hex": "01",
+    "expected": {
+      "frame_type_value": 1
+    }
+  },
+  {
+    "id": "handshake-done",
+    "frame_type": "HANDSHAKE_DONE",
+    "description": "HANDSHAKE_DONE frame (single byte 0x1E)",
+    "wire_hex": "1e",
+    "expected": {
+      "frame_type_value": 30
+    }
+  },
+  {
+    "id": "ack-no-ranges",
+    "frame_type": "ACK",
+    "description": "ACK with 0 additional ranges (largest=100, delay=25, first_range=10)",
+    "wire_hex": "02406419000a",
+    "expected": {
+      "largest_ack": 100,
+      "ack_delay": 25,
+      "ack_range_count": 0,
+      "first_ack_range": 10,
+      "ack_ranges": []
+    }
+  },
+  {
+    "id": "ack-two-ranges",
+    "frame_type": "ACK",
+    "description": "ACK with 2 additional ranges, no ECN",
+    "wire_hex": "02406419020a04050909",
+    "expected": {
+      "largest_ack": 100,
+      "ack_delay": 25,
+      "ack_range_count": 2,
+      "first_ack_range": 10,
+      "ack_ranges": [
+        {
+          "gap": 4,
+          "ack_range": 5
+        },
+        {
+          "gap": 9,
+          "ack_range": 9
+        }
+      ]
+    }
+  },
+  {
+    "id": "ack-ecn",
+    "frame_type": "ACK_ECN",
+    "description": "ACK_ECN (0x03) with ECN counts (ect0=50, ect1=20, ecn_ce=5)",
+    "wire_hex": "03406419000a321405",
+    "expected": {
+      "largest_ack": 100,
+      "ack_delay": 25,
+      "ack_range_count": 0,
+      "first_ack_range": 10,
+      "ack_ranges": [],
+      "ect0_count": 50,
+      "ect1_count": 20,
+      "ecn_ce_count": 5
+    }
+  },
+  {
+    "id": "ack-first-range-exceeds-largest",
+    "frame_type": "ACK",
+    "description": "first_ack_range > largest_ack (underflow)",
+    "wire_hex": "020a000014",
+    "expect": "error"
+  },
+  {
+    "id": "crypto-offset0-4bytes",
+    "frame_type": "CRYPTO",
+    "description": "CRYPTO frame: offset=0, 4 bytes of data",
+    "wire_hex": "060004deadbeef",
+    "expected": {
+      "offset": 0,
+      "length": 4,
+      "data_hex": "deadbeef"
+    }
+  },
+  {
+    "id": "crypto-offset100-empty",
+    "frame_type": "CRYPTO",
+    "description": "CRYPTO frame: offset=100, empty data (length=0)",
+    "wire_hex": "06406400",
+    "expected": {
+      "offset": 100,
+      "length": 0,
+      "data_hex": ""
+    }
+  },
+  {
+    "id": "stream-base-no-flags",
+    "frame_type": "STREAM",
+    "description": "STREAM (0x08): base type, no OFF/LEN/FIN, data to end of frame",
+    "wire_hex": "080448454c4c4f",
+    "expected": {
+      "stream_id": 4,
+      "offset": 0,
+      "length": 5,
+      "fin": false,
+      "has_offset": false,
+      "has_length": false,
+      "data_hex": "48454c4c4f"
+    }
+  },
+  {
+    "id": "stream-off",
+    "frame_type": "STREAM",
+    "description": "STREAM (0x0A): OFF bit set (offset=100), data to end of frame",
+    "wire_hex": "0a04406448454c4c4f",
+    "expected": {
+      "stream_id": 4,
+      "offset": 100,
+      "length": 5,
+      "fin": false,
+      "has_offset": true,
+      "has_length": false,
+      "data_hex": "48454c4c4f"
+    }
+  },
+  {
+    "id": "stream-off-fin",
+    "frame_type": "STREAM",
+    "description": "STREAM (0x0B): OFF+FIN bits set (offset=200), data to end of frame",
+    "wire_hex": "0b0440c848454c4c4f",
+    "expected": {
+      "stream_id": 4,
+      "offset": 200,
+      "length": 5,
+      "fin": true,
+      "has_offset": true,
+      "has_length": false,
+      "data_hex": "48454c4c4f"
+    }
+  },
+  {
+    "id": "stream-off-len",
+    "frame_type": "STREAM",
+    "description": "STREAM (0x0E): OFF+LEN bits set (offset=300, length=5)",
+    "wire_hex": "0e04412c0548454c4c4f",
+    "expected": {
+      "stream_id": 4,
+      "offset": 300,
+      "length": 5,
+      "fin": false,
+      "has_offset": true,
+      "has_length": true,
+      "data_hex": "48454c4c4f"
+    }
+  },
+  {
+    "id": "stream-off-len-fin",
+    "frame_type": "STREAM",
+    "description": "STREAM (0x0F): all flags OFF+LEN+FIN (offset=400, length=5)",
+    "wire_hex": "0f0441900548454c4c4f",
+    "expected": {
+      "stream_id": 4,
+      "offset": 400,
+      "length": 5,
+      "fin": true,
+      "has_offset": true,
+      "has_length": true,
+      "data_hex": "48454c4c4f"
+    }
+  },
+  {
+    "id": "stream-empty-fin",
+    "frame_type": "STREAM",
+    "description": "STREAM with empty data + FIN (legal, signals end of stream)",
+    "wire_hex": "0b0441f4",
+    "expected": {
+      "stream_id": 4,
+      "offset": 500,
+      "length": 0,
+      "fin": true,
+      "has_offset": true,
+      "has_length": false,
+      "data_hex": ""
+    }
+  },
+  {
+    "id": "max-data",
+    "frame_type": "MAX_DATA",
+    "description": "MAX_DATA: maximum=1048576 (1 MiB)",
+    "wire_hex": "1080100000",
+    "expected": {
+      "maximum": 1048576
+    }
+  },
+  {
+    "id": "max-stream-data",
+    "frame_type": "MAX_STREAM_DATA",
+    "description": "MAX_STREAM_DATA: stream_id=4, maximum=524288 (512 KiB)",
+    "wire_hex": "110480080000",
+    "expected": {
+      "stream_id": 4,
+      "maximum": 524288
+    }
+  },
+  {
+    "id": "max-streams-bidi",
+    "frame_type": "MAX_STREAMS_BIDI",
+    "description": "MAX_STREAMS (bidi): maximum=100",
+    "wire_hex": "124064",
+    "expected": {
+      "maximum": 100
+    }
+  },
+  {
+    "id": "max-streams-uni",
+    "frame_type": "MAX_STREAMS_UNI",
+    "description": "MAX_STREAMS (uni): maximum=50",
+    "wire_hex": "1332",
+    "expected": {
+      "maximum": 50
+    }
+  },
+  {
+    "id": "data-blocked",
+    "frame_type": "DATA_BLOCKED",
+    "description": "DATA_BLOCKED: maximum=1048576 (limit at which blocking occurred)",
+    "wire_hex": "1480100000",
+    "expected": {
+      "maximum": 1048576
+    }
+  },
+  {
+    "id": "stream-data-blocked",
+    "frame_type": "STREAM_DATA_BLOCKED",
+    "description": "STREAM_DATA_BLOCKED: stream_id=4, maximum=524288",
+    "wire_hex": "150480080000",
+    "expected": {
+      "stream_id": 4,
+      "maximum": 524288
+    }
+  },
+  {
+    "id": "streams-blocked-bidi",
+    "frame_type": "STREAMS_BLOCKED_BIDI",
+    "description": "STREAMS_BLOCKED (bidi): maximum=100",
+    "wire_hex": "164064",
+    "expected": {
+      "maximum": 100
+    }
+  },
+  {
+    "id": "streams-blocked-uni",
+    "frame_type": "STREAMS_BLOCKED_UNI",
+    "description": "STREAMS_BLOCKED (uni): maximum=50",
+    "wire_hex": "1732",
+    "expected": {
+      "maximum": 50
+    }
+  },
+  {
+    "id": "reset-stream",
+    "frame_type": "RESET_STREAM",
+    "description": "RESET_STREAM: stream_id=4, error_code=0x42, final_size=1000",
+    "wire_hex": "0404404243e8",
+    "expected": {
+      "stream_id": 4,
+      "error_code": 66,
+      "final_size": 1000
+    }
+  },
+  {
+    "id": "stop-sending",
+    "frame_type": "STOP_SENDING",
+    "description": "STOP_SENDING: stream_id=4, error_code=0x42",
+    "wire_hex": "05044042",
+    "expected": {
+      "stream_id": 4,
+      "error_code": 66
+    }
+  },
+  {
+    "id": "new-connection-id",
+    "frame_type": "NEW_CONNECTION_ID",
+    "description": "NEW_CONNECTION_ID: seq=1, retire=0, 8-byte CID, 16-byte reset token",
+    "wire_hex": "18010008010203040506070800112233445566778899aabbccddeeff",
+    "expected": {
+      "sequence_number": 1,
+      "retire_prior_to": 0,
+      "connection_id_length": 8,
+      "connection_id_hex": "0102030405060708",
+      "stateless_reset_token_hex": "00112233445566778899aabbccddeeff"
+    }
+  },
+  {
+    "id": "retire-connection-id",
+    "frame_type": "RETIRE_CONNECTION_ID",
+    "description": "RETIRE_CONNECTION_ID: sequence_number=0",
+    "wire_hex": "1900",
+    "expected": {
+      "sequence_number": 0
+    }
+  },
+  {
+    "id": "connection-close-transport",
+    "frame_type": "CONNECTION_CLOSE",
+    "description": "CONNECTION_CLOSE (transport): error=0x0A (FLOW_CONTROL_ERROR), frame_type=CRYPTO, reason='test'",
+    "wire_hex": "1c0a060474657374",
+    "expected": {
+      "close_type": "transport",
+      "error_code": 10,
+      "frame_type": 6,
+      "reason_phrase_length": 4,
+      "reason_phrase": "test"
+    }
+  },
+  {
+    "id": "connection-close-app",
+    "frame_type": "CONNECTION_CLOSE",
+    "description": "CONNECTION_CLOSE (app): error=0x42, reason='app error'",
+    "wire_hex": "1d404209617070206572726f72",
+    "expected": {
+      "close_type": "application",
+      "error_code": 66,
+      "reason_phrase_length": 9,
+      "reason_phrase": "app error"
+    }
+  },
+  {
+    "id": "new-token",
+    "frame_type": "NEW_TOKEN",
+    "description": "NEW_TOKEN: 16-byte token",
+    "wire_hex": "0710000102030405060708090a0b0c0d0e0f",
+    "expected": {
+      "token_length": 16,
+      "token_hex": "000102030405060708090a0b0c0d0e0f"
+    }
+  },
+  {
+    "id": "path-challenge",
+    "frame_type": "PATH_CHALLENGE",
+    "description": "PATH_CHALLENGE: 8 bytes of arbitrary data",
+    "wire_hex": "1a0123456789abcdef",
+    "expected": {
+      "data_hex": "0123456789abcdef"
+    }
+  },
+  {
+    "id": "path-response",
+    "frame_type": "PATH_RESPONSE",
+    "description": "PATH_RESPONSE: 8 bytes matching a prior PATH_CHALLENGE",
+    "wire_hex": "1b0123456789abcdef",
+    "expected": {
+      "data_hex": "0123456789abcdef"
+    }
+  },
+  {
+    "id": "unknown-frame-type",
+    "frame_type": "UNKNOWN",
+    "description": "Unknown frame type 0xFF",
+    "wire_hex": "40ff",
+    "expect": "error"
+  },
+  {
+    "id": "new-connection-id-cid-len-0",
+    "frame_type": "NEW_CONNECTION_ID",
+    "description": "NEW_CONNECTION_ID with CID length 0 (valid wire format but questionable)",
+    "wire_hex": "1801000000000000000000000000000000000000",
+    "expected": {
+      "sequence_number": 1,
+      "retire_prior_to": 0,
+      "connection_id_length": 0,
+      "connection_id_hex": "",
+      "stateless_reset_token_hex": "00000000000000000000000000000000"
+    }
+  },
+  {
+    "id": "new-connection-id-retire-exceeds-seq",
+    "frame_type": "NEW_CONNECTION_ID",
+    "description": "retire_prior_to (10) > sequence_number (5) — FRAME_ENCODING_ERROR",
+    "wire_hex": "18050a08010203040506070800112233445566778899aabbccddeeff",
+    "expect": "error"
+  },
+  {
+    "id": "crypto-truncated",
+    "frame_type": "CRYPTO",
+    "description": "Truncated CRYPTO: length says 10 but only 2 bytes present",
+    "wire_hex": "06000aaabb",
+    "expect": "error"
+  }
+]
