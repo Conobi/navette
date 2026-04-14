@@ -313,11 +313,11 @@ def pn_encode_length(full_pn: UInt64, largest_acked: UInt64) -> Int:
     else:
         num_unacked = UInt64(0)
 
-    if num_unacked < UInt64(0x80):
+    if num_unacked <= UInt64(0x100):
         return 1
-    elif num_unacked < UInt64(0x8000):
+    elif num_unacked <= UInt64(0x10000):
         return 2
-    elif num_unacked < UInt64(0x800000):
+    elif num_unacked <= UInt64(0x1000000):
         return 3
     else:
         return 4
