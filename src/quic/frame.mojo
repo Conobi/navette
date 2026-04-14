@@ -744,10 +744,17 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
             raise "ACK: first_ack_range exceeds largest_ack"
         var count = Int(ack_range_count)
         if count > MAX_ACK_RANGES:
-            count = MAX_ACK_RANGES
+            raise "ACK: range count " + String(count) + " exceeds maximum " + String(MAX_ACK_RANGES)
+        # Track running PN for underflow detection
+        var smallest_ack = ack.largest_ack - ack.first_ack_range
         for _ in range(count):
             var gap = varint_decode(reader)
             var ack_range = varint_decode(reader)
+            # gap+2 accounts for the implicit 1-packet gap between ranges
+            var needed = gap + 2 + ack_range
+            if needed > smallest_ack:
+                raise "ACK: range underflow (gap+range exceeds remaining PN space)"
+            smallest_ack = smallest_ack - needed
             ack.ranges.append(AckRange(gap, ack_range))
         if frame_type == FRAME_ACK_ECN:
             ack.ecn_ect0 = varint_decode(reader)
