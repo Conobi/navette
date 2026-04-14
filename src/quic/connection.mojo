@@ -24,6 +24,9 @@ from src.quic.frame import (
     AckFrame,
     CryptoFrame,
     ConnectionCloseFrame,
+    StreamFrame,
+    ResetStreamFrame,
+    StopSendingFrame,
     parse_frames,
     serialize_frames,
     FRAME_PADDING,
@@ -37,7 +40,28 @@ from src.quic.frame import (
     FRAME_NEW_TOKEN,
     FRAME_NEW_CONNECTION_ID,
     FRAME_RETIRE_CONNECTION_ID,
+    FRAME_STREAM_BASE,
+    FRAME_RESET_STREAM,
+    FRAME_STOP_SENDING,
+    FRAME_MAX_DATA,
+    FRAME_MAX_STREAM_DATA,
+    FRAME_MAX_STREAMS_BIDI,
+    FRAME_MAX_STREAMS_UNI,
+    FRAME_DATA_BLOCKED,
+    FRAME_STREAM_DATA_BLOCKED,
+    FRAME_STREAMS_BLOCKED_BIDI,
+    FRAME_STREAMS_BLOCKED_UNI,
 )
+from src.quic.stream_map import StreamMap
+from src.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
+from src.quic.stream import (
+    Stream, SendBuf, RecvBuf,
+    SEND_READY, SEND_SEND, SEND_DATA_SENT, SEND_DATA_RECVD, SEND_RESET_SENT, SEND_RESET_RECVD,
+    RECV_RECV, RECV_SIZE_KNOWN, RECV_DATA_RECVD, RECV_DATA_READ, RECV_STOP_SENDING_SENT, RECV_RESET_RECVD, RECV_RESET_READ,
+    send_state_is_terminal, recv_state_is_terminal,
+    stream_is_bidi, stream_is_local, stream_is_client_initiated,
+)
+from src.quic.flow_control import FlowControl
 from src.quic.packet import (
     PacketType,
     PacketHeader,
@@ -92,29 +116,42 @@ struct QuicEvent(Copyable, Movable):
     comptime HANDSHAKE_COMPLETE: UInt8 = 1
     comptime CONNECTION_CLOSED: UInt8 = 2
     comptime PEER_TRANSPORT_PARAMS: UInt8 = 3
+    comptime STREAM_READABLE: UInt8 = 5
+    comptime STREAM_WRITABLE: UInt8 = 6
+    comptime STREAM_RESET: UInt8 = 7
+    comptime STREAM_STOPPED: UInt8 = 8
+    comptime STREAM_OPENED: UInt8 = 9
 
     var type_id: UInt8
     var error_code: UInt64
     var reason: String
     var transport_params: Optional[TransportParams]
+    var stream_id: UInt64
+    var final_size: UInt64
 
     def __init__(out self, type_id: UInt8):
         self.type_id = type_id
         self.error_code = UInt64(0)
         self.reason = String("")
         self.transport_params = None
+        self.stream_id = UInt64(0)
+        self.final_size = UInt64(0)
 
     def __init__(out self, *, other: Self):
         self.type_id = other.type_id
         self.error_code = other.error_code
         self.reason = other.reason
         self.transport_params = other.transport_params.copy()
+        self.stream_id = other.stream_id
+        self.final_size = other.final_size
 
     def __init__(out self, *, deinit take: Self):
         self.type_id = take.type_id
         self.error_code = take.error_code
         self.reason = take.reason^
         self.transport_params = take.transport_params^
+        self.stream_id = take.stream_id
+        self.final_size = take.final_size
 
     @staticmethod
     def handshake_complete() -> QuicEvent:
@@ -131,6 +168,39 @@ struct QuicEvent(Copyable, Movable):
     def peer_transport_params(params: TransportParams) -> QuicEvent:
         var ev = QuicEvent(QuicEvent.PEER_TRANSPORT_PARAMS)
         ev.transport_params = TransportParams(other=params)
+        return ev^
+
+    @staticmethod
+    def stream_readable(stream_id: UInt64) -> QuicEvent:
+        var ev = QuicEvent(QuicEvent.STREAM_READABLE)
+        ev.stream_id = stream_id
+        return ev^
+
+    @staticmethod
+    def stream_writable(stream_id: UInt64) -> QuicEvent:
+        var ev = QuicEvent(QuicEvent.STREAM_WRITABLE)
+        ev.stream_id = stream_id
+        return ev^
+
+    @staticmethod
+    def stream_reset(stream_id: UInt64, error_code: UInt64, final_size: UInt64) -> QuicEvent:
+        var ev = QuicEvent(QuicEvent.STREAM_RESET)
+        ev.stream_id = stream_id
+        ev.error_code = error_code
+        ev.final_size = final_size
+        return ev^
+
+    @staticmethod
+    def stream_stopped(stream_id: UInt64, error_code: UInt64) -> QuicEvent:
+        var ev = QuicEvent(QuicEvent.STREAM_STOPPED)
+        ev.stream_id = stream_id
+        ev.error_code = error_code
+        return ev^
+
+    @staticmethod
+    def stream_opened(stream_id: UInt64) -> QuicEvent:
+        var ev = QuicEvent(QuicEvent.STREAM_OPENED)
+        ev.stream_id = stream_id
         return ev^
 
 
@@ -169,6 +239,8 @@ struct QuicConnection(Movable):
     var current_level: Int
     var send_handshake_done: Bool
     var last_ack_eliciting_send_time: UInt64
+    var stream_map: StreamMap
+    var cid_mgr: CidManager
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -197,6 +269,8 @@ struct QuicConnection(Movable):
         self.current_level = take.current_level
         self.send_handshake_done = take.send_handshake_done
         self.last_ack_eliciting_send_time = take.last_ack_eliciting_send_time
+        self.stream_map = take.stream_map^
+        self.cid_mgr = take.cid_mgr^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -210,7 +284,7 @@ struct QuicConnection(Movable):
         peer_cid: List[UInt8],
         initial_dcid: List[UInt8],
         now: UInt64,
-    ):
+    ) raises:
         self.is_server = is_server
         self.state = CONN_HANDSHAKING
         self.spaces = List[PacketNumberSpace](capacity=3)
@@ -241,6 +315,23 @@ struct QuicConnection(Movable):
         self.current_level = 0
         self.send_handshake_done = False
         self.last_ack_eliciting_send_time = UInt64(0)
+        self.stream_map = StreamMap(
+            is_server=is_server,
+            conn_recv_limit=local_params.initial_max_data,
+            conn_recv_window=local_params.initial_max_data,
+            conn_send_limit=UInt64(0),
+            local_max_streams_bidi=local_params.initial_max_streams_bidi,
+            local_max_streams_uni=local_params.initial_max_streams_uni,
+            local_window_bidi_local=local_params.initial_max_stream_data_bidi_local,
+            local_window_bidi_remote=local_params.initial_max_stream_data_bidi_remote,
+            local_window_uni=local_params.initial_max_stream_data_uni,
+        )
+        self.cid_mgr = CidManager(
+            initial_local_cid=List[UInt8](copy=local_cid),
+            initial_remote_cid=List[UInt8](copy=peer_cid),
+            local_active_limit=UInt64(2),
+            peer_active_limit=UInt64(2),
+        )
 
     # ── Destructor ───────────────────────────────────────────────────
 
@@ -272,6 +363,7 @@ struct QuicConnection(Movable):
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(other=local_params)
         params_copy.initial_scid = List[UInt8](copy=local_cid)
+        _apply_m3c_defaults(params_copy)
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
 
@@ -356,6 +448,7 @@ struct QuicConnection(Movable):
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(other=local_params)
         params_copy.initial_scid = List[UInt8](copy=local_cid)
+        _apply_m3c_defaults(params_copy)
         # Server sets original_dcid to prove it received the client's Initial.
         var orig_dcid_list = List[UInt8](capacity=len(orig_dcid))
         for i in range(len(orig_dcid)):
@@ -563,6 +656,186 @@ struct QuicConnection(Movable):
                                     cf.offset, Span(cf.data)
                                 )
 
+    # ── Stream frame handlers ────────────────────────────────────────
+
+    def _handle_stream_frame(mut self, stream_frame: StreamFrame) raises:
+        """Process an incoming STREAM frame (RFC 9000 §19.8)."""
+        var stream_id = stream_frame.stream_id
+        var offset = stream_frame.offset
+        var data_len = UInt64(len(stream_frame.data))
+        var fin = stream_frame.fin
+
+        # 1. Create peer stream if needed.
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            if stream_is_local(stream_id, self.is_server):
+                raise "PROTOCOL_VIOLATION: frame for unknown locally-initiated stream"
+            var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+            for i in range(len(new_ids)):
+                self.events.append(QuicEvent.stream_opened(new_ids[i]))
+
+        # 2. Get stream (returns a copy).
+        var stream = self.stream_map.get_stream(key)
+
+        # 3. Validate direction: no incoming STREAM on a local uni stream.
+        if not stream.is_bidi and stream.is_local:
+            raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
+
+        # 4. Validate recv state: must be in RECV or SIZE_KNOWN.
+        if not stream.recv_state:
+            raise "STREAM_STATE_ERROR: no recv state"
+        var rs = stream.recv_state.value()
+        if rs != RECV_RECV and rs != RECV_SIZE_KNOWN:
+            # Terminal or post-reset — silently drop.
+            return
+
+        # 5. Per-stream flow-control enforcement.
+        if not stream.fc_recv:
+            raise "internal: missing fc_recv"
+        var fc_r = stream.fc_recv.value().copy()
+        if offset + data_len > fc_r.limit:
+            raise "FLOW_CONTROL_ERROR: stream FC exceeded"
+
+        # 6. Write to the receive buffer (may update stream.fin_offset).
+        if not stream.recv_buf:
+            raise "internal: missing recv_buf"
+        var rb = stream.recv_buf.value().copy()
+        var new_bytes = rb.write(
+            offset, Span(stream_frame.data), fin, stream.fin_offset
+        )
+
+        # 7. Track highest offset observed on this stream.
+        var prev_highest = stream.recv_highest_offset
+        if offset + data_len > prev_highest:
+            stream.recv_highest_offset = offset + data_len
+
+        # 8. Connection-level flow-control check.
+        if not self.stream_map.conn_fc_recv.check_limit(new_bytes):
+            raise "FLOW_CONTROL_ERROR: connection FC exceeded"
+
+        # 9. Bump FC counters.
+        fc_r.add_received(new_bytes)
+        self.stream_map.conn_fc_recv.add_received(new_bytes)
+
+        # 10. Emit readable event if data is now deliverable.
+        var had_readable = rb.has_readable()
+        stream.recv_buf = rb^
+        stream.fc_recv = fc_r^
+
+        if had_readable:
+            self.events.append(QuicEvent.stream_readable(stream_id))
+
+        # 11. Recv-state transitions on FIN.
+        if fin:
+            if rs == RECV_RECV:
+                stream.recv_state = Optional[UInt8](RECV_SIZE_KNOWN)
+                rs = RECV_SIZE_KNOWN
+            if rs == RECV_SIZE_KNOWN:
+                # rb is already the pre-write reference reassigned above;
+                # use stream.recv_buf to check completeness.
+                if stream.recv_buf.value().is_complete(stream.fin_offset):
+                    stream.recv_state = Optional[UInt8](RECV_DATA_RECVD)
+
+        self.stream_map.set_stream(key, stream^)
+
+    def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
+        """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
+        var stream_id = reset_frame.stream_id
+        var error_code = reset_frame.error_code
+        var final_size = reset_frame.final_size
+
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            if stream_is_local(stream_id, self.is_server):
+                raise "PROTOCOL_VIOLATION: RESET for unknown local stream"
+            var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+            for i in range(len(new_ids)):
+                self.events.append(QuicEvent.stream_opened(new_ids[i]))
+
+        var stream = self.stream_map.get_stream(key)
+        if not stream.recv_state:
+            raise "STREAM_STATE_ERROR: RESET on non-recv stream"
+
+        # Validate final_size invariants.
+        if final_size < stream.recv_highest_offset:
+            raise "FINAL_SIZE_ERROR: final_size < received"
+        if stream.fin_offset:
+            if final_size != stream.fin_offset.value():
+                raise "FINAL_SIZE_ERROR: final_size differs from FIN"
+
+        if stream.fc_recv:
+            if final_size > stream.fc_recv.value().limit:
+                raise "FLOW_CONTROL_ERROR: RESET final_size exceeds stream limit"
+
+        var rs = stream.recv_state.value()
+        var was_complete = (rs == RECV_DATA_RECVD or rs == RECV_DATA_READ)
+
+        # Account phantom bytes at connection level (bytes the peer implicitly
+        # "sent" by claiming final_size without delivering them).
+        var phantom = final_size - stream.recv_highest_offset
+        if phantom > 0:
+            if not self.stream_map.conn_fc_recv.check_limit(phantom):
+                raise "FLOW_CONTROL_ERROR: conn FC exceeded on phantom bytes"
+            self.stream_map.conn_fc_recv.add_received(phantom)
+            self.stream_map.conn_fc_recv.add_consumed(phantom)
+
+        if not stream.fin_offset:
+            stream.fin_offset = Optional[UInt64](final_size)
+
+        # Suppress RESET state transition when DATA_RECVD: RFC 9000 §3.2 lets
+        # us keep delivering the fully-received stream to the application.
+        if not was_complete:
+            stream.recv_state = Optional[UInt8](RECV_RESET_RECVD)
+            stream.reset_error = Optional[UInt64](error_code)
+
+        self.events.append(
+            QuicEvent.stream_reset(stream_id, error_code, final_size)
+        )
+        self.stream_map.set_stream(key, stream^)
+        _ = self.stream_map.maybe_cleanup(key)
+
+    def _handle_stop_sending(mut self, stop_frame: StopSendingFrame) raises:
+        """Process an incoming STOP_SENDING frame (RFC 9000 §19.5)."""
+        var stream_id = stop_frame.stream_id
+        var error_code = stop_frame.error_code
+
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            if stream_is_local(stream_id, self.is_server):
+                raise "PROTOCOL_VIOLATION: STOP_SENDING for unknown local stream"
+            var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+            for i in range(len(new_ids)):
+                self.events.append(QuicEvent.stream_opened(new_ids[i]))
+
+        var stream = self.stream_map.get_stream(key)
+        if not stream.send_state:
+            raise "STREAM_STATE_ERROR: STOP_SENDING targets non-send side"
+
+        var ss = stream.send_state.value()
+        if ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD or ss == SEND_DATA_RECVD:
+            self.stream_map.set_stream(key, stream^)
+            return
+
+        # Transition to RESET_SENT and queue a RESET_STREAM for the send path.
+        stream.send_state = Optional[UInt8](SEND_RESET_SENT)
+        stream.stop_error = Optional[UInt64](error_code)
+        stream.needs_reset_stream = True
+        stream.reset_stream_error = error_code
+        var final_size: UInt64 = 0
+        if stream.send_buf:
+            var sb = stream.send_buf.value().copy()
+            if sb.fin_offset:
+                final_size = sb.fin_offset.value()
+            else:
+                final_size = sb.unsent_offset
+        stream.reset_stream_final_size = final_size
+
+        self.stream_map.remove_sendable(key)
+
+        self.events.append(QuicEvent.stream_stopped(stream_id, error_code))
+        self.stream_map.set_stream(key, stream^)
+        _ = self.stream_map.maybe_cleanup(key)
+
     # ── Frame dispatch ───────────────────────────────────────────────
 
     def _dispatch_frame(
@@ -623,15 +896,88 @@ struct QuicConnection(Movable):
                 self.events.append(QuicEvent.handshake_complete())
             return
 
-        # NEW_TOKEN, NEW_CONNECTION_ID, RETIRE_CONNECTION_ID: minimal handling
+        # NEW_TOKEN: minimal handling (client-only; ignored for M3c).
         if tid == FRAME_NEW_TOKEN:
-            return  # Ignore for M3b
-        if tid == FRAME_NEW_CONNECTION_ID:
-            return  # Minimal — store in future
-        if tid == FRAME_RETIRE_CONNECTION_ID:
-            return  # Minimal — acknowledge in future
+            return
 
-        # Stream-level frames: silently ignore for M3b.
+        # NEW_CONNECTION_ID: hand off to CidManager.
+        if tid == FRAME_NEW_CONNECTION_ID:
+            if frame._new_cid:
+                var nc = frame._new_cid.value().copy()
+                self.cid_mgr.on_new_connection_id(
+                    nc.sequence,
+                    nc.retire_prior_to,
+                    List[UInt8](copy=nc.cid),
+                    List[UInt8](copy=nc.stateless_reset_token),
+                )
+            return
+
+        # RETIRE_CONNECTION_ID: hand off to CidManager.
+        if tid == FRAME_RETIRE_CONNECTION_ID:
+            if frame._retire_cid:
+                self.cid_mgr.on_retire_connection_id(frame._retire_cid.value())
+            return
+
+        # STREAM frames (0x08-0x0F).
+        if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
+            if frame._stream:
+                var sf = frame._stream.value().copy()
+                self._handle_stream_frame(sf)
+            return
+
+        if tid == FRAME_RESET_STREAM:
+            if frame._reset_stream:
+                var rf = frame._reset_stream.value().copy()
+                self._handle_reset_stream(rf)
+            return
+
+        if tid == FRAME_STOP_SENDING:
+            if frame._stop_sending:
+                var ssf = frame._stop_sending.value().copy()
+                self._handle_stop_sending(ssf)
+            return
+
+        if tid == FRAME_MAX_DATA:
+            if frame._max_data:
+                self.stream_map.conn_fc_send.ensure_limit(frame._max_data.value())
+            return
+
+        if tid == FRAME_MAX_STREAM_DATA:
+            if frame._max_stream_data:
+                var msd = frame._max_stream_data.value().copy()
+                var key = Int(msd.stream_id)
+                if key in self.stream_map.streams:
+                    var stream = self.stream_map.get_stream(key)
+                    if stream.fc_send:
+                        var fc = stream.fc_send.value().copy()
+                        fc.ensure_limit(msd.maximum)
+                        stream.fc_send = fc^
+                        self.stream_map.set_stream(key, stream^)
+                        self.events.append(QuicEvent.stream_writable(msd.stream_id))
+            return
+
+        if tid == FRAME_MAX_STREAMS_BIDI:
+            if frame._max_streams:
+                var ms = frame._max_streams.value().copy()
+                if ms.maximum > self.stream_map.peer_max_streams_bidi:
+                    self.stream_map.peer_max_streams_bidi = ms.maximum
+            return
+
+        if tid == FRAME_MAX_STREAMS_UNI:
+            if frame._max_streams:
+                var ms = frame._max_streams.value().copy()
+                if ms.maximum > self.stream_map.peer_max_streams_uni:
+                    self.stream_map.peer_max_streams_uni = ms.maximum
+            return
+
+        # *_BLOCKED frames: informational only for M3c.
+        if (tid == FRAME_DATA_BLOCKED
+                or tid == FRAME_STREAM_DATA_BLOCKED
+                or tid == FRAME_STREAMS_BLOCKED_BIDI
+                or tid == FRAME_STREAMS_BLOCKED_UNI):
+            return
+
+        # Unknown frame type: ignore.
         return
 
     # ── ACK handling ─────────────────────────────────────────────────
@@ -877,6 +1223,22 @@ struct QuicConnection(Movable):
             var peer_tp = parse_transport_params(Span(tp_bytes))
             self.peer_params = TransportParams(other=peer_tp)
             self.events.append(QuicEvent.peer_transport_params(peer_tp))
+
+            # Propagate peer limits into StreamMap and CidManager.
+            var peer = self.peer_params.value().copy()
+            self.stream_map.set_peer_limits(
+                max_streams_bidi=peer.initial_max_streams_bidi,
+                max_streams_uni=peer.initial_max_streams_uni,
+                stream_fc_bidi_local=peer.initial_max_stream_data_bidi_local,
+                stream_fc_bidi_remote=peer.initial_max_stream_data_bidi_remote,
+                stream_fc_uni=peer.initial_max_stream_data_uni,
+                conn_fc_send_limit=peer.initial_max_data,
+            )
+            self.cid_mgr.peer_active_limit = peer.active_connection_id_limit
+            self.cid_mgr.retire_queue_cap = Int(peer.active_connection_id_limit) * 8
+
+            # Issue a spare local CID (seq=1) so the peer has a backup.
+            _ = self.cid_mgr.issue_new_cid()
 
         tp_buf.free()
         tp_written.free()
@@ -1417,3 +1779,19 @@ def _has_ack_eliciting(frames: List[Frame]) -> Bool:
         if frames[i].is_ack_eliciting():
             return True
     return False
+
+
+def _apply_m3c_defaults(mut params: TransportParams):
+    """Set M3c flow-control / stream-limit defaults if not already set."""
+    if params.initial_max_data == 0:
+        params.initial_max_data = UInt64(10485760)  # 10 MiB
+    if params.initial_max_stream_data_bidi_local == 0:
+        params.initial_max_stream_data_bidi_local = UInt64(1048576)  # 1 MiB
+    if params.initial_max_stream_data_bidi_remote == 0:
+        params.initial_max_stream_data_bidi_remote = UInt64(1048576)
+    if params.initial_max_stream_data_uni == 0:
+        params.initial_max_stream_data_uni = UInt64(1048576)
+    if params.initial_max_streams_bidi == 0:
+        params.initial_max_streams_bidi = UInt64(100)
+    if params.initial_max_streams_uni == 0:
+        params.initial_max_streams_uni = UInt64(100)
