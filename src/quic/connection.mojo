@@ -167,6 +167,7 @@ struct QuicConnection(Movable):
     var handshake_confirmed: Bool
     var current_level: Int
     var send_handshake_done: Bool
+    var last_ack_eliciting_send_time: UInt64
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -194,6 +195,7 @@ struct QuicConnection(Movable):
         self.handshake_confirmed = take.handshake_confirmed
         self.current_level = take.current_level
         self.send_handshake_done = take.send_handshake_done
+        self.last_ack_eliciting_send_time = take.last_ack_eliciting_send_time
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -237,6 +239,7 @@ struct QuicConnection(Movable):
         self.handshake_confirmed = False
         self.current_level = 0
         self.send_handshake_done = False
+        self.last_ack_eliciting_send_time = UInt64(0)
 
     # ── Destructor ───────────────────────────────────────────────────
 
@@ -416,8 +419,7 @@ struct QuicConnection(Movable):
         # 7. Derive initial keys from client's DCID (server side).
         conn.protect.derive_initial_keys(client_dcid, is_client=False)
 
-        # 8. Server address is validated by receiving a valid Initial.
-        conn.state = conn.state | CONN_ADDR_VALIDATED
+        # 8. Server address validation deferred until Handshake decrypt.
 
         return conn^
 
@@ -493,7 +495,11 @@ struct QuicConnection(Movable):
                 space_idx, full_pn, header_len, pkt_buf
             )
 
-            # 9. Parse and dispatch frames.
+            # 9. Server validates address on first Handshake decrypt.
+            if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
+                self.state = self.state | CONN_ADDR_VALIDATED
+
+            # 10. Parse and dispatch frames.
             var reader = ByteReader(Span(plaintext))
             var frames = parse_frames(reader)
             var ack_eliciting = False
@@ -502,10 +508,10 @@ struct QuicConnection(Movable):
                     ack_eliciting = True
                 self._dispatch_frame(frames[i], space_idx, now)
 
-            # 10. Update PN space.
+            # 11. Update PN space.
             self.spaces[space_idx].on_packet_received(full_pn, ack_eliciting)
 
-            # 11. Drive handshake after CRYPTO processing.
+            # 12. Drive handshake after CRYPTO processing.
             self._drive_handshake(now)
 
             offset += pkt_len
@@ -600,11 +606,16 @@ struct QuicConnection(Movable):
             if acked[i].pn == largest_acked_pn:
                 var rtt_sample = now - acked[i].time_sent
                 if now >= acked[i].time_sent:
-                    # Convert ack_delay from the frame's encoded value.
+                    # Convert ack_delay using peer's exponent when available.
+                    var ade = self.local_params.ack_delay_exponent
+                    var mad = self.local_params.max_ack_delay
+                    if self.peer_params:
+                        ade = self.peer_params.value().ack_delay_exponent
+                        mad = self.peer_params.value().max_ack_delay
                     var ack_delay_us = ack_frame.ack_delay * (
-                        UInt64(1) << self.local_params.ack_delay_exponent
+                        UInt64(1) << ade
                     )
-                    var max_ack_delay_us = self.local_params.max_ack_delay * 1000
+                    var max_ack_delay_us = mad * 1000
                     self.recovery.update_rtt(
                         rtt_sample,
                         ack_delay_us,
@@ -619,6 +630,10 @@ struct QuicConnection(Movable):
 
         # Reset PTO count.
         self.recovery.on_ack_received()
+
+        # Client confirms handshake when it receives ACK for 1-RTT packet.
+        if not self.is_server and space_idx == 2 and not self.handshake_confirmed:
+            self._on_handshake_complete(now)
 
         # Detect lost packets.
         self._detect_losses(space_idx, now)
@@ -782,6 +797,9 @@ struct QuicConnection(Movable):
         if (self.state & CONN_ESTABLISHED) != 0:
             return  # Already processed
 
+        # Clear HANDSHAKING flag.
+        self.state = self.state & ~CONN_HANDSHAKING
+
         # Read peer transport params.
         var tp_buf = _heap_alloc[UInt8](_TP_BUF_SIZE).as_any_origin()
         var tp_written = _heap_alloc[Int32](1).as_any_origin()
@@ -809,10 +827,11 @@ struct QuicConnection(Movable):
         tp_written.free()
 
         if self.is_server:
-            # Server: set ESTABLISHED, discard Initial space, queue HANDSHAKE_DONE.
+            # Server: set ESTABLISHED, discard Initial & Handshake, queue HANDSHAKE_DONE.
             self.state = self.state | CONN_ESTABLISHED
             self.handshake_confirmed = True
             self._discard_initial_space()
+            self._discard_handshake_space()
             self.send_handshake_done = True
             self.events.append(QuicEvent.handshake_complete())
         else:
@@ -834,20 +853,17 @@ struct QuicConnection(Movable):
 
         self.protect.discard_keys(0)
 
-    def _discard_handshake_space(mut self):
+    def _discard_handshake_space(mut self) raises:
         """Discard Handshake packet number space and keys."""
         if (self.state & CONN_HS_DISCARDED) != 0:
             return
         self.state = self.state | CONN_HS_DISCARDED
 
-        try:
-            var discarded = self.spaces[1].discard()
-            for i in range(len(discarded)):
-                self.recovery.on_packet_lost(
-                    discarded[i].size, discarded[i].in_flight
-                )
-        except:
-            pass
+        var discarded = self.spaces[1].discard()
+        for i in range(len(discarded)):
+            self.recovery.on_packet_lost(
+                discarded[i].size, discarded[i].in_flight
+            )
 
         self.protect.discard_keys(1)
 
@@ -883,6 +899,27 @@ struct QuicConnection(Movable):
             if len(frames) == 0:
                 continue
 
+            # For Initial packets, add PADDING frames inside the AEAD-protected
+            # payload so the datagram reaches MIN_INITIAL_PACKET_SIZE (1200).
+            if space_idx == 0:
+                # Estimate header overhead: long header + PN + AEAD tag.
+                # Long header ≈ 1+4+1+DCID+1+SCID+varint(token_len)+token+varint(payload_len)
+                # Conservative estimate: 7 + len(peer_cid) + len(local_cid) + 2 + 4
+                var hdr_overhead = 7 + len(self.peer_cid) + len(self.local_cid) + 2
+                var pn_est = 4  # max PN length
+                var tag_len = _AEAD_TAG_LEN
+
+                # Serialize current frames to measure payload size.
+                var est_writer = ByteWriter()
+                serialize_frames(frames, est_writer)
+                var est_payload = est_writer.finish()
+                var current_total = hdr_overhead + pn_est + len(est_payload) + tag_len + len(datagram)
+
+                if current_total < 1200:
+                    var pad_needed = 1200 - current_total
+                    for _ in range(pad_needed):
+                        frames.append(Frame.padding())
+
             # Serialize frames.
             var writer = ByteWriter()
             serialize_frames(frames, writer)
@@ -904,11 +941,16 @@ struct QuicConnection(Movable):
             if space_idx == 0:
                 has_initial = True
 
+            # Client discards Initial on first Handshake send (M5).
+            if not self.is_server and space_idx == 1 and (self.state & CONN_INITIAL_DISCARDED) == 0 and self.protect.has_keys(1):
+                self._discard_initial_space()
+
             # Record sent packet.
+            var is_ack_eliciting = _has_ack_eliciting(frames)
             var sent = SentPacket(
                 pn=pn,
                 time_sent=now,
-                ack_eliciting=_has_ack_eliciting(frames),
+                ack_eliciting=is_ack_eliciting,
                 in_flight=True,
                 size=pkt_size,
                 frames=frames,
@@ -916,11 +958,9 @@ struct QuicConnection(Movable):
             self.spaces[space_idx].on_packet_sent(sent)
             self.recovery.on_packet_sent(pkt_size, True)
 
-        # Pad Initial datagrams to 1200 bytes.
-        if has_initial and len(datagram) < 1200:
-            var pad_needed = 1200 - len(datagram)
-            for _ in range(pad_needed):
-                datagram.append(0)
+            # Track last ack-eliciting send time for PTO.
+            if is_ack_eliciting:
+                self.last_ack_eliciting_send_time = now
 
         if len(datagram) > 0:
             self.bytes_sent += UInt64(len(datagram))
@@ -1092,15 +1132,39 @@ struct QuicConnection(Movable):
         """
         var earliest = Optional[UInt64](None)
 
-        # PTO timer.
-        var max_ack_delay_us = self.local_params.max_ack_delay * 1000
-        var pto = self.recovery.pto_timeout(max_ack_delay_us)
-        var pto_deadline = self.idle_timer + pto
-        earliest = pto_deadline
+        # PTO timer — skip when server is amplification-limited (M7).
+        if not (self.is_server and (self.state & CONN_ADDR_VALIDATED) == 0):
+            # Only arm PTO if we have sent ack-eliciting packets.
+            if self.last_ack_eliciting_send_time > 0:
+                var max_ack_delay_us = self.local_params.max_ack_delay * 1000
+                var pto = self.recovery.pto_timeout(max_ack_delay_us)
+                var pto_deadline = self.last_ack_eliciting_send_time + pto
+                earliest = pto_deadline
+            elif not self.is_server:
+                # Client anti-deadlock: arm PTO from idle_timer even without sends.
+                var max_ack_delay_us = self.local_params.max_ack_delay * 1000
+                var pto = self.recovery.pto_timeout(max_ack_delay_us)
+                var pto_deadline = self.idle_timer + pto
+                earliest = pto_deadline
 
-        # Idle timer.
-        if self.local_params.max_idle_timeout > 0:
-            var idle_deadline = self.idle_timer + self.local_params.max_idle_timeout * 1000
+        # Idle timer — use effective min(local, peer) (M8).
+        var local_idle = self.local_params.max_idle_timeout
+        var peer_idle = UInt64(0)
+        if self.peer_params:
+            peer_idle = self.peer_params.value().max_idle_timeout
+        var effective_idle = UInt64(0)
+        if local_idle == 0 and peer_idle == 0:
+            effective_idle = UInt64(0)  # disabled
+        elif local_idle == 0:
+            effective_idle = peer_idle
+        elif peer_idle == 0:
+            effective_idle = local_idle
+        else:
+            effective_idle = local_idle
+            if peer_idle < effective_idle:
+                effective_idle = peer_idle
+        if effective_idle > 0:
+            var idle_deadline = self.idle_timer + effective_idle * 1000
             if earliest:
                 if idle_deadline < earliest.value():
                     earliest = idle_deadline
@@ -1139,9 +1203,24 @@ struct QuicConnection(Movable):
             self.close_timer = UInt64(0)
             return
 
-        # Idle timeout.
-        if self.local_params.max_idle_timeout > 0:
-            var idle_deadline = self.idle_timer + self.local_params.max_idle_timeout * 1000
+        # Idle timeout — use effective min(local, peer).
+        var local_idle = self.local_params.max_idle_timeout
+        var peer_idle = UInt64(0)
+        if self.peer_params:
+            peer_idle = self.peer_params.value().max_idle_timeout
+        var effective_idle = UInt64(0)
+        if local_idle == 0 and peer_idle == 0:
+            effective_idle = UInt64(0)
+        elif local_idle == 0:
+            effective_idle = peer_idle
+        elif peer_idle == 0:
+            effective_idle = local_idle
+        else:
+            effective_idle = local_idle
+            if peer_idle < effective_idle:
+                effective_idle = peer_idle
+        if effective_idle > 0:
+            var idle_deadline = self.idle_timer + effective_idle * 1000
             if now >= idle_deadline:
                 self.state = self.state | CONN_CLOSED
                 self.events.append(
@@ -1162,11 +1241,15 @@ struct QuicConnection(Movable):
             return ev^
         return None
 
-    def close(mut self, error_code: UInt64, reason: String):
+    def close(mut self, error_code: UInt64, reason: String, now: UInt64):
         """Initiate a graceful connection close."""
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         self.state = self.state | CONN_CLOSING
+        # Set close timer: 3 * PTO.
+        var max_ack_delay_us = self.local_params.max_ack_delay * 1000
+        var pto = self.recovery.pto_timeout(max_ack_delay_us)
+        self.close_timer = now + 3 * pto
         var reason_bytes = List[UInt8]()
         var reason_str_bytes = reason.as_bytes()
         for i in range(len(reason_str_bytes)):
