@@ -4,8 +4,8 @@
 #
 # Follows the same OwnedDLHandle pattern as conformance/lib/rustls.mojo, but
 # wraps the 13 TCP-TLS FFI symbols (4 config + 9 connection) plus the shared
-# rlsm_last_error helper. The QUIC FFI symbols stay in conformance/lib/rustls
-# for now and will be consolidated when QUIC lands at M3+.
+# rlsm_last_error helper. QUIC FFI symbols consolidated from
+# conformance/lib/rustls.mojo as of M3b.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
@@ -224,4 +224,260 @@ struct RustlsLibrary(Movable):
         """
         return self._handle.call["rlsm_config_set_alpn_protocols", Int32](
             config_handle, protocols, protocols_len,
+        )
+
+    # -- QUIC Wave 1: keys + AEAD + HP ----------------------------------------
+
+    @always_inline
+    def initial_keys(
+        self,
+        version: Int32,
+        dcid: UnsafePointer[UInt8, MutAnyOrigin],
+        dcid_len: Int32,
+        is_client: Int32,
+    ) -> Int32:
+        """Derive QUIC Initial keys, returning a handle.
+
+        Returns a positive handle on success, -1 on error.
+        """
+        return self._handle.call["rlsm_initial_keys", Int32](
+            version, dcid, dcid_len, is_client,
+        )
+
+    @always_inline
+    def keys_tag_len(self, keys_handle: Int32) -> Int32:
+        """Return AEAD tag length (16 for AES-128-GCM). -1 on error."""
+        return self._handle.call["rlsm_keys_tag_len", Int32](keys_handle)
+
+    @always_inline
+    def keys_local_encrypt(
+        self,
+        keys_handle: Int32,
+        packet_number: UInt64,
+        header: UnsafePointer[UInt8, MutAnyOrigin],
+        header_len: Int32,
+        payload: UnsafePointer[UInt8, MutAnyOrigin],
+        payload_len: Int32,
+        buf_capacity: Int32,
+    ) -> Int32:
+        """Encrypt payload in-place. Returns ciphertext length or -1."""
+        return self._handle.call["rlsm_keys_local_encrypt", Int32](
+            keys_handle, packet_number,
+            header, header_len,
+            payload, payload_len, buf_capacity,
+        )
+
+    @always_inline
+    def keys_remote_decrypt(
+        self,
+        keys_handle: Int32,
+        packet_number: UInt64,
+        header: UnsafePointer[UInt8, MutAnyOrigin],
+        header_len: Int32,
+        payload: UnsafePointer[UInt8, MutAnyOrigin],
+        payload_len: Int32,
+    ) -> Int32:
+        """Decrypt payload in-place. Returns plaintext length or -1."""
+        return self._handle.call["rlsm_keys_remote_decrypt", Int32](
+            keys_handle, packet_number,
+            header, header_len,
+            payload, payload_len,
+        )
+
+    @always_inline
+    def keys_local_header_protect(
+        self,
+        keys_handle: Int32,
+        sample: UnsafePointer[UInt8, MutAnyOrigin],
+        sample_len: Int32,
+        first_byte: UnsafePointer[UInt8, MutAnyOrigin],
+        pn_bytes: UnsafePointer[UInt8, MutAnyOrigin],
+        pn_len: Int32,
+    ) -> Int32:
+        """Apply header protection (local/encrypt direction). Returns 0 or -1."""
+        return self._handle.call["rlsm_keys_local_header_protect", Int32](
+            keys_handle, sample, sample_len,
+            first_byte, pn_bytes, pn_len,
+        )
+
+    @always_inline
+    def keys_remote_header_unprotect(
+        self,
+        keys_handle: Int32,
+        sample: UnsafePointer[UInt8, MutAnyOrigin],
+        sample_len: Int32,
+        first_byte: UnsafePointer[UInt8, MutAnyOrigin],
+        pn_bytes: UnsafePointer[UInt8, MutAnyOrigin],
+        pn_len: Int32,
+    ) -> Int32:
+        """Remove header protection (remote/decrypt direction). Returns 0 or -1."""
+        return self._handle.call["rlsm_keys_remote_header_unprotect", Int32](
+            keys_handle, sample, sample_len,
+            first_byte, pn_bytes, pn_len,
+        )
+
+    @always_inline
+    def keys_free(self, keys_handle: Int32) -> Int32:
+        """Free keys. Returns 0 on success, -1 if handle not found."""
+        return self._handle.call["rlsm_keys_free", Int32](keys_handle)
+
+    # -- QUIC Wave 2: handshake ------------------------------------------------
+
+    @always_inline
+    def quic_client_config_new(self) -> Int32:
+        """Create a QUIC client TLS config with Mozilla WebPKI roots.
+
+        Returns a positive handle on success, or -1 on error.
+        """
+        return self._handle.call["rlsm_quic_client_config_new", Int32]()
+
+    @always_inline
+    def quic_server_config_new(
+        self,
+        cert_pem: UnsafePointer[UInt8, MutAnyOrigin], cert_len: Int32,
+        key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
+        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC server TLS config. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_server_config_new", Int32](
+            cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len, out_handle,
+        )
+
+    @always_inline
+    def quic_client_config_with_ca(
+        self,
+        ca_pem:   UnsafePointer[UInt8, MutAnyOrigin], ca_len:   Int32,
+        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC client TLS config trusting ca_pem (for testing). Returns 0."""
+        return self._handle.call["rlsm_quic_client_config_with_ca", Int32](
+            ca_pem, ca_len, alpn_ptr, alpn_len, out_handle,
+        )
+
+    @always_inline
+    def quic_client_conn_new(
+        self,
+        config_handle: Int32,
+        version: Int32,
+        server_name: UnsafePointer[UInt8, MutAnyOrigin], name_len: Int32,
+        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC client connection. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_client_conn_new", Int32](
+            config_handle, version, server_name, name_len, tp, tp_len, out_handle,
+        )
+
+    @always_inline
+    def quic_server_conn_new(
+        self,
+        config_handle: Int32,
+        version: Int32,
+        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create QUIC server connection. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_server_conn_new", Int32](
+            config_handle, version, tp, tp_len, out_handle,
+        )
+
+    @always_inline
+    def quic_conn_free(self, conn_handle: Int32) -> Int32:
+        """Free QUIC connection handle. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_conn_free", Int32](conn_handle)
+
+    @always_inline
+    def quic_conn_write_hs(
+        self,
+        conn_handle: Int32,
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_capacity: Int32,
+        out_written: UnsafePointer[Int32, MutAnyOrigin],
+        out_kc: UnsafePointer[UInt8, MutAnyOrigin],
+    ) -> Int32:
+        """Drain outgoing TLS bytes. out_kc: 0=none, 1=Handshake, 2=OneRtt. Returns 0."""
+        return self._handle.call["rlsm_quic_conn_write_hs", Int32](
+            conn_handle, out_buf, out_capacity, out_written, out_kc,
+        )
+
+    @always_inline
+    def quic_conn_read_hs(
+        self,
+        conn_handle: Int32,
+        data: UnsafePointer[UInt8, MutAnyOrigin],
+        data_len: Int32,
+    ) -> Int32:
+        """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_conn_read_hs", Int32](
+            conn_handle, data, data_len,
+        )
+
+    @always_inline
+    def quic_conn_take_keys(
+        self,
+        conn_handle: Int32,
+        out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Move pending Keys into Wave 1 KEYS_TABLE. Returns 0 on success."""
+        return self._handle.call["rlsm_quic_conn_take_keys", Int32](
+            conn_handle, out_keys_handle,
+        )
+
+    @always_inline
+    def quic_conn_is_handshaking(self, conn_handle: Int32) -> Int32:
+        """Returns 1 if handshaking, 0 if complete, -1 on invalid handle."""
+        return self._handle.call["rlsm_quic_conn_is_handshaking", Int32](conn_handle)
+
+    @always_inline
+    def quic_conn_transport_params(
+        self,
+        conn_handle: Int32,
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_capacity: Int32,
+        out_written: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Read peer transport params. Returns 0 (available), 1 (not yet), -1 (error)."""
+        return self._handle.call["rlsm_quic_conn_transport_params", Int32](
+            conn_handle, out_buf, out_capacity, out_written,
+        )
+
+    @always_inline
+    def quic_conn_alert(self, conn_handle: Int32) -> Int32:
+        """Read cached TLS alert code. Returns alert number, or -1 if no alert."""
+        return self._handle.call["rlsm_quic_conn_alert", Int32](conn_handle)
+
+    # -- Raw AES-GCM-128 -------------------------------------------------------
+
+    @always_inline
+    def aes_gcm_128_seal(
+        self,
+        key: UnsafePointer[UInt8, MutAnyOrigin], key_len: Int32,
+        nonce: UnsafePointer[UInt8, MutAnyOrigin], nonce_len: Int32,
+        aad: UnsafePointer[UInt8, MutAnyOrigin], aad_len: Int32,
+        plaintext: UnsafePointer[UInt8, MutAnyOrigin], pt_len: Int32,
+        out: UnsafePointer[UInt8, MutAnyOrigin],
+        out_len: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """AES-GCM-128 encrypt. out must hold pt_len + 16 bytes. Returns 0 or -1."""
+        return self._handle.call["rlsm_aes_gcm_128_seal", Int32](
+            key, key_len, nonce, nonce_len, aad, aad_len,
+            plaintext, pt_len, out, out_len,
+        )
+
+    @always_inline
+    def aes_gcm_128_open(
+        self,
+        key: UnsafePointer[UInt8, MutAnyOrigin], key_len: Int32,
+        nonce: UnsafePointer[UInt8, MutAnyOrigin], nonce_len: Int32,
+        aad: UnsafePointer[UInt8, MutAnyOrigin], aad_len: Int32,
+        ciphertext: UnsafePointer[UInt8, MutAnyOrigin], ct_len: Int32,
+        out: UnsafePointer[UInt8, MutAnyOrigin],
+        out_len: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """AES-GCM-128 decrypt. ct_len includes 16-byte tag. Returns 0 or -1."""
+        return self._handle.call["rlsm_aes_gcm_128_open", Int32](
+            key, key_len, nonce, nonce_len, aad, aad_len,
+            ciphertext, ct_len, out, out_len,
         )
