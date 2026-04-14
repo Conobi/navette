@@ -1,7 +1,7 @@
 # mojo-net — Project Context
 
 **Last updated:** 2026-04-14
-**Current phase:** m3c-reviewing
+**Current phase:** done
 
 ## Why this exists
 
@@ -97,7 +97,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 - **QC-1 — QUIC conformance:** ✅ done — 6 commits (`a82d8a6..eb4548c`). Cat 1 key-pair consistency + Cat 2 packet header vectors + Cat 3 AEAD completeness. 33/33 conformance + 39/39 cargo. Pushed to origin/main 2026-04-13.
 - **M3a — QUIC codec & parsing:** ✅ done — 11 commits (`eb4548c..1362f45`). 5 production modules in `src/quic/` (error, codec, frame, packet, trans_param). 20 frame types, 6 packet types, 17 transport params. 66 test functions. 44/44 src + 33/33 conformance. Pushed to origin/main 2026-04-14.
 - **M3b — QUIC connection core:** done — 22 commits (`1362f45..b701388`). Sans-I/O QuicConnection with TLS 1.3 handshake, 3 PN spaces, loss detection/PTO, anti-amplification, stateless Retry. 49/49 src + 33/33 conformance. Pushed to origin/main 2026-04-14.
-- **M3c — QUIC data path + CID management:** spec (`specs/2026-04-14-m3c-quic-data-path.md`) → plan (`plans/2026-04-14-m3c-quic-data-path.md`), reviewing. 13 commits (`b701388..HEAD`). 4 new modules (flow_control, stream, stream_map, cid) + connection.mojo wiring. 53/53 src + 33/33 conformance tests passing.
+- **M3c — QUIC data path + CID management:** spec (`specs/2026-04-14-m3c-quic-data-path.md`) → plan (`plans/2026-04-14-m3c-quic-data-path.md`), done. 13 commits (`b701388..9247747`). 4 new modules (flow_control, stream, stream_map, cid) + connection.mojo wiring. 53/53 src + 33/33 conformance tests passing. Retrospective: `plans/2026-04-14-m3c-quic-data-path-retrospective.md`.
 - **M4 — Loss recovery + congestion control:** pending
 - **M5 — HTTP/3 + QPACK:** pending
 - **M6 — Unified HTTP client:** pending; depends on M5.5 + M5 + M2.5b
