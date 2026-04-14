@@ -124,8 +124,8 @@
   {
     "id": "stream-off",
     "frame_type": "STREAM",
-    "description": "STREAM (0x0A): OFF bit set (offset=100), data to end of frame",
-    "wire_hex": "0a04406448454c4c4f",
+    "description": "STREAM (0x0C): OFF bit set (offset=100), data to end of frame",
+    "wire_hex": "0c04406448454c4c4f",
     "expected": {
       "stream_id": 4,
       "offset": 100,
@@ -139,8 +139,8 @@
   {
     "id": "stream-off-fin",
     "frame_type": "STREAM",
-    "description": "STREAM (0x0B): OFF+FIN bits set (offset=200), data to end of frame",
-    "wire_hex": "0b0440c848454c4c4f",
+    "description": "STREAM (0x0D): OFF+FIN bits set (offset=200), data to end of frame",
+    "wire_hex": "0d0440c848454c4c4f",
     "expected": {
       "stream_id": 4,
       "offset": 200,
@@ -185,7 +185,7 @@
     "id": "stream-empty-fin",
     "frame_type": "STREAM",
     "description": "STREAM with empty data + FIN (legal, signals end of stream)",
-    "wire_hex": "0b0441f4",
+    "wire_hex": "0d0441f4",
     "expected": {
       "stream_id": 4,
       "offset": 500,
