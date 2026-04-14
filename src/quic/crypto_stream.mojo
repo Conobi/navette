@@ -125,6 +125,36 @@ struct CryptoStream(Copyable, Movable):
         for i in range(len(data)):
             self.send_buf.append(data[i])
 
+    def requeue(mut self, offset: UInt64, data: Span[UInt8, _]):
+        """Re-queue CRYPTO data for retransmission at its original offset.
+
+        If send_buf is empty, sets send_offset to the given offset and
+        places data in send_buf.  If send_buf already has data (from a
+        prior requeue call), appends contiguous data or replaces if the
+        new range starts before the current send_offset.
+        """
+        if len(self.send_buf) == 0:
+            self.send_offset = offset
+            self.send_buf = List[UInt8](capacity=len(data))
+            for i in range(len(data)):
+                self.send_buf.append(data[i])
+            return
+
+        # Already have data queued.  If new offset is before current
+        # send_offset, reset; otherwise extend if contiguous.
+        var current_end = self.send_offset + UInt64(len(self.send_buf))
+        if offset < self.send_offset:
+            # New data starts earlier -- replace entirely.
+            self.send_offset = offset
+            self.send_buf = List[UInt8](capacity=len(data))
+            for i in range(len(data)):
+                self.send_buf.append(data[i])
+        elif offset <= current_end:
+            # Contiguous or overlapping: append only the new portion.
+            var skip = Int(current_end - offset)
+            for i in range(skip, len(data)):
+                self.send_buf.append(data[i])
+
     def pending_crypto_frames(self, max_frame_size: Int) -> List[CryptoFrame]:
         """Fragment send_buf into CryptoFrame list, each at most max_frame_size bytes."""
         var frames = List[CryptoFrame]()

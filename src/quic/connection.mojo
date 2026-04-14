@@ -435,6 +435,10 @@ struct QuicConnection(Movable):
         self.bytes_received += UInt64(len(datagram))
         self.idle_timer = now
 
+        # Track the lowest encryption level at which we process a packet
+        # in this datagram, used for implicit CRYPTO retransmission below.
+        var lowest_recv_space = 3  # sentinel: nothing processed yet
+
         var offset = 0
         while offset < len(datagram):
             # 1. Copy remaining bytes into a working buffer.
@@ -518,6 +522,10 @@ struct QuicConnection(Movable):
 
                 # 12. Drive handshake after CRYPTO processing.
                 self._drive_handshake(now)
+
+                # Track lowest processed space for retransmission logic.
+                if space_idx < lowest_recv_space:
+                    lowest_recv_space = space_idx
             except:
                 decrypt_ok = False
 
@@ -525,6 +533,29 @@ struct QuicConnection(Movable):
                 break  # Stop processing coalesced packets
 
             offset += pkt_len
+
+        # Implicit CRYPTO retransmission (RFC 9002 §6.2.4 spirit).
+        # When we receive a packet at a lower encryption level than one
+        # where we have unacked CRYPTO, the peer likely did not get our
+        # higher-level response.  Re-queue unacked CRYPTO data so the
+        # next send() retransmits it.  This is critical for the server
+        # which cannot PTO while amplification-limited.
+        if lowest_recv_space < 3:
+            for s in range(lowest_recv_space + 1, 3):
+                if not self.protect.has_keys(s):
+                    continue
+                if len(self.crypto_streams[s].send_buf) > 0:
+                    continue
+                if len(self.spaces[s].sent_packets) == 0:
+                    continue
+                for entry in self.spaces[s].sent_packets.items():
+                    for fi in range(len(entry.value.frames)):
+                        if entry.value.frames[fi].is_crypto():
+                            if entry.value.frames[fi]._crypto:
+                                var cf = entry.value.frames[fi]._crypto.value().copy()
+                                self.crypto_streams[s].requeue(
+                                    cf.offset, Span(cf.data)
+                                )
 
     # ── Frame dispatch ───────────────────────────────────────────────
 
@@ -682,12 +713,15 @@ struct QuicConnection(Movable):
                 )
                 self.recovery.on_packet_lost(lost_pkt.size, lost_pkt.in_flight)
 
-                # Re-queue CRYPTO frames for retransmission.
+                # Re-queue CRYPTO frames for retransmission at their
+                # original offset so the peer receives correct offsets.
                 for f in range(len(lost_pkt.frames)):
                     if lost_pkt.frames[f].is_crypto():
                         if lost_pkt.frames[f]._crypto:
                             var cf = lost_pkt.frames[f]._crypto.value().copy()
-                            self.crypto_streams[space_idx].write(Span(cf.data))
+                            self.crypto_streams[space_idx].requeue(
+                                cf.offset, Span(cf.data)
+                            )
 
                 _ = self.spaces[space_idx].sent_packets.pop(pn_key)
 
@@ -1268,14 +1302,34 @@ struct QuicConnection(Movable):
         if self.last_ack_eliciting_send_time > 0 or (not self.is_server and (self.state & CONN_HANDSHAKING) != 0):
             if now >= pto_deadline:
                 self.recovery.pto_count += 1
-                # Find highest space with unacked CRYPTO to resend.
+                # Re-queue CRYPTO frames from unacked sent_packets for
+                # retransmission.  advance_send() already consumed the
+                # original send_buf bytes after the first send(), so we
+                # must copy CRYPTO data back from the SentPacket records.
                 var pto_space = -1
                 for s in range(3):
-                    if self.protect.has_keys(s) and len(self.crypto_streams[s].send_buf) > 0:
+                    if not self.protect.has_keys(s):
+                        continue
+                    # First check if send_buf already has data.
+                    if len(self.crypto_streams[s].send_buf) > 0:
+                        pto_space = s
+                        continue
+                    # Otherwise recover CRYPTO from unacked packets.
+                    var requeued = False
+                    for entry in self.spaces[s].sent_packets.items():
+                        for fi in range(len(entry.value.frames)):
+                            if entry.value.frames[fi].is_crypto():
+                                if entry.value.frames[fi]._crypto:
+                                    var cf = entry.value.frames[fi]._crypto.value().copy()
+                                    self.crypto_streams[s].requeue(
+                                        cf.offset, Span(cf.data)
+                                    )
+                                    requeued = True
+                    if requeued:
                         pto_space = s
                 if pto_space >= 0:
-                    # Re-queue CRYPTO frames by leaving send_buf intact.
-                    # They'll be picked up by next _build_frames_for_space.
+                    # CRYPTO data is now in send_buf; next
+                    # _build_frames_for_space will pick it up.
                     pass
                 else:
                     # Send PING in highest available space.
