@@ -53,6 +53,10 @@ TESTS=(
     test_h2_e2e
     test_h2_tls_alpn
     test_h2_coro_server
+    test_quic_codec
+    test_quic_frame
+    test_quic_packet
+    test_quic_transport_params
 )
 
 FILTER="${TESTS_FILTER:-}"
@@ -75,6 +79,9 @@ for t in "${TESTS[@]}"; do
         EXTRA_I=(-I examples/reverse_proxy)
     fi
     if [[ "$t" == test_h2_* ]]; then
+        EXTRA_I=(-I conformance)
+    fi
+    if [[ "$t" == test_quic_* ]]; then
         EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h2_coro_server" ]; then
