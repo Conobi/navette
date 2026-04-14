@@ -316,7 +316,7 @@
   {
     "id": "connection-close-transport",
     "frame_type": "CONNECTION_CLOSE",
-    "description": "CONNECTION_CLOSE (transport): error=0x0A (FLOW_CONTROL_ERROR), frame_type=CRYPTO, reason='test'",
+    "description": "CONNECTION_CLOSE (transport): error=0x0A (PROTOCOL_VIOLATION), frame_type=CRYPTO, reason='test'",
     "wire_hex": "1c0a060474657374",
     "expected": {
       "close_type": "transport",
@@ -376,15 +376,9 @@
   {
     "id": "new-connection-id-cid-len-0",
     "frame_type": "NEW_CONNECTION_ID",
-    "description": "NEW_CONNECTION_ID with CID length 0 (valid wire format but questionable)",
+    "description": "NEW_CONNECTION_ID with CID length 0 (must be 1-20)",
     "wire_hex": "1801000000000000000000000000000000000000",
-    "expected": {
-      "sequence_number": 1,
-      "retire_prior_to": 0,
-      "connection_id_length": 0,
-      "connection_id_hex": "",
-      "stateless_reset_token_hex": "00000000000000000000000000000000"
-    }
+    "expect": "error"
   },
   {
     "id": "new-connection-id-retire-exceeds-seq",

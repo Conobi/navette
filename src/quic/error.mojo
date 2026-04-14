@@ -55,6 +55,8 @@ comptime KEY_UPDATE_ERROR: UInt64 = 0x0E
 comptime AEAD_LIMIT_REACHED: UInt64 = 0x0F
 comptime NO_VIABLE_PATH: UInt64 = 0x10
 comptime VERSION_NEGOTIATION_ERROR: UInt64 = 0x11
+# CRYPTO_ERROR range: 0x0100–0x01FF (TLS AlertDescription + 0x100)
+comptime CRYPTO_ERROR: UInt64 = 0x0100
 
 
 def frame_encoding_error(frame_type: UInt64, reason: String) -> QuicTransportError:
