@@ -71,11 +71,13 @@ struct RecvBuf(Copyable, Movable):
     var seg_data: List[List[UInt8]]
     var read_offset: UInt64             # next byte to deliver
     var max_gaps: UInt64                # gap count limit
+    var total_received: UInt64          # total distinct bytes received (no gaps)
 
     def __init__(out self, recv_window: UInt64):
         self.seg_offsets = List[UInt64]()
         self.seg_data = List[List[UInt8]]()
         self.read_offset = UInt64(0)
+        self.total_received = UInt64(0)
         # max_gaps = max(64, recv_window // 512)
         var computed = recv_window // UInt64(512)
         if computed > UInt64(64):
@@ -88,12 +90,14 @@ struct RecvBuf(Copyable, Movable):
         self.seg_data = List[List[UInt8]](copy=other.seg_data)
         self.read_offset = other.read_offset
         self.max_gaps = other.max_gaps
+        self.total_received = other.total_received
 
     def __init__(out self, *, deinit take: Self):
         self.seg_offsets = take.seg_offsets^
         self.seg_data = take.seg_data^
         self.read_offset = take.read_offset
         self.max_gaps = take.max_gaps
+        self.total_received = take.total_received
 
     def _seg_end(self, i: Int) -> UInt64:
         """Return the exclusive end offset of segment i."""
@@ -157,6 +161,7 @@ struct RecvBuf(Copyable, Movable):
         if data_len > 0:
             self._insert(offset, data)
 
+        self.total_received += new_bytes
         return new_bytes
 
     def _count_new_bytes(self, offset: UInt64, end_offset: UInt64) -> UInt64:
@@ -347,13 +352,13 @@ struct RecvBuf(Copyable, Movable):
         return (result^, fin_reached)
 
     def is_complete(self, fin_offset: Optional[UInt64]) -> Bool:
-        """True if fin_offset is set and we have received all bytes up to it."""
+        """True if fin_offset is set and we have received all bytes up to it.
+
+        Uses total_received to remain correct after partial reads consume segments.
+        """
         if not fin_offset:
             return False
-        var fv = fin_offset.value()
-        if len(self.seg_offsets) == 0:
-            return fv == UInt64(0)
-        return self.seg_offsets[0] == UInt64(0) and self._seg_end(0) >= fv
+        return self.total_received >= fin_offset.value()
 
     def has_readable(self) -> Bool:
         """True if there are bytes ready to deliver starting at read_offset."""
@@ -504,6 +509,8 @@ struct SendBuf(Copyable, Movable):
         """Handle loss of [lost_off, lost_off+lost_len) bytes.
 
         Resets unsent_offset to trigger retransmission, floored at acked_offset.
+        If the lost range covers the FIN, clears fin_offset so make_frame will
+        re-include the FIN flag on the next retransmission.
         """
         if lost_len == 0:
             return
@@ -515,6 +522,14 @@ struct SendBuf(Copyable, Movable):
         # Floor at acked_offset (never retransmit already-acked data)
         if self.unsent_offset < self.acked_offset:
             self.unsent_offset = self.acked_offset
+
+        # If the lost range covers the FIN byte, clear fin_offset so that
+        # make_frame will re-include the FIN on the retransmit.
+        if self.fin_offset:
+            var lost_end = lost_off + lost_len
+            if lost_end >= self.fin_offset.value():
+                self.fin_offset = None
+                self.fin_acked = False
 
     def is_fully_acked(self) -> Bool:
         """True when all data and FIN have been acknowledged."""
@@ -578,7 +593,7 @@ struct Stream(Copyable, Movable):
         self.reset_stream_final_size = UInt64(0)
         self.reset_stream_error = UInt64(0)
         self.stop_sending_error = UInt64(0)
-        self.urgency = UInt8(0)
+        self.urgency = UInt8(127)
         self.incremental = False
 
     def __init__(out self, *, other: Self):
