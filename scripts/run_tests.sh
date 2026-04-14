@@ -57,6 +57,11 @@ TESTS=(
     test_quic_frame
     test_quic_packet
     test_quic_transport_params
+    test_quic_crypto_stream
+    test_quic_pn_space
+    test_quic_recovery
+    test_quic_retry
+    test_quic_connection
 )
 
 FILTER="${TESTS_FILTER:-}"
