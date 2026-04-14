@@ -55,7 +55,7 @@ for t in "${TESTS[@]}"; do
     echo "--- $t ---"
     cd "$CONFORMANCE_DIR"
     rm -f ./*.mojopkg 2>/dev/null || true
-    if uv run --project "$REPO_ROOT" mojo run -I "$CONFORMANCE_DIR" -D ASSERT=all "tests/$t.mojo"; then
+    if uv run --project "$REPO_ROOT" mojo run -I "$CONFORMANCE_DIR" -I "$REPO_ROOT" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
     else
         echo "FAILED: $t"
