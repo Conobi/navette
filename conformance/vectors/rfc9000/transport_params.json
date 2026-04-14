@@ -1,0 +1,145 @@
+[
+  {
+    "id": "all-defaults",
+    "description": "Empty encoding — no parameters present, all defaults apply",
+    "wire_hex": "",
+    "expected": {
+      "max_idle_timeout": 0,
+      "max_udp_payload_size": 65527,
+      "initial_max_data": 0,
+      "initial_max_stream_data_bidi_local": 0,
+      "initial_max_stream_data_bidi_remote": 0,
+      "initial_max_stream_data_uni": 0,
+      "initial_max_streams_bidi": 0,
+      "initial_max_streams_uni": 0,
+      "ack_delay_exponent": 3,
+      "max_ack_delay": 25,
+      "disable_active_migration": false,
+      "active_connection_id_limit": 2
+    }
+  },
+  {
+    "id": "full-params",
+    "description": "All known integer parameters set to non-default values",
+    "wire_hex": "010480007530030245ac040480100000050480080000060480080000070480040000080240640901320a01050b01320c000e0108",
+    "expected": {
+      "max_idle_timeout": 30000,
+      "max_udp_payload_size": 1452,
+      "initial_max_data": 1048576,
+      "initial_max_stream_data_bidi_local": 524288,
+      "initial_max_stream_data_bidi_remote": 524288,
+      "initial_max_stream_data_uni": 262144,
+      "initial_max_streams_bidi": 100,
+      "initial_max_streams_uni": 50,
+      "ack_delay_exponent": 5,
+      "max_ack_delay": 50,
+      "disable_active_migration": true,
+      "active_connection_id_limit": 8
+    }
+  },
+  {
+    "id": "max-idle-timeout",
+    "description": "Single parameter: max_idle_timeout=30000ms",
+    "wire_hex": "010480007530",
+    "expected": {
+      "max_idle_timeout": 30000
+    }
+  },
+  {
+    "id": "disable-active-migration",
+    "description": "disable_active_migration: zero-length value, presence = true (param_id=0x0C)",
+    "wire_hex": "0c00",
+    "expected": {
+      "disable_active_migration": true
+    }
+  },
+  {
+    "id": "unknown-param",
+    "description": "Unknown parameter: ID=0xFFFF, value=0x01020304 (should be preserved)",
+    "wire_hex": "8000ffff0401020304",
+    "expected": {
+      "unknown_parameters": [
+        {
+          "param_id": 65535,
+          "value_hex": "01020304"
+        }
+      ]
+    }
+  },
+  {
+    "id": "original-dcid",
+    "description": "original_destination_connection_id (0x00): 8-byte CID value",
+    "wire_hex": "00080102030405060708",
+    "expected": {
+      "original_destination_connection_id_hex": "0102030405060708"
+    }
+  },
+  {
+    "id": "initial-scid",
+    "description": "initial_source_connection_id (0x0F): 8-byte CID value",
+    "wire_hex": "0f08aabbccddeeff0011",
+    "expected": {
+      "initial_source_connection_id_hex": "aabbccddeeff0011"
+    }
+  },
+  {
+    "id": "stateless-reset-token",
+    "description": "stateless_reset_token (0x02): 16 bytes",
+    "wire_hex": "021000112233445566778899aabbccddeeff",
+    "expected": {
+      "stateless_reset_token_hex": "00112233445566778899aabbccddeeff"
+    }
+  },
+  {
+    "id": "preferred-address",
+    "description": "preferred_address (0x0D): IPv4=192.168.1.1:4433, IPv6=[2001:db8::1]:4434, CID=4B, token=16B",
+    "wire_hex": "0d2dc0a80101115120010db8000000000000000000000001115204aabbccddffeeddccbbaa99887766554433221100",
+    "expected": {
+      "preferred_address": {
+        "ipv4_address": "192.168.1.1",
+        "ipv4_port": 4433,
+        "ipv6_address": "2001:0db8:0000:0000:0000:0000:0000:0001",
+        "ipv6_port": 4434,
+        "connection_id_length": 4,
+        "connection_id_hex": "aabbccdd",
+        "stateless_reset_token_hex": "ffeeddccbbaa99887766554433221100"
+      }
+    }
+  },
+  {
+    "id": "error-duplicate-param",
+    "description": "Duplicate parameter: max_idle_timeout appears twice — TRANSPORT_PARAMETER_ERROR",
+    "wire_hex": "01048000753001048000ea60",
+    "expect": "error"
+  },
+  {
+    "id": "error-max-udp-payload-too-small",
+    "description": "max_udp_payload_size=1199 (< 1200 minimum) — TRANSPORT_PARAMETER_ERROR",
+    "wire_hex": "030244af",
+    "expect": "error"
+  },
+  {
+    "id": "error-ack-delay-exponent-too-large",
+    "description": "ack_delay_exponent=21 (> 20 maximum) — TRANSPORT_PARAMETER_ERROR",
+    "wire_hex": "0a0115",
+    "expect": "error"
+  },
+  {
+    "id": "error-max-ack-delay-too-large",
+    "description": "max_ack_delay=16384 (>= 2^14) — TRANSPORT_PARAMETER_ERROR",
+    "wire_hex": "0b0480004000",
+    "expect": "error"
+  },
+  {
+    "id": "error-active-cid-limit-too-small",
+    "description": "active_connection_id_limit=1 (< 2 minimum) — TRANSPORT_PARAMETER_ERROR",
+    "wire_hex": "0e0101",
+    "expect": "error"
+  },
+  {
+    "id": "error-truncated-value",
+    "description": "Truncated value: length says 4 bytes but only 2 available",
+    "wire_hex": "04048010",
+    "expect": "error"
+  }
+]
