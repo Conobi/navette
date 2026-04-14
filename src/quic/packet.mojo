@@ -75,7 +75,7 @@ struct PacketType(ImplicitlyCopyable, Equatable):
 # --- PacketHeader ---
 
 
-struct PacketHeader(Movable):
+struct PacketHeader(Copyable, Movable):
     var is_long_header: Bool
     var packet_type: PacketType
     var version: UInt32
@@ -98,6 +98,18 @@ struct PacketHeader(Movable):
         self.pn_offset = 0
         self.supported_versions = List[UInt32]()
         self.retry_integrity_tag = List[UInt8]()
+
+    def __init__(out self, *, other: Self):
+        self.is_long_header = other.is_long_header
+        self.packet_type = other.packet_type
+        self.version = other.version
+        self.dcid = List[UInt8](copy=other.dcid)
+        self.scid = List[UInt8](copy=other.scid)
+        self.token = List[UInt8](copy=other.token)
+        self.payload_length = other.payload_length
+        self.pn_offset = other.pn_offset
+        self.supported_versions = List[UInt32](copy=other.supported_versions)
+        self.retry_integrity_tag = List[UInt8](copy=other.retry_integrity_tag)
 
     def __init__(out self, *, deinit take: Self):
         self.is_long_header = take.is_long_header
