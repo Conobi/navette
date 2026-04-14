@@ -329,6 +329,7 @@ def pn_truncate(full_pn: UInt64, pn_length: Int) -> UInt64:
 
 def pn_decode(truncated_pn: UInt64, pn_length: Int, largest_pn: UInt64) -> UInt64:
     # RFC 9000 Appendix A, corrected per PR #3188.
+    # Use signed Int internally to avoid unsigned underflow.
     var pn_nbits = UInt64(8 * pn_length)
     var pn_win = UInt64(1) << pn_nbits
     var pn_hwin = pn_win >> 1
@@ -337,8 +338,14 @@ def pn_decode(truncated_pn: UInt64, pn_length: Int, largest_pn: UInt64) -> UInt6
     var expected_pn = largest_pn + 1
     var candidate = (expected_pn & ~pn_mask) | truncated_pn
 
-    if candidate <= expected_pn - pn_hwin and candidate < (UInt64(1) << 62) - pn_win:
+    # Signed comparisons to avoid underflow when expected_pn < pn_hwin
+    var s_candidate = Int(candidate)
+    var s_expected = Int(expected_pn)
+    var s_pn_hwin = Int(pn_hwin)
+    var s_pn_win = Int(pn_win)
+
+    if s_candidate <= s_expected - s_pn_hwin and s_candidate < (1 << 62) - s_pn_win:
         candidate += pn_win
-    if candidate > expected_pn + pn_hwin and candidate >= pn_win:
+    if s_candidate > s_expected + s_pn_hwin and candidate >= pn_win:
         candidate -= pn_win
     return candidate
