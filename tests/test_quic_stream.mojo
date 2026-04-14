@@ -620,6 +620,69 @@ def test_stream_urgency_default() raises:
     print("  test_stream_urgency_default: PASS")
 
 
+def test_recv_buf_duplicate_after_read() raises:
+    """After reading bytes, a retransmit of the same bytes must not inflate total_received."""
+    var fin_offset = Optional[UInt64](None)
+    var buf = RecvBuf(UInt64(65536))
+    var data1 = List[UInt8](capacity=5)
+    for i in range(5):
+        data1.append(UInt8(i))
+    var n1 = buf.write(UInt64(0), Span(data1), False, fin_offset)
+    assert_true(n1 == 5, "first write: 5 new bytes")
+
+    var result = buf.read(fin_offset)
+    assert_true(len(result[0]) == 5, "read returned 5 bytes")
+    assert_true(buf.read_offset == UInt64(5), "read_offset advanced to 5")
+
+    # Retransmit [0,5) — should count as 0 new bytes
+    var data2 = List[UInt8](capacity=5)
+    for i in range(5):
+        data2.append(UInt8(i))
+    var n2 = buf.write(UInt64(0), Span(data2), False, fin_offset)
+    assert_true(n2 == 0, "retransmit after read: 0 new bytes")
+    assert_true(buf.total_received == UInt64(5), "total_received stays at 5")
+    print("  test_recv_buf_duplicate_after_read: PASS")
+
+
+def test_recv_buf_is_complete_not_premature() raises:
+    """Ensure is_complete does not return True until ALL data has arrived."""
+    var fin_offset = Optional[UInt64](None)
+    var buf = RecvBuf(UInt64(65536))
+
+    # Write [0,5)
+    var data1 = List[UInt8](capacity=5)
+    for i in range(5):
+        data1.append(UInt8(i))
+    _ = buf.write(UInt64(0), Span(data1), False, fin_offset)
+
+    # Read [0,5)
+    _ = buf.read(fin_offset)
+    assert_true(buf.read_offset == UInt64(5), "read_offset = 5 after read")
+
+    # Retransmit [0,5) — should NOT advance total_received
+    var data2 = List[UInt8](capacity=5)
+    for i in range(5):
+        data2.append(UInt8(i))
+    _ = buf.write(UInt64(0), Span(data2), False, fin_offset)
+    assert_true(buf.total_received == UInt64(5), "total_received still 5 after retransmit")
+
+    # [5,10) not yet arrived — is_complete with fin_offset=10 must be False
+    var fo10 = Optional[UInt64](UInt64(10))
+    assert_false(buf.is_complete(fo10), "is_complete False — [5,10) not yet received")
+
+    # Now write [5,10) with fin=True
+    var data3 = List[UInt8](capacity=5)
+    for i in range(5):
+        data3.append(UInt8(i + 5))
+    _ = buf.write(UInt64(5), Span(data3), True, fin_offset)
+
+    # fin_offset should now be set to 10
+    assert_true(fin_offset.__bool__(), "fin_offset set after FIN write")
+    assert_true(fin_offset.value() == UInt64(10), "fin_offset == 10")
+    assert_true(buf.is_complete(fin_offset), "is_complete True — all 10 bytes received")
+    print("  test_recv_buf_is_complete_not_premature: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -656,5 +719,8 @@ def main() raises:
     test_send_buf_fin_loss_retransmit()
     test_recv_buf_is_complete_after_read()
     test_stream_urgency_default()
+
+    test_recv_buf_duplicate_after_read()
+    test_recv_buf_is_complete_not_premature()
 
     print("All test_quic_stream tests passed.")
