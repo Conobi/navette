@@ -53,7 +53,8 @@ struct CryptoStream(Movable):
         var buf_end = self.recv_offset + UInt64(len(self.recv_buf))
 
         # CVE-2024-1765 mitigation: reject offsets too far ahead.
-        if offset > buf_end + 16384:
+        # Use recv_offset (not buf_end) so the window doesn't grow with buffered data.
+        if offset > self.recv_offset + 16384:
             raise "CRYPTO offset exceeds window"
 
         # Duplicate: entire range already covered.
@@ -144,4 +145,4 @@ struct CryptoStream(Movable):
         for i in range(advance, len(self.send_buf)):
             new_buf.append(self.send_buf[i])
         self.send_buf = new_buf^
-        self.send_offset += bytes
+        self.send_offset += UInt64(advance)
