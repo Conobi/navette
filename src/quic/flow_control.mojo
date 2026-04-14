@@ -42,8 +42,15 @@ struct FlowControl(Copyable, Movable):
         self.blocked_at = take.blocked_at
 
     def should_update(self) -> Bool:
-        """True when remaining credit (limit - consumed) < window/2."""
-        return (self.limit - self.consumed) < (self.window // 2)
+        """True when remaining credit (limit - consumed) < window/2.
+
+        Guards against UInt64 underflow: if consumed >= limit, the window is
+        exhausted (or a bug has occurred), so we definitely need an update.
+        """
+        if self.consumed >= self.limit:
+            return True
+        var remaining = self.limit - self.consumed
+        return remaining < (self.window // 2)
 
     def next_limit(self) -> UInt64:
         """Compute what the new limit would be after a window update."""
