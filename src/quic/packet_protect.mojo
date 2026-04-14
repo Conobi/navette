@@ -52,16 +52,28 @@ struct PacketProtect(Movable):
 
     # -- Key management --------------------------------------------------------
 
-    def set_keys(mut self, level: Int, handle: Int32):
+    def _check_level(self, level: Int) raises:
+        if level < 0 or level >= 3:
+            raise "PacketProtect: level out of range (0-2)"
+
+    def set_keys(mut self, level: Int, handle: Int32) raises:
         """Install a keys handle at the given encryption level."""
+        self._check_level(level)
+        # Free old handle if present to prevent leak.
+        if self.keys[level] != Int32(-1):
+            _ = self._lib()[].keys_free(self.keys[level])
         self.keys[level] = handle
 
     def has_keys(self, level: Int) -> Bool:
         """True if keys are present for the given encryption level."""
+        if level < 0 or level >= 3:
+            return False
         return self.keys[level] != Int32(-1)
 
     def discard_keys(mut self, level: Int):
         """Free and remove keys at the given encryption level."""
+        if level < 0 or level >= 3:
+            return
         if self.keys[level] != Int32(-1):
             _ = self._lib()[].keys_free(self.keys[level])
             self.keys[level] = Int32(-1)
@@ -76,6 +88,7 @@ struct PacketProtect(Movable):
             dcid: The destination connection ID bytes.
             is_client: True for client-side keys, False for server-side.
         """
+        self.discard_keys(0)  # Free existing Initial keys if any
         var dcid_len = len(dcid)
         var dcid_buf = _heap_alloc[UInt8](dcid_len).as_any_origin()
         for i in range(dcid_len):
@@ -115,6 +128,7 @@ struct PacketProtect(Movable):
         Returns:
             A tuple of (unprotected first byte, packet number length 1..4).
         """
+        self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
             raise "no keys for level " + str(level)
