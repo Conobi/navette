@@ -729,3 +729,43 @@ Each recorded here with severity/trigger so project-context's open-follow-ups ca
 - **Source:** TQUIC `src/congestion_control/{congestion_control,cubic,pacing,dummy}.rs`, `src/connection/recovery.rs`.
 - **Project research:** `research/quic-loss-detection-edge-cases.md` §4 (persistent congestion), §11 (M3/M4 scope split).
 - **Project code:** `src/quic/recovery.mojo` (M3b/M3c baseline), `src/quic/connection.mojo:172` (`QuicEvent` flat-tag precedent), `src/quic/pn_space.mojo:146` (`sent_packets: Dict[Int, SentPacket]` — pre-existing), `src/quic/connection.mojo:1393` (inline amplification check — extracted into `_anti_amp_ok`), `src/quic/connection.mojo:1949` (`def timeout` — pacer `next_send_time` integration point).
+
+## 15. Task 0 spike findings (resolved 2026-04-15)
+
+Resolutions for the open Mojo 0.26.2 API questions enumerated in §11.
+
+### 1. Nested-Copyable variant dispatch
+
+- **Result:** FAILS with `Copyable` alone. WORKS with `ImplicitlyCopyable`.
+- **Root cause:** In Mojo 0.26.2, `Copyable` is an explicit-copy trait; `var o2 = o` (implicit copy) requires `ImplicitlyCopyable`. Declaring structs as `(ImplicitlyCopyable, Movable)` — which subsumes `Copyable` — allows both `var o2 = o` and explicit `.copy()` without any hand-written `__copy_init__`.
+- **Decision:** Use `(ImplicitlyCopyable, Movable)` (not `(Copyable, Movable)`) on `Inner`, `Outer`, and their M4a counterparts (`DummyCc`, `CubicCc`, `CcController`). The §2.3 nested-variant pattern is valid; no fallback to flat hoist needed.
+- **Evidence:** `mcp__mojo-mcp__execute` ran successfully and printed `10`, `15`, `15`, `115 15`.
+
+### 2. UInt128 availability
+
+- **Result:** All three approaches succeed:
+  - Attempt A — `SIMD[DType.uint128, 1]`: compiles and prints `100000000000000000000`.
+  - Attempt B — native `UInt128`: compiles and prints `100000000000000000000`.
+  - Attempt C — native `Int128`: compiles and prints `100000000000000000000`.
+  - UInt64 overflow confirmed: `10^10 * 10^10` wraps to `7766279631452241920`, proving UInt64 alone is insufficient for cube math.
+- **Decision:** Use `UInt128` directly in `cubic.mojo` for `w_cubic` intermediate arithmetic. No `mul_u64_hi_lo` split-arithmetic helper needed.
+
+### 3. UINT64_UNLIMITED idiom
+
+- **Result:** Both of these work at module scope and inside functions:
+  - `comptime UINT64_UNLIMITED: UInt64 = ~UInt64(0)` — prints `18446744073709551615`. (`alias` form also works but emits deprecation warning.)
+  - `comptime UINT64_UNLIMITED: UInt64 = UInt64.MAX` — prints `18446744073709551615`.
+- **Decision:** Use `comptime UINT64_UNLIMITED: UInt64 = UInt64.MAX` in `cc/trait.mojo` — clearest intent, no bit-flip expression needed.
+
+### 4. Optional truthiness
+
+- **Result:** All three idioms confirmed working:
+  - `if o1:` fires for `Optional[UInt64](42)` → prints `o1 truthy`.
+  - `if not o2:` fires for `Optional[UInt64](None)` → prints `o2 falsy`.
+  - `.value()` returns the wrapped value correctly → prints `value works`.
+- **Decision:** Use `if opt:` idiom throughout M4a code (matches existing codebase style at `connection.mojo:1975`).
+
+### 5. Module-scope `comptime`
+
+- **Result:** WORKS. `comptime FOO: UInt64 = 42` at module scope compiles and prints `42`.
+- **Decision:** Consistent with existing usage in `src/quic/recovery.mojo:7-10` and `src/quic/stream.mojo:11`. Use `comptime` freely at module scope in all new `cc/` files.
