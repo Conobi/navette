@@ -2,6 +2,10 @@
 # QUIC loss detection and congestion control — RFC 9002.
 # RTT estimation, loss detection, and PTO computation.
 
+from src.quic.cc.controller import CcController
+from src.quic.cc.pacing import Pacer
+from src.quic.cc.cc_trait import AckedPacket, LostPacket
+
 # ── Constants (RFC 9002 §6) ─────────────────────────────────────────────
 
 comptime K_PACKET_THRESHOLD: Int = 3
@@ -16,7 +20,7 @@ comptime INITIAL_RTTVAR: UInt64 = 166_500  # 333ms / 2
 
 
 struct Recovery(Movable):
-    """QUIC recovery state: RTT estimation, loss detection, PTO."""
+    """QUIC recovery state: RTT estimation, loss detection, PTO, CC, and pacing."""
 
     var smoothed_rtt: UInt64  # Microseconds, init = INITIAL_RTT
     var rttvar: UInt64  # Microseconds, init = INITIAL_RTTVAR
@@ -25,8 +29,18 @@ struct Recovery(Movable):
     var bytes_in_flight: UInt64  # Total in-flight bytes
     var pto_count: Int  # Exponential backoff counter
     var has_rtt_sample: Bool  # False until first ACK
+    var cc: CcController  # Congestion controller (Cubic or Dummy)
+    var pacer: Pacer  # Token-bucket pacer
 
-    def __init__(out self):
+    def __init__(out self, max_datagram_size: UInt64 = UInt64(1200), use_cubic: Bool = True):
+        """Create a Recovery instance.
+
+        Args:
+            max_datagram_size: Max datagram size in bytes (default 1200).
+                               Callers that used Recovery() continue to work unchanged.
+            use_cubic: If True (default), use CUBIC CC. If False, use Dummy CC.
+                       Task 8/9 callers will thread max_datagram_size and now properly.
+        """
         self.smoothed_rtt = INITIAL_RTT
         self.rttvar = INITIAL_RTTVAR
         self.min_rtt = UInt64(0)
@@ -34,6 +48,11 @@ struct Recovery(Movable):
         self.bytes_in_flight = UInt64(0)
         self.pto_count = 0
         self.has_rtt_sample = False
+        if use_cubic:
+            self.cc = CcController.new_cubic(max_datagram_size)
+        else:
+            self.cc = CcController.new_dummy(max_datagram_size)
+        self.pacer = Pacer.new(max_datagram_size)
 
     def __init__(out self, *, deinit take: Self):
         self.smoothed_rtt = take.smoothed_rtt
@@ -43,6 +62,8 @@ struct Recovery(Movable):
         self.bytes_in_flight = take.bytes_in_flight
         self.pto_count = take.pto_count
         self.has_rtt_sample = take.has_rtt_sample
+        self.cc = take.cc
+        self.pacer = take.pacer
 
     # ── RTT estimation (RFC 9002 §5) ────────────────────────────────────
 
@@ -97,10 +118,17 @@ struct Recovery(Movable):
 
     # ── Packet bookkeeping ──────────────────────────────────────────────
 
-    def on_packet_sent(mut self, size: Int, in_flight: Bool):
-        """Track bytes when a packet is sent."""
+    def on_packet_sent(mut self, size: Int, in_flight: Bool, now: UInt64 = UInt64(0)):
+        """Track bytes when a packet is sent and notify CC.
+
+        The `now` parameter defaults to 0 for backward compatibility with M3b
+        callers. Task 8/9 will thread the real timestamp through.
+        Note: pacer.on_sent is called at the actual send site by connection.mojo,
+        not here, since the connection controls the send path.
+        """
         if in_flight:
             self.bytes_in_flight += UInt64(size)
+            self.cc.on_packet_sent(UInt64(size), now)
 
     def on_packet_acked(mut self, size: Int, in_flight: Bool):
         """Release bytes when a packet is acknowledged."""
@@ -121,8 +149,15 @@ struct Recovery(Movable):
                 self.bytes_in_flight -= s
 
     def on_ack_received(mut self):
-        """Reset PTO backoff on ACK receipt."""
+        """Reset PTO backoff on ACK receipt and refresh pacer capacity.
+
+        CC.on_packet_acked fan-out is called by connection.mojo (Task 9),
+        which iterates sent_packets to build AckedPacket records.
+        Here we just reset PTO and sync the pacer with current CC state.
+        """
         self.pto_count = 0
+        # Refresh pacer capacity to reflect any cwnd change from CC ACK processing.
+        self.pacer.update_capacity(self.cc.cwnd(), self.smoothed_rtt)
 
     # ── Loss delay and PTO (RFC 9002 §6) ────────────────────────────────
 
