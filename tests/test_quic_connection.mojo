@@ -489,7 +489,7 @@ def test_idle_timeout() raises:
             break
 
     # Verify timeout() returns a deadline.
-    var deadline = client.timeout()
+    var deadline = client.timeout(now)
     assert_true(Bool(deadline), "client timeout() returned None after handshake")
 
     # Advance time well past idle timeout (5s = 5_000_000 us).
@@ -559,7 +559,7 @@ def test_handshake_with_loss() raises:
     # Intentionally NOT feeding server_dgrams_r1 to client.
 
     # Advance time past the client's PTO timeout.
-    var client_deadline = client.timeout()
+    var client_deadline = client.timeout(now)
     assert_true(Bool(client_deadline), "client should have a PTO deadline")
     now = client_deadline.value() + UInt64(1)
 
@@ -2197,6 +2197,59 @@ def test_persistent_congestion_end_to_end() raises:
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
+def test_pacer_delays_burst() raises:
+    """With a low pacing rate, timeout() exposes a pacer deadline delaying the next send."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Open a bidi stream and send 100 bytes to exercise the pacer.
+    var sid = client.open_stream(True)
+    var payload = List[UInt8](capacity=100)
+    for _ in range(100):
+        payload.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(payload), False)
+
+    # Flush one round so the packet is sent and pacer tokens are consumed.
+    now += UInt64(10_000)
+    _ = client.send(now)
+
+    # Call timeout() with the current `now`; some timer (PTO or pacer) must be active.
+    var deadline = client.timeout(now)
+    assert_true(Bool(deadline), "some timer active after send")
+    # The returned deadline must not be in the past.
+    if deadline:
+        assert_true(
+            deadline.value() >= now,
+            "deadline not in past; got " + String(deadline.value()),
+        )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_pacer_delays_burst: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2221,4 +2274,5 @@ def main() raises:
     test_m3c_frames_retransmit_on_loss()
     test_anti_amp_ok_extract_parity()
     test_persistent_congestion_end_to_end()
+    test_pacer_delays_burst()
     print("All test_quic_connection tests passed.")

@@ -1587,6 +1587,10 @@ struct QuicConnection(Movable):
             )
             self.spaces[space_idx].on_packet_sent(sent)
             self.recovery.on_packet_sent(pkt_size, True)
+            # Commit pacer token for this packet.
+            var _pace_rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
+            _ = self.recovery.pacer.refill_and_check(_pace_rate, now)
+            self.recovery.pacer.on_sent(UInt64(pkt_size))
 
             # Register stream-layer frame records for this Application-space packet
             # so ACK / loss handlers can re-apply state (M3c).
@@ -2076,8 +2080,8 @@ struct QuicConnection(Movable):
 
     # ── Timers ───────────────────────────────────────────────────────
 
-    def timeout(self) -> Optional[UInt64]:
-        """Return the earliest deadline among PTO, idle, close/drain timers.
+    def timeout(self, now: UInt64) -> Optional[UInt64]:
+        """Return the earliest deadline among PTO, idle, close/drain, and pacer timers.
 
         Returns None if no timer is active.
         """
@@ -2123,6 +2127,16 @@ struct QuicConnection(Movable):
                     earliest = self.drain_timer
             else:
                 earliest = self.drain_timer
+
+        # --- Pacer branch ---
+        var rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
+        var pacer_deadline = self.recovery.pacer.next_send_time(rate, now)
+        if pacer_deadline:
+            if earliest:
+                if pacer_deadline.value() < earliest.value():
+                    earliest = pacer_deadline
+            else:
+                earliest = pacer_deadline
 
         return earliest^
 
