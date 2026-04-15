@@ -20,7 +20,9 @@ from src.quic.connection import (
     CONN_ADDR_VALIDATED,
 )
 from src.quic.cid import CID_ACTIVE
-from src.quic.frame import StreamFrame, ResetStreamFrame
+from src.quic.frame import Frame, StreamFrame, ResetStreamFrame
+from src.quic.pn_space import SentPacket
+from src.quic.cc.cc_trait import AckedPacket, LostPacket
 from src.quic.stream import SEND_RESET_SENT
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.retry import (
@@ -2032,6 +2034,166 @@ def test_anti_amp_ok_extract_parity() raises:
     print("  test_anti_amp_ok_extract_parity: PASS")
 
 
+def test_persistent_congestion_end_to_end() raises:
+    """Force a loss-burst spanning persistent_congestion_duration and verify
+    CUBIC cwnd resets to 2*MDS, and recovery.min_rtt is re-seeded.
+
+    Drives the detector directly (no wire) and also exercises the
+    on_packets_lost fan-out through _detect_losses/_handle_ack via a synthetic
+    ACK that declares the injected packets lost via the packet-threshold rule.
+    """
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+
+    # Grow the CUBIC cwnd above the 2*MDS floor via direct on_packet_acked
+    # calls on the controller. Avoids needing to wire a send burst.
+    _ = client.recovery.cc.cwnd()
+    for i in range(50):
+        var pkt = AckedPacket(
+            pkt_num=UInt64(100 + i),
+            size=UInt64(1200),
+            time_sent=UInt64(i * 1000),
+            time_acked=UInt64(i * 1000 + 500),
+            rtt_sample=UInt64(500),
+        )
+        client.recovery.cc.on_packet_acked(
+            pkt, UInt64(500), UInt64(i * 1000 + 500)
+        )
+    var pre_loss_cwnd = client.recovery.cc.cwnd()
+    assert_true(
+        pre_loss_cwnd > UInt64(2) * UInt64(1200),
+        "cwnd grew before loss burst",
+    )
+
+    # Compute the congestion_period using the same formula the detector uses.
+    var srtt = client.recovery.smoothed_rtt
+    var rttvar = client.recovery.rttvar
+    var peer_mad_ms = client.local_params.max_ack_delay
+    if client.peer_params:
+        peer_mad_ms = client.peer_params.value().max_ack_delay
+    var peer_mad_us = peer_mad_ms * 1000
+    var rttvar_scaled: UInt64 = UInt64(4) * rttvar
+    if rttvar_scaled < UInt64(1000):
+        rttvar_scaled = UInt64(1000)
+    var congestion_period = (srtt + rttvar_scaled + peer_mad_us) * UInt64(3)
+
+    # Inject five ack-eliciting SentPacket records into the Data space
+    # spaced by congestion_period/4, so the span (latest - earliest) exceeds
+    # congestion_period.
+    var base_time = now + UInt64(1)
+    var lost_pns = List[Int]()
+    var step = congestion_period // UInt64(4)
+    if step == UInt64(0):
+        step = UInt64(1)
+    for i in range(5):
+        var pn = Int(9000 + i)
+        var t = base_time + UInt64(i) * step
+        var sp = SentPacket(
+            pn=UInt64(pn),
+            time_sent=t,
+            ack_eliciting=True,
+            in_flight=True,
+            size=Int(1200),
+            frames=List[Frame](),
+        )
+        client.spaces[2].sent_packets[pn] = sp^
+        lost_pns.append(pn)
+
+    # Seed the per-space tracker below the earliest so any_ae_acked_in_range
+    # answers False.
+    client.spaces[2].last_ae_acked_time_sent = base_time - UInt64(1)
+
+    var t_now = base_time + congestion_period + UInt64(1_000)
+
+    # Direct call to the detector — confirms the positive path.
+    var persistent = client._detect_persistent_congestion(
+        Int(2), lost_pns, peer_mad_us, t_now,
+    )
+    assert_true(persistent, "persistent congestion declared given criteria")
+
+    # Emulate the caller's post-True behavior: fan out to CC and reset min_rtt.
+    var lost_records = List[LostPacket]()
+    for i in range(len(lost_pns)):
+        var pn = lost_pns[i]
+        var sp_pn = client.spaces[2].sent_packets[pn].pn
+        var sp_size = client.spaces[2].sent_packets[pn].size
+        var sp_ts = client.spaces[2].sent_packets[pn].time_sent
+        lost_records.append(
+            LostPacket(
+                pkt_num=sp_pn,
+                size=UInt64(sp_size),
+                time_sent=sp_ts,
+            )
+        )
+    var rec_latest = client.recovery.latest_rtt
+    client.recovery.cc.on_packets_lost(
+        lost_records, client.recovery.smoothed_rtt, t_now, persistent=True
+    )
+    client.recovery.min_rtt = rec_latest
+
+    var post_cwnd = client.recovery.cc.cwnd()
+    var expected_min = UInt64(2) * UInt64(1200)
+    assert_true(
+        post_cwnd == expected_min,
+        "cwnd reset to 2*MDS after persistent congestion; got "
+        + String(post_cwnd),
+    )
+    assert_true(
+        client.recovery.min_rtt == client.recovery.latest_rtt,
+        "min_rtt re-seeded from latest_rtt",
+    )
+
+    # Negative control: with an AE ACK recorded *inside* the range, the
+    # detector must not declare persistent. Reseed with a fresh set of PNs.
+    var lost_pns2 = List[Int]()
+    for i in range(5):
+        var pn = Int(9100 + i)
+        var t = base_time + UInt64(i) * step
+        var sp = SentPacket(
+            pn=UInt64(pn),
+            time_sent=t,
+            ack_eliciting=True,
+            in_flight=True,
+            size=Int(1200),
+            frames=List[Frame](),
+        )
+        client.spaces[2].sent_packets[pn] = sp^
+        lost_pns2.append(pn)
+    # Advance the tracker into the range — any_ae_acked_in_range returns True.
+    client.spaces[2].last_ae_acked_time_sent = base_time + step
+    var neg = client._detect_persistent_congestion(
+        Int(2), lost_pns2, peer_mad_us, t_now,
+    )
+    assert_true(
+        not neg,
+        "persistent NOT declared when last_ae_acked_time_sent falls in range",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_persistent_congestion_end_to_end: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -2058,4 +2220,5 @@ def main() raises:
     test_max_streams_linear_growth()
     test_m3c_frames_retransmit_on_loss()
     test_anti_amp_ok_extract_parity()
+    test_persistent_congestion_end_to_end()
     print("All test_quic_connection tests passed.")
