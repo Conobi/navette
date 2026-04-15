@@ -15,6 +15,7 @@ from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
 from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.frame import StreamFrame, ResetStreamFrame
 from src.quic.stream import SEND_RESET_SENT
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.retry import (
@@ -1249,6 +1250,111 @@ def test_cid_issuance() raises:
     print("  test_cid_issuance: PASS")
 
 
+def test_flow_control_error_on_overflow() raises:
+    """Sender exceeds peer's stream FC limit → FLOW_CONTROL_ERROR (0x03)."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Build a STREAM frame whose payload exceeds the stream's recv FC limit
+    # (initial_max_stream_data_bidi_remote = 65536 bytes in _default_params).
+    # We directly call server._handle_stream_frame so the FC check fires
+    # before any packet-layer silencing.
+    var sid = UInt64(0)  # client-initiated bidi stream id 0 (peer stream from server's POV)
+    var data = List[UInt8](capacity=70_000)
+    for _ in range(70_000):
+        data.append(UInt8(0x41))
+
+    var sf = StreamFrame(sid, UInt64(0), data, False)
+    var raised_fc = False
+    try:
+        server._handle_stream_frame(sf)
+    except e:
+        var emsg = String(e)
+        if emsg.find("FLOW_CONTROL") >= 0:
+            raised_fc = True
+    assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on stream FC overflow")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_flow_control_error_on_overflow: PASS")
+
+
+def test_final_size_error_on_reset_mismatch() raises:
+    """RESET_STREAM with final_size < previously-observed offset → FINAL_SIZE_ERROR (0x06)."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Client opens stream and sends 100 bytes (no FIN).
+    var sid = client.open_stream(True)
+    var data = List[UInt8](capacity=100)
+    for _ in range(100):
+        data.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(data), False)
+
+    # Pump so the server receives the STREAM frame and records recv_highest_offset = 100.
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+
+    # Now send RESET_STREAM with final_size=50, which contradicts the observed 100 bytes.
+    var rf = ResetStreamFrame(sid, UInt64(0), UInt64(50))
+    var raised_fse = False
+    try:
+        server._handle_reset_stream(rf)
+    except e:
+        var emsg = String(e)
+        if emsg.find("FINAL_SIZE") >= 0:
+            raised_fse = True
+    assert_true(raised_fse, "server should raise FINAL_SIZE_ERROR on reset with final_size < received")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_final_size_error_on_reset_mismatch: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -1267,4 +1373,6 @@ def main() raises:
     test_reset_stream()
     test_stop_sending()
     test_cid_issuance()
+    test_flow_control_error_on_overflow()
+    test_final_size_error_on_reset_mismatch()
     print("All test_quic_connection tests passed.")
