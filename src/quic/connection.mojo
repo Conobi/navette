@@ -105,6 +105,7 @@ comptime CONN_CLOSED: UInt8 = 0x80
 # ── Constants ────────────────────────────────────────────────────────
 
 comptime _AEAD_TAG_LEN: Int = 16
+comptime ANTI_AMP_HEADER_FUDGE: UInt64 = 100
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
 comptime _MAX_CRYPTO_FRAME_SIZE: Int = 1200
@@ -1389,9 +1390,8 @@ struct QuicConnection(Movable):
                 continue
 
             # Anti-amplification check (server only, before address validated).
-            if self.is_server and not self._addr_validated():
-                if self.bytes_sent + UInt64(len(datagram)) + 100 > 3 * self.bytes_received:
-                    break
+            if not self._anti_amp_ok(UInt64(len(datagram))):
+                break
 
             var sent_records = List[SentStreamFrame]()
             var frames = self._build_frames_for_space(space_idx, now, sent_records)
@@ -2251,6 +2251,28 @@ struct QuicConnection(Movable):
         self.stream_map.set_stream(key, stream^)
 
     # ── Internal helpers ─────────────────────────────────────────────
+
+    def _anti_amp_ok(self, datagram_size: UInt64) -> Bool:
+        """Server-side 3x anti-amplification check (RFC 9000 §8.1).
+        Only applies to unvalidated servers. ANTI_AMP_HEADER_FUDGE accounts for
+        UDP/IP overhead and preserves the original inline check's behavior."""
+        if not self.is_server:
+            return True
+        if self._addr_validated():
+            return True
+        return self.bytes_sent + datagram_size + ANTI_AMP_HEADER_FUDGE <= 3 * self.bytes_received
+
+    def _can_send(self, size: UInt64, now: UInt64) -> Bool:
+        """Composite send gate: anti-amplification + CC window + pacer (non-mutating).
+        Token consumption happens via Pacer.refill_and_check at the actual send site."""
+        if not self._anti_amp_ok(size):
+            return False
+        if self.recovery.cc.cwnd() < self.recovery.bytes_in_flight + size:
+            return False
+        var rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
+        if self.recovery.pacer.next_send_time(rate, now):
+            return False
+        return True
 
     def _addr_validated(self) -> Bool:
         """True if the peer address has been validated."""

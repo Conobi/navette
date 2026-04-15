@@ -17,6 +17,7 @@ from src.tls.lib import RustlsLibrary
 from src.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
+    CONN_ADDR_VALIDATED,
 )
 from src.quic.cid import CID_ACTIVE
 from src.quic.frame import StreamFrame, ResetStreamFrame
@@ -1954,6 +1955,83 @@ def test_m3c_frames_retransmit_on_loss() raises:
     print("  test_m3c_frames_retransmit_on_loss: PASS")
 
 
+def test_anti_amp_ok_extract_parity() raises:
+    """_anti_amp_ok mirrors the inline check: unvalidated server rejects
+    oversized sends; validated server and clients are unrestricted."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+
+    # Post-handshake: server is addr-validated — large sends allowed.
+    assert_true(
+        server._anti_amp_ok(UInt64(1_000_000)),
+        "validated server: no cap, allows large send",
+    )
+
+    # Simulate unvalidated state: clear CONN_ADDR_VALIDATED from state.
+    var saved_state = server.state
+    server.state = server.state & ~CONN_ADDR_VALIDATED
+
+    # Reset bookkeeping to simulate no bytes received/sent yet.
+    server.bytes_received = UInt64(0)
+    server.bytes_sent = UInt64(0)
+
+    # Unvalidated server with 0 bytes_received: 3*0 - fudge = negative → reject any size.
+    assert_true(
+        not server._anti_amp_ok(UInt64(1000)),
+        "unvalidated server with 0 recv rejects 1000-byte send",
+    )
+
+    # Receive 1200 bytes: budget = 3*1200 = 3600; fudge=100 means max datagram_size is 3499.
+    server.bytes_received = UInt64(1200)
+    # bytes_sent=0, datagram_size=3400: 0 + 3400 + 100 = 3500 <= 3600 → OK.
+    assert_true(
+        server._anti_amp_ok(UInt64(3400)),
+        "3400 + 100 fudge fits within 3*1200=3600",
+    )
+    # bytes_sent=0, datagram_size=3600: 0 + 3600 + 100 = 3700 > 3600 → reject.
+    assert_true(
+        not server._anti_amp_ok(UInt64(3600)),
+        "3600 + 100 > 3600 (exceeds budget)",
+    )
+
+    # Restore addr-validated state: cap lifted.
+    server.state = saved_state
+    assert_true(
+        server._anti_amp_ok(UInt64(1_000_000)),
+        "addr-validated after restore: large send allowed",
+    )
+
+    # Client: _anti_amp_ok always True regardless of state.
+    assert_true(
+        client._anti_amp_ok(UInt64(1_000_000)),
+        "client: anti-amp check always passes",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_anti_amp_ok_extract_parity: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -1979,4 +2057,5 @@ def main() raises:
     test_max_stream_data_and_max_data_cycle()
     test_max_streams_linear_growth()
     test_m3c_frames_retransmit_on_loss()
+    test_anti_amp_ok_extract_parity()
     print("All test_quic_connection tests passed.")
