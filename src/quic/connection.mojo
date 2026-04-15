@@ -1512,6 +1512,11 @@ struct QuicConnection(Movable):
         if (self.state & CONN_DRAINING) != 0 or (self.state & CONN_CLOSED) != 0:
             return datagrams^
 
+        # CC window + pacer gate: if we can't even fit one minimum-size packet, skip.
+        # Anti-amplification is also re-checked per-space below.
+        if not self._can_send(UInt64(1200), now):
+            return datagrams^
+
         # Build one datagram with coalesced packets.
         var datagram = List[UInt8]()
 
