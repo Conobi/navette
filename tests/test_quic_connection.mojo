@@ -234,6 +234,16 @@ def _to_bytes(s: String) -> List[UInt8]:
     return out^
 
 
+def _peer_granted_bidi_limit(conn: QuicConnection) -> UInt64:
+    """Return the MAX_STREAMS(bidi) limit currently granted to the peer.
+
+    This reads `stream_map.local_max_streams_bidi`, which is the running limit
+    we advertise to the peer.  After N peer-initiated bidi streams are fully
+    closed, `check_max_streams_update` sets it to N + initial_max_streams_bidi.
+    """
+    return conn.stream_map.local_max_streams_bidi
+
+
 # ── Tests ────────────────────────────────────────────────────────────────
 
 
@@ -1447,6 +1457,102 @@ def test_max_stream_data_and_max_data_cycle() raises:
     print("  test_max_stream_data_and_max_data_cycle: PASS")
 
 
+def test_max_streams_linear_growth() raises:
+    """After peer completes N streams, receiver emits MAX_STREAMS(bidi) = N + initial_max_streams_bidi."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    # Use small initial_max_streams_bidi for a fast, deterministic test.
+    var client_params = _default_params()
+    var server_params = _default_params()
+    client_params.initial_max_streams_bidi = UInt64(100)
+    server_params.initial_max_streams_bidi = UInt64(100)
+
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Verify initial state: server has granted peer (client) bidi limit = 100.
+    assert_true(
+        _peer_granted_bidi_limit(server) == UInt64(100),
+        "initial server bidi limit should be 100, got "
+        + String(_peer_granted_bidi_limit(server)),
+    )
+
+    # Open N=50 bidi streams from client, send 1 byte + FIN on each.
+    var sids = List[UInt64]()
+    var one_byte = List[UInt8]()
+    one_byte.append(UInt8(0x41))
+    for _ in range(50):
+        var sid = client.open_stream(True)
+        sids.append(sid)
+        client.send_stream_data(sid, Span(one_byte), True)
+
+    # Pump client → server: deliver all STREAM+FIN frames.
+    # With 50 streams and round-robin, each send() emits ~1 frame.
+    # ceil(50/1) = 50 rounds to flush all FINs, plus a few ACK rounds.
+    now = _pump(client, server, now, 60)
+
+    _drain_events(server)
+
+    # Server consumes each stream's single byte (recv side → RECV_DATA_READ).
+    # For a bidi stream, server must also send data+FIN back to fully close.
+    # Send 1 byte + FIN (not FIN-only) so the ACK record has non-zero length
+    # and the send-side ack tracking advances correctly.
+    var reply_byte = List[UInt8]()
+    reply_byte.append(UInt8(0x42))
+    for i in range(len(sids)):
+        var sid = sids[i]
+        _ = server.recv_stream_data(sid)
+        # Send 1 byte + FIN back to close server's send side after ACK.
+        server.send_stream_data(sid, Span(reply_byte), True)
+
+    # Pump server → client: deliver server FINs (50 streams × ~1 frame each = 50 rounds).
+    # Then pump client → server: deliver ACKs (each ACK may cover multiple packets).
+    now = _pump(server, client, now, 60)
+    now = _pump(client, server, now, 20)
+    # Final stabilisation pass.
+    now = _pump(server, client, now, 20)
+    now = _pump(client, server, now, 20)
+
+    # Server's local_max_streams_bidi should now reflect linear growth:
+    # new_limit = peer_completed_bidi (50) + initial_max_streams_bidi (100) = 150.
+    var granted_bidi = _peer_granted_bidi_limit(server)
+    assert_true(
+        granted_bidi == UInt64(150),
+        "MAX_STREAMS(bidi) should be 50 + 100 = 150 (linear); got "
+        + String(granted_bidi),
+    )
+
+    # Explicitly verify it is NOT exponential (not 200, not 150*2, etc.).
+    assert_true(
+        granted_bidi < UInt64(200),
+        "MAX_STREAMS(bidi) must not be exponential (< 200); got "
+        + String(granted_bidi),
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_max_streams_linear_growth: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -1468,4 +1574,5 @@ def main() raises:
     test_flow_control_error_on_overflow()
     test_final_size_error_on_reset_mismatch()
     test_max_stream_data_and_max_data_cycle()
+    test_max_streams_linear_growth()
     print("All test_quic_connection tests passed.")
