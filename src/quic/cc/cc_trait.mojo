@@ -4,8 +4,8 @@
 
 # --- Module-scope constants (RFC 9002 + spec §3.1) ---
 
-comptime CC_KIND_DUMMY: UInt8 = 0
-comptime CC_KIND_CUBIC: UInt8 = 1
+comptime CC_KIND_CUBIC: UInt8 = 0
+comptime CC_KIND_DUMMY: UInt8 = 1
 # Reserved for M4b / later: CC_KIND_BBR = 2, CC_KIND_BBR3 = 3.
 
 comptime MIN_WINDOW_PACKETS: UInt64 = 2            # RFC 9002 §7.2
