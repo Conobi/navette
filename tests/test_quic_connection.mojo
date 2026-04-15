@@ -14,7 +14,10 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.connection import (
+    QuicConnection, QuicEvent, SentStreamFrame,
+    SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
+)
 from src.quic.cid import CID_ACTIVE
 from src.quic.frame import StreamFrame, ResetStreamFrame
 from src.quic.stream import SEND_RESET_SENT
@@ -1674,6 +1677,205 @@ def test_cid_retire_triggers_reissue() raises:
     print("  test_cid_retire_triggers_reissue: PASS")
 
 
+# ── Loss-retransmit helpers ───────────────────────────────────────────────
+
+
+def _last_app_pn(conn: QuicConnection) -> Int:
+    """Return the packet number of the most-recently-built App-space packet.
+
+    After send(), spaces[2].next_pn has been incremented by 1, so the last
+    PN used is next_pn - 1.
+    """
+    return Int(conn.spaces[2].next_pn) - 1
+
+
+def _app_has_kind(conn: QuicConnection, pn: Int, kind: UInt8, stream_id: Int) raises -> Bool:
+    """Return True if app_frames_sent[pn] contains a record with the given kind.
+
+    For SSF_NEW_CID the stream_id argument is ignored (CID frames carry
+    cid_seq, not stream_id).  For all other kinds the stream_id must match.
+    """
+    if pn not in conn.app_frames_sent:
+        return False
+    var recs = conn.app_frames_sent[pn].copy()
+    for i in range(len(recs)):
+        if recs[i].kind != kind:
+            continue
+        if kind == SSF_NEW_CID:
+            return True
+        if Int(recs[i].stream_id) == stream_id:
+            return True
+    return False
+
+
+def test_m3c_frames_retransmit_on_loss() raises:
+    """RESET_STREAM, STOP_SENDING, MAX_STREAM_DATA, and NEW_CONNECTION_ID
+    are re-emitted when their carrier App-space packet is declared lost."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var srv_cfg = configs[0]
+    var cli_cfg = configs[1]
+
+    # ── Subsection A: RESET_STREAM (client) + STOP_SENDING (server) ──────
+
+    var now_a = UInt64(1_000_000)
+    var params_a = _default_params()
+
+    var client_a = QuicConnection.client(lib_addr, cli_cfg, "localhost", params_a, now_a)
+    var orig_dcid_a = List[UInt8](copy=client_a.initial_dcid)
+    var cli_dcid_a = List[UInt8](copy=client_a.initial_dcid)
+    var server_a = QuicConnection.server(
+        lib_addr, srv_cfg, params_a, Span(orig_dcid_a), Span(cli_dcid_a), now_a,
+    )
+    now_a = _establish_handshake(client_a, server_a, now_a)
+    _drain_events(client_a)
+    _drain_events(server_a)
+
+    # Client opens stream, sends partial data to create a live recv-side on server.
+    var sid_a = client_a.open_stream(True)
+    var data_a = _to_bytes("hello")
+    client_a.send_stream_data(sid_a, Span(data_a), False)
+    now_a = _pump(client_a, server_a, now_a, 3)
+    _drain_events(server_a)
+    _ = server_a.recv_stream_data(sid_a)
+
+    # Client resets → needs_reset_stream = True.
+    client_a.reset_stream(sid_a, UInt64(7))
+    # Server requests stop → needs_stop_sending = True.
+    server_a.stop_sending(sid_a, UInt64(11))
+
+    # Build outgoing packets from each side (drop datagrams; just track PN).
+    now_a += UInt64(10_000)
+    _ = client_a.send(now_a)
+    var c_pn_a = _last_app_pn(client_a)
+    assert_true(
+        _app_has_kind(client_a, c_pn_a, SSF_RESET_STREAM, Int(sid_a)),
+        "client: RESET_STREAM in initial build",
+    )
+    _ = server_a.send(now_a)
+    var s_pn_a = _last_app_pn(server_a)
+    assert_true(
+        _app_has_kind(server_a, s_pn_a, SSF_STOP_SENDING, Int(sid_a)),
+        "server: STOP_SENDING in initial build",
+    )
+
+    # Declare the packets lost.
+    client_a._on_app_pkt_lost(c_pn_a)
+    server_a._on_app_pkt_lost(s_pn_a)
+
+    # Next build must re-emit both frames.
+    now_a += UInt64(10_000)
+    _ = client_a.send(now_a)
+    var c_pn_a2 = _last_app_pn(client_a)
+    assert_true(
+        _app_has_kind(client_a, c_pn_a2, SSF_RESET_STREAM, Int(sid_a)),
+        "client re-emits RESET_STREAM after loss",
+    )
+
+    _ = server_a.send(now_a)
+    var s_pn_a2 = _last_app_pn(server_a)
+    assert_true(
+        _app_has_kind(server_a, s_pn_a2, SSF_STOP_SENDING, Int(sid_a)),
+        "server re-emits STOP_SENDING after loss",
+    )
+
+    # ── Subsection B: MAX_STREAM_DATA ─────────────────────────────────────
+
+    var now_b = UInt64(2_000_000)
+    # Low stream window so 50% threshold trips after reading ~5 KiB.
+    var server_params_b = _default_params()
+    server_params_b.initial_max_stream_data_bidi_remote = UInt64(10240)
+    server_params_b.initial_max_data = UInt64(20480)
+    var client_params_b = _default_params()
+
+    var client_b = QuicConnection.client(lib_addr, cli_cfg, "localhost", client_params_b, now_b)
+    var orig_dcid_b = List[UInt8](copy=client_b.initial_dcid)
+    var cli_dcid_b = List[UInt8](copy=client_b.initial_dcid)
+    var server_b = QuicConnection.server(
+        lib_addr, srv_cfg, server_params_b, Span(orig_dcid_b), Span(cli_dcid_b), now_b,
+    )
+    now_b = _establish_handshake(client_b, server_b, now_b)
+    _drain_events(client_b)
+    _drain_events(server_b)
+
+    # Client sends 7 KiB (>50% of 10 KiB stream window) to the server.
+    var sid_b = client_b.open_stream(True)
+    var big_b = List[UInt8](capacity=7168)
+    for _ in range(7168):
+        big_b.append(UInt8(0x41))
+    client_b.send_stream_data(sid_b, Span(big_b), False)
+    now_b = _pump(client_b, server_b, now_b, 10)
+    _drain_events(server_b)
+
+    # Server reads → triggers needs_max_stream_data.
+    _ = server_b.recv_stream_data(sid_b)
+
+    # Build server packet; it should include MAX_STREAM_DATA.
+    now_b += UInt64(10_000)
+    _ = server_b.send(now_b)
+    var s_pn_b = _last_app_pn(server_b)
+    assert_true(
+        _app_has_kind(server_b, s_pn_b, SSF_MAX_STREAM_DATA, Int(sid_b)),
+        "server: MAX_STREAM_DATA in initial build",
+    )
+
+    # Lose it; next build must re-emit.
+    server_b._on_app_pkt_lost(s_pn_b)
+    now_b += UInt64(10_000)
+    _ = server_b.send(now_b)
+    var s_pn_b2 = _last_app_pn(server_b)
+    assert_true(
+        _app_has_kind(server_b, s_pn_b2, SSF_MAX_STREAM_DATA, Int(sid_b)),
+        "server re-emits MAX_STREAM_DATA after loss",
+    )
+
+    # ── Subsection C: NEW_CONNECTION_ID ───────────────────────────────────
+
+    var now_c = UInt64(3_000_000)
+    var params_c = _default_params()
+
+    var client_c = QuicConnection.client(lib_addr, cli_cfg, "localhost", params_c, now_c)
+    var orig_dcid_c = List[UInt8](copy=client_c.initial_dcid)
+    var cli_dcid_c = List[UInt8](copy=client_c.initial_dcid)
+    var server_c = QuicConnection.server(
+        lib_addr, srv_cfg, params_c, Span(orig_dcid_c), Span(cli_dcid_c), now_c,
+    )
+    now_c = _establish_handshake(client_c, server_c, now_c)
+    _drain_events(client_c)
+    _drain_events(server_c)
+    # Pump so each side issues its post-handshake NEW_CONNECTION_ID.
+    now_c = _pump(client_c, server_c, now_c, 4)
+
+    # Retire a non-primary CID → CidManager issues a replacement.
+    var seq_c = _pick_non_primary_cid_seq(server_c)
+    server_c.cid_mgr.on_retire_connection_id(seq_c)
+
+    # Build server packet; should include the NEW_CONNECTION_ID replacement.
+    now_c += UInt64(10_000)
+    _ = server_c.send(now_c)
+    var s_pn_c = _last_app_pn(server_c)
+    assert_true(
+        _app_has_kind(server_c, s_pn_c, SSF_NEW_CID, 0),
+        "server: NEW_CID in initial build",
+    )
+
+    # Lose the packet; clear_advertised restores the pending state.
+    server_c._on_app_pkt_lost(s_pn_c)
+    now_c += UInt64(10_000)
+    _ = server_c.send(now_c)
+    var s_pn_c2 = _last_app_pn(server_c)
+    assert_true(
+        _app_has_kind(server_c, s_pn_c2, SSF_NEW_CID, 0),
+        "server re-emits NEW_CID after loss",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_m3c_frames_retransmit_on_loss: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -1697,4 +1899,5 @@ def main() raises:
     test_final_size_error_on_reset_mismatch()
     test_max_stream_data_and_max_data_cycle()
     test_max_streams_linear_growth()
+    test_m3c_frames_retransmit_on_loss()
     print("All test_quic_connection tests passed.")
