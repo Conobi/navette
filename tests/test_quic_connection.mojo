@@ -1355,6 +1355,98 @@ def test_final_size_error_on_reset_mismatch() raises:
     print("  test_final_size_error_on_reset_mismatch: PASS")
 
 
+def test_max_stream_data_and_max_data_cycle() raises:
+    """Sender fills a stream past 50% of advertised FC, receiver consumes,
+    receiver emits MAX_STREAM_DATA, sender sees advanced limit and writes more."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    # Force low FC limits so the 50%-threshold logic trips predictably.
+    # server_params.initial_max_stream_data_bidi_remote = 10 KiB means:
+    #   - the server's recv window for client-initiated bidi streams is 10 KiB
+    #   - the client's send limit on those streams is also 10 KiB
+    # server_params.initial_max_data = 20 KiB sets the client's conn-level send limit.
+    var client_params = _default_params()
+    var server_params = _default_params()
+    server_params.initial_max_stream_data_bidi_remote = UInt64(10240)
+    server_params.initial_max_data = UInt64(20480)
+
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Client opens a bidi stream (id 0).
+    var sid = client.open_stream(True)
+    assert_equal_int(Int(sid), 0, "first client bidi stream id")
+
+    # Client sends 7 KiB (>50% of 10 KiB stream limit → should_update trips on drain).
+    var chunk = List[UInt8](capacity=7 * 1024)
+    for _ in range(7 * 1024):
+        chunk.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(chunk), False)
+
+    # Pump client → server so the server receives all STREAM frames.
+    # Each send() emits one STREAM frame (~1200 B); 7 KiB needs ceil(7168/1200)=6 rounds.
+    now = _pump(client, server, now, 8)
+    _drain_events(server)
+
+    # Server consumes the full 7 KiB — this triggers should_update() on the
+    # server's recv-side FC, setting needs_max_stream_data (and possibly
+    # needs_max_data) on the stream map.
+    var recv_out = server.recv_stream_data(sid)
+    assert_equal_int(len(recv_out[0]), 7 * 1024, "server read 7 KiB")
+
+    # Remember the client's current stream send limit before any MAX_STREAM_DATA.
+    var stream_before = client.stream_map.get_stream(Int(sid))
+    var limit_before = stream_before.fc_send.value().limit
+
+    # Pump server → client so MAX_STREAM_DATA (and possibly MAX_DATA) flow to client.
+    now = _pump(server, client, now, 3)
+
+    # Client's stream send FC limit should have advanced beyond the initial 10 KiB.
+    var stream_after = client.stream_map.get_stream(Int(sid))
+    var limit_after = stream_after.fc_send.value().limit
+    assert_true(
+        limit_after > limit_before,
+        "client stream FC limit did not advance after MAX_STREAM_DATA"
+        + " (before=" + String(limit_before) + ", after=" + String(limit_after) + ")",
+    )
+    # The new limit should be consumed(7168) + window(10240) = 17408, well above
+    # the original 10240, so the client can now send at least 5 KiB more.
+    assert_true(
+        limit_after >= UInt64(17408),
+        "client stream FC limit should be >=17408 after MAX_STREAM_DATA, got "
+        + String(limit_after),
+    )
+
+    # Verify the client can actually write another 5 KiB (within the new limit).
+    var extra = List[UInt8](capacity=5 * 1024)
+    for _ in range(5 * 1024):
+        extra.append(UInt8(0x42))
+    client.send_stream_data(sid, Span(extra), False)  # raises if state error
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_max_stream_data_and_max_data_cycle: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -1375,4 +1467,5 @@ def main() raises:
     test_cid_issuance()
     test_flow_control_error_on_overflow()
     test_final_size_error_on_reset_mismatch()
+    test_max_stream_data_and_max_data_cycle()
     print("All test_quic_connection tests passed.")
