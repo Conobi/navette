@@ -1315,6 +1315,63 @@ def test_flow_control_error_on_overflow() raises:
     print("  test_flow_control_error_on_overflow: PASS")
 
 
+def test_conn_flow_control_error_on_overflow() raises:
+    """Sender exceeds peer's MAX_DATA (conn-level) → FLOW_CONTROL_ERROR (0x03) on conn FC.
+    Stream limits are set high so the conn-level check fires first."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    # Server advertises a low conn-level limit but high stream-level limits,
+    # so only the conn-FC check can trip on the frame we inject.
+    var client_params = _default_params()
+    var server_params = _default_params()
+    server_params.initial_max_data = UInt64(50_000)
+    server_params.initial_max_stream_data_bidi_remote = UInt64(200_000)
+    server_params.initial_max_stream_data_bidi_local = UInt64(200_000)
+
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Build a STREAM frame with 60_000 bytes: above conn limit (50_000) but
+    # below stream limit (200_000), so the conn-FC path fires.
+    var sid = UInt64(0)  # client-initiated bidi stream id 0 (peer stream from server's POV)
+    var data = List[UInt8](capacity=60_000)
+    for _ in range(60_000):
+        data.append(UInt8(0x41))
+
+    var sf = StreamFrame(sid, UInt64(0), data, False)
+    var raised_fc = False
+    try:
+        server._handle_stream_frame(sf)
+    except e:
+        var emsg = String(e)
+        if emsg.find("FLOW_CONTROL") >= 0:
+            raised_fc = True
+    assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on conn FC overflow")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_conn_flow_control_error_on_overflow: PASS")
+
+
 def test_final_size_error_on_reset_mismatch() raises:
     """RESET_STREAM with final_size < previously-observed offset → FINAL_SIZE_ERROR (0x06)."""
     var lib_ptr = _heap_alloc[RustlsLibrary](1)
@@ -1384,11 +1441,13 @@ def test_max_stream_data_and_max_data_cycle() raises:
     # server_params.initial_max_stream_data_bidi_remote = 10 KiB means:
     #   - the server's recv window for client-initiated bidi streams is 10 KiB
     #   - the client's send limit on those streams is also 10 KiB
-    # server_params.initial_max_data = 20 KiB sets the client's conn-level send limit.
+    # server_params.initial_max_data = 10 KiB (same as stream window) sets the
+    # client's conn-level send limit so the conn-FC 50% threshold also trips:
+    #   consumed=7168, remaining=10240-7168=3072 < window/2=5120 → should_update.
     var client_params = _default_params()
     var server_params = _default_params()
     server_params.initial_max_stream_data_bidi_remote = UInt64(10240)
-    server_params.initial_max_data = UInt64(20480)
+    server_params.initial_max_data = UInt64(10240)
 
     var now = UInt64(1_000_000)
 
@@ -1448,6 +1507,15 @@ def test_max_stream_data_and_max_data_cycle() raises:
         limit_after >= UInt64(17408),
         "client stream FC limit should be >=17408 after MAX_STREAM_DATA, got "
         + String(limit_after),
+    )
+
+    # Verify conn-level FC limit advanced (MAX_DATA was emitted server-side and
+    # client received + applied it via ensure_limit).
+    var conn_fc_limit_after = client.stream_map.conn_fc_send.limit
+    assert_true(
+        conn_fc_limit_after > UInt64(10240),
+        "client conn_fc_send.limit did not advance after MAX_DATA"
+        + " (was 10240, now " + String(conn_fc_limit_after) + ")",
     )
 
     # Verify the client can actually write another 5 KiB (within the new limit).
@@ -1709,7 +1777,7 @@ def _app_has_kind(conn: QuicConnection, pn: Int, kind: UInt8, stream_id: Int) ra
 
 
 def test_m3c_frames_retransmit_on_loss() raises:
-    """RESET_STREAM, STOP_SENDING, MAX_STREAM_DATA, and NEW_CONNECTION_ID
+    """RESET_STREAM, STOP_SENDING, MAX_STREAM_DATA, MAX_DATA, and NEW_CONNECTION_ID
     are re-emitted when their carrier App-space packet is declared lost."""
     var lib_ptr = _heap_alloc[RustlsLibrary](1)
     lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
@@ -1781,13 +1849,15 @@ def test_m3c_frames_retransmit_on_loss() raises:
         "server re-emits STOP_SENDING after loss",
     )
 
-    # ── Subsection B: MAX_STREAM_DATA ─────────────────────────────────────
+    # ── Subsection B: MAX_STREAM_DATA + MAX_DATA ──────────────────────────
 
     var now_b = UInt64(2_000_000)
     # Low stream window so 50% threshold trips after reading ~5 KiB.
+    # Low conn window (10 KiB) so conn-FC 50% threshold also trips:
+    #   consumed=7168, remaining=10240-7168=3072 < window/2=5120 → should_update.
     var server_params_b = _default_params()
     server_params_b.initial_max_stream_data_bidi_remote = UInt64(10240)
-    server_params_b.initial_max_data = UInt64(20480)
+    server_params_b.initial_max_data = UInt64(10240)
     var client_params_b = _default_params()
 
     var client_b = QuicConnection.client(lib_addr, cli_cfg, "localhost", client_params_b, now_b)
@@ -1812,13 +1882,17 @@ def test_m3c_frames_retransmit_on_loss() raises:
     # Server reads → triggers needs_max_stream_data.
     _ = server_b.recv_stream_data(sid_b)
 
-    # Build server packet; it should include MAX_STREAM_DATA.
+    # Build server packet; it should include MAX_STREAM_DATA and MAX_DATA.
     now_b += UInt64(10_000)
     _ = server_b.send(now_b)
     var s_pn_b = _last_app_pn(server_b)
     assert_true(
         _app_has_kind(server_b, s_pn_b, SSF_MAX_STREAM_DATA, Int(sid_b)),
         "server: MAX_STREAM_DATA in initial build",
+    )
+    assert_true(
+        _app_has_kind(server_b, s_pn_b, SSF_MAX_DATA, 0),
+        "server: MAX_DATA in initial build",
     )
 
     # Lose it; next build must re-emit.
@@ -1829,6 +1903,10 @@ def test_m3c_frames_retransmit_on_loss() raises:
     assert_true(
         _app_has_kind(server_b, s_pn_b2, SSF_MAX_STREAM_DATA, Int(sid_b)),
         "server re-emits MAX_STREAM_DATA after loss",
+    )
+    assert_true(
+        _app_has_kind(server_b, s_pn_b2, SSF_MAX_DATA, 0),
+        "server re-emits MAX_DATA after loss",
     )
 
     # ── Subsection C: NEW_CONNECTION_ID ───────────────────────────────────
@@ -1896,6 +1974,7 @@ def main() raises:
     test_cid_issuance()
     test_cid_retire_triggers_reissue()
     test_flow_control_error_on_overflow()
+    test_conn_flow_control_error_on_overflow()
     test_final_size_error_on_reset_mismatch()
     test_max_stream_data_and_max_data_cycle()
     test_max_streams_linear_growth()
