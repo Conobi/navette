@@ -87,9 +87,10 @@ from src.quic.pn_space import (
     PacketNumberSpace,
     SentPacket,
 )
-from src.quic.recovery import Recovery
+from src.quic.recovery import Recovery, K_GRANULARITY
 from src.quic.crypto_stream import CryptoStream
 from src.quic.packet_protect import PacketProtect
+from src.quic.cc.cc_trait import AckedPacket, LostPacket, PERSISTENT_CONG_THRESHOLD
 
 # ── Connection state bitflags ────────────────────────────────────────
 
@@ -1090,18 +1091,39 @@ struct QuicConnection(Movable):
                     )
                 break
 
-        # Release bytes for acked packets.
+        # Release bytes for acked packets and fan out to congestion controller.
+        # Also advance the per-space last_ae_acked_time_sent tracker used by
+        # persistent-congestion detection (spec §5.4).
         for i in range(len(acked)):
             self.recovery.on_packet_acked(acked[i].size, acked[i].in_flight)
+            if acked[i].ack_eliciting:
+                if (
+                    acked[i].time_sent
+                    > self.spaces[space_idx].last_ae_acked_time_sent
+                ):
+                    self.spaces[space_idx].last_ae_acked_time_sent = (
+                        acked[i].time_sent
+                    )
+            var ap = AckedPacket(
+                pkt_num=acked[i].pn,
+                size=UInt64(acked[i].size),
+                time_sent=acked[i].time_sent,
+                time_acked=now,
+                rtt_sample=self.recovery.latest_rtt,
+            )
+            self.recovery.cc.on_packet_acked(
+                ap, self.recovery.smoothed_rtt, now
+            )
 
-        # Reset PTO count.
+        # Reset PTO count and refresh pacer capacity.
         self.recovery.on_ack_received()
 
         # Client confirms handshake when it receives ACK for 1-RTT packet.
         if not self.is_server and space_idx == 2 and not self.handshake_confirmed:
             self._on_handshake_complete(now)
 
-        # Detect lost packets.
+        # Detect lost packets (also runs persistent-congestion detection and
+        # fans out to cc.on_packets_lost).
         self._detect_losses(space_idx, now)
 
     # ── Loss detection ───────────────────────────────────────────────
@@ -1129,7 +1151,35 @@ struct QuicConnection(Movable):
             now,
         )
 
-        # Process lost packets.
+        if len(lost_pns) == 0:
+            return
+
+        # Evaluate persistent-congestion *before* popping lost packets, since
+        # the detector reads sent_packets[pn].ack_eliciting / .time_sent.
+        var peer_mad_us: UInt64 = UInt64(0)
+        if self.peer_params:
+            peer_mad_us = self.peer_params.value().max_ack_delay * 1000
+        var persistent = self._detect_persistent_congestion(
+            space_idx, lost_pns, peer_mad_us, now
+        )
+
+        # Build the LostPacket list for CC before teardown.
+        var lost_records = List[LostPacket]()
+        for i in range(len(lost_pns)):
+            var pn_key = lost_pns[i]
+            if pn_key in self.spaces[space_idx].sent_packets:
+                var sp_pn = self.spaces[space_idx].sent_packets[pn_key].pn
+                var sp_size = self.spaces[space_idx].sent_packets[pn_key].size
+                var sp_ts = self.spaces[space_idx].sent_packets[pn_key].time_sent
+                lost_records.append(
+                    LostPacket(
+                        pkt_num=sp_pn,
+                        size=UInt64(sp_size),
+                        time_sent=sp_ts,
+                    )
+                )
+
+        # Process lost packets (teardown + retransmission hooks).
         for i in range(len(lost_pns)):
             var pn_key = lost_pns[i]
             if pn_key in self.spaces[space_idx].sent_packets:
@@ -1153,6 +1203,86 @@ struct QuicConnection(Movable):
                     self._on_app_pkt_lost(pn_key)
 
                 _ = self.spaces[space_idx].sent_packets.pop(pn_key)
+
+        # Fan out to CC. `persistent=True` triggers cwnd reset to min_cwnd.
+        self.recovery.cc.on_packets_lost(
+            lost_records, self.recovery.smoothed_rtt, now, persistent
+        )
+        if persistent:
+            # RFC 9002 §5.2: reset min_rtt after persistent congestion so the
+            # next RTT sample re-seeds the estimator.
+            self.recovery.min_rtt = self.recovery.latest_rtt
+        # Refresh pacer capacity since cwnd may have changed.
+        self.recovery.pacer.update_capacity(
+            self.recovery.cc.cwnd(), self.recovery.smoothed_rtt
+        )
+
+    # ── Persistent-congestion detection (RFC 9002 §7.6.2) ────────────
+
+    def _detect_persistent_congestion(
+        self,
+        space_id: Int,
+        newly_lost_pns: List[Int],
+        peer_max_ack_delay_us: UInt64,
+        now: UInt64,
+    ) raises -> Bool:
+        """RFC 9002 §7.6.2 + §5.2. Return True when persistent congestion is
+        declared in `space_id`.
+
+        The caller is responsible for:
+          - Invoking `cc.on_packets_lost(..., persistent=True)` on True.
+          - Resetting `recovery.min_rtt = recovery.latest_rtt` (RFC 9002 §5.2).
+
+        Filtering to ack-eliciting packets is inline (spec §5.3): the check
+        looks up each lost PN in `sent_packets` and uses its `ack_eliciting`
+        flag to decide whether it contributes to the span.
+
+        `max_ack_delay` contributes unconditionally — regardless of which
+        packet number space — per research §4.2 (contrasts with PTO §6.2.1).
+        """
+        if not self.recovery.has_rtt_sample:
+            return False   # RFC 9002 §7.6.2: MUST NOT declare before first RTT sample
+        if len(newly_lost_pns) < 2:
+            return False
+
+        # Track earliest/latest time_sent across ack-eliciting lost packets.
+        var earliest: UInt64 = UInt64.MAX
+        var latest: UInt64 = UInt64(0)
+        var ae_count: Int = 0
+        for i in range(len(newly_lost_pns)):
+            var pn = newly_lost_pns[i]
+            if pn not in self.spaces[space_id].sent_packets:
+                continue   # already removed; defensive
+            var sp_ts = self.spaces[space_id].sent_packets[pn].time_sent
+            var sp_ae = self.spaces[space_id].sent_packets[pn].ack_eliciting
+            if not sp_ae:
+                continue
+            ae_count += 1
+            if sp_ts < earliest:
+                earliest = sp_ts
+            if sp_ts > latest:
+                latest = sp_ts
+
+        if ae_count < 2:
+            return False
+
+        # Congestion period: PERSISTENT_CONG_THRESHOLD × (srtt + 4*rttvar + max_ack_delay).
+        var rttvar_scaled: UInt64 = UInt64(4) * self.recovery.rttvar
+        if rttvar_scaled < K_GRANULARITY:
+            rttvar_scaled = K_GRANULARITY
+        var congestion_period = (
+            self.recovery.smoothed_rtt + rttvar_scaled + peer_max_ack_delay_us
+        ) * PERSISTENT_CONG_THRESHOLD
+
+        if latest - earliest < congestion_period:
+            return False
+
+        # RFC: declare persistent iff no ack-eliciting packet with
+        # earliest <= time_sent <= latest in this space was acknowledged.
+        # The per-space single-UInt64 tracker gives a conservative answer.
+        return not self.spaces[space_id].any_ae_acked_in_range(
+            earliest, latest
+        )
 
     # ── Handshake driver ─────────────────────────────────────────────
 
