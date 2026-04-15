@@ -15,6 +15,7 @@ from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
 from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.cid import CID_ACTIVE
 from src.quic.frame import StreamFrame, ResetStreamFrame
 from src.quic.stream import SEND_RESET_SENT
 from src.quic.trans_param import TransportParams, default_transport_params
@@ -1553,6 +1554,126 @@ def test_max_streams_linear_growth() raises:
     print("  test_max_streams_linear_growth: PASS")
 
 
+def _count_active_cids(conn: QuicConnection) -> Int:
+    """Count local CIDs with state == CID_ACTIVE."""
+    var count = 0
+    for i in range(len(conn.cid_mgr.local_cids)):
+        if conn.cid_mgr.local_cids[i].state == CID_ACTIVE:
+            count += 1
+    return count
+
+
+def _pick_non_primary_cid_seq(conn: QuicConnection) -> UInt64:
+    """Return sequence number of the first non-zero active local CID."""
+    for i in range(len(conn.cid_mgr.local_cids)):
+        if (
+            conn.cid_mgr.local_cids[i].state == CID_ACTIVE
+            and conn.cid_mgr.local_cids[i].sequence != UInt64(0)
+        ):
+            return conn.cid_mgr.local_cids[i].sequence
+    # Fallback: return seq 1 (should always exist after handshake + pump).
+    return UInt64(1)
+
+
+def _drain_pending_cid_frames(mut conn: QuicConnection) -> Int:
+    """Simulate the NEW_CONNECTION_ID build path: mark_advertised for each
+    pending (unadvertised) entry.  Returns the number of frames built."""
+    var pending = conn.cid_mgr.pending_new_cid_entries()
+    var built = len(pending)
+    for i in range(len(pending)):
+        conn.cid_mgr.mark_advertised(pending[i].sequence)
+    return built
+
+
+def test_cid_retire_triggers_reissue() raises:
+    """Client retires a server CID → server issues a replacement CID."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Exchange NEW_CONNECTION_ID frames so each side has its post-handshake CIDs.
+    _ = _pump(client, server, now, 4)
+
+    # Record server's active CID count (should be == peer_active_limit == 2).
+    var initial_active = _count_active_cids(server)
+    assert_true(
+        initial_active >= 2,
+        "server has >=2 active local CIDs post-handshake; got "
+        + String(initial_active),
+    )
+
+    # Pick a non-primary CID on the server to retire.
+    var to_retire_seq = _pick_non_primary_cid_seq(server)
+
+    # Retire it: CidManager marks it CID_RETIRED and issues a replacement
+    # (advertised=False) if active count drops below peer_active_limit.
+    server.cid_mgr.on_retire_connection_id(to_retire_seq)
+
+    # The replacement must be in pending_new_cid_entries() (advertised=False).
+    var pending = server.cid_mgr.pending_new_cid_entries()
+    assert_true(
+        len(pending) >= 1,
+        "server queued a replacement CID entry after retire; got "
+        + String(len(pending)),
+    )
+    assert_true(
+        not pending[0].advertised,
+        "replacement CID must not yet be advertised",
+    )
+
+    # Simulate the send path: build NEW_CONNECTION_ID frames + mark_advertised.
+    var built = _drain_pending_cid_frames(server)
+    assert_true(
+        built >= 1,
+        "at least one NEW_CONNECTION_ID frame built; got " + String(built),
+    )
+
+    # After advertising, pending_new_cid_entries() should be empty.
+    var pending_after = server.cid_mgr.pending_new_cid_entries()
+    assert_true(
+        len(pending_after) == 0,
+        "no unadvertised entries remain after build+advertise; got "
+        + String(len(pending_after)),
+    )
+
+    # Active CID count should be restored to >= initial_active
+    # (one CID retired, one replacement issued).
+    var active_after = _count_active_cids(server)
+    assert_true(
+        active_after >= initial_active,
+        "active CID count restored after reissue (was "
+        + String(initial_active)
+        + ", now "
+        + String(active_after)
+        + ")",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_cid_retire_triggers_reissue: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -1571,6 +1692,7 @@ def main() raises:
     test_reset_stream()
     test_stop_sending()
     test_cid_issuance()
+    test_cid_retire_triggers_reissue()
     test_flow_control_error_on_overflow()
     test_final_size_error_on_reset_mismatch()
     test_max_stream_data_and_max_data_cycle()
