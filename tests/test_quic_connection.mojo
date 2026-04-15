@@ -2250,6 +2250,52 @@ def test_pacer_delays_burst() raises:
     print("  test_pacer_delays_burst: PASS")
 
 
+def test_cubic_cwnd_gates_send_path() raises:
+    """A connection with CUBIC cannot send beyond cwnd."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Force CUBIC cwnd to a small known value and clear in-flight bytes.
+    client.recovery.cc.cubic._cwnd_value = UInt64(2400)  # 2 * MDS
+    client.recovery.bytes_in_flight = UInt64(0)
+    # Disable the pacer so it doesn't interfere with the cwnd gate check.
+    client.recovery.pacer.enabled = False
+
+    # 3000 bytes exceeds cwnd=2400 — send must be blocked.
+    var ok = client._can_send(UInt64(3000), now)
+    assert_true(not ok, "send blocked by cwnd (cwnd=2400, size=3000)")
+
+    # 1200 bytes fits within cwnd=2400 — send must be permitted.
+    ok = client._can_send(UInt64(1200), now)
+    assert_true(ok, "1200-byte send permitted within cwnd=2400")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_cubic_cwnd_gates_send_path: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2275,4 +2321,5 @@ def main() raises:
     test_anti_amp_ok_extract_parity()
     test_persistent_congestion_end_to_end()
     test_pacer_delays_burst()
+    test_cubic_cwnd_gates_send_path()
     print("All test_quic_connection tests passed.")
