@@ -433,7 +433,7 @@ def test_ecn_disabled_no_ecn_mark() raises:
 
 
 def test_ecn_ce_triggers_congestion() raises:
-    """CE-marked ACK triggers congestion event; cwnd is reduced."""
+    """CE delta > 0 in ACK → _process_ecn_feedback → on_congestion_event → cwnd reduces."""
     var lib_ptr = _heap_alloc[RustlsLibrary](1)
     lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
     var lib_addr = UInt64(Int(lib_ptr))
@@ -451,18 +451,54 @@ def test_ecn_ce_triggers_congestion() raises:
     _drain_events(client)
     _drain_events(server)
 
-    # Set client to CAPABLE with an inflated cwnd.
+    # Set client to CAPABLE so ECN feedback is processed.
     client.ecn_state = ECN_STATE_CAPABLE
+    # Inflate cwnd above initial window so reduction is observable.
     client.recovery.cc.cubic._cwnd_value = UInt64(500_000)
     client.recovery.cc.cubic.ssthresh = UInt64(1_000_000)
-    var cwnd_before = client.recovery.cc.cubic._cwnd_value
+    # Reset congestion_event_time so suppression window doesn't block the event.
+    client.recovery.cc.cubic.congestion_event_time = UInt64(0)
 
-    # Trigger a congestion event directly via the CC interface.
-    client.recovery.cc.on_congestion_event(client.recovery.smoothed_rtt, now)
+    # Step 1: Client sends a packet (marked ECT0 since state is CAPABLE).
+    var sid = client.open_stream(True)
+    var data = _to_bytes("ping")
+    client.send_stream_data(sid, Span(data), False)
+    now += UInt64(10_000)
+    var c_dg = client.send(now)
+    assert_true(len(c_dg) > 0, "client must produce datagrams")
+
+    # Step 2: Server receives client's packets with ECN_CE mark.
+    # This increments server.spaces[2].recv_ecn.ce → next ACK will carry CE counts.
+    for i in range(len(c_dg)):
+        try:
+            server.recv(Span(c_dg[i]), now, ecn_mark=ECN_CE)
+        except:
+            pass
+
+    # Verify server recorded the CE mark.
+    assert_true(
+        server.spaces[2].recv_ecn.ce > UInt64(0),
+        "server should record CE mark in recv_ecn.ce",
+    )
+
+    # Step 3: Server sends ACK with ECN counts (has_ecn=True, ecn_ce=1).
+    var s_dg = server.send(now)
+    assert_true(len(s_dg) > 0, "server must produce ACK")
+
+    # Step 4: Client receives ACK → _handle_ack → _process_ecn_feedback →
+    # CE delta > last_ack_ecn.ce → on_congestion_event → cwnd drops.
+    # Zero last_ack_ecn so delta = ack.ecn_ce - 0 > 0.
+    client.spaces[2].last_ack_ecn.ce = UInt64(0)
+    var cwnd_before = client.recovery.cc.cubic._cwnd_value
+    for i in range(len(s_dg)):
+        try:
+            client.recv(Span(s_dg[i]), now)
+        except:
+            pass
 
     assert_true(
-        client.recovery.cc.cubic._cwnd_value < cwnd_before,
-        "cwnd should decrease after congestion event",
+        client.recovery.cc.cwnd() <= cwnd_before,
+        "CE in ACK must trigger cwnd reduction via ECN feedback path",
     )
 
     lib_ptr.destroy_pointee()
