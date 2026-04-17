@@ -149,6 +149,79 @@ fn _simple_get_body(mut y: CoroYielder) raises:
     ctx_ptr[].resp_writer.end()
 
 
+fn _echo_body_coro(mut y: CoroYielder) raises:
+    """Read full request body (yielding when empty), respond with body length."""
+    var ctx_ptr = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(y.user_data())
+    )
+    var total = 0
+    while True:
+        var frame = ctx_ptr[].recv_body.try_read()
+        if not frame:
+            y.yield_to_caller()
+            continue
+        var f = frame.unsafe_take()
+        if f.is_data():
+            total += len(f.data())
+        elif f.is_end():
+            break
+        elif f.is_error():
+            return
+    var resp_headers = Headers()
+    resp_headers.add("x-body-length", String(total))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), resp_headers^)
+    ctx_ptr[].resp_writer.end()
+
+
+fn _trailer_check_coro(mut y: CoroYielder) raises:
+    """Read body frames including trailers; write 1 to extra_data if x-custom-trailer seen."""
+    var ctx_ptr = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(y.user_data())
+    )
+    var found_ptr = UnsafePointer[Int, MutAnyOrigin](
+        unsafe_from_address=Int(ctx_ptr[].extra_data)
+    )
+    while True:
+        var frame = ctx_ptr[].recv_body.try_read()
+        if not frame:
+            y.yield_to_caller()
+            continue
+        var f = frame.unsafe_take()
+        if f.is_trailers():
+            var hdrs = f.trailers().copy()
+            for i in range(len(hdrs)):
+                if hdrs.name_at(i) == "x-custom-trailer":
+                    found_ptr[] = 1
+            break
+        elif f.is_end():
+            break
+        elif f.is_error():
+            return
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), Headers())
+    ctx_ptr[].resp_writer.end()
+
+
+fn _blocking_body_coro(mut y: CoroYielder) raises:
+    """Block waiting for body data; write 42 to extra_data on error (RST or GOAWAY)."""
+    var ctx_ptr = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+        unsafe_from_address=Int(y.user_data())
+    )
+    var signal_ptr = UnsafePointer[Int, MutAnyOrigin](
+        unsafe_from_address=Int(ctx_ptr[].extra_data)
+    )
+    while True:
+        var frame = ctx_ptr[].recv_body.try_read()
+        if not frame:
+            y.yield_to_caller()
+            continue
+        var f = frame.unsafe_take()
+        if f.is_error():
+            signal_ptr[] = 42
+            return
+        elif f.is_end():
+            return
+
+
 # ── Tests ────────────────────────────────────────────────────────────────
 
 
@@ -207,7 +280,205 @@ def test_h3_coro_simple_get() raises:
     print("  test_h3_coro_simple_get: PASS")
 
 
+def test_h3_coro_post_with_body() raises:
+    """POST /upload with body 'hello world' → server echoes body length 11."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3CoroServer(quic=server_quic^, body_fn=_echo_body_coro)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_coro_client(server, client, now, 50)
+
+    var stream_id = client.open_bidi_stream()
+    var req_fields = List[QpackHeaderField]()
+    req_fields.append(QpackHeaderField(":method", "POST"))
+    req_fields.append(QpackHeaderField(":path", "/upload"))
+    req_fields.append(QpackHeaderField(":scheme", "https"))
+    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    client.send_headers(stream_id, req_fields, False)  # no fin yet
+
+    var body_data = List[UInt8]()
+    var src = String("hello world").as_bytes()
+    for i in range(len(src)):
+        body_data.append(src[i])
+    client.send_data(stream_id, body_data^, True)  # fin=True with body
+
+    now = _pump_coro_client(server, client, now, 30)
+
+    var got_200 = False
+    var got_body_length = String("")
+    while True:
+        var ev = client.poll_event()
+        if not ev:
+            break
+        var e = ev.unsafe_take()
+        if e.kind == H3Event.HEADERS_RECEIVED:
+            for i in range(len(e.fields)):
+                if e.fields[i].name == ":status" and e.fields[i].value == "200":
+                    got_200 = True
+                elif e.fields[i].name == "x-body-length":
+                    got_body_length = e.fields[i].value
+
+    assert_true(got_200, "did not receive 200 OK")
+    assert_true(got_body_length == "11", "expected body length 11, got: " + got_body_length)
+    print("  test_h3_coro_post_with_body: PASS")
+
+
+def test_h3_coro_trailers() raises:
+    """POST with trailers → coroutine reads trailer header x-custom-trailer."""
+    var found_ptr = _heap_alloc[Int](1).as_any_origin()
+    found_ptr.init_pointee_move(Int(0))
+    var extra = UnsafePointer[NoneType, MutExternalOrigin](
+        unsafe_from_address=Int(found_ptr)
+    )
+
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3CoroServer(quic=server_quic^, body_fn=_trailer_check_coro, extra_data=extra)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_coro_client(server, client, now, 50)
+
+    var stream_id = client.open_bidi_stream()
+    var req_fields = List[QpackHeaderField]()
+    req_fields.append(QpackHeaderField(":method", "POST"))
+    req_fields.append(QpackHeaderField(":path", "/"))
+    req_fields.append(QpackHeaderField(":scheme", "https"))
+    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    client.send_headers(stream_id, req_fields, False)
+
+    var body_data = List[UInt8]()
+    body_data.append(UInt8(65))  # 'A'
+    client.send_data(stream_id, body_data^, False)
+
+    # Send trailers (second HEADERS frame, fin=True)
+    var trailer_fields = List[QpackHeaderField]()
+    trailer_fields.append(QpackHeaderField("x-custom-trailer", "test"))
+    client.send_headers(stream_id, trailer_fields, True)
+
+    now = _pump_coro_client(server, client, now, 30)
+
+    var found_val = found_ptr[]
+    found_ptr.destroy_pointee()
+    found_ptr.free()
+    assert_equal_int(found_val, 1, "trailer header x-custom-trailer not received by coroutine")
+    print("  test_h3_coro_trailers: PASS")
+
+
+def test_h3_coro_rst_stream() raises:
+    """Client resets a stream → coroutine receives StreamError (signal=42)."""
+    var signal_ptr = _heap_alloc[Int](1).as_any_origin()
+    signal_ptr.init_pointee_move(Int(0))
+    var extra = UnsafePointer[NoneType, MutExternalOrigin](
+        unsafe_from_address=Int(signal_ptr)
+    )
+
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3CoroServer(quic=server_quic^, body_fn=_blocking_body_coro, extra_data=extra)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_coro_client(server, client, now, 50)
+
+    # Send POST without fin — coroutine yields waiting for body
+    var stream_id = client.open_bidi_stream()
+    var req_fields = List[QpackHeaderField]()
+    req_fields.append(QpackHeaderField(":method", "POST"))
+    req_fields.append(QpackHeaderField(":path", "/"))
+    req_fields.append(QpackHeaderField(":scheme", "https"))
+    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    client.send_headers(stream_id, req_fields, False)
+
+    now = _pump_coro_client(server, client, now, 10)
+
+    # Client resets the stream
+    client.reset_stream(stream_id, UInt64(0x010c))   # H3_REQUEST_CANCELLED
+
+    now = _pump_coro_client(server, client, now, 20)
+
+    var signal_val = signal_ptr[]
+    signal_ptr.destroy_pointee()
+    signal_ptr.free()
+    assert_equal_int(signal_val, 42, "coroutine did not receive stream reset error")
+    print("  test_h3_coro_rst_stream: PASS")
+
+
+def test_h3_coro_goaway() raises:
+    """Server sends GOAWAY → client receives GOAWAY_RECEIVED event."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3CoroServer(quic=server_quic^, body_fn=_simple_get_body)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_coro_client(server, client, now, 50)
+
+    # Server sends GOAWAY before any request
+    server.send_goaway(UInt64(0))
+    now = _pump_coro_client(server, client, now, 20)
+
+    # Client should receive GOAWAY_RECEIVED event
+    var got_goaway = False
+    while True:
+        var ev = client.poll_event()
+        if not ev:
+            break
+        var e = ev.unsafe_take()
+        if e.kind == H3Event.GOAWAY_RECEIVED:
+            got_goaway = True
+
+    assert_true(got_goaway, "client did not receive GOAWAY from server")
+    print("  test_h3_coro_goaway: PASS")
+
+
 def main() raises:
     print("=== test_h3_coro_server ===")
     test_h3_coro_simple_get()
+    test_h3_coro_post_with_body()
+    test_h3_coro_trailers()
+    test_h3_coro_rst_stream()
+    test_h3_coro_goaway()
     print("All H3CoroServer tests passed.")
