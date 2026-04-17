@@ -231,16 +231,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var sid = Int(ev.stream_id)
         if sid not in self._streams:
             return
-        var ctx_ptr = self._streams[sid].ptr()
+        var p = self._streams[sid].copy()
+        var ctx_ptr = p.ptr()
         var ctx = ctx_ptr.take_pointee()
         var err = StreamError.rst_stream(UInt32(ev.error_code))
         ctx.recv_body._set_error(StreamError.rst_stream(UInt32(ev.error_code)))
         self.handler.on_reset(err)
+        _ = self._streams.pop(sid)
         ctx_ptr.free()
-        try:
-            _ = self._streams.pop(sid)
-        except:
-            pass
 
     # --- Internal: response drain --------------------------------------------
 
@@ -319,11 +317,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         """Free stream context if both sides are done."""
         if sid not in self._streams:
             return
-        var ctx_ptr = self._streams[sid].ptr()
+        var p = self._streams[sid].copy()
+        var ctx_ptr = p.ptr()
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
+            _ = self._streams.pop(sid)
             ctx_ptr.destroy_pointee()
             ctx_ptr.free()
-            try:
-                _ = self._streams.pop(sid)
-            except:
-                pass
