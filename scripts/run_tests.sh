@@ -39,6 +39,7 @@ TESTS=(
     test_request_clone
     test_handler_lifecycle
     test_h3_extension
+    test_h3_qpack
     test_session_handle
     test_mock_session
     test_h1_server_handler
