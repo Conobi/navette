@@ -551,21 +551,255 @@ def huffman_decode(data: List[UInt8]) raises -> String:
     return result
 
 
-struct QpackEncoder(Copyable, Movable):
-    """QPACK encoder stub — implemented in T4."""
+# ---------------------------------------------------------------------------
+# Prefix integer helpers (RFC 7541 §5.1)
+# ---------------------------------------------------------------------------
 
-    def __init__(out self):
-        pass
+def qpack_encode_int(value: UInt64, prefix_bits: UInt8) -> List[UInt8]:
+    """Encode an integer with N-bit prefix per RFC 7541 §5.1.
+    Returns only the integer bytes; caller OR-s the high flag bits into first byte.
+    """
+    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
+    var result = List[UInt8]()
+    if value < max_first:
+        result.append(UInt8(value))
+        return result^
+    result.append(UInt8(max_first))
+    var v = value - max_first
+    while v >= 128:
+        result.append(UInt8((v & 0x7F) | 0x80))
+        v >>= 7
+    result.append(UInt8(v))
+    return result^
+
+
+struct _IntDecodeResult(Copyable, Movable):
+    var value: UInt64
+    var new_offset: Int
+
+    def __init__(out self, value: UInt64, new_offset: Int):
+        self.value = value
+        self.new_offset = new_offset
 
     def __init__(out self, *, copy_from: Self):
-        pass
+        self.value = copy_from.value
+        self.new_offset = copy_from.new_offset
 
+
+def qpack_decode_int(data: List[UInt8], offset: Int, prefix_bits: UInt8) raises -> _IntDecodeResult:
+    """Decode a prefix integer per RFC 7541 §5.1."""
+    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
+    var first = UInt64(data[offset]) & max_first
+    if first < max_first:
+        return _IntDecodeResult(first, offset + 1)
+    var value = max_first
+    var shift = UInt64(0)
+    var pos = offset + 1
+    while pos < len(data):
+        var b = UInt64(data[pos])
+        pos += 1
+        value += (b & 0x7F) << shift
+        shift += 7
+        if (b & 0x80) == 0:
+            return _IntDecodeResult(value, pos)
+    raise "QPACK: truncated integer encoding"
+
+
+struct _StrDecodeResult(Copyable, Movable):
+    var value: String
+    var new_offset: Int
+
+    def __init__(out self, value: String, new_offset: Int):
+        self.value = value
+        self.new_offset = new_offset
+
+    def __init__(out self, *, copy_from: Self):
+        self.value = copy_from.value
+        self.new_offset = copy_from.new_offset
+
+
+def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[UInt8]:
+    """Encode a string literal per RFC 7541 §5.2 / RFC 9204 §4.1.2."""
+    var result = List[UInt8]()
+    if use_huffman:
+        var huff = huffman_encode(s)
+        var len_bytes = qpack_encode_int(UInt64(len(huff)), 7)
+        len_bytes[0] |= 0x80  # Set H bit
+        for i in range(len(len_bytes)):
+            result.append(len_bytes[i])
+        for i in range(len(huff)):
+            result.append(huff[i])
+    else:
+        var raw = s.as_bytes()
+        var len_bytes = qpack_encode_int(UInt64(len(raw)), 7)
+        for i in range(len(len_bytes)):
+            result.append(len_bytes[i])
+        for i in range(len(raw)):
+            result.append(raw[i])
+    return result^
+
+
+def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
+    """Decode a QPACK/HPACK string literal from data at offset."""
+    if offset >= len(data):
+        raise "QPACK: truncated string at offset " + String(offset)
+    var h_bit = (data[offset] & 0x80) != 0
+    var ir = qpack_decode_int(data, offset, 7)
+    var length = Int(ir.value)
+    var pos = ir.new_offset
+    if pos + length > len(data):
+        raise "QPACK: string data truncated"
+    var raw = List[UInt8]()
+    for i in range(length):
+        raw.append(data[pos + i])
+    pos += length
+    if h_bit:
+        return _StrDecodeResult(huffman_decode(raw), pos)
+    else:
+        var s = String(unsafe_from_utf8=raw)
+        return _StrDecodeResult(s, pos)
+
+
+# ---------------------------------------------------------------------------
+# QpackEncoder (static table only; no dynamic table)
+# ---------------------------------------------------------------------------
+
+struct QpackEncoder(Copyable, Movable):
+    var use_huffman: Bool
+
+    def __init__(out self, use_huffman: Bool = True):
+        self.use_huffman = use_huffman
+
+    def __init__(out self, *, copy_from: Self):
+        self.use_huffman = copy_from.use_huffman
+
+    def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
+        """Encode a header list as a QPACK field section block.
+
+        Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
+        Each field:
+          - Indexed Static Field Line (§4.5.2): 11xxxxxx (6-bit index)
+          - Literal Field Line With Name Reference (§4.5.4): 01011nnn (T=1, 3-bit index)
+          - Literal Field Line Without Name Reference (§4.5.6): 00100000 + name + value
+        """
+        var result = List[UInt8]()
+        result.append(0x00)  # Required Insert Count = 0
+        result.append(0x00)  # S bit = 0, Delta Base = 0
+
+        for i in range(len(headers)):
+            var field_bytes = self._encode_field(headers[i].name, headers[i].value)
+            for j in range(len(field_bytes)):
+                result.append(field_bytes[j])
+
+        return result^
+
+    def _encode_field(self, name: String, value: String) raises -> List[UInt8]:
+        # 1. Try exact static match → Indexed Static Field Line (§4.5.2)
+        var exact = qpack_static_find(name, value)
+        if exact.__bool__():
+            var idx = exact.value()
+            var idx_bytes = qpack_encode_int(UInt64(idx), 6)
+            idx_bytes[0] |= 0xC0  # bits 7-6 = 11
+            return idx_bytes^
+
+        # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
+        # Format: 0 1 T N XXXXX where T=1 (static), N=0 (may-index)
+        # = 0110 0 XXXXX = 0x60 with 5-bit index prefix
+        var name_match = qpack_static_find_name(name)
+        if name_match.__bool__():
+            var idx = name_match.value()
+            var idx_bytes = qpack_encode_int(UInt64(idx), 5)
+            idx_bytes[0] |= 0x60  # bits 7-5 = 0 1 1, bit 4 = 0 (N=0)
+            var result = List[UInt8]()
+            for i in range(len(idx_bytes)):
+                result.append(idx_bytes[i])
+            var val_bytes = _qpack_encode_string(value, self.use_huffman)
+            for i in range(len(val_bytes)):
+                result.append(val_bytes[i])
+            return result^
+
+        # 3. Literal Without Name Reference (§4.5.6)
+        var result = List[UInt8]()
+        result.append(0x20)  # 0010 0000, N=0
+        var name_bytes = _qpack_encode_string(name, self.use_huffman)
+        for i in range(len(name_bytes)):
+            result.append(name_bytes[i])
+        var val_bytes = _qpack_encode_string(value, self.use_huffman)
+        for i in range(len(val_bytes)):
+            result.append(val_bytes[i])
+        return result^
+
+
+# ---------------------------------------------------------------------------
+# QpackDecoder (static table only; no dynamic table)
+# ---------------------------------------------------------------------------
 
 struct QpackDecoder(Copyable, Movable):
-    """QPACK decoder stub — implemented in T5."""
+    """QPACK decoder — static table only (RFC 9204 §3.2.4)."""
 
     def __init__(out self):
         pass
 
     def __init__(out self, *, copy_from: Self):
         pass
+
+    def decode(self, data: List[UInt8]) raises -> List[QpackHeaderField]:
+        """Decode a QPACK field section block.
+
+        Skips the 2-byte prefix (Required Insert Count + Delta Base),
+        then decodes each field instruction until data is exhausted.
+        """
+        if len(data) < 2:
+            raise "QPACK: field section too short"
+        var result = List[QpackHeaderField]()
+        var pos = 2  # skip prefix
+
+        while pos < len(data):
+            var b = data[pos]
+
+            if (b & 0x80) != 0:
+                # §4.5.2: Indexed Field Line
+                # 1xxxxxxx — bit 6 is T (T=1 = static)
+                var t_bit = (b & 0x40) != 0
+                var ir = qpack_decode_int(data, pos, 6)
+                var idx = Int(ir.value)
+                pos = ir.new_offset
+                if t_bit:
+                    # Static table reference
+                    var entry = qpack_static_get(idx)
+                    result.append(QpackHeaderField(entry.name, entry.value))
+                else:
+                    raise "QPACK: dynamic table not supported (indexed)"
+
+            elif (b & 0xC0) == 0x40:
+                # §4.5.4: Literal Field Line With Name Reference
+                # 0 1 T N XXXXX — bit 5 is T (T=1 = static), bit 4 is N (never-indexed)
+                var t_bit = (b & 0x20) != 0
+                var ir = qpack_decode_int(data, pos, 5)
+                var idx = Int(ir.value)
+                pos = ir.new_offset
+                var sr = _qpack_decode_string(data, pos)
+                var value = sr.value
+                pos = sr.new_offset
+                if t_bit:
+                    var entry = qpack_static_get(idx)
+                    result.append(QpackHeaderField(entry.name, value))
+                else:
+                    raise "QPACK: dynamic table not supported (literal name ref)"
+
+            elif (b & 0xE0) == 0x20:
+                # §4.5.6: Literal Field Line Without Name Reference
+                # 001xxxxx — skip flags byte
+                pos += 1
+                var nr = _qpack_decode_string(data, pos)
+                var name = nr.value
+                pos = nr.new_offset
+                var vr = _qpack_decode_string(data, pos)
+                var value = vr.value
+                pos = vr.new_offset
+                result.append(QpackHeaderField(name, value))
+
+            else:
+                raise "QPACK: unknown field instruction byte: " + String(Int(b))
+
+        return result^
