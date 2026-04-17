@@ -49,3 +49,6 @@ from src.h3.qpack import (
     huffman_encode,
     huffman_decode,
 )
+from src.h3.connection import H3Event, H3Connection
+from src.h3.h3_handler_server import H3HandlerServer
+from src.h3.h3_session import H3Session
