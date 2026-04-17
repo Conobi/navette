@@ -2560,6 +2560,96 @@ def test_pn_skip_next_in_valid_range() raises:
     print("  test_pn_skip_next_in_valid_range: PASS")
 
 
+def test_streams_blocked_bidi_emitted() raises:
+    """CLIENT emits STREAMS_BLOCKED_BIDI when peer's bidi stream limit is exhausted."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Cap peer bidi limit so exactly one more stream can open before we're blocked.
+    var base = client.stream_map.local_opened_bidi
+    client.stream_map.peer_max_streams_bidi = base + UInt64(1)
+
+    _ = client.stream_map.open_stream(True)   # succeeds
+    try:
+        _ = client.stream_map.open_stream(True)   # blocked → sets needs_streams_blocked_bidi
+    except:
+        pass
+
+    assert_true(
+        client.stream_map.needs_streams_blocked_bidi,
+        "needs_streams_blocked_bidi must be set after failed open_stream",
+    )
+
+    _ = client.send(now)
+
+    assert_equal_int(
+        Int(client.stream_map.streams_blocked_at_bidi),
+        Int(base + UInt64(1)),
+        "streams_blocked_at_bidi must equal peer_max_streams_bidi after send",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_streams_blocked_bidi_emitted: PASS")
+
+
+def test_streams_blocked_dedup_no_resend() raises:
+    """STREAMS_BLOCKED is NOT re-emitted for the same peer limit (dedup)."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var base = client.stream_map.local_opened_bidi
+    client.stream_map.peer_max_streams_bidi = base + UInt64(1)
+    _ = client.stream_map.open_stream(True)
+    try:
+        _ = client.stream_map.open_stream(True)
+    except:
+        pass
+
+    # First send → emits STREAMS_BLOCKED, sets dedup field.
+    _ = client.send(now)
+    var after_first = client.stream_map.streams_blocked_at_bidi
+
+    # Second send at same limit → dedup: field must not change.
+    now += UInt64(10_000)
+    _ = client.send(now)
+    assert_equal_int(
+        Int(client.stream_map.streams_blocked_at_bidi),
+        Int(after_first),
+        "streams_blocked_at_bidi must not change on second send (dedup)",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_streams_blocked_dedup_no_resend: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2592,4 +2682,6 @@ def main() raises:
     test_ecn_disabled_after_probing()
     test_pn_skip_active_after_handshake()
     test_pn_skip_next_in_valid_range()
+    test_streams_blocked_bidi_emitted()
+    test_streams_blocked_dedup_no_resend()
     print("All test_quic_connection tests passed.")
