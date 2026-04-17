@@ -68,11 +68,24 @@ def test_static_find_name_no_match() raises:
 def test_huffman_encode_decode_roundtrip() raises:
     var original = String("www.example.com")
     var encoded = huffman_encode(original)
-    # Huffman-encoded "www.example.com" per RFC 7541 Appendix C.4.1
-    # We verify roundtrip, not exact bytes (exact bytes verified by conformance test)
     var decoded = huffman_decode(encoded)
     assert_true(decoded == original, "roundtrip should reproduce original string")
     print("  test_huffman_encode_decode_roundtrip: PASS")
+
+
+def test_huffman_encode_known_vector() raises:
+    # RFC 7541 C.4.1: Huffman encoding of "custom-key" = 0x25a849e95ba97d7f (8 bytes)
+    var encoded = huffman_encode(String("custom-key"))
+    assert_equal_int(len(encoded), 8, "custom-key should Huffman-encode to 8 bytes")
+    assert_equal_int(Int(encoded[0]), 0x25, "byte 0")
+    assert_equal_int(Int(encoded[1]), 0xa8, "byte 1")
+    assert_equal_int(Int(encoded[2]), 0x49, "byte 2")
+    assert_equal_int(Int(encoded[3]), 0xe9, "byte 3")
+    assert_equal_int(Int(encoded[4]), 0x5b, "byte 4")
+    assert_equal_int(Int(encoded[5]), 0xa9, "byte 5")
+    assert_equal_int(Int(encoded[6]), 0x7d, "byte 6")
+    assert_equal_int(Int(encoded[7]), 0x7f, "byte 7")
+    print("  test_huffman_encode_known_vector: PASS")
 
 
 def test_huffman_encode_empty() raises:
@@ -148,19 +161,26 @@ def test_encode_indexed_static_method_get() raises:
 
 
 def test_encode_literal_name_ref() raises:
-    # :method PATCH: name matches first :method entry at index 15, value does not
-    # Verify: output is longer than indexed case, and roundtrip via decoder works
+    # :method PATCH: name matches first :method entry (index 15), value not in table.
+    # §4.5.4 wire format (use_huffman=False):
+    #   prefix     [0x00, 0x00]
+    #   §4.5.4     [0x5F, 0x00]  — 0x50 | 4-bit int(15); 15==max_first → 2 bytes
+    #   value      [0x05, 'P','A','T','C','H']  — H=0, length=5
     var enc = QpackEncoder(False)
     var headers = List[QpackHeaderField]()
     headers.append(QpackHeaderField(":method", "PATCH"))
     var out = enc.encode(headers)
-    assert_true(len(out) > 3, "literal encoding should be longer than indexed")
-    # Verify via decoder
-    var dec = QpackDecoder()
-    var decoded = dec.decode(out)
-    assert_equal_int(len(decoded), 1, "should decode 1 header")
-    assert_true(decoded[0].name == ":method", "name should be :method")
-    assert_true(decoded[0].value == "PATCH", "value should be PATCH")
+    assert_equal_int(len(out), 10, "wire length should be 10 bytes")
+    assert_equal_int(Int(out[0]), 0x00, "prefix byte 0")
+    assert_equal_int(Int(out[1]), 0x00, "prefix byte 1")
+    assert_equal_int(Int(out[2]), 0x5F, "§4.5.4 first byte: N=0 T=1 index=15 multi-byte")
+    assert_equal_int(Int(out[3]), 0x00, "§4.5.4 second byte: remainder=0")
+    assert_equal_int(Int(out[4]), 0x05, "value: H=0, length=5")
+    assert_equal_int(Int(out[5]), 0x50, "value: 'P'")
+    assert_equal_int(Int(out[6]), 0x41, "value: 'A'")
+    assert_equal_int(Int(out[7]), 0x54, "value: 'T'")
+    assert_equal_int(Int(out[8]), 0x43, "value: 'C'")
+    assert_equal_int(Int(out[9]), 0x48, "value: 'H'")
     print("  test_encode_literal_name_ref: PASS")
 
 
@@ -231,13 +251,22 @@ def test_decode_indexed_static() raises:
 
 
 def test_decode_literal_name_ref() raises:
-    # Encode :method PATCH via encoder, then decode
-    var enc = QpackEncoder(False)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":method", "PATCH"))
-    var encoded = enc.encode(fields)
+    # Decode known-correct §4.5.4 wire bytes for :method PATCH (use_huffman=False).
+    # Same bytes as oracle (pylsqpack) for :method PATCH field alone.
+    # [0x00, 0x00, 0x5F, 0x00, 0x05, 'P','A','T','C','H']
+    var data = List[UInt8]()
+    data.append(0x00)  # RIC=0
+    data.append(0x00)  # S=0, delta=0
+    data.append(0x5F)  # §4.5.4: N=0, T=1 (static), index=15 multi-byte first byte
+    data.append(0x00)  # index remainder = 0 → index = 15
+    data.append(0x05)  # H=0, length=5
+    data.append(0x50)  # 'P'
+    data.append(0x41)  # 'A'
+    data.append(0x54)  # 'T'
+    data.append(0x43)  # 'C'
+    data.append(0x48)  # 'H'
     var dec = QpackDecoder()
-    var headers = dec.decode(encoded)
+    var headers = dec.decode(data)
     assert_equal_int(len(headers), 1, "should decode 1 header")
     assert_true(headers[0].name == ":method", "name should be :method")
     assert_true(headers[0].value == "PATCH", "value should be PATCH")
@@ -365,6 +394,7 @@ def main() raises:
     test_static_find_name_only()
     test_static_find_name_no_match()
     test_huffman_encode_decode_roundtrip()
+    test_huffman_encode_known_vector()
     test_huffman_encode_empty()
     test_huffman_decode_padding_ones()
     test_huffman_decode_bad_padding_raises()

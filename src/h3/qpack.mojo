@@ -88,13 +88,13 @@ def _qpack_static_table() -> List[QpackStaticEntry]:
     t.append(QpackStaticEntry("content-type", "image/jpeg"))                     # 49
     t.append(QpackStaticEntry("content-type", "image/png"))                      # 50
     t.append(QpackStaticEntry("content-type", "text/css"))                       # 51
-    t.append(QpackStaticEntry("content-type", "text/html;charset=utf-8"))        # 52
+    t.append(QpackStaticEntry("content-type", "text/html; charset=utf-8"))       # 52
     t.append(QpackStaticEntry("content-type", "text/plain"))                     # 53
     t.append(QpackStaticEntry("content-type", "text/plain;charset=utf-8"))       # 54
     t.append(QpackStaticEntry("range", "bytes=0-"))                              # 55
     t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000"))  # 56
-    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000;includesubdomains"))          # 57
-    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000;includesubdomains;preload"))  # 58
+    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000; includesubdomains"))         # 57
+    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000; includesubdomains; preload")) # 58
     t.append(QpackStaticEntry("vary", "accept-encoding"))                        # 59
     t.append(QpackStaticEntry("vary", "origin"))                                 # 60
     t.append(QpackStaticEntry("x-content-type-options", "nosniff"))              # 61
@@ -679,8 +679,8 @@ struct QpackEncoder(Copyable, Movable):
         Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
         Each field:
           - Indexed Static Field Line (§4.5.2): 11xxxxxx (6-bit index)
-          - Literal Field Line With Name Reference (§4.5.4): 0 1 T N xxxx (T=1, 4-bit index)
-          - Literal Field Line Without Name Reference (§4.5.6): 00100000 + name + value
+          - Literal Field Line With Name Reference (§4.5.4): 0 1 N T xxxx (N=0, T=1, 4-bit index)
+          - Literal Field Line Without Name Reference (§4.5.6): 0 0 1 N H nnn | name | value
         """
         var result = List[UInt8]()
         result.append(0x00)  # Required Insert Count = 0
@@ -703,13 +703,13 @@ struct QpackEncoder(Copyable, Movable):
             return idx_bytes^
 
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
-        # Format: 0 1 T N xxxx where T=1 (static), N=0 (may-index)
-        # = 0110 xxxx = 0x60 with 4-bit index prefix
+        # Format: 0 1 N T xxxx where N=0 (may-index), T=1 (static)
+        # = 0101 xxxx = 0x50 with 4-bit index prefix
         var name_match = qpack_static_find_name(name)
         if name_match.__bool__():
             var idx = name_match.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 4)
-            idx_bytes[0] |= 0x60  # bits 7-6 = 0 1, bit 5 = T=1 (static), bit 4 = N=0 (may-index)
+            idx_bytes[0] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0 (may-index), bit 4 = T=1 (static)
             var result = List[UInt8]()
             for i in range(len(idx_bytes)):
                 result.append(idx_bytes[i])
@@ -719,11 +719,24 @@ struct QpackEncoder(Copyable, Movable):
             return result^
 
         # 3. Literal Without Name Reference (§4.5.6)
+        # Format: 0 0 1 N H nnn | name_bytes | H 7-bit-value-len | value_bytes
+        # bit 4 = N=0 (may-index), bit 3 = H (Huffman for name), bits 2:0 = 3-bit name length prefix
         var result = List[UInt8]()
-        result.append(0x20)  # 0010 0000, N=0
-        var name_bytes = _qpack_encode_string(name, self.use_huffman)
-        for i in range(len(name_bytes)):
-            result.append(name_bytes[i])
+        var name_raw = List[UInt8]()
+        var name_h_bit: UInt8 = 0x00
+        if self.use_huffman:
+            name_raw = huffman_encode(name)
+            name_h_bit = 0x08  # bit 3 = H=1
+        else:
+            var name_span = name.as_bytes()
+            for k in range(len(name_span)):
+                name_raw.append(name_span[k])
+        var name_len_bytes = qpack_encode_int(UInt64(len(name_raw)), 3)
+        name_len_bytes[0] |= 0x20 | name_h_bit  # 001 N=0 H nnn
+        for i in range(len(name_len_bytes)):
+            result.append(name_len_bytes[i])
+        for i in range(len(name_raw)):
+            result.append(name_raw[i])
         var val_bytes = _qpack_encode_string(value, self.use_huffman)
         for i in range(len(val_bytes)):
             result.append(val_bytes[i])
@@ -786,8 +799,8 @@ struct QpackDecoder(Copyable, Movable):
 
             elif (b & 0xC0) == 0x40:
                 # §4.5.4: Literal Field Line With Name Reference
-                # 0 1 T N xxxx — bit 5 is T (T=1 = static), bit 4 is N (never-indexed)
-                var t_bit = (b & 0x20) != 0
+                # 0 1 N T xxxx — bit 5 is N (never-indexed), bit 4 is T (T=1 = static)
+                var t_bit = (b & 0x10) != 0
                 var ir = qpack_decode_int(data, pos, 4)
                 var idx = Int(ir.value)
                 pos = ir.new_offset
@@ -802,15 +815,26 @@ struct QpackDecoder(Copyable, Movable):
 
             elif (b & 0xE0) == 0x20:
                 # §4.5.6: Literal Field Line Without Name Reference
-                # 001xxxxx — skip flags byte
-                pos += 1
-                var nr = _qpack_decode_string(data, pos)
-                var name = nr.value
-                pos = nr.new_offset
+                # 0 0 1 N H nnn — bit 3 = H (Huffman for name), bits 2:0 = 3-bit name length prefix
+                var name_huffman = (b & 0x08) != 0
+                var name_len_r = qpack_decode_int(data, pos, 3)
+                pos = name_len_r.new_offset
+                var name_len = Int(name_len_r.value)
+                if pos + name_len > len(data):
+                    raise "QPACK: §4.5.6 name data truncated"
+                var name_raw = List[UInt8]()
+                for j in range(name_len):
+                    name_raw.append(data[pos + j])
+                pos += name_len
+                var field_name: String
+                if name_huffman:
+                    field_name = huffman_decode(name_raw)
+                else:
+                    field_name = String(unsafe_from_utf8=name_raw)
                 var vr = _qpack_decode_string(data, pos)
                 var value = vr.value
                 pos = vr.new_offset
-                result.append(QpackHeaderField(name, value))
+                result.append(QpackHeaderField(field_name, value))
 
             else:
                 raise "QPACK: unknown field instruction byte: " + String(Int(b))
