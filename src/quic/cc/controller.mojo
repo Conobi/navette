@@ -47,9 +47,9 @@ struct CcController(ImplicitlyCopyable, Movable):
             return self.cubic.pacing_rate(smoothed_rtt_us)
         return UInt64(0)
 
-    def on_packet_sent(mut self, size: UInt64, now: UInt64):
+    def on_packet_sent(mut self, size: UInt64, pn: UInt64, now: UInt64):
         if self.kind == CC_KIND_CUBIC:
-            self.cubic.on_packet_sent(size, now)
+            self.cubic.on_packet_sent(size, pn, now)
 
     def on_packet_acked(mut self, packet: AckedPacket, smoothed_rtt_us: UInt64, now: UInt64):
         if self.kind == CC_KIND_CUBIC:
