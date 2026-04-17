@@ -41,6 +41,8 @@ TESTS=(
     test_h2_stream_cross
     test_cross_quic_hs_keys
     test_cross_quic_packet_header
+    test_h3_frame_cross
+    test_qpack_cross
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
