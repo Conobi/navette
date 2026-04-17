@@ -301,7 +301,11 @@ struct H3Connection(Movable):
 
     def open_bidi_stream(mut self) raises -> UInt64:
         """Open a client-initiated bidi stream."""
-        return self._quic.open_stream(True)
+        var sid = self._quic.open_stream(True)
+        var sbuf = _H3StreamBuf()
+        sbuf.is_uni = False
+        self._stream_bufs[Int(sid)] = sbuf
+        return sid
 
     # --- Internal: bootstrap -------------------------------------------------
 
