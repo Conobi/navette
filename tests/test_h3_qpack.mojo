@@ -216,6 +216,131 @@ def test_encode_huffman_disabled() raises:
     print("  test_encode_huffman_disabled: PASS")
 
 
+def test_decode_indexed_static() raises:
+    # [0x00, 0x00, 0xD1] = prefix + indexed :method GET (index 17, wire=0xC0|17=0xD1)
+    var data = List[UInt8]()
+    data.append(0x00)
+    data.append(0x00)
+    data.append(0xD1)  # 0xC0 | 17
+    var dec = QpackDecoder()
+    var headers = dec.decode(data)
+    assert_equal_int(len(headers), 1, "should decode 1 header")
+    assert_true(headers[0].name == ":method", "name should be :method")
+    assert_true(headers[0].value == "GET", "value should be GET")
+    print("  test_decode_indexed_static: PASS")
+
+
+def test_decode_literal_name_ref() raises:
+    # Encode :method PATCH via encoder, then decode
+    var enc = QpackEncoder(False)
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField(":method", "PATCH"))
+    var encoded = enc.encode(fields)
+    var dec = QpackDecoder()
+    var headers = dec.decode(encoded)
+    assert_equal_int(len(headers), 1, "should decode 1 header")
+    assert_true(headers[0].name == ":method", "name should be :method")
+    assert_true(headers[0].value == "PATCH", "value should be PATCH")
+    print("  test_decode_literal_name_ref: PASS")
+
+
+def test_decode_literal_no_name_ref() raises:
+    var enc = QpackEncoder(False)
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField("x-custom", "hello"))
+    var encoded = enc.encode(fields)
+    var dec = QpackDecoder()
+    var headers = dec.decode(encoded)
+    assert_equal_int(len(headers), 1, "should decode 1 header")
+    assert_true(headers[0].name == "x-custom", "name should be x-custom")
+    assert_true(headers[0].value == "hello", "value should be hello")
+    print("  test_decode_literal_no_name_ref: PASS")
+
+
+def test_decode_huffman_value() raises:
+    # Encode with Huffman enabled, then decode
+    var enc = QpackEncoder(True)
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField("x-custom", "world"))
+    var encoded = enc.encode(fields)
+    var dec = QpackDecoder()
+    var headers = dec.decode(encoded)
+    assert_equal_int(len(headers), 1, "should decode 1 header")
+    assert_true(headers[0].value == "world", "value should be world")
+    print("  test_decode_huffman_value: PASS")
+
+
+def test_decode_nonzero_insert_count_raises() raises:
+    # Required Insert Count must be 0 for static-only
+    var data = List[UInt8]()
+    data.append(0x02)  # non-zero RIC
+    data.append(0x00)
+    var dec = QpackDecoder()
+    var raised = False
+    try:
+        _ = dec.decode(data)
+    except:
+        raised = True
+    assert_true(raised, "should raise on non-zero insert count")
+    print("  test_decode_nonzero_insert_count_raises: PASS")
+
+
+def test_decode_truncated_raises() raises:
+    # Truncated literal (half of a literal field line)
+    var enc2 = QpackEncoder(False)
+    var f2 = List[QpackHeaderField]()
+    f2.append(QpackHeaderField("x-header", "longvalue"))
+    var e2 = enc2.encode(f2)
+    # Take only first half (truncated)
+    var half = List[UInt8]()
+    for i in range(len(e2) // 2):
+        half.append(e2[i])
+    var dec = QpackDecoder()
+    var raised = False
+    try:
+        _ = dec.decode(half)
+    except:
+        raised = True
+    assert_true(raised, "should raise on truncated data")
+    print("  test_decode_truncated_raises: PASS")
+
+
+def test_decode_multi_fields() raises:
+    var enc = QpackEncoder(False)
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField(":method", "GET"))
+    fields.append(QpackHeaderField(":path", "/"))
+    fields.append(QpackHeaderField(":scheme", "https"))
+    var encoded = enc.encode(fields)
+    var dec = QpackDecoder()
+    var headers = dec.decode(encoded)
+    assert_equal_int(len(headers), 3, "should decode 3 headers")
+    assert_true(headers[0].name == ":method", "h0 name should be :method")
+    assert_true(headers[1].name == ":path", "h1 name should be :path")
+    assert_true(headers[2].name == ":scheme", "h2 name should be :scheme")
+    print("  test_decode_multi_fields: PASS")
+
+
+def test_decode_static_index_out_of_range_raises() raises:
+    # Indexed-static flag with an out-of-range index
+    var data = List[UInt8]()
+    data.append(0x00)
+    data.append(0x00)
+    # Build a multi-byte indexed static with large index (>>99)
+    # 0xFF = 0xC0 | 0x3F (max_first for 6-bit prefix = 63)
+    data.append(0xFF)         # first byte: indexed static, max_first = 63
+    data.append(0x80 | 50)   # continuation: adds 50*128 to 63 = 6463
+    data.append(0x00)         # end continuation
+    var dec = QpackDecoder()
+    var raised = False
+    try:
+        _ = dec.decode(data)
+    except:
+        raised = True
+    assert_true(raised, "should raise on out-of-range static index")
+    print("  test_decode_static_index_out_of_range_raises: PASS")
+
+
 def main() raises:
     print("=== test_h3_qpack ===")
     test_static_get_method_get()
@@ -235,4 +360,12 @@ def main() raises:
     test_encode_literal_no_name_ref()
     test_encode_multi_headers()
     test_encode_huffman_disabled()
+    test_decode_indexed_static()
+    test_decode_literal_name_ref()
+    test_decode_literal_no_name_ref()
+    test_decode_huffman_value()
+    test_decode_nonzero_insert_count_raises()
+    test_decode_truncated_raises()
+    test_decode_multi_fields()
+    test_decode_static_index_out_of_range_raises()
     print("All tests passed.")

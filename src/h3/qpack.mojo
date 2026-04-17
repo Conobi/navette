@@ -751,8 +751,13 @@ struct QpackDecoder(Copyable, Movable):
         """
         if len(data) < 2:
             raise "QPACK: field section too short"
+        # RFC 9204 §4.5.1: Required Insert Count encoded with 8-bit prefix.
+        # Static-only decoders only support RIC = 0.
+        var ric_result = qpack_decode_int(data, 0, 8)
+        if ric_result.value != 0:
+            raise "QPACK: non-zero Required Insert Count not supported (dynamic table not implemented)"
         var result = List[QpackHeaderField]()
-        var pos = 2  # skip prefix
+        var pos = Int(ric_result.new_offset) + 1  # skip RIC byte(s) + Delta Base byte
 
         while pos < len(data):
             var b = data[pos]
