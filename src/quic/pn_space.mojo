@@ -2,6 +2,7 @@
 # QUIC Packet Number Space — per-space PN counters, ACK tracking, SentPacket records.
 # RFC 9000 Section 17.2.2 (PN spaces), Appendix B (ACK generation).
 
+from src.quic.ecn import EcnCounts, ECN_NOT_ECT, ECN_ECT0
 from src.quic.frame import AckFrame, AckRange, Frame
 from src.quic.packet import PacketType
 
@@ -97,6 +98,7 @@ struct SentPacket(Copyable, Movable):
     var in_flight: Bool         # True if counts toward bytes_in_flight
     var size: Int               # Bytes in UDP datagram
     var frames: List[Frame]     # For CRYPTO retransmission
+    var ecn_mark: UInt8          # IP ECN codepoint used when this packet was sent (0 = NOT_ECT)
 
     def __init__(
         out self,
@@ -106,6 +108,7 @@ struct SentPacket(Copyable, Movable):
         in_flight: Bool,
         size: Int,
         frames: List[Frame],
+        ecn_mark: UInt8 = UInt8(0),
     ):
         self.pn = pn
         self.time_sent = time_sent
@@ -113,6 +116,7 @@ struct SentPacket(Copyable, Movable):
         self.in_flight = in_flight
         self.size = size
         self.frames = List[Frame](copy=frames)
+        self.ecn_mark = ecn_mark
 
     def __init__(out self, *, other: Self):
         self.pn = other.pn
@@ -121,6 +125,7 @@ struct SentPacket(Copyable, Movable):
         self.in_flight = other.in_flight
         self.size = other.size
         self.frames = List[Frame](copy=other.frames)
+        self.ecn_mark = other.ecn_mark
 
     def __init__(out self, *, deinit take: Self):
         self.pn = take.pn
@@ -129,6 +134,7 @@ struct SentPacket(Copyable, Movable):
         self.in_flight = take.in_flight
         self.size = take.size
         self.frames = take.frames^
+        self.ecn_mark = take.ecn_mark
 
 
 # ── PacketNumberSpace ────────────────────────────────────────────────
@@ -146,6 +152,9 @@ struct PacketNumberSpace(Copyable, Movable):
     var sent_packets: Dict[Int, SentPacket]
     var keys_handle: Int32                 # -1 = no keys
     var last_ae_acked_time_sent: UInt64    # time_sent of latest ACKed ack-eliciting pkt; 0 = none
+    var recv_ecn: EcnCounts       # ECN marks observed on packets received in this space
+    var last_ack_ecn: EcnCounts   # ECN counts from the last ACK frame we sent (for CE delta tracking)
+    var ect0_in_flight: UInt64    # O(1) count of in-flight ECT(0)-marked packets
 
     def __init__(out self, level: EncryptionLevel):
         self.level = level
@@ -158,6 +167,9 @@ struct PacketNumberSpace(Copyable, Movable):
         self.sent_packets = Dict[Int, SentPacket]()
         self.keys_handle = Int32(-1)
         self.last_ae_acked_time_sent = UInt64(0)
+        self.recv_ecn = EcnCounts()
+        self.last_ack_ecn = EcnCounts()
+        self.ect0_in_flight = UInt64(0)
 
     def __init__(out self, *, other: Self):
         self.level = EncryptionLevel(other=other.level)
@@ -170,6 +182,9 @@ struct PacketNumberSpace(Copyable, Movable):
         self.sent_packets = other.sent_packets.copy()
         self.keys_handle = other.keys_handle
         self.last_ae_acked_time_sent = other.last_ae_acked_time_sent
+        self.recv_ecn = EcnCounts(other=other.recv_ecn)
+        self.last_ack_ecn = EcnCounts(other=other.last_ack_ecn)
+        self.ect0_in_flight = other.ect0_in_flight
 
     def __init__(out self, *, deinit take: Self):
         self.level = take.level
@@ -182,6 +197,9 @@ struct PacketNumberSpace(Copyable, Movable):
         self.sent_packets = take.sent_packets^
         self.keys_handle = take.keys_handle
         self.last_ae_acked_time_sent = take.last_ae_acked_time_sent
+        self.recv_ecn = take.recv_ecn^
+        self.last_ack_ecn = take.last_ack_ecn^
+        self.ect0_in_flight = take.ect0_in_flight
 
     # ── PN allocation ────────────────────────────────────────────────
 
@@ -316,6 +334,13 @@ struct PacketNumberSpace(Copyable, Movable):
             var ack_range = self.ack_ranges[i].end - self.ack_ranges[i].start
             ranges.append(AckRange(gap, ack_range))
         ack.ranges = ranges^
+
+        # Include ECN counts when we've received ECN-marked packets (RFC 9000 §13.4.3).
+        if not self.recv_ecn.is_zero():
+            ack.has_ecn = True
+            ack.ecn_ect0 = self.recv_ecn.ect0
+            ack.ecn_ect1 = self.recv_ecn.ect1
+            ack.ecn_ce = self.recv_ecn.ce
 
         # Reset ACK state.
         self.ack_needed = False
