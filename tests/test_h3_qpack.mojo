@@ -11,6 +11,8 @@ from src.h3.qpack import (
     qpack_static_find_name,
     huffman_encode,
     huffman_decode,
+    QpackEncoder,
+    QpackDecoder,
 )
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
@@ -122,6 +124,98 @@ def test_huffman_decode_excess_padding_raises() raises:
     print("  test_huffman_decode_excess_padding_raises: PASS")
 
 
+def test_encode_prefix_two_zero_bytes() raises:
+    # Any encoded block must start with [0x00, 0x00]
+    var enc = QpackEncoder(False)
+    var headers = List[QpackHeaderField]()
+    headers.append(QpackHeaderField(":method", "GET"))
+    var out = enc.encode(headers)
+    assert_equal_int(Int(out[0]), 0x00, "first byte should be 0x00")
+    assert_equal_int(Int(out[1]), 0x00, "second byte should be 0x00")
+    print("  test_encode_prefix_two_zero_bytes: PASS")
+
+
+def test_encode_indexed_static_method_get() raises:
+    # :method GET is static index 17; wire = 0xC0 | 17 = 0xD1
+    var enc = QpackEncoder(False)
+    var headers = List[QpackHeaderField]()
+    headers.append(QpackHeaderField(":method", "GET"))
+    var out = enc.encode(headers)
+    # prefix [0x00, 0x00] + indexed byte 0xD1
+    assert_equal_int(len(out), 3, "output should be 3 bytes")
+    assert_equal_int(Int(out[2]), 0xD1, "indexed :method GET should be 0xD1")
+    print("  test_encode_indexed_static_method_get: PASS")
+
+
+def test_encode_literal_name_ref() raises:
+    # :method PATCH: name matches first :method entry at index 15, value does not
+    # Verify: output is longer than indexed case, and roundtrip via decoder works
+    var enc = QpackEncoder(False)
+    var headers = List[QpackHeaderField]()
+    headers.append(QpackHeaderField(":method", "PATCH"))
+    var out = enc.encode(headers)
+    assert_true(len(out) > 3, "literal encoding should be longer than indexed")
+    # Verify via decoder
+    var dec = QpackDecoder()
+    var decoded = dec.decode(out)
+    assert_equal_int(len(decoded), 1, "should decode 1 header")
+    assert_true(decoded[0].name == ":method", "name should be :method")
+    assert_true(decoded[0].value == "PATCH", "value should be PATCH")
+    print("  test_encode_literal_name_ref: PASS")
+
+
+def test_encode_literal_no_name_ref() raises:
+    # x-custom: myval — not in static table
+    var enc = QpackEncoder(False)
+    var headers = List[QpackHeaderField]()
+    headers.append(QpackHeaderField("x-custom", "myval"))
+    var out = enc.encode(headers)
+    var dec = QpackDecoder()
+    var decoded = dec.decode(out)
+    assert_equal_int(len(decoded), 1, "should decode 1 header")
+    assert_true(decoded[0].name == "x-custom", "name should be x-custom")
+    assert_true(decoded[0].value == "myval", "value should be myval")
+    print("  test_encode_literal_no_name_ref: PASS")
+
+
+def test_encode_multi_headers() raises:
+    var enc = QpackEncoder(False)
+    var headers = List[QpackHeaderField]()
+    headers.append(QpackHeaderField(":method", "GET"))
+    headers.append(QpackHeaderField(":path", "/"))
+    headers.append(QpackHeaderField(":scheme", "https"))
+    headers.append(QpackHeaderField(":authority", "example.com"))
+    var out = enc.encode(headers)
+    var dec = QpackDecoder()
+    var decoded = dec.decode(out)
+    assert_equal_int(len(decoded), 4, "should decode 4 headers")
+    assert_true(decoded[0].name == ":method", "h0 name")
+    assert_true(decoded[0].value == "GET", "h0 value")
+    assert_true(decoded[1].name == ":path", "h1 name")
+    assert_true(decoded[1].value == "/", "h1 value")
+    assert_true(decoded[2].name == ":scheme", "h2 name")
+    assert_true(decoded[2].value == "https", "h2 value")
+    assert_true(decoded[3].name == ":authority", "h3 name")
+    assert_true(decoded[3].value == "example.com", "h3 value")
+    print("  test_encode_multi_headers: PASS")
+
+
+def test_encode_huffman_disabled() raises:
+    # With huffman=False, literal strings must not be Huffman-encoded
+    var enc = QpackEncoder(False)
+    var headers = List[QpackHeaderField]()
+    headers.append(QpackHeaderField("x-test", "hello"))
+    var out = enc.encode(headers)
+    # Find "hello" in raw bytes (should appear as-is since no huffman)
+    var found = False
+    for i in range(len(out) - 4):
+        if (out[i] == 0x68 and out[i+1] == 0x65 and out[i+2] == 0x6c
+                and out[i+3] == 0x6c and out[i+4] == 0x6f):
+            found = True
+    assert_true(found, "hello bytes should appear unencoded")
+    print("  test_encode_huffman_disabled: PASS")
+
+
 def main() raises:
     print("=== test_h3_qpack ===")
     test_static_get_method_get()
@@ -135,4 +229,10 @@ def main() raises:
     test_huffman_decode_padding_ones()
     test_huffman_decode_bad_padding_raises()
     test_huffman_decode_excess_padding_raises()
+    test_encode_prefix_two_zero_bytes()
+    test_encode_indexed_static_method_get()
+    test_encode_literal_name_ref()
+    test_encode_literal_no_name_ref()
+    test_encode_multi_headers()
+    test_encode_huffman_disabled()
     print("All tests passed.")
