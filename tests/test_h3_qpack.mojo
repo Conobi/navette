@@ -341,6 +341,21 @@ def test_decode_static_index_out_of_range_raises() raises:
     print("  test_decode_static_index_out_of_range_raises: PASS")
 
 
+def test_decode_s_bit_raises() raises:
+    # S=1 in the Delta Base byte means negative delta — not supported
+    var data = List[UInt8]()
+    data.append(0x00)  # RIC=0
+    data.append(0x80)  # S=1 (bit 7 set), Delta Base=0
+    var dec = QpackDecoder()
+    var raised = False
+    try:
+        _ = dec.decode(data)
+    except:
+        raised = True
+    assert_true(raised, "should raise on S=1 in Delta Base")
+    print("  test_decode_s_bit_raises: PASS")
+
+
 def main() raises:
     print("=== test_h3_qpack ===")
     test_static_get_method_get()
@@ -368,4 +383,5 @@ def main() raises:
     test_decode_truncated_raises()
     test_decode_multi_fields()
     test_decode_static_index_out_of_range_raises()
+    test_decode_s_bit_raises()
     print("All tests passed.")
