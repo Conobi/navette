@@ -155,6 +155,8 @@ struct PacketNumberSpace(Copyable, Movable):
     var recv_ecn: EcnCounts       # ECN marks observed on packets received in this space
     var last_ack_ecn: EcnCounts   # ECN counts from the last ACK frame we sent (for CE delta tracking)
     var ect0_in_flight: UInt64    # O(1) count of in-flight ECT(0)-marked packets
+    var pn_skip_rng: UInt64    # Xorshift64 state; 0 = disabled (Initial + Handshake)
+    var pn_skip_next: UInt64   # PN at which the next gap is inserted
 
     def __init__(out self, level: EncryptionLevel):
         self.level = level
@@ -170,6 +172,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.recv_ecn = EcnCounts()
         self.last_ack_ecn = EcnCounts()
         self.ect0_in_flight = UInt64(0)
+        self.pn_skip_rng  = UInt64(0)
+        self.pn_skip_next = UInt64(0xFFFFFFFFFFFFFFFF)
 
     def __init__(out self, *, other: Self):
         self.level = EncryptionLevel(other=other.level)
@@ -185,6 +189,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.recv_ecn = EcnCounts(other=other.recv_ecn)
         self.last_ack_ecn = EcnCounts(other=other.last_ack_ecn)
         self.ect0_in_flight = other.ect0_in_flight
+        self.pn_skip_rng  = other.pn_skip_rng
+        self.pn_skip_next = other.pn_skip_next
 
     def __init__(out self, *, deinit take: Self):
         self.level = take.level
@@ -200,11 +206,28 @@ struct PacketNumberSpace(Copyable, Movable):
         self.recv_ecn = take.recv_ecn^
         self.last_ack_ecn = take.last_ack_ecn^
         self.ect0_in_flight = take.ect0_in_flight
+        self.pn_skip_rng  = take.pn_skip_rng
+        self.pn_skip_next = take.pn_skip_next
 
     # ── PN allocation ────────────────────────────────────────────────
 
     def alloc_pn(mut self) -> UInt64:
-        """Allocate and return the next packet number."""
+        """Allocate and return the next packet number.
+
+        When pn_skip_rng is non-zero (Application space after handshake),
+        randomly skips 1-8 PNs every 200-499 allocations via Xorshift64.
+        Skipped PNs are never in sent_packets — pre-crafted ACKs for them
+        produce no RTT sample (CVE-2025-4820 defense).
+        """
+        if self.pn_skip_rng != 0 and self.next_pn >= self.pn_skip_next:
+            # Xorshift64 step
+            self.pn_skip_rng ^= self.pn_skip_rng << 13
+            self.pn_skip_rng ^= self.pn_skip_rng >> 7
+            self.pn_skip_rng ^= self.pn_skip_rng << 17
+            var gap = (self.pn_skip_rng & 7) + 1                    # 1-8 skipped PNs
+            self.next_pn += gap
+            # Schedule next gap: 200-499 packets from now
+            self.pn_skip_next = self.next_pn + 200 + (self.pn_skip_rng % 300)
         var pn = self.next_pn
         self.next_pn += 1
         return pn
