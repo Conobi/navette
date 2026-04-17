@@ -1,5 +1,5 @@
 # src/quic/cc/cubic.mojo
-# CUBIC congestion controller per RFC 9438 (no HyStart++; that lands in M4b).
+# CUBIC congestion controller per RFC 9438 with HyStart++ (RFC 9406).
 # See specs/2026-04-15-m4a-quic-cc-core.md §4 for the full spec.
 
 from std.bit import bit_width
@@ -10,6 +10,7 @@ from src.quic.cc.cc_trait import (
     LostPacket,
     UINT64_UNLIMITED,
 )
+from src.quic.cc.minmax import MinMax
 
 
 # --- Module-scope constants (§4.3) ---
@@ -24,6 +25,18 @@ comptime CUBIC_CONGESTION_SUPPRESS_RTT_MULT: UInt64 = 1
 comptime CUBIC_MAX_CWND: UInt64 = UInt64(1) << UInt64(30)  # 1 GiB
 # (t-k)^3 is computed in us^3; dividing by 10^18 converts to s^3.
 comptime CUBIC_SECONDS_CUBED_SCALE_U128: UInt128 = UInt128(1_000_000_000_000_000_000)
+
+# --- HyStart++ constants (RFC 9406) ---
+
+comptime HYSTART_MIN_RTT_THRESH_US: UInt64 = 4_000     # 4 ms minimum threshold
+comptime HYSTART_MAX_RTT_THRESH_US: UInt64 = 16_000    # 16 ms maximum threshold
+comptime HYSTART_RTT_THRESH_DIVISOR: UInt64 = 8        # thresh = last_min_rtt / 8
+comptime HYSTART_CSS_GROWTH_DIVISOR: UInt64 = 4        # CSS cwnd growth = acked // 4
+comptime HYSTART_CSS_ROUNDS: Int = 5                   # CSS rounds before exiting SS
+comptime HYSTART_MIN_SAMPLES: Int = 8                  # min RTT samples per round
+comptime HS_STATE_SS: UInt8 = 0                        # in slow start (standard)
+comptime HS_STATE_CSS: UInt8 = 1                       # in conservative slow start
+comptime HS_STATE_DONE: UInt8 = 2                      # HyStart++ inactive (CA or loss)
 
 
 # --- Integer cube-root helper (§4.6) ---
@@ -67,7 +80,7 @@ def _cube_root_u64(x: UInt64) -> UInt64:
 
 
 struct Cubic(ImplicitlyCopyable, Movable):
-    """RFC 9438 CUBIC congestion controller, no HyStart++."""
+    """RFC 9438 CUBIC congestion controller with HyStart++ (RFC 9406)."""
 
     # --- Window state ---
     var _cwnd_value: UInt64            # Current congestion window (bytes)
@@ -89,6 +102,14 @@ struct Cubic(ImplicitlyCopyable, Movable):
     var min_cwnd: UInt64               # 2 * max_datagram_size
     var initial_window: UInt64         # min(10*MDS, 14720) per RFC 9002 §7.2
 
+    # --- HyStart++ state (RFC 9406). Active only during slow start. ---
+    var hs_state: UInt8               # HS_STATE_SS / HS_STATE_CSS / HS_STATE_DONE
+    var hs_window_end_pn: UInt64      # PN marking end of current round
+    var hs_current_round_min_rtt: UInt64  # minimum RTT sample in current round
+    var hs_last_round_min_rtt: UInt64    # minimum RTT from the previous round
+    var hs_rtt_sample_count: Int      # RTT samples collected this round
+    var hs_css_rounds: Int            # number of CSS rounds elapsed
+
     def __init__(out self, max_datagram_size: UInt64):
         """Construct at RFC 9002 §7.2 initial window; slow-start (ssthresh unlimited)."""
         self.max_datagram_size = max_datagram_size
@@ -106,6 +127,12 @@ struct Cubic(ImplicitlyCopyable, Movable):
         self.congestion_event_time = UInt64(0)
         self.bytes_acked_since_epoch = UInt64(0)
         self.w_est = UInt64(0)
+        self.hs_state = HS_STATE_SS
+        self.hs_window_end_pn = UInt64(0)
+        self.hs_current_round_min_rtt = UINT64_UNLIMITED
+        self.hs_last_round_min_rtt = UINT64_UNLIMITED
+        self.hs_rtt_sample_count = 0
+        self.hs_css_rounds = 0
 
     # --- Trait methods (§3.3) ---
 
@@ -121,8 +148,10 @@ struct Cubic(ImplicitlyCopyable, Movable):
         return (UInt64(5) * self._cwnd_value * UInt64(1_000_000)) // (UInt64(4) * srtt)
 
     def on_packet_sent(mut self, size: UInt64, pn: UInt64, now: UInt64):
-        """Bookkeeping hook; CUBIC does not mutate cwnd on send."""
-        pass
+        """Track round boundary for HyStart++. CUBIC does not mutate cwnd on send."""
+        # In both SS and CSS, track the latest sent PN as the round-end marker.
+        if self.hs_state == HS_STATE_SS or self.hs_state == HS_STATE_CSS:
+            self.hs_window_end_pn = pn
 
     def on_packet_acked(
         mut self,
@@ -130,9 +159,23 @@ struct Cubic(ImplicitlyCopyable, Movable):
         smoothed_rtt_us: UInt64,
         now: UInt64,
     ):
-        """Slow-start or congestion-avoidance update per RFC 9438."""
-        if self._cwnd_value < self.ssthresh:
-            # Slow-start: cwnd += min(acked_bytes, MDS). Standard (no HyStart++).
+        """Slow-start or congestion-avoidance update per RFC 9438 + HyStart++ (RFC 9406)."""
+        # HyStart++ RTT sample collection (while in SS or CSS).
+        if self.hs_state == HS_STATE_SS or self.hs_state == HS_STATE_CSS:
+            var rtt = packet.rtt_sample
+            if rtt < self.hs_current_round_min_rtt:
+                self.hs_current_round_min_rtt = rtt
+            self.hs_rtt_sample_count += 1
+            if packet.pkt_num >= self.hs_window_end_pn and self.hs_rtt_sample_count >= HYSTART_MIN_SAMPLES:
+                self._hs_on_round_end()
+
+        # CSS cwnd growth REPLACES standard SS growth (not an addition).
+        # The elif prevents double-counting if hs_state is CSS and cwnd < ssthresh.
+        if self.hs_state == HS_STATE_CSS:
+            self._cwnd_value += packet.size // HYSTART_CSS_GROWTH_DIVISOR
+            return
+        elif self._cwnd_value < self.ssthresh:
+            # Standard SS: cwnd += min(acked, MDS). Applies when hs_state is SS or DONE.
             var inc = packet.size
             if inc > self.max_datagram_size:
                 inc = self.max_datagram_size
@@ -221,6 +264,7 @@ struct Cubic(ImplicitlyCopyable, Movable):
         persistent: Bool,
     ):
         """Reduce cwnd on congestion event. Persistent congestion resets to min."""
+        self._hs_on_loss()  # Disable HyStart++ on any loss detection.
         if persistent:
             # RFC 9002 §7.6.2: persistent congestion → back to minimum window.
             self._cwnd_value = self.min_cwnd
@@ -285,6 +329,37 @@ struct Cubic(ImplicitlyCopyable, Movable):
         # epoch_start reset; next CA ACK starts a fresh epoch.
         self.epoch_start = UInt64(0)
         self.bytes_acked_since_epoch = UInt64(0)
+
+    def _hs_on_round_end(mut self):
+        """End-of-round processing for HyStart++ (RFC 9406 §4.3)."""
+        if self.hs_state == HS_STATE_SS:
+            # Only check for delay increase once we have a baseline (previous round).
+            if self.hs_last_round_min_rtt != UINT64_UNLIMITED:
+                # Threshold: clamp(last_min_rtt / 8, 4ms, 16ms).
+                var raw = self.hs_last_round_min_rtt // HYSTART_RTT_THRESH_DIVISOR
+                var thresh = raw
+                if thresh < HYSTART_MIN_RTT_THRESH_US:
+                    thresh = HYSTART_MIN_RTT_THRESH_US
+                if thresh > HYSTART_MAX_RTT_THRESH_US:
+                    thresh = HYSTART_MAX_RTT_THRESH_US
+                if self.hs_current_round_min_rtt >= self.hs_last_round_min_rtt + thresh:
+                    # RTT increasing — enter Conservative Slow Start.
+                    self.hs_state = HS_STATE_CSS
+                    self.hs_css_rounds = 0
+        elif self.hs_state == HS_STATE_CSS:
+            self.hs_css_rounds += 1
+            if self.hs_css_rounds >= HYSTART_CSS_ROUNDS:
+                # CSS complete — exit slow start by setting ssthresh = current cwnd.
+                self.ssthresh = self._cwnd_value
+                self.hs_state = HS_STATE_DONE
+        # Advance round: promote current stats to "last" and reset counters.
+        self.hs_last_round_min_rtt = self.hs_current_round_min_rtt
+        self.hs_current_round_min_rtt = UINT64_UNLIMITED
+        self.hs_rtt_sample_count = 0
+
+    def _hs_on_loss(mut self):
+        """Disable HyStart++ when a loss or congestion event occurs."""
+        self.hs_state = HS_STATE_DONE
 
     def name(self) -> String:
         """Human-readable name for logging / qlog."""

@@ -1,7 +1,8 @@
 # tests/test_cc_cubic.mojo
 # CUBIC congestion controller tests per spec §9.1 (RFC 9438).
 
-from src.quic.cc.cubic import Cubic, _cube_root_u64
+from src.quic.cc.cubic import (Cubic, _cube_root_u64,
+    HS_STATE_SS, HS_STATE_CSS, HS_STATE_DONE)
 from src.quic.cc.cc_trait import AckedPacket, LostPacket, INITIAL_WINDOW_BYTES_CAP
 from std.testing import assert_true
 
@@ -161,6 +162,13 @@ def test_cube_root_newton_correct() raises:
     print("PASS: test_cube_root_newton_correct")
 
 
+def test_hystart_initial_state() raises:
+    var c = Cubic(max_datagram_size=MDS)
+    assert_true(c.hs_state == HS_STATE_SS, "starts in SS")
+    assert_true(c.hs_window_end_pn == UInt64(0), "window end starts at 0")
+    print("PASS: test_hystart_initial_state")
+
+
 def test_cubic_overflow_clamp_not_hit_normal_rtt() raises:
     """With normal RTT (100ms, 1s), cubic curve doesn't trip MAX_CWND clamp."""
     var c = Cubic(max_datagram_size=MDS)
@@ -192,5 +200,6 @@ def main() raises:
     test_cubic_reno_friendly_w_est_tracks()
     test_cubic_copy_semantics()
     test_cube_root_newton_correct()
+    test_hystart_initial_state()
     test_cubic_overflow_clamp_not_hit_normal_rtt()
     print("All cubic tests passed.")
