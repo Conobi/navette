@@ -514,8 +514,14 @@ struct SendBuf(Copyable, Movable):
         """Handle acknowledgment of [ack_off, ack_off+ack_len) bytes.
 
         If the ack range extends the contiguous acked_offset, trims buffer front.
+        Bare-FIN ACKs (ack_len == 0) are handled by checking if all data was
+        already acked (acked_offset >= fin_offset).
         """
         if ack_len == 0:
+            # Bare-FIN ACK: set fin_acked if all preceding data was already acked
+            if self.fin_offset:
+                if self.acked_offset >= self.fin_offset.value():
+                    self.fin_acked = True
             return
 
         var ack_end = ack_off + ack_len
