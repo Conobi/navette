@@ -18,7 +18,7 @@ struct DummyCc(ImplicitlyCopyable, Movable):
     def pacing_rate(self, smoothed_rtt_us: UInt64) -> UInt64:
         return UInt64(0)
 
-    def on_packet_sent(mut self, size: UInt64, now: UInt64):
+    def on_packet_sent(mut self, size: UInt64, pn: UInt64, now: UInt64):
         pass
 
     def on_packet_acked(mut self, packet: AckedPacket, smoothed_rtt_us: UInt64, now: UInt64):
