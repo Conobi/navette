@@ -41,6 +41,8 @@ TESTS=(
     test_h3_extension
     test_h3_frame
     test_h3_qpack
+    test_h3_connection
+    test_h3_e2e
     test_session_handle
     test_mock_session
     test_h1_server_handler
@@ -93,6 +95,9 @@ for t in "${TESTS[@]}"; do
     fi
     if [ "$t" = "test_proxy_token" ]; then
         EXTRA_I=(-I examples/reverse_proxy)
+    fi
+    if [[ "$t" == test_h3_connection ]] || [[ "$t" == test_h3_e2e ]]; then
+        EXTRA_I=(-I conformance)
     fi
     if [[ "$t" == test_h2_* ]]; then
         EXTRA_I=(-I conformance)
