@@ -30,6 +30,7 @@ from src.quic.frame import (
     MaxStreamDataFrame,
     MaxStreamsFrame,
     NewConnectionIdFrame,
+    StreamDataBlockedFrame,
     parse_frames,
     serialize_frames,
     FRAME_PADDING,
@@ -1033,6 +1034,8 @@ struct QuicConnection(Movable):
         if tid == FRAME_MAX_DATA:
             if frame._max_data:
                 self.stream_map.conn_fc_send.ensure_limit(frame._max_data.value())
+                # Reset blocked_at so we can emit DATA_BLOCKED again at the new limit.
+                self.stream_map.conn_fc_send.blocked_at = UInt64(0)
             return
 
         if tid == FRAME_MAX_STREAM_DATA:
@@ -1046,6 +1049,8 @@ struct QuicConnection(Movable):
                         var old_limit = fc.limit
                         fc.ensure_limit(msd.maximum)
                         var grew = fc.limit > old_limit
+                        if grew:
+                            fc.blocked_at = UInt64(0)   # allow re-emission at new limit
                         stream.fc_send = fc^
                         self.stream_map.set_stream(key, stream^)
                         if grew:
@@ -1942,6 +1947,32 @@ struct QuicConnection(Movable):
             self.stream_map.set_stream(sid, stream^)
             if not still_pending:
                 self.stream_map.remove_sendable(sid)
+
+        # 7. DATA_BLOCKED (RFC 9000 §4.1) — connection-level FC exhausted.
+        var conn_limit = self.stream_map.conn_fc_send.limit
+        if (self.stream_map.conn_fc_send.received >= conn_limit
+                and self.stream_map.conn_fc_send.blocked_at != conn_limit):
+            frames.append(Frame.data_blocked(conn_limit))
+            self.stream_map.conn_fc_send.blocked_at = conn_limit
+
+        # 8. STREAM_DATA_BLOCKED (RFC 9000 §4.1) — per-stream FC exhausted.
+        var blocked_ids = List[Int]()
+        for key in self.stream_map.streams.keys():
+            blocked_ids.append(key)
+        for i in range(len(blocked_ids)):
+            var sid = blocked_ids[i]
+            if sid not in self.stream_map.streams:
+                continue
+            var stream = self.stream_map.get_stream(sid)
+            if not stream.fc_send:
+                continue
+            var fc = stream.fc_send.value().copy()
+            var stream_limit = fc.limit
+            if fc.available() == UInt64(0) and fc.blocked_at != stream_limit and stream_limit > UInt64(0):
+                frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(stream.id, stream_limit)))
+                fc.blocked_at = stream_limit
+                stream.fc_send = fc^
+                self.stream_map.set_stream(sid, stream^)
 
     # ── Packet building ──────────────────────────────────────────────
 
