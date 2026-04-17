@@ -59,8 +59,9 @@ struct LostPacket(ImplicitlyCopyable, Movable):
 # pacing_rate(self, smoothed_rtt_us: UInt64) -> UInt64
 #     Target pacing rate in bytes/sec. Returning 0 means unpaced.
 #
-# on_packet_sent(mut self, size: UInt64, now: UInt64)
+# on_packet_sent(mut self, size: UInt64, pn: UInt64, now: UInt64)
 #     Called when an in-flight packet leaves the host.
+#     `pn` is the packet number; used by HyStart++ round tracking.
 #
 # on_packet_acked(mut self, packet: AckedPacket, smoothed_rtt_us: UInt64, now: UInt64)
 #     Called once per newly-ACKed packet.

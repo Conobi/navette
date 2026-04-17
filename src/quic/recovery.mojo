@@ -118,17 +118,18 @@ struct Recovery(Movable):
 
     # ── Packet bookkeeping ──────────────────────────────────────────────
 
-    def on_packet_sent(mut self, size: Int, in_flight: Bool, now: UInt64 = UInt64(0)):
+    def on_packet_sent(mut self, size: Int, in_flight: Bool,
+                       pn: UInt64 = UInt64(0), now: UInt64 = UInt64(0)):
         """Track bytes when a packet is sent and notify CC.
 
-        The `now` parameter defaults to 0 for backward compatibility with M3b
-        callers. Task 8/9 will thread the real timestamp through.
+        `pn` defaults to 0 for backward compatibility with existing call sites.
+        `connection.mojo` (Task 6) will pass the real PN.
         Note: pacer.on_sent is called at the actual send site by connection.mojo,
         not here, since the connection controls the send path.
         """
         if in_flight:
             self.bytes_in_flight += UInt64(size)
-            self.cc.on_packet_sent(UInt64(size), now)
+            self.cc.on_packet_sent(UInt64(size), pn, now)
 
     def on_packet_acked(mut self, size: Int, in_flight: Bool):
         """Release bytes when a packet is acknowledged."""

@@ -120,7 +120,7 @@ struct Cubic(ImplicitlyCopyable, Movable):
             return (UInt64(2) * self._cwnd_value * UInt64(1_000_000)) // srtt
         return (UInt64(5) * self._cwnd_value * UInt64(1_000_000)) // (UInt64(4) * srtt)
 
-    def on_packet_sent(mut self, size: UInt64, now: UInt64):
+    def on_packet_sent(mut self, size: UInt64, pn: UInt64, now: UInt64):
         """Bookkeeping hook; CUBIC does not mutate cwnd on send."""
         pass
 

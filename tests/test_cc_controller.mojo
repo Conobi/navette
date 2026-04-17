@@ -26,7 +26,7 @@ def test_controller_cubic_dispatch() raises:
     assert_true(ctrl.kind == CC_KIND_CUBIC, "kind is CUBIC")
     assert_true(ctrl.name() == String("cubic"), "name dispatch")
     var start = ctrl.cwnd()
-    ctrl.on_packet_sent(size=MDS, now=UInt64(1000))
+    ctrl.on_packet_sent(size=MDS, pn=UInt64(1), now=UInt64(1000))
     assert_true(ctrl.cwnd() == start, "on_packet_sent doesn't change cwnd")
     print("PASS: test_controller_cubic_dispatch")
 
