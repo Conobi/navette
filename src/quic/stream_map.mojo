@@ -66,6 +66,10 @@ struct StreamMap(Movable):
     var needs_max_data: Bool
     var needs_max_streams_bidi: Bool
     var needs_max_streams_uni: Bool
+    var needs_streams_blocked_bidi: Bool   # set when open_stream() hits peer bidi limit
+    var needs_streams_blocked_uni: Bool    # set when open_stream() hits peer uni limit
+    var streams_blocked_at_bidi: UInt64    # dedup: last peer_max_streams_bidi we notified
+    var streams_blocked_at_uni: UInt64     # dedup: last peer_max_streams_uni we notified
 
     # ── Constructors ─────────────────────────────────────────────────────────
 
@@ -117,6 +121,10 @@ struct StreamMap(Movable):
         self.needs_max_data = False
         self.needs_max_streams_bidi = False
         self.needs_max_streams_uni = False
+        self.needs_streams_blocked_bidi = False
+        self.needs_streams_blocked_uni = False
+        self.streams_blocked_at_bidi = UInt64(0)
+        self.streams_blocked_at_uni = UInt64(0)
 
     def __init__(out self, *, deinit take: Self):
         self.streams = take.streams^
@@ -146,6 +154,10 @@ struct StreamMap(Movable):
         self.needs_max_data = take.needs_max_data
         self.needs_max_streams_bidi = take.needs_max_streams_bidi
         self.needs_max_streams_uni = take.needs_max_streams_uni
+        self.needs_streams_blocked_bidi = take.needs_streams_blocked_bidi
+        self.needs_streams_blocked_uni = take.needs_streams_blocked_uni
+        self.streams_blocked_at_bidi = take.streams_blocked_at_bidi
+        self.streams_blocked_at_uni = take.streams_blocked_at_uni
 
     # ── Handshake completion ─────────────────────────────────────────────────
 
@@ -175,6 +187,7 @@ struct StreamMap(Movable):
         """
         if bidi:
             if self.local_opened_bidi >= self.peer_max_streams_bidi:
+                self.needs_streams_blocked_bidi = True
                 raise "stream limit reached: peer_max_streams_bidi=" + String(
                     Int(self.peer_max_streams_bidi)
                 )
@@ -192,6 +205,7 @@ struct StreamMap(Movable):
             return id
         else:
             if self.local_opened_uni >= self.peer_max_streams_uni:
+                self.needs_streams_blocked_uni = True
                 raise "stream limit reached: peer_max_streams_uni=" + String(
                     Int(self.peer_max_streams_uni)
                 )
