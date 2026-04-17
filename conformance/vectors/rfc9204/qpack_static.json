@@ -38,8 +38,7 @@
           "name": ":authority",
           "value": "example.com"
         }
-      ],
-      "huffman": false
+      ]
     },
     {
       "description": "POST /upload with content-type",
@@ -95,8 +94,7 @@
           "name": "content-length",
           "value": "0"
         }
-      ],
-      "huffman": false
+      ]
     },
     {
       "description": "200 OK response",
@@ -128,8 +126,7 @@
           "name": "cache-control",
           "value": "no-cache"
         }
-      ],
-      "huffman": false
+      ]
     },
     {
       "description": "404 Not Found",
@@ -145,8 +142,7 @@
           "name": ":status",
           "value": "404"
         }
-      ],
-      "huffman": false
+      ]
     },
     {
       "description": "Custom header literal no name ref",
@@ -170,8 +166,7 @@
           "name": "x-custom-header",
           "value": "myvalue"
         }
-      ],
-      "huffman": false
+      ]
     },
     {
       "description": ":method PATCH literal with name ref",
@@ -195,8 +190,7 @@
           "name": ":path",
           "value": "/api"
         }
-      ],
-      "huffman": false
+      ]
     },
     {
       "description": "GET / with Huffman",
@@ -236,8 +230,7 @@
           "name": ":authority",
           "value": "www.example.com"
         }
-      ],
-      "huffman": true
+      ]
     }
   ]
 }
