@@ -7,7 +7,8 @@
 from std.collections import Dict, Optional
 from std.memory import Span
 
-from src.quic.connection import QuicConnection
+from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
 from src.h3.frame import (
     H3RawFrame,
     DataFrame,
@@ -21,6 +22,12 @@ from src.h3.frame import (
     SETTINGS_QPACK_MAX_TABLE_CAPACITY,
     SETTINGS_MAX_FIELD_SECTION_SIZE,
     parse_h3_frame,
+)
+from src.h3.error import (
+    H3_MISSING_SETTINGS,
+    H3_GENERAL_PROTOCOL_ERROR,
+    H3_FRAME_UNEXPECTED,
+    H3_STREAM_CREATION_ERROR,
 )
 from src.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField
 
@@ -206,30 +213,275 @@ struct H3Connection(Movable):
         self._h3_events = rest^
         return Optional[H3Event](ev^)
 
+    # --- Transport API -------------------------------------------------------
+
     def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
-        """Stub — implemented in Task 1."""
-        pass
+        """Feed one inbound QUIC datagram; translate QuicEvents to H3Events."""
+        self._quic.recv(data, now)
+        _ = self._quic.timeout(now)
+        while True:
+            var ev_opt = self._quic.poll()
+            if not ev_opt:
+                break
+            var ev = ev_opt.unsafe_take()
+            if ev.type_id == QuicEvent.HANDSHAKE_COMPLETE:
+                if not self._init_done:
+                    self._init_done = True
+                    self._bootstrap_local_streams(now)
+                var h3ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
+                self._h3_events.append(h3ev^)
+            elif ev.type_id == QuicEvent.STREAM_OPENED:
+                if self._is_peer_initiated(ev.stream_id):
+                    var sbuf = _H3StreamBuf()
+                    sbuf.is_uni = (ev.stream_id & UInt64(0x02)) != 0
+                    self._stream_bufs[Int(ev.stream_id)] = sbuf^
+            elif ev.type_id == QuicEvent.STREAM_READABLE:
+                try:
+                    self._drain_stream(ev.stream_id, now)
+                except:
+                    pass
+            elif ev.type_id == QuicEvent.STREAM_RESET:
+                if self._is_request_stream(ev.stream_id):
+                    var h3ev = H3Event(H3Event.STREAM_RESET)
+                    h3ev.stream_id = ev.stream_id
+                    h3ev.error_code = ev.error_code
+                    self._h3_events.append(h3ev^)
+            elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
+                var h3ev = H3Event(H3Event.CONNECTION_CLOSED)
+                h3ev.error_code = ev.error_code
+                h3ev.reason = ev.reason
+                self._h3_events.append(h3ev^)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Stub — implemented in Task 1."""
-        return List[List[UInt8]]()
+        """Drain outbound QUIC datagrams. Returns list of UDP payloads."""
+        return self._quic.send(now)
 
-    def send_headers(mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool) raises:
-        """Stub — implemented in Task 1."""
-        pass
+    # --- Send API ------------------------------------------------------------
 
-    def send_data(mut self, stream_id: UInt64, data: List[UInt8], fin: Bool) raises:
-        """Stub — implemented in Task 1."""
-        pass
+    def send_headers(
+        mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool
+    ) raises:
+        """QPACK-encode fields → HeadersFrame → send_stream_data."""
+        var encoded = self._enc.encode(fields)
+        var hf = HeadersFrame(encoded)
+        var wire = hf.encode()
+        self._quic.send_stream_data(stream_id, Span(wire), fin)
+
+    def send_data(
+        mut self, stream_id: UInt64, data: List[UInt8], fin: Bool
+    ) raises:
+        """Encode as DataFrame → send_stream_data. Empty data + fin=True sends FIN only."""
+        if len(data) == 0 and fin:
+            var empty = List[UInt8]()
+            self._quic.send_stream_data(stream_id, Span(empty), True)
+            return
+        if len(data) == 0:
+            return
+        var df = DataFrame(data)
+        var wire = df.encode()
+        self._quic.send_stream_data(stream_id, Span(wire), fin)
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
-        """Stub — implemented in Task 1."""
-        pass
+        """Write GOAWAY frame to local control stream."""
+        if not self._init_done:
+            raise "H3: not established"
+        if not self._local_ctrl_sid:
+            raise "H3: no local control stream"
+        var w = ByteWriter()
+        varint_encode(w, last_stream_id)
+        var payload = w.finish()
+        var raw = H3RawFrame(H3_FRAME_GOAWAY, payload)
+        var wire = raw.encode()
+        self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(wire), False)
+        self._goaway_sent = Optional[UInt64](last_stream_id)
 
     def reset_stream(mut self, stream_id: UInt64, error_code: UInt64) raises:
-        """Stub — implemented in Task 1."""
-        pass
+        """Send RESET_STREAM via QUIC."""
+        self._quic.reset_stream(stream_id, error_code)
 
     def open_bidi_stream(mut self) raises -> UInt64:
-        """Stub — implemented in Task 1."""
-        return UInt64(0)
+        """Open a client-initiated bidi stream."""
+        return self._quic.open_stream(True)
+
+    # --- Internal: bootstrap -------------------------------------------------
+
+    def _bootstrap_local_streams(mut self, now: UInt64) raises:
+        """Open 3 uni streams, write type varints, send SETTINGS. Guarded by _init_done."""
+        var ctrl_sid = self._quic.open_stream(False)
+        self._local_ctrl_sid = Optional[UInt64](ctrl_sid)
+        var qenc_sid = self._quic.open_stream(False)
+        self._local_qenc_sid = Optional[UInt64](qenc_sid)
+        var qdec_sid = self._quic.open_stream(False)
+        self._local_qdec_sid = Optional[UInt64](qdec_sid)
+
+        # Write stream type varint to each (single byte: 0x00, 0x02, 0x03)
+        var ctrl_type = List[UInt8]()
+        ctrl_type.append(UInt8(0x00))
+        self._quic.send_stream_data(ctrl_sid, Span(ctrl_type), False)
+        var qenc_type = List[UInt8]()
+        qenc_type.append(UInt8(0x02))
+        self._quic.send_stream_data(qenc_sid, Span(qenc_type), False)
+        var qdec_type = List[UInt8]()
+        qdec_type.append(UInt8(0x03))
+        self._quic.send_stream_data(qdec_sid, Span(qdec_type), False)
+
+        # Send SETTINGS on control stream (RFC 9114 §7.2.4)
+        var pairs = List[SettingsPair]()
+        pairs.append(SettingsPair(SETTINGS_QPACK_MAX_TABLE_CAPACITY, UInt64(0)))
+        pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, UInt64(0x7FFFFFFF)))
+        var sf = SettingsFrame(pairs)
+        var settings_wire = sf.encode()
+        self._quic.send_stream_data(ctrl_sid, Span(settings_wire), False)
+
+    # --- Internal: stream drain + frame parse --------------------------------
+
+    def _drain_stream(mut self, stream_id: UInt64, now: UInt64) raises:
+        """Read bytes from QUIC, accumulate in _stream_bufs, parse frames."""
+        var key = Int(stream_id)
+        if key not in self._stream_bufs:
+            return  # locally-initiated stream or unknown — ignore
+
+        var recv_result = self._quic.recv_stream_data(stream_id)
+        var new_bytes = recv_result[0].copy()
+        var fin = recv_result[1]
+
+        # Append new bytes to accumulator
+        var sbuf = self._stream_bufs[key].copy()
+        for i in range(len(new_bytes)):
+            sbuf.buf.append(new_bytes[i])
+        self._stream_bufs[key] = sbuf^
+
+        # Handle unidirectional stream type byte (first byte = stream type)
+        var sbuf2 = self._stream_bufs[key].copy()
+        if sbuf2.is_uni:
+            if not sbuf2.type_byte:
+                if len(sbuf2.buf) == 0:
+                    self._stream_bufs[key] = sbuf2^
+                    return
+                var type_byte = sbuf2.buf[0]
+                var new_buf = List[UInt8]()
+                for i in range(1, len(sbuf2.buf)):
+                    new_buf.append(sbuf2.buf[i])
+                sbuf2.buf = new_buf^
+                sbuf2.type_byte = Optional[UInt8](type_byte)
+                self._stream_bufs[key] = sbuf2^
+                if type_byte == UInt8(0x00):
+                    self._peer_ctrl_sid = Optional[UInt64](stream_id)
+                elif type_byte == UInt8(0x02):
+                    self._peer_qenc_sid = Optional[UInt64](stream_id)
+                elif type_byte == UInt8(0x03):
+                    self._peer_qdec_sid = Optional[UInt64](stream_id)
+                else:
+                    self._quic.close(H3_STREAM_CREATION_ERROR, "unknown uni stream type", now)
+                    return
+            else:
+                self._stream_bufs[key] = sbuf2^
+
+        # Reject server-initiated bidi from peer (RFC 9114 §6.1)
+        var sbuf3 = self._stream_bufs[key].copy()
+        if not sbuf3.is_uni and not self._is_peer_initiated(stream_id):
+            self._stream_bufs[key] = sbuf3^
+            self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
+            return
+        self._stream_bufs[key] = sbuf3^
+
+        # Determine if this is the peer control stream
+        var is_ctrl = False
+        if self._peer_ctrl_sid:
+            if self._peer_ctrl_sid.value() == stream_id:
+                is_ctrl = True
+
+        self._parse_frames_from_buf(stream_id, is_ctrl, now)
+
+        # FIN on bidi request stream → STREAM_ENDED event
+        var sbuf4 = self._stream_bufs[key].copy()
+        if not sbuf4.is_uni and fin:
+            var h3ev = H3Event(H3Event.STREAM_ENDED)
+            h3ev.stream_id = stream_id
+            self._h3_events.append(h3ev^)
+        self._stream_bufs[key] = sbuf4^
+
+    def _parse_frames_from_buf(mut self, stream_id: UInt64, is_ctrl: Bool, now: UInt64) raises:
+        """Parse H3 frames from accumulated bytes. Consumes one frame per iteration."""
+        var key = Int(stream_id)
+        while True:
+            var sbuf = self._stream_bufs[key].copy()
+            if len(sbuf.buf) == 0:
+                self._stream_bufs[key] = sbuf^
+                break
+            # Make a separate copy for ByteReader (avoids lifetime conflict)
+            var buf_copy = List[UInt8](copy=sbuf.buf)
+            var r = ByteReader(Span(buf_copy))
+            var ok = True
+            var frame = H3RawFrame(UInt64(0), List[UInt8]())
+            var consumed = 0
+            try:
+                frame = parse_h3_frame(r)
+                consumed = r.pos
+            except:
+                ok = False
+            if not ok:
+                self._stream_bufs[key] = sbuf^
+                break
+            # Remove consumed bytes from front of buf
+            var new_buf = List[UInt8]()
+            for i in range(consumed, len(sbuf.buf)):
+                new_buf.append(sbuf.buf[i])
+            sbuf.buf = new_buf^
+            self._stream_bufs[key] = sbuf^
+            if is_ctrl:
+                self._handle_control_frame(stream_id, frame, now)
+            else:
+                self._handle_request_frame(stream_id, frame, now)
+
+    def _handle_control_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
+        """Process one frame received on the peer control stream."""
+        # RFC 9114 §6.2.1: first frame on peer control stream MUST be SETTINGS
+        if not self._peer_ctrl_first_frame_seen:
+            self._peer_ctrl_first_frame_seen = True
+            if frame.frame_type != H3_FRAME_SETTINGS:
+                self._quic.close(H3_MISSING_SETTINGS, "first ctrl frame must be SETTINGS", now)
+                return
+
+        if frame.frame_type == H3_FRAME_SETTINGS:
+            if self._peer_ctrl_settings:
+                self._quic.close(H3_GENERAL_PROTOCOL_ERROR, "duplicate SETTINGS", now)
+                return
+            self._peer_ctrl_settings = True
+            _ = SettingsFrame.decode(frame.payload)
+            var h3ev = H3Event(H3Event.SETTINGS_RECEIVED)
+            self._h3_events.append(h3ev^)
+
+        elif frame.frame_type == H3_FRAME_GOAWAY:
+            var r = ByteReader(Span(frame.payload))
+            var last_sid = varint_decode(r)
+            self._peer_goaway_sid = Optional[UInt64](last_sid)
+            var h3ev = H3Event(H3Event.GOAWAY_RECEIVED)
+            h3ev.last_stream_id = last_sid
+            self._h3_events.append(h3ev^)
+
+        elif frame.frame_type == H3_FRAME_DATA or frame.frame_type == H3_FRAME_HEADERS:
+            # RFC 9114 §7.2.1 / §7.2.2: DATA and HEADERS forbidden on control streams
+            self._quic.close(H3_FRAME_UNEXPECTED, "DATA/HEADERS on control stream", now)
+
+        # else: unknown frame types are ignored (RFC 9114 §7.2.8)
+
+    def _handle_request_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
+        """Process one frame received on a request/response bidi stream."""
+        if frame.frame_type == H3_FRAME_HEADERS:
+            var fields = self._dec.decode(frame.payload)
+            var h3ev = H3Event(H3Event.HEADERS_RECEIVED)
+            h3ev.stream_id = stream_id
+            h3ev.fields = fields^
+            self._h3_events.append(h3ev^)
+
+        elif frame.frame_type == H3_FRAME_DATA:
+            var h3ev = H3Event(H3Event.DATA_RECEIVED)
+            h3ev.stream_id = stream_id
+            h3ev.data = List[UInt8](copy=frame.payload)
+            self._h3_events.append(h3ev^)
+
+        elif frame.frame_type == H3_FRAME_SETTINGS or frame.frame_type == H3_FRAME_GOAWAY:
+            # Forbidden on request streams (RFC 9114 §7.2.5)
+            self._quic.close(H3_FRAME_UNEXPECTED, "SETTINGS/GOAWAY on request stream", now)
+        # else: unknown, ignore
