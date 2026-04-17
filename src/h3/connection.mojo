@@ -304,7 +304,7 @@ struct H3Connection(Movable):
         var sid = self._quic.open_stream(True)
         var sbuf = _H3StreamBuf()
         sbuf.is_uni = False
-        self._stream_bufs[Int(sid)] = sbuf
+        self._stream_bufs[Int(sid)] = sbuf^
         return sid
 
     # --- Internal: bootstrap -------------------------------------------------
