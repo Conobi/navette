@@ -57,6 +57,7 @@ TESTS=(
     test_h2_e2e
     test_h2_tls_alpn
     test_h2_coro_server
+    test_h3_coro_server
     test_quic_cid
     test_quic_codec
     test_quic_frame
@@ -109,6 +110,9 @@ for t in "${TESTS[@]}"; do
         EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h2_coro_server" ]; then
+        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+    fi
+    if [ "$t" = "test_h3_coro_server" ]; then
         EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
     fi
     if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
