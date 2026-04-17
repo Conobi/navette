@@ -220,29 +220,29 @@ struct H3Session(Session):
         # Happy path: response complete, not yet delivered
         if ctx_ptr[].status_code >= 0 and ctx_ptr[].complete and not handle.has_headers():
             var ctx = ctx_ptr.take_pointee()
+            # Swap owned fields out of ctx so ctx can drop cleanly with empty fields
+            var resp_headers = ctx.headers^
+            ctx.headers = Headers()
+            var body_data = ctx.body_data^
+            ctx.body_data = List[UInt8]()
+            var status_code = ctx.status_code
+            # Build response
+            var body_frames = List[BodyFrame]()
+            if len(body_data) > 0:
+                body_frames.append(BodyFrame.data(body_data^))
             var resp = Response(
-                status=StatusCode(ctx.status_code),
+                status=StatusCode(status_code),
                 reason=String(""),
                 version=Version.http_3(),
-                headers=ctx.headers^,
-                body=List[BodyFrame](),
+                headers=resp_headers^,
+                body=body_frames^,
             )
-            if len(ctx.body_data) > 0:
-                var body_copy = ctx.body_data^
-                resp.body.append(BodyFrame.data(body_copy^))
-                ctx.body_data = List[UInt8]()
-            ctx.headers = Headers()
             handle._set_response(resp^)
             handle._mark_complete()
-            # Free heap allocation and remove from Dicts
-            ctx_ptr.init_pointee_move(ctx^)
-            ctx_ptr.destroy_pointee()
+            # Remove from Dicts then free heap allocation; ctx drops with empty fields
+            _ = self._streams.pop(stream_id)
+            _ = self._handle_to_stream.pop(hid)
             ctx_ptr.free()
-            try:
-                _ = self._streams.pop(stream_id)
-                _ = self._handle_to_stream.pop(hid)
-            except:
-                pass
 
     def capabilities(self) -> Capabilities:
         return Capabilities.for_h3()
