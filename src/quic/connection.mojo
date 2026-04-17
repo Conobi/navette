@@ -1126,9 +1126,11 @@ struct QuicConnection(Movable):
         # Release bytes for acked packets and fan out to congestion controller.
         # Also advance the per-space last_ae_acked_time_sent tracker used by
         # persistent-congestion detection (spec §5.4).
+        var ect0_acked_count = UInt64(0)
         for i in range(len(acked)):
             # Decrement ECT(0) in-flight counter on ACK (O(1)).
             if acked[i].ecn_mark == ECN_ECT0:
+                ect0_acked_count += UInt64(1)
                 if self.spaces[space_idx].ect0_in_flight > UInt64(0):
                     self.spaces[space_idx].ect0_in_flight -= UInt64(1)
             self.recovery.on_packet_acked(acked[i].size, acked[i].in_flight)
@@ -1163,8 +1165,13 @@ struct QuicConnection(Movable):
         self._detect_losses(space_idx, now)
 
         # ECN feedback processing (after loss detection).
-        if ack_frame.has_ecn and self.ecn_state != ECN_STATE_DISABLED:
-            self._process_ecn_feedback(space_idx, ack_frame, now)
+        # Call whenever ECN state is active (PROBING or CAPABLE):
+        # - PROBING: always, so we detect the no-ECN-counts case (path bleaches
+        #   marks → DISABLED).
+        # - CAPABLE: always, so we can detect bleaching (ECT0 in-flight but ACK
+        #   has no ECN counts) and CE increments for congestion signaling.
+        if self.ecn_state != ECN_STATE_DISABLED:
+            self._process_ecn_feedback(space_idx, ack_frame, ect0_acked_count, now)
 
     # ── Loss detection ───────────────────────────────────────────────
 
@@ -1329,12 +1336,15 @@ struct QuicConnection(Movable):
         )
 
     def _process_ecn_feedback(
-        mut self, space_idx: Int, ack: AckFrame, now: UInt64
+        mut self, space_idx: Int, ack: AckFrame, ect0_acked: UInt64, now: UInt64
     ):
         """Process ECN counts from an ACK frame (RFC 9000 §13.4.2 + RFC 9002 §7.9).
 
         Validates the path (PROBING→CAPABLE or PROBING→DISABLED) and triggers
-        a congestion event on CE increment."""
+        a congestion event on CE increment.
+
+        ect0_acked: number of ECT(0)-marked packets covered by this ACK batch
+        (captured before the in-flight counter was decremented)."""
         var prev_ce = self.spaces[space_idx].last_ack_ecn.ce
 
         # Update stored last-seen ECN counts.
@@ -1353,11 +1363,23 @@ struct QuicConnection(Movable):
                 else:
                     self.ecn_state = ECN_STATE_CAPABLE
 
-        # --- Bleaching check (RFC 9000 §13.4.2) ---
-        var in_flight_ect0 = self.spaces[space_idx].ect0_in_flight
-        if ack.ecn_ect0 + ack.ecn_ect1 + ack.ecn_ce > in_flight_ect0 + UInt64(1):
-            self.ecn_state = ECN_STATE_DISABLED
-            return
+        # --- Bleaching / remarking checks (RFC 9000 §13.4.2, only after CAPABLE) ---
+        # These checks only apply once ECN is confirmed (CAPABLE).  During
+        # PROBING the path validation logic above is the gating mechanism.
+        if self.ecn_state == ECN_STATE_CAPABLE:
+            var in_flight_ect0 = self.spaces[space_idx].ect0_in_flight
+            # Remarking: peer reports more ECN-marked packets than we sent.
+            if ack.ecn_ect0 + ack.ecn_ect1 + ack.ecn_ce > in_flight_ect0 + UInt64(1):
+                self.ecn_state = ECN_STATE_DISABLED
+                return
+            # Bleaching: we sent ECT(0)-marked packets in this batch but peer
+            # reports no ECN counts → path strips ECN codepoints.
+            if (ect0_acked > UInt64(0)
+                    and ack.ecn_ect0 == UInt64(0)
+                    and ack.ecn_ect1 == UInt64(0)
+                    and ack.ecn_ce == UInt64(0)):
+                self.ecn_state = ECN_STATE_DISABLED
+                return
 
         # --- CE delta → congestion event (RFC 9002 §7.9) ---
         if ack.ecn_ce > prev_ce:

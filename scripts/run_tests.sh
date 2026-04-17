@@ -66,9 +66,11 @@ TESTS=(
     test_quic_stream
     test_quic_stream_map
     test_quic_connection
+    test_ecn
     test_cc_cubic
     test_cc_pacing
     test_cc_controller
+    test_cc_minmax
 )
 
 FILTER="${TESTS_FILTER:-}"
@@ -94,6 +96,9 @@ for t in "${TESTS[@]}"; do
         EXTRA_I=(-I conformance)
     fi
     if [[ "$t" == test_quic_* ]]; then
+        EXTRA_I=(-I conformance)
+    fi
+    if [ "$t" = "test_ecn" ]; then
         EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h2_coro_server" ]; then
