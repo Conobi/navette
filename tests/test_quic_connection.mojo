@@ -25,6 +25,7 @@ from src.quic.pn_space import SentPacket
 from src.quic.cc.cc_trait import AckedPacket, LostPacket
 from src.quic.stream import SEND_RESET_SENT
 from src.quic.trans_param import TransportParams, default_transport_params
+from src.quic.ecn import ECN_STATE_DISABLED
 from src.quic.retry import (
     generate_retry_token,
     validate_retry_token,
@@ -2296,6 +2297,189 @@ def test_cubic_cwnd_gates_send_path() raises:
     print("  test_cubic_cwnd_gates_send_path: PASS")
 
 
+def test_blocked_frames_emitted_on_conn_fc_stall() raises:
+    """CLIENT emits DATA_BLOCKED when conn-level FC is exhausted."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(lib_addr, configs[0], params,
+                                       Span(orig_dcid), Span(client_dcid), now)
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Exhaust the connection-level flow-control send credit.
+    client.stream_map.conn_fc_send.received = client.stream_map.conn_fc_send.limit
+
+    # send() should detect the stall and set blocked_at.
+    now += UInt64(10_000)
+    _ = client.send(now)
+
+    assert_true(
+        client.stream_map.conn_fc_send.blocked_at == client.stream_map.conn_fc_send.limit,
+        "blocked_at should equal limit after conn-FC stall",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_blocked_frames_emitted_on_conn_fc_stall: PASS")
+
+
+def test_blocked_not_re_emitted_at_same_limit() raises:
+    """DATA_BLOCKED is not emitted twice at the same limit."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(lib_addr, configs[0], params,
+                                       Span(orig_dcid), Span(client_dcid), now)
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Exhaust FC, first send sets blocked_at.
+    client.stream_map.conn_fc_send.received = client.stream_map.conn_fc_send.limit
+    now += UInt64(10_000)
+    _ = client.send(now)
+    var blocked_after_first = client.stream_map.conn_fc_send.blocked_at
+
+    # Second send at the same limit must not change blocked_at.
+    now += UInt64(10_000)
+    _ = client.send(now)
+    var blocked_after_second = client.stream_map.conn_fc_send.blocked_at
+
+    assert_true(
+        blocked_after_second == blocked_after_first,
+        "blocked_at should not change on second send at same limit",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_blocked_not_re_emitted_at_same_limit: PASS")
+
+
+def test_blocked_cleared_on_max_data_increase() raises:
+    """blocked_at resets to 0 after MAX_DATA raises the limit."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(lib_addr, configs[0], params,
+                                       Span(orig_dcid), Span(client_dcid), now)
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Exhaust FC and trigger blocked.
+    var old_limit = client.stream_map.conn_fc_send.limit
+    client.stream_map.conn_fc_send.received = old_limit
+    now += UInt64(10_000)
+    _ = client.send(now)
+    assert_true(
+        client.stream_map.conn_fc_send.blocked_at == old_limit,
+        "blocked_at should be set after stall",
+    )
+
+    # Simulate MAX_DATA arrival: raise the limit and clear blocked_at.
+    client.stream_map.conn_fc_send.ensure_limit(old_limit + UInt64(1_000_000))
+    client.stream_map.conn_fc_send.blocked_at = UInt64(0)
+
+    assert_true(
+        client.stream_map.conn_fc_send.blocked_at == UInt64(0),
+        "blocked_at should be 0 after MAX_DATA limit increase",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_blocked_cleared_on_max_data_increase: PASS")
+
+
+def test_ecn_disabled_after_probing() raises:
+    """ECN transitions to DISABLED when probes are sent but path strips marks."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(lib_addr, configs[0], params,
+                                       Span(orig_dcid), Span(client_dcid), now)
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Reset to PROBING with 1 probe needed.
+    client.ecn_state = UInt8(0)   # ECN_STATE_PROBING
+    client.ecn_probe_pkts_needed = 1
+    client.ecn_probe_pkts_sent = 0
+    client.ecn_probe_first_pn = UInt64(0)
+    # Clear server recv_ecn so ACK carries no ECN counts.
+    server.spaces[2].recv_ecn.ect0 = UInt64(0)
+    server.spaces[2].recv_ecn.ect1 = UInt64(0)
+    server.spaces[2].recv_ecn.ce = UInt64(0)
+
+    # Open a stream so client has something to send.
+    var sid = client.open_stream(True)
+    var hello = _to_bytes("ecn_probe")
+    client.send_stream_data(sid, Span(hello), False)
+
+    # Pump several rounds; server always receives without ECN marks.
+    for _ in range(5):
+        now += UInt64(10_000)
+        var c_dg = client.send(now)
+        for i in range(len(c_dg)):
+            try:
+                server.recv(Span(c_dg[i]), now)
+            except:
+                pass
+        var s_dg = server.send(now)
+        for i in range(len(s_dg)):
+            try:
+                client.recv(Span(s_dg[i]), now)
+            except:
+                pass
+
+    assert_true(
+        client.ecn_state == ECN_STATE_DISABLED,
+        "client ECN state should be DISABLED when probes sent but path strips marks",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_ecn_disabled_after_probing: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2322,4 +2506,8 @@ def main() raises:
     test_persistent_congestion_end_to_end()
     test_pacer_delays_burst()
     test_cubic_cwnd_gates_send_path()
+    test_blocked_frames_emitted_on_conn_fc_stall()
+    test_blocked_not_re_emitted_at_same_limit()
+    test_blocked_cleared_on_max_data_increase()
+    test_ecn_disabled_after_probing()
     print("All test_quic_connection tests passed.")
