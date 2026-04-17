@@ -10,8 +10,6 @@ from src.quic.cc.cc_trait import (
     LostPacket,
     UINT64_UNLIMITED,
 )
-from src.quic.cc.minmax import MinMax
-
 
 # --- Module-scope constants (§4.3) ---
 
@@ -264,7 +262,6 @@ struct Cubic(ImplicitlyCopyable, Movable):
         persistent: Bool,
     ):
         """Reduce cwnd on congestion event. Persistent congestion resets to min."""
-        self._hs_on_loss()  # Disable HyStart++ on any loss detection.
         if persistent:
             # RFC 9002 §7.6.2: persistent congestion → back to minimum window.
             self._cwnd_value = self.min_cwnd
@@ -286,6 +283,8 @@ struct Cubic(ImplicitlyCopyable, Movable):
             )
             if now < suppress_until:
                 return
+
+        self._hs_on_loss()  # Disable HyStart++ AFTER suppression guard.
 
         # Fast convergence (RFC 9438 §4.6): when cwnd < w_last_max, bias w_max low.
         if self._cwnd_value < self.w_last_max:
