@@ -433,7 +433,7 @@ def test_h3_goaway() raises:
     now = _pump_e2e(server, client, now, 50)
 
     # Server sends GOAWAY
-    server._h3.send_goaway(UInt64(0))
+    server.send_goaway(UInt64(0))
 
     # Pump so client receives it
     now = _pump_e2e(server, client, now, 10)

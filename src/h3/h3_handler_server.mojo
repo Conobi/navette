@@ -125,6 +125,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     def should_close(self) -> Bool:
         return self._h3.is_closed()
 
+    def send_goaway(mut self, last_stream_id: UInt64) raises:
+        """Send GOAWAY via the underlying H3Connection."""
+        self._h3.send_goaway(last_stream_id)
+
     # --- Internal: event dispatch --------------------------------------------
 
     def _dispatch_h3_events(mut self, now: UInt64) raises:
