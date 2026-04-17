@@ -2480,6 +2480,86 @@ def test_ecn_disabled_after_probing() raises:
     print("  test_ecn_disabled_after_probing: PASS")
 
 
+def test_pn_skip_active_after_handshake() raises:
+    """Application-space pn_skip_rng is seeded at handshake; Initial/Handshake remain zero."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(lib_addr, configs[0], params,
+                                       Span(orig_dcid), Span(client_dcid), now)
+
+    now = _establish_handshake(client, server, now)
+
+    # Application space (index 2) must be seeded after handshake.
+    assert_true(
+        client.spaces[2].pn_skip_rng != UInt64(0),
+        "client: Application-space pn_skip_rng should be non-zero after handshake",
+    )
+    assert_true(
+        client.spaces[2].pn_skip_next < UInt64(0xFFFFFFFFFFFFFFFF),
+        "client: pn_skip_next should be < MAX after seeding",
+    )
+    # Initial (0) and Handshake (1) spaces must NOT be seeded.
+    assert_true(
+        client.spaces[0].pn_skip_rng == UInt64(0),
+        "client: Initial-space pn_skip_rng must remain 0",
+    )
+    assert_true(
+        client.spaces[1].pn_skip_rng == UInt64(0),
+        "client: Handshake-space pn_skip_rng must remain 0",
+    )
+    # Server must also be seeded.
+    assert_true(
+        server.spaces[2].pn_skip_rng != UInt64(0),
+        "server: Application-space pn_skip_rng should be non-zero after handshake",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_pn_skip_active_after_handshake: PASS")
+
+
+def test_pn_skip_next_in_valid_range() raises:
+    """pn_skip_next is in [200, 499] immediately after handshake seeding."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(lib_addr, configs[0], params,
+                                       Span(orig_dcid), Span(client_dcid), now)
+
+    now = _establish_handshake(client, server, now)
+
+    var skip_next = client.spaces[2].pn_skip_next
+    assert_true(
+        skip_next >= UInt64(200),
+        "pn_skip_next must be >= 200, got " + String(skip_next),
+    )
+    assert_true(
+        skip_next < UInt64(500),
+        "pn_skip_next must be < 500, got " + String(skip_next),
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_pn_skip_next_in_valid_range: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2510,4 +2590,6 @@ def main() raises:
     test_blocked_not_re_emitted_at_same_limit()
     test_blocked_cleared_on_max_data_increase()
     test_ecn_disabled_after_probing()
+    test_pn_skip_active_after_handshake()
+    test_pn_skip_next_in_valid_range()
     print("All test_quic_connection tests passed.")

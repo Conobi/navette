@@ -1555,6 +1555,16 @@ struct QuicConnection(Movable):
         tp_buf.free()
         tp_written.free()
 
+        # Seed Application-space PN skip RNG from local_cid (per-connection).
+        # Initial and Handshake spaces retain pn_skip_rng=0 (skip disabled).
+        var pn_skip_seed = UInt64(0)
+        for i in range(min(Int(8), Int(len(self.local_cid)))):
+            pn_skip_seed = (pn_skip_seed << 8) | UInt64(self.local_cid[i])
+        if pn_skip_seed == 0:
+            pn_skip_seed = UInt64(0xDEADBEEFCAFEB00F)  # degenerate fallback (1-in-2^64)
+        self.spaces[2].pn_skip_rng  = pn_skip_seed
+        self.spaces[2].pn_skip_next = 200 + (pn_skip_seed % 300)
+
         if self.is_server:
             # Server: set ESTABLISHED, discard Initial & Handshake, queue HANDSHAKE_DONE.
             self.state = self.state | CONN_ESTABLISHED
