@@ -1,6 +1,6 @@
 # Research Plan: librustls Wave 2 + QUIC Transport Core (M3)
 
-> Previous plan (LLVM coroutine intrinsics) superseded — ucontext via C FFI is shipped and working in boucle/stackful.mojo. Topics 1–2 done, Topic 3 blocked and moot.
+> Previous plan (LLVM coroutine intrinsics) superseded — ucontext via C FFI is shipped and working in boucle/stackful.mojo. Topics 1–5 done (Wave 2 scope). Topics 6–13 done (M3 safety deep dive, 2026-04-14).
 
 ## Topic Table
 
