@@ -91,6 +91,10 @@ from src.quic.recovery import Recovery, K_GRANULARITY
 from src.quic.crypto_stream import CryptoStream
 from src.quic.packet_protect import PacketProtect
 from src.quic.cc.cc_trait import AckedPacket, LostPacket, PERSISTENT_CONG_THRESHOLD
+from src.quic.ecn import (
+    EcnCounts, ECN_NOT_ECT, ECN_ECT0, ECN_ECT1, ECN_CE,
+    ECN_STATE_PROBING, ECN_STATE_CAPABLE, ECN_STATE_DISABLED,
+)
 
 # ── Connection state bitflags ────────────────────────────────────────
 
@@ -305,6 +309,11 @@ struct QuicConnection(Movable):
     # Maps Application-space packet number -> list of stream-layer frames
     # sent in that packet, for ACK/loss processing (M3c).
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
+    # ECN path validation state (RFC 9000 §13.4.2, RFC 9002 §7.9).
+    var ecn_state: UInt8           # ECN_STATE_PROBING / ECN_STATE_CAPABLE / ECN_STATE_DISABLED
+    var ecn_probe_pkts_needed: Int # probe this many ECT(0) packets before validation check
+    var ecn_probe_pkts_sent: Int   # ECT(0) packets sent during probing phase
+    var ecn_probe_first_pn: UInt64 # PN of first ECT(0) probe packet
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -336,6 +345,10 @@ struct QuicConnection(Movable):
         self.stream_map = take.stream_map^
         self.cid_mgr = take.cid_mgr^
         self.app_frames_sent = take.app_frames_sent^
+        self.ecn_state = take.ecn_state
+        self.ecn_probe_pkts_needed = take.ecn_probe_pkts_needed
+        self.ecn_probe_pkts_sent = take.ecn_probe_pkts_sent
+        self.ecn_probe_first_pn = take.ecn_probe_first_pn
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -380,6 +393,10 @@ struct QuicConnection(Movable):
         self.current_level = 0
         self.send_handshake_done = False
         self.last_ack_eliciting_send_time = UInt64(0)
+        self.ecn_state = ECN_STATE_PROBING
+        self.ecn_probe_pkts_needed = 10
+        self.ecn_probe_pkts_sent = 0
+        self.ecn_probe_first_pn = UInt64(0)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -585,7 +602,8 @@ struct QuicConnection(Movable):
 
     # ── Receive path ─────────────────────────────────────────────────
 
-    def recv(mut self, datagram: Span[UInt8, _], now: UInt64) raises:
+    def recv(mut self, datagram: Span[UInt8, _], now: UInt64,
+             ecn_mark: UInt8 = UInt8(0)) raises:
         """Process an incoming UDP datagram.
 
         Parses coalesced packets, decrypts payloads, dispatches frames,
@@ -678,6 +696,15 @@ struct QuicConnection(Movable):
 
                 # 11. Update PN space.
                 self.spaces[space_idx].on_packet_received(full_pn, ack_eliciting)
+
+                # ECN accounting: count marks seen on received packets.
+                if self.ecn_state != ECN_STATE_DISABLED:
+                    if ecn_mark == ECN_CE:
+                        self.spaces[space_idx].recv_ecn.ce += UInt64(1)
+                    elif ecn_mark == ECN_ECT0:
+                        self.spaces[space_idx].recv_ecn.ect0 += UInt64(1)
+                    elif ecn_mark == ECN_ECT1:
+                        self.spaces[space_idx].recv_ecn.ect1 += UInt64(1)
 
                 # 12. Drive handshake after CRYPTO processing.
                 self._drive_handshake(now)
@@ -1095,6 +1122,10 @@ struct QuicConnection(Movable):
         # Also advance the per-space last_ae_acked_time_sent tracker used by
         # persistent-congestion detection (spec §5.4).
         for i in range(len(acked)):
+            # Decrement ECT(0) in-flight counter on ACK (O(1)).
+            if acked[i].ecn_mark == ECN_ECT0:
+                if self.spaces[space_idx].ect0_in_flight > UInt64(0):
+                    self.spaces[space_idx].ect0_in_flight -= UInt64(1)
             self.recovery.on_packet_acked(acked[i].size, acked[i].in_flight)
             if acked[i].ack_eliciting:
                 if (
@@ -1125,6 +1156,10 @@ struct QuicConnection(Movable):
         # Detect lost packets (also runs persistent-congestion detection and
         # fans out to cc.on_packets_lost).
         self._detect_losses(space_idx, now)
+
+        # ECN feedback processing (after loss detection).
+        if ack_frame.has_ecn and self.ecn_state != ECN_STATE_DISABLED:
+            self._process_ecn_feedback(space_idx, ack_frame, now)
 
     # ── Loss detection ───────────────────────────────────────────────
 
@@ -1186,6 +1221,10 @@ struct QuicConnection(Movable):
                 var lost_pkt = SentPacket(
                     other=self.spaces[space_idx].sent_packets[pn_key]
                 )
+                # Decrement ECT(0) in-flight on loss.
+                if lost_pkt.ecn_mark == ECN_ECT0:
+                    if self.spaces[space_idx].ect0_in_flight > UInt64(0):
+                        self.spaces[space_idx].ect0_in_flight -= UInt64(1)
                 self.recovery.on_packet_lost(lost_pkt.size, lost_pkt.in_flight)
 
                 # Re-queue CRYPTO frames for retransmission at their
@@ -1283,6 +1322,45 @@ struct QuicConnection(Movable):
         return not self.spaces[space_id].any_ae_acked_in_range(
             earliest, latest
         )
+
+    def _process_ecn_feedback(
+        mut self, space_idx: Int, ack: AckFrame, now: UInt64
+    ):
+        """Process ECN counts from an ACK frame (RFC 9000 §13.4.2 + RFC 9002 §7.9).
+
+        Validates the path (PROBING→CAPABLE or PROBING→DISABLED) and triggers
+        a congestion event on CE increment."""
+        var prev_ce = self.spaces[space_idx].last_ack_ecn.ce
+
+        # Update stored last-seen ECN counts.
+        self.spaces[space_idx].last_ack_ecn = EcnCounts(
+            ack.ecn_ect0, ack.ecn_ect1, ack.ecn_ce
+        )
+
+        # --- Path validation (PROBING phase) ---
+        if self.ecn_state == ECN_STATE_PROBING:
+            if (self.ecn_probe_pkts_sent >= self.ecn_probe_pkts_needed
+                    and ack.largest_ack >= self.ecn_probe_first_pn):
+                if ack.ecn_ect0 == UInt64(0) and ack.ecn_ect1 == UInt64(0) and ack.ecn_ce == UInt64(0):
+                    # Peer sees no ECN counts → path strips ECN marks.
+                    self.ecn_state = ECN_STATE_DISABLED
+                    return
+                else:
+                    self.ecn_state = ECN_STATE_CAPABLE
+
+        # --- Bleaching check (RFC 9000 §13.4.2) ---
+        var in_flight_ect0 = self.spaces[space_idx].ect0_in_flight
+        if ack.ecn_ect0 + ack.ecn_ect1 + ack.ecn_ce > in_flight_ect0 + UInt64(1):
+            self.ecn_state = ECN_STATE_DISABLED
+            return
+
+        # --- CE delta → congestion event (RFC 9002 §7.9) ---
+        if ack.ecn_ce > prev_ce:
+            self.recovery.cc.on_congestion_event(self.recovery.smoothed_rtt, now)
+            # Refresh pacer after cwnd may have changed.
+            self.recovery.pacer.update_capacity(
+                self.recovery.cc.cwnd(), self.recovery.smoothed_rtt
+            )
 
     # ── Handshake driver ─────────────────────────────────────────────
 
@@ -1580,8 +1658,9 @@ struct QuicConnection(Movable):
             if not self.is_server and space_idx == 1 and (self.state & CONN_INITIAL_DISCARDED) == 0 and self.protect.has_keys(1):
                 self._discard_initial_space()
 
-            # Record sent packet.
+            # Record sent packet with ECN mark.
             var is_ack_eliciting = _has_ack_eliciting(frames)
+            var ect = self.ecn_mark()
             var sent = SentPacket(
                 pn=pn,
                 time_sent=now,
@@ -1589,9 +1668,16 @@ struct QuicConnection(Movable):
                 in_flight=True,
                 size=pkt_size,
                 frames=frames,
+                ecn_mark=ect,
             )
             self.spaces[space_idx].on_packet_sent(sent)
-            self.recovery.on_packet_sent(pkt_size, True)
+            # Track ECT(0) in-flight count for bleaching check.
+            if ect == ECN_ECT0:
+                self.spaces[space_idx].ect0_in_flight += UInt64(1)
+                if self.ecn_probe_pkts_sent == 0:
+                    self.ecn_probe_first_pn = pn
+                self.ecn_probe_pkts_sent += 1
+            self.recovery.on_packet_sent(pkt_size, True, pn, now)
             # Commit pacer token for this packet.
             var _pace_rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
             _ = self.recovery.pacer.refill_and_check(_pace_rate, now)
@@ -2422,6 +2508,15 @@ struct QuicConnection(Movable):
         if self.recovery.pacer.next_send_time(rate, now):
             return False
         return True
+
+    def ecn_mark(self) -> UInt8:
+        """Return the ECN codepoint to apply to outgoing datagrams.
+
+        Returns ECN_ECT0 while probing or confirmed capable; ECN_NOT_ECT when
+        the path is known to strip/corrupt ECN marks."""
+        if self.ecn_state == ECN_STATE_DISABLED:
+            return ECN_NOT_ECT
+        return ECN_ECT0
 
     def _addr_validated(self) -> Bool:
         """True if the peer address has been validated."""
