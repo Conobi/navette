@@ -193,7 +193,7 @@ def generate_qpack_vectors() -> list:
         ),
     ]
 
-    for description, headers, huffman in header_sets:
+    for description, headers, _huffman in header_sets:
         # pylsqpack.Encoder: encode(stream_id, headers) -> (encoder_stream_bytes, header_block)
         # pylsqpack.Decoder: feed_header(stream_id, header_block) -> (decoder_stream_bytes, headers_list)
         enc = pylsqpack.Encoder()
@@ -207,7 +207,7 @@ def generate_qpack_vectors() -> list:
             "headers": [{"name": k.decode(), "value": v.decode()} for k, v in headers],
             "encoded_hex": encoded.hex(),
             "decoded": [{"name": k.decode(), "value": v.decode()} for k, v in decoded],
-            "huffman": huffman,
+            # Note: pylsqpack controls Huffman encoding internally; this flag is informational only.
         })
 
     return vectors
