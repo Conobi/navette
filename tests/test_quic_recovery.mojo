@@ -7,6 +7,9 @@ from src.quic.recovery import (
     INITIAL_RTT,
     INITIAL_RTTVAR,
 )
+from src.quic.cc.controller import CcController
+from src.quic.cc.cc_trait import CC_KIND_CUBIC, CC_KIND_DUMMY, AckedPacket, LostPacket
+from std.testing import assert_true
 
 
 def test_initial_values() raises:
@@ -215,6 +218,58 @@ def test_bytes_in_flight() raises:
     print("  bytes_in_flight: PASS")
 
 
+def test_recovery_cc_cubic_by_default() raises:
+    var rec = Recovery(max_datagram_size=UInt64(1200))
+    assert_true(rec.cc.kind == CC_KIND_CUBIC, "CUBIC by default")
+    print("PASS: test_recovery_cc_cubic_by_default")
+
+
+def test_recovery_cc_dummy_optin() raises:
+    var rec = Recovery(max_datagram_size=UInt64(1200), use_cubic=False)
+    assert_true(rec.cc.kind == CC_KIND_DUMMY, "dummy when opted in")
+    print("PASS: test_recovery_cc_dummy_optin")
+
+
+def test_recovery_on_packet_sent_notifies_cc() raises:
+    var rec = Recovery(max_datagram_size=UInt64(1200))
+    var before_bif = rec.bytes_in_flight
+    rec.on_packet_sent(size=1200, in_flight=True, now=UInt64(1000))
+    assert_true(rec.bytes_in_flight == before_bif + UInt64(1200), "bytes_in_flight updated")
+    # CC notification verified indirectly — internal cubic state opaque.
+    print("PASS: test_recovery_on_packet_sent_notifies_cc")
+
+
+def test_recovery_pacer_capacity_updates_on_ack() raises:
+    var rec = Recovery(max_datagram_size=UInt64(1200))
+    rec.update_rtt(rtt_sample=UInt64(10_000), ack_delay=UInt64(0),
+                   max_ack_delay=UInt64(0), handshake_confirmed=False)
+    var pkt = AckedPacket(pkt_num=1, size=UInt64(1200),
+                           time_sent=0, time_acked=10_000, rtt_sample=10_000)
+    rec.cc.on_packet_acked(pkt, smoothed_rtt_us=UInt64(10_000), now=UInt64(10_000))
+    rec.on_ack_received()
+    # After on_ack_received, pacer.update_capacity should have run.
+    assert_true(rec.pacer.capacity > UInt64(0), "pacer capacity reflects current CC state")
+    print("PASS: test_recovery_pacer_capacity_updates_on_ack")
+
+
+def test_recovery_min_rtt_reset_on_persistent() raises:
+    """Caller-driven reset of min_rtt simulating persistent-congestion response."""
+    var rec = Recovery(max_datagram_size=UInt64(1200))
+    rec.update_rtt(rtt_sample=UInt64(10_000), ack_delay=UInt64(0),
+                   max_ack_delay=UInt64(0), handshake_confirmed=False)
+    assert_true(rec.min_rtt == UInt64(10_000), "min_rtt set to first sample")
+    rec.update_rtt(rtt_sample=UInt64(5_000), ack_delay=UInt64(0),
+                   max_ack_delay=UInt64(0), handshake_confirmed=False)
+    assert_true(rec.min_rtt == UInt64(5_000), "min_rtt lowered on smaller sample")
+    rec.update_rtt(rtt_sample=UInt64(20_000), ack_delay=UInt64(0),
+                   max_ack_delay=UInt64(0), handshake_confirmed=False)
+    assert_true(rec.min_rtt == UInt64(5_000), "min_rtt not raised by higher sample (monotonic)")
+    # Caller-driven reset (simulating QuicConnection after persistent detection):
+    rec.min_rtt = rec.latest_rtt
+    assert_true(rec.min_rtt == UInt64(20_000), "caller-driven reset works")
+    print("PASS: test_recovery_min_rtt_reset_on_persistent")
+
+
 def main() raises:
     print("test_quic_recovery:")
     test_initial_values()
@@ -227,4 +282,9 @@ def main() raises:
     test_time_threshold_loss()
     test_pto_backoff()
     test_bytes_in_flight()
+    test_recovery_cc_cubic_by_default()
+    test_recovery_cc_dummy_optin()
+    test_recovery_on_packet_sent_notifies_cc()
+    test_recovery_pacer_capacity_updates_on_ack()
+    test_recovery_min_rtt_reset_on_persistent()
     print("All test_quic_recovery tests passed.")

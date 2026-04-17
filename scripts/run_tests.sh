@@ -66,6 +66,9 @@ TESTS=(
     test_quic_stream
     test_quic_stream_map
     test_quic_connection
+    test_cc_cubic
+    test_cc_pacing
+    test_cc_controller
 )
 
 FILTER="${TESTS_FILTER:-}"

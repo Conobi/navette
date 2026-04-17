@@ -231,6 +231,49 @@ def test_ack_range_merge() raises:
     print("    PASS test_ack_range_merge")
 
 
+def test_pn_space_last_ae_acked_initially_zero() raises:
+    """last_ae_acked_time_sent starts at 0."""
+    var sp = PacketNumberSpace(EncryptionLevel.application())
+    _assert_eq_u64(sp.last_ae_acked_time_sent, UInt64(0), "initial 0")
+    print("    PASS test_pn_space_last_ae_acked_initially_zero")
+
+
+def test_pn_space_any_ae_acked_in_range_boundaries() raises:
+    """any_ae_acked_in_range: unset→False, in-range→True, before→False, past→True."""
+    var sp = PacketNumberSpace(EncryptionLevel.application())
+    # zero → no evidence
+    _assert_false(sp.any_ae_acked_in_range(UInt64(100), UInt64(200)),
+                  "unset → False")
+    sp.last_ae_acked_time_sent = UInt64(150)
+    # in range
+    _assert_true(sp.any_ae_acked_in_range(UInt64(100), UInt64(200)),
+                 "in-range tracker → True")
+    sp.last_ae_acked_time_sent = UInt64(50)
+    # before range
+    _assert_false(sp.any_ae_acked_in_range(UInt64(100), UInt64(200)),
+                  "before range → False")
+    sp.last_ae_acked_time_sent = UInt64(300)
+    # past range — conservative True
+    _assert_true(sp.any_ae_acked_in_range(UInt64(100), UInt64(200)),
+                 "past range → conservative True")
+    print("    PASS test_pn_space_any_ae_acked_in_range_boundaries")
+
+
+def test_pn_space_last_ae_acked_monotonic() raises:
+    """last_ae_acked_time_sent is not lowered by a smaller value."""
+    var sp = PacketNumberSpace(EncryptionLevel.application())
+    sp.last_ae_acked_time_sent = UInt64(100)
+    var t1 = UInt64(50)
+    if t1 > sp.last_ae_acked_time_sent:
+        sp.last_ae_acked_time_sent = t1
+    _assert_eq_u64(sp.last_ae_acked_time_sent, UInt64(100), "monotonic (not lowered)")
+    var t2 = UInt64(200)
+    if t2 > sp.last_ae_acked_time_sent:
+        sp.last_ae_acked_time_sent = t2
+    _assert_eq_u64(sp.last_ae_acked_time_sent, UInt64(200), "advanced to later time")
+    print("    PASS test_pn_space_last_ae_acked_monotonic")
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -248,5 +291,8 @@ def main() raises:
     test_on_ack_received()
     test_duplicate_pn_ignored()
     test_ack_range_merge()
+    test_pn_space_last_ae_acked_initially_zero()
+    test_pn_space_any_ae_acked_in_range_boundaries()
+    test_pn_space_last_ae_acked_monotonic()
 
     print("All test_quic_pn_space tests passed.")

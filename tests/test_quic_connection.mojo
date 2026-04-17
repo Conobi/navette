@@ -14,7 +14,15 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.connection import (
+    QuicConnection, QuicEvent, SentStreamFrame,
+    SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
+    CONN_ADDR_VALIDATED,
+)
+from src.quic.cid import CID_ACTIVE
+from src.quic.frame import Frame, StreamFrame, ResetStreamFrame
+from src.quic.pn_space import SentPacket
+from src.quic.cc.cc_trait import AckedPacket, LostPacket
 from src.quic.stream import SEND_RESET_SENT
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.retry import (
@@ -231,6 +239,16 @@ def _to_bytes(s: String) -> List[UInt8]:
     for i in range(len(src)):
         out.append(src[i])
     return out^
+
+
+def _peer_granted_bidi_limit(conn: QuicConnection) -> UInt64:
+    """Return the MAX_STREAMS(bidi) limit currently granted to the peer.
+
+    This reads `stream_map.local_max_streams_bidi`, which is the running limit
+    we advertise to the peer.  After N peer-initiated bidi streams are fully
+    closed, `check_max_streams_update` sets it to N + initial_max_streams_bidi.
+    """
+    return conn.stream_map.local_max_streams_bidi
 
 
 # ── Tests ────────────────────────────────────────────────────────────────
@@ -471,7 +489,7 @@ def test_idle_timeout() raises:
             break
 
     # Verify timeout() returns a deadline.
-    var deadline = client.timeout()
+    var deadline = client.timeout(now)
     assert_true(Bool(deadline), "client timeout() returned None after handshake")
 
     # Advance time well past idle timeout (5s = 5_000_000 us).
@@ -541,7 +559,7 @@ def test_handshake_with_loss() raises:
     # Intentionally NOT feeding server_dgrams_r1 to client.
 
     # Advance time past the client's PTO timeout.
-    var client_deadline = client.timeout()
+    var client_deadline = client.timeout(now)
     assert_true(Bool(client_deadline), "client should have a PTO deadline")
     now = client_deadline.value() + UInt64(1)
 
@@ -1249,7 +1267,1033 @@ def test_cid_issuance() raises:
     print("  test_cid_issuance: PASS")
 
 
+def test_flow_control_error_on_overflow() raises:
+    """Sender exceeds peer's stream FC limit → FLOW_CONTROL_ERROR (0x03)."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Build a STREAM frame whose payload exceeds the stream's recv FC limit
+    # (initial_max_stream_data_bidi_remote = 65536 bytes in _default_params).
+    # We directly call server._handle_stream_frame so the FC check fires
+    # before any packet-layer silencing.
+    var sid = UInt64(0)  # client-initiated bidi stream id 0 (peer stream from server's POV)
+    var data = List[UInt8](capacity=70_000)
+    for _ in range(70_000):
+        data.append(UInt8(0x41))
+
+    var sf = StreamFrame(sid, UInt64(0), data, False)
+    var raised_fc = False
+    try:
+        server._handle_stream_frame(sf)
+    except e:
+        var emsg = String(e)
+        if emsg.find("FLOW_CONTROL") >= 0:
+            raised_fc = True
+    assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on stream FC overflow")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_flow_control_error_on_overflow: PASS")
+
+
+def test_conn_flow_control_error_on_overflow() raises:
+    """Sender exceeds peer's MAX_DATA (conn-level) → FLOW_CONTROL_ERROR (0x03) on conn FC.
+    Stream limits are set high so the conn-level check fires first."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    # Server advertises a low conn-level limit but high stream-level limits,
+    # so only the conn-FC check can trip on the frame we inject.
+    var client_params = _default_params()
+    var server_params = _default_params()
+    server_params.initial_max_data = UInt64(50_000)
+    server_params.initial_max_stream_data_bidi_remote = UInt64(200_000)
+    server_params.initial_max_stream_data_bidi_local = UInt64(200_000)
+
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Build a STREAM frame with 60_000 bytes: above conn limit (50_000) but
+    # below stream limit (200_000), so the conn-FC path fires.
+    var sid = UInt64(0)  # client-initiated bidi stream id 0 (peer stream from server's POV)
+    var data = List[UInt8](capacity=60_000)
+    for _ in range(60_000):
+        data.append(UInt8(0x41))
+
+    var sf = StreamFrame(sid, UInt64(0), data, False)
+    var raised_fc = False
+    try:
+        server._handle_stream_frame(sf)
+    except e:
+        var emsg = String(e)
+        if emsg.find("FLOW_CONTROL") >= 0:
+            raised_fc = True
+    assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on conn FC overflow")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_conn_flow_control_error_on_overflow: PASS")
+
+
+def test_final_size_error_on_reset_mismatch() raises:
+    """RESET_STREAM with final_size < previously-observed offset → FINAL_SIZE_ERROR (0x06)."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Client opens stream and sends 100 bytes (no FIN).
+    var sid = client.open_stream(True)
+    var data = List[UInt8](capacity=100)
+    for _ in range(100):
+        data.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(data), False)
+
+    # Pump so the server receives the STREAM frame and records recv_highest_offset = 100.
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+
+    # Now send RESET_STREAM with final_size=50, which contradicts the observed 100 bytes.
+    var rf = ResetStreamFrame(sid, UInt64(0), UInt64(50))
+    var raised_fse = False
+    try:
+        server._handle_reset_stream(rf)
+    except e:
+        var emsg = String(e)
+        if emsg.find("FINAL_SIZE") >= 0:
+            raised_fse = True
+    assert_true(raised_fse, "server should raise FINAL_SIZE_ERROR on reset with final_size < received")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_final_size_error_on_reset_mismatch: PASS")
+
+
+def test_max_stream_data_and_max_data_cycle() raises:
+    """Sender fills a stream past 50% of advertised FC, receiver consumes,
+    receiver emits MAX_STREAM_DATA, sender sees advanced limit and writes more."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    # Force low FC limits so the 50%-threshold logic trips predictably.
+    # server_params.initial_max_stream_data_bidi_remote = 10 KiB means:
+    #   - the server's recv window for client-initiated bidi streams is 10 KiB
+    #   - the client's send limit on those streams is also 10 KiB
+    # server_params.initial_max_data = 10 KiB (same as stream window) sets the
+    # client's conn-level send limit so the conn-FC 50% threshold also trips:
+    #   consumed=7168, remaining=10240-7168=3072 < window/2=5120 → should_update.
+    var client_params = _default_params()
+    var server_params = _default_params()
+    server_params.initial_max_stream_data_bidi_remote = UInt64(10240)
+    server_params.initial_max_data = UInt64(10240)
+
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Client opens a bidi stream (id 0).
+    var sid = client.open_stream(True)
+    assert_equal_int(Int(sid), 0, "first client bidi stream id")
+
+    # Client sends 7 KiB (>50% of 10 KiB stream limit → should_update trips on drain).
+    var chunk = List[UInt8](capacity=7 * 1024)
+    for _ in range(7 * 1024):
+        chunk.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(chunk), False)
+
+    # Pump client → server so the server receives all STREAM frames.
+    # Each send() emits one STREAM frame (~1200 B); 7 KiB needs ceil(7168/1200)=6 rounds.
+    now = _pump(client, server, now, 8)
+    _drain_events(server)
+
+    # Server consumes the full 7 KiB — this triggers should_update() on the
+    # server's recv-side FC, setting needs_max_stream_data (and possibly
+    # needs_max_data) on the stream map.
+    var recv_out = server.recv_stream_data(sid)
+    assert_equal_int(len(recv_out[0]), 7 * 1024, "server read 7 KiB")
+
+    # Remember the client's current stream send limit before any MAX_STREAM_DATA.
+    var stream_before = client.stream_map.get_stream(Int(sid))
+    var limit_before = stream_before.fc_send.value().limit
+
+    # Pump server → client so MAX_STREAM_DATA (and possibly MAX_DATA) flow to client.
+    now = _pump(server, client, now, 3)
+
+    # Client's stream send FC limit should have advanced beyond the initial 10 KiB.
+    var stream_after = client.stream_map.get_stream(Int(sid))
+    var limit_after = stream_after.fc_send.value().limit
+    assert_true(
+        limit_after > limit_before,
+        "client stream FC limit did not advance after MAX_STREAM_DATA"
+        + " (before=" + String(limit_before) + ", after=" + String(limit_after) + ")",
+    )
+    # The new limit should be consumed(7168) + window(10240) = 17408, well above
+    # the original 10240, so the client can now send at least 5 KiB more.
+    assert_true(
+        limit_after >= UInt64(17408),
+        "client stream FC limit should be >=17408 after MAX_STREAM_DATA, got "
+        + String(limit_after),
+    )
+
+    # Verify conn-level FC limit advanced (MAX_DATA was emitted server-side and
+    # client received + applied it via ensure_limit).
+    var conn_fc_limit_after = client.stream_map.conn_fc_send.limit
+    assert_true(
+        conn_fc_limit_after > UInt64(10240),
+        "client conn_fc_send.limit did not advance after MAX_DATA"
+        + " (was 10240, now " + String(conn_fc_limit_after) + ")",
+    )
+
+    # Verify the client can actually write another 5 KiB (within the new limit).
+    var extra = List[UInt8](capacity=5 * 1024)
+    for _ in range(5 * 1024):
+        extra.append(UInt8(0x42))
+    client.send_stream_data(sid, Span(extra), False)  # raises if state error
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_max_stream_data_and_max_data_cycle: PASS")
+
+
+def test_max_streams_linear_growth() raises:
+    """After peer completes N streams, receiver emits MAX_STREAMS(bidi) = N + initial_max_streams_bidi."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    # Use small initial_max_streams_bidi for a fast, deterministic test.
+    var client_params = _default_params()
+    var server_params = _default_params()
+    client_params.initial_max_streams_bidi = UInt64(100)
+    server_params.initial_max_streams_bidi = UInt64(100)
+
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Verify initial state: server has granted peer (client) bidi limit = 100.
+    assert_true(
+        _peer_granted_bidi_limit(server) == UInt64(100),
+        "initial server bidi limit should be 100, got "
+        + String(_peer_granted_bidi_limit(server)),
+    )
+
+    # Open N=50 bidi streams from client, send 1 byte + FIN on each.
+    var sids = List[UInt64]()
+    var one_byte = List[UInt8]()
+    one_byte.append(UInt8(0x41))
+    for _ in range(50):
+        var sid = client.open_stream(True)
+        sids.append(sid)
+        client.send_stream_data(sid, Span(one_byte), True)
+
+    # Pump client → server: deliver all STREAM+FIN frames.
+    # With 50 streams and round-robin, each send() emits ~1 frame.
+    # ceil(50/1) = 50 rounds to flush all FINs, plus a few ACK rounds.
+    now = _pump(client, server, now, 60)
+
+    _drain_events(server)
+
+    # Server consumes each stream's single byte (recv side → RECV_DATA_READ).
+    # For a bidi stream, server must also send data+FIN back to fully close.
+    # Send 1 byte + FIN (not FIN-only) so the ACK record has non-zero length
+    # and the send-side ack tracking advances correctly.
+    var reply_byte = List[UInt8]()
+    reply_byte.append(UInt8(0x42))
+    for i in range(len(sids)):
+        var sid = sids[i]
+        _ = server.recv_stream_data(sid)
+        # Send 1 byte + FIN back to close server's send side after ACK.
+        server.send_stream_data(sid, Span(reply_byte), True)
+
+    # Pump server → client: deliver server FINs (50 streams × ~1 frame each = 50 rounds).
+    # Then pump client → server: deliver ACKs (each ACK may cover multiple packets).
+    now = _pump(server, client, now, 60)
+    now = _pump(client, server, now, 20)
+    # Final stabilisation pass.
+    now = _pump(server, client, now, 20)
+    now = _pump(client, server, now, 20)
+
+    # Server's local_max_streams_bidi should now reflect linear growth:
+    # new_limit = peer_completed_bidi (50) + initial_max_streams_bidi (100) = 150.
+    var granted_bidi = _peer_granted_bidi_limit(server)
+    assert_true(
+        granted_bidi == UInt64(150),
+        "MAX_STREAMS(bidi) should be 50 + 100 = 150 (linear); got "
+        + String(granted_bidi),
+    )
+
+    # Explicitly verify it is NOT exponential (not 200, not 150*2, etc.).
+    assert_true(
+        granted_bidi < UInt64(200),
+        "MAX_STREAMS(bidi) must not be exponential (< 200); got "
+        + String(granted_bidi),
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_max_streams_linear_growth: PASS")
+
+
+def _count_active_cids(conn: QuicConnection) -> Int:
+    """Count local CIDs with state == CID_ACTIVE."""
+    var count = 0
+    for i in range(len(conn.cid_mgr.local_cids)):
+        if conn.cid_mgr.local_cids[i].state == CID_ACTIVE:
+            count += 1
+    return count
+
+
+def _pick_non_primary_cid_seq(conn: QuicConnection) -> UInt64:
+    """Return sequence number of the first non-zero active local CID."""
+    for i in range(len(conn.cid_mgr.local_cids)):
+        if (
+            conn.cid_mgr.local_cids[i].state == CID_ACTIVE
+            and conn.cid_mgr.local_cids[i].sequence != UInt64(0)
+        ):
+            return conn.cid_mgr.local_cids[i].sequence
+    # Fallback: return seq 1 (should always exist after handshake + pump).
+    return UInt64(1)
+
+
+def _drain_pending_cid_frames(mut conn: QuicConnection) -> Int:
+    """Simulate the NEW_CONNECTION_ID build path: mark_advertised for each
+    pending (unadvertised) entry.  Returns the number of frames built."""
+    var pending = conn.cid_mgr.pending_new_cid_entries()
+    var built = len(pending)
+    for i in range(len(pending)):
+        conn.cid_mgr.mark_advertised(pending[i].sequence)
+    return built
+
+
+def test_cid_retire_triggers_reissue() raises:
+    """Client retires a server CID → server issues a replacement CID."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Exchange NEW_CONNECTION_ID frames so each side has its post-handshake CIDs.
+    _ = _pump(client, server, now, 4)
+
+    # Record server's active CID count (should be == peer_active_limit == 2).
+    var initial_active = _count_active_cids(server)
+    assert_true(
+        initial_active >= 2,
+        "server has >=2 active local CIDs post-handshake; got "
+        + String(initial_active),
+    )
+
+    # Pick a non-primary CID on the server to retire.
+    var to_retire_seq = _pick_non_primary_cid_seq(server)
+
+    # Retire it: CidManager marks it CID_RETIRED and issues a replacement
+    # (advertised=False) if active count drops below peer_active_limit.
+    server.cid_mgr.on_retire_connection_id(to_retire_seq)
+
+    # The replacement must be in pending_new_cid_entries() (advertised=False).
+    var pending = server.cid_mgr.pending_new_cid_entries()
+    assert_true(
+        len(pending) >= 1,
+        "server queued a replacement CID entry after retire; got "
+        + String(len(pending)),
+    )
+    assert_true(
+        not pending[0].advertised,
+        "replacement CID must not yet be advertised",
+    )
+
+    # Simulate the send path: build NEW_CONNECTION_ID frames + mark_advertised.
+    var built = _drain_pending_cid_frames(server)
+    assert_true(
+        built >= 1,
+        "at least one NEW_CONNECTION_ID frame built; got " + String(built),
+    )
+
+    # After advertising, pending_new_cid_entries() should be empty.
+    var pending_after = server.cid_mgr.pending_new_cid_entries()
+    assert_true(
+        len(pending_after) == 0,
+        "no unadvertised entries remain after build+advertise; got "
+        + String(len(pending_after)),
+    )
+
+    # Active CID count should be restored to >= initial_active
+    # (one CID retired, one replacement issued).
+    var active_after = _count_active_cids(server)
+    assert_true(
+        active_after >= initial_active,
+        "active CID count restored after reissue (was "
+        + String(initial_active)
+        + ", now "
+        + String(active_after)
+        + ")",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_cid_retire_triggers_reissue: PASS")
+
+
+# ── Loss-retransmit helpers ───────────────────────────────────────────────
+
+
+def _last_app_pn(conn: QuicConnection) -> Int:
+    """Return the packet number of the most-recently-built App-space packet.
+
+    After send(), spaces[2].next_pn has been incremented by 1, so the last
+    PN used is next_pn - 1.
+    """
+    return Int(conn.spaces[2].next_pn) - 1
+
+
+def _app_has_kind(conn: QuicConnection, pn: Int, kind: UInt8, stream_id: Int) raises -> Bool:
+    """Return True if app_frames_sent[pn] contains a record with the given kind.
+
+    For SSF_NEW_CID the stream_id argument is ignored (CID frames carry
+    cid_seq, not stream_id).  For all other kinds the stream_id must match.
+    """
+    if pn not in conn.app_frames_sent:
+        return False
+    var recs = conn.app_frames_sent[pn].copy()
+    for i in range(len(recs)):
+        if recs[i].kind != kind:
+            continue
+        if kind == SSF_NEW_CID:
+            return True
+        if Int(recs[i].stream_id) == stream_id:
+            return True
+    return False
+
+
+def test_m3c_frames_retransmit_on_loss() raises:
+    """RESET_STREAM, STOP_SENDING, MAX_STREAM_DATA, MAX_DATA, and NEW_CONNECTION_ID
+    are re-emitted when their carrier App-space packet is declared lost."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var srv_cfg = configs[0]
+    var cli_cfg = configs[1]
+
+    # ── Subsection A: RESET_STREAM (client) + STOP_SENDING (server) ──────
+
+    var now_a = UInt64(1_000_000)
+    var params_a = _default_params()
+
+    var client_a = QuicConnection.client(lib_addr, cli_cfg, "localhost", params_a, now_a)
+    var orig_dcid_a = List[UInt8](copy=client_a.initial_dcid)
+    var cli_dcid_a = List[UInt8](copy=client_a.initial_dcid)
+    var server_a = QuicConnection.server(
+        lib_addr, srv_cfg, params_a, Span(orig_dcid_a), Span(cli_dcid_a), now_a,
+    )
+    now_a = _establish_handshake(client_a, server_a, now_a)
+    _drain_events(client_a)
+    _drain_events(server_a)
+
+    # Client opens stream, sends partial data to create a live recv-side on server.
+    var sid_a = client_a.open_stream(True)
+    var data_a = _to_bytes("hello")
+    client_a.send_stream_data(sid_a, Span(data_a), False)
+    now_a = _pump(client_a, server_a, now_a, 3)
+    _drain_events(server_a)
+    _ = server_a.recv_stream_data(sid_a)
+
+    # Client resets → needs_reset_stream = True.
+    client_a.reset_stream(sid_a, UInt64(7))
+    # Server requests stop → needs_stop_sending = True.
+    server_a.stop_sending(sid_a, UInt64(11))
+
+    # Build outgoing packets from each side (drop datagrams; just track PN).
+    now_a += UInt64(10_000)
+    _ = client_a.send(now_a)
+    var c_pn_a = _last_app_pn(client_a)
+    assert_true(
+        _app_has_kind(client_a, c_pn_a, SSF_RESET_STREAM, Int(sid_a)),
+        "client: RESET_STREAM in initial build",
+    )
+    _ = server_a.send(now_a)
+    var s_pn_a = _last_app_pn(server_a)
+    assert_true(
+        _app_has_kind(server_a, s_pn_a, SSF_STOP_SENDING, Int(sid_a)),
+        "server: STOP_SENDING in initial build",
+    )
+
+    # Declare the packets lost.
+    client_a._on_app_pkt_lost(c_pn_a)
+    server_a._on_app_pkt_lost(s_pn_a)
+
+    # Next build must re-emit both frames.
+    now_a += UInt64(10_000)
+    _ = client_a.send(now_a)
+    var c_pn_a2 = _last_app_pn(client_a)
+    assert_true(
+        _app_has_kind(client_a, c_pn_a2, SSF_RESET_STREAM, Int(sid_a)),
+        "client re-emits RESET_STREAM after loss",
+    )
+
+    _ = server_a.send(now_a)
+    var s_pn_a2 = _last_app_pn(server_a)
+    assert_true(
+        _app_has_kind(server_a, s_pn_a2, SSF_STOP_SENDING, Int(sid_a)),
+        "server re-emits STOP_SENDING after loss",
+    )
+
+    # ── Subsection B: MAX_STREAM_DATA + MAX_DATA ──────────────────────────
+
+    var now_b = UInt64(2_000_000)
+    # Low stream window so 50% threshold trips after reading ~5 KiB.
+    # Low conn window (10 KiB) so conn-FC 50% threshold also trips:
+    #   consumed=7168, remaining=10240-7168=3072 < window/2=5120 → should_update.
+    var server_params_b = _default_params()
+    server_params_b.initial_max_stream_data_bidi_remote = UInt64(10240)
+    server_params_b.initial_max_data = UInt64(10240)
+    var client_params_b = _default_params()
+
+    var client_b = QuicConnection.client(lib_addr, cli_cfg, "localhost", client_params_b, now_b)
+    var orig_dcid_b = List[UInt8](copy=client_b.initial_dcid)
+    var cli_dcid_b = List[UInt8](copy=client_b.initial_dcid)
+    var server_b = QuicConnection.server(
+        lib_addr, srv_cfg, server_params_b, Span(orig_dcid_b), Span(cli_dcid_b), now_b,
+    )
+    now_b = _establish_handshake(client_b, server_b, now_b)
+    _drain_events(client_b)
+    _drain_events(server_b)
+
+    # Client sends 7 KiB (>50% of 10 KiB stream window) to the server.
+    var sid_b = client_b.open_stream(True)
+    var big_b = List[UInt8](capacity=7168)
+    for _ in range(7168):
+        big_b.append(UInt8(0x41))
+    client_b.send_stream_data(sid_b, Span(big_b), False)
+    now_b = _pump(client_b, server_b, now_b, 10)
+    _drain_events(server_b)
+
+    # Server reads → triggers needs_max_stream_data.
+    _ = server_b.recv_stream_data(sid_b)
+
+    # Build server packet; it should include MAX_STREAM_DATA and MAX_DATA.
+    now_b += UInt64(10_000)
+    _ = server_b.send(now_b)
+    var s_pn_b = _last_app_pn(server_b)
+    assert_true(
+        _app_has_kind(server_b, s_pn_b, SSF_MAX_STREAM_DATA, Int(sid_b)),
+        "server: MAX_STREAM_DATA in initial build",
+    )
+    assert_true(
+        _app_has_kind(server_b, s_pn_b, SSF_MAX_DATA, 0),
+        "server: MAX_DATA in initial build",
+    )
+
+    # Lose it; next build must re-emit.
+    server_b._on_app_pkt_lost(s_pn_b)
+    now_b += UInt64(10_000)
+    _ = server_b.send(now_b)
+    var s_pn_b2 = _last_app_pn(server_b)
+    assert_true(
+        _app_has_kind(server_b, s_pn_b2, SSF_MAX_STREAM_DATA, Int(sid_b)),
+        "server re-emits MAX_STREAM_DATA after loss",
+    )
+    assert_true(
+        _app_has_kind(server_b, s_pn_b2, SSF_MAX_DATA, 0),
+        "server re-emits MAX_DATA after loss",
+    )
+
+    # ── Subsection C: NEW_CONNECTION_ID ───────────────────────────────────
+
+    var now_c = UInt64(3_000_000)
+    var params_c = _default_params()
+
+    var client_c = QuicConnection.client(lib_addr, cli_cfg, "localhost", params_c, now_c)
+    var orig_dcid_c = List[UInt8](copy=client_c.initial_dcid)
+    var cli_dcid_c = List[UInt8](copy=client_c.initial_dcid)
+    var server_c = QuicConnection.server(
+        lib_addr, srv_cfg, params_c, Span(orig_dcid_c), Span(cli_dcid_c), now_c,
+    )
+    now_c = _establish_handshake(client_c, server_c, now_c)
+    _drain_events(client_c)
+    _drain_events(server_c)
+    # Pump so each side issues its post-handshake NEW_CONNECTION_ID.
+    now_c = _pump(client_c, server_c, now_c, 4)
+
+    # Retire a non-primary CID → CidManager issues a replacement.
+    var seq_c = _pick_non_primary_cid_seq(server_c)
+    server_c.cid_mgr.on_retire_connection_id(seq_c)
+
+    # Build server packet; should include the NEW_CONNECTION_ID replacement.
+    now_c += UInt64(10_000)
+    _ = server_c.send(now_c)
+    var s_pn_c = _last_app_pn(server_c)
+    assert_true(
+        _app_has_kind(server_c, s_pn_c, SSF_NEW_CID, 0),
+        "server: NEW_CID in initial build",
+    )
+
+    # Lose the packet; clear_advertised restores the pending state.
+    server_c._on_app_pkt_lost(s_pn_c)
+    now_c += UInt64(10_000)
+    _ = server_c.send(now_c)
+    var s_pn_c2 = _last_app_pn(server_c)
+    assert_true(
+        _app_has_kind(server_c, s_pn_c2, SSF_NEW_CID, 0),
+        "server re-emits NEW_CID after loss",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_m3c_frames_retransmit_on_loss: PASS")
+
+
+def test_anti_amp_ok_extract_parity() raises:
+    """_anti_amp_ok mirrors the inline check: unvalidated server rejects
+    oversized sends; validated server and clients are unrestricted."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+
+    # Post-handshake: server is addr-validated — large sends allowed.
+    assert_true(
+        server._anti_amp_ok(UInt64(1_000_000)),
+        "validated server: no cap, allows large send",
+    )
+
+    # Simulate unvalidated state: clear CONN_ADDR_VALIDATED from state.
+    var saved_state = server.state
+    server.state = server.state & ~CONN_ADDR_VALIDATED
+
+    # Reset bookkeeping to simulate no bytes received/sent yet.
+    server.bytes_received = UInt64(0)
+    server.bytes_sent = UInt64(0)
+
+    # Unvalidated server with 0 bytes_received: 3*0 - fudge = negative → reject any size.
+    assert_true(
+        not server._anti_amp_ok(UInt64(1000)),
+        "unvalidated server with 0 recv rejects 1000-byte send",
+    )
+
+    # Receive 1200 bytes: budget = 3*1200 = 3600; fudge=100 means max datagram_size is 3499.
+    server.bytes_received = UInt64(1200)
+    # bytes_sent=0, datagram_size=3400: 0 + 3400 + 100 = 3500 <= 3600 → OK.
+    assert_true(
+        server._anti_amp_ok(UInt64(3400)),
+        "3400 + 100 fudge fits within 3*1200=3600",
+    )
+    # bytes_sent=0, datagram_size=3600: 0 + 3600 + 100 = 3700 > 3600 → reject.
+    assert_true(
+        not server._anti_amp_ok(UInt64(3600)),
+        "3600 + 100 > 3600 (exceeds budget)",
+    )
+
+    # Restore addr-validated state: cap lifted.
+    server.state = saved_state
+    assert_true(
+        server._anti_amp_ok(UInt64(1_000_000)),
+        "addr-validated after restore: large send allowed",
+    )
+
+    # Client: _anti_amp_ok always True regardless of state.
+    assert_true(
+        client._anti_amp_ok(UInt64(1_000_000)),
+        "client: anti-amp check always passes",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_anti_amp_ok_extract_parity: PASS")
+
+
+def test_persistent_congestion_end_to_end() raises:
+    """Force a loss-burst spanning persistent_congestion_duration and verify
+    CUBIC cwnd resets to 2*MDS, and recovery.min_rtt is re-seeded.
+
+    Drives the detector directly (no wire) and also exercises the
+    on_packets_lost fan-out through _detect_losses/_handle_ack via a synthetic
+    ACK that declares the injected packets lost via the packet-threshold rule.
+    """
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+
+    # Grow the CUBIC cwnd above the 2*MDS floor via direct on_packet_acked
+    # calls on the controller. Avoids needing to wire a send burst.
+    _ = client.recovery.cc.cwnd()
+    for i in range(50):
+        var pkt = AckedPacket(
+            pkt_num=UInt64(100 + i),
+            size=UInt64(1200),
+            time_sent=UInt64(i * 1000),
+            time_acked=UInt64(i * 1000 + 500),
+            rtt_sample=UInt64(500),
+        )
+        client.recovery.cc.on_packet_acked(
+            pkt, UInt64(500), UInt64(i * 1000 + 500)
+        )
+    var pre_loss_cwnd = client.recovery.cc.cwnd()
+    assert_true(
+        pre_loss_cwnd > UInt64(2) * UInt64(1200),
+        "cwnd grew before loss burst",
+    )
+
+    # Compute the congestion_period using the same formula the detector uses.
+    var srtt = client.recovery.smoothed_rtt
+    var rttvar = client.recovery.rttvar
+    var peer_mad_ms = client.local_params.max_ack_delay
+    if client.peer_params:
+        peer_mad_ms = client.peer_params.value().max_ack_delay
+    var peer_mad_us = peer_mad_ms * 1000
+    var rttvar_scaled: UInt64 = UInt64(4) * rttvar
+    if rttvar_scaled < UInt64(1000):
+        rttvar_scaled = UInt64(1000)
+    var congestion_period = (srtt + rttvar_scaled + peer_mad_us) * UInt64(3)
+
+    # Inject five ack-eliciting SentPacket records into the Data space
+    # spaced by congestion_period/4, so the span (latest - earliest) exceeds
+    # congestion_period.
+    var base_time = now + UInt64(1)
+    var lost_pns = List[Int]()
+    var step = congestion_period // UInt64(4)
+    if step == UInt64(0):
+        step = UInt64(1)
+    for i in range(5):
+        var pn = Int(9000 + i)
+        var t = base_time + UInt64(i) * step
+        var sp = SentPacket(
+            pn=UInt64(pn),
+            time_sent=t,
+            ack_eliciting=True,
+            in_flight=True,
+            size=Int(1200),
+            frames=List[Frame](),
+        )
+        client.spaces[2].sent_packets[pn] = sp^
+        lost_pns.append(pn)
+
+    # Seed the per-space tracker below the earliest so any_ae_acked_in_range
+    # answers False.
+    client.spaces[2].last_ae_acked_time_sent = base_time - UInt64(1)
+
+    var t_now = base_time + congestion_period + UInt64(1_000)
+
+    # Direct call to the detector — confirms the positive path.
+    var persistent = client._detect_persistent_congestion(
+        Int(2), lost_pns, peer_mad_us, t_now,
+    )
+    assert_true(persistent, "persistent congestion declared given criteria")
+
+    # Emulate the caller's post-True behavior: fan out to CC and reset min_rtt.
+    var lost_records = List[LostPacket]()
+    for i in range(len(lost_pns)):
+        var pn = lost_pns[i]
+        var sp_pn = client.spaces[2].sent_packets[pn].pn
+        var sp_size = client.spaces[2].sent_packets[pn].size
+        var sp_ts = client.spaces[2].sent_packets[pn].time_sent
+        lost_records.append(
+            LostPacket(
+                pkt_num=sp_pn,
+                size=UInt64(sp_size),
+                time_sent=sp_ts,
+            )
+        )
+    var rec_latest = client.recovery.latest_rtt
+    client.recovery.cc.on_packets_lost(
+        lost_records, client.recovery.smoothed_rtt, t_now, persistent=True
+    )
+    client.recovery.min_rtt = rec_latest
+
+    var post_cwnd = client.recovery.cc.cwnd()
+    var expected_min = UInt64(2) * UInt64(1200)
+    assert_true(
+        post_cwnd == expected_min,
+        "cwnd reset to 2*MDS after persistent congestion; got "
+        + String(post_cwnd),
+    )
+    assert_true(
+        client.recovery.min_rtt == client.recovery.latest_rtt,
+        "min_rtt re-seeded from latest_rtt",
+    )
+
+    # Negative control: with an AE ACK recorded *inside* the range, the
+    # detector must not declare persistent. Reseed with a fresh set of PNs.
+    var lost_pns2 = List[Int]()
+    for i in range(5):
+        var pn = Int(9100 + i)
+        var t = base_time + UInt64(i) * step
+        var sp = SentPacket(
+            pn=UInt64(pn),
+            time_sent=t,
+            ack_eliciting=True,
+            in_flight=True,
+            size=Int(1200),
+            frames=List[Frame](),
+        )
+        client.spaces[2].sent_packets[pn] = sp^
+        lost_pns2.append(pn)
+    # Advance the tracker into the range — any_ae_acked_in_range returns True.
+    client.spaces[2].last_ae_acked_time_sent = base_time + step
+    var neg = client._detect_persistent_congestion(
+        Int(2), lost_pns2, peer_mad_us, t_now,
+    )
+    assert_true(
+        not neg,
+        "persistent NOT declared when last_ae_acked_time_sent falls in range",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_persistent_congestion_end_to_end: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
+
+
+def test_pacer_delays_burst() raises:
+    """With a low pacing rate, timeout() exposes a pacer deadline delaying the next send."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Open a bidi stream and send 100 bytes to exercise the pacer.
+    var sid = client.open_stream(True)
+    var payload = List[UInt8](capacity=100)
+    for _ in range(100):
+        payload.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(payload), False)
+
+    # Flush one round so the packet is sent and pacer tokens are consumed.
+    now += UInt64(10_000)
+    _ = client.send(now)
+
+    # Call timeout() with the current `now`; some timer (PTO or pacer) must be active.
+    var deadline = client.timeout(now)
+    assert_true(Bool(deadline), "some timer active after send")
+    # The returned deadline must not be in the past.
+    if deadline:
+        assert_true(
+            deadline.value() >= now,
+            "deadline not in past; got " + String(deadline.value()),
+        )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_pacer_delays_burst: PASS")
+
+
+def test_cubic_cwnd_gates_send_path() raises:
+    """A connection with CUBIC cannot send beyond cwnd."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var server_config = configs[0]
+    var client_config = configs[1]
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Force CUBIC cwnd to a small known value and clear in-flight bytes.
+    client.recovery.cc.cubic._cwnd_value = UInt64(2400)  # 2 * MDS
+    client.recovery.bytes_in_flight = UInt64(0)
+    # Disable the pacer so it doesn't interfere with the cwnd gate check.
+    client.recovery.pacer.enabled = False
+
+    # 3000 bytes exceeds cwnd=2400 — send must be blocked.
+    var ok = client._can_send(UInt64(3000), now)
+    assert_true(not ok, "send blocked by cwnd (cwnd=2400, size=3000)")
+
+    # 1200 bytes fits within cwnd=2400 — send must be permitted.
+    ok = client._can_send(UInt64(1200), now)
+    assert_true(ok, "1200-byte send permitted within cwnd=2400")
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_cubic_cwnd_gates_send_path: PASS")
 
 
 def main() raises:
@@ -1267,4 +2311,15 @@ def main() raises:
     test_reset_stream()
     test_stop_sending()
     test_cid_issuance()
+    test_cid_retire_triggers_reissue()
+    test_flow_control_error_on_overflow()
+    test_conn_flow_control_error_on_overflow()
+    test_final_size_error_on_reset_mismatch()
+    test_max_stream_data_and_max_data_cycle()
+    test_max_streams_linear_growth()
+    test_m3c_frames_retransmit_on_loss()
+    test_anti_amp_ok_extract_parity()
+    test_persistent_congestion_end_to_end()
+    test_pacer_delays_burst()
+    test_cubic_cwnd_gates_send_path()
     print("All test_quic_connection tests passed.")

@@ -145,6 +145,7 @@ struct PacketNumberSpace(Copyable, Movable):
     var ack_needed: Bool
     var sent_packets: Dict[Int, SentPacket]
     var keys_handle: Int32                 # -1 = no keys
+    var last_ae_acked_time_sent: UInt64    # time_sent of latest ACKed ack-eliciting pkt; 0 = none
 
     def __init__(out self, level: EncryptionLevel):
         self.level = level
@@ -156,6 +157,7 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ack_needed = False
         self.sent_packets = Dict[Int, SentPacket]()
         self.keys_handle = Int32(-1)
+        self.last_ae_acked_time_sent = UInt64(0)
 
     def __init__(out self, *, other: Self):
         self.level = EncryptionLevel(other=other.level)
@@ -167,6 +169,7 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ack_needed = other.ack_needed
         self.sent_packets = other.sent_packets.copy()
         self.keys_handle = other.keys_handle
+        self.last_ae_acked_time_sent = other.last_ae_acked_time_sent
 
     def __init__(out self, *, deinit take: Self):
         self.level = take.level
@@ -178,6 +181,7 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ack_needed = take.ack_needed
         self.sent_packets = take.sent_packets^
         self.keys_handle = take.keys_handle
+        self.last_ae_acked_time_sent = take.last_ae_acked_time_sent
 
     # ── PN allocation ────────────────────────────────────────────────
 
@@ -395,3 +399,18 @@ struct PacketNumberSpace(Copyable, Movable):
             _ = self.sent_packets.pop(keys[i])
         self.keys_handle = Int32(-1)
         return result^
+
+    # ── Persistent-congestion helper ─────────────────────────────────
+
+    def any_ae_acked_in_range(self, earliest: UInt64, latest: UInt64) -> Bool:
+        """Conservative query: True if we have evidence an ack-eliciting packet
+        whose time_sent falls in [earliest, latest] was ACKed, OR if the tracker
+        has advanced past latest (earlier range-ACKs may have been overwritten).
+        Returns False if last_ae_acked_time_sent == 0 (no AE ACK ever received)
+        or if it predates earliest.
+        Used by persistent-congestion detection (Task 9 / M4a §5.4)."""
+        if self.last_ae_acked_time_sent == UInt64(0):
+            return False   # no AE ACK ever received in this space
+        if self.last_ae_acked_time_sent >= earliest:
+            return True    # in-range (definite) OR past latest (conservative)
+        return False       # last AE ACK predates range — no evidence
