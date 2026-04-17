@@ -274,6 +274,55 @@ def test_pn_space_last_ae_acked_monotonic() raises:
     print("    PASS test_pn_space_last_ae_acked_monotonic")
 
 
+def test_pn_skip_gap_inserted() raises:
+    """PN skip fires when next_pn reaches pn_skip_next, creating a gap."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    # Set nonzero RNG seed and trigger point at PN 3
+    space.pn_skip_rng = UInt64(0x123456789ABCDEF0)
+    space.pn_skip_next = UInt64(3)
+
+    # PNs 0, 1, 2 allocated normally (before trigger)
+    _assert_true(space.alloc_pn() == 0, "pn skip gap: pn 0")
+    _assert_true(space.alloc_pn() == 1, "pn skip gap: pn 1")
+    _assert_true(space.alloc_pn() == 2, "pn skip gap: pn 2")
+
+    # At next_pn=3, trigger fires: gap inserted, first allocated PN > 3
+    var pn3 = space.alloc_pn()
+    _assert_true(pn3 >= 4, "pn skip gap: first post-skip pn >= 4 (gap of 1-8 inserted)")
+
+    # pn_skip_next rescheduled to at least current next_pn + 199
+    _assert_true(space.pn_skip_next >= space.next_pn + 199,
+                 "pn skip gap: pn_skip_next rescheduled >= next_pn + 200")
+
+    print("    PASS test_pn_skip_gap_inserted")
+
+
+def test_pn_skip_disabled_when_rng_zero() raises:
+    """Default pn_skip_rng=0 → alloc_pn produces contiguous sequence."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    # Default: pn_skip_rng=0 (disabled), pn_skip_next=UInt64.MAX
+    for i in range(600):
+        var pn = space.alloc_pn()
+        _assert_true(pn == UInt64(i),
+                     "pn skip disabled: pn must equal index")
+    print("    PASS test_pn_skip_disabled_when_rng_zero")
+
+
+def test_pn_skip_initial_handshake_spaces_unaffected() raises:
+    """Initial and Handshake spaces always produce contiguous PNs (rng stays 0)."""
+    var init_space = PacketNumberSpace(EncryptionLevel.initial())
+    var hs_space = PacketNumberSpace(EncryptionLevel.handshake())
+
+    # init and handshake must have rng=0 always
+    _assert_true(init_space.pn_skip_rng == 0, "initial space: pn_skip_rng starts at 0")
+    _assert_true(hs_space.pn_skip_rng == 0, "handshake space: pn_skip_rng starts at 0")
+
+    for i in range(100):
+        _assert_true(init_space.alloc_pn() == UInt64(i), "initial space contiguous pn")
+        _assert_true(hs_space.alloc_pn() == UInt64(i), "handshake space contiguous pn")
+    print("    PASS test_pn_skip_initial_handshake_spaces_unaffected")
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -294,5 +343,8 @@ def main() raises:
     test_pn_space_last_ae_acked_initially_zero()
     test_pn_space_any_ae_acked_in_range_boundaries()
     test_pn_space_last_ae_acked_monotonic()
+    test_pn_skip_gap_inserted()
+    test_pn_skip_disabled_when_rng_zero()
+    test_pn_skip_initial_handshake_spaces_unaffected()
 
     print("All test_quic_pn_space tests passed.")
