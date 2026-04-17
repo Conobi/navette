@@ -186,6 +186,30 @@ def test_cubic_overflow_clamp_not_hit_normal_rtt() raises:
     print("PASS: test_cubic_overflow_clamp_not_hit_normal_rtt")
 
 
+def test_congestion_event_reduces_cwnd() raises:
+    var c = Cubic(max_datagram_size=MDS)
+    # Force into CA (above ssthresh).
+    c._cwnd_value = UInt64(100_000)
+    c.ssthresh = UInt64(50_000)
+    var before = c.cwnd()
+    c._on_congestion_event(smoothed_rtt=UInt64(50_000), now=UInt64(200_000))
+    assert_true(c.cwnd() < before, "CE mark reduces cwnd")
+    assert_true(c.hs_state == HS_STATE_DONE, "CE disables HyStart++")
+    print("PASS: test_congestion_event_reduces_cwnd")
+
+
+def test_congestion_event_suppressed_within_rtt() raises:
+    var c = Cubic(max_datagram_size=MDS)
+    c._cwnd_value = UInt64(100_000)
+    c.ssthresh = UInt64(50_000)
+    c._on_congestion_event(smoothed_rtt=UInt64(50_000), now=UInt64(200_000))
+    var after_first = c.cwnd()
+    # Second event within 1 RTT (now < 200_000 + 50_000 = 250_000).
+    c._on_congestion_event(smoothed_rtt=UInt64(50_000), now=UInt64(220_000))
+    assert_true(c.cwnd() == after_first, "second CE within RTT is suppressed")
+    print("PASS: test_congestion_event_suppressed_within_rtt")
+
+
 def main() raises:
     test_cubic_init_initial_window()
     test_cubic_slow_start_growth()
@@ -202,4 +226,6 @@ def main() raises:
     test_cube_root_newton_correct()
     test_hystart_initial_state()
     test_cubic_overflow_clamp_not_hit_normal_rtt()
+    test_congestion_event_reduces_cwnd()
+    test_congestion_event_suppressed_within_rtt()
     print("All cubic tests passed.")

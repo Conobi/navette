@@ -60,6 +60,12 @@ struct CcController(ImplicitlyCopyable, Movable):
         if self.kind == CC_KIND_CUBIC:
             self.cubic.on_packets_lost(lost, smoothed_rtt_us, now, persistent)
 
+    def on_congestion_event(mut self, smoothed_rtt: UInt64, now: UInt64):
+        """ECN CE congestion signal. Reduces cwnd without persistent-congestion logic."""
+        if self.kind == CC_KIND_CUBIC:
+            self.cubic._on_congestion_event(smoothed_rtt, now)
+        # DummyCc: no-op.
+
     def name(self) -> String:
         if self.kind == CC_KIND_CUBIC:
             return String("cubic")
