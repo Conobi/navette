@@ -235,7 +235,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = p.ptr()
         var ctx = ctx_ptr.take_pointee()
         var err = StreamError.rst_stream(UInt32(ev.error_code))
-        ctx.recv_body._set_error(StreamError.rst_stream(UInt32(ev.error_code)))
         self.handler.on_reset(err)
         _ = self._streams.pop(sid)
         ctx_ptr.free()
