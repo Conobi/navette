@@ -6,7 +6,7 @@
 # drives implicit stream creation, and manages the round-robin send schedule.
 
 from std.collections import Dict, Optional
-from src.quic.flow_control import FlowControl
+from src.quic.flow_control import FlowControl, CONN_FC_MAX_WINDOW
 from src.quic.stream import (
     Stream,
     SEND_READY,
@@ -84,7 +84,7 @@ struct StreamMap(Movable):
         self.streams = Dict[Int, Stream]()
         self.is_server = is_server
 
-        self.conn_fc_recv = FlowControl(conn_recv_limit, conn_recv_window)
+        self.conn_fc_recv = FlowControl(conn_recv_limit, conn_recv_window, CONN_FC_MAX_WINDOW)
         self.conn_fc_send = FlowControl(conn_send_limit, conn_send_limit)
 
         self.local_max_streams_bidi = local_max_streams_bidi

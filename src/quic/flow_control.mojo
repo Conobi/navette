@@ -2,6 +2,11 @@
 # QUIC flow control tracker — RFC 9000 §4.
 # Used at both connection and per-stream levels.
 # Two-counter design: `received` for enforcement, `consumed` for window updates.
+# Window doubles on each update (up to max_window) to avoid Slow-Start stall.
+
+# Maximum window caps (used at construction sites).
+comptime STREAM_FC_MAX_WINDOW: UInt64 = 8 * 1024 * 1024    # 8 MiB per stream
+comptime CONN_FC_MAX_WINDOW: UInt64   = 64 * 1024 * 1024   # 64 MiB per connection
 
 
 struct FlowControl(Copyable, Movable):
@@ -10,7 +15,8 @@ struct FlowControl(Copyable, Movable):
     - `received`:   total bytes received/sent on wire (enforcement via check_limit).
     - `consumed`:   total bytes consumed by app or accounted via RESET (window updates).
     - `limit`:      current limit advertised to/by peer.
-    - `window`:     static window size (M3c).
+    - `window`:     current receive window size; doubles on each update up to max_window.
+    - `max_window`: hard cap on window growth (0 → uses `window` as cap, no growth).
     - `blocked_at`: limit at which we last sent BLOCKED (0 = not blocked).
     """
 
@@ -18,13 +24,15 @@ struct FlowControl(Copyable, Movable):
     var consumed: UInt64
     var limit: UInt64
     var window: UInt64
+    var max_window: UInt64
     var blocked_at: UInt64
 
-    def __init__(out self, limit: UInt64, window: UInt64):
+    def __init__(out self, limit: UInt64, window: UInt64, max_window: UInt64 = UInt64(0)):
         self.received = UInt64(0)
         self.consumed = UInt64(0)
         self.limit = limit
         self.window = window
+        self.max_window = max_window if max_window > 0 else window
         self.blocked_at = UInt64(0)
 
     def __init__(out self, *, other: Self):
@@ -32,6 +40,7 @@ struct FlowControl(Copyable, Movable):
         self.consumed = other.consumed
         self.limit = other.limit
         self.window = other.window
+        self.max_window = other.max_window
         self.blocked_at = other.blocked_at
 
     def __init__(out self, *, deinit take: Self):
@@ -39,26 +48,31 @@ struct FlowControl(Copyable, Movable):
         self.consumed = take.consumed
         self.limit = take.limit
         self.window = take.window
+        self.max_window = take.max_window
         self.blocked_at = take.blocked_at
 
     def should_update(self) -> Bool:
-        """True when remaining credit (limit - consumed) < window/2.
+        """True when remaining credit (limit - consumed) < window/3.
 
-        Guards against UInt64 underflow: if consumed >= limit, the window is
-        exhausted (or a bug has occurred), so we definitely need an update.
+        Using 1/3 threshold (instead of 1/2) ensures MAX_DATA/MAX_STREAM_DATA
+        is sent before the sender stalls under CUBIC Slow-Start window growth.
+        Guards against UInt64 underflow: if consumed >= limit the window is
+        exhausted so we definitely need an update.
         """
         if self.consumed >= self.limit:
             return True
         var remaining = self.limit - self.consumed
-        return remaining < (self.window // 2)
+        return remaining < (self.window // 3)
 
     def next_limit(self) -> UInt64:
-        """Compute what the new limit would be after a window update."""
+        """Pure query: what the new limit would be (no state change)."""
         return self.consumed + self.window
 
     def update_limit(mut self) -> UInt64:
-        """Advance limit to next_limit() and return the new value."""
-        self.limit = self.next_limit()
+        """Double window (up to max_window), advance limit, and return the new value."""
+        if self.window < self.max_window:
+            self.window = min(self.window * 2, self.max_window)
+        self.limit = self.consumed + self.window
         return self.limit
 
     def add_received(mut self, bytes: UInt64):

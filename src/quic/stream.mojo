@@ -3,7 +3,7 @@
 # State machine constants, RecvBuf (reassembly), SendBuf (outgoing),
 # and the Stream struct that composes them.
 
-from src.quic.flow_control import FlowControl
+from src.quic.flow_control import FlowControl, STREAM_FC_MAX_WINDOW
 from src.quic.frame import StreamFrame
 
 # ── Send-side states (RFC 9000 §3.1) ─────────────────────────────────────────
@@ -695,7 +695,7 @@ struct Stream(Copyable, Movable):
         s.send_buf = SendBuf()
         s.recv_buf = RecvBuf(fc_recv_window)
         s.fc_send = FlowControl(fc_send_limit, fc_send_limit)
-        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window)
+        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window, STREAM_FC_MAX_WINDOW)
         return s^
 
     @staticmethod
@@ -712,7 +712,7 @@ struct Stream(Copyable, Movable):
         s.send_buf = SendBuf()
         s.recv_buf = RecvBuf(fc_recv_window)
         s.fc_send = FlowControl(fc_send_limit, fc_send_limit)
-        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window)
+        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window, STREAM_FC_MAX_WINDOW)
         return s^
 
     @staticmethod
@@ -734,7 +734,7 @@ struct Stream(Copyable, Movable):
         var s = Stream(id, False, False)
         s.recv_state = RECV_RECV
         s.recv_buf = RecvBuf(fc_recv_window)
-        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window)
+        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window, STREAM_FC_MAX_WINDOW)
         return s^
 
     def is_fully_closed(self) -> Bool:
