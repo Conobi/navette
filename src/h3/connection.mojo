@@ -372,14 +372,13 @@ struct H3Connection(Movable):
                 elif type_byte == UInt8(0x03):
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                 else:
-                    self._quic.close(H3_STREAM_CREATION_ERROR, "unknown uni stream type", now)
                     return
             else:
                 self._stream_bufs[key] = sbuf2^
 
         # Reject server-initiated bidi from peer (RFC 9114 §6.1)
         var sbuf3 = self._stream_bufs[key].copy()
-        if not sbuf3.is_uni and not self._is_peer_initiated(stream_id):
+        if not sbuf3.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
             self._stream_bufs[key] = sbuf3^
             self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
             return
