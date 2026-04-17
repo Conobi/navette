@@ -679,7 +679,7 @@ struct QpackEncoder(Copyable, Movable):
         Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
         Each field:
           - Indexed Static Field Line (§4.5.2): 11xxxxxx (6-bit index)
-          - Literal Field Line With Name Reference (§4.5.4): 01011nnn (T=1, 3-bit index)
+          - Literal Field Line With Name Reference (§4.5.4): 0 1 T N xxxx (T=1, 4-bit index)
           - Literal Field Line Without Name Reference (§4.5.6): 00100000 + name + value
         """
         var result = List[UInt8]()
