@@ -34,9 +34,9 @@ def test_should_update_threshold() raises:
     var fc = FlowControl(limit=1000, window=1000)
     assert_true(not fc.should_update(), "no update at start")
     fc.add_consumed(400)
-    assert_true(not fc.should_update(), "no update at 400 consumed")
-    fc.add_consumed(101)
-    assert_true(fc.should_update(), "should update at 501 consumed")
+    assert_true(not fc.should_update(), "no update at 400 consumed (remaining=600 > 333)")
+    fc.add_consumed(268)  # total=668, remaining=332 < window//3=333
+    assert_true(fc.should_update(), "should update at 668 consumed (remaining=332 < 333)")
     print("PASS: test_should_update_threshold")
 
 
@@ -66,7 +66,7 @@ def test_received_consumed_split() raises:
     fc.add_consumed(200)
     assert_true(fc.available() == 200, "available based on received")
     assert_true(not fc.should_update(), "should_update based on consumed (remaining=800)")
-    fc.add_consumed(400)
+    fc.add_consumed(468)  # total=668, remaining=332 < 333
     assert_true(fc.should_update(), "should_update triggers at consumed threshold")
     print("PASS: test_received_consumed_split")
 
@@ -106,6 +106,44 @@ def test_should_update_no_underflow() raises:
     print("PASS: test_should_update_no_underflow")
 
 
+def test_fc_doubles_on_update() raises:
+    var fc = FlowControl(limit=1000000, window=1000000, max_window=8000000)
+    fc.add_consumed(700000)  # remaining=300000 < 1000000//3=333333 → should_update=True
+    assert_true(fc.should_update(), "should update at 700000 consumed")
+    var new_limit = fc.update_limit()
+    assert_true(fc.window == 2000000, "window doubled to 2 MiB equivalent")
+    assert_true(new_limit == 2700000, "new_limit = consumed + new_window = 700000 + 2000000")
+    assert_true(not fc.should_update(), "no update immediately after update_limit")
+    print("PASS: test_fc_doubles_on_update")
+
+
+def test_fc_doubles_to_cap() raises:
+    var fc = FlowControl(limit=1000000, window=1000000, max_window=4000000)
+    # Force multiple updates to hit cap
+    fc.add_consumed(700000)
+    _ = fc.update_limit()  # window: 1M → 2M, limit = 700000+2M = 2700000
+    assert_true(fc.window == 2000000, "window 2M after first update")
+    fc.add_consumed(2000000)  # total=2700000, remaining=0 → should_update
+    assert_true(fc.should_update(), "should update when consumed reaches new limit")
+    _ = fc.update_limit()  # window: 2M → 4M (cap), limit = 2700000+4M = 6700000
+    assert_true(fc.window == 4000000, "window 4M after second update (at cap)")
+    fc.add_consumed(3000000)  # force another update opportunity
+    _ = fc.update_limit()  # window: stays at 4M (already at cap)
+    assert_true(fc.window == 4000000, "window stays at cap on subsequent updates")
+    print("PASS: test_fc_doubles_to_cap")
+
+
+def test_fc_no_growth_without_max_window() raises:
+    # FlowControl(limit, window) without max_window → max_window defaults to window → no growth
+    var fc = FlowControl(limit=1000, window=1000)
+    fc.add_consumed(668)
+    assert_true(fc.should_update(), "should update at 668 consumed")
+    var new_limit = fc.update_limit()
+    assert_true(fc.window == 1000, "window unchanged when max_window == window")
+    assert_true(new_limit == 1668, "new_limit = consumed + window = 668 + 1000")
+    print("PASS: test_fc_no_growth_without_max_window")
+
+
 def main() raises:
     test_initial_state()
     test_add_received_and_available()
@@ -117,4 +155,7 @@ def main() raises:
     test_phantom_bytes()
     test_blocked_at_tracking()
     test_should_update_no_underflow()
+    test_fc_doubles_on_update()
+    test_fc_doubles_to_cap()
+    test_fc_no_growth_without_max_window()
     print("All flow_control tests passed.")
