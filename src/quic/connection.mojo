@@ -31,6 +31,7 @@ from src.quic.frame import (
     MaxStreamsFrame,
     NewConnectionIdFrame,
     StreamDataBlockedFrame,
+    StreamsBlockedFrame,
     parse_frames,
     serialize_frames,
     FRAME_PADDING,
@@ -111,6 +112,8 @@ comptime CONN_CLOSED: UInt8 = 0x80
 # ── Constants ────────────────────────────────────────────────────────
 
 comptime _AEAD_TAG_LEN: Int = 16
+comptime _MAX_PN_LEN: Int = 4   # maximum packet-number length (bytes)
+comptime _HP_SAMPLE_LEN: Int = 16  # header-protection sample length
 comptime ANTI_AMP_HEADER_FUDGE: UInt64 = 100
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
@@ -1062,6 +1065,9 @@ struct QuicConnection(Movable):
                 var ms = frame._max_streams.value().copy()
                 if ms.maximum > self.stream_map.peer_max_streams_bidi:
                     self.stream_map.peer_max_streams_bidi = ms.maximum
+                    # Peer granted more streams; reset dedup so we re-notify if we hit the new limit.
+                    self.stream_map.needs_streams_blocked_bidi = False
+                    self.stream_map.streams_blocked_at_bidi = UInt64(0)
             return
 
         if tid == FRAME_MAX_STREAMS_UNI:
@@ -1069,6 +1075,8 @@ struct QuicConnection(Movable):
                 var ms = frame._max_streams.value().copy()
                 if ms.maximum > self.stream_map.peer_max_streams_uni:
                     self.stream_map.peer_max_streams_uni = ms.maximum
+                    self.stream_map.needs_streams_blocked_uni = False
+                    self.stream_map.streams_blocked_at_uni = UInt64(0)
             return
 
         # *_BLOCKED frames: informational only for M3c.
@@ -2006,6 +2014,22 @@ struct QuicConnection(Movable):
                 stream.fc_send = fc^
                 self.stream_map.set_stream(sid, stream^)
 
+        # 9. STREAMS_BLOCKED (RFC 9000 §4.6) — local stream count at peer concurrency limit.
+        if self.stream_map.needs_streams_blocked_bidi:
+            var bidi_limit = self.stream_map.peer_max_streams_bidi
+            if self.stream_map.streams_blocked_at_bidi != bidi_limit:
+                frames.append(
+                    Frame.streams_blocked(StreamsBlockedFrame(bidi_limit, True))
+                )
+                self.stream_map.streams_blocked_at_bidi = bidi_limit
+        if self.stream_map.needs_streams_blocked_uni:
+            var uni_limit = self.stream_map.peer_max_streams_uni
+            if self.stream_map.streams_blocked_at_uni != uni_limit:
+                frames.append(
+                    Frame.streams_blocked(StreamsBlockedFrame(uni_limit, False))
+                )
+                self.stream_map.streams_blocked_at_uni = uni_limit
+
     # ── Packet building ──────────────────────────────────────────────
 
     def _build_packet(
@@ -2099,10 +2123,19 @@ struct QuicConnection(Movable):
                 var shift = UInt64((pn_len - 1 - i) * 8)
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
+            # Header-protection requires the ciphertext to be at least
+            # _MAX_PN_LEN + _HP_SAMPLE_LEN = 20 bytes after pn_offset.
+            # ciphertext = payload + AEAD_TAG(16), so payload must be >= 4
+            # for a 1-byte PN.  Pad with QUIC PADDING (0x00) if needed.
+            var min_payload_len = _MAX_PN_LEN  # 4 bytes
+            var padded_payload = List[UInt8](copy=payload)
+            while len(padded_payload) < min_payload_len:
+                padded_payload.append(UInt8(0))
+
             # Encrypt payload.
             var header_span = Span(header_bytes)
             var ciphertext = self.protect.encrypt_payload(
-                space_idx, pn, header_span, Span(payload)
+                space_idx, pn, header_span, Span(padded_payload)
             )
 
             # Assemble full packet.
