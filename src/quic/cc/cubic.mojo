@@ -360,6 +360,50 @@ struct Cubic(ImplicitlyCopyable, Movable):
         """Disable HyStart++ when a loss or congestion event occurs."""
         self.hs_state = HS_STATE_DONE
 
+    def _on_congestion_event(mut self, smoothed_rtt: UInt64, now: UInt64):
+        """Single congestion event from ECN CE mark.
+
+        Same suppression window and cwnd-reduction logic as on_packets_lost
+        (non-persistent path). Does NOT trigger persistent-congestion detection.
+        """
+        # Suppress if within 1 RTT of last congestion event.
+        if self.congestion_event_time > UInt64(0):
+            var suppress_until = (
+                self.congestion_event_time
+                + CUBIC_CONGESTION_SUPPRESS_RTT_MULT * smoothed_rtt
+            )
+            if now < suppress_until:
+                return
+        self._hs_on_loss()  # Disable HyStart++ on congestion (after suppression guard).
+        # Fast convergence + multiplicative decrease (same as non-persistent loss).
+        if self._cwnd_value < self.w_last_max:
+            self.w_last_max = self._cwnd_value
+            self.w_max = (
+                self._cwnd_value * (CUBIC_BETA_NUM + CUBIC_BETA_DEN)
+            ) // (UInt64(2) * CUBIC_BETA_DEN)
+        else:
+            self.w_last_max = self._cwnd_value
+            self.w_max = self._cwnd_value
+        var reduced = (self._cwnd_value * CUBIC_BETA_NUM) // CUBIC_BETA_DEN
+        if reduced < self.min_cwnd:
+            reduced = self.min_cwnd
+        self._cwnd_value = reduced
+        self.ssthresh = self._cwnd_value
+        self.w_est = self._cwnd_value
+        # Recompute k_us.
+        if self.w_max == UInt64(0):
+            self.k_us = UInt64(0)
+        else:
+            var one_minus_beta_num = CUBIC_BETA_DEN - CUBIC_BETA_NUM
+            var k_arg = (
+                self.w_max * one_minus_beta_num * CUBIC_C_DEN
+            ) // (CUBIC_BETA_DEN * CUBIC_C_NUM)
+            var k_seconds = _cube_root_u64(k_arg)
+            self.k_us = k_seconds * UInt64(1_000_000)
+        self.congestion_event_time = now
+        self.epoch_start = UInt64(0)
+        self.bytes_acked_since_epoch = UInt64(0)
+
     def name(self) -> String:
         """Human-readable name for logging / qlog."""
         return String("cubic")
