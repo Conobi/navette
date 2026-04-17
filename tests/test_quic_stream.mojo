@@ -683,6 +683,37 @@ def test_recv_buf_is_complete_not_premature() raises:
     print("  test_recv_buf_is_complete_not_premature: PASS")
 
 
+def test_send_buf_bare_fin_acked() raises:
+    """Regression: bare-FIN frame (0 data bytes + FIN=True) must mark fin_acked."""
+    var buf = SendBuf()
+
+    # Write 0 bytes with FIN — creates a bare-FIN stream frame
+    var empty_data = List[UInt8]()
+    buf.write(Span[UInt8](empty_data), True)
+    assert_true(buf.fin, "bare fin: fin flag set")
+
+    # Frame the bare FIN (offset=0, data=[], fin=True)
+    var frame_opt = buf.make_frame(UInt64(0), 100)
+    assert_true(frame_opt.__bool__(), "bare fin: frame returned")
+    var frame = frame_opt.value().copy()
+    assert_true(frame.fin, "bare fin: frame.fin = True")
+    assert_equal_int(len(frame.data), 0, "bare fin: frame.data is empty")
+    assert_true(buf.fin_offset.__bool__(), "bare fin: fin_offset set after framing")
+    assert_equal_int(Int(buf.fin_offset.value()), 0, "bare fin: fin_offset = 0")
+
+    # Before ACK: not fully acked
+    assert_false(buf.is_fully_acked(), "bare fin: not fully acked before ACK")
+
+    # ACK the bare-FIN frame: ack_off=0, ack_len=0
+    buf.on_ack(UInt64(0), UInt64(0))
+
+    # After bare-FIN ACK: fin_acked must be True
+    assert_true(buf.fin_acked, "bare fin: fin_acked set after bare-FIN ACK")
+    assert_true(buf.is_fully_acked(), "bare fin: is_fully_acked() after bare-FIN ACK")
+
+    print("  test_send_buf_bare_fin_acked: PASS")
+
+
 def test_send_buf_write_after_fin() raises:
     """After FIN is queued, additional writes must raise."""
     var sb = SendBuf()
@@ -749,5 +780,6 @@ def main() raises:
     test_recv_buf_is_complete_not_premature()
 
     test_send_buf_write_after_fin()
+    test_send_buf_bare_fin_acked()
 
     print("All test_quic_stream tests passed.")
