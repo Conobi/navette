@@ -703,13 +703,13 @@ struct QpackEncoder(Copyable, Movable):
             return idx_bytes^
 
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
-        # Format: 0 1 T N XXXXX where T=1 (static), N=0 (may-index)
-        # = 0110 0 XXXXX = 0x60 with 5-bit index prefix
+        # Format: 0 1 T N xxxx where T=1 (static), N=0 (may-index)
+        # = 0110 xxxx = 0x60 with 4-bit index prefix
         var name_match = qpack_static_find_name(name)
         if name_match.__bool__():
             var idx = name_match.value()
-            var idx_bytes = qpack_encode_int(UInt64(idx), 5)
-            idx_bytes[0] |= 0x60  # bits 7-5 = 0 1 1, bit 4 = 0 (N=0)
+            var idx_bytes = qpack_encode_int(UInt64(idx), 4)
+            idx_bytes[0] |= 0x60  # bits 7-6 = 0 1, bit 5 = T=1 (static), bit 4 = N=0 (may-index)
             var result = List[UInt8]()
             for i in range(len(idx_bytes)):
                 result.append(idx_bytes[i])
@@ -773,9 +773,9 @@ struct QpackDecoder(Copyable, Movable):
 
             elif (b & 0xC0) == 0x40:
                 # §4.5.4: Literal Field Line With Name Reference
-                # 0 1 T N XXXXX — bit 5 is T (T=1 = static), bit 4 is N (never-indexed)
+                # 0 1 T N xxxx — bit 5 is T (T=1 = static), bit 4 is N (never-indexed)
                 var t_bit = (b & 0x20) != 0
-                var ir = qpack_decode_int(data, pos, 5)
+                var ir = qpack_decode_int(data, pos, 4)
                 var idx = Int(ir.value)
                 pos = ir.new_offset
                 var sr = _qpack_decode_string(data, pos)
