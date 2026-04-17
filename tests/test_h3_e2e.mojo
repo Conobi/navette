@@ -4,6 +4,7 @@
 # Run with:
 #   uv run mojo run -I . -I conformance -D ASSERT=all tests/test_h3_e2e.mojo
 
+from std.collections.deque import Deque
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
@@ -13,6 +14,7 @@ from src.quic.connection import QuicConnection
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.h3.connection import H3Connection, H3Event
 from src.h3.h3_handler_server import H3HandlerServer
+from src.h3.h3_session import H3Session
 from src.h3.qpack import QpackHeaderField, QpackEncoder
 from src.http.handler import StreamHandler, RecvBody, ResponseWriter, Capabilities, StreamError
 from src.http.request import Request, RequestBody
@@ -22,6 +24,7 @@ from src.http.status import StatusCode
 from src.http.body import BodyFrame
 from src.http.method import Method
 from src.http.version import Version
+from src.http.session import RequestHandle
 from tests._test_util import assert_true, assert_equal_int
 
 
@@ -285,8 +288,167 @@ def test_h3_post_with_body() raises:
     print("  test_h3_post_with_body: PASS")
 
 
+def _pump_e2e[H: StreamHandler](
+    mut server: H3HandlerServer[H],
+    mut client: H3Session,
+    mut now: UInt64,
+    rounds: Int = 5,
+) raises -> UInt64:
+    """Exchange datagrams between HandlerServer and H3Session."""
+    for _ in range(rounds):
+        now += UInt64(10_000)
+        var s_dgs = server.drain_datagrams(now)
+        for i in range(len(s_dgs)):
+            try:
+                client.feed_datagram(Span(s_dgs[i]), now)
+            except:
+                pass
+        var c_dgs = client.drain_datagrams(now)
+        for i in range(len(c_dgs)):
+            try:
+                server.feed_datagram(Span(c_dgs[i]), now)
+            except:
+                pass
+    return now
+
+
+def test_h3_session_get() raises:
+    """H3Session.submit(GET /) → response 200 with body 'hello'."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3HandlerServer[_FixedResponseHandler](
+        quic=server_quic^, handler=_FixedResponseHandler("hello")
+    )
+    var client = H3Session(quic=client_quic^)
+
+    # Pump handshake
+    now = _pump_e2e(server, client, now, 50)
+
+    # Submit GET /
+    var req = Request(
+        method=Method.get(),
+        target=String("/"),
+        version=Version.http_3(),
+        headers=Headers(),
+    )
+    var handle = client.submit(req^)
+
+    # Pump until complete
+    var complete = False
+    for _ in range(30):
+        now = _pump_e2e(server, client, now, 3)
+        client.run_one(handle)
+        if handle.is_complete():
+            complete = True
+            break
+
+    assert_true(complete, "H3Session GET: handle did not complete")
+    assert_true(handle.has_headers(), "H3Session GET: no response headers")
+    var resp_opt = handle.try_take_response()
+    assert_true(Bool(resp_opt), "H3Session GET: try_take_response returned none")
+    var resp = resp_opt.take()
+    assert_equal_int(Int(resp.status.code()), 200, "status 200")
+    print("  test_h3_session_get: PASS")
+
+
+def test_h3_multi_request() raises:
+    """Three concurrent GET requests all complete successfully."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3HandlerServer[_FixedResponseHandler](
+        quic=server_quic^, handler=_FixedResponseHandler("ok")
+    )
+    var client = H3Session(quic=client_quic^)
+
+    now = _pump_e2e(server, client, now, 50)
+
+    # Submit three requests — RequestHandle is Movable but not Copyable,
+    # so keep them as individual named variables.
+    var req0 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=Headers())
+    var req1 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=Headers())
+    var req2 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=Headers())
+    var h0 = client.submit(req0^)
+    var h1 = client.submit(req1^)
+    var h2 = client.submit(req2^)
+
+    for _ in range(60):
+        now = _pump_e2e(server, client, now, 3)
+        client.run_one(h0)
+        client.run_one(h1)
+        client.run_one(h2)
+        if h0.is_complete() and h1.is_complete() and h2.is_complete():
+            break
+
+    assert_true(h0.is_complete(), "handle 0 not complete")
+    assert_true(h1.is_complete(), "handle 1 not complete")
+    assert_true(h2.is_complete(), "handle 2 not complete")
+    assert_true(h0.has_headers(), "handle 0 no headers")
+    assert_true(h1.has_headers(), "handle 1 no headers")
+    assert_true(h2.has_headers(), "handle 2 no headers")
+    print("  test_h3_multi_request: PASS")
+
+
+def test_h3_goaway() raises:
+    """Server sends GOAWAY; client receives GOAWAY_RECEIVED event."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3HandlerServer[_FixedResponseHandler](
+        quic=server_quic^, handler=_FixedResponseHandler("bye")
+    )
+    var client = H3Session(quic=client_quic^)
+
+    now = _pump_e2e(server, client, now, 50)
+
+    # Server sends GOAWAY
+    server._h3.send_goaway(UInt64(0))
+
+    # Pump so client receives it
+    now = _pump_e2e(server, client, now, 10)
+
+    # H3Session.feed_datagram dispatches events internally and sets
+    # received_goaway when a GOAWAY_RECEIVED event is observed.
+    assert_true(client.received_goaway, "client did not receive GOAWAY_RECEIVED")
+    print("  test_h3_goaway: PASS")
+
+
 def main() raises:
     print("=== test_h3_e2e ===")
     test_h3_simple_get()
     test_h3_post_with_body()
+    test_h3_session_get()
+    test_h3_multi_request()
+    test_h3_goaway()
     print("All H3 E2E tests passed.")
