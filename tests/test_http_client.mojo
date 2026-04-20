@@ -14,7 +14,7 @@ from src.http.status import StatusCode
 from src.http.response import Response
 from src.http.alt_svc import Origin
 from src.http.url import parse_url
-from src.http.client import HttpClient
+from src.http.client import HttpClient, _is_redirect, _is_idempotent
 from src.h1.h1_session import H1Session
 from src.h1.handler_server import H1HandlerServer
 from src.h2.h2_session import H2Session
@@ -264,6 +264,70 @@ def test_client_multiple_origins() raises:
     assert_true(h2.id() > UInt64(0), "h2 valid")
 
 
+def test_is_redirect() raises:
+    """Redirect status codes are detected."""
+    assert_true(_is_redirect(UInt16(301)), "301")
+    assert_true(_is_redirect(UInt16(302)), "302")
+    assert_true(_is_redirect(UInt16(307)), "307")
+    assert_true(_is_redirect(UInt16(308)), "308")
+    assert_true(not _is_redirect(UInt16(200)), "200 not redirect")
+    assert_true(not _is_redirect(UInt16(404)), "404 not redirect")
+
+
+def test_is_idempotent() raises:
+    """Idempotent methods are detected."""
+    assert_true(_is_idempotent(Method.get()), "GET")
+    assert_true(_is_idempotent(Method.head()), "HEAD")
+    assert_true(_is_idempotent(Method.put()), "PUT")
+    assert_true(_is_idempotent(Method.delete()), "DELETE")
+    assert_true(not _is_idempotent(Method.post()), "POST not idempotent")
+
+
+def test_build_redirect_request_301() raises:
+    """301 rewrites to GET and drops body."""
+    var client = HttpClient.default()
+    var hdrs = Headers()
+    hdrs.add("Host", "example.com")
+    hdrs.add("Authorization", "Bearer token123")
+    var body_data = List[UInt8]()
+    body_data.extend(String("data").as_bytes())
+    var req = Request(
+        method=Method.post(), target=String("/submit"),
+        headers=hdrs^, body=RequestBody.buffered(body_data^),
+    )
+    var redirect_req = client.build_redirect_request(req^, UInt16(301), "/new-location")
+    assert_true(String(redirect_req.method) == "GET", "method rewritten to GET")
+    assert_true(redirect_req.target == "/new-location", "target updated")
+    assert_true(redirect_req.body.is_empty(), "body dropped")
+    assert_true(not redirect_req.headers.has("authorization"), "auth dropped")
+
+
+def test_build_redirect_request_307() raises:
+    """307 preserves method and body."""
+    var client = HttpClient.default()
+    var body_data = List[UInt8]()
+    body_data.extend(String("payload").as_bytes())
+    var req = Request(
+        method=Method.post(), target=String("/api"),
+        headers=Headers(), body=RequestBody.buffered(body_data^),
+    )
+    var redirect_req = client.build_redirect_request(req^, UInt16(307), "/api/v2")
+    assert_true(String(redirect_req.method) == "POST", "method preserved")
+    assert_true(redirect_req.target == "/api/v2", "target updated")
+    assert_true(redirect_req.body.is_buffered(), "body preserved")
+
+
+def test_build_redirect_absolute_url() raises:
+    """Redirect to absolute URL extracts path."""
+    var client = HttpClient.default()
+    var req = Request(
+        method=Method.get(), target=String("/old"),
+        headers=Headers(), body=RequestBody.empty(),
+    )
+    var redirect_req = client.build_redirect_request(req^, UInt16(301), "https://other.com/new?q=1")
+    assert_true(redirect_req.target == "/new?q=1", "path extracted from absolute URL")
+
+
 def main() raises:
     test_session_slot_from_h1()
     test_session_slot_idle_tracking()
@@ -278,4 +342,9 @@ def main() raises:
     test_client_max_conns_h1()
     test_client_max_conns_mux()
     test_client_multiple_origins()
-    print("test_http_client: 13/13 passed")
+    test_is_redirect()
+    test_is_idempotent()
+    test_build_redirect_request_301()
+    test_build_redirect_request_307()
+    test_build_redirect_absolute_url()
+    print("test_http_client: 18/18 passed")

@@ -16,6 +16,32 @@ from src.http.headers import Headers
 from src.http.url import ParsedUrl, parse_url
 
 
+def _is_redirect(status_code: UInt16) -> Bool:
+    """Check if a status code is a redirect (301/302/307/308)."""
+    return (
+        status_code == UInt16(301) or status_code == UInt16(302)
+        or status_code == UInt16(307) or status_code == UInt16(308)
+    )
+
+
+def _is_idempotent(method: Method) -> Bool:
+    """Check if a method is idempotent (safe to retry)."""
+    var m = String(method)
+    return m == "GET" or m == "HEAD" or m == "OPTIONS" or m == "PUT" or m == "DELETE"
+
+
+def _str_starts_with(s: String, prefix: String) -> Bool:
+    """Check if string starts with prefix (manual implementation)."""
+    var s_bytes = s.as_bytes()
+    var p_bytes = prefix.as_bytes()
+    if len(p_bytes) > len(s_bytes):
+        return False
+    for i in range(len(p_bytes)):
+        if s_bytes[i] != p_bytes[i]:
+            return False
+    return True
+
+
 struct HttpClient(Movable):
     """Sans-I/O unified HTTP client with connection pooling."""
 
@@ -202,6 +228,39 @@ struct HttpClient(Movable):
             headers=hdrs^,
             body=body^,
         )
+
+    def build_redirect_request(self, var original: Request, status_code: UInt16, location: String) raises -> Request:
+        """Build a follow-up request for a redirect response.
+
+        301/302: rewrite to GET, drop body.
+        307/308: preserve method + body (raises if stream body).
+        Drops Authorization header (cross-origin safety)."""
+        var code = Int(status_code)
+        var new_method: Method
+        var new_body: RequestBody
+        if code == 301 or code == 302:
+            new_method = Method.get()
+            new_body = RequestBody.empty()
+        else:
+            # 307/308: preserve method + body
+            if original.body.is_stream():
+                raise Error("HttpClient: cannot follow 307/308 redirect with stream body")
+            new_method = Method(other=original.method)
+            if original.body.is_buffered():
+                new_body = original.body._clone_buffered()
+            else:
+                new_body = RequestBody.empty()
+        # Parse location (may be relative path or absolute URL)
+        var target: String
+        if _str_starts_with(location, "http://") or _str_starts_with(location, "https://"):
+            var parsed = parse_url(location)
+            target = parsed.path
+        else:
+            target = location
+        # Build new headers — drop Authorization for security
+        var hdrs = Headers(other=original.headers)
+        hdrs.remove("authorization")
+        return Request(method=new_method^, target=target, headers=hdrs^, body=new_body^)
 
     def get(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
