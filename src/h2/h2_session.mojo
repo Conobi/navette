@@ -10,8 +10,8 @@ from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from lib.http1.types import Header
-from lib.http2.connection import (
+from .header import Header
+from .connection import (
     H2Connection,
     H2Config,
     H2Event,

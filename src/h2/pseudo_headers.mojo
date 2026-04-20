@@ -6,7 +6,7 @@
 # RFC 9113 Section 8.3: pseudo-headers must appear before regular
 # headers, no duplicates allowed (except :method/:path validation).
 
-from lib.http1.types import Header
+from .header import Header
 from src.http.method import Method
 from src.http.version import Version
 from src.http.headers import Headers

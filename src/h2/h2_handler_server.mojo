@@ -8,7 +8,7 @@ from std.collections import Dict
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from lib.http2.connection import (
+from .connection import (
     H2Connection,
     H2Config,
     H2Event,
