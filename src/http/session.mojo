@@ -5,6 +5,7 @@
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional
+from src.http.body import BodyFrame
 from src.http.handler import Capabilities, RecvBody, StreamError
 from src.http.request import Request
 from src.http.response import Response
@@ -130,4 +131,7 @@ trait Session(Movable, ImplicitlyDestructible):
         ...
 
     def close(deinit self) raises:
+        ...
+
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
         ...

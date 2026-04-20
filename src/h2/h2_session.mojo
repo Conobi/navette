@@ -276,6 +276,9 @@ struct H2Session(Session):
             except:
                 pass
 
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
+        raise Error("H2Session.feed_body: streaming bodies not yet supported")
+
     # --- Transport bridging API ---------------------------------------------
 
     def feed(mut self, data: Span[UInt8, _]) raises:
