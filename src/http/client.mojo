@@ -20,6 +20,7 @@ struct HttpClient(Movable):
     """Sans-I/O unified HTTP client with connection pooling."""
 
     var _pool: Dict[Origin, List[SessionSlotPtr]]
+    var _handle_slot: Dict[Int, Int]  # handle_id → slot addr (for run_one routing)
     var _max_conns_h1: Int
     var _max_conns_mux: Int
     var _idle_timeout_ms: UInt64
@@ -36,6 +37,7 @@ struct HttpClient(Movable):
         retry_idempotent: Bool = True,
     ):
         self._pool = Dict[Origin, List[SessionSlotPtr]]()
+        self._handle_slot = Dict[Int, Int]()
         self._max_conns_h1 = max_conns_h1
         self._max_conns_mux = max_conns_mux
         self._idle_timeout_ms = idle_timeout_ms
@@ -44,6 +46,7 @@ struct HttpClient(Movable):
 
     def __init__(out self, *, deinit take: Self):
         self._pool = take._pool^
+        self._handle_slot = take._handle_slot^
         self._max_conns_h1 = take._max_conns_h1
         self._max_conns_mux = take._max_conns_mux
         self._idle_timeout_ms = take._idle_timeout_ms
@@ -144,15 +147,34 @@ struct HttpClient(Movable):
         for i in range(len(slots)):
             if slots[i].ptr()[].is_idle():
                 slots[i].ptr()[].mark_active()
-                return slots[i].ptr()[].submit(req^)
+                var handle = slots[i].ptr()[].submit(req^)
+                self._handle_slot[Int(handle.id())] = Int(slots[i].addr)
+                return handle^
         # No idle slot — use first slot (H2/H3 can multiplex; H1 will raise
         # internally if it already has an in-flight request)
         var p = slots[0].ptr()
-        return p[].submit(req^)
+        var handle = p[].submit(req^)
+        self._handle_slot[Int(handle.id())] = Int(slots[0].addr)
+        return handle^
 
     def run_one(mut self, var origin: Origin, mut handle: RequestHandle) raises:
-        """Advance a handle on the origin's session.
-        Auto-marks the slot idle when the handle completes."""
+        """Advance a handle on the session that owns it.
+        Auto-marks the slot idle when H1 response completes."""
+        var hid = Int(handle.id())
+        # Route to the correct slot via handle mapping
+        if hid in self._handle_slot:
+            var addr = self._handle_slot[hid]
+            var p = UnsafePointer[SessionSlot, MutAnyOrigin](
+                unsafe_from_address=addr
+            )
+            p[].run_one(handle)
+            # Auto mark idle when H1 response completes (H1 is not multiplexed)
+            if handle.is_complete() and p[].capabilities().alpn == 0:
+                p[].mark_idle(UInt64(1))
+            if handle.is_complete():
+                _ = self._handle_slot.pop(hid)
+            return
+        # Fallback: use first slot (legacy path)
         if origin not in self._pool:
             raise Error("HttpClient: no connection for origin")
         ref slots = self._pool[origin^]
@@ -160,17 +182,13 @@ struct HttpClient(Movable):
             raise Error("HttpClient: no connection for origin")
         var p = slots[0].ptr()
         p[].run_one(handle)
-        # Auto mark idle when response is complete (H1 frees the slot)
-        if handle.is_complete() and p[].capabilities().alpn == 0:
-            p[].mark_idle(UInt64(1))  # timestamp 1 = placeholder; real time from caller
 
     # --- Convenience API ---
 
     def _build_request(
-        self, var method: Method, url: String, var body_bytes: List[UInt8]
-    ) raises -> Request:
-        """Build a Request from URL + optional body."""
-        var parsed = parse_url(url)
+        self, var method: Method, var parsed: ParsedUrl, var body_bytes: List[UInt8]
+    ) -> Request:
+        """Build a Request from parsed URL components + optional body."""
         var hdrs = Headers()
         hdrs.add("Host", parsed.host)
         var body: RequestBody
@@ -188,29 +206,29 @@ struct HttpClient(Movable):
     def get(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.get(), url, List[UInt8]())
+        var req = self._build_request(Method.get(), parsed^, List[UInt8]())
         return self.submit(origin^, req^)
 
     def post(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.post(), url, body^)
+        var req = self._build_request(Method.post(), parsed^, body^)
         return self.submit(origin^, req^)
 
     def put(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.put(), url, body^)
+        var req = self._build_request(Method.put(), parsed^, body^)
         return self.submit(origin^, req^)
 
     def delete(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.delete(), url, List[UInt8]())
+        var req = self._build_request(Method.delete(), parsed^, List[UInt8]())
         return self.submit(origin^, req^)
 
     def head(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.head(), url, List[UInt8]())
+        var req = self._build_request(Method.head(), parsed^, List[UInt8]())
         return self.submit(origin^, req^)
