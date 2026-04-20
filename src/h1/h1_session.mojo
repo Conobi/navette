@@ -10,10 +10,26 @@ from std.memory import Span
 from src.h1.client import ClientConnection
 from src.h1.config import ParseConfig
 from src.http.body import BodyFrame
+from src.http.headers import Headers
 from src.http.handler import Capabilities, RecvBody
 from src.http.method import Method
-from src.http.request import Request
+from src.http.request import Request, RequestBody
+from src.http.version import Version
 from src.http.session import Session, RequestHandle
+
+
+def _int_to_hex(n: Int) -> String:
+    """Convert a non-negative integer to lowercase hex string (no 0x prefix)."""
+    if n == 0:
+        return String("0")
+    comptime HEX = "0123456789abcdef"
+    var result = String()
+    var val = n
+    while val > 0:
+        var d = val % 16
+        result = chr(Int(HEX.as_bytes()[d])) + result
+        val //= 16
+    return result^
 
 
 struct H1Session(Session):
@@ -25,6 +41,7 @@ struct H1Session(Session):
     var _pending_handle_id: UInt64
     var _has_inflight: Bool
     var _inflight_method: Optional[Method]
+    var _streaming: Bool
 
     def __init__(out self):
         self._conn = ClientConnection(ParseConfig())
@@ -33,6 +50,7 @@ struct H1Session(Session):
         self._pending_handle_id = UInt64(0)
         self._has_inflight = False
         self._inflight_method = Optional[Method]()
+        self._streaming = False
 
     def __init__(out self, *, deinit take: Self):
         self._conn = take._conn^
@@ -41,18 +59,34 @@ struct H1Session(Session):
         self._pending_handle_id = take._pending_handle_id
         self._has_inflight = take._has_inflight
         self._inflight_method = take._inflight_method^
+        self._streaming = take._streaming
 
     # --- Session trait API ---
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
         if self._has_inflight:
             raise Error("H1Session.submit: H1 has only one in-flight request per connection")
-        if req.body.is_stream():
-            raise Error("H1Session.submit: streaming request bodies not supported in v1")
         self._next_id += UInt64(1)
         self._inflight_method = Optional[Method](Method(other=req.method))
-        self._conn.send_request(req^)
-        self._outbuf.extend(self._conn.drain())
+        if req.body.is_stream():
+            # Streaming body: send headers only with Transfer-Encoding: chunked.
+            # Replace the stream body with empty so send_request serializes
+            # headers without a Content-Length, then body comes via feed_body.
+            req.headers.add("Transfer-Encoding", "chunked")
+            var stream_req = Request(
+                method=Method(other=req.method),
+                target=req.target,
+                version=Version(other=req.version),
+                headers=Headers(other=req.headers),
+                body=RequestBody.empty(),
+            )
+            self._conn.send_request(stream_req^)
+            self._outbuf.extend(self._conn.drain())
+            self._streaming = True
+        else:
+            self._conn.send_request(req^)
+            self._outbuf.extend(self._conn.drain())
+            self._streaming = False
         self._pending_handle_id = self._next_id
         self._has_inflight = True
         return RequestHandle(id=self._next_id)
@@ -92,7 +126,22 @@ struct H1Session(Session):
         pass
 
     def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
-        raise Error("H1Session.feed_body: streaming bodies not yet supported")
+        if not self._streaming:
+            raise Error("H1Session.feed_body: no streaming request in progress")
+        if handle_id != self._pending_handle_id:
+            raise Error("H1Session.feed_body: handle id does not match pending request")
+        if frame.is_data():
+            var data_len = len(frame.data())
+            var hex_str = _int_to_hex(data_len)
+            self._outbuf.extend(hex_str.as_bytes())
+            self._outbuf.extend(String("\r\n").as_bytes())
+            for i in range(data_len):
+                self._outbuf.append(frame.data()[i])
+            self._outbuf.extend(String("\r\n").as_bytes())
+        elif frame.is_end():
+            # Terminal chunk: 0\r\n\r\n
+            self._outbuf.extend(String("0\r\n\r\n").as_bytes())
+            self._streaming = False
 
     # --- Transport bridging API ---
 
