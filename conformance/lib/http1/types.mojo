@@ -2,23 +2,7 @@
 #
 # Data types for the HTTP/1.1 request parser.
 
-
-struct Header(Copyable, Movable):
-    """A single HTTP header field."""
-    var name: String
-    var value: String
-
-    def __init__(out self, name: String, value: String):
-        self.name = name
-        self.value = value
-
-    def __init__(out self, *, other: Self):
-        self.name = other.name
-        self.value = other.value
-
-    def __init__(out self, *, deinit take: Self):
-        self.name = take.name^
-        self.value = take.value^
+from src.h2.header import Header
 
 
 struct ParserStrictness(Copyable, Movable):

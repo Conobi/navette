@@ -1,5 +1,6 @@
 # conformance/lib/http2/__init__.mojo
-from .frame import (
+# Re-exports from src.h2 + local oracles.
+from src.h2.frame import (
     H2_NO_ERROR,
     H2_PROTOCOL_ERROR,
     H2_INTERNAL_ERROR,
@@ -40,10 +41,10 @@ from .frame import (
     decode_frame,
     encode_frame,
 )
-from .hpack import HpackEncoder, HpackDecoder, HpackConfig
-from .hpack_huffman import HuffmanCodec
-from .hpack_integer import encode_integer, decode_integer
-from .hpack_table import StaticTable, DynamicTable
+from src.h2.hpack import HpackEncoder, HpackDecoder, HpackConfig
+from src.h2.hpack_huffman import HuffmanCodec
+from src.h2.hpack_integer import encode_integer, decode_integer
+from src.h2.hpack_table import StaticTable, DynamicTable
 from .oracles import (
     decode_frame_with_hyperframe,
     hpack_decode_with_python,
@@ -56,7 +57,7 @@ from .oracles import (
     h2_roundtrip,
     h2_stream_data_scenario,
 )
-from .payloads import (
+from src.h2.payloads import (
     DataPayload,
     decode_data_payload,
     HeadersPayload,
@@ -79,7 +80,7 @@ from .payloads import (
     ContinuationPayload,
     decode_continuation_payload,
 )
-from .connection import (
+from src.h2.connection import (
     H2Config,
     H2Settings,
     H2Event,

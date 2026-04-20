@@ -11,7 +11,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.stackful import CoroHandle, CoroYielder, CoroBody
 
-from lib.http2.connection import (
+from .connection import (
     H2Connection,
     H2Config,
     H2Event,

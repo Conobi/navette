@@ -2,7 +2,7 @@
 #
 # Production HTTP/2 configuration factory.
 
-from lib.http2.connection import H2Config
+from .connection import H2Config
 
 
 def h2_production_config(*, client_side: Bool) -> H2Config:

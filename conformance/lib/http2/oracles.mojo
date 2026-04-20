@@ -2,7 +2,7 @@
 #
 # Python oracle wrappers for HTTP/2 frame and HPACK cross-validation.
 from std.python import Python, PythonObject
-from lib.http1.types import Header
+from src.h2.header import Header
 
 
 def _wire_to_py_bytes(wire: List[UInt8]) raises -> PythonObject:
