@@ -14,6 +14,7 @@ from src.http.handler import (
     StreamHandler,
     StreamError,
 )
+from src.http.body import BodyFrame
 from src.http.session import Session, RequestHandle
 from src.http.request import Request
 from src.http.response import Response
@@ -103,4 +104,7 @@ struct MockSession[H: StreamHandler](Session):
         return self._server.caps.alpn
 
     def close(deinit self) raises:
+        pass
+
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
         pass

@@ -268,6 +268,9 @@ struct H3Session(Session):
             except:
                 pass
 
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
+        raise Error("H3Session.feed_body: streaming bodies not yet supported")
+
     # --- Internal: event dispatch --------------------------------------------
 
     def _dispatch_events(mut self) raises:

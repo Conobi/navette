@@ -9,6 +9,7 @@ from std.collections.optional import Optional
 from std.memory import Span
 from src.h1.client import ClientConnection
 from src.h1.config import ParseConfig
+from src.http.body import BodyFrame
 from src.http.handler import Capabilities, RecvBody
 from src.http.method import Method
 from src.http.request import Request
@@ -89,6 +90,9 @@ struct H1Session(Session):
 
     def close(deinit self) raises:
         pass
+
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
+        raise Error("H1Session.feed_body: streaming bodies not yet supported")
 
     # --- Transport bridging API ---
 
