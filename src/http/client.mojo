@@ -122,20 +122,37 @@ struct HttpClient(Movable):
             except:
                 pass
 
+    def close_all(deinit self):
+        """Consume client, freeing all pooled sessions."""
+        # __del__ handles the actual cleanup
+        pass
+
     # --- Low-level API ---
+    # NOTE: submit/run_one take an Origin parameter because Request.target is
+    # only a path (not a full URL). Convenience methods handle URL→Origin
+    # resolution internally. M6c's HttpCoroClient will also resolve internally.
 
     def submit(mut self, var origin: Origin, var req: Request) raises -> RequestHandle:
-        """Submit request to a pooled session for origin."""
+        """Submit request to a pooled session for origin.
+        Prefers idle slots; for H1 (non-multiplexed) avoids active slots."""
         if origin not in self._pool:
             raise Error("HttpClient: no available connection for origin")
         ref slots = self._pool[origin^]
         if len(slots) == 0:
             raise Error("HttpClient: no available connection for origin")
+        # Prefer an idle slot (important for H1 which can't multiplex)
+        for i in range(len(slots)):
+            if slots[i].ptr()[].is_idle():
+                slots[i].ptr()[].mark_active()
+                return slots[i].ptr()[].submit(req^)
+        # No idle slot — use first slot (H2/H3 can multiplex; H1 will raise
+        # internally if it already has an in-flight request)
         var p = slots[0].ptr()
         return p[].submit(req^)
 
     def run_one(mut self, var origin: Origin, mut handle: RequestHandle) raises:
-        """Advance a handle on the origin's session."""
+        """Advance a handle on the origin's session.
+        Auto-marks the slot idle when the handle completes."""
         if origin not in self._pool:
             raise Error("HttpClient: no connection for origin")
         ref slots = self._pool[origin^]
@@ -143,6 +160,9 @@ struct HttpClient(Movable):
             raise Error("HttpClient: no connection for origin")
         var p = slots[0].ptr()
         p[].run_one(handle)
+        # Auto mark idle when response is complete (H1 frees the slot)
+        if handle.is_complete() and p[].capabilities().alpn == 0:
+            p[].mark_idle(UInt64(1))  # timestamp 1 = placeholder; real time from caller
 
     # --- Convenience API ---
 
