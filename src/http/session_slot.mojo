@@ -81,7 +81,7 @@ struct SessionSlot(Movable):
         )
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
-        self.idle_since = UInt64(0)
+        self.mark_active()
         if self.kind == SLOT_H1:
             return self.h1.value().submit(req^)
         elif self.kind == SLOT_H2:
@@ -105,13 +105,19 @@ struct SessionSlot(Movable):
         else:
             self.h3.value().feed_datagram(data, UInt64(0))
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) raises -> List[UInt8]:
         if self.kind == SLOT_H1:
             return self.h1.value().drain()
         elif self.kind == SLOT_H2:
             return self.h2.value().drain()
-        # H3 drain returns List[List[UInt8]] — flatten for uniform API
-        return List[UInt8]()
+        # H3 uses datagrams (List[List[UInt8]]) — concatenate into flat buffer.
+        # M6c's HttpCoroClient will use drain_datagrams() directly for proper
+        # UDP framing; this flat drain is a fallback for uniform API.
+        var out = List[UInt8]()
+        var datagrams = self.h3.value().drain_datagrams(UInt64(0))
+        for i in range(len(datagrams)):
+            out.extend(datagrams[i])
+        return out^
 
     def capabilities(self) -> Capabilities:
         if self.kind == SLOT_H1:
