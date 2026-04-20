@@ -161,14 +161,15 @@ struct H2Session(Session):
     # --- Session trait API ---------------------------------------------------
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
-        if req.body.is_stream():
-            raise Error("H2Session.submit: streaming request bodies not supported in v1")
         self._next_handle_id += UInt64(1)
         var handle_id = self._next_handle_id
         var stream_id = self._conn.next_stream_id()
         var h2_headers = request_to_h2_headers(req)
+        var is_stream = req.body.is_stream()
         var has_body = req.body.is_buffered() and len(req.body.bytes()) > 0
-        var end_stream = not has_body
+        # For stream bodies: send headers without END_STREAM, skip body
+        # (caller will use feed_body to send data frames).
+        var end_stream = not has_body and not is_stream
         self._conn.send_headers(stream_id, h2_headers^, end_stream=end_stream)
         if has_body:
             self._conn.send_data(
@@ -277,7 +278,17 @@ struct H2Session(Session):
                 pass
 
     def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
-        raise Error("H2Session.feed_body: streaming bodies not yet supported")
+        var hid = Int(handle_id)
+        if hid not in self._handle_to_stream:
+            raise Error("H2Session.feed_body: unknown handle")
+        var stream_id = self._handle_to_stream[hid]
+        if frame.is_data():
+            var bytes_copy = frame.data().copy()
+            self._conn.send_data(stream_id, bytes_copy^, end_stream=False)
+            self._flush_outbound()
+        elif frame.is_end():
+            self._conn.send_data(stream_id, List[UInt8](), end_stream=True)
+            self._flush_outbound()
 
     # --- Transport bridging API ---------------------------------------------
 

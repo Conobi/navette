@@ -162,8 +162,11 @@ struct H3Session(Session):
                 fields.append(QpackHeaderField(name, value))
 
         # Determine if there is a body
+        var is_stream = req.body.is_stream()
         var has_body = req.body.is_buffered() and len(req.body.bytes()) > 0
-        var fin_on_headers = not has_body
+        # For stream bodies: send headers without fin, skip body
+        # (caller will use feed_body to send data frames).
+        var fin_on_headers = not has_body and not is_stream
 
         var stream_id = self._h3.open_bidi_stream()
         self._h3.send_headers(stream_id, fields, fin_on_headers)
@@ -269,7 +272,15 @@ struct H3Session(Session):
                 pass
 
     def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
-        raise Error("H3Session.feed_body: streaming bodies not yet supported")
+        var hid = Int(handle_id)
+        if hid not in self._handle_to_stream:
+            raise Error("H3Session.feed_body: unknown handle")
+        var stream_id = self._handle_to_stream[hid]
+        if frame.is_data():
+            var bytes_copy = frame.data().copy()
+            self._h3.send_data(stream_id, bytes_copy^, False)
+        elif frame.is_end():
+            self._h3.send_data(stream_id, List[UInt8](), True)
 
     # --- Internal: event dispatch --------------------------------------------
 
