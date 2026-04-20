@@ -11,6 +11,8 @@ aws-lc-rs = "1"
 rustls = "0.23"
 rustls-pemfile = "2"
 webpki-roots = "1"
+flate2 = "1"
+brotli = "7"
 
 [dev-dependencies]
 hex = "0.4"
