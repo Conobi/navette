@@ -8,6 +8,7 @@ from src.http.response import Response
 from src.http.status import StatusCode
 from src.http.headers import Headers
 from src.http.request import Request
+from src.http.body import BodyFrame
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 
@@ -67,6 +68,9 @@ struct StubSession(Session):
         return self.caps.alpn
 
     def close(deinit self) raises:
+        pass
+
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
         pass
 
 
