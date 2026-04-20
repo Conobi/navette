@@ -1720,9 +1720,9 @@ struct QuicConnection(Movable):
             if space_idx == 0:
                 has_initial = True
 
-            # Client discards Initial on first Handshake send (M5).
-            if not self.is_server and space_idx == 1 and (self.state & CONN_INITIAL_DISCARDED) == 0 and self.protect.has_keys(1):
-                self._discard_initial_space()
+            # NOTE: Initial discard deferred to _on_handshake_complete so the
+            # client can coalesce Initial ACK + Handshake in the same datagram
+            # (required by some server stacks for proper routing).
 
             # Record sent packet with ECN mark.
             var is_ack_eliciting = _has_ack_eliciting(frames)
