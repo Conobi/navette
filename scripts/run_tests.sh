@@ -58,6 +58,8 @@ TESTS=(
     test_h2_tls_alpn
     test_h2_coro_server
     test_h3_coro_server
+    test_url
+    test_http_client
     test_quic_cid
     test_quic_codec
     test_quic_frame
@@ -100,7 +102,7 @@ for t in "${TESTS[@]}"; do
     if [[ "$t" == test_h3_connection ]] || [[ "$t" == test_h3_e2e ]]; then
         EXTRA_I=(-I conformance)
     fi
-    if [[ "$t" == test_h2_* ]]; then
+    if [[ "$t" == test_h2_* ]] || [[ "$t" == "test_http_client" ]]; then
         EXTRA_I=(-I conformance)
     fi
     if [[ "$t" == test_quic_* ]]; then
