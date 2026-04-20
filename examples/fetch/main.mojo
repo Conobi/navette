@@ -362,7 +362,13 @@ def main() raises:
         print("* Connected in " + String(Int(t_connect - t_start)) + "ms")
 
     # 2. TLS handshake
-    var lib = RustlsLibrary()
+    # Heap-allocate RustlsLibrary: TlsConnection stores a raw pointer to it
+    # via UnsafePointer(to=lib). If lib is on the stack, a Mojo compiler bug
+    # causes the pointer to go stale when `tls` is passed as `mut` to helper
+    # functions and new stack variables are allocated afterwards.
+    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
+    lib_ptr.init_pointee_move(RustlsLibrary())
+    ref lib = lib_ptr[]
     var cli_cfg = TlsClientConfig(lib, insecure=True)
     var alpn_protos = List[String]()
     if args.force_h1:
@@ -537,3 +543,5 @@ def main() raises:
             print("* Redirects followed: " + String(redirect_count))
 
     _ = external_call["close", Int32](fd)
+    # lib_ptr intentionally not freed: TlsConnection/TlsClientConfig destructors
+    # still hold raw pointers to it. Process exit reclaims all memory.
