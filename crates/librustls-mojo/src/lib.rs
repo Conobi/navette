@@ -7,6 +7,7 @@
 
 pub mod handles;
 pub mod error;
+pub mod decode;
 mod quic;
 mod quic_hs;
 mod config;
