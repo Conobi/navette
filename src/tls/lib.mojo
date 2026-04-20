@@ -324,12 +324,18 @@ struct RustlsLibrary(Movable):
     # -- QUIC Wave 2: handshake ------------------------------------------------
 
     @always_inline
-    def quic_client_config_new(self) -> Int32:
+    def quic_client_config_new(
+        self,
+        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
         """Create a QUIC client TLS config with Mozilla WebPKI roots.
 
-        Returns a positive handle on success, or -1 on error.
+        Returns 0 on success, -1 on error. Handle written to out_handle.
         """
-        return self._handle.call["rlsm_quic_client_config_new", Int32]()
+        return self._handle.call["rlsm_quic_client_config_new", Int32](
+            alpn_ptr, alpn_len, out_handle,
+        )
 
     @always_inline
     def quic_server_config_new(

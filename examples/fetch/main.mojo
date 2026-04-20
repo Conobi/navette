@@ -1,12 +1,10 @@
 # examples/fetch/main.mojo
 #
-# `fetch` — a minimal curl alternative built on mojo-net's unified HTTP client (M6).
-# Supports HTTP/1.1 and HTTP/2 via ALPN, TLS, redirects, content decoding,
-# and the full M6 unified client stack.
+# `fetch` — HTTP/3 native CLI built on mojo-net.
+# Default transport is QUIC/H3 (UDP). Falls back to TCP+TLS (H2/H1) with flags.
 #
 # Build + run:
-#   LD_LIBRARY_PATH=lib uv run mojo run -I . -I conformance \
-#     examples/fetch/main.mojo [OPTIONS] <URL>
+#   LD_LIBRARY_PATH=lib uv run mojo run -I . examples/fetch/main.mojo [OPTIONS] <URL>
 #
 # Options:
 #   -X METHOD        HTTP method (default: GET, or POST if -d given)
@@ -17,8 +15,8 @@
 #   -L               Follow redirects (up to 10 hops)
 #   -s               Silent: suppress progress/info messages
 #   --compressed     Request + decode gzip/brotli content-encoding
-#   --http1.1        Force HTTP/1.1 (skip H2 ALPN)
-#   --http2          Force HTTP/2 (only negotiate h2)
+#   --http1.1        Force HTTP/1.1 over TCP+TLS
+#   --http2          Force HTTP/2 over TCP+TLS
 #   --json DATA      Shorthand: POST with Content-Type: application/json
 #   -w FORMAT        Write timing stats after response:
 #                      %{time_connect} %{time_tls} %{time_total}
@@ -26,7 +24,7 @@
 #
 # Examples:
 #   fetch https://1.1.1.1/cdn-cgi/trace
-#   fetch -v -L https://httpbin.org/redirect/3
+#   fetch -v --http2 https://1.1.1.1/cdn-cgi/trace
 #   fetch --json '{"q":"hello"}' https://httpbin.org/post
 #   fetch --compressed https://example.com
 #   fetch -w "\n%{http_code} %{size_download}B via %{alpn} in %{time_total}ms\n" https://1.1.1.1/
@@ -45,6 +43,9 @@ from src.http.body import BodyFrame
 from src.http.url import parse_url, ParsedUrl
 from src.h1.h1_session import H1Session
 from src.h2.h2_session import H2Session
+from src.h3.h3_session import H3Session
+from src.quic.connection import QuicConnection
+from src.quic.trans_param import TransportParams, default_transport_params
 from src.http.decode import ContentDecoder, ContentEncoding
 
 comptime _RECV_BUF: Int = 16384
@@ -110,6 +111,78 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
         _ = external_call["close", Int32](fd)
         raise "connect() failed: " + String(Int(rc))
     return fd
+
+
+def _udp_connect(host_ip: String, port: Int) raises -> Int32:
+    """Open a connected UDP socket to host_ip:port (IPv4 only)."""
+    var fd = external_call["socket", Int32](Int32(2), Int32(2), Int32(0))  # SOCK_DGRAM=2
+    if fd < 0:
+        raise "socket(UDP) failed: " + String(Int(fd))
+    var addr = _heap_alloc[UInt8](16).as_any_origin()
+    for i in range(16):
+        addr[i] = 0
+    addr[0] = 2  # AF_INET
+    addr[1] = 0
+    var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
+    addr[2] = UInt8(port_be & 0xFF)
+    addr[3] = UInt8((port_be >> 8) & 0xFF)
+    var octet = 0
+    var octet_idx = 4
+    var host_bytes = host_ip.as_bytes()
+    for ci in range(len(host_bytes)):
+        var b = host_bytes[ci]
+        if b == 46:
+            addr[octet_idx] = UInt8(octet)
+            octet_idx += 1
+            octet = 0
+        else:
+            octet = octet * 10 + (Int(b) - 48)
+    addr[octet_idx] = UInt8(octet)
+    var rc = external_call["connect", Int32](fd, addr, Int32(16))
+    addr.free()
+    if rc < 0:
+        _ = external_call["close", Int32](fd)
+        raise "connect(UDP) failed: " + String(Int(rc))
+    return fd
+
+
+def _udp_send(fd: Int32, data: List[UInt8]) raises:
+    """Send a single UDP datagram."""
+    if len(data) == 0:
+        return
+    var buf = _heap_alloc[UInt8](len(data)).as_any_origin()
+    for i in range(len(data)):
+        buf[i] = data[i]
+    var rc = external_call["send", Int](fd, buf, len(data), Int32(0))
+    buf.free()
+    if rc <= 0:
+        raise "send(UDP) returned " + String(rc)
+
+
+def _udp_recv(fd: Int32) raises -> List[UInt8]:
+    """Receive a single UDP datagram (non-blocking attempt with MSG_DONTWAIT)."""
+    var buf = _heap_alloc[UInt8](1500).as_any_origin()
+    var rc = external_call["recv", Int](fd, buf, 1500, Int32(0x40))  # MSG_DONTWAIT
+    var result = List[UInt8]()
+    if rc > 0:
+        for i in range(rc):
+            result.append(buf[i])
+    buf.free()
+    return result^
+
+
+def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
+    """Receive a single UDP datagram (blocking)."""
+    var buf = _heap_alloc[UInt8](1500).as_any_origin()
+    var rc = external_call["recv", Int](fd, buf, 1500, Int32(0))
+    var result = List[UInt8]()
+    if rc > 0:
+        for i in range(rc):
+            result.append(buf[i])
+    buf.free()
+    if rc < 0:
+        raise "recv(UDP) returned " + String(rc)
+    return result^
 
 
 def _send_all(fd: Int32, data: List[UInt8]) raises:
@@ -346,56 +419,8 @@ def _is_redirect(code: UInt16) -> Bool:
 # ---------------------------------------------------------------------------
 
 
-def main() raises:
-    var args = _parse_args()
-    var parsed = parse_url(args.url)
-    var t_start = _monotonic_ms()
-
-    if args.verbose:
-        print("* Connecting to " + parsed.host + ":" + String(Int(parsed.port)) + "...")
-
-    # 1. TCP connect
-    var fd = _tcp_connect(parsed.host, Int(parsed.port))
-    var t_connect = _monotonic_ms()
-
-    if args.verbose:
-        print("* Connected in " + String(Int(t_connect - t_start)) + "ms")
-
-    # 2. TLS handshake
-    # Heap-allocate RustlsLibrary: TlsConnection stores a raw pointer to it
-    # via UnsafePointer(to=lib). If lib is on the stack, a Mojo compiler bug
-    # causes the pointer to go stale when `tls` is passed as `mut` to helper
-    # functions and new stack variables are allocated afterwards.
-    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
-    lib_ptr.init_pointee_move(RustlsLibrary())
-    ref lib = lib_ptr[]
-    var cli_cfg = TlsClientConfig(lib, insecure=True)
-    var alpn_protos = List[String]()
-    if args.force_h1:
-        alpn_protos.append("http/1.1")
-    elif args.force_h2:
-        alpn_protos.append("h2")
-    else:
-        alpn_protos.append("h2")
-        alpn_protos.append("http/1.1")
-    cli_cfg.set_alpn_protocols(lib, alpn_protos)
-    var tls = TlsConnection.new_client(lib, cli_cfg, parsed.host)
-
-    _tls_send(fd, tls)
-    while tls.is_handshaking():
-        _ = _tls_recv(fd, tls)
-    _tls_send(fd, tls)
-    var t_tls = _monotonic_ms()
-
-    var alpn_str = String("http/1.1")
-    var alpn_opt = tls.alpn()
-    if alpn_opt:
-        alpn_str = alpn_opt.value()
-
-    if args.verbose:
-        print("* TLS handshake in " + String(Int(t_tls - t_connect)) + "ms (ALPN: " + alpn_str + ")")
-
-    # 3. Build request headers
+def _build_request(args: CliArgs, parsed: ParsedUrl) raises -> Request:
+    """Build the HTTP request from CLI args."""
     var hdrs = Headers()
     hdrs.add("host", parsed.host)
     hdrs.add("user-agent", "mojo-fetch/1.0")
@@ -431,16 +456,184 @@ def main() raises:
         body = RequestBody.empty()
 
     var method = _str_to_method(args.method)
+    return Request(method=method^, target=parsed.path, headers=hdrs^, body=body^)
+
+
+struct FetchResult(Movable):
+    var resp: Response
+    var alpn: String
+    var t_connect: UInt64
+    var t_tls: UInt64
+    var t_total: UInt64
+
+    def __init__(out self, var resp: Response, alpn: String, t_connect: UInt64, t_tls: UInt64, t_total: UInt64):
+        self.resp = resp^
+        self.alpn = alpn
+        self.t_connect = t_connect
+        self.t_tls = t_tls
+        self.t_total = t_total
+
+    def __init__(out self, *, deinit take: Self):
+        self.resp = take.resp^
+        self.alpn = take.alpn^
+        self.t_connect = take.t_connect
+        self.t_tls = take.t_tls
+        self.t_total = take.t_total
+
+
+def _h3_default_params() -> TransportParams:
+    """QUIC transport params for the client."""
+    var p = default_transport_params()
+    p.max_idle_timeout = UInt64(30_000)
+    p.initial_max_data = UInt64(1_048_576)
+    p.initial_max_stream_data_bidi_local = UInt64(65_536)
+    p.initial_max_stream_data_bidi_remote = UInt64(65_536)
+    p.initial_max_streams_bidi = UInt64(100)
+    p.initial_max_streams_uni = UInt64(100)
+    return p^
+
+
+def _request_via_h3(
+    args: CliArgs, parsed: ParsedUrl, var req: Request,
+) raises -> FetchResult:
+    """Execute request over QUIC/H3."""
+    var t_start = _monotonic_ms()
 
     if args.verbose:
+        print("* Connecting to " + parsed.host + ":" + String(Int(parsed.port)) + " (UDP/QUIC)...")
+
+    var fd = _udp_connect(parsed.host, Int(parsed.port))
+    var t_connect = _monotonic_ms()
+
+    if args.verbose:
+        print("* UDP socket ready in " + String(Int(t_connect - t_start)) + "ms")
+
+    # Heap-allocate library (same Mojo compiler bug workaround as TCP path)
+    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
+    lib_ptr.init_pointee_move(RustlsLibrary())
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    # Create QUIC client TLS config with h3 ALPN
+    var alpn_buf = _heap_alloc[UInt8](2).as_any_origin()
+    alpn_buf[0] = UInt8(0x68)  # 'h'
+    alpn_buf[1] = UInt8(0x33)  # '3'
+    var cfg_out = _heap_alloc[Int32](1).as_any_origin()
+    var rc = lib_ptr[].quic_client_config_new(alpn_buf, Int32(2), cfg_out)
+    if rc != 0:
+        raise "quic_client_config_new failed"
+    var quic_cfg = cfg_out[0]
+    cfg_out.free()
+    alpn_buf.free()
+
+    var now = _monotonic_ms() * UInt64(1000)  # microseconds
+    var params = _h3_default_params()
+    var quic = QuicConnection.client(lib_addr, quic_cfg, parsed.host, params, now)
+
+    # QUIC handshake: exchange datagrams until established
+    for _ in range(100):
+        now = _monotonic_ms() * UInt64(1000)
+        var out_dgs = quic.send(now)
+        for i in range(len(out_dgs)):
+            _udp_send(fd, out_dgs[i])
+        if quic.is_established():
+            break
+        var dgram = _udp_recv_blocking(fd)
+        if len(dgram) > 0:
+            now = _monotonic_ms() * UInt64(1000)
+            quic.recv(Span(dgram), now)
+    if not quic.is_established():
+        raise "QUIC handshake failed"
+
+    var t_tls = _monotonic_ms()
+    if args.verbose:
+        print("* QUIC handshake in " + String(Int(t_tls - t_connect)) + "ms")
+
+    # Wrap in H3Session
+    var session = H3Session(quic=quic^)
+
+    # Bootstrap H3 (SETTINGS exchange)
+    now = _monotonic_ms() * UInt64(1000)
+    var boot_dgs = session.drain_datagrams(now)
+    for i in range(len(boot_dgs)):
+        _udp_send(fd, boot_dgs[i])
+
+    # Submit request
+    if args.verbose:
+        print("> " + args.method + " " + parsed.path + " h3")
+
+    var handle = session.submit(req^)
+    now = _monotonic_ms() * UInt64(1000)
+    var req_dgs = session.drain_datagrams(now)
+    for i in range(len(req_dgs)):
+        _udp_send(fd, req_dgs[i])
+
+    # Pump until response
+    for _ in range(_MAX_ITERS):
+        session.run_one(handle)
+        if handle.is_complete():
+            break
+        var dgram = _udp_recv_blocking(fd)
+        if len(dgram) > 0:
+            now = _monotonic_ms() * UInt64(1000)
+            session.feed_datagram(Span(dgram), now)
+        now = _monotonic_ms() * UInt64(1000)
+        var out_dgs = session.drain_datagrams(now)
+        for i in range(len(out_dgs)):
+            _udp_send(fd, out_dgs[i])
+
+    if not handle.is_complete():
+        raise "H3 response not received (timeout)"
+
+    var t_total = _monotonic_ms()
+    _ = external_call["close", Int32](fd)
+    return FetchResult(handle^.take_response(), String("h3"), t_connect - t_start, t_tls - t_start, t_total - t_start)
+
+
+def _request_via_tcp(
+    args: CliArgs, parsed: ParsedUrl, var req: Request,
+) raises -> FetchResult:
+    """Execute request over TCP+TLS (H2 or H1)."""
+    var t_start = _monotonic_ms()
+
+    if args.verbose:
+        print("* Connecting to " + parsed.host + ":" + String(Int(parsed.port)) + " (TCP)...")
+
+    var fd = _tcp_connect(parsed.host, Int(parsed.port))
+    var t_connect = _monotonic_ms()
+
+    if args.verbose:
+        print("* Connected in " + String(Int(t_connect - t_start)) + "ms")
+
+    # Heap-allocate RustlsLibrary (Mojo compiler bug workaround)
+    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
+    lib_ptr.init_pointee_move(RustlsLibrary())
+    ref lib = lib_ptr[]
+    var cli_cfg = TlsClientConfig(lib, insecure=True)
+    var alpn_protos = List[String]()
+    if args.force_h1:
+        alpn_protos.append("http/1.1")
+    else:
+        alpn_protos.append("h2")
+        alpn_protos.append("http/1.1")
+    cli_cfg.set_alpn_protocols(lib, alpn_protos)
+    var tls = TlsConnection.new_client(lib, cli_cfg, parsed.host)
+
+    _tls_send(fd, tls)
+    while tls.is_handshaking():
+        _ = _tls_recv(fd, tls)
+    _tls_send(fd, tls)
+    var t_tls = _monotonic_ms()
+
+    var alpn_str = String("http/1.1")
+    var alpn_opt = tls.alpn()
+    if alpn_opt:
+        alpn_str = alpn_opt.value()
+
+    if args.verbose:
+        print("* TLS handshake in " + String(Int(t_tls - t_connect)) + "ms (ALPN: " + alpn_str + ")")
         print("> " + args.method + " " + parsed.path + " " + alpn_str)
-        for i in range(len(hdrs)):
-            print("> " + hdrs.name_at(i) + ": " + hdrs.value_at(i))
-        print(">")
 
-    var req = Request(method=method^, target=parsed.path, headers=hdrs^, body=body^)
-
-    # 4. Execute via the appropriate session
+    # Execute via H2 or H1
     var resp: Response
     if alpn_str == "h2":
         var session = H2Session()
@@ -451,7 +644,6 @@ def main() raises:
         var out = session.drain()
         tls.send_data(Span(out))
         _tls_send(fd, tls)
-        # Pump
         for _ in range(_MAX_ITERS):
             session.run_one(handle)
             if handle.is_complete():
@@ -474,7 +666,6 @@ def main() raises:
         var out = session.drain()
         tls.send_data(Span(out))
         _tls_send(fd, tls)
-        # Pump
         for _ in range(_MAX_ITERS):
             session.run_one(handle)
             if handle.is_complete():
@@ -486,9 +677,33 @@ def main() raises:
             raise "response not received (timeout)"
         resp = handle^.take_response()
 
-    var redirect_count = 0
-
     var t_total = _monotonic_ms()
+    _ = external_call["close", Int32](fd)
+    return FetchResult(resp^, alpn_str, t_connect - t_start, t_tls - t_start, t_total - t_start)
+
+
+def main() raises:
+    var args = _parse_args()
+    var parsed = parse_url(args.url)
+
+    var req = _build_request(args, parsed)
+    if args.verbose:
+        for i in range(len(req.headers)):
+            print("> " + req.headers.name_at(i) + ": " + req.headers.value_at(i))
+        print(">")
+
+    # Dispatch: H3 (default) or TCP (forced H1/H2)
+    var result: FetchResult
+    if args.force_h1 or args.force_h2:
+        result = _request_via_tcp(args, parsed, req^)
+    else:
+        result = _request_via_h3(args, parsed, req^)
+
+    ref resp = result.resp
+    var alpn_str = result.alpn
+    var t_connect = result.t_connect
+    var t_tls = result.t_tls
+    var t_total = result.t_total
 
     # 6. Content-Encoding decoding
     var body_bytes = List[UInt8]()
@@ -530,18 +745,12 @@ def main() raises:
             Int(resp.status.code()),
             len(body_bytes),
             alpn_str,
-            t_connect - t_start,
-            t_tls - t_start,
-            t_total - t_start,
+            t_connect,
+            t_tls,
+            t_total,
         )
         print(out, end="")
 
     if not args.silent and args.verbose:
         print("")
-        print("* Total time: " + String(Int(t_total - t_start)) + "ms")
-        if redirect_count > 0:
-            print("* Redirects followed: " + String(redirect_count))
-
-    _ = external_call["close", Int32](fd)
-    # lib_ptr intentionally not freed: TlsConnection/TlsClientConfig destructors
-    # still hold raw pointers to it. Process exit reclaims all memory.
+        print("* Total time: " + String(Int(t_total)) + "ms")
