@@ -1,0 +1,150 @@
+# src/http/session_slot.mojo
+#
+# SessionSlot — tagged enum wrapping H1/H2/H3 Sessions (M6a §5).
+
+from std.collections.optional import Optional
+from std.memory import Span, UnsafePointer
+
+from src.http.handler import Capabilities, ALPN_H1, ALPN_H2, ALPN_H3
+from src.http.session import Session, RequestHandle
+from src.http.request import Request
+from src.h1.h1_session import H1Session
+from src.h2.h2_session import H2Session
+from src.h3.h3_session import H3Session
+
+
+comptime SLOT_H1: UInt8 = 1
+comptime SLOT_H2: UInt8 = 2
+comptime SLOT_H3: UInt8 = 3
+
+
+struct SessionSlot(Movable):
+    """Tagged enum holding one of H1Session/H2Session/H3Session.
+    Delegates Session-like methods to the active variant."""
+
+    var kind: UInt8
+    var h1: Optional[H1Session]
+    var h2: Optional[H2Session]
+    var h3: Optional[H3Session]
+    var idle_since: UInt64       # monotonic ms, 0 = active
+
+    def __init__(
+        out self,
+        *,
+        kind: UInt8,
+        var h1: Optional[H1Session],
+        var h2: Optional[H2Session],
+        var h3: Optional[H3Session],
+        idle_since: UInt64,
+    ):
+        self.kind = kind
+        self.h1 = h1^
+        self.h2 = h2^
+        self.h3 = h3^
+        self.idle_since = idle_since
+
+    def __init__(out self, *, deinit take: Self):
+        self.kind = take.kind
+        self.h1 = take.h1^
+        self.h2 = take.h2^
+        self.h3 = take.h3^
+        self.idle_since = take.idle_since
+
+    @staticmethod
+    def from_h1(var session: H1Session) -> Self:
+        return Self(
+            kind=SLOT_H1,
+            h1=Optional[H1Session](session^),
+            h2=Optional[H2Session](),
+            h3=Optional[H3Session](),
+            idle_since=UInt64(0),
+        )
+
+    @staticmethod
+    def from_h2(var session: H2Session) -> Self:
+        return Self(
+            kind=SLOT_H2,
+            h1=Optional[H1Session](),
+            h2=Optional[H2Session](session^),
+            h3=Optional[H3Session](),
+            idle_since=UInt64(0),
+        )
+
+    @staticmethod
+    def from_h3(var session: H3Session) -> Self:
+        return Self(
+            kind=SLOT_H3,
+            h1=Optional[H1Session](),
+            h2=Optional[H2Session](),
+            h3=Optional[H3Session](session^),
+            idle_since=UInt64(0),
+        )
+
+    def submit(mut self, var req: Request) raises -> RequestHandle:
+        self.idle_since = UInt64(0)
+        if self.kind == SLOT_H1:
+            return self.h1.value().submit(req^)
+        elif self.kind == SLOT_H2:
+            return self.h2.value().submit(req^)
+        else:
+            return self.h3.value().submit(req^)
+
+    def run_one(mut self, mut handle: RequestHandle) raises:
+        if self.kind == SLOT_H1:
+            self.h1.value().run_one(handle)
+        elif self.kind == SLOT_H2:
+            self.h2.value().run_one(handle)
+        else:
+            self.h3.value().run_one(handle)
+
+    def feed(mut self, data: Span[UInt8, _]) raises:
+        if self.kind == SLOT_H1:
+            self.h1.value().feed(data)
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed(data)
+        else:
+            self.h3.value().feed_datagram(data, UInt64(0))
+
+    def drain(mut self) -> List[UInt8]:
+        if self.kind == SLOT_H1:
+            return self.h1.value().drain()
+        elif self.kind == SLOT_H2:
+            return self.h2.value().drain()
+        # H3 drain returns List[List[UInt8]] — flatten for uniform API
+        return List[UInt8]()
+
+    def capabilities(self) -> Capabilities:
+        if self.kind == SLOT_H1:
+            return Capabilities.for_h1()
+        if self.kind == SLOT_H2:
+            return Capabilities.for_h2()
+        return Capabilities.for_h3()
+
+    def is_idle(self) -> Bool:
+        return self.idle_since != UInt64(0)
+
+    def mark_idle(mut self, now: UInt64):
+        self.idle_since = now
+
+    def mark_active(mut self):
+        self.idle_since = UInt64(0)
+
+
+struct SessionSlotPtr(Copyable, Movable):
+    """Heap pointer wrapper for Dict storage (SessionSlot is move-only)."""
+
+    var addr: UInt64
+
+    def __init__(out self, addr: UInt64):
+        self.addr = addr
+
+    def __init__(out self, *, other: Self):
+        self.addr = other.addr
+
+    def __init__(out self, *, deinit take: Self):
+        self.addr = take.addr
+
+    def ptr(self) -> UnsafePointer[SessionSlot, MutAnyOrigin]:
+        return UnsafePointer[SessionSlot, MutAnyOrigin](
+            unsafe_from_address=Int(self.addr)
+        )
