@@ -8,6 +8,7 @@ from std.memory import Span, UnsafePointer
 from src.http.handler import Capabilities, ALPN_H1, ALPN_H2, ALPN_H3
 from src.http.session import Session, RequestHandle
 from src.http.request import Request
+from src.http.body import BodyFrame
 from src.h1.h1_session import H1Session
 from src.h2.h2_session import H2Session
 from src.h3.h3_session import H3Session
@@ -118,6 +119,14 @@ struct SessionSlot(Movable):
         for i in range(len(datagrams)):
             out.extend(datagrams[i].copy())
         return out^
+
+    def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
+        if self.kind == SLOT_H1:
+            self.h1.value().feed_body(handle_id, frame^)
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed_body(handle_id, frame^)
+        else:
+            self.h3.value().feed_body(handle_id, frame^)
 
     def capabilities(self) -> Capabilities:
         if self.kind == SLOT_H1:
