@@ -116,7 +116,7 @@ struct SessionSlot(Movable):
         var out = List[UInt8]()
         var datagrams = self.h3.value().drain_datagrams(UInt64(0))
         for i in range(len(datagrams)):
-            out.extend(datagrams[i])
+            out.extend(datagrams[i].copy())
         return out^
 
     def capabilities(self) -> Capabilities:
