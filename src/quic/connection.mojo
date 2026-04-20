@@ -622,6 +622,12 @@ struct QuicConnection(Movable):
 
         var offset = 0
         while offset < len(datagram):
+            # Skip datagram-level zero padding (RFC 9000 §12.4).
+            # A zero first byte is never a valid QUIC packet (long headers
+            # require bit 7, short headers require bit 6).
+            if datagram[offset] == 0:
+                break
+
             # 1. Copy remaining bytes into a working buffer.
             var remaining = List[UInt8](capacity=len(datagram) - offset)
             for i in range(offset, len(datagram)):
@@ -634,13 +640,29 @@ struct QuicConnection(Movable):
             var header = header_result[0].copy()
             var header_end = header_result[1]
 
+            # 2b. Client: adopt server's SCID as peer_cid (RFC 9000 §7.2).
+            #     On the first Initial from the server, the client must
+            #     switch its DCID to the server's chosen SCID.
+            if not self.is_server and header.is_long_header and len(header.scid) > 0:
+                if header.packet_type == PacketType.initial():
+                    self.peer_cid = List[UInt8](copy=header.scid)
+
             # 3. Map to PN space.
             var space_idx = packet_type_to_space(header.packet_type)
             if space_idx < 0:
                 break  # VN, Retry — skip for M3b
 
             if not self.protect.has_keys(space_idx):
-                break  # Can't decrypt without keys
+                # No keys for this level. For long-header packets we can
+                # compute the packet boundary and skip to the next coalesced
+                # packet (RFC 9000 §12.2). Short headers consume the rest.
+                if header.is_long_header:
+                    var skip = header.pn_offset + Int(header.payload_length)
+                    if skip > len(remaining):
+                        break  # Truncated
+                    offset += skip
+                    continue
+                break
 
             # 4. Determine packet boundary.
             var pkt_len: Int
@@ -710,9 +732,6 @@ struct QuicConnection(Movable):
                     elif ecn_mark == ECN_ECT1:
                         self.spaces[space_idx].recv_ecn.ect1 += UInt64(1)
 
-                # 12. Drive handshake after CRYPTO processing.
-                self._drive_handshake(now)
-
                 # Track lowest processed space for retransmission logic.
                 if space_idx < lowest_recv_space:
                     lowest_recv_space = space_idx
@@ -720,10 +739,13 @@ struct QuicConnection(Movable):
                 # Decryption or frame processing failed for this packet.
                 # Per RFC 9000 §12.2, stop processing remaining coalesced
                 # packets (they may use keys we don't have yet).
-                # Note: this also catches non-decrypt errors (frame dispatch,
-                # handshake driver). If debugging, inspect `e` here.
                 _ = e
                 decrypt_ok = False
+
+            # 12. Drive handshake OUTSIDE try/except so TLS errors
+            # propagate to the caller (they are fatal, not recoverable).
+            if decrypt_ok:
+                self._drive_handshake(now)
 
             if not decrypt_ok:
                 break  # Stop processing coalesced packets
@@ -1656,27 +1678,26 @@ struct QuicConnection(Movable):
             if len(frames) == 0:
                 continue
 
-            # For client Initial packets, add PADDING frames inside the AEAD-protected
-            # payload so the datagram reaches MIN_INITIAL_PACKET_SIZE (1200).
-            # Server does NOT pad (spec §6).
-            if space_idx == 0 and not self.is_server:
-                # Estimate header overhead: long header + PN + AEAD tag.
-                # Long header ≈ 1+4+1+DCID+1+SCID+varint(token_len)+token+varint(payload_len)
-                # Conservative estimate: 7 + len(peer_cid) + len(local_cid) + 2 + 4
-                var hdr_overhead = 7 + len(self.peer_cid) + len(self.local_cid) + 2
-                var pn_est = 4  # max PN length
-                var tag_len = _AEAD_TAG_LEN
+            # Pad client long-header datagrams to 1200 bytes during handshake.
+            # Initial: required by RFC 9000 §14.1.
+            # Handshake: not strictly required, but necessary in practice —
+            # some server stacks (Cloudflare/quiche) drop undersized client
+            # datagrams during handshake due to anti-amplification accounting.
+            if (space_idx == 0 or space_idx == 1) and not self.is_server:
+                if (self.state & CONN_ESTABLISHED) == 0:
+                    var hdr_overhead = 7 + len(self.peer_cid) + len(self.local_cid) + 2
+                    var pn_est = 4  # max PN length
+                    var tag_len = _AEAD_TAG_LEN
 
-                # Serialize current frames to measure payload size.
-                var est_writer = ByteWriter()
-                serialize_frames(frames, est_writer)
-                var est_payload = est_writer.finish()
-                var current_total = hdr_overhead + pn_est + len(est_payload) + tag_len + len(datagram)
+                    var est_writer = ByteWriter()
+                    serialize_frames(frames, est_writer)
+                    var est_payload = est_writer.finish()
+                    var current_total = hdr_overhead + pn_est + len(est_payload) + tag_len + len(datagram)
 
-                if current_total < 1200:
-                    var pad_needed = 1200 - current_total
-                    for _ in range(pad_needed):
-                        frames.append(Frame.padding())
+                    if current_total < 1200:
+                        var pad_needed = 1200 - current_total
+                        for _ in range(pad_needed):
+                            frames.append(Frame.padding())
 
             # Serialize frames.
             var writer = ByteWriter()
