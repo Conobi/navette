@@ -4,7 +4,8 @@ set -euo pipefail
 # HttpArena calls this instead of `docker build frameworks/mojo-net/`.
 # We need the full repo as context + boucle as a build-context.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks to find the real repo root
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOUCLE_DIR="${BOUCLE_DIR:-$(cd "$REPO_ROOT/../boucle" && pwd)}"
 
