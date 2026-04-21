@@ -103,7 +103,19 @@ def read_file(path: String) raises -> List[UInt8]:
 
 
 def write_file(path: String, data: Span[UInt8, _]) raises:
-    """Write data to file via open/write/close."""
+    """Write data to file via open/write/close. Creates parent dirs if needed."""
+    # Ensure parent directories exist.
+    var path_bytes = path.as_bytes()
+    var last_slash = -1
+    for i in range(len(path_bytes)):
+        if path_bytes[i] == 47:  # '/'
+            last_slash = i
+    if last_slash > 0:
+        var parent = String()
+        for i in range(last_slash):
+            parent += chr(Int(path_bytes[i]))
+        mkdir_p(parent)
+
     var pbuf = _to_cstr(path)
     # O_WRONLY | O_CREAT | O_TRUNC = 1 | 64 | 512 = 577
     var fd = external_call["open", Int32](pbuf, Int32(577), MODE_644)
@@ -120,10 +132,10 @@ def write_file(path: String, data: Span[UInt8, _]) raises:
         for i in range(to_write):
             buf[i] = data[offset + i]
         var n = external_call["pwrite64", Int](Int32(fd), buf, to_write, offset)
-        if n < 0:
+        if n <= 0:
             buf.free()
             _ = external_call["close", Int32](fd)
-            raise "write_file: pwrite64 failed"
+            raise "write_file: pwrite64 failed (returned " + String(n) + ")"
         offset += n
     buf.free()
     _ = external_call["close", Int32](fd)
