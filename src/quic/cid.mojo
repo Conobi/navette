@@ -8,8 +8,10 @@
 # a bounded retire_queue.
 
 from std.ffi import external_call
-from std.memory import Span
+from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _cid_alloc
+
+from src.tls.lib import RustlsLibrary
 
 
 # ── CID state constants ────────────────────────────────────────────────────────
@@ -80,10 +82,12 @@ struct CidManager(Movable):
     var retire_queue: List[UInt64]         # seq numbers to RETIRE_CONNECTION_ID for
     var retire_queue_cap: Int              # max queue depth (peer_active_limit * 8)
     var highest_retire_prior_to: UInt64    # highest retire_prior_to from peer
+    var lib_addr: UInt64                    # RustlsLibrary address for HMAC-SHA256
     var server_secret: List[UInt8]         # 32-byte key for HMAC-SHA256 reset tokens
 
     def __init__(
         out self,
+        lib_addr: UInt64,
         initial_local_cid: List[UInt8],
         initial_remote_cid: List[UInt8],
         local_active_limit: UInt64,
@@ -97,6 +101,8 @@ struct CidManager(Movable):
             local_active_limit: Our active_connection_id_limit transport parameter.
             peer_active_limit:  Peer's active_connection_id_limit transport parameter.
         """
+        self.lib_addr = lib_addr
+
         # Generate 32-byte server_secret via getrandom(2).
         var rbuf = _cid_alloc[UInt8](32).as_any_origin()
         _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
@@ -109,7 +115,7 @@ struct CidManager(Movable):
         # Mark as advertised=True: the initial CID is conveyed in the handshake,
         # not via a NEW_CONNECTION_ID frame, so no advertisement is pending.
         var local_token = _hmac_sha256_truncate16(
-            Span(self.server_secret), Span(initial_local_cid)
+            self.lib_addr, Span(self.server_secret), Span(initial_local_cid)
         )
         var local_entry = CidEntry(
             initial_local_cid, UInt64(0), local_token, CID_ACTIVE, True
@@ -149,6 +155,7 @@ struct CidManager(Movable):
         self.retire_queue = take.retire_queue^
         self.retire_queue_cap = take.retire_queue_cap
         self.highest_retire_prior_to = take.highest_retire_prior_to
+        self.lib_addr = take.lib_addr
         self.server_secret = take.server_secret^
 
     # ── CID generation ────────────────────────────────────────────────────────
@@ -165,7 +172,7 @@ struct CidManager(Movable):
 
     def generate_reset_token(self, cid: Span[UInt8, _]) raises -> List[UInt8]:
         """Compute HMAC-SHA256(server_secret, cid)[:16] as the reset token."""
-        return _hmac_sha256_truncate16(Span(self.server_secret), cid)
+        return _hmac_sha256_truncate16(self.lib_addr, Span(self.server_secret), cid)
 
     # ── Local CID issuance ────────────────────────────────────────────────────
 
@@ -179,7 +186,7 @@ struct CidManager(Movable):
             return None
 
         var new_cid = self.generate_cid()
-        var token = _hmac_sha256_truncate16(Span(self.server_secret), Span(new_cid))
+        var token = _hmac_sha256_truncate16(self.lib_addr, Span(self.server_secret), Span(new_cid))
         var entry = CidEntry(new_cid, self.local_next_seq, token, CID_ACTIVE)
         self.local_next_seq += UInt64(1)
         var entry_copy = CidEntry(other=entry)
@@ -336,22 +343,45 @@ struct CidManager(Movable):
 
 
 def _hmac_sha256_truncate16(
-    key: Span[UInt8, _], msg: Span[UInt8, _]
+    lib_addr: UInt64, key: Span[UInt8, _], msg: Span[UInt8, _]
 ) raises -> List[UInt8]:
-    """Derive a 16-byte reset token from key and msg.
+    """Derive a 16-byte reset token via HMAC-SHA256(key, msg)[:16].
 
-    Uses a simple XOR-fold construction. Sufficient for stateless reset
-    detection (deterministic, collision-resistant for practical CID sizes).
-    TODO: replace with real HMAC-SHA256 via Rust FFI for production.
+    Uses the Rust FFI bridge (aws-lc-rs) for a proper cryptographic MAC.
     """
-    # XOR key bytes cyclically into a 16-byte state, then fold in msg.
+    var lib = UnsafePointer[RustlsLibrary, MutAnyOrigin](
+        unsafe_from_address=Int(lib_addr)
+    )
+
+    var key_ptr = _cid_alloc[UInt8](len(key)).as_any_origin()
+    for i in range(len(key)):
+        key_ptr[i] = key[i]
+
+    var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1)).as_any_origin()
+    for i in range(len(msg)):
+        msg_ptr[i] = msg[i]
+
+    var out_ptr = _cid_alloc[UInt8](32).as_any_origin()
+
+    var rc = lib[].hmac_sha256(
+        key_ptr, Int32(len(key)),
+        msg_ptr, Int32(len(msg)),
+        out_ptr,
+    )
+
+    if rc != 0:
+        var err = lib[].last_error()
+        key_ptr.free()
+        msg_ptr.free()
+        out_ptr.free()
+        raise "HMAC-SHA256 failed: " + err
+
+    # Truncate to first 16 bytes for the reset token.
     var token = List[UInt8](capacity=16)
     for i in range(16):
-        token.append(UInt8(0))
-    for i in range(len(key)):
-        token[i % 16] = token[i % 16] ^ key[i]
-    for i in range(len(msg)):
-        # Rotate state to spread influence
-        var idx = (i * 7 + 3) % 16
-        token[idx] = token[idx] ^ msg[i] ^ UInt8((i + 1) & 0xFF)
+        token.append(out_ptr[i])
+
+    key_ptr.free()
+    msg_ptr.free()
+    out_ptr.free()
     return token^

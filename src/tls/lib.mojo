@@ -487,3 +487,15 @@ struct RustlsLibrary(Movable):
             key, key_len, nonce, nonce_len, aad, aad_len,
             ciphertext, ct_len, out_buf, out_len,
         )
+
+    @always_inline
+    def hmac_sha256(
+        self,
+        key: UnsafePointer[UInt8, MutAnyOrigin], key_len: Int32,
+        msg: UnsafePointer[UInt8, MutAnyOrigin], msg_len: Int32,
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+    ) -> Int32:
+        """HMAC-SHA256. out_buf must hold 32 bytes. Returns 0 or -1."""
+        return self._handle.call["rlsm_hmac_sha256", Int32](
+            key, key_len, msg, msg_len, out_buf,
+        )

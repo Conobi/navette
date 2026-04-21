@@ -6,7 +6,11 @@
 # Run with:
 #   uv run mojo run -I . -D ASSERT=all tests/test_quic_cid.mojo
 
+from std.memory import UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
+
 from tests._test_util import assert_true, assert_false, assert_equal_int
+from src.tls.lib import RustlsLibrary
 from src.quic.cid import (
     CidEntry,
     CidManager,
@@ -35,18 +39,18 @@ def _make_token() -> List[UInt8]:
     return tok^
 
 
-def _make_manager() raises -> CidManager:
+def _make_manager(lib_addr: UInt64) raises -> CidManager:
     """Create a CidManager with known CIDs for deterministic testing."""
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    return CidManager(local_cid, remote_cid, UInt64(4), UInt64(4))
+    return CidManager(lib_addr, local_cid, remote_cid, UInt64(4), UInt64(4))
 
 
 # ── 1. test_initial_state ─────────────────────────────────────────────────────
 
 
-def test_initial_state() raises:
-    var mgr = _make_manager()
+def test_initial_state(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # One local CID at seq=0 (Active)
     assert_equal_int(len(mgr.local_cids), 1, "local_cids should have 1 entry")
@@ -70,8 +74,8 @@ def test_initial_state() raises:
 # ── 2. test_cid_generation ────────────────────────────────────────────────────
 
 
-def test_cid_generation() raises:
-    var mgr = _make_manager()
+def test_cid_generation(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # Each generated CID is 8 bytes
     var cid0 = mgr.generate_cid()
@@ -101,8 +105,8 @@ def test_cid_generation() raises:
 # ── 3. test_reset_token_deterministic ─────────────────────────────────────────
 
 
-def test_reset_token_deterministic() raises:
-    var mgr = _make_manager()
+def test_reset_token_deterministic(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     var cid_a = _make_cid(UInt8(0x01))
     var cid_b = _make_cid(UInt8(0x02))
@@ -135,8 +139,8 @@ def test_reset_token_deterministic() raises:
 # ── 4. test_issue_new_cid ─────────────────────────────────────────────────────
 
 
-def test_issue_new_cid() raises:
-    var mgr = _make_manager()
+def test_issue_new_cid(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # Initially 1 active local CID
     assert_equal_int(mgr.active_local_count(), 1, "initial active local count = 1")
@@ -159,11 +163,11 @@ def test_issue_new_cid() raises:
 # ── 5. test_issue_cid_respects_limit ──────────────────────────────────────────
 
 
-def test_issue_cid_respects_limit() raises:
+def test_issue_cid_respects_limit(lib_addr: UInt64) raises:
     # peer_active_limit=2: we start with seq=0 (1 active), can issue seq=1 → 2 active, but not seq=2
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    var mgr = CidManager(local_cid, remote_cid, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib_addr, local_cid, remote_cid, UInt64(2), UInt64(2))
 
     # Start: 1 active (seq=0)
     assert_equal_int(mgr.active_local_count(), 1, "initial active = 1")
@@ -182,8 +186,8 @@ def test_issue_cid_respects_limit() raises:
 # ── 6. test_on_new_connection_id_basic ────────────────────────────────────────
 
 
-def test_on_new_connection_id_basic() raises:
-    var mgr = _make_manager()
+def test_on_new_connection_id_basic(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # Initially 1 remote CID
     assert_equal_int(len(mgr.remote_cids), 1, "initial remote count = 1")
@@ -202,8 +206,8 @@ def test_on_new_connection_id_basic() raises:
 # ── 7. test_retire_prior_to ────────────────────────────────────────────────────
 
 
-def test_retire_prior_to() raises:
-    var mgr = _make_manager()
+def test_retire_prior_to(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # Add remote CID seq=1 first
     var cid1 = _make_cid(UInt8(0xC1))
@@ -235,11 +239,11 @@ def test_retire_prior_to() raises:
 # ── 8. test_retirement_queue_cap ──────────────────────────────────────────────
 
 
-def test_retirement_queue_cap() raises:
+def test_retirement_queue_cap(lib_addr: UInt64) raises:
     # peer_active_limit=2 → retire_queue_cap = 2 * 8 = 16
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    var mgr = CidManager(local_cid, remote_cid, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib_addr, local_cid, remote_cid, UInt64(2), UInt64(2))
 
     # Add retire_queue_cap + 1 sequences to overflow the queue.
     # Cap = peer_active_limit * 8 = 16.
@@ -274,8 +278,8 @@ def test_retirement_queue_cap() raises:
 # ── 9. test_late_arriving_cid ─────────────────────────────────────────────────
 
 
-def test_late_arriving_cid() raises:
-    var mgr = _make_manager()
+def test_late_arriving_cid(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # Advance highest_retire_prior_to to 3 via a CID that says retire_prior_to=3
     var cid3 = _make_cid(UInt8(0xD0))
@@ -303,8 +307,8 @@ def test_late_arriving_cid() raises:
 # ── 10. test_on_retire_connection_id ─────────────────────────────────────────
 
 
-def test_on_retire_connection_id() raises:
-    var mgr = _make_manager()
+def test_on_retire_connection_id(lib_addr: UInt64) raises:
+    var mgr = _make_manager(lib_addr)
 
     # Issue seq=1 so we have 2 active local CIDs
     _ = mgr.issue_new_cid()
@@ -328,12 +332,12 @@ def test_on_retire_connection_id() raises:
 # ── 11. test_retire_triggers_replacement ─────────────────────────────────────
 
 
-def test_retire_triggers_replacement() raises:
+def test_retire_triggers_replacement(lib_addr: UInt64) raises:
     """RFC 9000 §5.1.1: retiring a local CID below peer_active_limit issues a replacement."""
     # peer_active_limit=2; start with seq=0 (1 active). Issue seq=1 → 2 active.
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    var mgr = CidManager(local_cid, remote_cid, UInt64(4), UInt64(2))
+    var mgr = CidManager(lib_addr, local_cid, remote_cid, UInt64(4), UInt64(2))
 
     _ = mgr.issue_new_cid()  # seq=1; now 2 active == peer_active_limit
     assert_equal_int(mgr.active_local_count(), 2, "2 active before retire")
@@ -350,9 +354,9 @@ def test_retire_triggers_replacement() raises:
 # ── 12. test_pending_new_cid_entries ─────────────────────────────────────────
 
 
-def test_pending_new_cid_entries() raises:
+def test_pending_new_cid_entries(lib_addr: UInt64) raises:
     """Verify pending_new_cid_entries returns Active CIDs not yet advertised."""
-    var mgr = _make_manager()
+    var mgr = _make_manager(lib_addr)
 
     # Initial seq=0 is marked advertised=True (handshake CID, no frame needed).
     var pending0 = mgr.pending_new_cid_entries()
@@ -375,11 +379,11 @@ def test_pending_new_cid_entries() raises:
 # ── 13. test_clear_advertised ─────────────────────────────────────────────────
 
 
-def test_clear_advertised() raises:
+def test_clear_advertised(lib_addr: UInt64) raises:
     """Clear_advertised allows a CID to be re-advertised on loss."""
     var local = _make_cid(UInt8(0x01))
     var remote = _make_cid(UInt8(0x03))
-    var mgr = CidManager(local^, remote^, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib_addr, local^, remote^, UInt64(2), UInt64(2))
     var entry = mgr.issue_new_cid()
     assert_true(entry.__bool__(), "issued seq=1")
     mgr.mark_advertised(UInt64(1))
@@ -397,18 +401,23 @@ def test_clear_advertised() raises:
 def main() raises:
     print("test_quic_cid:")
 
-    test_initial_state()
-    test_cid_generation()
-    test_reset_token_deterministic()
-    test_issue_new_cid()
-    test_issue_cid_respects_limit()
-    test_on_new_connection_id_basic()
-    test_retire_prior_to()
-    test_retirement_queue_cap()
-    test_late_arriving_cid()
-    test_on_retire_connection_id()
-    test_retire_triggers_replacement()
-    test_pending_new_cid_entries()
-    test_clear_advertised()
+    # Initialise shared RustlsLibrary for HMAC-SHA256.
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary())
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    test_initial_state(lib_addr)
+    test_cid_generation(lib_addr)
+    test_reset_token_deterministic(lib_addr)
+    test_issue_new_cid(lib_addr)
+    test_issue_cid_respects_limit(lib_addr)
+    test_on_new_connection_id_basic(lib_addr)
+    test_retire_prior_to(lib_addr)
+    test_retirement_queue_cap(lib_addr)
+    test_late_arriving_cid(lib_addr)
+    test_on_retire_connection_id(lib_addr)
+    test_retire_triggers_replacement(lib_addr)
+    test_pending_new_cid_entries(lib_addr)
+    test_clear_advertised(lib_addr)
 
     print("All test_quic_cid tests passed.")
