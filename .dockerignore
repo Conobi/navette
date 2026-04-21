@@ -1,0 +1,12 @@
+.git
+.venv
+.worktrees
+research
+plans
+specs
+docs
+conformance
+tests
+examples
+scripts
+*.md
