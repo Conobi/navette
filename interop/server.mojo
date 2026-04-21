@@ -72,10 +72,11 @@ def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
 def _create_server_config(
     lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
     alpn: String,
+    certs_dir: String,
 ) raises -> Int32:
-    """Create a QUIC server TLS config from /certs/ PEM files."""
-    var cert_data = read_file("/certs/cert.pem")
-    var key_data = read_file("/certs/priv.key")
+    """Create a QUIC server TLS config from PEM files in certs_dir."""
+    var cert_data = read_file(certs_dir + "/cert.pem")
+    var key_data = read_file(certs_dir + "/priv.key")
 
     var cert_len = len(cert_data)
     var key_len = len(key_data)
@@ -139,6 +140,18 @@ def main() raises:
     if testcase != "handshake" and testcase != "transfer":
         _ = external_call["exit", Int32](Int32(127))
 
+    # Configurable paths and port (env var overrides for local testing).
+    var www_opt = getenv_opt("WWW_DIR")
+    var www_dir = www_opt.value() if www_opt else String("/www")
+    var certs_opt = getenv_opt("CERTS_DIR")
+    var certs_dir = certs_opt.value() if certs_opt else String("/certs")
+    var port_opt = getenv_opt("PORT")
+    var port_str = port_opt.value() if port_opt else String("443")
+    var port = 0
+    var ps_bytes = port_str.as_bytes()
+    for pi in range(len(ps_bytes)):
+        port = port * 10 + (Int(ps_bytes[pi]) - 48)
+
     # Load TLS library.
     var lib_ptr = _heap_alloc[RustlsLibrary](1)
     lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
@@ -148,11 +161,11 @@ def main() raises:
     # Nothing extra needed; just ensure it's set in the environment.
 
     # Create server TLS config with hq-interop ALPN.
-    var server_config = _create_server_config(lib_ptr.as_any_origin(), "hq-interop")
+    var server_config = _create_server_config(lib_ptr.as_any_origin(), "hq-interop", certs_dir)
 
-    # Bind UDP socket on port 443.
-    var udp_fd = udp_bind(443)
-    print("interop-server: listening on :443, testcase=" + testcase)
+    # Bind UDP socket.
+    var udp_fd = udp_bind(port)
+    print("interop-server: listening on :" + String(port) + ", testcase=" + testcase)
 
     # Connection state — parallel lists (Dict iteration not supported in 0.26.2).
     var conn_keys = List[String]()
@@ -280,7 +293,7 @@ def main() raises:
                                 conn_ptrs[ci][],
                                 stream_id,
                                 Span(stream_buf_vals[buf_idx]),
-                                "/www",
+                                www_dir,
                             )
                             # Clear buffer after serving.
                             stream_buf_vals[buf_idx] = List[UInt8]()

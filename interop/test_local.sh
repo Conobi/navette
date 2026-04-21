@@ -2,53 +2,37 @@
 set -euo pipefail
 
 echo "=== QUIC Interop Runner Local Test ==="
-echo "NOTE: Requires root (port 443 + /www /certs /downloads paths)"
-echo "      Run with: sudo bash interop/test_local.sh"
-echo "      Or use Docker for a rootless alternative."
 echo ""
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEST_DIR="/tmp/interop_local"
+PORT=4433
 
 # --- Setup temp directories ---
-mkdir -p /tmp/interop_local/{www,downloads,certs}
-
-# --- Symlink interop runner paths (requires root) ---
-ln -sfn /tmp/interop_local/www /www
-ln -sfn /tmp/interop_local/certs /certs
-mkdir -p /downloads
+mkdir -p "$TEST_DIR"/{www,downloads,certs}
 
 # --- Generate self-signed EC cert ---
 echo "[setup] Generating self-signed EC certificate..."
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout /tmp/interop_local/certs/priv.key \
-    -out /tmp/interop_local/certs/cert.pem \
+    -keyout "$TEST_DIR/certs/priv.key" \
+    -out "$TEST_DIR/certs/cert.pem" \
     -days 1 -nodes -subj "/CN=server" 2>/dev/null
-cp /tmp/interop_local/certs/cert.pem /tmp/interop_local/certs/ca.pem
-echo "[setup] Cert written to /tmp/interop_local/certs/"
+cp "$TEST_DIR/certs/cert.pem" "$TEST_DIR/certs/ca.pem"
 
 # --- Create test files ---
 echo "[setup] Creating test files..."
-dd if=/dev/urandom of=/tmp/interop_local/www/small.bin bs=1024 count=1 2>/dev/null
-echo "[setup] Test files written to /tmp/interop_local/www/"
+dd if=/dev/urandom of="$TEST_DIR/www/small.bin" bs=1024 count=1 2>/dev/null
+dd if=/dev/urandom of="$TEST_DIR/www/medium.bin" bs=1024 count=100 2>/dev/null
 
-# --- Build binaries (if not already built) ---
-if [ ! -f /tmp/interop-server ]; then
-    echo "[build] Building interop server..."
-    cd "$REPO_ROOT"
-    LD_LIBRARY_PATH=lib uv run mojo build -I . interop/server.mojo -o /tmp/interop-server
-else
-    echo "[build] Skipping server build (already exists at /tmp/interop-server)"
-fi
+# --- Build binaries ---
+echo "[build] Building interop server..."
+cd "$REPO_ROOT"
+LD_LIBRARY_PATH=lib uv run mojo build -I . interop/server.mojo -o /tmp/interop-server
 
-if [ ! -f /tmp/interop-client ]; then
-    echo "[build] Building interop client..."
-    cd "$REPO_ROOT"
-    LD_LIBRARY_PATH=lib uv run mojo build -I . interop/client.mojo -o /tmp/interop-client
-else
-    echo "[build] Skipping client build (already exists at /tmp/interop-client)"
-fi
+echo "[build] Building interop client..."
+LD_LIBRARY_PATH=lib uv run mojo build -I . interop/client.mojo -o /tmp/interop-client
 
-# --- Test 1: Unsupported TESTCASE should exit 127 ---
+# --- Test 1: Unsupported TESTCASE exits 127 ---
 echo ""
 echo "[test] TESTCASE=zerortt (unsupported) should exit 127..."
 EXIT=0
@@ -62,33 +46,71 @@ fi
 # --- Test 2: handshake ---
 echo ""
 echo "[test] TESTCASE=handshake: server + client download..."
+rm -f "$TEST_DIR/downloads/small.bin"
 
-# Clean previous download result
-rm -f /downloads/small.bin /tmp/interop_local/downloads/small.bin
-
-# Start server in background
-TESTCASE=handshake LD_LIBRARY_PATH="$REPO_ROOT/lib" /tmp/interop-server &
+TESTCASE=handshake \
+    WWW_DIR="$TEST_DIR/www" \
+    CERTS_DIR="$TEST_DIR/certs" \
+    PORT=$PORT \
+    LD_LIBRARY_PATH="$REPO_ROOT/lib" \
+    /tmp/interop-server &
 SERVER_PID=$!
-
 sleep 1
 
-# Run client
-TESTCASE=handshake REQUESTS="https://127.0.0.1:443/small.bin" \
-    LD_LIBRARY_PATH="$REPO_ROOT/lib" /tmp/interop-client || true
+TESTCASE=handshake \
+    REQUESTS="https://127.0.0.1:$PORT/small.bin" \
+    CERTS_DIR="$TEST_DIR/certs" \
+    DOWNLOADS_DIR="$TEST_DIR/downloads" \
+    LD_LIBRARY_PATH="$REPO_ROOT/lib" \
+    /tmp/interop-client || true
 
-# Stop server
 kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null || true
 
-# The client saves to /downloads; copy result for comparison
-if [ -f /downloads/small.bin ]; then
-    cp /downloads/small.bin /tmp/interop_local/downloads/small.bin
-fi
-
-if cmp -s /tmp/interop_local/www/small.bin /tmp/interop_local/downloads/small.bin; then
+if cmp -s "$TEST_DIR/www/small.bin" "$TEST_DIR/downloads/small.bin"; then
     echo "[test] PASS: downloaded file matches original"
 else
     echo "[test] FAIL: file mismatch or download missing"
 fi
+
+# --- Test 3: transfer (multiple files) ---
+echo ""
+echo "[test] TESTCASE=transfer: multiple file download..."
+rm -f "$TEST_DIR/downloads/small.bin" "$TEST_DIR/downloads/medium.bin"
+
+TESTCASE=transfer \
+    WWW_DIR="$TEST_DIR/www" \
+    CERTS_DIR="$TEST_DIR/certs" \
+    PORT=$PORT \
+    LD_LIBRARY_PATH="$REPO_ROOT/lib" \
+    /tmp/interop-server &
+SERVER_PID=$!
+sleep 1
+
+TESTCASE=transfer \
+    REQUESTS="https://127.0.0.1:$PORT/small.bin https://127.0.0.1:$PORT/medium.bin" \
+    CERTS_DIR="$TEST_DIR/certs" \
+    DOWNLOADS_DIR="$TEST_DIR/downloads" \
+    LD_LIBRARY_PATH="$REPO_ROOT/lib" \
+    /tmp/interop-client || true
+
+kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null || true
+
+TRANSFER_OK=true
+if ! cmp -s "$TEST_DIR/www/small.bin" "$TEST_DIR/downloads/small.bin"; then
+    TRANSFER_OK=false
+fi
+if ! cmp -s "$TEST_DIR/www/medium.bin" "$TEST_DIR/downloads/medium.bin"; then
+    TRANSFER_OK=false
+fi
+
+if [ "$TRANSFER_OK" = true ]; then
+    echo "[test] PASS: both files match"
+else
+    echo "[test] FAIL: file mismatch or download missing"
+fi
+
+# --- Cleanup ---
+rm -rf "$TEST_DIR"
 
 echo ""
 echo "=== Done ==="
