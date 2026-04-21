@@ -12,9 +12,9 @@
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
 
 from std.collections import Dict, Optional
+from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from std.python import Python
 
 from src.tls.lib import RustlsLibrary
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
@@ -2658,12 +2658,16 @@ def _get_lib(
 
 
 def _generate_random_cid() raises -> List[UInt8]:
-    """Generate a random 8-byte connection ID via Python os.urandom."""
-    var os = Python.import_module("os")
-    var rand_bytes = os.urandom(8)
+    """Generate a random 8-byte connection ID via getrandom(2)."""
+    var buf = _heap_alloc[UInt8](8).as_any_origin()
+    var rc = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
+    if rc != 8:
+        buf.free()
+        raise "getrandom failed"
     var cid = List[UInt8](capacity=8)
     for i in range(8):
-        cid.append(UInt8(Int(py=rand_bytes[i])))
+        cid.append(buf[i])
+    buf.free()
     return cid^
 
 
