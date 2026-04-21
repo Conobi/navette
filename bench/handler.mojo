@@ -311,7 +311,7 @@ def handle_static(
     target: String,
     headers: Headers,
     mut resp: ResponseWriter,
-    cache: Dict[String, StaticEntry],
+    cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
 ) raises:
     """Serve a file from the static cache for ``/static/<filename>``.
 
@@ -346,10 +346,10 @@ def handle_static(
         fi += 1
 
     # Look up in cache
-    if filename not in cache:
+    if filename not in cache_ptr[]:
         handle_404(resp)
         return
-    var entry = cache[filename].copy()
+    var entry = cache_ptr[][filename].copy()
 
     # Content negotiation
     var use_br = _accepts_encoding(headers, String("br")) and len(entry.br_data) > 0
@@ -398,13 +398,13 @@ def _dispatch_request(
     target: String,
     headers: Headers,
     mut resp: ResponseWriter,
-    cache: Dict[String, StaticEntry],
+    cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
 ) raises:
     """Route a request based on URL path prefix."""
     if _starts_with(target, String("/baseline2")) or _starts_with(target, String("/baseline11")):
         handle_baseline2(target, resp)
     elif _starts_with(target, String("/static/")):
-        handle_static(target, headers, resp, cache)
+        handle_static(target, headers, resp, cache_ptr)
     else:
         handle_404(resp)
 
@@ -432,7 +432,7 @@ struct BenchHandler(StreamHandler):
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
-        _dispatch_request(req.target, req.headers, resp, self.cache_ptr[])
+        _dispatch_request(req.target, req.headers, resp, self.cache_ptr)
 
     def on_body_available(
         mut self,
@@ -469,22 +469,22 @@ struct BenchHandler(StreamHandler):
 def bench_h2_body_fn(mut yielder: CoroYielder) raises:
     """CoroBody for H2CoroServer: dispatch request from per-stream context."""
     var ctx = yielder.user_data().bitcast[H2CoroStreamCtx]()
-    var cache = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]()
+    var cache_ptr = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]().as_any_origin()
     _dispatch_request(
         ctx[].request.target,
         ctx[].request.headers,
         ctx[].resp_writer,
-        cache[],
+        cache_ptr,
     )
 
 
 def bench_h3_body_fn(mut yielder: CoroYielder) raises:
     """CoroBody for H3CoroServer: dispatch request from per-stream context."""
     var ctx = yielder.user_data().bitcast[H3CoroStreamCtx]()
-    var cache = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]()
+    var cache_ptr = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]().as_any_origin()
     _dispatch_request(
         ctx[].request.target,
         ctx[].request.headers,
         ctx[].resp_writer,
-        cache[],
+        cache_ptr,
     )
