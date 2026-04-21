@@ -364,6 +364,19 @@ struct H2ServerHandler(CompletionHandler):
             self._close_connection(idx)
             return
 
+        var sent = Int(result)
+        var buf_len = len(self.connections[idx][].send_buf)
+        if sent < buf_len:
+            # Partial send — keep unsent tail
+            var remaining = List[UInt8](capacity=buf_len - sent)
+            var i = sent
+            while i < buf_len:
+                remaining.append(self.connections[idx][].send_buf[i])
+                i += 1
+            self.connections[idx][].send_buf = remaining^
+            self._queue_send(idx)
+            return
+
         self.connections[idx][].send_buf = List[UInt8]()
 
         if len(self.connections[idx][].send_pending) > 0:
