@@ -89,13 +89,12 @@ def _create_server_config(
     for i in range(key_len):
         key_buf[i] = key_data[i]
 
-    # Encode ALPN: length-prefixed wire format.
+    # ALPN: raw protocol name bytes (Rust wraps in vec![]).
     var alpn_bytes = alpn.as_bytes()
-    var alpn_wire_len = 1 + len(alpn_bytes)
+    var alpn_wire_len = len(alpn_bytes)
     var alpn_buf = _heap_alloc[UInt8](alpn_wire_len).as_any_origin()
-    alpn_buf[0] = UInt8(len(alpn_bytes))
     for i in range(len(alpn_bytes)):
-        alpn_buf[1 + i] = alpn_bytes[i]
+        alpn_buf[i] = alpn_bytes[i]
 
     var out_handle = _heap_alloc[Int32](1).as_any_origin()
     var rc = lib_ptr[].quic_server_config_new(
@@ -287,8 +286,8 @@ def main() raises:
                         for bi in range(len(chunk)):
                             stream_buf_vals[buf_idx].append(chunk[bi])
 
-                        # Check if we have a complete request (\r\n) or FIN.
-                        if _has_crlf(stream_buf_vals[buf_idx]) or fin:
+                        # Check if we have a complete request (\r\n) or FIN with data.
+                        if len(stream_buf_vals[buf_idx]) > 0 and (_has_crlf(stream_buf_vals[buf_idx]) or fin):
                             http09_serve(
                                 conn_ptrs[ci][],
                                 stream_id,

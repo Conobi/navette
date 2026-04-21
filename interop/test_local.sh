@@ -12,12 +12,21 @@ PORT=4433
 mkdir -p "$TEST_DIR"/{www,downloads,certs}
 
 # --- Generate self-signed EC cert ---
-echo "[setup] Generating self-signed EC certificate..."
+echo "[setup] Generating CA + leaf certificate..."
+# CA cert (self-signed)
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "$TEST_DIR/certs/ca.key" \
+    -out "$TEST_DIR/certs/ca.pem" \
+    -days 1 -nodes -subj "/CN=Test CA" 2>/dev/null
+# Leaf cert signed by CA (with SAN for localhost + 127.0.0.1)
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$TEST_DIR/certs/priv.key" \
-    -out "$TEST_DIR/certs/cert.pem" \
-    -days 1 -nodes -subj "/CN=server" 2>/dev/null
-cp "$TEST_DIR/certs/cert.pem" "$TEST_DIR/certs/ca.pem"
+    -out "$TEST_DIR/certs/leaf.csr" \
+    -nodes -subj "/CN=server" 2>/dev/null
+openssl x509 -req -in "$TEST_DIR/certs/leaf.csr" \
+    -CA "$TEST_DIR/certs/ca.pem" -CAkey "$TEST_DIR/certs/ca.key" -CAcreateserial \
+    -out "$TEST_DIR/certs/cert.pem" -days 1 \
+    -extfile <(echo "subjectAltName=DNS:server,DNS:localhost,IP:127.0.0.1") 2>/dev/null
 
 # --- Create test files ---
 echo "[setup] Creating test files..."
