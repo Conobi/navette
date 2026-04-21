@@ -34,7 +34,7 @@ def _parse_query_int(target: String, name: String) -> Optional[Int]:
             continue
         i += 1
 
-        if i + name_len + 1 >= tgt_len:
+        if i + name_len + 1 > tgt_len:
             break
         var matched = True
         var j = 0
@@ -70,7 +70,7 @@ def handle_baseline2(target: String, mut resp: ResponseWriter) raises:
     """GET /baseline2?a=X&b=Y -> text/plain sum."""
     var a = _parse_query_int(target, "a")
     var b = _parse_query_int(target, "b")
-    if not Bool(a) or not Bool(b):
+    if not a or not b:
         var hdrs = Headers()
         hdrs.add("content-type", "text/plain")
         resp.send_status(StatusCode(400), hdrs^)
