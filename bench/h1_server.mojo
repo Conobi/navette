@@ -300,6 +300,19 @@ struct H1ServerHandler(CompletionHandler):
             self._close_connection(idx)
             return
 
+        # Handle partial sends.
+        var sent = Int(result)
+        var buf_len = len(self.connections[idx][].send_buf)
+        if sent < buf_len:
+            var remaining = List[UInt8](capacity=buf_len - sent)
+            var i = sent
+            while i < buf_len:
+                remaining.append(self.connections[idx][].send_buf[i])
+                i += 1
+            self.connections[idx][].send_buf = remaining^
+            self._queue_send(idx)
+            return
+
         self.connections[idx][].send_buf = List[UInt8]()
 
         # Promote any pending data.
