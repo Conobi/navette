@@ -72,8 +72,8 @@ def _create_server_config(
     certs_dir: String,
 ) raises -> Int32:
     """Create a QUIC server TLS config from PEM files in certs_dir."""
-    var cert_data = read_file(certs_dir + "/cert.pem")
-    var key_data = read_file(certs_dir + "/priv.key")
+    var cert_data = read_file(certs_dir + "/server.crt")
+    var key_data = read_file(certs_dir + "/server.key")
 
     var cert_len = len(cert_data)
     var key_len = len(key_data)
@@ -225,4 +225,13 @@ def main() raises:
                 print("bench-h3: connection closed for conn " + String(ci))
                 conn_h3s[ci].destroy_pointee()
                 conn_h3s[ci].free()
-                conn_h3s[ci] = UnsafePointer[H3CoroServer, MutAnyOrigin]()
+                # Swap-and-pop to avoid null slot accumulation.
+                var last = len(conn_keys) - 1
+                if ci < last:
+                    conn_keys[ci] = conn_keys[last]
+                    conn_addrs[ci] = conn_addrs[last].copy()
+                    conn_h3s[ci] = conn_h3s[last]
+                    conn_h3s[last] = UnsafePointer[H3CoroServer, MutAnyOrigin]()
+                _ = conn_keys.pop()
+                _ = conn_addrs.pop()
+                _ = conn_h3s.pop()
