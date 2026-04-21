@@ -207,12 +207,18 @@ def main() raises:
     if len(urls) == 0:
         raise "REQUESTS is empty"
 
+    # Configurable paths (env var overrides for local testing).
+    var certs_opt = getenv_opt("CERTS_DIR")
+    var certs_dir = certs_opt.value() if certs_opt else String("/certs")
+    var dl_opt = getenv_opt("DOWNLOADS_DIR")
+    var downloads_dir = dl_opt.value() if dl_opt else String("/downloads")
+
     # ── Load TLS library + CA cert ────────────────────────────────────────
     var lib_ptr = _heap_alloc[RustlsLibrary](1)
     lib_ptr.init_pointee_move(RustlsLibrary())
     var lib_addr = UInt64(Int(lib_ptr))
 
-    var ca_pem = read_file("/certs/ca.pem")
+    var ca_pem = read_file(certs_dir + "/ca.pem")
     var ca_ptr = ca_pem.unsafe_ptr().as_any_origin()
     var ca_len = Int32(len(ca_pem))
 
@@ -260,7 +266,7 @@ def main() raises:
         var path = parsed[2]
         var filename = basename(path)
         var data = _fetch_file(quic, fd, path)
-        write_file("/downloads/" + filename, Span(data))
+        write_file(downloads_dir + "/" + filename, Span(data))
 
     # ── Clean up ──────────────────────────────────────────────────────────
     udp_close(fd)
