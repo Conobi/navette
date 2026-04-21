@@ -25,6 +25,7 @@ pub use quic::{
     rlsm_keys_free,
     rlsm_aes_gcm_128_seal,
     rlsm_aes_gcm_128_open,
+    rlsm_hmac_sha256,
 };
 pub use config::{
     rlsm_client_config_new,

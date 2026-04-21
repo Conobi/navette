@@ -413,6 +413,7 @@ struct QuicConnection(Movable):
             local_window_uni=local_params.initial_max_stream_data_uni,
         )
         self.cid_mgr = CidManager(
+            lib_addr=self.lib_addr,
             initial_local_cid=List[UInt8](copy=local_cid),
             initial_remote_cid=List[UInt8](copy=peer_cid),
             local_active_limit=UInt64(2),

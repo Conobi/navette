@@ -5,6 +5,7 @@
 use std::sync::OnceLock;
 
 use aws_lc_rs::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
+use aws_lc_rs::hmac;
 use rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256;
 use rustls::crypto::tls13::{HkdfExpander, OkmBlock};
 use rustls::quic::{DirectionalKeys, Keys, Version as QuicVersion};
@@ -761,6 +762,63 @@ pub extern "C" fn rlsm_aes_gcm_128_open(
     unsafe {
         std::ptr::copy_nonoverlapping(plaintext.as_ptr(), out_ptr, pt_len);
         *out_len_ptr = pt_len as i32;
+    }
+
+    0
+}
+
+// ---------------------------------------------------------------------------
+// HMAC-SHA256
+// ---------------------------------------------------------------------------
+
+/// Compute HMAC-SHA256(key, msg) and write the 32-byte tag to `out_ptr`.
+///
+/// `out_ptr` must have capacity >= 32 bytes.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn rlsm_hmac_sha256(
+    key_ptr: *const u8,
+    key_len: i32,
+    msg_ptr: *const u8,
+    msg_len: i32,
+    out_ptr: *mut u8,
+) -> i32 {
+    clear_last_error();
+
+    if key_len < 0 {
+        rlsm_err!("rlsm_hmac_sha256: negative key_len"; return -1);
+    }
+    if key_len > 0 && key_ptr.is_null() {
+        rlsm_err!("rlsm_hmac_sha256: null key pointer with non-zero key_len"; return -1);
+    }
+    if msg_len < 0 {
+        rlsm_err!("rlsm_hmac_sha256: negative msg_len"; return -1);
+    }
+    if msg_len > 0 && msg_ptr.is_null() {
+        rlsm_err!("rlsm_hmac_sha256: null msg pointer with non-zero msg_len"; return -1);
+    }
+    if out_ptr.is_null() {
+        rlsm_err!("rlsm_hmac_sha256: null out pointer"; return -1);
+    }
+
+    let key_bytes = if key_len > 0 {
+        unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) }
+    } else {
+        &[]
+    };
+    let msg_bytes = if msg_len > 0 {
+        unsafe { std::slice::from_raw_parts(msg_ptr, msg_len as usize) }
+    } else {
+        &[]
+    };
+
+    let s_key = hmac::Key::new(hmac::HMAC_SHA256, key_bytes);
+    let tag = hmac::sign(&s_key, msg_bytes);
+    let tag_bytes = tag.as_ref();
+
+    // HMAC-SHA256 always produces 32 bytes
+    unsafe {
+        std::ptr::copy_nonoverlapping(tag_bytes.as_ptr(), out_ptr, 32);
     }
 
     0
