@@ -135,8 +135,8 @@ def _has_crlf(data: List[UInt8]) -> Bool:
 def main() raises:
     var testcase = getenv("TESTCASE")
 
-    # Only support handshake, transfer, and retry for now.
-    if testcase != "handshake" and testcase != "transfer" and testcase != "retry":
+    # Only support handshake and transfer for now. Retry and http3 deferred.
+    if testcase != "handshake" and testcase != "transfer":
         _ = external_call["exit", Int32](Int32(127))
 
     # Load TLS library.
