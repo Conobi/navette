@@ -161,8 +161,8 @@ def _udp_send(fd: Int32, data: List[UInt8]) raises:
 
 def _udp_recv(fd: Int32) raises -> List[UInt8]:
     """Receive a single UDP datagram (non-blocking attempt with MSG_DONTWAIT)."""
-    var buf = _heap_alloc[UInt8](1500).as_any_origin()
-    var rc = external_call["recv", Int](fd, buf, 1500, Int32(0x40))  # MSG_DONTWAIT
+    var buf = _heap_alloc[UInt8](65536).as_any_origin()
+    var rc = external_call["recv", Int](fd, buf, 65536, Int32(0x40))  # MSG_DONTWAIT
     var result = List[UInt8]()
     if rc > 0:
         for i in range(rc):
@@ -173,8 +173,8 @@ def _udp_recv(fd: Int32) raises -> List[UInt8]:
 
 def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
     """Receive a single UDP datagram (blocking)."""
-    var buf = _heap_alloc[UInt8](1500).as_any_origin()
-    var rc = external_call["recv", Int](fd, buf, 1500, Int32(0))
+    var buf = _heap_alloc[UInt8](65536).as_any_origin()
+    var rc = external_call["recv", Int](fd, buf, 65536, Int32(0))
     var result = List[UInt8]()
     if rc > 0:
         for i in range(rc):

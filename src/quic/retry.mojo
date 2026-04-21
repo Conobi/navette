@@ -2,9 +2,9 @@
 # Stateless Retry token generation/validation and integrity tag computation.
 # RFC 9001 Section 8.1 (Retry), Appendix A.4 (integrity tag test vector).
 
-from std.memory import UnsafePointer
+from std.ffi import external_call
+from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from std.python import Python
 
 from src.tls.lib import RustlsLibrary
 
@@ -84,12 +84,9 @@ def generate_retry_token(
     off = _copy_span_to_ptr(client_addr_hash, pt_ptr, off)
     off = _write_u64_be(pt_ptr, off, now)
 
-    # Generate 12-byte nonce via Python os.urandom
-    var os = Python.import_module("os")
-    var py_nonce = os.urandom(12)
+    # Generate 12-byte random nonce via getrandom(2).
     var nonce_ptr = _heap_alloc[UInt8](12).as_any_origin()
-    for i in range(12):
-        nonce_ptr[i] = UInt8(Int(py=py_nonce[i]))
+    _ = external_call["getrandom", Int](nonce_ptr, UInt64(12), UInt32(0))
 
     # Prepare key pointer
     var key_ptr = _heap_alloc[UInt8](16).as_any_origin()
