@@ -141,7 +141,7 @@ def _recv_datagram(fd: Int32) raises -> List[UInt8]:
 
 def _drive_handshake(mut quic: QuicConnection, fd: Int32) raises:
     """Pump send/recv until the QUIC handshake completes."""
-    for _ in range(100):
+    for _ in range(600):  # 600 × 100ms poll = 60s max (interop runner default)
         var now = monotonic_us()
         var out = quic.send(now)
         _send_datagrams(fd, out)
@@ -150,7 +150,10 @@ def _drive_handshake(mut quic: QuicConnection, fd: Int32) raises:
         if udp_poll(fd, 100):
             var data = _recv_datagram(fd)
             if len(data) > 0:
-                quic.recv(Span(data), monotonic_us())
+                now = monotonic_us()
+                quic.recv(Span(data), now)
+                if quic.is_established():
+                    return
     raise "handshake failed"
 
 
