@@ -401,7 +401,7 @@ def _dispatch_request(
     cache: Dict[String, StaticEntry],
 ) raises:
     """Route a request based on URL path prefix."""
-    if _starts_with(target, String("/baseline2")):
+    if _starts_with(target, String("/baseline2")) or _starts_with(target, String("/baseline11")):
         handle_baseline2(target, resp)
     elif _starts_with(target, String("/static/")):
         handle_static(target, headers, resp, cache)
