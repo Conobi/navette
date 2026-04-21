@@ -7,6 +7,8 @@
 use std::io::BufReader;
 use std::sync::{Arc, OnceLock};
 
+use rustls::KeyLogFile;
+
 use rustls::client::ClientConfig;
 use rustls::quic::{ClientConnection, DirectionalKeys, KeyChange, Keys, Secrets,
                    ServerConnection, Version as QuicVersion};
@@ -134,6 +136,7 @@ pub extern "C" fn rlsm_quic_server_config_new(
         }
     };
 
+    config.key_log = Arc::new(KeyLogFile::new());
     config.alpn_protocols = vec![alpn_bytes.to_vec()];
 
     match quic_server_cfg_table().insert(Arc::new(config)) {
@@ -164,6 +167,7 @@ pub extern "C" fn rlsm_quic_client_config_new(
     let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(root_store)
         .with_no_client_auth();
+    config.key_log = Arc::new(KeyLogFile::new());
     config.alpn_protocols = vec![alpn_bytes.to_vec()];
 
     match quic_client_cfg_table().insert(Arc::new(config)) {
@@ -214,6 +218,7 @@ pub extern "C" fn rlsm_quic_client_config_with_ca(
     let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(root_store)
         .with_no_client_auth();
+    config.key_log = Arc::new(KeyLogFile::new());
     config.alpn_protocols = vec![alpn_bytes.to_vec()];
 
     match quic_client_cfg_table().insert(Arc::new(config)) {
