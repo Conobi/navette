@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use rustls::client::ClientConfig;
 use rustls::server::ServerConfig;
+use rustls::KeyLogFile;
 use rustls::RootCertStore;
 
 use crate::error::{clear_last_error, set_last_error};
@@ -88,9 +89,10 @@ pub extern "C" fn rlsm_client_config_new() -> i32 {
     let root_store =
         RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-    let config = ClientConfig::builder()
+    let mut config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
+    config.key_log = Arc::new(KeyLogFile::new());
 
     match config_table().insert(ConfigEntry::Client(Arc::new(config))) {
         Some(h) => h,
@@ -167,7 +169,7 @@ pub extern "C" fn rlsm_server_config_new(
     };
 
     // --- build ServerConfig ---
-    let config = match ServerConfig::builder()
+    let mut config = match ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
     {
@@ -177,6 +179,7 @@ pub extern "C" fn rlsm_server_config_new(
             return -1;
         }
     };
+    config.key_log = Arc::new(KeyLogFile::new());
 
     match config_table().insert(ConfigEntry::Server(Arc::new(config))) {
         Some(h) => h,
