@@ -14,11 +14,15 @@ from std.memory.unsafe_pointer import alloc
 # ── constants ────────────────────────────────────────────────────────────────
 
 comptime AF_INET: Int32 = 2
+comptime AF_INET6: Int32 = 10
 comptime SOCK_DGRAM: Int32 = 2
 comptime SOL_SOCKET: Int32 = 1
 comptime SO_REUSEADDR: Int32 = 2
+comptime IPPROTO_IPV6: Int32 = 41
+comptime IPV6_V6ONLY: Int32 = 26
 comptime POLLIN: Int16 = 1
 comptime CLOCK_MONOTONIC: Int32 = 1
+comptime _ADDR_SIZE: Int = 28  # sizeof(sockaddr_in6) — used for all address buffers
 
 
 # ── internal helpers ─────────────────────────────────────────────────────────
@@ -66,36 +70,51 @@ def _load_le64(buf: UnsafePointer[UInt8, MutAnyOrigin], offset: Int) -> Int:
 
 
 def udp_bind(port: Int) raises -> Int32:
-    """Create a UDP socket bound to 0.0.0.0:port.  Returns the socket fd."""
-    var fd = external_call["socket", Int32](AF_INET, SOCK_DGRAM, Int32(0))
+    """Create a dual-stack UDP socket bound to [::]:port.
+
+    Uses AF_INET6 with IPV6_V6ONLY=0 so both IPv4 and IPv6 clients
+    can reach the server (IPv4 arrives as ::ffff:a.b.c.d).
+    """
+    var fd = external_call["socket", Int32](AF_INET6, SOCK_DGRAM, Int32(0))
     if fd < 0:
         raise "udp_bind: socket() failed"
 
-    # setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4)
     var optval = alloc[UInt8](4).as_any_origin()
+
+    # SO_REUSEADDR
     _store_le32(optval, 0, Int32(1))
     var sso = external_call["setsockopt", Int32](
         fd, SOL_SOCKET, SO_REUSEADDR, optval, Int32(4)
     )
-    optval.free()
     if sso < 0:
+        optval.free()
         _ = external_call["close", Int32](fd)
-        raise "udp_bind: setsockopt() failed"
+        raise "udp_bind: setsockopt(SO_REUSEADDR) failed"
 
-    # Build sockaddr_in (16 bytes)
-    var addr = alloc[UInt8](16).as_any_origin()
-    for i in range(16):
+    # IPV6_V6ONLY = 0 (dual-stack: accept both IPv4 and IPv6)
+    _store_le32(optval, 0, Int32(0))
+    var v6o = external_call["setsockopt", Int32](
+        fd, IPPROTO_IPV6, IPV6_V6ONLY, optval, Int32(4)
+    )
+    optval.free()
+    if v6o < 0:
+        _ = external_call["close", Int32](fd)
+        raise "udp_bind: setsockopt(IPV6_V6ONLY) failed"
+
+    # Build sockaddr_in6 (28 bytes)
+    var addr = alloc[UInt8](_ADDR_SIZE).as_any_origin()
+    for i in range(_ADDR_SIZE):
         addr[i] = 0
-    # sin_family = AF_INET (2) — little-endian u16
-    addr[0] = 2
+    # sin6_family = AF_INET6 (10) — little-endian u16
+    addr[0] = 10
     addr[1] = 0
-    # sin_port — big-endian u16
+    # sin6_port — big-endian u16 at offset 2
     var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
     addr[2] = UInt8(port_be & 0xFF)
     addr[3] = UInt8((port_be >> 8) & 0xFF)
-    # sin_addr = 0.0.0.0 (already zero)
+    # sin6_addr = :: (all zeros, already zero)
 
-    var rc = external_call["bind", Int32](fd, addr, Int32(16))
+    var rc = external_call["bind", Int32](fd, addr, Int32(_ADDR_SIZE))
     addr.free()
     if rc < 0:
         _ = external_call["close", Int32](fd)
@@ -105,14 +124,17 @@ def udp_bind(port: Int) raises -> Int32:
 
 
 def udp_recvfrom(fd: Int32) raises -> Tuple[List[UInt8], List[UInt8]]:
-    """Receive a UDP datagram.  Returns (data, sockaddr_bytes)."""
+    """Receive a UDP datagram.  Returns (data, sockaddr_bytes).
+
+    Address buffer is _ADDR_SIZE bytes (sockaddr_in6) to handle both
+    IPv4-mapped and native IPv6 peers on a dual-stack socket.
+    """
     var buf = alloc[UInt8](65536).as_any_origin()
-    var addr = alloc[UInt8](16).as_any_origin()
-    for i in range(16):
+    var addr = alloc[UInt8](_ADDR_SIZE).as_any_origin()
+    for i in range(_ADDR_SIZE):
         addr[i] = 0
-    # addrlen = 16 as a 32-bit LE integer
     var addrlen = alloc[UInt8](4).as_any_origin()
-    _store_le32(addrlen, 0, Int32(16))
+    _store_le32(addrlen, 0, Int32(_ADDR_SIZE))
 
     var n = external_call["recvfrom", Int](
         fd, buf, Int(65536), Int32(0), addr, addrlen
@@ -127,8 +149,8 @@ def udp_recvfrom(fd: Int32) raises -> Tuple[List[UInt8], List[UInt8]]:
     for i in range(n):
         data.append(buf[i])
 
-    var addr_bytes = List[UInt8](capacity=16)
-    for i in range(16):
+    var addr_bytes = List[UInt8](capacity=_ADDR_SIZE)
+    for i in range(_ADDR_SIZE):
         addr_bytes.append(addr[i])
 
     buf.free()
@@ -144,12 +166,13 @@ def udp_sendto(fd: Int32, data: Span[UInt8, _], addr: Span[UInt8, _]) raises:
     for i in range(dlen):
         buf[i] = data[i]
 
-    var addr_buf = alloc[UInt8](16).as_any_origin()
-    for i in range(16):
+    var alen = len(addr)
+    var addr_buf = alloc[UInt8](alen).as_any_origin()
+    for i in range(alen):
         addr_buf[i] = addr[i]
 
     var n = external_call["sendto", Int](
-        fd, buf, dlen, Int32(0), addr_buf, Int32(16)
+        fd, buf, dlen, Int32(0), addr_buf, Int32(alen)
     )
     buf.free()
     addr_buf.free()
