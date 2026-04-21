@@ -274,7 +274,19 @@ def _accepts_encoding(headers: Headers, encoding: String) -> Bool:
                 break
             j += 1
         if matched:
-            return True
+            # Word-boundary check: must be at token boundary, not inside "brotli"
+            var before_ok = (i == 0
+                or ae_bytes[i - 1] == UInt8(ord(" "))
+                or ae_bytes[i - 1] == UInt8(ord(","))
+                or ae_bytes[i - 1] == UInt8(ord("\t")))
+            var end_pos = i + enc_len
+            var after_ok = (end_pos == ae_len
+                or ae_bytes[end_pos] == UInt8(ord(" "))
+                or ae_bytes[end_pos] == UInt8(ord(","))
+                or ae_bytes[end_pos] == UInt8(ord(";"))
+                or ae_bytes[end_pos] == UInt8(ord("\t")))
+            if before_ok and after_ok:
+                return True
         i += 1
     return False
 
