@@ -5,10 +5,21 @@
 
 from std.collections.optional import Optional
 from std.collections import Dict
-from src.http.handler import ResponseWriter
+from std.memory import UnsafePointer
+from src.http.handler import (
+    ResponseWriter,
+    RecvBody,
+    StreamHandler,
+    Capabilities,
+    StreamError,
+)
 from src.http.body import BodyFrame
 from src.http.status import StatusCode
 from src.http.headers import Headers
+from src.http.request import Request
+from src.h2.h2_coro_server import CoroStreamCtx as H2CoroStreamCtx
+from src.h3.h3_coro_server import CoroStreamCtx as H3CoroStreamCtx
+from boucle.stackful import CoroYielder
 from interop.file_io import read_file
 
 
@@ -362,3 +373,118 @@ def handle_static(
     resp.send_status(StatusCode(200), hdrs^)
     _ = resp.try_send_body(BodyFrame.data(body_data^))
     resp.end()
+
+
+# ---------------------------------------------------------------------------
+# Request dispatcher
+# ---------------------------------------------------------------------------
+
+
+def _starts_with(haystack: String, needle: String) -> Bool:
+    """Check if haystack starts with needle via byte comparison."""
+    var h = haystack.as_bytes()
+    var n = needle.as_bytes()
+    if len(n) > len(h):
+        return False
+    var i = 0
+    while i < len(n):
+        if h[i] != n[i]:
+            return False
+        i += 1
+    return True
+
+
+def _dispatch_request(
+    target: String,
+    headers: Headers,
+    mut resp: ResponseWriter,
+    cache: Dict[String, StaticEntry],
+) raises:
+    """Route a request based on URL path prefix."""
+    if _starts_with(target, String("/baseline2")):
+        handle_baseline2(target, resp)
+    elif _starts_with(target, String("/static/")):
+        handle_static(target, headers, resp, cache)
+    else:
+        handle_404(resp)
+
+
+# ---------------------------------------------------------------------------
+# BenchHandler — StreamHandler implementation
+# ---------------------------------------------------------------------------
+
+
+struct BenchHandler(StreamHandler):
+    """StreamHandler that dispatches to benchmark endpoints."""
+
+    var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
+
+    def __init__(out self, cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]):
+        self.cache_ptr = cache_ptr
+
+    def __init__(out self, *, deinit take: Self):
+        self.cache_ptr = take.cache_ptr
+
+    def on_request(
+        mut self,
+        var req: Request,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+        caps: Capabilities,
+    ) raises:
+        _dispatch_request(req.target, req.headers, resp, self.cache_ptr[])
+
+    def on_body_available(
+        mut self,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+    ) raises:
+        pass
+
+    def on_request_end(
+        mut self,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+    ) raises:
+        pass
+
+    def on_send_drained(
+        mut self,
+        mut resp: ResponseWriter,
+    ) raises:
+        pass
+
+    def on_reset(
+        mut self,
+        error: StreamError,
+    ):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# CoroBody functions for H2 and H3 coro servers
+# ---------------------------------------------------------------------------
+
+
+def bench_h2_body_fn(mut yielder: CoroYielder) raises:
+    """CoroBody for H2CoroServer: dispatch request from per-stream context."""
+    var ctx = yielder.user_data().bitcast[H2CoroStreamCtx]()
+    var cache = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]()
+    _dispatch_request(
+        ctx[].request.target,
+        ctx[].request.headers,
+        ctx[].resp_writer,
+        cache[],
+    )
+
+
+def bench_h3_body_fn(mut yielder: CoroYielder) raises:
+    """CoroBody for H3CoroServer: dispatch request from per-stream context."""
+    var ctx = yielder.user_data().bitcast[H3CoroStreamCtx]()
+    var cache = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]()
+    _dispatch_request(
+        ctx[].request.target,
+        ctx[].request.headers,
+        ctx[].resp_writer,
+        cache[],
+    )
