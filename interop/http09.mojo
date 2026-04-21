@@ -71,8 +71,17 @@ def http09_serve(
     request_data: Span[UInt8, _],
     www_dir: String,
 ) raises:
-    """Parse request, read file from `{www_dir}/{path}`, send file bytes with fin=True."""
-    var rel_path = http09_parse_path(request_data)
-    var full_path = www_dir + "/" + rel_path
-    var file_data = read_file(full_path)
-    quic.send_stream_data(stream_id, Span(file_data), fin=True)
+    """Parse request, read file from `{www_dir}/{path}`, send file bytes with fin=True.
+
+    On error (bad request or missing file), resets the stream instead of
+    leaving it dangling.
+    """
+    try:
+        var rel_path = http09_parse_path(request_data)
+        var full_path = www_dir + "/" + rel_path
+        var file_data = read_file(full_path)
+        quic.send_stream_data(stream_id, Span(file_data), fin=True)
+    except e:
+        # Reset the stream so the peer sees a clean error instead of a timeout.
+        quic.reset_stream(stream_id, UInt64(0x0100))  # H3_GENERAL_PROTOCOL_ERROR
+        raise e.copy()
