@@ -210,6 +210,20 @@ struct H2ServerHandler(CompletionHandler):
         if idx < 0:
             return
 
+        # If connection is marked closed (deferred), clear in-flight flag
+        # and free if no more operations are outstanding.
+        if self.connections[idx][].closed:
+            if op_kind == OP_RECV:
+                self.connections[idx][].recv_in_flight = False
+            elif op_kind == OP_SEND:
+                self.connections[idx][].send_in_flight = False
+            if (
+                not self.connections[idx][].recv_in_flight
+                and not self.connections[idx][].send_in_flight
+            ):
+                self._free_connection(idx)
+            return
+
         if op_kind == OP_RECV:
             self._handle_recv(idx, result)
         elif op_kind == OP_SEND:
@@ -396,8 +410,21 @@ struct H2ServerHandler(CompletionHandler):
     # --- Close ---
 
     def _close_connection(mut self, idx: Int):
+        if self.connections[idx][].closed:
+            return
+        self.connections[idx][].closed = True
+        # If no io_uring operations are in-flight, free immediately.
+        # Otherwise, keep the connection alive so the kernel can still
+        # access its buffers.  The deferred path in _dispatch will call
+        # _free_connection once all outstanding CQEs have drained.
+        if (
+            not self.connections[idx][].recv_in_flight
+            and not self.connections[idx][].send_in_flight
+        ):
+            self._free_connection(idx)
+
+    def _free_connection(mut self, idx: Int):
         var ptr = self.connections[idx]
-        ptr[].closed = True
         var last = len(self.connections) - 1
         if idx != last:
             self.connections[idx] = self.connections[last]
@@ -420,7 +447,11 @@ def _drain_pending_submits(mut loop: CompletionLoop[H2ServerHandler]) raises:
         var token = encode_token(s.conn_id, s.op_kind)
 
         if s.kind == _SUBMIT_ACCEPT:
-            loop.submit_accept(s.fd, token)
+            try:
+                loop.submit_accept(s.fd, token)
+            except:
+                # SQ full — re-queue for next poll iteration.
+                loop._handler.pending_submits.append(s.copy())
         elif s.kind == _SUBMIT_RECV:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
@@ -431,7 +462,12 @@ def _drain_pending_submits(mut loop: CompletionLoop[H2ServerHandler]) raises:
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
-            loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
+            try:
+                loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
+            except:
+                # SQ full — mark not-in-flight so it can be re-queued.
+                loop._handler.connections[idx][].recv_in_flight = False
+                loop._handler.pending_submits.append(s.copy())
         elif s.kind == _SUBMIT_SEND:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
@@ -445,7 +481,12 @@ def _drain_pending_submits(mut loop: CompletionLoop[H2ServerHandler]) raises:
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
-            loop.submit_send(s.fd, buf_ptr, UInt(n), token)
+            try:
+                loop.submit_send(s.fd, buf_ptr, UInt(n), token)
+            except:
+                # SQ full — mark not-in-flight so it can be re-queued.
+                loop._handler.connections[idx][].send_in_flight = False
+                loop._handler.pending_submits.append(s.copy())
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +545,7 @@ def main() raises:
         server_tls_config=server_config^,
         cache_ptr=cache_ptr,
     )
-    var loop = CompletionLoop[H2ServerHandler](handler^, sq_entries=256)
+    var loop = CompletionLoop[H2ServerHandler](handler^, sq_entries=4096)
 
     loop.submit_accept(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
