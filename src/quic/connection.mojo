@@ -641,10 +641,14 @@ struct QuicConnection(Movable):
             var header = header_result[0].copy()
             var header_end = header_result[1]
 
-            # 2b. Client: adopt server's SCID as peer_cid (RFC 9000 §7.2).
-            #     On the first Initial from the server, the client must
-            #     switch its DCID to the server's chosen SCID.
-            if not self.is_server and header.is_long_header and len(header.scid) > 0:
+            # 2b. Adopt peer's SCID as peer_cid (RFC 9000 §7.2).
+            #     Client: on first server Initial, switch DCID to server's SCID.
+            #     Server: on first client Initial, switch DCID to client's SCID.
+            #     Without this, the server would keep using the client's
+            #     random DCID (used only for initial key derivation) as the
+            #     DCID in outgoing packets, which other implementations
+            #     (ngtcp2, quiche) correctly reject.
+            if header.is_long_header and len(header.scid) > 0:
                 if header.packet_type == PacketType.initial():
                     self.peer_cid = List[UInt8](copy=header.scid)
 
