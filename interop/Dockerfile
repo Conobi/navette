@@ -40,8 +40,9 @@ COPY . .
 # Build the Rust shared library
 RUN cargo build --release --manifest-path crates/librustls-mojo/Cargo.toml
 
-# Copy the .so into the conventional lib/ directory so Mojo can find it
-RUN cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/
+# Copy the .so into the conventional lib/ directory so Mojo can find it.
+# Cargo produces liblibrustls_mojo.so but RustlsLibrary() loads librustls_mojo.so.
+RUN cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
 
 # Build Mojo interop binaries (include project root so `import mojo_net` works)
 RUN magic run mojo build -I . interop/server.mojo -o /interop-server
@@ -63,8 +64,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /interop-server  /usr/local/bin/interop-server
 COPY --from=build /interop-client  /usr/local/bin/interop-client
 
-# Copy the Rust shared library
-COPY --from=build /app/lib/liblibrustls_mojo.so /usr/local/lib/liblibrustls_mojo.so
+# Copy the Rust shared library (name must match what RustlsLibrary() dlopen's)
+COPY --from=build /app/lib/librustls_mojo.so /usr/local/lib/librustls_mojo.so
 
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
