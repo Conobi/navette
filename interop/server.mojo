@@ -5,8 +5,8 @@
 # Reads TESTCASE env var, binds UDP :443, accepts QUIC connections,
 # serves files from /www via HTTP/0.9.
 #
-# Supported test cases: handshake, transfer, retry.
-# Unsupported (http3, etc.) exit with code 127.
+# Supported test cases: handshake, transfer.
+# Deferred (exit 127): retry, http3.
 
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
