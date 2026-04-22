@@ -55,6 +55,7 @@ RUN cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_m
 RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/h1_server.mojo -o /bench-h1
 RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/h2_server.mojo -o /bench-h2
 RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/h3_server.mojo -o /bench-h3
+RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
@@ -72,6 +73,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /bench-h1 /usr/local/bin/h1_server
 COPY --from=build /bench-h2 /usr/local/bin/h2_server
 COPY --from=build /bench-h3 /usr/local/bin/h3_server
+COPY --from=build /bench-launcher /usr/local/bin/launcher
 
 # Copy the Rust shared library
 COPY --from=build /app/lib/librustls_mojo.so /usr/local/lib/librustls_mojo.so
@@ -83,11 +85,7 @@ COPY --from=build /app/.venv/lib/python3.14/site-packages/modular/lib/*.so /usr/
 RUN mkdir -p /app/lib && ln -s /usr/local/lib/librustls_mojo.so /app/lib/librustls_mojo.so
 WORKDIR /app
 
-# Copy launcher script
-COPY bench/run.sh /usr/local/bin/run.sh
-RUN chmod +x /usr/local/bin/run.sh
-
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
 # HttpArena uses host network mode — ports 8080 (H1) and 8443 (H2+H3)
-ENTRYPOINT ["/usr/local/bin/run.sh"]
+ENTRYPOINT ["/usr/local/bin/launcher"]
