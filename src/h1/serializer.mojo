@@ -201,7 +201,7 @@ def serialize_request(request: Request) raises -> List[UInt8]:
         body_len = 0
 
     _serialize_headers(buf, request.headers)
-    if body_len > 0:
+    if body_len > 0 and not request.headers.has("content-length"):
         _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
 
     # End of header block.
@@ -258,7 +258,7 @@ def serialize_response(response: Response) -> List[UInt8]:
     _serialize_headers(buf, response.headers)
     if use_chunked:
         _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
-    elif body_len > 0:
+    elif body_len > 0 and not response.headers.has("content-length"):
         _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
 
     _append_crlf(buf)
