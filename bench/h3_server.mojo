@@ -39,6 +39,7 @@ comptime TIMESPEC_SIZE: Int = 16
 
 comptime SOL_SOCKET: Int32 = 1
 comptime SO_REUSEADDR: Int32 = 2
+comptime SO_REUSEPORT: Int32 = 15
 comptime IPPROTO_IPV6: Int32 = 41
 comptime IPV6_V6ONLY: Int32 = 26
 
@@ -721,6 +722,18 @@ def _setup_udp_socket(port: Int) raises -> Int32:
         optval.free()
         raise "setsockopt(SO_REUSEADDR) failed"
 
+    # SO_REUSEPORT for multi-worker support
+    optval[0] = 1
+    optval[1] = 0
+    optval[2] = 0
+    optval[3] = 0
+    var rp = external_call["setsockopt", Int32](
+        fd, SOL_SOCKET, SO_REUSEPORT, optval, Int32(4)
+    )
+    if rp < 0:
+        optval.free()
+        raise "setsockopt(SO_REUSEPORT) failed"
+
     # IPV6_V6ONLY = 0 (dual-stack)
     optval[0] = 0
     var v6o = external_call["setsockopt", Int32](
@@ -787,7 +800,13 @@ def main() raises:
     var port = 8443
     var udp_fd = _setup_udp_socket(port)
 
-    print("h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
+    var worker_id_opt = getenv_opt("BENCH_WORKER_ID")
+    var prefix: String
+    if worker_id_opt.__bool__():
+        prefix = "[h3-w" + worker_id_opt.value() + "] "
+    else:
+        prefix = ""
+    print(prefix + "h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
 
     # Build handler + loop.
     var handler = H3UdpHandler(
