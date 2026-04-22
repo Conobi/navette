@@ -3,12 +3,9 @@
 # Multi-process benchmark launcher. Spawns N copies of each bench
 # server binary with SO_REUSEPORT. Same model as nginx workers.
 #
-# Signal handling: we cannot use a C-style signal handler with a
-# module-level mutable pointer (Mojo forbids module-level mutable vars).
-# Instead children set PR_SET_PDEATHSIG = SIGTERM so they die automatically
-# when the launcher exits, and the launcher's main loop simply runs until
-# interrupted (SIGINT/SIGTERM kills the process via default disposition).
-# A pipe-based self-wakeup is used: the monitor loop polls with usleep.
+# Signal handling: SIGTERM/SIGINT are blocked via sigprocmask at startup,
+# then checked synchronously each loop iteration via sigtimedwait with a
+# 500ms timeout. No module-level mutable vars needed.
 
 from std.ffi import external_call
 from std.memory import UnsafePointer
@@ -20,14 +17,20 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 # ---------------------------------------------------------------------------
 
 comptime MAX_RESTARTS: Int = 3
-comptime POLL_INTERVAL_US: UInt32 = 500000  # 500 ms
 
 comptime SIGTERM: Int32 = 15
+comptime SIGINT: Int32 = 2
 comptime SIGKILL: Int32 = 9
 comptime WNOHANG: Int32 = 1
 
-# prctl constants
-comptime PR_SET_PDEATHSIG: Int32 = 1
+# sigprocmask "how" constants
+comptime SIG_BLOCK: Int32 = 0
+
+# sigset_t size on Linux x86_64: 128 bytes (1024 bits / 8)
+comptime SIGSET_SIZE: Int = 128
+
+# kernel_timespec: 16 bytes (tv_sec i64 + tv_nsec i64)
+comptime TIMESPEC_SIZE: Int = 16
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +144,8 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
         raise "fork() failed"
 
     if pid == 0:
-        # Child process: ask the kernel to send us SIGTERM when the parent exits.
-        _ = external_call["prctl", Int32](PR_SET_PDEATHSIG, SIGTERM, Int32(0), Int32(0), Int32(0))
-
-        # exec the server binary.
+        # Child process — exec the server binary.
+        # Use execv (not execve) to inherit parent's environment.
         var path_bytes = binary_path.as_bytes()
         var path_buf = _heap_alloc[UInt8](len(path_bytes) + 1).as_any_origin()
         for i in range(len(path_bytes)):
@@ -156,14 +157,9 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
         argv[0] = path_buf
         argv[1] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
 
-        # envp = NULL (inherit parent environment)
-        var envp = UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        _ = external_call["execv", Int32](path_buf, argv)
 
-        _ = external_call["execve", Int32](path_buf, argv, envp)
-
-        # If execve failed, exit child.
+        # If execv failed, exit child.
         _ = external_call["_exit", Int32](Int32(127))
 
     return pid
@@ -176,12 +172,32 @@ def _kill_children(children: List[ProcessInfo], sig: Int32):
             _ = external_call["kill", Int32](children[i].pid, sig)
 
 
+def _make_sigset(sig1: Int32, sig2: Int32) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    """Create a sigset_t with sig1 and sig2 added."""
+    var ss = _heap_alloc[UInt8](SIGSET_SIZE).as_any_origin()
+    # sigemptyset: zero all 128 bytes
+    for i in range(SIGSET_SIZE):
+        ss[i] = 0
+    # sigaddset: set bit (sig - 1) in the bitmask
+    # Signal N is bit (N-1) in the 1024-bit set.
+    var bit1 = Int(sig1) - 1
+    ss[bit1 // 8] = ss[bit1 // 8] | UInt8(1 << (bit1 % 8))
+    var bit2 = Int(sig2) - 1
+    ss[bit2 // 8] = ss[bit2 // 8] | UInt8(1 << (bit2 % 8))
+    return ss
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 
 def main() raises:
+    # Block SIGTERM and SIGINT so they can be caught by sigtimedwait.
+    var sigset = _make_sigset(SIGTERM, SIGINT)
+    var null_set = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
+    _ = external_call["sigprocmask", Int32](SIG_BLOCK, sigset, null_set)
+
     # Read worker count from BENCH_WORKERS env (default: CPU count).
     var workers_per_server: Int
 
@@ -245,15 +261,28 @@ def main() raises:
             )
             children.append(ProcessInfo(pid, String(copy=server_types[s]), w))
 
-    # Monitor loop: check children every 500 ms.
-    # The loop runs until the process receives SIGTERM/SIGINT (default
-    # disposition terminates us) — children survive via PR_SET_PDEATHSIG
-    # and will themselves receive SIGTERM when we die.
+    # Monitor loop: use sigtimedwait with 500ms timeout.
+    # Returns signal number if caught, -1 with errno=EAGAIN on timeout.
     var status_buf = _heap_alloc[Int32](1).as_any_origin()
+    var ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_any_origin()
+    for i in range(TIMESPEC_SIZE):
+        ts[i] = 0
+    # tv_sec = 0, tv_nsec = 500_000_000 (500ms) = 0x1DCD6500 LE
+    ts[8] = 0x00
+    ts[9] = 0x65
+    ts[10] = 0xCD
+    ts[11] = 0x1D
 
-    while True:
-        _ = external_call["usleep", Int32](POLL_INTERVAL_US)
+    var null_info = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
+    var shutdown = False
 
+    while not shutdown:
+        # Check for SIGTERM/SIGINT with 500ms timeout.
+        var sig = external_call["sigtimedwait", Int32](sigset, null_info, ts)
+        if sig == SIGTERM or sig == SIGINT:
+            shutdown = True
+
+        # Check children via waitpid(WNOHANG).
         var i = 0
         while i < len(children):
             if children[i].dead:
@@ -278,7 +307,7 @@ def main() raises:
                     + String(exit_status)
                 )
 
-                if children[i].restart_count < MAX_RESTARTS:
+                if children[i].restart_count < MAX_RESTARTS and not shutdown:
                     children[i].restart_count += 1
                     var bin_path: String
                     if children[i].server_type == "h1":
@@ -312,16 +341,47 @@ def main() raises:
                         print("[launcher] respawn failed: " + String(e))
                         children[i].dead = True
                 else:
-                    print(
-                        "[launcher] "
-                        + children[i].server_type
-                        + " worker "
-                        + String(children[i].worker_id)
-                        + " exceeded max restarts, marking dead"
-                    )
+                    if not shutdown:
+                        print(
+                            "[launcher] "
+                            + children[i].server_type
+                            + " worker "
+                            + String(children[i].worker_id)
+                            + " exceeded max restarts, marking dead"
+                        )
                     children[i].dead = True
 
             i += 1
 
+    # Graceful shutdown: SIGTERM to all children.
+    print("[launcher] shutdown requested, sending SIGTERM to children...")
+    _kill_children(children, SIGTERM)
+
+    # Wait up to 5 seconds for children to exit.
+    _ = external_call["usleep", Int32](UInt32(5000000))
+
+    # SIGKILL any survivors.
+    for i in range(len(children)):
+        if children[i].dead:
+            continue
+        status_buf[0] = 0
+        var wpid = external_call["waitpid", Int32](
+            children[i].pid, status_buf, WNOHANG
+        )
+        if wpid == 0:
+            # Still alive — force kill.
+            print(
+                "[launcher] SIGKILL "
+                + children[i].server_type
+                + " worker "
+                + String(children[i].worker_id)
+            )
+            _ = external_call["kill", Int32](children[i].pid, SIGKILL)
+            _ = external_call["waitpid", Int32](
+                children[i].pid, status_buf, Int32(0)
+            )
+
+    ts.free()
+    sigset.free()
     status_buf.free()
     print("[launcher] all children reaped, exiting")
