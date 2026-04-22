@@ -539,7 +539,10 @@ struct H3UdpHandler(CompletionHandler):
         self.conn_addrs[conn_idx] = List[UInt8](copy=addr)
 
         # Drain and send outgoing datagrams.
-        self._drain_and_send(conn_idx, now)
+        try:
+            self._drain_and_send(conn_idx, now)
+        except:
+            pass
 
         # Re-arm the RX slot.
         slot[]._wire()
@@ -606,7 +609,10 @@ struct H3UdpHandler(CompletionHandler):
         var i = 0
         while i < len(self.conn_keys):
             # Drain datagrams for this connection.
-            self._drain_and_send(i, now)
+            try:
+                self._drain_and_send(i, now)
+            except:
+                pass
 
             # Close dead connections (swap-and-pop).
             if self.conn_h3s[i][].should_close():
