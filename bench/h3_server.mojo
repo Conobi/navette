@@ -21,8 +21,6 @@ from interop.udp import monotonic_us
 
 from boucle import CompletionLoop, CompletionHandler
 from boucle.handle import RawHandle
-from boucle.net.socket import Socket
-from boucle.net.addr import SocketAddrV6
 from boucle._sys.linux.raw.ctypes import c_void
 
 
@@ -483,7 +481,7 @@ struct H3UdpHandler(CompletionHandler):
             )
             return
 
-        var key = _addr_to_key(dcid)
+        var key = _addr_to_key(addr)
         var conn_idx = self._find_conn(key)
 
         if conn_idx < 0:
@@ -699,13 +697,19 @@ def _drain_pending_submits(mut loop: CompletionLoop[H3UdpHandler]) raises:
 # ── _setup_udp_socket ────────────────────────────────────────────────
 
 
-def _setup_udp_socket(port: UInt16) raises -> Int32:
-    """Create a dual-stack UDP socket bound to [::]:port. Returns raw fd."""
-    var sock = Socket.udp_v6()
-    var fd = sock.raw()
+comptime AF_INET6: Int32 = 10
+comptime SOCK_DGRAM: Int32 = 2
+
+
+def _setup_udp_socket(port: Int) raises -> Int32:
+    """Create a dual-stack UDP socket bound to [::]:port via raw syscalls."""
+    var fd = external_call["socket", Int32](AF_INET6, SOCK_DGRAM, Int32(0))
+    if fd < 0:
+        raise "_setup_udp_socket: socket() failed"
+
+    var optval = _heap_alloc[UInt8](4).as_any_origin()
 
     # SO_REUSEADDR = 1
-    var optval = _heap_alloc[UInt8](4).as_any_origin()
     optval[0] = 1
     optval[1] = 0
     optval[2] = 0
@@ -726,11 +730,24 @@ def _setup_udp_socket(port: UInt16) raises -> Int32:
     if v6o < 0:
         raise "setsockopt(IPV6_V6ONLY) failed"
 
-    var bind_addr = SocketAddrV6(0, 0, 0, 0, 0, 0, 0, 0, port=port)
-    sock.bind(bind_addr)
+    # sockaddr_in6: family(2) + port(2) + flowinfo(4) + addr(16) + scope_id(4) = 28
+    var addr = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
+    for i in range(ADDR_SIZE):
+        addr[i] = 0
+    # sin6_family = AF_INET6 (10) — little-endian u16
+    addr[0] = 10
+    addr[1] = 0
+    # sin6_port — big-endian u16
+    var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
+    addr[2] = UInt8(port_be & 0xFF)
+    addr[3] = UInt8((port_be >> 8) & 0xFF)
 
-    # Keep socket alive — leak the Socket wrapper so fd stays open.
-    _ = sock
+    var rc = external_call["bind", Int32](fd, addr, Int32(ADDR_SIZE))
+    addr.free()
+    if rc < 0:
+        _ = external_call["close", Int32](fd)
+        raise "_setup_udp_socket: bind() failed on port " + String(port)
+
     return fd
 
 
@@ -767,7 +784,7 @@ def main() raises:
     var server_config = _create_server_config(lib_ptr, "h3", certs_dir)
 
     # Create UDP socket.
-    var port = UInt16(8443)
+    var port = 8443
     var udp_fd = _setup_udp_socket(port)
 
     print("h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
