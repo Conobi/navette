@@ -173,7 +173,7 @@ struct H2ServerHandler(CompletionHandler):
         self.cache_ptr = cache_ptr
         self.pending_submits = List[PendingSubmit]()
 
-    fn __moveinit__(out self, deinit take: Self):
+    def __moveinit__(out self, deinit take: Self):
         self.listener_fd = take.listener_fd
         self.connections = take.connections^
         self.next_conn_id = take.next_conn_id
@@ -194,16 +194,16 @@ struct H2ServerHandler(CompletionHandler):
 
     fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
-            self._dispatch(token, result)
+            self._dispatch(token, result, flags)
         except e:
             print("h2-bench: on_complete error:", e)
 
-    def _dispatch(mut self, token: UInt64, result: Int32) raises:
+    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
         var op_kind = UInt8(token & 0xFF)
         var conn_id = token >> 8
 
         if op_kind == OP_ACCEPT:
-            self._handle_accept(result)
+            self._handle_accept(result, flags)
             return
 
         var idx = self._find_index(conn_id)
@@ -283,10 +283,13 @@ struct H2ServerHandler(CompletionHandler):
 
     # --- Accept ---
 
-    def _handle_accept(mut self, result: Int32) raises:
+    def _handle_accept(mut self, result: Int32, flags: UInt32) raises:
+        var more = (flags & UInt32(2)) != 0
+
         if result < 0:
             print("h2-bench: accept failed:", result)
-            self._queue_accept()
+            if not more:
+                self._queue_accept()
             return
 
         var client_fd = result
@@ -318,7 +321,8 @@ struct H2ServerHandler(CompletionHandler):
         var idx = len(self.connections) - 1
 
         self._queue_recv(idx)
-        self._queue_accept()
+        if not more:
+            self._queue_accept()
 
     # --- RECV ---
 
@@ -448,7 +452,7 @@ def _drain_pending_submits(mut loop: CompletionLoop[H2ServerHandler]) raises:
 
         if s.kind == _SUBMIT_ACCEPT:
             try:
-                loop.submit_accept(s.fd, token)
+                loop.submit_accept_multishot(s.fd, token)
             except:
                 # SQ full — re-queue for next poll iteration.
                 loop._handler.pending_submits.append(s.copy())
@@ -547,7 +551,7 @@ def main() raises:
     )
     var loop = CompletionLoop[H2ServerHandler](handler^, sq_entries=4096)
 
-    loop.submit_accept(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
+    loop.submit_accept_multishot(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
     while True:
         loop.poll(wait_nr=1)
