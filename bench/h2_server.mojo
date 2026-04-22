@@ -14,6 +14,7 @@
 #   - main
 
 from std.collections import Dict
+from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
@@ -48,6 +49,7 @@ def encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
 # ---------------------------------------------------------------------------
 comptime _RECV_BUF_SIZE: Int = 8192
 comptime _LISTEN_PORT: UInt16 = 8443
+comptime SO_REUSEPORT: Int32 = 15
 
 
 # ---------------------------------------------------------------------------
@@ -533,14 +535,30 @@ def main() raises:
 
     # Listening socket
     var listener = Socket.tcp_v4()
+    # Set SO_REUSEPORT for multi-worker support.
+    var reuseport_val = _heap_alloc[UInt8](4).as_any_origin()
+    reuseport_val[0] = 1
+    reuseport_val[1] = 0
+    reuseport_val[2] = 0
+    reuseport_val[3] = 0
+    var rp_rc = external_call["setsockopt", Int32](
+        listener.raw(), Int32(1), SO_REUSEPORT, reuseport_val, Int32(4)
+    )
+    reuseport_val.free()
+    if rp_rc < 0:
+        print("h2-bench: warning: setsockopt(SO_REUSEPORT) failed")
     var bind_addr = SocketAddrV4(0, 0, 0, 0, port=_LISTEN_PORT)
     listener.bind(bind_addr)
     listener.listen(Backlog.DEFAULT)
     var listener_fd = listener.raw()
 
-    print(
-        "h2-bench: listening on https://127.0.0.1:" + String(_LISTEN_PORT)
-    )
+    var worker_id_opt = getenv_opt("BENCH_WORKER_ID")
+    var prefix: String
+    if worker_id_opt.__bool__():
+        prefix = "[h2-w" + worker_id_opt.value() + "] "
+    else:
+        prefix = ""
+    print(prefix + "h2-bench: listening on https://127.0.0.1:" + String(_LISTEN_PORT))
 
     # Build handler + loop
     var handler = H2ServerHandler(
