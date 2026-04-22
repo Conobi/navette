@@ -342,8 +342,458 @@ struct PendingSubmit(Copyable, Movable):
         self.slot_idx = take.slot_idx
 
 
-# ── main (placeholder) ────────────────────────────────────────────────
+# ── H3UdpHandler ─────────────────────────────────────────────────────
+
+
+struct H3UdpHandler(CompletionHandler):
+    """CompletionHandler for UDP-based H3 server using io_uring."""
+
+    var udp_fd: Int32
+    var conn_keys: List[String]
+    var conn_h3s: List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]
+    var conn_addrs: List[List[UInt8]]
+    var rx_slots: UnsafePointer[UdpRxSlot, MutAnyOrigin]
+    var tx_slots: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
+    var tx_slot_tokens: List[UInt64]
+    var next_tx_id: UInt64
+    var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
+    var lib_addr: UInt64
+    var server_config: Int32
+    var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
+    var pending_submits: List[PendingSubmit]
+
+    def __init__(
+        out self,
+        udp_fd: Int32,
+        cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
+        lib_addr: UInt64,
+        server_config: Int32,
+    ):
+        self.udp_fd = udp_fd
+        self.conn_keys = List[String]()
+        self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
+        self.conn_addrs = List[List[UInt8]]()
+        self.rx_slots = _heap_alloc[UdpRxSlot](RX_POOL_SIZE).as_any_origin()
+        self.tx_slots = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
+        self.tx_slot_tokens = List[UInt64]()
+        self.next_tx_id = UInt64(0)
+        self.cache_ptr = cache_ptr
+        self.lib_addr = lib_addr
+        self.server_config = server_config
+        self.pending_submits = List[PendingSubmit]()
+
+        # Allocate timeout timespec (16 bytes): 50ms = 50_000_000 ns LE.
+        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_any_origin()
+        for i in range(TIMESPEC_SIZE):
+            self.timeout_ts[i] = 0
+        # tv_nsec at offset 8 = 50_000_000 = 0x02FAF080 LE
+        self.timeout_ts[8] = 0x80
+        self.timeout_ts[9] = 0xF0
+        self.timeout_ts[10] = 0xFA
+        self.timeout_ts[11] = 0x02
+
+        # Pre-allocate RX pool.
+        for i in range(RX_POOL_SIZE):
+            (self.rx_slots + i).init_pointee_move(UdpRxSlot())
+
+    def __init__(out self, *, deinit take: Self):
+        self.udp_fd = take.udp_fd
+        self.conn_keys = take.conn_keys^
+        self.conn_h3s = take.conn_h3s^
+        self.conn_addrs = take.conn_addrs^
+        self.rx_slots = take.rx_slots
+        self.tx_slots = take.tx_slots^
+        self.tx_slot_tokens = take.tx_slot_tokens^
+        self.next_tx_id = take.next_tx_id
+        self.cache_ptr = take.cache_ptr
+        self.lib_addr = take.lib_addr
+        self.server_config = take.server_config
+        self.timeout_ts = take.timeout_ts
+        self.pending_submits = take.pending_submits^
+
+    # --- Conn lookup ---
+
+    def _find_conn(self, key: String) -> Int:
+        for i in range(len(self.conn_keys)):
+            if self.conn_keys[i] == key:
+                return i
+        return -1
+
+    # --- on_complete dispatch ---
+
+    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+        try:
+            self._dispatch(token, result)
+        except e:
+            print("h3-bench: on_complete error:", e)
+
+    def _dispatch(mut self, token: UInt64, result: Int32) raises:
+        var op_kind = UInt8(token & 0xFF)
+        var slot_idx = token >> 8
+
+        if op_kind == OP_RECVMSG:
+            self._handle_recvmsg(Int(slot_idx), result)
+        elif op_kind == OP_SENDMSG:
+            self._handle_sendmsg(slot_idx, result)
+        elif op_kind == OP_TIMEOUT:
+            self._handle_timeout(result)
+
+    # --- recvmsg path ---
+
+    def _handle_recvmsg(mut self, slot_idx: Int, result: Int32) raises:
+        if slot_idx < 0 or slot_idx >= RX_POOL_SIZE:
+            return
+
+        var slot = self.rx_slots + slot_idx
+        slot[].in_use = False
+
+        if result <= 0:
+            # Re-arm the slot for more data.
+            slot[]._wire()
+            slot[].in_use = True
+            self.pending_submits.append(
+                PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
+            )
+            return
+
+        var n = Int(result)
+
+        # Read received data from data_buf.
+        var data = List[UInt8](capacity=n)
+        for i in range(n):
+            data.append(slot[].data_buf[i])
+
+        # Read source addr from addr_buf.
+        var addr = List[UInt8](capacity=ADDR_SIZE)
+        for i in range(ADDR_SIZE):
+            addr.append(slot[].addr_buf[i])
+
+        var now = monotonic_us()
+
+        # Extract DCID to find or create connection.
+        var dcid: List[UInt8]
+        try:
+            dcid = _extract_dcid(Span(data))
+        except:
+            # Bad packet — re-arm and ignore.
+            slot[]._wire()
+            slot[].in_use = True
+            self.pending_submits.append(
+                PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
+            )
+            return
+
+        var key = _addr_to_key(dcid)
+        var conn_idx = self._find_conn(key)
+
+        if conn_idx < 0:
+            # Create new QUIC connection.
+            var tp = default_transport_params()
+            var dcid_copy = List[UInt8](copy=dcid)
+            var quic: QuicConnection
+            try:
+                quic = QuicConnection.server(
+                    self.lib_addr,
+                    self.server_config,
+                    tp,
+                    Span(dcid),
+                    Span(dcid_copy),
+                    now,
+                )
+            except:
+                # Failed to create connection — re-arm slot.
+                slot[]._wire()
+                slot[].in_use = True
+                self.pending_submits.append(
+                    PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
+                )
+                return
+
+            var handler = BenchHandler(self.cache_ptr)
+            var h3: H3HandlerServer[BenchHandler]
+            try:
+                h3 = H3HandlerServer[BenchHandler](quic=quic^, handler=handler^)
+            except:
+                slot[]._wire()
+                slot[].in_use = True
+                self.pending_submits.append(
+                    PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
+                )
+                return
+
+            var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
+            h3_ptr.init_pointee_move(h3^)
+
+            self.conn_keys.append(key)
+            self.conn_h3s.append(h3_ptr)
+            self.conn_addrs.append(List[UInt8](copy=addr))
+            conn_idx = len(self.conn_keys) - 1
+
+        # Feed datagram to the connection.
+        try:
+            self.conn_h3s[conn_idx][].feed_datagram(Span(data), now)
+        except:
+            pass
+
+        # Update peer address.
+        self.conn_addrs[conn_idx] = List[UInt8](copy=addr)
+
+        # Drain and send outgoing datagrams.
+        self._drain_and_send(conn_idx, now)
+
+        # Re-arm the RX slot.
+        slot[]._wire()
+        slot[].in_use = True
+        self.pending_submits.append(
+            PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
+        )
+
+    def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
+        """Drain outgoing datagrams from a connection and queue sendmsg."""
+        var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
+        for i in range(len(datagrams)):
+            var pkt = List[UInt8](copy=datagrams[i])
+            if len(pkt) == 0:
+                continue
+
+            var tx_id = self.next_tx_id
+            self.next_tx_id += 1
+            var token = _encode_token(tx_id, OP_SENDMSG)
+
+            var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
+            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+            tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+            self.tx_slots.append(tx_ptr)
+            self.tx_slot_tokens.append(token)
+
+            self.pending_submits.append(
+                PendingSubmit(kind=_SUBMIT_SENDMSG, slot_idx=tx_id)
+            )
+
+    # --- sendmsg path ---
+
+    def _handle_sendmsg(mut self, tx_id: UInt64, result: Int32) raises:
+        # Find the TX slot by its token.
+        var token = _encode_token(tx_id, OP_SENDMSG)
+        var idx = -1
+        for i in range(len(self.tx_slot_tokens)):
+            if self.tx_slot_tokens[i] == token:
+                idx = i
+                break
+
+        if idx < 0:
+            return
+
+        # Free the TX slot buffers and pointer.
+        var ptr = self.tx_slots[idx]
+        ptr[].free()
+        ptr.free()
+
+        # Swap-and-pop to remove from lists.
+        var last = len(self.tx_slots) - 1
+        if idx != last:
+            self.tx_slots[idx] = self.tx_slots[last]
+            self.tx_slot_tokens[idx] = self.tx_slot_tokens[last]
+        _ = self.tx_slots.pop()
+        _ = self.tx_slot_tokens.pop()
+
+    # --- timeout path ---
+
+    def _handle_timeout(mut self, result: Int32) raises:
+        var now = monotonic_us()
+
+        # Drain all connections — they may have pending retransmissions.
+        var i = 0
+        while i < len(self.conn_keys):
+            # Drain datagrams for this connection.
+            self._drain_and_send(i, now)
+
+            # Close dead connections (swap-and-pop).
+            if self.conn_h3s[i][].should_close():
+                var ptr = self.conn_h3s[i]
+                ptr.destroy_pointee()
+                ptr.free()
+
+                var last = len(self.conn_keys) - 1
+                if i != last:
+                    self.conn_keys[i] = self.conn_keys[last]
+                    self.conn_h3s[i] = self.conn_h3s[last]
+                    self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
+                _ = self.conn_keys.pop()
+                _ = self.conn_h3s.pop()
+                _ = self.conn_addrs.pop()
+                # Don't increment i — the swapped-in element needs checking.
+                continue
+            i += 1
+
+        # Re-arm the 50ms timeout.
+        self.pending_submits.append(
+            PendingSubmit(kind=_SUBMIT_TIMEOUT, slot_idx=UInt64(0))
+        )
+
+
+# ── _drain_pending_submits ───────────────────────────────────────────
+
+
+def _drain_pending_submits(mut loop: CompletionLoop[H3UdpHandler]) raises:
+    var submits = loop._handler.pending_submits^
+    loop._handler.pending_submits = List[PendingSubmit]()
+
+    for i in range(len(submits)):
+        var s = submits[i].copy()
+
+        if s.kind == _SUBMIT_RECVMSG:
+            var slot_idx = Int(s.slot_idx)
+            if slot_idx < 0 or slot_idx >= RX_POOL_SIZE:
+                continue
+            var rx_slot = loop._handler.rx_slots + slot_idx
+            var msghdr_addr = Int(rx_slot[].msghdr_buf)
+            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=msghdr_addr
+            )
+            var token = _encode_token(s.slot_idx, OP_RECVMSG)
+            try:
+                loop.submit_recvmsg(loop._handler.udp_fd, msghdr_ptr, token)
+            except:
+                rx_slot[].in_use = False
+                loop._handler.pending_submits.append(s.copy())
+
+        elif s.kind == _SUBMIT_SENDMSG:
+            # Find TX slot by tx_id (s.slot_idx).
+            var tx_id = s.slot_idx
+            var token = _encode_token(tx_id, OP_SENDMSG)
+            var tx_idx = -1
+            for j in range(len(loop._handler.tx_slot_tokens)):
+                if loop._handler.tx_slot_tokens[j] == token:
+                    tx_idx = j
+                    break
+            if tx_idx < 0:
+                continue
+            var msghdr_addr = Int(loop._handler.tx_slots[tx_idx][].msghdr_buf)
+            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=msghdr_addr
+            )
+            try:
+                loop.submit_sendmsg(loop._handler.udp_fd, msghdr_ptr, token)
+            except:
+                loop._handler.pending_submits.append(s.copy())
+
+        elif s.kind == _SUBMIT_TIMEOUT:
+            var ts_addr = Int(loop._handler.timeout_ts)
+            var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=ts_addr
+            )
+            var token = _encode_token(UInt64(0), OP_TIMEOUT)
+            try:
+                loop.submit_timeout(ts_ptr, token)
+            except:
+                loop._handler.pending_submits.append(s.copy())
+
+
+# ── _setup_udp_socket ────────────────────────────────────────────────
+
+
+def _setup_udp_socket(port: UInt16) raises -> Int32:
+    """Create a dual-stack UDP socket bound to [::]:port. Returns raw fd."""
+    var sock = Socket.udp_v6()
+    var fd = sock.raw()
+
+    # SO_REUSEADDR = 1
+    var optval = _heap_alloc[UInt8](4).as_any_origin()
+    optval[0] = 1
+    optval[1] = 0
+    optval[2] = 0
+    optval[3] = 0
+    var sso = external_call["setsockopt", Int32](
+        fd, SOL_SOCKET, SO_REUSEADDR, optval, Int32(4)
+    )
+    if sso < 0:
+        optval.free()
+        raise "setsockopt(SO_REUSEADDR) failed"
+
+    # IPV6_V6ONLY = 0 (dual-stack)
+    optval[0] = 0
+    var v6o = external_call["setsockopt", Int32](
+        fd, IPPROTO_IPV6, IPV6_V6ONLY, optval, Int32(4)
+    )
+    optval.free()
+    if v6o < 0:
+        raise "setsockopt(IPV6_V6ONLY) failed"
+
+    var bind_addr = SocketAddrV6(0, 0, 0, 0, 0, 0, 0, 0, port=port)
+    sock.bind(bind_addr)
+
+    # Keep socket alive — leak the Socket wrapper so fd stays open.
+    _ = sock
+    return fd
+
+
+# ── main ─────────────────────────────────────────────────────────────
 
 
 def main() raises:
-    print("bench-h3: placeholder (Tasks 2-5 pending)")
+    # Load static files from STATIC_DIR env var (default /data/static).
+    var static_dir_opt = getenv_opt("STATIC_DIR")
+    var static_dir: String
+    if static_dir_opt.__bool__():
+        static_dir = static_dir_opt.value()
+    else:
+        static_dir = String("/data/static")
+    var cache = _load_static_files(static_dir)
+
+    # Heap-allocate cache so pointer remains stable.
+    var cache_ptr = _heap_alloc[Dict[String, StaticEntry]](1).as_any_origin()
+    cache_ptr.init_pointee_move(cache^)
+
+    # Load TLS library and create server config.
+    var certs_dir_opt = getenv_opt("CERTS_DIR")
+    var certs_dir: String
+    if certs_dir_opt.__bool__():
+        certs_dir = certs_dir_opt.value()
+    else:
+        certs_dir = String("certs")
+
+    var lib = RustlsLibrary()
+    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
+    lib_ptr.init_pointee_move(lib^)
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var server_config = _create_server_config(lib_ptr, "h3", certs_dir)
+
+    # Create UDP socket.
+    var port = UInt16(8443)
+    var udp_fd = _setup_udp_socket(port)
+
+    print("h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
+
+    # Build handler + loop.
+    var handler = H3UdpHandler(
+        udp_fd=udp_fd,
+        cache_ptr=cache_ptr,
+        lib_addr=lib_addr,
+        server_config=server_config,
+    )
+    var loop = CompletionLoop[H3UdpHandler](handler^, sq_entries=4096)
+
+    # Submit initial recvmsg operations for all RX slots.
+    for i in range(RX_POOL_SIZE):
+        var rx_slot = loop._handler.rx_slots + i
+        rx_slot[].in_use = True
+        var msghdr_addr = Int(rx_slot[].msghdr_buf)
+        var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+            unsafe_from_address=msghdr_addr
+        )
+        var token = _encode_token(UInt64(i), OP_RECVMSG)
+        loop.submit_recvmsg(udp_fd, msghdr_ptr, token)
+
+    # Submit initial timeout.
+    var ts_addr = Int(loop._handler.timeout_ts)
+    var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        unsafe_from_address=ts_addr
+    )
+    loop.submit_timeout(ts_ptr, _encode_token(UInt64(0), OP_TIMEOUT))
+
+    # Event loop.
+    while True:
+        loop.poll(wait_nr=1)
+        _drain_pending_submits(loop)
