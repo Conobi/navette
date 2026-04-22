@@ -173,7 +173,7 @@ struct H2ServerHandler(CompletionHandler):
         self.cache_ptr = cache_ptr
         self.pending_submits = List[PendingSubmit]()
 
-    def __moveinit__(out self, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
         self.connections = take.connections^
         self.next_conn_id = take.next_conn_id
