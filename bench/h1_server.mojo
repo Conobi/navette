@@ -7,6 +7,7 @@
 # backend-proxy logic stripped out.
 
 from std.collections import Dict
+from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
@@ -40,6 +41,7 @@ def encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
 
 comptime _RECV_BUF_SIZE: Int = 8192
 comptime _LISTEN_PORT: UInt16 = 8080
+comptime SO_REUSEPORT: Int32 = 15
 
 # ---------------------------------------------------------------------------
 # PendingSubmit
@@ -455,12 +457,32 @@ def main() raises:
 
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
+
+    # Set SO_REUSEPORT for multi-worker support.
+    var optval = _heap_alloc[UInt8](4).as_any_origin()
+    optval[0] = 1
+    optval[1] = 0
+    optval[2] = 0
+    optval[3] = 0
+    var sso = external_call["setsockopt", Int32](
+        listener.raw(), Int32(1), SO_REUSEPORT, optval, Int32(4)
+    )
+    optval.free()
+    if sso < 0:
+        print("h1-bench: warning: setsockopt(SO_REUSEPORT) failed")
+
     var bind_addr = SocketAddrV4(0, 0, 0, 0, port=_LISTEN_PORT)
     listener.bind(bind_addr)
     listener.listen(Backlog.DEFAULT)
     var listener_fd = listener.raw()
 
-    print("h1-bench: listening on http://0.0.0.0:" + String(_LISTEN_PORT))
+    var worker_id_opt = getenv_opt("BENCH_WORKER_ID")
+    var prefix: String
+    if worker_id_opt.__bool__():
+        prefix = "[h1-w" + worker_id_opt.value() + "] "
+    else:
+        prefix = ""
+    print(prefix + "h1-bench: listening on http://0.0.0.0:" + String(_LISTEN_PORT))
 
     # Build handler + loop.
     var handler = H1ServerHandler(
