@@ -164,6 +164,46 @@ struct PacketProtect(Movable):
 
     # -- AEAD decrypt ----------------------------------------------------------
 
+    def decrypt_payload_in_place(
+        self,
+        level: Int,
+        pn: UInt64,
+        header_len: Int,
+        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_len: Int,
+    ) raises -> Int:
+        """Decrypt AEAD payload in-place. Zero-copy.
+
+        pkt_ptr[0..header_len] is the header (AAD, read-only by Rust).
+        pkt_ptr[header_len..pkt_len] is ciphertext+tag (decrypted in-place).
+
+        Returns plaintext length. After call, plaintext is at
+        pkt_ptr[header_len .. header_len + result].
+        """
+        self._check_level(level)
+        var keys_handle = self.keys[level]
+        if keys_handle == Int32(-1):
+            raise "no keys for level " + String(level)
+
+        if header_len >= pkt_len:
+            raise "header_len >= packet length"
+
+        var payload_len = pkt_len - header_len
+
+        var rc = self._lib()[].keys_remote_decrypt(
+            keys_handle,
+            pn,
+            pkt_ptr,                 # header (AAD)
+            Int32(header_len),
+            pkt_ptr + header_len,    # payload (decrypted in-place)
+            Int32(payload_len),
+        )
+
+        if rc < 0:
+            raise "decrypt_payload failed: " + self._lib()[].last_error()
+
+        return Int(rc)
+
     def decrypt_payload(
         self,
         level: Int,
@@ -171,64 +211,58 @@ struct PacketProtect(Movable):
         header_len: Int,
         mut packet_buf: List[UInt8],
     ) raises -> List[UInt8]:
-        """Decrypt the AEAD-protected payload of a QUIC packet.
+        """Decrypt payload (List convenience wrapper — copies result out)."""
+        var plaintext_len = self.decrypt_payload_in_place(
+            level, pn, header_len,
+            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            len(packet_buf),
+        )
+        # Copy plaintext out of the buffer for backward compatibility.
+        var result = List[UInt8](capacity=plaintext_len)
+        for i in range(plaintext_len):
+            result.append(packet_buf[header_len + i])
+        return result^
 
-        Args:
-            level: Encryption level.
-            pn: Full (decoded) packet number.
-            header_len: Length of the packet header (bytes before payload).
-            packet_buf: The full packet buffer (header + ciphertext + tag).
+    # -- AEAD encrypt ----------------------------------------------------------
 
-        Returns:
-            The decrypted plaintext (without AEAD tag).
+    def encrypt_payload_in_place(
+        self,
+        level: Int,
+        pn: UInt64,
+        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        header_len: Int,
+        payload_len: Int,
+        total_capacity: Int,
+    ) raises -> Int:
+        """Encrypt payload in-place. Zero-copy.
+
+        pkt_ptr[0..header_len] = header (AAD, read-only).
+        pkt_ptr[header_len..header_len+payload_len] = plaintext -> ciphertext.
+        pkt_ptr[header_len+payload_len..total_capacity] = space for AEAD tag.
+
+        Returns ciphertext length (payload_len + tag_len).
         """
         self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
-        var total_len = len(packet_buf)
-        if header_len >= total_len:
-            raise "header_len >= packet length"
+        var buf_capacity = total_capacity - header_len
 
-        var payload_len = total_len - header_len
-
-        # Copy header to a heap buffer for the FFI AAD parameter.
-        var header_buf = _heap_alloc[UInt8](header_len).as_any_origin()
-        for i in range(header_len):
-            header_buf[i] = packet_buf[i]
-
-        # Copy payload (ciphertext + tag) to a mutable heap buffer.
-        var payload_buf = _heap_alloc[UInt8](payload_len).as_any_origin()
-        for i in range(payload_len):
-            payload_buf[i] = packet_buf[header_len + i]
-
-        var rc = self._lib()[].keys_remote_decrypt(
+        var rc = self._lib()[].keys_local_encrypt(
             keys_handle,
             pn,
-            header_buf,
+            pkt_ptr,                 # header (AAD)
             Int32(header_len),
-            payload_buf,
+            pkt_ptr + header_len,    # payload (encrypted in-place)
             Int32(payload_len),
+            Int32(buf_capacity),
         )
 
-        header_buf.free()
-
         if rc < 0:
-            var err = self._lib()[].last_error()
-            payload_buf.free()
-            raise "decrypt_payload failed: " + err
+            raise "encrypt_payload failed: " + self._lib()[].last_error()
 
-        # rc = plaintext length (payload_len - tag_len).
-        var plaintext_len = Int(rc)
-        var result = List[UInt8](capacity=plaintext_len)
-        for i in range(plaintext_len):
-            result.append(payload_buf[i])
-
-        payload_buf.free()
-        return result^
-
-    # -- AEAD encrypt ----------------------------------------------------------
+        return Int(rc)
 
     def encrypt_payload(
         self,
@@ -237,60 +271,30 @@ struct PacketProtect(Movable):
         header: Span[UInt8, _],
         plaintext: Span[UInt8, _],
     ) raises -> List[UInt8]:
-        """Encrypt a QUIC payload with AEAD.
-
-        Args:
-            level: Encryption level.
-            pn: Full packet number.
-            header: The serialized packet header (used as AAD).
-            plaintext: The plaintext payload to encrypt.
-
-        Returns:
-            The ciphertext including the 16-byte AEAD tag.
-        """
-        self._check_level(level)
-        var keys_handle = self.keys[level]
-        if keys_handle == Int32(-1):
-            raise "no keys for level " + String(level)
-
-        var pt_len = len(plaintext)
-        var capacity = pt_len + _AEAD_TAG_LEN
-
-        # Copy header to heap for FFI.
+        """Encrypt payload (Span convenience wrapper — returns new List)."""
         var header_len = len(header)
-        var header_buf = _heap_alloc[UInt8](header_len).as_any_origin()
+        var pt_len = len(plaintext)
+        var capacity = header_len + pt_len + _AEAD_TAG_LEN
+
+        # Build contiguous buffer: header + plaintext + tag space
+        var buf = _heap_alloc[UInt8](capacity).as_any_origin()
         for i in range(header_len):
-            header_buf[i] = header[i]
-
-        # Copy plaintext to a buffer with extra capacity for the tag.
-        var payload_buf = _heap_alloc[UInt8](capacity).as_any_origin()
+            buf[i] = header[i]
         for i in range(pt_len):
-            payload_buf[i] = plaintext[i]
+            buf[header_len + i] = plaintext[i]
+        for i in range(_AEAD_TAG_LEN):
+            buf[header_len + pt_len + i] = 0
 
-        var rc = self._lib()[].keys_local_encrypt(
-            keys_handle,
-            pn,
-            header_buf,
-            Int32(header_len),
-            payload_buf,
-            Int32(pt_len),
-            Int32(capacity),
+        var ct_len = self.encrypt_payload_in_place(
+            level, pn, buf, header_len, pt_len, capacity,
         )
 
-        header_buf.free()
-
-        if rc < 0:
-            var err = self._lib()[].last_error()
-            payload_buf.free()
-            raise "encrypt_payload failed: " + err
-
-        # rc = ciphertext length (plaintext + tag).
-        var ct_len = Int(rc)
+        # Copy ciphertext (without header) to result.
         var result = List[UInt8](capacity=ct_len)
         for i in range(ct_len):
-            result.append(payload_buf[i])
+            result.append(buf[header_len + i])
 
-        payload_buf.free()
+        buf.free()
         return result^
 
     # -- Header protection (encrypt direction) ---------------------------------
