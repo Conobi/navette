@@ -247,6 +247,9 @@ struct PacketProtect(Movable):
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
+        if total_capacity < header_len + payload_len + _AEAD_TAG_LEN:
+            raise "encrypt_payload_in_place: buffer too small"
+
         var buf_capacity = total_capacity - header_len
 
         var rc = self._lib()[].keys_local_encrypt(
