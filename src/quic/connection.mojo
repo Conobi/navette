@@ -2132,27 +2132,31 @@ struct QuicConnection(Movable):
                 var shift = UInt64((pn_len - 1 - i) * 8)
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
-            # Encrypt payload.
-            var header_span = Span(header_bytes)
-            var ciphertext = self.protect.encrypt_payload(
-                space_idx, pn, header_span, Span(payload)
+            # Encrypt + protect in a single buffer (zero-copy).
+            # Append payload to header_bytes.
+            for i in range(len(payload)):
+                header_bytes.append(payload[i])
+            # Append zero space for AEAD tag.
+            for i in range(_AEAD_TAG_LEN):
+                header_bytes.append(UInt8(0))
+
+            # header_bytes is now: [header | PN | payload | tag_space]
+            var total_len = len(header_bytes)
+            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin()
+
+            # Encrypt payload region in-place.
+            var header_len = pn_offset + pn_len
+            _ = self.protect.encrypt_payload_in_place(
+                space_idx, pn, pkt_ptr, header_len,
+                len(payload), total_len,
             )
 
-            # Assemble full packet: header + PN + ciphertext.
-            var packet = List[UInt8](
-                capacity=len(header_bytes) + len(ciphertext)
-            )
-            for i in range(len(header_bytes)):
-                packet.append(header_bytes[i])
-            for i in range(len(ciphertext)):
-                packet.append(ciphertext[i])
-
-            # Apply header protection.
-            self.protect.protect_header(
-                space_idx, packet, pn_offset, pn_len
+            # Protect header in-place.
+            self.protect.protect_header_ptr(
+                space_idx, pkt_ptr, total_len, pn_offset, pn_len,
             )
 
-            return packet^
+            return header_bytes^
 
         else:
             # Short header (1-RTT / Application).
@@ -2176,32 +2180,35 @@ struct QuicConnection(Movable):
             # _MAX_PN_LEN + _HP_SAMPLE_LEN = 20 bytes after pn_offset.
             # ciphertext = payload + AEAD_TAG(16), so payload must be >= 4
             # for a 1-byte PN.  Pad with QUIC PADDING (0x00) if needed.
-            var min_payload_len = _MAX_PN_LEN  # 4 bytes
-            var padded_payload = List[UInt8](copy=payload)
-            while len(padded_payload) < min_payload_len:
-                padded_payload.append(UInt8(0))
+            # Pad payload to minimum size for HP sample.
+            var min_payload_len = _MAX_PN_LEN
+            for i in range(len(payload)):
+                header_bytes.append(payload[i])
+            var current_payload_len = len(payload)
+            while current_payload_len < min_payload_len:
+                header_bytes.append(UInt8(0))
+                current_payload_len += 1
 
-            # Encrypt payload.
-            var header_span = Span(header_bytes)
-            var ciphertext = self.protect.encrypt_payload(
-                space_idx, pn, header_span, Span(padded_payload)
+            # Append zero space for AEAD tag.
+            for i in range(_AEAD_TAG_LEN):
+                header_bytes.append(UInt8(0))
+
+            var total_len = len(header_bytes)
+            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin()
+
+            # Encrypt payload region in-place.
+            var header_len = pn_offset + pn_len
+            _ = self.protect.encrypt_payload_in_place(
+                space_idx, pn, pkt_ptr, header_len,
+                current_payload_len, total_len,
             )
 
-            # Assemble full packet.
-            var packet = List[UInt8](
-                capacity=len(header_bytes) + len(ciphertext)
-            )
-            for i in range(len(header_bytes)):
-                packet.append(header_bytes[i])
-            for i in range(len(ciphertext)):
-                packet.append(ciphertext[i])
-
-            # Apply header protection.
-            self.protect.protect_header(
-                space_idx, packet, pn_offset, pn_len
+            # Protect header in-place.
+            self.protect.protect_header_ptr(
+                space_idx, pkt_ptr, total_len, pn_offset, pn_len,
             )
 
-            return packet^
+            return header_bytes^
 
     # ── Application-space frame ACK/loss handling (M3c) ─────────────
 
