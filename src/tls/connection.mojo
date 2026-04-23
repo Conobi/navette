@@ -188,14 +188,11 @@ struct TlsConnection(Movable):
         if n == 0:
             return
 
-        var buf = _heap_alloc[UInt8](n).as_any_origin()
-        for i in range(n):
-            buf[i] = ciphertext[i]
-
         var rc = self._lib()[].tls_conn_read_tls(
-            self._handle, buf, Int32(n)
+            self._handle,
+            ciphertext.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            Int32(n),
         )
-        buf.free()
 
         if rc < 0:
             raise (
@@ -245,14 +242,11 @@ struct TlsConnection(Movable):
         if n == 0:
             return
 
-        var buf = _heap_alloc[UInt8](n).as_any_origin()
-        for i in range(n):
-            buf[i] = plaintext[i]
-
         var rc = self._lib()[].tls_conn_write_plaintext(
-            self._handle, buf, Int32(n)
+            self._handle,
+            plaintext.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            Int32(n),
         )
-        buf.free()
         if rc < 0:
             raise (
                 "rlsm_tls_conn_write_plaintext failed: "
