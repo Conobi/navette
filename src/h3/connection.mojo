@@ -5,7 +5,7 @@
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
-from std.memory import Span
+from std.memory import Span, UnsafePointer
 
 from src.quic.connection import QuicConnection, QuicEvent
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
@@ -218,6 +218,49 @@ struct H3Connection(Movable):
     def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram; translate QuicEvents to H3Events."""
         self._quic.recv(data, now)
+        _ = self._quic.timeout(now)
+        while True:
+            var ev_opt = self._quic.poll()
+            if not ev_opt:
+                break
+            var ev = ev_opt.unsafe_take()
+            if ev.type_id == QuicEvent.HANDSHAKE_COMPLETE:
+                if not self._init_done:
+                    self._init_done = True
+                    self._bootstrap_local_streams(now)
+                var h3ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
+                self._h3_events.append(h3ev^)
+            elif ev.type_id == QuicEvent.STREAM_OPENED:
+                if self._is_peer_initiated(ev.stream_id):
+                    var sbuf = _H3StreamBuf()
+                    sbuf.is_uni = (ev.stream_id & UInt64(0x02)) != 0
+                    self._stream_bufs[Int(ev.stream_id)] = sbuf^
+            elif ev.type_id == QuicEvent.STREAM_READABLE:
+                try:
+                    self._drain_stream(ev.stream_id, now)
+                except:
+                    pass
+            elif ev.type_id == QuicEvent.STREAM_RESET:
+                if self._is_request_stream(ev.stream_id):
+                    var h3ev = H3Event(H3Event.STREAM_RESET)
+                    h3ev.stream_id = ev.stream_id
+                    h3ev.error_code = ev.error_code
+                    self._h3_events.append(h3ev^)
+            elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
+                var h3ev = H3Event(H3Event.CONNECTION_CLOSED)
+                h3ev.error_code = ev.error_code
+                h3ev.reason = ev.reason
+                self._h3_events.append(h3ev^)
+
+    def feed_datagram_from_buffer(
+        mut self,
+        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf_len: Int,
+        now: UInt64,
+    ) raises:
+        """Feed one inbound QUIC datagram from a mutable buffer pointer.
+        Zero-copy variant — buffer is modified in-place."""
+        self._quic.recv_from_buffer(buf, buf_len, now)
         _ = self._quic.timeout(now)
         while True:
             var ev_opt = self._quic.poll()

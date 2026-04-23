@@ -457,10 +457,8 @@ struct H3UdpHandler(CompletionHandler):
 
         var n = Int(result)
 
-        # Read received data from data_buf.
-        var data = List[UInt8](capacity=n)
-        for i in range(n):
-            data.append(slot[].data_buf[i])
+        # Zero-copy: use buffer directly for feed_datagram.
+        var data_ptr = slot[].data_buf
 
         # Read source addr from addr_buf.
         var addr = List[UInt8](capacity=ADDR_SIZE)
@@ -469,10 +467,15 @@ struct H3UdpHandler(CompletionHandler):
 
         var now = monotonic_us()
 
+        # Small copy for DCID extraction (header only, not full datagram).
+        var temp_data = List[UInt8](capacity=n)
+        for i in range(n):
+            temp_data.append(data_ptr[i])
+
         # Extract DCID to find or create connection.
         var dcid: List[UInt8]
         try:
-            dcid = _extract_dcid(Span(data))
+            dcid = _extract_dcid(Span(temp_data))
         except:
             # Bad packet — re-arm and ignore.
             slot[]._wire()
@@ -528,9 +531,9 @@ struct H3UdpHandler(CompletionHandler):
             self.conn_addrs.append(List[UInt8](copy=addr))
             conn_idx = len(self.conn_keys) - 1
 
-        # Feed datagram to the connection.
+        # Feed datagram to the connection (zero-copy from RX slot buffer).
         try:
-            self.conn_h3s[conn_idx][].feed_datagram(Span(data), now)
+            self.conn_h3s[conn_idx][].feed_datagram_from_buffer(data_ptr, n, now)
         except:
             pass
 

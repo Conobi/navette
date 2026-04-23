@@ -119,6 +119,18 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         if self._h3.is_established():
             self._drain_responses(now)
 
+    def feed_datagram_from_buffer(
+        mut self,
+        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf_len: Int,
+        now: UInt64,
+    ) raises:
+        """Feed one inbound QUIC datagram from a mutable buffer (zero-copy)."""
+        self._h3.feed_datagram_from_buffer(buf, buf_len, now)
+        self._dispatch_h3_events(now)
+        if self._h3.is_established():
+            self._drain_responses(now)
+
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         return self._h3.drain_datagrams(now)
 
