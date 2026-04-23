@@ -46,7 +46,7 @@ COPY --from=boucle . /boucle
 COPY . .
 
 # Build the Rust shared library
-RUN cargo build --release --manifest-path crates/librustls-mojo/Cargo.toml
+RUN cargo build --release --features skip-locks --manifest-path crates/librustls-mojo/Cargo.toml
 
 # Copy the .so into the conventional lib/ directory
 RUN cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
