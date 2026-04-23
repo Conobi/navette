@@ -609,12 +609,34 @@ struct QuicConnection(Movable):
 
     def recv(mut self, datagram: Span[UInt8, _], now: UInt64,
              ecn_mark: UInt8 = UInt8(0)) raises:
-        """Process an incoming UDP datagram.
+        """Process an incoming UDP datagram (Span convenience wrapper)."""
+        var n = len(datagram)
+        if n == 0:
+            return
+        var buf = _heap_alloc[UInt8](n).as_any_origin()
+        for i in range(n):
+            buf[i] = datagram[i]
+        try:
+            self.recv_from_buffer(buf, n, now, ecn_mark)
+        except e:
+            buf.free()
+            raise e.copy()
+        buf.free()
 
-        Parses coalesced packets, decrypts payloads, dispatches frames,
-        and drives the TLS handshake as needed.
+    def recv_from_buffer(
+        mut self,
+        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf_len: Int,
+        now: UInt64,
+        ecn_mark: UInt8 = UInt8(0),
+    ) raises:
+        """Process an incoming UDP datagram from a mutable buffer.
+
+        Zero-copy variant: operates directly on the caller's buffer for
+        header unprotection and payload decryption, eliminating intermediate
+        copies where possible.
         """
-        self.bytes_received += UInt64(len(datagram))
+        self.bytes_received += UInt64(buf_len)
         self.idle_timer = now
 
         # Track the lowest encryption level at which we process a packet
@@ -622,32 +644,30 @@ struct QuicConnection(Movable):
         var lowest_recv_space = 3  # sentinel: nothing processed yet
 
         var offset = 0
-        while offset < len(datagram):
+        while offset < buf_len:
             # Skip datagram-level zero padding (RFC 9000 §12.4).
             # A zero first byte is never a valid QUIC packet (long headers
             # require bit 7, short headers require bit 6).
-            if datagram[offset] == 0:
+            if buf[offset] == 0:
                 break
 
-            # 1. Copy remaining bytes into a working buffer.
-            var remaining = List[UInt8](capacity=len(datagram) - offset)
-            for i in range(offset, len(datagram)):
-                remaining.append(datagram[i])
+            var remaining_len = buf_len - offset
+            var remaining_ptr = buf + offset
+
+            # 1. Copy remaining bytes for parse_packet_header (needs Span
+            # from List — known remaining copy, to be removed later).
+            var remaining_list = List[UInt8](capacity=remaining_len)
+            for i in range(remaining_len):
+                remaining_list.append(remaining_ptr[i])
 
             # 2. Parse packet header.
             var header_result = parse_packet_header(
-                Span(remaining), len(self.local_cid)
+                Span(remaining_list), len(self.local_cid)
             )
             var header = header_result[0].copy()
             var header_end = header_result[1]
 
             # 2b. Adopt peer's SCID as peer_cid (RFC 9000 §7.2).
-            #     Client: on first server Initial, switch DCID to server's SCID.
-            #     Server: on first client Initial, switch DCID to client's SCID.
-            #     Without this, the server would keep using the client's
-            #     random DCID (used only for initial key derivation) as the
-            #     DCID in outgoing packets, which other implementations
-            #     (ngtcp2, quiche) correctly reject.
             if header.is_long_header and len(header.scid) > 0:
                 if header.packet_type == PacketType.initial():
                     self.peer_cid = List[UInt8](copy=header.scid)
@@ -663,7 +683,7 @@ struct QuicConnection(Movable):
                 # packet (RFC 9000 §12.2). Short headers consume the rest.
                 if header.is_long_header:
                     var skip = header.pn_offset + Int(header.payload_length)
-                    if skip > len(remaining):
+                    if skip > remaining_len:
                         break  # Truncated
                     offset += skip
                     continue
@@ -674,23 +694,21 @@ struct QuicConnection(Movable):
             if header.is_long_header:
                 pkt_len = header.pn_offset + Int(header.payload_length)
             else:
-                pkt_len = len(remaining)
+                pkt_len = remaining_len
 
-            if pkt_len > len(remaining):
+            if pkt_len > remaining_len:
                 break  # Truncated packet
 
-            # 5. Copy packet bytes for in-place operations.
-            var pkt_buf = List[UInt8](capacity=pkt_len)
-            for i in range(pkt_len):
-                pkt_buf.append(remaining[i])
+            # 5. Use buffer directly — no pkt_buf copy needed.
+            var pkt_ptr = remaining_ptr
 
             # 6-12. Decrypt and process. On failure, stop processing
             # remaining coalesced packets (RFC 9000 §12.2).
             var decrypt_ok = True
             try:
-                # 6. Unprotect header.
-                var hp_result = self.protect.unprotect_header(
-                    space_idx, pkt_buf, header.pn_offset
+                # 6. Unprotect header in-place (zero-copy).
+                var hp_result = self.protect.unprotect_header_ptr(
+                    space_idx, pkt_ptr, pkt_len, header.pn_offset
                 )
                 var first_byte = hp_result[0]
                 var pn_length = hp_result[1]
@@ -699,17 +717,17 @@ struct QuicConnection(Movable):
                 var truncated_pn = UInt64(0)
                 for i in range(pn_length):
                     truncated_pn = (truncated_pn << 8) | UInt64(
-                        pkt_buf[header.pn_offset + i]
+                        pkt_ptr[header.pn_offset + i]
                     )
                 var largest = UInt64(0)
                 if self.spaces[space_idx].largest_recv_pn >= 0:
                     largest = UInt64(self.spaces[space_idx].largest_recv_pn)
                 var full_pn = pn_decode(truncated_pn, pn_length, largest)
 
-                # 8. Decrypt payload.
+                # 8. Decrypt payload in-place (zero-copy).
                 var header_len = header.pn_offset + pn_length
-                var plaintext = self.protect.decrypt_payload(
-                    space_idx, full_pn, header_len, pkt_buf
+                var plaintext_len = self.protect.decrypt_payload_in_place(
+                    space_idx, full_pn, header_len, pkt_ptr, pkt_len
                 )
 
                 # 9. Server validates address on first Handshake decrypt.
@@ -717,7 +735,12 @@ struct QuicConnection(Movable):
                     self.state = self.state | CONN_ADDR_VALIDATED
 
                 # 10. Parse and dispatch frames.
-                var reader = ByteReader(Span(plaintext))
+                # Copy plaintext into list for ByteReader (known remaining
+                # copy — ByteReader needs Span from List).
+                var pt_list = List[UInt8](capacity=plaintext_len)
+                for i in range(plaintext_len):
+                    pt_list.append(pkt_ptr[header_len + i])
+                var reader = ByteReader(Span(pt_list))
                 var frames = parse_frames(reader)
                 var ack_eliciting = False
                 for i in range(len(frames)):
