@@ -112,74 +112,55 @@ struct PacketProtect(Movable):
 
     # -- Header protection (decrypt direction) ---------------------------------
 
-    def unprotect_header(
-        self, level: Int, mut packet_buf: List[UInt8], pn_offset: Int
+    def unprotect_header_ptr(
+        self,
+        level: Int,
+        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_len: Int,
+        pn_offset: Int,
     ) raises -> Tuple[UInt8, Int]:
-        """Remove header protection and return (first_byte, pn_length).
+        """Remove header protection in-place. Zero-copy — no heap allocs.
 
-        Modifies packet_buf in-place: the first byte and the PN bytes at
-        pn_offset are unmasked.
+        Modifies pkt_ptr[0] (first byte) and pkt_ptr[pn_offset..pn_offset+4]
+        (PN bytes) in-place via the Rust FFI.
 
-        Args:
-            level: Encryption level (0=Initial, 1=Handshake, 2=Application).
-            packet_buf: The full packet buffer (modified in-place).
-            pn_offset: Byte offset where the packet number starts.
-
-        Returns:
-            A tuple of (unprotected first byte, packet number length 1..4).
+        Returns (unprotected first byte, pn_length 1..4).
         """
         self._check_level(level)
         var keys_handle = self.keys[level]
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
-        # Need at least pn_offset + 4 (max PN) + 16 (HP sample).
-        if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > len(packet_buf):
+        if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > pkt_len:
             raise "packet too short for header unprotection"
 
-        # Extract 16-byte HP sample starting at pn_offset + 4.
-        var sample = _heap_alloc[UInt8](_HP_SAMPLE_LEN).as_any_origin()
-        for i in range(_HP_SAMPLE_LEN):
-            sample[i] = packet_buf[pn_offset + _MAX_PN_LEN + i]
-
-        # Copy first byte and 4 PN bytes for the FFI call.
-        var first_byte = _heap_alloc[UInt8](1).as_any_origin()
-        first_byte[0] = packet_buf[0]
-
-        var pn_bytes = _heap_alloc[UInt8](_MAX_PN_LEN).as_any_origin()
-        for i in range(_MAX_PN_LEN):
-            pn_bytes[i] = packet_buf[pn_offset + i]
-
+        # Pass pointers directly into the packet buffer — no copies.
         var rc = self._lib()[].keys_remote_header_unprotect(
             keys_handle,
-            sample,
+            pkt_ptr + pn_offset + _MAX_PN_LEN,  # sample (16 bytes, read-only)
             Int32(_HP_SAMPLE_LEN),
-            first_byte,
-            pn_bytes,
+            pkt_ptr,                              # first_byte (modified in-place)
+            pkt_ptr + pn_offset,                  # pn_bytes (modified in-place)
             Int32(_MAX_PN_LEN),
         )
 
         if rc < 0:
-            var err = self._lib()[].last_error()
-            sample.free()
-            first_byte.free()
-            pn_bytes.free()
-            raise "header unprotect failed: " + err
+            raise "header unprotect failed: " + self._lib()[].last_error()
 
-        # Read back the unprotected values.
-        var fb = first_byte[0]
+        var fb = pkt_ptr[0]
         var pn_length = Int(fb & 0x03) + 1
-
-        # Write unprotected values back into the packet buffer.
-        packet_buf[0] = fb
-        for i in range(_MAX_PN_LEN):
-            packet_buf[pn_offset + i] = pn_bytes[i]
-
-        sample.free()
-        first_byte.free()
-        pn_bytes.free()
-
         return Tuple[UInt8, Int](fb, pn_length)
+
+    def unprotect_header(
+        self, level: Int, mut packet_buf: List[UInt8], pn_offset: Int
+    ) raises -> Tuple[UInt8, Int]:
+        """Remove header protection (List convenience wrapper)."""
+        return self.unprotect_header_ptr(
+            level,
+            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            len(packet_buf),
+            pn_offset,
+        )
 
     # -- AEAD decrypt ----------------------------------------------------------
 
@@ -314,6 +295,35 @@ struct PacketProtect(Movable):
 
     # -- Header protection (encrypt direction) ---------------------------------
 
+    def protect_header_ptr(
+        self,
+        level: Int,
+        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_len: Int,
+        pn_offset: Int,
+        pn_length: Int,
+    ) raises:
+        """Apply header protection in-place. Zero-copy — no heap allocs."""
+        self._check_level(level)
+        var keys_handle = self.keys[level]
+        if keys_handle == Int32(-1):
+            raise "no keys for level " + String(level)
+
+        if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > pkt_len:
+            raise "packet too short for header protection"
+
+        var rc = self._lib()[].keys_local_header_protect(
+            keys_handle,
+            pkt_ptr + pn_offset + _MAX_PN_LEN,  # sample
+            Int32(_HP_SAMPLE_LEN),
+            pkt_ptr,                              # first_byte
+            pkt_ptr + pn_offset,                  # pn_bytes
+            Int32(pn_length),
+        )
+
+        if rc < 0:
+            raise "header protect failed: " + self._lib()[].last_error()
+
     def protect_header(
         self,
         level: Int,
@@ -321,61 +331,14 @@ struct PacketProtect(Movable):
         pn_offset: Int,
         pn_length: Int,
     ) raises:
-        """Apply header protection to a serialized QUIC packet.
-
-        Modifies packet_buf in-place: masks the first byte and the PN bytes
-        at pn_offset using the HP sample from the ciphertext.
-
-        Args:
-            level: Encryption level.
-            packet_buf: The full packet (header + ciphertext + tag), modified in-place.
-            pn_offset: Byte offset where the packet number starts.
-            pn_length: Length of the encoded packet number (1..4).
-        """
-        self._check_level(level)
-        var keys_handle = self.keys[level]
-        if keys_handle == Int32(-1):
-            raise "no keys for level " + String(level)
-
-        # HP sample starts 4 bytes after pn_offset (into the ciphertext).
-        if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > len(packet_buf):
-            raise "packet too short for header protection"
-
-        var sample = _heap_alloc[UInt8](_HP_SAMPLE_LEN).as_any_origin()
-        for i in range(_HP_SAMPLE_LEN):
-            sample[i] = packet_buf[pn_offset + _MAX_PN_LEN + i]
-
-        var first_byte = _heap_alloc[UInt8](1).as_any_origin()
-        first_byte[0] = packet_buf[0]
-
-        var pn_bytes = _heap_alloc[UInt8](pn_length).as_any_origin()
-        for i in range(pn_length):
-            pn_bytes[i] = packet_buf[pn_offset + i]
-
-        var rc = self._lib()[].keys_local_header_protect(
-            keys_handle,
-            sample,
-            Int32(_HP_SAMPLE_LEN),
-            first_byte,
-            pn_bytes,
-            Int32(pn_length),
+        """Apply header protection (List convenience wrapper)."""
+        self.protect_header_ptr(
+            level,
+            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            len(packet_buf),
+            pn_offset,
+            pn_length,
         )
-
-        if rc < 0:
-            var err = self._lib()[].last_error()
-            sample.free()
-            first_byte.free()
-            pn_bytes.free()
-            raise "header protect failed: " + err
-
-        # Write protected values back.
-        packet_buf[0] = first_byte[0]
-        for i in range(pn_length):
-            packet_buf[pn_offset + i] = pn_bytes[i]
-
-        sample.free()
-        first_byte.free()
-        pn_bytes.free()
 
     # -- Internal --------------------------------------------------------------
 
