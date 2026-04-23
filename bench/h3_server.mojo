@@ -627,8 +627,8 @@ struct H3UdpHandler(CompletionHandler):
                 # Find the key that maps to index i and remove it.
                 var dead_key = String()
                 for entry in self.conn_map.items():
-                    if entry[].value == i:
-                        dead_key = entry[].key
+                    if entry.value == i:
+                        dead_key = entry.key
                         break
                 if dead_key:
                     _ = self.conn_map.pop(dead_key)
@@ -640,8 +640,8 @@ struct H3UdpHandler(CompletionHandler):
                     self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
                     # Update the Dict entry for the swapped-in connection.
                     for entry in self.conn_map.items():
-                        if entry[].value == last:
-                            self.conn_map[entry[].key] = i
+                        if entry.value == last:
+                            self.conn_map[entry.key] = i
                             break
                 _ = self.conn_h3s.pop()
                 _ = self.conn_addrs.pop()
