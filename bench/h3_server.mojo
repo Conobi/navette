@@ -348,7 +348,7 @@ struct H3UdpHandler(CompletionHandler):
     """CompletionHandler for UDP-based H3 server using io_uring."""
 
     var udp_fd: Int32
-    var conn_keys: List[String]
+    var conn_map: Dict[String, Int]
     var conn_h3s: List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]
     var conn_addrs: List[List[UInt8]]
     var rx_slots: UnsafePointer[UdpRxSlot, MutAnyOrigin]
@@ -369,7 +369,7 @@ struct H3UdpHandler(CompletionHandler):
         server_config: Int32,
     ):
         self.udp_fd = udp_fd
-        self.conn_keys = List[String]()
+        self.conn_map = Dict[String, Int]()
         self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
         self.rx_slots = _heap_alloc[UdpRxSlot](RX_POOL_SIZE).as_any_origin()
@@ -397,7 +397,7 @@ struct H3UdpHandler(CompletionHandler):
 
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
-        self.conn_keys = take.conn_keys^
+        self.conn_map = take.conn_map^
         self.conn_h3s = take.conn_h3s^
         self.conn_addrs = take.conn_addrs^
         self.rx_slots = take.rx_slots
@@ -413,9 +413,11 @@ struct H3UdpHandler(CompletionHandler):
     # --- Conn lookup ---
 
     def _find_conn(self, key: String) -> Int:
-        for i in range(len(self.conn_keys)):
-            if self.conn_keys[i] == key:
-                return i
+        if key in self.conn_map:
+            try:
+                return self.conn_map[key]
+            except:
+                return -1
         return -1
 
     # --- on_complete dispatch ---
@@ -526,10 +528,10 @@ struct H3UdpHandler(CompletionHandler):
             var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
             h3_ptr.init_pointee_move(h3^)
 
-            self.conn_keys.append(key)
+            conn_idx = len(self.conn_h3s)
+            self.conn_map[key] = conn_idx
             self.conn_h3s.append(h3_ptr)
             self.conn_addrs.append(List[UInt8](copy=addr))
-            conn_idx = len(self.conn_keys) - 1
 
         # Feed datagram to the connection (zero-copy from RX slot buffer).
         try:
@@ -609,7 +611,7 @@ struct H3UdpHandler(CompletionHandler):
 
         # Drain all connections — they may have pending retransmissions.
         var i = 0
-        while i < len(self.conn_keys):
+        while i < len(self.conn_h3s):
             # Drain datagrams for this connection.
             try:
                 self._drain_and_send(i, now)
@@ -622,12 +624,25 @@ struct H3UdpHandler(CompletionHandler):
                 ptr.destroy_pointee()
                 ptr.free()
 
-                var last = len(self.conn_keys) - 1
+                # Find the key that maps to index i and remove it.
+                var dead_key = String()
+                for entry in self.conn_map.items():
+                    if entry[].value == i:
+                        dead_key = entry[].key
+                        break
+                if dead_key:
+                    _ = self.conn_map.pop(dead_key)
+
+                var last = len(self.conn_h3s) - 1
                 if i != last:
-                    self.conn_keys[i] = self.conn_keys[last]
+                    # Swap the last element into position i.
                     self.conn_h3s[i] = self.conn_h3s[last]
                     self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
-                _ = self.conn_keys.pop()
+                    # Update the Dict entry for the swapped-in connection.
+                    for entry in self.conn_map.items():
+                        if entry[].value == last:
+                            self.conn_map[entry[].key] = i
+                            break
                 _ = self.conn_h3s.pop()
                 _ = self.conn_addrs.pop()
                 # Don't increment i — the swapped-in element needs checking.
