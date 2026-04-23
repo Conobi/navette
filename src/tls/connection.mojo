@@ -37,33 +37,6 @@ comptime _CIPHERTEXT_DRAIN_BUF_SIZE = 18432
 comptime _ALPN_BUF_SIZE = 256
 
 
-def _drain_write_tls(
-    ref lib: RustlsLibrary,
-    handle: Int32,
-    mut out: List[UInt8],
-) raises:
-    """Drain all pending ciphertext from a connection into `out`.
-
-    Loops `rlsm_tls_conn_write_tls` until the rustls write buffer reports
-    nothing more to send. Raises if the underlying FFI returns a negative
-    value so TLS alerts and fatal handshake errors propagate up.
-    """
-    var buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_any_origin()
-    while True:
-        var n = lib.tls_conn_write_tls(
-            handle, buf, Int32(_CIPHERTEXT_DRAIN_BUF_SIZE)
-        )
-        if n < 0:
-            var err = lib.last_error()
-            buf.free()
-            raise "rlsm_tls_conn_write_tls failed: " + err
-        if n == 0:
-            break
-        for i in range(Int(n)):
-            out.append(buf[i])
-    buf.free()
-
-
 struct TlsConnection(Movable):
     """Sans-I/O TLS connection wrapping a rustls connection handle.
 
@@ -74,6 +47,9 @@ struct TlsConnection(Movable):
     var _lib_addr: UInt64
     var _handle: Int32
     var _ciphertext_out: List[UInt8]
+    var _ct_drain_buf: UnsafePointer[UInt8, MutAnyOrigin]
+    var _pt_drain_buf: UnsafePointer[UInt8, MutAnyOrigin]
+    var _handshake_complete: Bool
 
     # -- Private constructor (used by factory methods) ------------------------
 
@@ -83,10 +59,16 @@ struct TlsConnection(Movable):
         _lib_addr: UInt64,
         _handle: Int32,
         var _ciphertext_out: List[UInt8],
+        _ct_drain_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        _pt_drain_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        _handshake_complete: Bool,
     ):
         self._lib_addr = _lib_addr
         self._handle = _handle
         self._ciphertext_out = _ciphertext_out^
+        self._ct_drain_buf = _ct_drain_buf
+        self._pt_drain_buf = _pt_drain_buf
+        self._handshake_complete = _handshake_complete
 
     # -- Move / Destroy --------------------------------------------------------
 
@@ -94,10 +76,15 @@ struct TlsConnection(Movable):
         self._lib_addr = take._lib_addr
         self._handle = take._handle
         self._ciphertext_out = take._ciphertext_out^
+        self._ct_drain_buf = take._ct_drain_buf
+        self._pt_drain_buf = take._pt_drain_buf
+        self._handshake_complete = take._handshake_complete
 
     def __del__(deinit self):
         if self._handle > 0:
             _ = self._lib()[].tls_conn_free(self._handle)
+        self._ct_drain_buf.free()
+        self._pt_drain_buf.free()
 
     # -- Construction ----------------------------------------------------------
 
@@ -135,12 +122,24 @@ struct TlsConnection(Movable):
             raise "rlsm_tls_client_new failed: " + lib.last_error()
 
         # Drain the ClientHello immediately so the caller can send it.
-        # If draining fails, free the rustls handle before propagating to
-        # avoid leaking it (no destructor runs since construction failed).
+        # We allocate the ciphertext drain buffer here and reuse it as the
+        # struct's pre-allocated buffer (no double allocation).
         var ct_out = List[UInt8]()
+        var init_ct_buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_any_origin()
         try:
-            _drain_write_tls(lib, handle, ct_out)
+            while True:
+                var dn = lib.tls_conn_write_tls(
+                    handle, init_ct_buf, Int32(_CIPHERTEXT_DRAIN_BUF_SIZE)
+                )
+                if dn < 0:
+                    init_ct_buf.free()
+                    raise "rlsm_tls_conn_write_tls failed: " + lib.last_error()
+                if dn == 0:
+                    break
+                for di in range(Int(dn)):
+                    ct_out.append(init_ct_buf[di])
         except e:
+            init_ct_buf.free()
             _ = lib.tls_conn_free(handle)
             raise e.copy()
 
@@ -148,6 +147,9 @@ struct TlsConnection(Movable):
             _lib_addr=UInt64(Int(UnsafePointer(to=lib))),
             _handle=handle,
             _ciphertext_out=ct_out^,
+            _ct_drain_buf=init_ct_buf,
+            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin(),
+            _handshake_complete=False,
         )
 
     @staticmethod
@@ -168,6 +170,9 @@ struct TlsConnection(Movable):
             _lib_addr=UInt64(Int(UnsafePointer(to=lib))),
             _handle=handle,
             _ciphertext_out=List[UInt8](),
+            _ct_drain_buf=_heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_any_origin(),
+            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin(),
+            _handshake_complete=False,
         )
 
     # -- Inbound: ciphertext -> plaintext --------------------------------------
@@ -200,9 +205,12 @@ struct TlsConnection(Movable):
                 + self._lib()[].last_error()
             )
 
-        _drain_write_tls(
-            self._lib()[], self._handle, self._ciphertext_out
-        )
+        self._drain_write_tls()
+
+        if not self._handshake_complete:
+            var hs = self._lib()[].tls_conn_is_handshaking(self._handle)
+            if hs == Int32(0):
+                self._handshake_complete = True
 
     def drain_plaintext(mut self) raises -> List[UInt8]:
         """Return any decrypted plaintext available after `receive_data`.
@@ -213,23 +221,20 @@ struct TlsConnection(Movable):
         data. Raises on FFI errors so close_notify / fatal alerts surface
         rather than being indistinguishable from "no data yet".
         """
-        var buf = _heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin()
         var result = List[UInt8]()
-
         while True:
             var n = self._lib()[].tls_conn_read_plaintext(
-                self._handle, buf, Int32(_IO_BUF_SIZE)
+                self._handle, self._pt_drain_buf, Int32(_IO_BUF_SIZE)
             )
             if n < 0:
-                var err = self._lib()[].last_error()
-                buf.free()
-                raise "rlsm_tls_conn_read_plaintext failed: " + err
+                raise (
+                    "rlsm_tls_conn_read_plaintext failed: "
+                    + self._lib()[].last_error()
+                )
             if n == 0:
                 break
             for i in range(Int(n)):
-                result.append(buf[i])
-
-        buf.free()
+                result.append(self._pt_drain_buf[i])
         return result^
 
     # -- Outbound: plaintext -> ciphertext -------------------------------------
@@ -253,9 +258,7 @@ struct TlsConnection(Movable):
                 + self._lib()[].last_error()
             )
 
-        _drain_write_tls(
-            self._lib()[], self._handle, self._ciphertext_out
-        )
+        self._drain_write_tls()
 
     def drain_ciphertext(mut self) -> List[UInt8]:
         """Return all buffered ciphertext, clearing the internal buffer.
@@ -270,8 +273,7 @@ struct TlsConnection(Movable):
 
     def is_handshaking(self) -> Bool:
         """True if the TLS handshake is still in progress."""
-        var rc = self._lib()[].tls_conn_is_handshaking(self._handle)
-        return rc == Int32(1)
+        return not self._handshake_complete
 
     def wants_write(self) -> Bool:
         """True if there is buffered ciphertext waiting to be sent."""
@@ -303,6 +305,24 @@ struct TlsConnection(Movable):
         return Optional[String](s^)
 
     # -- Internal --------------------------------------------------------------
+
+    def _drain_write_tls(mut self) raises:
+        """Drain all pending ciphertext from rustls into `_ciphertext_out`."""
+        while True:
+            var n = self._lib()[].tls_conn_write_tls(
+                self._handle,
+                self._ct_drain_buf,
+                Int32(_CIPHERTEXT_DRAIN_BUF_SIZE),
+            )
+            if n < 0:
+                raise (
+                    "rlsm_tls_conn_write_tls failed: "
+                    + self._lib()[].last_error()
+                )
+            if n == 0:
+                break
+            for i in range(Int(n)):
+                self._ciphertext_out.append(self._ct_drain_buf[i])
 
     @always_inline
     def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
