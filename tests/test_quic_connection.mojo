@@ -14,6 +14,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
+from src.quic.packet_protect import PacketProtect
 from src.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
@@ -2650,6 +2651,125 @@ def test_streams_blocked_dedup_no_resend() raises:
     print("  test_streams_blocked_dedup_no_resend: PASS")
 
 
+def test_batch_crypto_roundtrip() raises:
+    """Encrypt with client batch methods, decrypt with server batch methods."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var client = PacketProtect(lib_addr)
+    var server = PacketProtect(lib_addr)
+
+    var dcid: List[UInt8] = [
+        UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
+        UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
+    ]
+    client.derive_initial_keys(Span(dcid), True)
+    server.derive_initial_keys(Span(dcid), False)
+
+    # Build packet: 22-byte header + 32-byte PADDING + 16-byte tag space = 70 bytes
+    # PN_OFFSET = 18, HEADER_LEN = 22 (18 + 4-byte PN)
+    var buf_ptr = _heap_alloc[UInt8](70).as_any_origin()
+    for i in range(70):
+        buf_ptr[i] = UInt8(0)
+
+    # Byte 0: Initial long header, 4-byte PN
+    buf_ptr[0] = UInt8(0xC3)
+    # Bytes 1-4: version 0x00000001
+    buf_ptr[1] = UInt8(0x00)
+    buf_ptr[2] = UInt8(0x00)
+    buf_ptr[3] = UInt8(0x00)
+    buf_ptr[4] = UInt8(0x01)
+    # Byte 5: DCID len = 8
+    buf_ptr[5] = UInt8(8)
+    # Bytes 6-13: DCID
+    buf_ptr[6]  = UInt8(0x83)
+    buf_ptr[7]  = UInt8(0x94)
+    buf_ptr[8]  = UInt8(0xc8)
+    buf_ptr[9]  = UInt8(0xf0)
+    buf_ptr[10] = UInt8(0x3e)
+    buf_ptr[11] = UInt8(0x51)
+    buf_ptr[12] = UInt8(0x57)
+    buf_ptr[13] = UInt8(0x08)
+    # Byte 14: SCID len = 0
+    buf_ptr[14] = UInt8(0)
+    # Byte 15: token length varint = 0
+    buf_ptr[15] = UInt8(0)
+    # Bytes 16-17: payload length varint (2-byte: 0x40|high, low) = 52 = 4+32+16
+    buf_ptr[16] = UInt8(0x40)
+    buf_ptr[17] = UInt8(52)
+    # Bytes 18-21: PN = 0 (4 bytes, already zero)
+    # Bytes 22-53: PADDING (zeros, already zero)
+    # Bytes 54-69: tag space (zeros)
+
+    # Allocate parallel arrays on the heap
+    var pkt_ptrs   = _heap_alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_any_origin()
+    var pns        = _heap_alloc[UInt64](1).as_any_origin()
+    var hdr_lens   = _heap_alloc[Int32](1).as_any_origin()
+    var pay_lens   = _heap_alloc[Int32](1).as_any_origin()
+    var capacities = _heap_alloc[Int32](1).as_any_origin()
+    var pkt_lens   = _heap_alloc[Int32](1).as_any_origin()
+    var pn_offsets = _heap_alloc[Int32](1).as_any_origin()
+    var pn_lengths = _heap_alloc[Int32](1).as_any_origin()
+
+    var out_ct_lens  = _heap_alloc[Int32](1).as_any_origin()
+    var out_results  = _heap_alloc[Int32](1).as_any_origin()
+    var out_fb       = _heap_alloc[UInt8](1).as_any_origin()
+    var out_pnl      = _heap_alloc[Int32](1).as_any_origin()
+    var out_pt_lens  = _heap_alloc[Int32](1).as_any_origin()
+
+    pkt_ptrs[0]   = buf_ptr
+    pns[0]        = UInt64(0)
+    hdr_lens[0]   = Int32(22)   # 18 + 4-byte PN
+    pay_lens[0]   = Int32(32)   # PADDING bytes
+    capacities[0] = Int32(70)   # total buffer size
+    pkt_lens[0]   = Int32(70)
+    pn_offsets[0] = Int32(18)
+    pn_lengths[0] = Int32(4)
+
+    # Encrypt
+    _ = client.batch_encrypt_in_place(0, 1, pns, pkt_ptrs, hdr_lens, pay_lens, capacities, out_ct_lens)
+    # out_ct_lens = payload_len + tag_len = 32 + 16 = 48
+    assert_true(out_ct_lens[0] == Int32(48), "ciphertext length must be 48 (payload+tag)")
+
+    # Apply header protection
+    pkt_lens[0] = Int32(70)
+    _ = client.batch_protect_headers(0, 1, pkt_ptrs, pkt_lens, pn_offsets, pn_lengths, out_results)
+    assert_true(out_results[0] == Int32(0), "batch_protect_headers must succeed (result=0)")
+
+    # Remove header protection (server side)
+    _ = server.batch_unprotect_headers(0, 1, pkt_ptrs, pkt_lens, pn_offsets, out_fb, out_pnl)
+    assert_true(out_pnl[0] == Int32(4), "PN length must be 4 after unprotect")
+
+    # Decrypt (server side)
+    hdr_lens[0] = Int32(22)
+    _ = server.batch_decrypt_in_place(0, 1, pns, pkt_ptrs, pkt_lens, hdr_lens, out_pt_lens)
+    assert_true(out_pt_lens[0] == Int32(32), "decrypted plaintext length must be 32")
+
+    # Verify plaintext is all zeros (original PADDING)
+    for i in range(32):
+        assert_true(buf_ptr[22 + i] == UInt8(0), "plaintext byte must be 0")
+
+    pkt_ptrs.free()
+    pns.free()
+    hdr_lens.free()
+    pay_lens.free()
+    capacities.free()
+    pkt_lens.free()
+    pn_offsets.free()
+    pn_lengths.free()
+    out_ct_lens.free()
+    out_results.free()
+    out_fb.free()
+    out_pnl.free()
+    out_pt_lens.free()
+    buf_ptr.free()
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_batch_crypto_roundtrip: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2684,4 +2804,5 @@ def main() raises:
     test_pn_skip_next_in_valid_range()
     test_streams_blocked_bidi_emitted()
     test_streams_blocked_dedup_no_resend()
+    test_batch_crypto_roundtrip()
     print("All test_quic_connection tests passed.")
