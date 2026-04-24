@@ -47,7 +47,7 @@ comptime IPV6_V6ONLY: Int32 = 26
 comptime _SUBMIT_SENDMSG: UInt8 = 1
 comptime _SUBMIT_TIMEOUT: UInt8 = 2
 
-comptime PBUF_COUNT: Int = 128
+comptime PBUF_COUNT: Int = 1024
 comptime PBUF_SIZE: Int = 1600
 comptime PBUF_GROUP_ID: UInt16 = 0
 comptime RECVMSG_OUT_HDR_SIZE: Int = 16
@@ -165,18 +165,20 @@ struct PendingDatagram(Copyable, Movable):
     var payload_len: Int
     var addr_offset: Int
     var addr_len: Int
-    var conn_idx: Int
+    var addr_key: String
+    var dcid: List[UInt8]
 
     def __init__(out self, buf_id: UInt16, buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
                  payload_ptr: UnsafePointer[UInt8, MutAnyOrigin], payload_len: Int,
-                 addr_offset: Int, addr_len: Int, conn_idx: Int):
+                 addr_offset: Int, addr_len: Int, var addr_key: String, var dcid: List[UInt8]):
         self.buf_id = buf_id
         self.buf_ptr = buf_ptr
         self.payload_ptr = payload_ptr
         self.payload_len = payload_len
         self.addr_offset = addr_offset
         self.addr_len = addr_len
-        self.conn_idx = conn_idx
+        self.addr_key = addr_key^
+        self.dcid = dcid^
 
     def __init__(out self, *, other: Self):
         self.buf_id = other.buf_id
@@ -185,7 +187,8 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = other.payload_len
         self.addr_offset = other.addr_offset
         self.addr_len = other.addr_len
-        self.conn_idx = other.conn_idx
+        self.addr_key = String(other.addr_key)
+        self.dcid = List[UInt8](copy=other.dcid)
 
     def __init__(out self, *, deinit take: Self):
         self.buf_id = take.buf_id
@@ -194,7 +197,8 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = take.payload_len
         self.addr_offset = take.addr_offset
         self.addr_len = take.addr_len
-        self.conn_idx = take.conn_idx
+        self.addr_key = take.addr_key^
+        self.dcid = take.dcid^
 
 
 # ── UdpTxSlot ─────────────────────────────────────────────────────────
@@ -325,6 +329,7 @@ struct H3UdpHandler(BatchCompletionHandler):
     var msghdr_template: UnsafePointer[UInt8, MutAnyOrigin]
     var tx_slots: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
     var tx_slot_tokens: List[UInt64]
+    var tx_slot_idx_by_token: Dict[UInt64, Int]
     var next_tx_id: UInt64
     var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
     var lib_addr: UInt64
@@ -361,6 +366,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # causes EFAULT.
         self.tx_slots = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
         self.tx_slot_tokens = List[UInt64]()
+        self.tx_slot_idx_by_token = Dict[UInt64, Int]()
         self.next_tx_id = UInt64(0)
         self.cache_ptr = cache_ptr
         self.lib_addr = lib_addr
@@ -389,6 +395,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.msghdr_template = take.msghdr_template
         self.tx_slots = take.tx_slots^
         self.tx_slot_tokens = take.tx_slot_tokens^
+        self.tx_slot_idx_by_token = take.tx_slot_idx_by_token^
         self.next_tx_id = take.next_tx_id
         self.cache_ptr = take.cache_ptr
         self.lib_addr = take.lib_addr
@@ -475,27 +482,23 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.consumed_bufs.append(buf_id)
             return
 
-        # Extract DCID for connection lookup.
-        var temp_data = List[UInt8](capacity=payloadlen)
-        for i in range(payloadlen):
-            temp_data.append(payload_ptr[i])
-
+        # Extract DCID directly from the provided buffer — no copy.
         var dcid: List[UInt8]
         try:
-            dcid = _extract_dcid(Span(temp_data))
+            dcid = _extract_dcid(Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen))
         except:
             # Bad packet — return buffer.
             self.consumed_bufs.append(buf_id)
             return
 
-        # Build address key for connection demux.
+        # Build address key for connection demux. Stored as String — re-looked-up
+        # in _flush_impl since timeout completions in the same poll batch may
+        # swap-and-pop conn_h3s, invalidating any cached index.
         var addr_bytes = List[UInt8](capacity=addr_len)
         for i in range(addr_len):
             addr_bytes.append(buf_ptr[addr_offset + i])
         var key = _addr_to_key(addr_bytes)
-        var conn_idx = self._find_conn(key)
 
-        # Append to pending batch — do NOT process yet.
         self.pending_rx.append(
             PendingDatagram(
                 buf_id=buf_id,
@@ -504,7 +507,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                 payload_len=payloadlen,
                 addr_offset=addr_offset,
                 addr_len=addr_len,
-                conn_idx=conn_idx,
+                addr_key=key^,
+                dcid=dcid^,
             )
         )
 
@@ -521,31 +525,23 @@ struct H3UdpHandler(BatchCompletionHandler):
 
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
-            var conn_idx = pd.conn_idx
+            # Re-lookup conn_idx by addr_key — the index recorded at
+            # _handle_recvmsg time may be stale if a timeout completion
+            # in the same poll batch did swap-and-pop on conn_h3s.
+            var conn_idx = self._find_conn(pd.addr_key)
 
             if conn_idx < 0:
-                # Create new QUIC connection.
-                # Extract DCID again from payload.
-                var temp_data = List[UInt8](capacity=pd.payload_len)
-                for j in range(pd.payload_len):
-                    temp_data.append(pd.payload_ptr[j])
-
-                var dcid: List[UInt8]
-                try:
-                    dcid = _extract_dcid(Span(temp_data))
-                except:
-                    self.consumed_bufs.append(pd.buf_id)
-                    continue
-
+                # Create new QUIC connection. DCID was already extracted in
+                # _handle_recvmsg and travels in PendingDatagram.
                 var tp = default_transport_params()
-                var dcid_copy = List[UInt8](copy=dcid)
+                var dcid_copy = List[UInt8](copy=pd.dcid)
                 var quic: QuicConnection
                 try:
                     quic = QuicConnection.server(
                         self.lib_addr,
                         self.server_config,
                         tp,
-                        Span(dcid),
+                        Span(pd.dcid),
                         Span(dcid_copy),
                         now,
                     )
@@ -568,10 +564,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var addr = List[UInt8](capacity=pd.addr_len)
                 for j in range(pd.addr_len):
                     addr.append(pd.buf_ptr[pd.addr_offset + j])
-                var key = _addr_to_key(addr)
 
                 conn_idx = len(self.conn_h3s)
-                self.conn_map[key] = conn_idx
+                self.conn_map[pd.addr_key] = conn_idx
                 self.conn_h3s.append(h3_ptr)
                 self.conn_addrs.append(addr^)
 
@@ -613,8 +608,10 @@ struct H3UdpHandler(BatchCompletionHandler):
             var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
             var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
             tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+            var slot_idx = len(self.tx_slots)
             self.tx_slots.append(tx_ptr)
             self.tx_slot_tokens.append(token)
+            self.tx_slot_idx_by_token[token] = slot_idx
 
             self.pending_submits.append(
                 PendingSubmit(kind=_SUBMIT_SENDMSG, slot_idx=tx_id)
@@ -623,29 +620,28 @@ struct H3UdpHandler(BatchCompletionHandler):
     # --- sendmsg path ---
 
     def _handle_sendmsg(mut self, tx_id: UInt64, result: Int32) raises:
-        # Find the TX slot by its token.
+        # O(1) lookup via the token→idx map.
         var token = _encode_token(tx_id, OP_SENDMSG)
-        var idx = -1
-        for i in range(len(self.tx_slot_tokens)):
-            if self.tx_slot_tokens[i] == token:
-                idx = i
-                break
-
-        if idx < 0:
+        if token not in self.tx_slot_idx_by_token:
             return
+        var idx = self.tx_slot_idx_by_token[token]
 
         # Free the TX slot buffers and pointer.
         var ptr = self.tx_slots[idx]
         ptr[].free()
         ptr.free()
 
-        # Swap-and-pop to remove from lists.
+        # Swap-and-pop. Update the dict for the slot that moves into
+        # position `idx`, and remove the entry for the freed token.
         var last = len(self.tx_slots) - 1
         if idx != last:
+            var moved_token = self.tx_slot_tokens[last]
             self.tx_slots[idx] = self.tx_slots[last]
-            self.tx_slot_tokens[idx] = self.tx_slot_tokens[last]
+            self.tx_slot_tokens[idx] = moved_token
+            self.tx_slot_idx_by_token[moved_token] = idx
         _ = self.tx_slots.pop()
         _ = self.tx_slot_tokens.pop()
+        _ = self.tx_slot_idx_by_token.pop(token)
 
     # --- timeout path ---
 
@@ -709,16 +705,12 @@ def _drain_pending_submits(mut loop: BatchCompletionLoop[H3UdpHandler]) raises:
         var s = submits[i].copy()
 
         if s.kind == _SUBMIT_SENDMSG:
-            # Find TX slot by tx_id (s.slot_idx).
+            # O(1) lookup via the token→idx map.
             var tx_id = s.slot_idx
             var token = _encode_token(tx_id, OP_SENDMSG)
-            var tx_idx = -1
-            for j in range(len(loop._handler.tx_slot_tokens)):
-                if loop._handler.tx_slot_tokens[j] == token:
-                    tx_idx = j
-                    break
-            if tx_idx < 0:
+            if token not in loop._handler.tx_slot_idx_by_token:
                 continue
+            var tx_idx = loop._handler.tx_slot_idx_by_token[token]
             var msghdr_addr = Int(loop._handler.tx_slots[tx_idx][].msghdr_buf)
             var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
                 unsafe_from_address=msghdr_addr
@@ -892,9 +884,7 @@ def main() raises:
         for i in range(len(consumed)):
             var bid = consumed[i]
             var buf_base = loop._handler.pbuf_pool + Int(bid) * PBUF_SIZE
-            # Zero the buffer before re-providing.
-            for j in range(PBUF_SIZE):
-                buf_base[j] = 0
+            # Kernel overwrites the buffer on recvmsg — no need to zero.
             var rprov_token = _encode_token(UInt64(bid), OP_PROVIDE_BUF)
             loop.reprovide_buffer(buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid, rprov_token)
 
