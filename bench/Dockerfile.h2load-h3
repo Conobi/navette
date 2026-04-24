@@ -1,0 +1,118 @@
+# syntax=docker/dockerfile:1
+# h2load with HTTP/3 support — multi-stage build
+#
+# Build:
+#   docker build -t h2load-h3:latest -f bench/Dockerfile.h2load-h3 bench/
+#
+# Usage:
+#   docker run --rm --network host h2load-h3:latest \
+#       -n 10000 -c 100 -m 10 --h1 https://127.0.0.1:8443/
+#
+# For HTTP/3:
+#   docker run --rm --network host h2load-h3:latest \
+#       -n 10000 -c 100 -m 10 --npn-list=h3 https://127.0.0.1:8443/
+
+# ---------------------------------------------------------------------------
+# Stage 1: build
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04 AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        g++ \
+        clang \
+        make \
+        binutils \
+        autoconf \
+        automake \
+        autotools-dev \
+        libtool \
+        pkg-config \
+        zlib1g-dev \
+        libcunit1-dev \
+        libssl-dev \
+        libxml2-dev \
+        libev-dev \
+        libevent-dev \
+        libjansson-dev \
+        libjemalloc-dev \
+        libc-ares-dev \
+        cython3 \
+        python3-dev \
+        python3-setuptools \
+        git \
+        ca-certificates \
+        curl \
+        cmake \
+        ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# quictls — OpenSSL 3.x fork with QUIC API needed by ngtcp2
+RUN git clone --depth 1 -b openssl-3.1.4+quic https://github.com/quictls/openssl \
+    && cd openssl \
+    && ./config enable-tls1_3 --prefix=/usr/local --libdir=lib \
+    && make -j"$(nproc)" \
+    && make install_sw
+
+# nghttp3 — HTTP/3 message framing
+RUN git clone --depth 1 -b v1.5.0 --recursive https://github.com/ngtcp2/nghttp3 \
+    && cd nghttp3 \
+    && autoreconf -i \
+    && ./configure --prefix=/usr/local --enable-lib-only \
+    && make -j"$(nproc)" \
+    && make install
+
+# ngtcp2 — QUIC transport
+RUN git clone --depth 1 -b v1.5.0 --recursive https://github.com/ngtcp2/ngtcp2 \
+    && cd ngtcp2 \
+    && autoreconf -i \
+    && ./configure --prefix=/usr/local \
+        PKG_CONFIG_PATH="/usr/local/lib/pkgconfig" \
+        --with-openssl \
+        --enable-lib-only \
+    && make -j"$(nproc)" \
+    && make install
+
+# nghttp2 (with h2load built against QUIC stack)
+RUN git clone --depth 1 -b v1.60.0 https://github.com/nghttp2/nghttp2 \
+    && cd nghttp2 \
+    && autoreconf -i \
+    && ./configure --prefix=/usr/local \
+        PKG_CONFIG_PATH="/usr/local/lib/pkgconfig" \
+        LDFLAGS="-Wl,-rpath,/usr/local/lib" \
+        --enable-http3 \
+        --enable-app \
+        --disable-examples \
+        --disable-python-bindings \
+    && make -j"$(nproc)" \
+    && make install
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libev4 \
+        libevent-2.1-7 \
+        libjansson4 \
+        libjemalloc2 \
+        libc-ares2 \
+        libxml2 \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy runtime libraries and h2load binary
+COPY --from=build /usr/local/lib/ /usr/local/lib/
+COPY --from=build /usr/local/bin/h2load /usr/local/bin/h2load
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+RUN ldconfig
+
+ENTRYPOINT ["/usr/local/bin/h2load"]
