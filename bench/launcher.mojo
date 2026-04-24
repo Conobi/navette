@@ -228,25 +228,53 @@ def main() raises:
 
     print("[launcher] workers per server: " + String(workers_per_server))
 
-    # Find server binaries.
-    var h1_bin = _find_binary("h1_server")
-    var h2_bin = _find_binary("h2_server")
-    var h3_bin = _find_binary("h3_server")
+    # Read optional BENCH_PROTOCOL filter (e.g. "h1", "h2", "h3").
+    # If unset or empty, all protocols are launched.
+    var proto_env_name = "BENCH_PROTOCOL"
+    var proto_env_bytes = proto_env_name.as_bytes()
+    var proto_env_buf = _heap_alloc[UInt8](len(proto_env_bytes) + 1).as_any_origin()
+    for i in range(len(proto_env_bytes)):
+        proto_env_buf[i] = proto_env_bytes[i]
+    proto_env_buf[len(proto_env_bytes)] = 0
 
-    print("[launcher] h1=" + h1_bin + " h2=" + h2_bin + " h3=" + h3_bin)
+    var proto_ptr = external_call["getenv", UnsafePointer[UInt8, MutAnyOrigin]](proto_env_buf)
+    proto_env_buf.free()
+
+    var protocol_filter = String("")
+    if Int(proto_ptr) != 0:
+        var pf_len = 0
+        while proto_ptr[pf_len] != 0 and pf_len < 10:
+            pf_len += 1
+        if pf_len > 0:
+            var pf_bytes = List[UInt8]()
+            for i in range(pf_len):
+                pf_bytes.append(proto_ptr[i])
+            protocol_filter = String(from_utf8=pf_bytes^)
+
+    if protocol_filter:
+        print("[launcher] protocol filter: " + protocol_filter)
+
+    # Find server binaries and build filtered lists.
+    var server_types = List[String]()
+    var server_bins = List[String]()
+
+    var all_types = List[String]()
+    all_types.append("h1")
+    all_types.append("h2")
+    all_types.append("h3")
+
+    for i in range(len(all_types)):
+        if not protocol_filter or all_types[i] == protocol_filter:
+            var bin = _find_binary(all_types[i] + "_server")
+            print("[launcher] " + all_types[i] + "=" + bin)
+            server_types.append(String(copy=all_types[i]))
+            server_bins.append(bin)
+
+    if len(server_types) == 0:
+        raise "no matching protocol for BENCH_PROTOCOL=" + protocol_filter
 
     # Spawn workers.
     var children = List[ProcessInfo]()
-
-    var server_types = List[String]()
-    server_types.append("h1")
-    server_types.append("h2")
-    server_types.append("h3")
-
-    var server_bins = List[String]()
-    server_bins.append(h1_bin)
-    server_bins.append(h2_bin)
-    server_bins.append(h3_bin)
 
     for s in range(len(server_types)):
         for w in range(workers_per_server):
@@ -309,13 +337,7 @@ def main() raises:
 
                 if children[i].restart_count < MAX_RESTARTS and not shutdown:
                     children[i].restart_count += 1
-                    var bin_path: String
-                    if children[i].server_type == "h1":
-                        bin_path = h1_bin
-                    elif children[i].server_type == "h2":
-                        bin_path = h2_bin
-                    else:
-                        bin_path = h3_bin
+                    var bin_path = _find_binary(children[i].server_type + "_server")
 
                     try:
                         var new_pid = _spawn_worker(
