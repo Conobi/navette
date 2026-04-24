@@ -594,6 +594,71 @@ pub extern "C" fn rlsm_keys_batch_header_unprotect(
     }
 }
 
+/// Batch AEAD decryption for N packets using the same keys.
+///
+/// Each packet's payload region is decrypted in-place.
+/// out_plaintext_lens[i] = plaintext length on success, -1 on failure.
+///
+/// Returns count of successful decryptions, or -1 on fatal error.
+#[no_mangle]
+pub extern "C" fn rlsm_keys_batch_decrypt(
+    keys_handle: i32,
+    count: i32,
+    packet_numbers: *const u64,
+    packet_ptrs: *const *mut u8,
+    packet_lens: *const i32,
+    header_lens: *const i32,
+    out_plaintext_lens: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if count <= 0 {
+        return 0;
+    }
+    if packet_numbers.is_null() || packet_ptrs.is_null() || packet_lens.is_null()
+        || header_lens.is_null() || out_plaintext_lens.is_null()
+    {
+        rlsm_err!("rlsm_keys_batch_decrypt: null pointer"; return -1);
+    }
+
+    let n = count as usize;
+
+    match keys_table().with_mut(keys_handle, |entry: &mut KeysEntry| {
+        let mut ok_count: i32 = 0;
+        for i in 0..n {
+            let pkt_ptr = unsafe { *packet_ptrs.add(i) };
+            let pkt_len = unsafe { *packet_lens.add(i) } as usize;
+            let hdr_len = unsafe { *header_lens.add(i) } as usize;
+            let pn = unsafe { *packet_numbers.add(i) };
+
+            if pkt_ptr.is_null() || hdr_len >= pkt_len {
+                unsafe { *out_plaintext_lens.add(i) = -1 };
+                continue;
+            }
+
+            let header = unsafe { std::slice::from_raw_parts(pkt_ptr, hdr_len) };
+            let payload_len = pkt_len - hdr_len;
+            let payload = unsafe { std::slice::from_raw_parts_mut(pkt_ptr.add(hdr_len), payload_len) };
+
+            match entry.remote.packet.decrypt_in_place(pn, header, payload) {
+                Ok(plaintext) => {
+                    unsafe { *out_plaintext_lens.add(i) = plaintext.len() as i32 };
+                    ok_count += 1;
+                }
+                Err(_) => {
+                    unsafe { *out_plaintext_lens.add(i) = -1 };
+                }
+            }
+        }
+        ok_count
+    }) {
+        Some(count) => count,
+        None => {
+            rlsm_err!("rlsm_keys_batch_decrypt: invalid keys handle"; return -1);
+        }
+    }
+}
+
 /// Return the AEAD tag length for the keys identified by `keys_handle`.
 ///
 /// Returns the tag length (positive) on success, or -1 on error.
@@ -975,6 +1040,47 @@ mod tests {
         assert_eq!(rc, 1, "expected 1 success, got {rc}");
         assert_eq!(out_fb[0] & 0x80, 0x80, "long header bit not set");
         assert!(out_pnl[0] >= 1 && out_pnl[0] <= 4, "bad pn_length: {}", out_pnl[0]);
+
+        rlsm_keys_free(server_h);
+        rlsm_keys_free(client_h);
+    }
+
+    #[test]
+    fn test_batch_decrypt_single() {
+        let server_h = make_initial_keys(false);
+        let client_h = make_initial_keys(true);
+
+        let (mut pkt, pn_offset) = make_test_initial_packet(server_h);
+        let pn_offset = pn_offset as usize;
+
+        // Unprotect header first
+        let mut fb = [0u8; 1];
+        let mut pnl = [0i32; 1];
+        let mut ptrs = [pkt.as_mut_ptr()];
+        let lens = [pkt.len() as i32];
+        let offsets = [pn_offset as i32];
+        let rc = rlsm_keys_batch_header_unprotect(
+            client_h, 1,
+            ptrs.as_ptr(), lens.as_ptr(), offsets.as_ptr(),
+            fb.as_mut_ptr(), pnl.as_mut_ptr(),
+        );
+        assert_eq!(rc, 1);
+        let pn_length = pnl[0] as usize;
+        let header_len = pn_offset + pn_length;
+
+        // Batch decrypt
+        let pns = [0u64];
+        let hdr_lens = [header_len as i32];
+        let mut out_pt_lens = [0i32; 1];
+
+        let rc = rlsm_keys_batch_decrypt(
+            client_h, 1,
+            pns.as_ptr(),
+            ptrs.as_ptr(), lens.as_ptr(), hdr_lens.as_ptr(),
+            out_pt_lens.as_mut_ptr(),
+        );
+        assert_eq!(rc, 1, "expected 1 success, got {rc}");
+        assert!(out_pt_lens[0] > 0, "plaintext length should be positive");
 
         rlsm_keys_free(server_h);
         rlsm_keys_free(client_h);
