@@ -317,6 +317,88 @@ struct RustlsLibrary(Movable):
         )
 
     @always_inline
+    def keys_batch_header_unprotect(
+        self,
+        keys_handle: Int32,
+        count: Int32,
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
+        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
+        out_first_bytes: UnsafePointer[UInt8, MutAnyOrigin],
+        out_pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Batch header unprotection. Returns success count or -1."""
+        return self._handle.call[
+            "rlsm_keys_batch_header_unprotect", Int32
+        ](
+            keys_handle, count,
+            packet_ptrs, packet_lens, pn_offsets,
+            out_first_bytes, out_pn_lengths,
+        )
+
+    @always_inline
+    def keys_batch_decrypt(
+        self,
+        keys_handle: Int32,
+        count: Int32,
+        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
+        header_lens: UnsafePointer[Int32, MutAnyOrigin],
+        out_plaintext_lens: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Batch AEAD decryption. Returns success count or -1."""
+        return self._handle.call[
+            "rlsm_keys_batch_decrypt", Int32
+        ](
+            keys_handle, count,
+            packet_numbers, packet_ptrs, packet_lens, header_lens,
+            out_plaintext_lens,
+        )
+
+    @always_inline
+    def keys_batch_header_protect(
+        self,
+        keys_handle: Int32,
+        count: Int32,
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
+        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
+        pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
+        out_results: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Batch header protection. Returns success count or -1."""
+        return self._handle.call[
+            "rlsm_keys_batch_header_protect", Int32
+        ](
+            keys_handle, count,
+            packet_ptrs, packet_lens, pn_offsets, pn_lengths,
+            out_results,
+        )
+
+    @always_inline
+    def keys_batch_encrypt(
+        self,
+        keys_handle: Int32,
+        count: Int32,
+        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        header_lens: UnsafePointer[Int32, MutAnyOrigin],
+        payload_lens: UnsafePointer[Int32, MutAnyOrigin],
+        buf_capacities: UnsafePointer[Int32, MutAnyOrigin],
+        out_ciphertext_lens: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Batch AEAD encryption. Returns success count or -1."""
+        return self._handle.call[
+            "rlsm_keys_batch_encrypt", Int32
+        ](
+            keys_handle, count,
+            packet_numbers, packet_ptrs,
+            header_lens, payload_lens, buf_capacities,
+            out_ciphertext_lens,
+        )
+
+    @always_inline
     def keys_free(self, keys_handle: Int32) -> Int32:
         """Free keys. Returns 0 on success, -1 if handle not found."""
         return self._handle.call["rlsm_keys_free", Int32](keys_handle)
