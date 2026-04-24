@@ -67,7 +67,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libssl3 \
+        openssl \
     && rm -rf /var/lib/apt/lists/*
+
+# Generate self-signed TLS certificate for H2/H3 benchmarks
+RUN mkdir -p /certs && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout /certs/server.key -out /certs/server.crt -days 365 -nodes \
+        -subj "/CN=localhost"
 
 # Copy compiled binaries
 COPY --from=build /bench-h1 /usr/local/bin/h1_server
@@ -86,6 +92,7 @@ RUN mkdir -p /app/lib && ln -s /usr/local/lib/librustls_mojo.so /app/lib/librust
 WORKDIR /app
 
 ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV CERTS_DIR=/certs
 
 # HttpArena uses host network mode — ports 8080 (H1) and 8443 (H2+H3)
 ENTRYPOINT ["/usr/local/bin/launcher"]
