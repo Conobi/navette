@@ -2,8 +2,8 @@
 #
 # HTTP/3 QUIC benchmark server for HttpArena on port 8443 (UDP).
 #
-# Uses boucle CompletionLoop with io_uring (recvmsg/sendmsg/timeout)
-# for high-performance UDP I/O. Pattern adapted from bench/h1_server.mojo.
+# Uses boucle BatchCompletionLoop with multishot recvmsg and provided
+# buffer rings for high-performance UDP I/O.
 
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
@@ -19,9 +19,10 @@ from bench.handler import BenchHandler, StaticEntry, _load_static_files
 from interop.file_io import read_file, getenv_opt
 from interop.udp import monotonic_us
 
-from boucle import CompletionLoop, CompletionHandler
+from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle
 from boucle._sys.linux.raw.ctypes import c_void
+from boucle._sys.linux.raw.x86_64.io_uring import IORING_CQE_F_BUFFER, IORING_CQE_F_MORE, IORING_CQE_BUFFER_SHIFT
 
 
 # ── constants ──────────────────────────────────────────────────────────
@@ -30,7 +31,6 @@ comptime OP_RECVMSG: UInt8 = 0
 comptime OP_SENDMSG: UInt8 = 1
 comptime OP_TIMEOUT: UInt8 = 2
 
-comptime RX_POOL_SIZE: Int = 64
 comptime DATAGRAM_BUF_SIZE: Int = 1500
 comptime ADDR_SIZE: Int = 28
 comptime MSGHDR_SIZE: Int = 56
@@ -43,13 +43,22 @@ comptime SO_REUSEPORT: Int32 = 15
 comptime IPPROTO_IPV6: Int32 = 41
 comptime IPV6_V6ONLY: Int32 = 26
 
-comptime _SUBMIT_RECVMSG: UInt8 = 0
 comptime _SUBMIT_SENDMSG: UInt8 = 1
 comptime _SUBMIT_TIMEOUT: UInt8 = 2
+
+comptime PBUF_COUNT: Int = 128
+comptime PBUF_SIZE: Int = 1600
+comptime PBUF_GROUP_ID: UInt16 = 0
+comptime RECVMSG_OUT_HDR_SIZE: Int = 16
 
 
 def _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
     return (slot_idx << 8) | UInt64(op_kind)
+
+
+@always_inline
+def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
+    return UInt32(ptr[0]) | (UInt32(ptr[1]) << 8) | (UInt32(ptr[2]) << 16) | (UInt32(ptr[3]) << 24)
 
 
 # ── helpers (kept from original) ───────────────────────────────────────
@@ -145,90 +154,46 @@ def _create_server_config(
     return config_handle
 
 
-# ── UdpRxSlot ─────────────────────────────────────────────────────────
+# ── PendingDatagram ──────────────────────────────────────────────────
 
 
-struct UdpRxSlot(Movable):
-    """Pre-allocated receive buffer set for a single recvmsg operation.
+struct PendingDatagram(Copyable, Movable):
+    var buf_id: UInt16
+    var buf_ptr: UnsafePointer[UInt8, MutAnyOrigin]
+    var payload_ptr: UnsafePointer[UInt8, MutAnyOrigin]
+    var payload_len: Int
+    var addr_offset: Int
+    var addr_len: Int
+    var conn_idx: Int
 
-    Layout: msghdr (56 bytes) -> iovec (16 bytes) -> data_buf (1500 bytes)
-            msghdr.msg_name -> addr_buf (28 bytes, sockaddr_in6)
-    """
+    def __init__(out self, buf_id: UInt16, buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+                 payload_ptr: UnsafePointer[UInt8, MutAnyOrigin], payload_len: Int,
+                 addr_offset: Int, addr_len: Int, conn_idx: Int):
+        self.buf_id = buf_id
+        self.buf_ptr = buf_ptr
+        self.payload_ptr = payload_ptr
+        self.payload_len = payload_len
+        self.addr_offset = addr_offset
+        self.addr_len = addr_len
+        self.conn_idx = conn_idx
 
-    var msghdr_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var iov_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var addr_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var data_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var in_use: Bool
-
-    def __init__(out self):
-        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
-        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_any_origin()
-        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-        self.data_buf = _heap_alloc[UInt8](DATAGRAM_BUF_SIZE).as_any_origin()
-        self.in_use = False
-        self._wire()
+    def __init__(out self, *, other: Self):
+        self.buf_id = other.buf_id
+        self.buf_ptr = other.buf_ptr
+        self.payload_ptr = other.payload_ptr
+        self.payload_len = other.payload_len
+        self.addr_offset = other.addr_offset
+        self.addr_len = other.addr_len
+        self.conn_idx = other.conn_idx
 
     def __init__(out self, *, deinit take: Self):
-        self.msghdr_buf = take.msghdr_buf
-        self.iov_buf = take.iov_buf
-        self.addr_buf = take.addr_buf
-        self.data_buf = take.data_buf
-        self.in_use = take.in_use
-
-    def _wire(mut self):
-        """Zero buffers and wire msghdr -> iov -> data_buf, msg_name -> addr_buf."""
-        # Zero msghdr
-        for i in range(MSGHDR_SIZE):
-            self.msghdr_buf[i] = 0
-        # Zero iov
-        for i in range(IOVEC_SIZE):
-            self.iov_buf[i] = 0
-        # Zero addr
-        for i in range(ADDR_SIZE):
-            self.addr_buf[i] = 0
-
-        var msghdr = self.msghdr_buf
-
-        # offset 0: msg_name = addr_buf pointer (8 bytes)
-        var addr_ptr_val = UInt64(Int(self.addr_buf))
-        var addr_ptr_bytes = UnsafePointer(to=addr_ptr_val).bitcast[UInt8]()
-        for i in range(8):
-            msghdr[i] = addr_ptr_bytes[i]
-
-        # offset 8: msg_namelen = 28 (UInt32)
-        var namelen = UInt32(ADDR_SIZE)
-        var namelen_bytes = UnsafePointer(to=namelen).bitcast[UInt8]()
-        for i in range(4):
-            msghdr[8 + i] = namelen_bytes[i]
-
-        # offset 12: padding (4 bytes, already zero)
-
-        # offset 16: msg_iov = iov_buf pointer (8 bytes)
-        var iov_ptr_val = UInt64(Int(self.iov_buf))
-        var iov_ptr_bytes = UnsafePointer(to=iov_ptr_val).bitcast[UInt8]()
-        for i in range(8):
-            msghdr[16 + i] = iov_ptr_bytes[i]
-
-        # offset 24: msg_iovlen = 1 (UInt64)
-        var iovlen = UInt64(1)
-        var iovlen_bytes = UnsafePointer(to=iovlen).bitcast[UInt8]()
-        for i in range(8):
-            msghdr[24 + i] = iovlen_bytes[i]
-
-        # offsets 32-55: msg_control, msg_controllen, msg_flags — all zero
-
-        # Wire iovec: offset 0 = iov_base (data_buf ptr), offset 8 = iov_len
-        var iov = self.iov_buf
-        var data_ptr_val = UInt64(Int(self.data_buf))
-        var data_ptr_bytes = UnsafePointer(to=data_ptr_val).bitcast[UInt8]()
-        for i in range(8):
-            iov[i] = data_ptr_bytes[i]
-
-        var iov_len = UInt64(DATAGRAM_BUF_SIZE)
-        var iov_len_bytes = UnsafePointer(to=iov_len).bitcast[UInt8]()
-        for i in range(8):
-            iov[8 + i] = iov_len_bytes[i]
+        self.buf_id = take.buf_id
+        self.buf_ptr = take.buf_ptr
+        self.payload_ptr = take.payload_ptr
+        self.payload_len = take.payload_len
+        self.addr_offset = take.addr_offset
+        self.addr_len = take.addr_len
+        self.conn_idx = take.conn_idx
 
 
 # ── UdpTxSlot ─────────────────────────────────────────────────────────
@@ -344,14 +309,19 @@ struct PendingSubmit(Copyable, Movable):
 # ── H3UdpHandler ─────────────────────────────────────────────────────
 
 
-struct H3UdpHandler(CompletionHandler):
-    """CompletionHandler for UDP-based H3 server using io_uring."""
+struct H3UdpHandler(BatchCompletionHandler):
+    """BatchCompletionHandler for UDP-based H3 server using io_uring
+    with multishot recvmsg and provided buffer rings."""
 
     var udp_fd: Int32
     var conn_map: Dict[String, Int]
     var conn_h3s: List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]
     var conn_addrs: List[List[UInt8]]
-    var rx_slots: UnsafePointer[UdpRxSlot, MutAnyOrigin]
+    var pbuf_pool: UnsafePointer[UInt8, MutAnyOrigin]
+    var pending_rx: List[PendingDatagram]
+    var multishot_active: Bool
+    var consumed_bufs: List[UInt16]
+    var msghdr_template: UnsafePointer[UInt8, MutAnyOrigin]
     var tx_slots: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
     var tx_slot_tokens: List[UInt64]
     var next_tx_id: UInt64
@@ -372,7 +342,15 @@ struct H3UdpHandler(CompletionHandler):
         self.conn_map = Dict[String, Int]()
         self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
-        self.rx_slots = _heap_alloc[UdpRxSlot](RX_POOL_SIZE).as_any_origin()
+        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
+        for i in range(PBUF_COUNT * PBUF_SIZE):
+            self.pbuf_pool[i] = 0
+        self.pending_rx = List[PendingDatagram]()
+        self.multishot_active = False
+        self.consumed_bufs = List[UInt16]()
+        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
+        for i in range(MSGHDR_SIZE):
+            self.msghdr_template[i] = 0
         self.tx_slots = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
         self.tx_slot_tokens = List[UInt64]()
         self.next_tx_id = UInt64(0)
@@ -391,16 +369,16 @@ struct H3UdpHandler(CompletionHandler):
         self.timeout_ts[10] = 0xFA
         self.timeout_ts[11] = 0x02
 
-        # Pre-allocate RX pool.
-        for i in range(RX_POOL_SIZE):
-            (self.rx_slots + i).init_pointee_move(UdpRxSlot())
-
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
         self.conn_map = take.conn_map^
         self.conn_h3s = take.conn_h3s^
         self.conn_addrs = take.conn_addrs^
-        self.rx_slots = take.rx_slots
+        self.pbuf_pool = take.pbuf_pool
+        self.pending_rx = take.pending_rx^
+        self.multishot_active = take.multishot_active
+        self.consumed_bufs = take.consumed_bufs^
+        self.msghdr_template = take.msghdr_template
         self.tx_slots = take.tx_slots^
         self.tx_slot_tokens = take.tx_slot_tokens^
         self.next_tx_id = take.next_tx_id
@@ -424,136 +402,191 @@ struct H3UdpHandler(CompletionHandler):
 
     fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
-            self._dispatch(token, result)
+            self._dispatch(token, result, flags)
         except e:
             print("h3-bench: on_complete error:", e)
 
-    def _dispatch(mut self, token: UInt64, result: Int32) raises:
+    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
         var op_kind = UInt8(token & 0xFF)
-        var slot_idx = token >> 8
 
         if op_kind == OP_RECVMSG:
-            self._handle_recvmsg(Int(slot_idx), result)
+            self._handle_recvmsg(result, flags)
         elif op_kind == OP_SENDMSG:
+            var slot_idx = token >> 8
             self._handle_sendmsg(slot_idx, result)
         elif op_kind == OP_TIMEOUT:
             self._handle_timeout(result)
 
-    # --- recvmsg path ---
+    # --- multishot recvmsg path ---
 
-    def _handle_recvmsg(mut self, slot_idx: Int, result: Int32) raises:
-        if slot_idx < 0 or slot_idx >= RX_POOL_SIZE:
-            return
+    def _handle_recvmsg(mut self, result: Int32, flags: UInt32) raises:
+        # Check if multishot is still active.
+        if (flags & UInt32(IORING_CQE_F_MORE)) == 0:
+            self.multishot_active = False
 
-        var slot = self.rx_slots + slot_idx
-        slot[].in_use = False
-
+        # Error or cancelled — nothing to process.
         if result <= 0:
-            # Re-arm the slot for more data.
-            slot[]._wire()
-            slot[].in_use = True
-            self.pending_submits.append(
-                PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
-            )
             return
 
-        var n = Int(result)
+        # Must have a buffer attached.
+        if (flags & UInt32(IORING_CQE_F_BUFFER)) == 0:
+            return
 
-        # Zero-copy: use buffer directly for feed_datagram.
-        var data_ptr = slot[].data_buf
+        # Extract buffer ID from CQE flags.
+        var buf_id = UInt16(flags >> UInt32(IORING_CQE_BUFFER_SHIFT))
+        var buf_ptr = self.pbuf_pool + Int(buf_id) * PBUF_SIZE
 
-        # Read source addr from addr_buf.
-        var addr = List[UInt8](capacity=ADDR_SIZE)
-        for i in range(ADDR_SIZE):
-            addr.append(slot[].addr_buf[i])
+        # Parse io_uring_recvmsg_out header (16 bytes):
+        # [namelen: u32][controllen: u32][payloadlen: u32][flags: u32]
+        if result < Int32(RECVMSG_OUT_HDR_SIZE):
+            # Too short for header — return buffer.
+            self.consumed_bufs.append(buf_id)
+            return
 
-        var now = monotonic_us()
+        var namelen = Int(_read_u32_le(buf_ptr))
+        var controllen = Int(_read_u32_le(buf_ptr + 4))
+        var payloadlen = Int(_read_u32_le(buf_ptr + 8))
+        var msg_flags = _read_u32_le(buf_ptr + 12)
 
-        # Small copy for DCID extraction (header only, not full datagram).
-        var temp_data = List[UInt8](capacity=n)
-        for i in range(n):
-            temp_data.append(data_ptr[i])
+        # Check MSG_TRUNC (0x20) — drop truncated datagrams.
+        if (msg_flags & UInt32(0x20)) != 0:
+            self.consumed_bufs.append(buf_id)
+            return
 
-        # Extract DCID to find or create connection.
+        # Address starts after the 16-byte header.
+        var addr_offset = RECVMSG_OUT_HDR_SIZE
+        var addr_len = namelen
+
+        # Payload starts after header + name + control.
+        var payload_offset = RECVMSG_OUT_HDR_SIZE + namelen + controllen
+        var payload_ptr = buf_ptr + payload_offset
+
+        if payloadlen <= 0:
+            self.consumed_bufs.append(buf_id)
+            return
+
+        # Extract DCID for connection lookup.
+        var temp_data = List[UInt8](capacity=payloadlen)
+        for i in range(payloadlen):
+            temp_data.append(payload_ptr[i])
+
         var dcid: List[UInt8]
         try:
             dcid = _extract_dcid(Span(temp_data))
         except:
-            # Bad packet — re-arm and ignore.
-            slot[]._wire()
-            slot[].in_use = True
-            self.pending_submits.append(
-                PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
-            )
+            # Bad packet — return buffer.
+            self.consumed_bufs.append(buf_id)
             return
 
-        var key = _addr_to_key(addr)
+        # Build address key for connection demux.
+        var addr_bytes = List[UInt8](capacity=addr_len)
+        for i in range(addr_len):
+            addr_bytes.append(buf_ptr[addr_offset + i])
+        var key = _addr_to_key(addr_bytes)
         var conn_idx = self._find_conn(key)
 
-        if conn_idx < 0:
-            # Create new QUIC connection.
-            var tp = default_transport_params()
-            var dcid_copy = List[UInt8](copy=dcid)
-            var quic: QuicConnection
-            try:
-                quic = QuicConnection.server(
-                    self.lib_addr,
-                    self.server_config,
-                    tp,
-                    Span(dcid),
-                    Span(dcid_copy),
-                    now,
-                )
-            except:
-                # Failed to create connection — re-arm slot.
-                slot[]._wire()
-                slot[].in_use = True
-                self.pending_submits.append(
-                    PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
-                )
-                return
-
-            var handler = BenchHandler(self.cache_ptr)
-            var h3: H3HandlerServer[BenchHandler]
-            try:
-                h3 = H3HandlerServer[BenchHandler](quic=quic^, handler=handler^)
-            except:
-                slot[]._wire()
-                slot[].in_use = True
-                self.pending_submits.append(
-                    PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
-                )
-                return
-
-            var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
-            h3_ptr.init_pointee_move(h3^)
-
-            conn_idx = len(self.conn_h3s)
-            self.conn_map[key] = conn_idx
-            self.conn_h3s.append(h3_ptr)
-            self.conn_addrs.append(List[UInt8](copy=addr))
-
-        # Feed datagram to the connection (zero-copy from RX slot buffer).
-        try:
-            self.conn_h3s[conn_idx][].feed_datagram_from_buffer(data_ptr, n, now)
-        except:
-            pass
-
-        # Update peer address.
-        self.conn_addrs[conn_idx] = List[UInt8](copy=addr)
-
-        # Drain and send outgoing datagrams.
-        try:
-            self._drain_and_send(conn_idx, now)
-        except:
-            pass
-
-        # Re-arm the RX slot.
-        slot[]._wire()
-        slot[].in_use = True
-        self.pending_submits.append(
-            PendingSubmit(kind=_SUBMIT_RECVMSG, slot_idx=UInt64(slot_idx))
+        # Append to pending batch — do NOT process yet.
+        self.pending_rx.append(
+            PendingDatagram(
+                buf_id=buf_id,
+                buf_ptr=buf_ptr,
+                payload_ptr=payload_ptr,
+                payload_len=payloadlen,
+                addr_offset=addr_offset,
+                addr_len=addr_len,
+                conn_idx=conn_idx,
+            )
         )
+
+    # --- on_flush: batch process all pending datagrams ---
+
+    fn on_flush(mut self):
+        try:
+            self._flush_impl()
+        except e:
+            print("h3-bench: on_flush error:", e)
+
+    def _flush_impl(mut self) raises:
+        var now = monotonic_us()
+
+        for i in range(len(self.pending_rx)):
+            var pd = self.pending_rx[i].copy()
+            var conn_idx = pd.conn_idx
+
+            if conn_idx < 0:
+                # Create new QUIC connection.
+                # Extract DCID again from payload.
+                var temp_data = List[UInt8](capacity=pd.payload_len)
+                for j in range(pd.payload_len):
+                    temp_data.append(pd.payload_ptr[j])
+
+                var dcid: List[UInt8]
+                try:
+                    dcid = _extract_dcid(Span(temp_data))
+                except:
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+
+                var tp = default_transport_params()
+                var dcid_copy = List[UInt8](copy=dcid)
+                var quic: QuicConnection
+                try:
+                    quic = QuicConnection.server(
+                        self.lib_addr,
+                        self.server_config,
+                        tp,
+                        Span(dcid),
+                        Span(dcid_copy),
+                        now,
+                    )
+                except:
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+
+                var handler = BenchHandler(self.cache_ptr)
+                var h3: H3HandlerServer[BenchHandler]
+                try:
+                    h3 = H3HandlerServer[BenchHandler](quic=quic^, handler=handler^)
+                except:
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+
+                var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
+                h3_ptr.init_pointee_move(h3^)
+
+                # Build address from buffer for the new connection.
+                var addr = List[UInt8](capacity=pd.addr_len)
+                for j in range(pd.addr_len):
+                    addr.append(pd.buf_ptr[pd.addr_offset + j])
+                var key = _addr_to_key(addr)
+
+                conn_idx = len(self.conn_h3s)
+                self.conn_map[key] = conn_idx
+                self.conn_h3s.append(h3_ptr)
+                self.conn_addrs.append(addr^)
+
+            # Feed datagram to the connection.
+            try:
+                self.conn_h3s[conn_idx][].feed_datagram_from_buffer(pd.payload_ptr, pd.payload_len, now)
+            except:
+                pass
+
+            # Update peer address.
+            var addr_update = List[UInt8](capacity=pd.addr_len)
+            for j in range(pd.addr_len):
+                addr_update.append(pd.buf_ptr[pd.addr_offset + j])
+            self.conn_addrs[conn_idx] = addr_update^
+
+            # Drain and send outgoing datagrams.
+            try:
+                self._drain_and_send(conn_idx, now)
+            except:
+                pass
+
+            # Save buf_id for reprovision in main loop.
+            self.consumed_bufs.append(pd.buf_id)
+
+        self.pending_rx.clear()
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
         """Drain outgoing datagrams from a connection and queue sendmsg."""
@@ -658,30 +691,14 @@ struct H3UdpHandler(CompletionHandler):
 # ── _drain_pending_submits ───────────────────────────────────────────
 
 
-def _drain_pending_submits(mut loop: CompletionLoop[H3UdpHandler]) raises:
+def _drain_pending_submits(mut loop: BatchCompletionLoop[H3UdpHandler]) raises:
     var submits = loop._handler.pending_submits^
     loop._handler.pending_submits = List[PendingSubmit]()
 
     for i in range(len(submits)):
         var s = submits[i].copy()
 
-        if s.kind == _SUBMIT_RECVMSG:
-            var slot_idx = Int(s.slot_idx)
-            if slot_idx < 0 or slot_idx >= RX_POOL_SIZE:
-                continue
-            var rx_slot = loop._handler.rx_slots + slot_idx
-            var msghdr_addr = Int(rx_slot[].msghdr_buf)
-            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-                unsafe_from_address=msghdr_addr
-            )
-            var token = _encode_token(s.slot_idx, OP_RECVMSG)
-            try:
-                loop.submit_recvmsg(loop._handler.udp_fd, msghdr_ptr, token)
-            except:
-                rx_slot[].in_use = False
-                loop._handler.pending_submits.append(s.copy())
-
-        elif s.kind == _SUBMIT_SENDMSG:
+        if s.kind == _SUBMIT_SENDMSG:
             # Find TX slot by tx_id (s.slot_idx).
             var tx_id = s.slot_idx
             var token = _encode_token(tx_id, OP_SENDMSG)
@@ -833,18 +850,19 @@ def main() raises:
         lib_addr=lib_addr,
         server_config=server_config,
     )
-    var loop = CompletionLoop[H3UdpHandler](handler^, sq_entries=4096)
+    var loop = BatchCompletionLoop[H3UdpHandler](handler^, sq_entries=4096)
 
-    # Submit initial recvmsg operations for all RX slots.
-    for i in range(RX_POOL_SIZE):
-        var rx_slot = loop._handler.rx_slots + i
-        rx_slot[].in_use = True
-        var msghdr_addr = Int(rx_slot[].msghdr_buf)
-        var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-            unsafe_from_address=msghdr_addr
-        )
-        var token = _encode_token(UInt64(i), OP_RECVMSG)
-        loop.submit_recvmsg(udp_fd, msghdr_ptr, token)
+    # Register provided buffer pool with io_uring.
+    loop.provide_buffers(loop._handler.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID, UInt16(0))
+
+    # Submit one multishot recvmsg using the msghdr template.
+    var msghdr_addr = Int(loop._handler.msghdr_template)
+    var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        unsafe_from_address=msghdr_addr
+    )
+    var recvmsg_token = _encode_token(UInt64(0), OP_RECVMSG)
+    loop.submit_recvmsg_multishot(udp_fd, msghdr_ptr, PBUF_GROUP_ID, recvmsg_token)
+    loop._handler.multishot_active = True
 
     # Submit initial timeout.
     var ts_addr = Int(loop._handler.timeout_ts)
@@ -856,4 +874,27 @@ def main() raises:
     # Event loop.
     while True:
         loop.poll(wait_nr=1)
+
+        # Re-provide consumed buffers.
+        var consumed = loop._handler.consumed_bufs^
+        loop._handler.consumed_bufs = List[UInt16]()
+        for i in range(len(consumed)):
+            var bid = consumed[i]
+            var buf_base = loop._handler.pbuf_pool + Int(bid) * PBUF_SIZE
+            # Zero the buffer before re-providing.
+            for j in range(PBUF_SIZE):
+                buf_base[j] = 0
+            loop.reprovide_buffer(buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid)
+
+        # Re-arm multishot recvmsg if it ended.
+        if not loop._handler.multishot_active:
+            var ms_addr = Int(loop._handler.msghdr_template)
+            var ms_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=ms_addr
+            )
+            var ms_token = _encode_token(UInt64(0), OP_RECVMSG)
+            loop.submit_recvmsg_multishot(udp_fd, ms_ptr, PBUF_GROUP_ID, ms_token)
+            loop._handler.multishot_active = True
+
+        # Drain pending sendmsg/timeout submits.
         _drain_pending_submits(loop)
