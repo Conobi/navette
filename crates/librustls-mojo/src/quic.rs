@@ -524,6 +524,76 @@ pub extern "C" fn rlsm_keys_remote_header_unprotect(
     }
 }
 
+/// Batch header unprotection for N packets using the same keys.
+///
+/// Each packet buffer is modified in-place (first byte + PN bytes unmasked).
+/// out_first_bytes[i] receives the unprotected first byte.
+/// out_pn_lengths[i] = PN length (1..4) on success, -1 on per-packet failure.
+///
+/// Returns count of successfully unprotected packets, or -1 on fatal error
+/// (invalid handle).
+#[no_mangle]
+pub extern "C" fn rlsm_keys_batch_header_unprotect(
+    keys_handle: i32,
+    count: i32,
+    packet_ptrs: *const *mut u8,
+    packet_lens: *const i32,
+    pn_offsets: *const i32,
+    out_first_bytes: *mut u8,
+    out_pn_lengths: *mut i32,
+) -> i32 {
+    clear_last_error();
+
+    if count <= 0 {
+        return 0;
+    }
+    if packet_ptrs.is_null() || packet_lens.is_null() || pn_offsets.is_null()
+        || out_first_bytes.is_null() || out_pn_lengths.is_null()
+    {
+        rlsm_err!("rlsm_keys_batch_header_unprotect: null pointer"; return -1);
+    }
+
+    let n = count as usize;
+
+    match keys_table().with(keys_handle, |entry: &KeysEntry| {
+        let mut ok_count: i32 = 0;
+        for i in 0..n {
+            let pkt_ptr = unsafe { *packet_ptrs.add(i) };
+            let pkt_len = unsafe { *packet_lens.add(i) } as usize;
+            let pn_off = unsafe { *pn_offsets.add(i) } as usize;
+
+            if pn_off + 4 + 16 > pkt_len || pkt_ptr.is_null() {
+                unsafe { *out_pn_lengths.add(i) = -1 };
+                continue;
+            }
+
+            let sample = unsafe { std::slice::from_raw_parts(pkt_ptr.add(pn_off + 4), 16) };
+            let first_byte = unsafe { &mut *pkt_ptr };
+            let pn_bytes = unsafe { std::slice::from_raw_parts_mut(pkt_ptr.add(pn_off), 4) };
+
+            match entry.remote.header.decrypt_in_place(sample, first_byte, pn_bytes) {
+                Ok(()) => {
+                    let pn_length = (*first_byte & 0x03) as i32 + 1;
+                    unsafe {
+                        *out_first_bytes.add(i) = *first_byte;
+                        *out_pn_lengths.add(i) = pn_length;
+                    }
+                    ok_count += 1;
+                }
+                Err(_) => {
+                    unsafe { *out_pn_lengths.add(i) = -1 };
+                }
+            }
+        }
+        ok_count
+    }) {
+        Some(count) => count,
+        None => {
+            rlsm_err!("rlsm_keys_batch_header_unprotect: invalid keys handle"; return -1);
+        }
+    }
+}
+
 /// Return the AEAD tag length for the keys identified by `keys_handle`.
 ///
 /// Returns the tag length (positive) on success, or -1 on error.
@@ -822,4 +892,91 @@ pub extern "C" fn rlsm_hmac_sha256(
     }
 
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create Initial keys and return the handle.
+    fn make_initial_keys(is_client: bool) -> i32 {
+        let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
+        let h = rlsm_initial_keys(
+            1,
+            dcid.as_ptr(),
+            dcid.len() as i32,
+            if is_client { 1 } else { 0 },
+        );
+        assert!(h > 0, "rlsm_initial_keys failed");
+        h
+    }
+
+    /// Build a minimal Initial packet for testing batch operations.
+    /// Returns (packet_bytes, pn_offset).
+    fn make_test_initial_packet(keys_handle: i32) -> (Vec<u8>, i32) {
+        let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
+        let pn_offset: i32 = 18;
+        let pn_length = 4;
+        let payload_len = 32;
+        let aead_tag_len = 16;
+        let header_len = pn_offset as usize + pn_length;
+        let total = header_len + payload_len + aead_tag_len;
+        let pl_field = (pn_length + payload_len + aead_tag_len) as u16;
+
+        let mut pkt = vec![0u8; total];
+        pkt[0] = 0xC3;
+        pkt[1] = 0x00; pkt[2] = 0x00; pkt[3] = 0x00; pkt[4] = 0x01;
+        pkt[5] = 8;
+        pkt[6..14].copy_from_slice(&dcid);
+        pkt[14] = 0;
+        pkt[15] = 0;
+        pkt[16] = 0x40 | ((pl_field >> 8) as u8);
+        pkt[17] = (pl_field & 0xFF) as u8;
+
+        let header = &pkt[..header_len].to_vec();
+        let rc = rlsm_keys_local_encrypt(
+            keys_handle, 0,
+            header.as_ptr(), header_len as i32,
+            pkt[header_len..].as_mut_ptr(), payload_len as i32,
+            (payload_len + aead_tag_len) as i32,
+        );
+        assert!(rc > 0, "encrypt failed: {rc}");
+
+        let sample_offset = pn_offset as usize + 4;
+        let rc = rlsm_keys_local_header_protect(
+            keys_handle,
+            pkt[sample_offset..].as_ptr(), 16,
+            &mut pkt[0] as *mut u8,
+            pkt[pn_offset as usize..].as_mut_ptr(), pn_length as i32,
+        );
+        assert_eq!(rc, 0, "header protect failed");
+
+        (pkt, pn_offset)
+    }
+
+    #[test]
+    fn test_batch_header_unprotect_single() {
+        let server_h = make_initial_keys(false);
+        let client_h = make_initial_keys(true);
+
+        let (mut pkt, pn_offset) = make_test_initial_packet(server_h);
+
+        let mut ptrs = [pkt.as_mut_ptr()];
+        let lens = [pkt.len() as i32];
+        let offsets = [pn_offset];
+        let mut out_fb = [0u8; 1];
+        let mut out_pnl = [0i32; 1];
+
+        let rc = rlsm_keys_batch_header_unprotect(
+            client_h, 1,
+            ptrs.as_ptr(), lens.as_ptr(), offsets.as_ptr(),
+            out_fb.as_mut_ptr(), out_pnl.as_mut_ptr(),
+        );
+        assert_eq!(rc, 1, "expected 1 success, got {rc}");
+        assert_eq!(out_fb[0] & 0x80, 0x80, "long header bit not set");
+        assert!(out_pnl[0] >= 1 && out_pnl[0] <= 4, "bad pn_length: {}", out_pnl[0]);
+
+        rlsm_keys_free(server_h);
+        rlsm_keys_free(client_h);
+    }
 }
