@@ -347,6 +347,130 @@ struct PacketProtect(Movable):
             pn_length,
         )
 
+    # -- Batch operations (Phase 2) -------------------------------------------
+
+    def batch_unprotect_headers(
+        self,
+        level: Int,
+        count: Int,
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
+        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
+        out_first_bytes: UnsafePointer[UInt8, MutAnyOrigin],
+        out_pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
+    ) raises -> Int:
+        """Batch header unprotection for N packets at the same level.
+
+        Returns count of successfully unprotected packets.
+        """
+        self._check_level(level)
+        var keys_handle = self.keys[level]
+        if keys_handle == Int32(-1):
+            raise "no keys for level " + String(level)
+
+        var rc = self._lib()[].keys_batch_header_unprotect(
+            keys_handle, Int32(count),
+            packet_ptrs, packet_lens, pn_offsets,
+            out_first_bytes, out_pn_lengths,
+        )
+
+        if rc < 0:
+            raise "batch_unprotect_headers failed: " + self._lib()[].last_error()
+
+        return Int(rc)
+
+    def batch_decrypt_in_place(
+        self,
+        level: Int,
+        count: Int,
+        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
+        header_lens: UnsafePointer[Int32, MutAnyOrigin],
+        out_plaintext_lens: UnsafePointer[Int32, MutAnyOrigin],
+    ) raises -> Int:
+        """Batch AEAD decryption for N packets at the same level.
+
+        Returns count of successfully decrypted packets.
+        """
+        self._check_level(level)
+        var keys_handle = self.keys[level]
+        if keys_handle == Int32(-1):
+            raise "no keys for level " + String(level)
+
+        var rc = self._lib()[].keys_batch_decrypt(
+            keys_handle, Int32(count),
+            packet_numbers, packet_ptrs, packet_lens, header_lens,
+            out_plaintext_lens,
+        )
+
+        if rc < 0:
+            raise "batch_decrypt_in_place failed: " + self._lib()[].last_error()
+
+        return Int(rc)
+
+    def batch_encrypt_in_place(
+        self,
+        level: Int,
+        count: Int,
+        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        header_lens: UnsafePointer[Int32, MutAnyOrigin],
+        payload_lens: UnsafePointer[Int32, MutAnyOrigin],
+        buf_capacities: UnsafePointer[Int32, MutAnyOrigin],
+        out_ciphertext_lens: UnsafePointer[Int32, MutAnyOrigin],
+    ) raises -> Int:
+        """Batch AEAD encryption for N packets at the same level.
+
+        Returns count of successfully encrypted packets.
+        """
+        self._check_level(level)
+        var keys_handle = self.keys[level]
+        if keys_handle == Int32(-1):
+            raise "no keys for level " + String(level)
+
+        var rc = self._lib()[].keys_batch_encrypt(
+            keys_handle, Int32(count),
+            packet_numbers, packet_ptrs,
+            header_lens, payload_lens, buf_capacities,
+            out_ciphertext_lens,
+        )
+
+        if rc < 0:
+            raise "batch_encrypt_in_place failed: " + self._lib()[].last_error()
+
+        return Int(rc)
+
+    def batch_protect_headers(
+        self,
+        level: Int,
+        count: Int,
+        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
+        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
+        pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
+        out_results: UnsafePointer[Int32, MutAnyOrigin],
+    ) raises -> Int:
+        """Batch header protection for N packets at the same level.
+
+        Returns count of successfully protected packets.
+        """
+        self._check_level(level)
+        var keys_handle = self.keys[level]
+        if keys_handle == Int32(-1):
+            raise "no keys for level " + String(level)
+
+        var rc = self._lib()[].keys_batch_header_protect(
+            keys_handle, Int32(count),
+            packet_ptrs, packet_lens, pn_offsets, pn_lengths,
+            out_results,
+        )
+
+        if rc < 0:
+            raise "batch_protect_headers failed: " + self._lib()[].last_error()
+
+        return Int(rc)
+
     # -- Internal --------------------------------------------------------------
 
     @always_inline
