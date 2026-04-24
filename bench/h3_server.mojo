@@ -30,6 +30,7 @@ from boucle._sys.linux.raw.x86_64.io_uring import IORING_CQE_F_BUFFER, IORING_CQ
 comptime OP_RECVMSG: UInt8 = 0
 comptime OP_SENDMSG: UInt8 = 1
 comptime OP_TIMEOUT: UInt8 = 2
+comptime OP_PROVIDE_BUF: UInt8 = 3
 
 comptime DATAGRAM_BUF_SIZE: Int = 1500
 comptime ADDR_SIZE: Int = 28
@@ -351,6 +352,13 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
         for i in range(MSGHDR_SIZE):
             self.msghdr_template[i] = 0
+        # msg_namelen at offset 8 = 28 (sockaddr_in6 size) — kernel
+        # needs this to populate the peer address in provided buffers.
+        self.msghdr_template[8] = 28
+        # msg_iovlen stays 0: for multishot recvmsg with provided buffers
+        # the kernel ignores msg_iov, but import_iovec still validates
+        # the pointer if iovlen > 0 — setting iovlen=1 with iov=NULL
+        # causes EFAULT.
         self.tx_slots = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
         self.tx_slot_tokens = List[UInt64]()
         self.next_tx_id = UInt64(0)
@@ -416,6 +424,8 @@ struct H3UdpHandler(BatchCompletionHandler):
             self._handle_sendmsg(slot_idx, result)
         elif op_kind == OP_TIMEOUT:
             self._handle_timeout(result)
+        elif op_kind == OP_PROVIDE_BUF:
+            pass  # provide_buffers completion — nothing to do
 
     # --- multishot recvmsg path ---
 
@@ -853,7 +863,8 @@ def main() raises:
     var loop = BatchCompletionLoop[H3UdpHandler](handler^, sq_entries=4096)
 
     # Register provided buffer pool with io_uring.
-    loop.provide_buffers(loop._handler.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID, UInt16(0))
+    var provide_token = _encode_token(UInt64(0), OP_PROVIDE_BUF)
+    loop.provide_buffers(loop._handler.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID, UInt16(0), provide_token)
 
     # Submit one multishot recvmsg using the msghdr template.
     var msghdr_addr = Int(loop._handler.msghdr_template)
@@ -884,7 +895,8 @@ def main() raises:
             # Zero the buffer before re-providing.
             for j in range(PBUF_SIZE):
                 buf_base[j] = 0
-            loop.reprovide_buffer(buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid)
+            var rprov_token = _encode_token(UInt64(bid), OP_PROVIDE_BUF)
+            loop.reprovide_buffer(buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid, rprov_token)
 
         # Re-arm multishot recvmsg if it ended.
         if not loop._handler.multishot_active:
