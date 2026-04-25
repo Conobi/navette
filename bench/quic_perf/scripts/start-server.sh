@@ -33,10 +33,12 @@ case "$SERVER" in
         CONTAINER=bench-h3
         ;;
     tquic)
+        # Mount payloads under /data/static so tquic_server serves the same
+        # URL shape as mojo-net's handler (which routes /static/<file> → cache).
         docker run -d --name bench-tquic \
             --network host \
             --cpuset-cpus=0 \
-            -v "$HERE/payloads:/data:ro" \
+            -v "$HERE/payloads:/data/static:ro" \
             -v "$REPO_ROOT/certs:/certs:ro" \
             --entrypoint /usr/local/bin/tquic_server \
             tquic-bench:latest \

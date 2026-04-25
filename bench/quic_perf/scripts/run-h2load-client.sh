@@ -22,7 +22,7 @@ docker run --rm --network host --cpuset-cpus=2-5 \
     h2load-h3:latest \
     -D "$DURATION" -c 100 -m "$H2LOAD_M" \
     --alpn-list=h3 \
-    "https://127.0.0.1:8443/${PAYLOAD}.bin" \
+    "https://127.0.0.1:8443/static/${PAYLOAD}.bin" \
     > /tmp/client-stdout.log 2>&1 || true
 
 echo "[run-h2load-client] $PAYLOAD/$SCENARIO/${DURATION}s: stdout in /tmp/client-stdout.log"
