@@ -86,3 +86,6 @@ struct AcceptProfile(Copyable, Movable):
         self.hs_completed = UInt64(0)
         self.hs_timed_out = UInt64(0)
         self.hs_latency_us = List[UInt64]()
+
+    def record_idle(mut self, idle_us: UInt64):
+        self.idle_us_total += idle_us
