@@ -4,6 +4,7 @@
 # Build:
 #   docker build -t mojo-net-bench:latest \
 #       --build-context boucle=../boucle \
+#       --build-context simdjson=../json-simd-mojo \
 #       -f bench/Dockerfile .
 
 # ---------------------------------------------------------------------------
@@ -42,6 +43,11 @@ RUN uv sync --group dev
 # Copy boucle source (from --build-context boucle=../boucle)
 COPY --from=boucle . /boucle
 
+# Copy json-simd-mojo source (from --build-context simdjson=../json-simd-mojo).
+# The package layout is /simdjson/simdjson/, so -I /simdjson lets bench code
+# `from simdjson.parser import Parser` resolve correctly.
+COPY --from=simdjson . /simdjson
+
 # Copy the rest of the source tree
 COPY . .
 
@@ -51,10 +57,10 @@ RUN cargo build --release --features skip-locks --manifest-path crates/librustls
 # Copy the .so into the conventional lib/ directory
 RUN cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
 
-# Build the three benchmark server binaries
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/h1_server.mojo -o /bench-h1
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/h2_server.mojo -o /bench-h2
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/h3_server.mojo -o /bench-h3
+# Build the three benchmark server binaries (h1 covers both plaintext and TLS modes)
+RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h1_server.mojo -o /bench-h1
+RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h2_server.mojo -o /bench-h2
+RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h3_server.mojo -o /bench-h3
 RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------
@@ -93,6 +99,11 @@ WORKDIR /app
 
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV CERTS_DIR=/certs
+ENV DATA_DIR=/data
 
-# HttpArena uses host network mode — ports 8080 (H1) and 8443 (H2+H3)
+# Vendor the dataset for the /json profile so the image is self-contained.
+COPY --from=build /app/bench/data/dataset.json /data/dataset.json
+
+# HttpArena uses host network mode — ports 8080 (H1), 8081 (H1+TLS), 8443 (H2+H3)
+EXPOSE 8080 8081 8443
 ENTRYPOINT ["/usr/local/bin/launcher"]
