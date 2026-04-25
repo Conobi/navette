@@ -32,3 +32,57 @@ def monotonic_us() -> UInt64:
         tv_nsec = tv_nsec | (UInt64(ts[8 + i]) << UInt64(i * 8))
     ts.free()
     return tv_sec * 1_000_000 + tv_nsec / 1_000
+
+
+struct AcceptProfile(Copyable, Movable):
+    var run_start_us: UInt64
+
+    var idle_us_total: UInt64
+    var busy_us_total: UInt64
+    var on_flush_count: UInt64
+
+    var pkts_per_flush_buckets: List[UInt64]   # len = 8
+
+    var ffi_shim_us_total: UInt64
+    var hp_us_total: UInt64
+    var aead_us_total: UInt64
+    var header_parse_us_total: UInt64
+    var frame_parse_us_total: UInt64
+    var sm_us_total: UInt64
+    var drain_us_total: UInt64
+    var residual_us_total: UInt64
+    var pkt_count: UInt64
+
+    var per_pkt_total_buckets: List[UInt64]    # len = 24
+    var per_pkt_total_overflow: UInt64
+
+    var hs_arrivals: UInt64
+    var hs_completed: UInt64
+    var hs_timed_out: UInt64
+    var hs_latency_us: List[UInt64]
+
+    def __init__(out self):
+        self.run_start_us = monotonic_us()
+        self.idle_us_total = UInt64(0)
+        self.busy_us_total = UInt64(0)
+        self.on_flush_count = UInt64(0)
+        self.pkts_per_flush_buckets = List[UInt64]()
+        for _ in range(8):
+            self.pkts_per_flush_buckets.append(UInt64(0))
+        self.ffi_shim_us_total = UInt64(0)
+        self.hp_us_total = UInt64(0)
+        self.aead_us_total = UInt64(0)
+        self.header_parse_us_total = UInt64(0)
+        self.frame_parse_us_total = UInt64(0)
+        self.sm_us_total = UInt64(0)
+        self.drain_us_total = UInt64(0)
+        self.residual_us_total = UInt64(0)
+        self.pkt_count = UInt64(0)
+        self.per_pkt_total_buckets = List[UInt64]()
+        for _ in range(24):
+            self.per_pkt_total_buckets.append(UInt64(0))
+        self.per_pkt_total_overflow = UInt64(0)
+        self.hs_arrivals = UInt64(0)
+        self.hs_completed = UInt64(0)
+        self.hs_timed_out = UInt64(0)
+        self.hs_latency_us = List[UInt64]()
