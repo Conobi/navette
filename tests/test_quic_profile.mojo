@@ -190,6 +190,16 @@ def test_record_pkt_residual_underflow_safe() raises:
     print("PASS: test_record_pkt_residual_underflow_safe")
 
 
+def test_record_drain_accumulates() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain(UInt64(40))
+    p.record_drain(UInt64(60))
+    p.record_drain(UInt64(0))
+    assert_true(p.drain_us_total == UInt64(100), "drain accumulates")
+    print("PASS: test_record_drain_accumulates")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -200,4 +210,5 @@ def main() raises:
     test_record_pkt_sums_and_residual()
     test_record_pkt_overflow()
     test_record_pkt_residual_underflow_safe()
+    test_record_drain_accumulates()
     print("All Plan A tests passed.")
