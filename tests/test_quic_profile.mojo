@@ -54,8 +54,19 @@ def test_default_init() raises:
     print("PASS: test_default_init")
 
 
+def test_record_idle_accumulates() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_idle(UInt64(100))
+    p.record_idle(UInt64(250))
+    p.record_idle(UInt64(50))
+    assert_true(p.idle_us_total == UInt64(400), "idle accumulates")
+    print("PASS: test_record_idle_accumulates")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
     test_default_init()
+    test_record_idle_accumulates()
     print("All Plan A tests passed.")
