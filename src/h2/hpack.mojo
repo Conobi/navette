@@ -357,12 +357,8 @@ struct HpackDecoder(Movable):
             var huff_result = self.huffman.decode(raw)
             if len(huff_result[1]) > 0:
                 return (String(""), 0, huff_result[1])
-            var s = String("")
-            for i in range(len(huff_result[0])):
-                s += chr(Int(huff_result[0][i]))
+            var s = String(unsafe_from_utf8=huff_result[0])
             return (s^, consumed, String(""))
         else:
-            var s = String("")
-            for i in range(len(raw)):
-                s += chr(Int(raw[i]))
+            var s = String(unsafe_from_utf8=raw)
             return (s^, consumed, String(""))
