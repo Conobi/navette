@@ -22,6 +22,16 @@ from src.h3.h3_coro_server import CoroStreamCtx as H3CoroStreamCtx
 from boucle.stackful import CoroYielder
 from interop.file_io import read_file
 
+from simdjson.parser import Parser
+from simdjson.document import Document
+from simdjson.value import Value
+
+from bench.json_writer import (
+    write_bytes,
+    write_uint,
+    write_str_escaped,
+)
+
 
 def _str_to_bytes(s: String) -> List[UInt8]:
     """Convert a String to List[UInt8] for BodyFrame.data()."""
@@ -263,6 +273,189 @@ def _load_static_files(static_dir: String) -> Dict[String, StaticEntry]:
 
 
 # ---------------------------------------------------------------------------
+# DatasetItem — pre-escaped JSON fragments for the /json profile
+# ---------------------------------------------------------------------------
+
+
+struct DatasetItem(Copyable, Movable, ImplicitlyDestructible):
+    """One row from data/dataset.json with string fields pre-escaped.
+
+    The renderer at request time only needs to memcpy these byte spans
+    and emit fresh integer formats (id, price, quantity, total). All
+    JSON escaping happens once at boot.
+    """
+
+    var id: UInt64
+    var price: UInt64
+    var quantity: UInt64
+    var active: Bool
+    # Each *_quoted fragment includes its surrounding " or [ ] or { }
+    # so the renderer can splat it directly between commas / colons.
+    var name_quoted: List[UInt8]
+    var category_quoted: List[UInt8]
+    var tags_array: List[UInt8]
+    var rating_object: List[UInt8]
+
+    def __init__(
+        out self,
+        id: UInt64,
+        price: UInt64,
+        quantity: UInt64,
+        active: Bool,
+        var name_quoted: List[UInt8],
+        var category_quoted: List[UInt8],
+        var tags_array: List[UInt8],
+        var rating_object: List[UInt8],
+    ):
+        self.id = id
+        self.price = price
+        self.quantity = quantity
+        self.active = active
+        self.name_quoted = name_quoted^
+        self.category_quoted = category_quoted^
+        self.tags_array = tags_array^
+        self.rating_object = rating_object^
+
+    def __init__(out self, *, other: Self):
+        self.id = other.id
+        self.price = other.price
+        self.quantity = other.quantity
+        self.active = other.active
+        self.name_quoted = other.name_quoted.copy()
+        self.category_quoted = other.category_quoted.copy()
+        self.tags_array = other.tags_array.copy()
+        self.rating_object = other.rating_object.copy()
+
+    def __init__(out self, *, deinit take: Self):
+        self.id = take.id
+        self.price = take.price
+        self.quantity = take.quantity
+        self.active = take.active
+        self.name_quoted = take.name_quoted^
+        self.category_quoted = take.category_quoted^
+        self.tags_array = take.tags_array^
+        self.rating_object = take.rating_object^
+
+
+# ---------------------------------------------------------------------------
+# Dataset loader (simdjson)
+# ---------------------------------------------------------------------------
+
+
+def _build_quoted_string(mut doc: Document, val: Value) raises -> List[UInt8]:
+    """Render *val* (a JSON string) as an escaped, double-quoted byte fragment."""
+    var s = val.get_string(doc)
+    var out = List[UInt8]()
+    write_str_escaped(out, s.as_bytes())
+    return out^
+
+
+def _build_tags_array(mut doc: Document, tags: Value) raises -> List[UInt8]:
+    """Render a JSON array of strings as a single pre-escaped byte fragment."""
+    var out = List[UInt8]()
+    out.append(UInt8(ord("[")))
+    var n = tags.count(doc)
+    var i = 0
+    while i < n:
+        if i > 0:
+            out.append(UInt8(ord(",")))
+        var s = tags.at(doc, i).get_string(doc)
+        write_str_escaped(out, s.as_bytes())
+        i += 1
+    out.append(UInt8(ord("]")))
+    return out^
+
+
+def _build_rating_object(mut doc: Document, rating: Value) raises -> List[UInt8]:
+    """Render the rating object {score, count} as a pre-escaped byte fragment."""
+    var score = rating.get(doc, String("score")).get_uint(doc)
+    var count = rating.get(doc, String("count")).get_uint(doc)
+    var out = List[UInt8]()
+    write_bytes(out, String('{"score":').as_bytes())
+    write_uint(out, score)
+    write_bytes(out, String(',"count":').as_bytes())
+    write_uint(out, count)
+    out.append(UInt8(ord("}")))
+    return out^
+
+
+def _load_dataset(path: String) -> List[DatasetItem]:
+    """Parse *path* with simdjson and materialise pre-escaped DatasetItems.
+
+    Returns an empty list on any error so the bench still boots when the
+    data mount is absent.
+    """
+    var items = List[DatasetItem]()
+    var raw: List[UInt8]
+    try:
+        raw = read_file(path)
+    except:
+        print("bench: warning: dataset file not found at " + path)
+        return items^
+
+    try:
+        var parser = Parser()
+        var doc = parser.parse(raw^)
+        var root = doc.root()
+        if not root.is_array(doc):
+            print("bench: warning: dataset root is not an array")
+            return items^
+        var n = root.count(doc)
+        var i = 0
+        while i < n:
+            var item = root.at(doc, i)
+            var id = item.get(doc, String("id")).get_uint(doc)
+            var price = item.get(doc, String("price")).get_uint(doc)
+            var quantity = item.get(doc, String("quantity")).get_uint(doc)
+            var active = item.get(doc, String("active")).get_bool(doc)
+            var name_quoted = _build_quoted_string(doc, item.get(doc, String("name")))
+            var category_quoted = _build_quoted_string(doc, item.get(doc, String("category")))
+            var tags_array = _build_tags_array(doc, item.get(doc, String("tags")))
+            var rating_object = _build_rating_object(doc, item.get(doc, String("rating")))
+            items.append(
+                DatasetItem(
+                    id=id,
+                    price=price,
+                    quantity=quantity,
+                    active=active,
+                    name_quoted=name_quoted^,
+                    category_quoted=category_quoted^,
+                    tags_array=tags_array^,
+                    rating_object=rating_object^,
+                )
+            )
+            i += 1
+    except e:
+        print("bench: warning: dataset parse failed: " + String(e))
+
+    return items^
+
+
+# ---------------------------------------------------------------------------
+# BenchState — single heap-allocated container shared across servers
+# ---------------------------------------------------------------------------
+
+
+struct BenchState(Movable):
+    """Boot-time state passed by pointer to every per-stream handler."""
+
+    var static_cache: Dict[String, StaticEntry]
+    var dataset: List[DatasetItem]
+
+    def __init__(
+        out self,
+        var static_cache: Dict[String, StaticEntry],
+        var dataset: List[DatasetItem],
+    ):
+        self.static_cache = static_cache^
+        self.dataset = dataset^
+
+    def __init__(out self, *, deinit take: Self):
+        self.static_cache = take.static_cache^
+        self.dataset = take.dataset^
+
+
+# ---------------------------------------------------------------------------
 # Accept-Encoding check
 # ---------------------------------------------------------------------------
 
@@ -315,7 +508,7 @@ def handle_static(
     target: String,
     headers: Headers,
     mut resp: ResponseWriter,
-    cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
+    state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
 ) raises:
     """Serve a file from the static cache for ``/static/<filename>``.
 
@@ -350,10 +543,10 @@ def handle_static(
         fi += 1
 
     # Look up in cache
-    if filename not in cache_ptr[]:
+    if filename not in state_ptr[].static_cache:
         handle_404(resp)
         return
-    var entry = cache_ptr[][filename].copy()
+    var entry = state_ptr[].static_cache[filename].copy()
 
     # Content negotiation
     var use_br = _accepts_encoding(headers, String("br")) and len(entry.br_data) > 0
@@ -380,6 +573,106 @@ def handle_static(
 
 
 # ---------------------------------------------------------------------------
+# /json/{count}?m=X handler — HttpArena json + json-tls profile
+# ---------------------------------------------------------------------------
+
+
+def _parse_json_path(target: String, mut count_out: Int, mut m_out: Int):
+    """Parse ``/json/<count>?m=<m>`` into *count_out* and *m_out*.
+
+    Sets count_out to -1 if count is missing/non-numeric. Defaults *m* to 1
+    when ``?m=`` is absent or non-numeric.
+    """
+    var bytes = target.as_bytes()
+    var n = len(bytes)
+    var prefix_len = 6  # len("/json/")
+    m_out = 1
+    count_out = -1
+    if n <= prefix_len:
+        return
+
+    var count = 0
+    var has_digit = False
+    var i = prefix_len
+    while i < n and bytes[i] >= UInt8(ord("0")) and bytes[i] <= UInt8(ord("9")):
+        count = count * 10 + Int(bytes[i]) - Int(ord("0"))
+        has_digit = True
+        i += 1
+    if not has_digit:
+        return
+    count_out = count
+
+    var m_opt = _parse_query_int(target, "m")
+    if m_opt.__bool__():
+        var m = m_opt.value()
+        if m > 0:
+            m_out = m
+
+
+def handle_json(
+    target: String,
+    mut resp: ResponseWriter,
+    state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+) raises:
+    """GET /json/{count}?m=<m> -> application/json with computed totals."""
+    var count: Int = -1
+    var m: Int = 1
+    _parse_json_path(target, count, m)
+    if count < 0:
+        handle_404(resp)
+        return
+
+    var dataset_len = len(state_ptr[].dataset)
+    if count > dataset_len:
+        count = dataset_len
+    if count < 0:
+        count = 0
+
+    var body = List[UInt8]()
+    write_bytes(body, String('{"items":[').as_bytes())
+
+    var i = 0
+    while i < count:
+        if i > 0:
+            body.append(UInt8(ord(",")))
+        ref item = state_ptr[].dataset[i]
+        write_bytes(body, String('{"id":').as_bytes())
+        write_uint(body, item.id)
+        write_bytes(body, String(',"name":').as_bytes())
+        write_bytes(body, Span(item.name_quoted))
+        write_bytes(body, String(',"category":').as_bytes())
+        write_bytes(body, Span(item.category_quoted))
+        write_bytes(body, String(',"price":').as_bytes())
+        write_uint(body, item.price)
+        write_bytes(body, String(',"quantity":').as_bytes())
+        write_uint(body, item.quantity)
+        write_bytes(body, String(',"active":').as_bytes())
+        if item.active:
+            write_bytes(body, String("true").as_bytes())
+        else:
+            write_bytes(body, String("false").as_bytes())
+        write_bytes(body, String(',"tags":').as_bytes())
+        write_bytes(body, Span(item.tags_array))
+        write_bytes(body, String(',"rating":').as_bytes())
+        write_bytes(body, Span(item.rating_object))
+        write_bytes(body, String(',"total":').as_bytes())
+        write_uint(body, item.price * item.quantity * UInt64(m))
+        body.append(UInt8(ord("}")))
+        i += 1
+
+    write_bytes(body, String('],"count":').as_bytes())
+    write_uint(body, UInt64(count))
+    body.append(UInt8(ord("}")))
+
+    var hdrs = Headers()
+    hdrs.add("content-type", "application/json")
+    hdrs.add("content-length", String(len(body)))
+    resp.send_status(StatusCode(200), hdrs^)
+    _ = resp.try_send_body(BodyFrame.data(body^))
+    resp.end()
+
+
+# ---------------------------------------------------------------------------
 # Request dispatcher
 # ---------------------------------------------------------------------------
 
@@ -402,13 +695,15 @@ def _dispatch_request(
     target: String,
     headers: Headers,
     mut resp: ResponseWriter,
-    cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
+    state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
 ) raises:
     """Route a request based on URL path prefix."""
     if _starts_with(target, String("/baseline2")) or _starts_with(target, String("/baseline11")):
         handle_baseline2(target, resp)
+    elif _starts_with(target, String("/json/")):
+        handle_json(target, resp, state_ptr)
     elif _starts_with(target, String("/static/")):
-        handle_static(target, headers, resp, cache_ptr)
+        handle_static(target, headers, resp, state_ptr)
     else:
         handle_404(resp)
 
@@ -421,13 +716,13 @@ def _dispatch_request(
 struct BenchHandler(StreamHandler):
     """StreamHandler that dispatches to benchmark endpoints."""
 
-    var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
+    var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
 
-    def __init__(out self, cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]):
-        self.cache_ptr = cache_ptr
+    def __init__(out self, state_ptr: UnsafePointer[BenchState, MutAnyOrigin]):
+        self.state_ptr = state_ptr
 
     def __init__(out self, *, deinit take: Self):
-        self.cache_ptr = take.cache_ptr
+        self.state_ptr = take.state_ptr
 
     def on_request(
         mut self,
@@ -436,7 +731,7 @@ struct BenchHandler(StreamHandler):
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
-        _dispatch_request(req.target, req.headers, resp, self.cache_ptr)
+        _dispatch_request(req.target, req.headers, resp, self.state_ptr)
 
     def on_body_available(
         mut self,
@@ -473,22 +768,22 @@ struct BenchHandler(StreamHandler):
 def bench_h2_body_fn(mut yielder: CoroYielder) raises:
     """CoroBody for H2CoroServer: dispatch request from per-stream context."""
     var ctx = yielder.user_data().bitcast[H2CoroStreamCtx]()
-    var cache_ptr = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]().as_any_origin()
+    var state_ptr = ctx[].extra_data.bitcast[BenchState]().as_any_origin()
     _dispatch_request(
         ctx[].request.target,
         ctx[].request.headers,
         ctx[].resp_writer,
-        cache_ptr,
+        state_ptr,
     )
 
 
 def bench_h3_body_fn(mut yielder: CoroYielder) raises:
     """CoroBody for H3CoroServer: dispatch request from per-stream context."""
     var ctx = yielder.user_data().bitcast[H3CoroStreamCtx]()
-    var cache_ptr = ctx[].extra_data.bitcast[Dict[String, StaticEntry]]().as_any_origin()
+    var state_ptr = ctx[].extra_data.bitcast[BenchState]().as_any_origin()
     _dispatch_request(
         ctx[].request.target,
         ctx[].request.headers,
         ctx[].resp_writer,
-        cache_ptr,
+        state_ptr,
     )

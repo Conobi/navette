@@ -15,7 +15,13 @@ from src.quic.connection import QuicConnection
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.packet import parse_packet_header
 from src.h3.h3_handler_server import H3HandlerServer
-from bench.handler import BenchHandler, StaticEntry, _load_static_files
+from bench.handler import (
+    BenchHandler,
+    BenchState,
+    StaticEntry,
+    _load_static_files,
+    _load_dataset,
+)
 from interop.file_io import read_file, getenv_opt
 from interop.udp import monotonic_us
 
@@ -331,7 +337,7 @@ struct H3UdpHandler(BatchCompletionHandler):
     var tx_slot_tokens: List[UInt64]
     var tx_slot_idx_by_token: Dict[UInt64, Int]
     var next_tx_id: UInt64
-    var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
+    var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var lib_addr: UInt64
     var server_config: Int32
     var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
@@ -340,7 +346,7 @@ struct H3UdpHandler(BatchCompletionHandler):
     def __init__(
         out self,
         udp_fd: Int32,
-        cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
+        state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
         lib_addr: UInt64,
         server_config: Int32,
     ):
@@ -368,7 +374,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slot_tokens = List[UInt64]()
         self.tx_slot_idx_by_token = Dict[UInt64, Int]()
         self.next_tx_id = UInt64(0)
-        self.cache_ptr = cache_ptr
+        self.state_ptr = state_ptr
         self.lib_addr = lib_addr
         self.server_config = server_config
         self.pending_submits = List[PendingSubmit]()
@@ -397,7 +403,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slot_tokens = take.tx_slot_tokens^
         self.tx_slot_idx_by_token = take.tx_slot_idx_by_token^
         self.next_tx_id = take.next_tx_id
-        self.cache_ptr = take.cache_ptr
+        self.state_ptr = take.state_ptr
         self.lib_addr = take.lib_addr
         self.server_config = take.server_config
         self.timeout_ts = take.timeout_ts
@@ -549,7 +555,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.consumed_bufs.append(pd.buf_id)
                     continue
 
-                var handler = BenchHandler(self.cache_ptr)
+                var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
                 try:
                     h3 = H3HandlerServer[BenchHandler](quic=quic^, handler=handler^)
@@ -814,9 +820,19 @@ def main() raises:
         static_dir = String("/data/static")
     var cache = _load_static_files(static_dir)
 
-    # Heap-allocate cache so pointer remains stable.
-    var cache_ptr = _heap_alloc[Dict[String, StaticEntry]](1).as_any_origin()
-    cache_ptr.init_pointee_move(cache^)
+    # Load dataset for the /json profile from DATA_DIR (default /data).
+    var data_dir_opt = getenv_opt("DATA_DIR")
+    var data_dir: String
+    if data_dir_opt.__bool__():
+        data_dir = data_dir_opt.value()
+    else:
+        data_dir = String("/data")
+    var dataset = _load_dataset(data_dir + "/dataset.json")
+
+    # Heap-allocate combined bench state.
+    var bstate = BenchState(static_cache=cache^, dataset=dataset^)
+    var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
+    state_ptr.init_pointee_move(bstate^)
 
     # Load TLS library and create server config.
     var certs_dir_opt = getenv_opt("CERTS_DIR")
@@ -848,7 +864,7 @@ def main() raises:
     # Build handler + loop.
     var handler = H3UdpHandler(
         udp_fd=udp_fd,
-        cache_ptr=cache_ptr,
+        state_ptr=state_ptr,
         lib_addr=lib_addr,
         server_config=server_config,
     )

@@ -20,7 +20,13 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from src.tls import RustlsLibrary, TlsServerConfig, TlsConnection
 from src.h2.h2_coro_server import H2CoroServer
-from bench.handler import bench_h2_body_fn, StaticEntry, _load_static_files
+from bench.handler import (
+    bench_h2_body_fn,
+    BenchState,
+    StaticEntry,
+    _load_static_files,
+    _load_dataset,
+)
 
 from boucle import CompletionLoop, CompletionHandler
 from boucle.handle import OwnedHandle
@@ -157,7 +163,7 @@ struct H2ServerHandler(CompletionHandler):
     var next_conn_id: UInt64
     var tls_lib: RustlsLibrary
     var server_tls_config: TlsServerConfig
-    var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
+    var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
 
     def __init__(
@@ -165,14 +171,14 @@ struct H2ServerHandler(CompletionHandler):
         listener_fd: Int32,
         var tls_lib: RustlsLibrary,
         var server_tls_config: TlsServerConfig,
-        cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
+        state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
     ):
         self.listener_fd = listener_fd
         self.connections = List[UnsafePointer[H2Conn, MutAnyOrigin]]()
         self.next_conn_id = 1
         self.tls_lib = tls_lib^
         self.server_tls_config = server_tls_config^
-        self.cache_ptr = cache_ptr
+        self.state_ptr = state_ptr
         self.pending_submits = List[PendingSubmit]()
 
     def __init__(out self, *, deinit take: Self):
@@ -181,7 +187,7 @@ struct H2ServerHandler(CompletionHandler):
         self.next_conn_id = take.next_conn_id
         self.tls_lib = take.tls_lib^
         self.server_tls_config = take.server_tls_config^
-        self.cache_ptr = take.cache_ptr
+        self.state_ptr = take.state_ptr
         self.pending_submits = take.pending_submits^
 
     # --- Conn lookup ---
@@ -303,7 +309,7 @@ struct H2ServerHandler(CompletionHandler):
         )
 
         var noneptr = UnsafePointer[NoneType, MutExternalOrigin](
-            unsafe_from_address=Int(self.cache_ptr)
+            unsafe_from_address=Int(self.state_ptr)
         )
         var h2 = H2CoroServer(
             body_fn=bench_h2_body_fn, extra_data=noneptr
@@ -530,8 +536,20 @@ def main() raises:
 
     # Load static files
     var cache = _load_static_files(static_dir)
-    var cache_ptr = _heap_alloc[Dict[String, StaticEntry]](1).as_any_origin()
-    cache_ptr.init_pointee_move(cache^)
+
+    # Load dataset for the /json profile from DATA_DIR (default /data).
+    var data_dir_opt = getenv_opt("DATA_DIR")
+    var data_dir: String
+    if data_dir_opt.__bool__():
+        data_dir = data_dir_opt.value()
+    else:
+        data_dir = String("/data")
+    var dataset = _load_dataset(data_dir + "/dataset.json")
+
+    # Heap-allocate combined bench state.
+    var bstate = BenchState(static_cache=cache^, dataset=dataset^)
+    var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
+    state_ptr.init_pointee_move(bstate^)
 
     # Listening socket
     var listener = Socket.tcp_v4()
@@ -565,7 +583,7 @@ def main() raises:
         listener_fd=listener_fd,
         tls_lib=tls_lib^,
         server_tls_config=server_config^,
-        cache_ptr=cache_ptr,
+        state_ptr=state_ptr,
     )
     var loop = CompletionLoop[H2ServerHandler](handler^, sq_entries=4096)
 
