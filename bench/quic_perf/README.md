@@ -2,7 +2,7 @@
 
 TQUIC-style HTTP/3 benchmark comparing mojo-net's `h3_server` to the TQUIC reference, under matched payloads, matched concurrency, and CPU-saturating load.
 
-> **Status: machinery shipped, calibration pending.** The harness orchestrates correctly end-to-end (build → run → parse → median → summarize), but the absolute numbers are not yet trustworthy. Three known issues — CPU sampling, cold-start variance, and `tquic_client` undersaturation on laptop hardware — must be resolved before `results/REFERENCE.md` is repopulated. See `results/REFERENCE.md` for details.
+> **Status: calibrated.** End-to-end run validated against the TQUIC reference: `tquic_server` saturates core 0 at 87K req/s with `tquic_client` (88% CPU), confirming the harness exposes real saturation. `results/REFERENCE.md` has the current numbers; mojo-net measures ~210× slower long-conn and ~2,500× slower short-conn than TQUIC on the same hardware, while using <6% of one core — the bottleneck is connection-establishment throughput, not steady-state stream work.
 
 ## What this measures
 
@@ -139,6 +139,4 @@ make bench-full
 
 ## Reference baseline
 
-`results/REFERENCE.md` is currently a **calibration-pending placeholder**: it lists host details and the three issues blocking trustworthy numbers (PID-vs-cgroup CPU sampling, cold-start variance, `tquic_client` undersaturation on laptop hardware). It does not yet contain reference rps/bytes/CPU% rows.
-
-Treat the harness today as a working *machinery* you can run locally to compare *configurations on the same host* (relative signal). Absolute throughput claims should wait on the calibration follow-ups.
+`results/REFERENCE.md` contains numbers from `make bench-mvp` on the implementer's machine, with full host details, so reviewers on different hardware can sanity-check their setup. Treat REFERENCE.md as a snapshot, not as authoritative — re-run on your own hardware for actionable numbers.
