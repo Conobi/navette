@@ -4,6 +4,7 @@
 # Sans-I/O: receive_data(bytes) -> List[H2Event], data_to_send() -> List[UInt8].
 
 from std.collections import Dict
+from std.memory import memmove
 
 from .frame import (
     Frame,
@@ -502,8 +503,10 @@ struct H2Connection(Movable):
         self._local_settings = H2Settings.from_config(self._config)
         self._remote_settings = H2Settings.defaults()
         self._settings_acked = False
-        self._inbuf = List[UInt8]()
-        self._outbuf = List[UInt8]()
+        # Pre-size to one default H2 max-frame-size + frame header so the
+        # common path lands in one allocation per connection.
+        self._inbuf = List[UInt8](capacity=16 * 1024)
+        self._outbuf = List[UInt8](capacity=16 * 1024)
         self._streams = Dict[Int, StreamState]()
         self._next_stream_id = UInt32(1) if client_side else UInt32(2)
         self._last_recv_stream_id = UInt32(0)
@@ -599,17 +602,25 @@ struct H2Connection(Movable):
     def _queue_frame(mut self, frame: Frame):
         """Encode frame and append to outbound buffer."""
         var encoded = encode_frame(frame)
-        for i in range(len(encoded)):
-            self._outbuf.append(encoded[i])
+        self._outbuf.extend(encoded^)
 
     def _trim_inbuf(mut self, count: Int):
-        """Remove first `count` bytes from the inbound buffer."""
+        """Remove first `count` bytes from the inbound buffer.
+
+        Uses an in-place memmove + resize instead of building a fresh
+        List byte-by-byte. memmove handles the overlapping src/dest
+        correctly (unlike memcpy).
+        """
         if count <= 0:
             return
-        var new_buf = List[UInt8]()
-        for i in range(count, len(self._inbuf)):
-            new_buf.append(self._inbuf[i])
-        self._inbuf = new_buf^
+        var n = len(self._inbuf)
+        if count >= n:
+            self._inbuf.clear()
+            return
+        var remaining = n - count
+        var ptr = self._inbuf.unsafe_ptr()
+        memmove(dest=ptr, src=ptr + count, count=remaining)
+        self._inbuf.resize(unsafe_uninit_length=remaining)
 
     def _connection_error(mut self, mut events: List[H2Event], error_code: Int, message: String):
         """Send GOAWAY and emit ConnectionTerminated event."""
