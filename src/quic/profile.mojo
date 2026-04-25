@@ -107,3 +107,17 @@ fn _pkts_per_flush_bucket(pkts: Int) -> Int:
     if pkts <= 63: return 5
     if pkts <= 127: return 6
     return 7
+
+
+fn _per_pkt_bucket(us: UInt64) -> Int:
+    """Map us to bucket 0..23 or 24 (overflow). bucket[0]={0}; bucket[i]=[2^(i-1), 2^i) for 1<=i<=23; overflow=24 for us>=2^23."""
+    if us == UInt64(0):
+        return 0
+    if us >= UInt64(8_388_608):  # 2^23
+        return 24
+    var v = us
+    var i = 0
+    while v >= UInt64(1):
+        v = v >> UInt64(1)
+        i += 1
+    return i  # floor(log2(us)) + 1 for us > 0

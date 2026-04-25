@@ -97,10 +97,38 @@ def test_record_flush_buckets_and_sums() raises:
     print("PASS: test_record_flush_buckets_and_sums")
 
 
+def test_per_pkt_bucket_assignment() raises:
+    from src.quic.profile import _per_pkt_bucket
+    # us == 0 → bucket 0
+    assert_true(_per_pkt_bucket(UInt64(0)) == 0, "0us → bucket 0")
+    # us == 1 → bucket 1 ([1, 2))
+    assert_true(_per_pkt_bucket(UInt64(1)) == 1, "1us → bucket 1")
+    # us == 2 → bucket 2 ([2, 4))
+    assert_true(_per_pkt_bucket(UInt64(2)) == 2, "2us → bucket 2")
+    # us == 3 → still bucket 2
+    assert_true(_per_pkt_bucket(UInt64(3)) == 2, "3us → bucket 2")
+    # us == 4 → bucket 3
+    assert_true(_per_pkt_bucket(UInt64(4)) == 3, "4us → bucket 3")
+    # us == 7 → bucket 3
+    assert_true(_per_pkt_bucket(UInt64(7)) == 3, "7us → bucket 3")
+    # us == 8 → bucket 4
+    assert_true(_per_pkt_bucket(UInt64(8)) == 4, "8us → bucket 4")
+    # us == 2^22 = 4_194_304 → bucket 23 (top closed bucket)
+    assert_true(_per_pkt_bucket(UInt64(4_194_304)) == 23, "4.2Mus → bucket 23")
+    # us == 2^23 - 1 = 8_388_607 → still bucket 23
+    assert_true(_per_pkt_bucket(UInt64(8_388_607)) == 23, "<8.39s → bucket 23")
+    # us == 2^23 = 8_388_608 → overflow (returns 24)
+    assert_true(_per_pkt_bucket(UInt64(8_388_608)) == 24, "8.39s → overflow=24")
+    # us == 100_000_000 (100s) → overflow
+    assert_true(_per_pkt_bucket(UInt64(100_000_000)) == 24, "100s → overflow=24")
+    print("PASS: test_per_pkt_bucket_assignment")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
     test_default_init()
     test_record_idle_accumulates()
     test_record_flush_buckets_and_sums()
+    test_per_pkt_bucket_assignment()
     print("All Plan A tests passed.")
