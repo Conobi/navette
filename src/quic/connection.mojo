@@ -2658,9 +2658,13 @@ struct QuicConnection(Movable):
         Token consumption happens via Pacer.refill_and_check at the actual send site.
 
         The pacer is bypassed for connections that have not yet reached
-        is_established(). Pacing handshake-space packets caused cold-start
-        throughput collapse; anti-amplification and CC cwnd remain the safety
-        floors during handshake (see specs/2026-04-25-quic-pacer-bypass-handshake.md).
+        is_established(). Anti-amplification and CC cwnd remain the safety
+        floors during handshake. RFC 9002 §7 requires "pace OR limit bursts
+        to the initial congestion window" — the retained anti-amp + cwnd
+        checks satisfy the latter clause for handshake-space sends.
+        Reference impls split: picoquic ships this design; quinn / TQUIC /
+        ngtcp2 / quiche pace every encryption level. See
+        specs/2026-04-25-quic-pacer-bypass-handshake.md for the verdict.
         """
         if not self._anti_amp_ok(size):
             return False

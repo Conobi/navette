@@ -28,11 +28,23 @@ to emit pushes ~100 concurrent client handshakes past their handshake
 timeout (~1 s).
 
 This spec specifies the surgical change to **bypass the pacer for any
-connection that has not yet reached the `CONN_ESTABLISHED` state**, mirroring
-TQUIC, quinn, picoquic, and ngtcp2 (industry consensus: pacing applies to
-1-RTT only). Anti-amplification (`_anti_amp_ok`) and congestion-window
-checks are preserved unchanged — those are the actual safety floors for
-handshake bandwidth.
+connection that has not yet reached the `CONN_ESTABLISHED` state**.
+Anti-amplification (`_anti_amp_ok`) and congestion-window checks are
+preserved unchanged — they are the actual safety floors for handshake
+bandwidth, and they suffice to satisfy RFC 9002 §7's normative
+"use pacing OR limit bursts to the initial congestion window" requirement
+during the handshake phase.
+
+**Reference-implementation consensus is split** (verified 2026-04-25
+against the upstream source repos): **picoquic** ships this exact design
+(`picoquic/sender.c`'s pacing gate is applied only on the 1-RTT /
+application-data send path, not on the Initial or Handshake send paths).
+**quinn**, **TQUIC**, **ngtcp2**, and **quiche** all pace every encryption
+level uniformly. mojo-net's bypass is therefore the minority approach but
+is RFC-compatible: RFC 9002 §7 contains no normative requirement to pace
+Initial/Handshake specifically, only the combined "pace OR limit bursts to
+the initial congestion window" clause that the retained anti-amp + cwnd
+checks already satisfy.
 
 ## Why this is RFC-correct
 
@@ -41,10 +53,16 @@ handshake bandwidth.
 - **RFC 9000 §8.1** (anti-amplification) provides the actual handshake-phase
   safety floor: a server may send at most 3× the bytes received from an
   unvalidated peer. This check stays in place.
-- **TQUIC** (mojo-net's primary QUIC reference per project-context line 51):
-  pacer applies only after 1-RTT keys are installed.
-- **quinn**, **picoquic**, **ngtcp2**: all bypass the pacer for Initial +
-  Handshake space.
+- **picoquic** ships exactly this design — the pacing gate
+  (`picoquic_is_sending_authorized_by_pacing`) is wired into the 1-RTT /
+  application-data send path only, never on the Initial / Handshake
+  prepare paths.
+- **TQUIC**, **quinn**, **ngtcp2**, **quiche**: pace every encryption
+  level uniformly. mojo-net's bypass diverges from these stacks. Aligning
+  with picoquic's design is acceptable for mojo-net because the bypass is
+  bounded by the same anti-amp + cwnd checks those stacks also enforce
+  during handshake — the practical burst shape is the same; only the
+  inter-packet pacing delay during Initial/Handshake differs.
 - **mojo-net's M4a CUBIC milestone** (`plans/2026-04-15-m4a-quic-cc-core.md`)
   added a universal `_can_send` gate that did not distinguish encryption
   level. Pacing handshakes was an unintended side-effect of that
