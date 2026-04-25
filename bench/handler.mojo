@@ -255,6 +255,10 @@ def _load_static_files(static_dir: String) -> Dict[String, StaticEntry]:
     _load_one_static(static_dir, "favicon.ico", cache)
     _load_one_static(static_dir, "manifest.webmanifest", cache)
     _load_one_static(static_dir, "robots.txt", cache)
+    _load_one_static(static_dir, "1k.bin", cache)
+    _load_one_static(static_dir, "5k.bin", cache)
+    _load_one_static(static_dir, "15k.bin", cache)
+    _load_one_static(static_dir, "2m.bin", cache)
     return cache^
 
 
