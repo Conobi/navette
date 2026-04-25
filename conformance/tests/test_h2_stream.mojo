@@ -403,8 +403,66 @@ def test_send_data() raises:
     assert_equal(state, STREAM_HALF_CLOSED_LOCAL, "half-closed local")
 
 
+fn _count_data_payload_bytes(buf: List[UInt8]) -> Int:
+    """Sum payload lengths of all DATA frames in a wire-format buffer."""
+    var total = 0
+    var i = 0
+    while i + 9 <= len(buf):
+        var length = (Int(buf[i]) << 16) | (Int(buf[i + 1]) << 8) | Int(buf[i + 2])
+        var ftype = Int(buf[i + 3])
+        if ftype == FRAME_DATA:
+            total += length
+        i += 9 + length
+    return total
+
+
+fn _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
+    """Count DATA frames whose END_STREAM flag is set."""
+    var count = 0
+    var i = 0
+    while i + 9 <= len(buf):
+        var length = (Int(buf[i]) << 16) | (Int(buf[i + 1]) << 8) | Int(buf[i + 2])
+        var ftype = Int(buf[i + 3])
+        var flags = Int(buf[i + 4])
+        if ftype == FRAME_DATA and (flags & FLAG_END_STREAM) != 0:
+            count += 1
+        i += 9 + length
+    return count
+
+
+fn _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[UInt8]:
+    """Hand-build a wire-format WINDOW_UPDATE frame."""
+    var b = List[UInt8]()
+    # Length = 4
+    b.append(UInt8(0))
+    b.append(UInt8(0))
+    b.append(UInt8(4))
+    # Type = 0x08 (WINDOW_UPDATE), Flags = 0
+    b.append(UInt8(0x08))
+    b.append(UInt8(0))
+    # Stream ID (R bit = 0)
+    var sid = Int(stream_id)
+    b.append(UInt8((sid >> 24) & 0x7F))
+    b.append(UInt8((sid >> 16) & 0xFF))
+    b.append(UInt8((sid >> 8) & 0xFF))
+    b.append(UInt8(sid & 0xFF))
+    # Increment payload (R bit = 0)
+    var inc = Int(increment)
+    b.append(UInt8((inc >> 24) & 0x7F))
+    b.append(UInt8((inc >> 16) & 0xFF))
+    b.append(UInt8((inc >> 8) & 0xFF))
+    b.append(UInt8(inc & 0xFF))
+    return b^
+
+
 def test_send_data_window_exhaustion() raises:
-    """Send_data raises when send window is exhausted."""
+    """Queue overflow when send window is exhausted; drain on WINDOW_UPDATE.
+
+    This is the locked queue-and-drain contract established in commit cc813cd:
+    send_data must NOT raise when the connection (or stream) send window is
+    smaller than the requested payload; it emits as much as fits and queues
+    the remainder, draining it once a WINDOW_UPDATE is received.
+    """
     var client = H2Connection(client_side=True)
     client.initiate_connection()
     var client_preface = client.data_to_send()
@@ -422,21 +480,40 @@ def test_send_data_window_exhaustion() raises:
     headers.append(Header(":authority", "example.com"))
     client.send_headers(UInt32(1), headers^, end_stream=False)
     _ = client.data_to_send()
-    # Fill connection window (65535 bytes default)
+
+    # Fill connection window (65535 bytes default). MUST NOT raise.
     var body = List[UInt8]()
     for _ in range(65535):
         body.append(UInt8(0x42))
     client.send_data(UInt32(1), body^, end_stream=False)
-    _ = client.data_to_send()
-    # Next send should fail
+
+    var first_drain = client.data_to_send()
+    var first_data_bytes = _count_data_payload_bytes(first_drain)
+    assert_equal(first_data_bytes, 65535, "first drain emits exactly 65535 DATA bytes")
+
+    # Next 1-byte send should NOT raise — it must queue into _pending_data.
     var small_body = List[UInt8]()
     small_body.append(UInt8(0x43))
-    var raised = False
-    try:
-        client.send_data(UInt32(1), small_body^, end_stream=False)
-    except:
-        raised = True
-    assert_true(raised, "send_data raises on window exhaustion")
+    client.send_data(UInt32(1), small_body^, end_stream=True)
+
+    # The queued byte must NOT appear on the wire yet.
+    var queued_drain = client.data_to_send()
+    var queued_bytes = _count_data_payload_bytes(queued_drain)
+    assert_equal(queued_bytes, 0, "queued DATA must not appear before WINDOW_UPDATE")
+
+    # Synthesize server-side WINDOW_UPDATEs granting 10 bytes on both the
+    # connection (stream 0) and stream 1, since both windows are exhausted.
+    var wu_conn = _wire_window_update(UInt32(0), UInt32(10))
+    _ = client.receive_data(wu_conn)
+    var wu_stream = _wire_window_update(UInt32(1), UInt32(10))
+    _ = client.receive_data(wu_stream)
+
+    # Now the queued 1 byte must drain with END_STREAM set.
+    var second_drain = client.data_to_send()
+    var second_data_bytes = _count_data_payload_bytes(second_drain)
+    var second_end_streams = _count_end_stream_data_frames(second_drain)
+    assert_equal(second_data_bytes, 1, "queued 1 byte drained after WINDOW_UPDATE")
+    assert_equal(second_end_streams, 1, "END_STREAM rides the final fragment")
 
 
 def test_inbound_data_on_unknown_stream() raises:
@@ -641,22 +718,16 @@ def test_settings_initial_window_size_adjusts_streams() raises:
     _ = client.data_to_send()
     # Stream 1 send_window was 65535, delta = 100 - 65535 = -65435
     # New send_window = 65535 + (-65435) = 100
-    # Try sending 101 bytes — should fail (stream window)
+    # Try sending 101 bytes — under the queue-and-drain contract, send_data
+    # must NOT raise: it emits 100 bytes on the wire and queues the 1
+    # remaining byte until a WINDOW_UPDATE arrives.
     var body_101 = List[UInt8]()
     for _ in range(101):
         body_101.append(UInt8(0x41))
-    var raised = False
-    try:
-        client.send_data(UInt32(1), body_101, end_stream=False)
-    except:
-        raised = True
-    assert_true(raised, "send_data fails when stream window < data size after SETTINGS adjustment")
-    # But 100 bytes should succeed
-    var body_100 = List[UInt8]()
-    for _ in range(100):
-        body_100.append(UInt8(0x41))
-    client.send_data(UInt32(1), body_100, end_stream=False)
-    # No exception = pass
+    client.send_data(UInt32(1), body_101, end_stream=False)
+    var first_wire = client.data_to_send()
+    var first_data_bytes = _count_data_payload_bytes(first_wire)
+    assert_equal(first_data_bytes, 100, "100 bytes emitted; 1 byte queued under stream window")
 
 
 def test_settings_max_frame_size_invalid() raises:
