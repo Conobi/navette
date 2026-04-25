@@ -1,1 +1,7 @@
 timestamp,git_sha,server,endpoint,n,c,m,reqs_per_s,p50_us,p99_us,p999_us,bytes_per_req
+2026-04-25T15:00:36Z,d6fdbcb,mojo-net,/baseline2?a=1&b=2,100000,50,16,236935.38,2169,4600,6356,22
+2026-04-25T15:00:36Z,d6fdbcb,mojo-net,/json/50?m=6,100000,50,16,35901.02,15772,39179,53084,8418
+2026-04-25T15:00:36Z,d6fdbcb,mojo-net,/static/footer.html,100000,50,16,213613.14,0,0,0,29
+2026-04-25T15:00:36Z,d6fdbcb,hyper,/baseline2?a=1&b=2,100000,50,16,337484.39,985,2230,2976,27
+2026-04-25T15:00:36Z,d6fdbcb,hyper,/json/50?m=6,100000,50,16,363344.37,0,0,0,11
+2026-04-25T15:00:36Z,d6fdbcb,hyper,/static/footer.html,100000,50,16,29942.59,13160,21057,26568,56376
