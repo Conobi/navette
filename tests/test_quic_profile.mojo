@@ -124,6 +124,72 @@ def test_per_pkt_bucket_assignment() raises:
     print("PASS: test_per_pkt_bucket_assignment")
 
 
+def test_record_pkt_sums_and_residual() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # total=120, legs sum to 70 → residual = 50.
+    # ffi_us=80 overlaps with sm_us=20; not subtracted from residual.
+    p.record_pkt(
+        total_us=UInt64(120),
+        ffi_us=UInt64(80),
+        hp_us=UInt64(10),
+        aead_us=UInt64(15),
+        header_parse_us=UInt64(8),
+        frame_parse_us=UInt64(12),
+        sm_us=UInt64(25),
+    )
+    assert_true(p.pkt_count == UInt64(1), "pkt_count = 1")
+    assert_true(p.ffi_shim_us_total == UInt64(80), "ffi sum")
+    assert_true(p.hp_us_total == UInt64(10), "hp sum")
+    assert_true(p.aead_us_total == UInt64(15), "aead sum")
+    assert_true(p.header_parse_us_total == UInt64(8), "header_parse sum")
+    assert_true(p.frame_parse_us_total == UInt64(12), "frame_parse sum")
+    assert_true(p.sm_us_total == UInt64(25), "sm sum")
+    # residual = total - (hp + aead + header_parse + frame_parse + sm)
+    #         = 120 - (10 + 15 + 8 + 12 + 25) = 120 - 70 = 50
+    assert_true(p.residual_us_total == UInt64(50), "residual = 50")
+    # Bucket: 120us → bucket 7 ([64, 128))
+    assert_true(p.per_pkt_total_buckets[7] == UInt64(1), "120us in bucket 7")
+    assert_true(p.per_pkt_total_overflow == UInt64(0), "no overflow")
+    print("PASS: test_record_pkt_sums_and_residual")
+
+
+def test_record_pkt_overflow() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # total=10s = 10_000_000us → overflow.
+    p.record_pkt(
+        total_us=UInt64(10_000_000),
+        ffi_us=UInt64(0), hp_us=UInt64(0), aead_us=UInt64(0),
+        header_parse_us=UInt64(0), frame_parse_us=UInt64(0), sm_us=UInt64(0),
+    )
+    assert_true(p.pkt_count == UInt64(1), "pkt_count = 1")
+    assert_true(p.per_pkt_total_overflow == UInt64(1), "overflow = 1")
+    # All closed buckets stay 0.
+    for i in range(24):
+        assert_true(p.per_pkt_total_buckets[i] == UInt64(0), "no closed-bucket bump")
+    assert_true(p.residual_us_total == UInt64(10_000_000), "residual = total when legs=0")
+    print("PASS: test_record_pkt_overflow")
+
+
+def test_record_pkt_residual_underflow_safe() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Defensive: legs sum to MORE than total (clock noise / overlap).
+    # residual must clamp to 0 instead of UInt64-underflowing.
+    p.record_pkt(
+        total_us=UInt64(50),
+        ffi_us=UInt64(0),
+        hp_us=UInt64(20),
+        aead_us=UInt64(20),
+        header_parse_us=UInt64(20),
+        frame_parse_us=UInt64(20),
+        sm_us=UInt64(20),  # legs sum = 100 > total = 50
+    )
+    assert_true(p.residual_us_total == UInt64(0), "residual clamped to 0 on underflow")
+    print("PASS: test_record_pkt_residual_underflow_safe")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -131,4 +197,7 @@ def main() raises:
     test_record_idle_accumulates()
     test_record_flush_buckets_and_sums()
     test_per_pkt_bucket_assignment()
+    test_record_pkt_sums_and_residual()
+    test_record_pkt_overflow()
+    test_record_pkt_residual_underflow_safe()
     print("All Plan A tests passed.")

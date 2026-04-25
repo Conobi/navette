@@ -96,6 +96,37 @@ struct AcceptProfile(Copyable, Movable):
         var b = _pkts_per_flush_bucket(pkts)
         self.pkts_per_flush_buckets[b] += UInt64(1)
 
+    def record_pkt(
+        mut self,
+        *,
+        total_us: UInt64,
+        ffi_us: UInt64,
+        hp_us: UInt64,
+        aead_us: UInt64,
+        header_parse_us: UInt64,
+        frame_parse_us: UInt64,
+        sm_us: UInt64,
+    ):
+        self.pkt_count += UInt64(1)
+        self.ffi_shim_us_total += ffi_us
+        self.hp_us_total += hp_us
+        self.aead_us_total += aead_us
+        self.header_parse_us_total += header_parse_us
+        self.frame_parse_us_total += frame_parse_us
+        self.sm_us_total += sm_us
+
+        # residual = total - (hp + aead + header_parse + frame_parse + sm)
+        # ffi NOT subtracted (overlaps sm). Clamp to 0 on underflow.
+        var legs_sum = hp_us + aead_us + header_parse_us + frame_parse_us + sm_us
+        if total_us >= legs_sum:
+            self.residual_us_total += (total_us - legs_sum)
+
+        var b = _per_pkt_bucket(total_us)
+        if b >= 24:
+            self.per_pkt_total_overflow += UInt64(1)
+        else:
+            self.per_pkt_total_buckets[b] += UInt64(1)
+
 
 fn _pkts_per_flush_bucket(pkts: Int) -> Int:
     """Map fan-out count to bucket index 0..7. Buckets [1,2-3,4-7,...,128+]."""
