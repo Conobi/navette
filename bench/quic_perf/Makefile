@@ -2,7 +2,7 @@
 #
 # Targets:
 #   setup       : build images + generate certs/payloads (idempotent)
-#   bench-mvp   : 8 single-iter runs (smoke test)
+#   bench-mvp   : 8 cells × 3 iters = 24 runs (median absorbs cold-start noise)
 #   bench-full  : 32-cell × 3-iter matrix (~50 min)
 #   summary     : render Markdown table from results/*.json
 #   clean       : remove generated payloads, results, SUMMARY.md
@@ -29,6 +29,7 @@ build-mojo-net:
 	    echo "[setup] building mojo-net-bench:latest"; \
 	    docker build -t mojo-net-bench:latest \
 	        --build-context boucle=$(REPO_ROOT)/../boucle \
+	        --build-context simdjson=$(REPO_ROOT)/../json-simd-mojo \
 	        -f $(REPO_ROOT)/bench/Dockerfile $(REPO_ROOT); \
 	else \
 	    echo "[setup] mojo-net-bench:latest exists (skip)"; \
@@ -68,11 +69,11 @@ gen-payloads:
 	@$(HERE)/scripts/gen-payloads.sh
 
 bench-mvp:
-	@echo "[bench-mvp] 8 single-iter runs (server x scenario x server)"
+	@echo "[bench-mvp] 8 cells × 3 iters = 24 runs"
 	@for server in $(SERVERS); do \
 	    for scenario in $(SCENARIOS); do \
 	        for client in tquic_client h2load; do \
-	            $(HERE)/scripts/bench.sh $$server 1k $$scenario $$client; \
+	            $(HERE)/scripts/bench.sh $$server 1k $$scenario $$client --iters 3; \
 	        done; \
 	    done; \
 	done
