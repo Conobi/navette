@@ -85,23 +85,37 @@ DATA bytes (8 × 8397 = 67 176) and stops counting after that, even
 though the next ~25 KB of ciphertext was sent over the same TCP
 connection before EOF.
 
-## Verified test matrix
+## Final piece: TLS-record chunking in `bench/h2_server.mojo`
 
-| Client | Config | Result |
-|---|---|---|
-| h2load | `c=1 m=7 n=12` | **12/12 succeeded** (no concurrency pressure) |
-| h2load | `c=1 m=8/9/10 n=12` | **8/12 succeeded** (was 7/12 pre-combine) |
-| curl   | `--http2 --parallel-max 12` x12 | **12/12 200-8397** |
+The remaining h2load gap turned out to be exactly the TLS-record
+hypothesis. Replacing the single `tls.send_data(h2_out)` /
+`tls.drain_ciphertext()` per recv with a loop that slices `h2_out`
+into 16 KB chunks (`_TLS_RECORD_CHUNK`), encrypts each, and stages
+them via `_stage_send` made the entire problem disappear.
 
-## Open follow-up (lower priority)
+When the codec drained ~100 KB plaintext for 12 streams in one shot,
+librustls produced a single ~100 KB ciphertext blob, which the
+kernel pushed in a small number of large TCP segments. h2load's
+parser apparently stopped processing after the initial m-stream
+batch of frames in the same record/segment. Slicing into per-record
+plaintext chunks gives the wire a shape closer to what nginx emits
+— each TLS record carries one batch of frames, the kernel can
+interleave with inbound packets carrying client WINDOW_UPDATEs and
+new HEADERS, and h2load happily processes the full stream.
 
-Investigate whether `bench/h2_server.mojo`'s coalesced
-`tls.send_data(h2_out)` of large plaintext (one ~100 KB blob) trips
-some h2load expectation about TLS record boundaries. Splitting the
-encrypt into smaller record-sized chunks (≤ 16 KB) would let
-h2load see HEADERS frames interleaved with DATA on different record
-boundaries, which is what h2load probably gets when talking to
-nginx. Out of scope here.
+## Final verified test matrix
+
+| Client | Config | Pre-chunk | Post-chunk |
+|---|---|---|---|
+| h2load | `c=1 m=7 n=12` | 12/12 | **12/12** |
+| h2load | `c=1 m=8/10 n=12` | 8/12 | **12/12** |
+| h2load | `c=1 m=12 n=12` | hung | **12/12** |
+| h2load | `c=100 m=10 n=10000` | 700/10000 (original retro bug) | **10000/10000 @ 9 746 req/s, 78 MB/s** |
+| curl   | `--http2 --parallel-max 12` | 12/12 | 12/12 |
+
+The original `bench-h1-consolidation-and-json-retrospective` bug is
+fully resolved with the three changes together (codec
+fragment-and-queue + END_STREAM combine + TLS-record chunking).
 
 ## Tests run
 
@@ -130,6 +144,7 @@ green.
 |---|---|
 | `src/h2/connection.mojo` | `PendingDataChunk` struct, `_pending_data` field on `H2Connection`, rewritten `send_data` (fragment-and-queue + empty-END_STREAM merge), new `_drain_pending_data` / `_drain_stream_pending`, drain wire-up in `_handle_window_update` and `_handle_settings` (INITIAL_WINDOW_SIZE branch). |
 | `src/h2/h2_coro_server.mojo` | `_drain_responses` now buffers DATA chunks and folds END_STREAM onto the last DATA payload instead of emitting a separate empty `DATA(END_STREAM)` frame. |
+| `bench/h2_server.mojo` | `_handle_recv` slices the H2 plaintext drain into 16 KB chunks before each `tls.send_data` / `drain_ciphertext` / `_stage_send`, so each batch of frames lands in its own TLS record. New `_TLS_RECORD_CHUNK` constant. |
 | `tests/test_h2_send_window_exhaustion.mojo` | New codec-level reproducer. |
 
 No bench-server, h2_session, or h2_handler call-site changes were
