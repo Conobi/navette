@@ -495,7 +495,15 @@ def decode_frame(
             elif frame_type == FRAME_PUSH_PROMISE:
                 min_overhead = 5  # 1 pad + 4 promised stream id
 
-            if pad_length > length - min_overhead:
+            # RFC 9113 §6.1 + security hardening: padding must leave at
+            # least one byte of frame-specific data. A `pad_length` that
+            # equals (or exceeds) the available payload — i.e. padding
+            # consuming the entire data portion — is a padding-oracle
+            # vector and MUST be treated as a connection-level
+            # PROTOCOL_ERROR. We use `>=` here (stricter than the literal
+            # ">" reading of §6.1) because zero-data + max-pad has no
+            # legitimate use and is a known abuse pattern.
+            if pad_length >= length - min_overhead:
                 var f = _make_error_frame(
                     length,
                     frame_type,
@@ -504,7 +512,7 @@ def decode_frame(
                     payload,
                     "padding length "
                     + String(pad_length)
-                    + " exceeds available payload",
+                    + " consumes entire payload",
                     H2_PROTOCOL_ERROR,
                     SCOPE_CONNECTION,
                 )
