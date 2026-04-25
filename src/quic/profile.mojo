@@ -204,6 +204,77 @@ struct AcceptProfile(Copyable, Movable):
         s += "=== end ===\n"
         return s^
 
+    def report_json(self) -> String:
+        var now = monotonic_us()
+        var run_us = now - self.run_start_us
+        var n_closed = self.pkt_count - self.per_pkt_total_overflow
+        var p50 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 50.0)
+        var p90 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 90.0)
+        var p99 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 99.0)
+        var bucket_max: UInt64 = UInt64(0)
+        var b = 23
+        while b >= 0:
+            if self.per_pkt_total_buckets[b] > UInt64(0):
+                bucket_max = UInt64(1) << UInt64(b)
+                break
+            b -= 1
+        if self.per_pkt_total_overflow > UInt64(0):
+            bucket_max = UInt64(8_388_608)
+
+        var lp50 = _exact_percentile(self.hs_latency_us, 50.0)
+        var lp90 = _exact_percentile(self.hs_latency_us, 90.0)
+        var lp99 = _exact_percentile(self.hs_latency_us, 99.0)
+        var lmax = _exact_percentile(self.hs_latency_us, 100.0)
+
+        var s = String("{\n")
+        s += '  "schema_version": 1,\n'
+        s += '  "run_wall_clock_us": ' + String(run_us) + ',\n'
+        s += '  "on_flush_events": ' + String(self.on_flush_count) + ',\n'
+        s += '  "idle_us_total": ' + String(self.idle_us_total) + ',\n'
+        s += '  "busy_us_total": ' + String(self.busy_us_total) + ',\n'
+
+        s += '  "pkts_per_flush_histogram": {\n'
+        var keys = List[String]()
+        keys.append(String("1"))
+        keys.append(String("2-3"))
+        keys.append(String("4-7"))
+        keys.append(String("8-15"))
+        keys.append(String("16-31"))
+        keys.append(String("32-63"))
+        keys.append(String("64-127"))
+        keys.append(String("128+"))
+        for i in range(8):
+            s += '    "' + keys[i] + '": ' + String(self.pkts_per_flush_buckets[i])
+            if i < 7:
+                s += ","
+            s += "\n"
+        s += "  },\n"
+
+        s += '  "per_pkt_us": {\n'
+        s += '    "total":         {"p50": ' + String(p50) + ', "p90": ' + String(p90)
+        s += ', "p99": ' + String(p99) + ', "max": ' + String(bucket_max)
+        s += ', "n": ' + String(n_closed) + ', "overflow": ' + String(self.per_pkt_total_overflow) + "},\n"
+        s += _json_leg("header_parse", self.header_parse_us_total, self.pkt_count) + ",\n"
+        s += _json_leg("hp",           self.hp_us_total,           self.pkt_count) + ",\n"
+        s += _json_leg("aead",         self.aead_us_total,         self.pkt_count) + ",\n"
+        s += _json_leg("frame_parse",  self.frame_parse_us_total,  self.pkt_count) + ",\n"
+        s += _json_leg("sm",           self.sm_us_total,           self.pkt_count) + ",\n"
+        s += _json_leg("residual",     self.residual_us_total,     self.pkt_count) + ",\n"
+        s += _json_leg("shim_ffi",     self.ffi_shim_us_total,     self.pkt_count) + ",\n"
+        s += _json_leg("drain",        self.drain_us_total,        self.pkt_count) + "\n"
+        s += "  },\n"
+
+        s += '  "handshake": {\n'
+        s += '    "arrivals": ' + String(self.hs_arrivals) + ', '
+        s += '"successful": ' + String(self.hs_completed) + ', '
+        s += '"timed_out": ' + String(self.hs_timed_out) + ',\n'
+        s += '    "latency_us": {"p50": ' + String(lp50) + ', "p90": ' + String(lp90)
+        s += ', "p99": ' + String(lp99) + ', "max": ' + String(lmax)
+        s += ', "count": ' + String(len(self.hs_latency_us)) + "}\n"
+        s += "  }\n"
+        s += "}\n"
+        return s^
+
 
 fn _pkts_per_flush_bucket(pkts: Int) -> Int:
     """Map fan-out count to bucket index 0..7. Buckets [1,2-3,4-7,...,128+]."""
@@ -350,3 +421,13 @@ fn _fmt_leg(label: String, total: UInt64, count: UInt64) -> String:
         avg_s = String(" ") + avg_s
     var total_s = String(total)
     return label + ":  avg=" + avg_s + "   total=" + total_s + "us"
+
+
+fn _json_leg(name: String, total: UInt64, count: UInt64) -> String:
+    var avg: UInt64 = UInt64(0)
+    if count > UInt64(0):
+        avg = total / count
+    var pad = String()
+    while len(pad) + len(name) < 14:
+        pad += " "
+    return '    "' + name + '":' + pad + '{"avg": ' + String(avg) + ', "total": ' + String(total) + "}"
