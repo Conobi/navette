@@ -12,7 +12,13 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from src.h1.handler_server import H1HandlerServer
-from bench.handler import BenchHandler, StaticEntry, _load_static_files
+from bench.handler import (
+    BenchHandler,
+    BenchState,
+    StaticEntry,
+    _load_static_files,
+    _load_dataset,
+)
 from interop.file_io import getenv_opt
 
 from boucle import CompletionLoop, CompletionHandler
@@ -132,25 +138,25 @@ struct H1ServerHandler(CompletionHandler):
     var listener_fd: Int32
     var connections: List[UnsafePointer[H1Conn, MutAnyOrigin]]
     var next_conn_id: UInt64
-    var cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin]
+    var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
 
     def __init__(
         out self,
         listener_fd: Int32,
-        cache_ptr: UnsafePointer[Dict[String, StaticEntry], MutAnyOrigin],
+        state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
     ):
         self.listener_fd = listener_fd
         self.connections = List[UnsafePointer[H1Conn, MutAnyOrigin]]()
         self.next_conn_id = 1
-        self.cache_ptr = cache_ptr
+        self.state_ptr = state_ptr
         self.pending_submits = List[PendingSubmit]()
 
     def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
         self.connections = take.connections^
         self.next_conn_id = take.next_conn_id
-        self.cache_ptr = take.cache_ptr
+        self.state_ptr = take.state_ptr
         self.pending_submits = take.pending_submits^
 
     # --- Conn lookup ---
@@ -268,7 +274,7 @@ struct H1ServerHandler(CompletionHandler):
         self.next_conn_id += 1
 
         var handle = OwnedHandle(raw=client_fd)
-        var handler = BenchHandler(self.cache_ptr)
+        var handler = BenchHandler(self.state_ptr)
         var http = H1HandlerServer[BenchHandler](handler=handler^)
 
         var conn = H1Conn(
@@ -451,9 +457,19 @@ def main() raises:
         static_dir = String("/data/static")
     var cache = _load_static_files(static_dir)
 
-    # Heap-allocate cache so pointer remains stable.
-    var cache_ptr = _heap_alloc[Dict[String, StaticEntry]](1).as_any_origin()
-    cache_ptr.init_pointee_move(cache^)
+    # Load dataset for the /json profile from DATA_DIR (default /data).
+    var data_dir_opt = getenv_opt("DATA_DIR")
+    var data_dir: String
+    if data_dir_opt.__bool__():
+        data_dir = data_dir_opt.value()
+    else:
+        data_dir = String("/data")
+    var dataset = _load_dataset(data_dir + "/dataset.json")
+
+    # Heap-allocate combined bench state so the pointer stays stable.
+    var state = BenchState(static_cache=cache^, dataset=dataset^)
+    var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
+    state_ptr.init_pointee_move(state^)
 
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
@@ -487,7 +503,7 @@ def main() raises:
     # Build handler + loop.
     var handler = H1ServerHandler(
         listener_fd=listener_fd,
-        cache_ptr=cache_ptr,
+        state_ptr=state_ptr,
     )
     var loop = CompletionLoop[H1ServerHandler](handler^, sq_entries=4096)
 
