@@ -255,6 +255,56 @@ def test_exact_percentile_unsorted_input() raises:
     print("PASS: test_exact_percentile_unsorted_input")
 
 
+def test_bucket_percentile_uniform() raises:
+    """Uniform [1us, 1ms): p50 ≈ 500us, p90 ≈ 900us, p99 ≈ 990us, ±25%."""
+    from src.quic.profile import AcceptProfile, _bucket_percentile
+    var p = AcceptProfile()
+    # 10000 samples uniform [1us, 1_000_000ns = 1000us).
+    # Use deterministic LCG for reproducibility.
+    var seed: UInt64 = UInt64(0xdeadbeef)
+    for _ in range(10000):
+        seed = seed * UInt64(6364136223846793005) + UInt64(1442695040888963407)
+        var us = UInt64(1) + (seed % UInt64(999))  # [1, 1000)
+        p.record_pkt(
+            total_us=us,
+            ffi_us=UInt64(0), hp_us=UInt64(0), aead_us=UInt64(0),
+            header_parse_us=UInt64(0), frame_parse_us=UInt64(0), sm_us=UInt64(0),
+        )
+    var p50 = _bucket_percentile(p.per_pkt_total_buckets, p.pkt_count - p.per_pkt_total_overflow, 50.0)
+    var p90 = _bucket_percentile(p.per_pkt_total_buckets, p.pkt_count - p.per_pkt_total_overflow, 90.0)
+    var p99 = _bucket_percentile(p.per_pkt_total_buckets, p.pkt_count - p.per_pkt_total_overflow, 99.0)
+    # ±25% tolerance.
+    assert_true(p50 >= UInt64(375) and p50 <= UInt64(625), "p50 in [375, 625]")
+    assert_true(p90 >= UInt64(675) and p90 <= UInt64(1125), "p90 in [675, 1125]")
+    assert_true(p99 >= UInt64(742) and p99 <= UInt64(1238), "p99 in [742, 1238]")
+    print("PASS: test_bucket_percentile_uniform")
+
+
+def test_bucket_percentile_overflow() raises:
+    """999 samples at 100us + 1 over the 2^23us cutoff. p99.99 → overflow lower bound."""
+    from src.quic.profile import AcceptProfile, _bucket_percentile
+    var p = AcceptProfile()
+    for _ in range(999):
+        p.record_pkt(
+            total_us=UInt64(100),
+            ffi_us=UInt64(0), hp_us=UInt64(0), aead_us=UInt64(0),
+            header_parse_us=UInt64(0), frame_parse_us=UInt64(0), sm_us=UInt64(0),
+        )
+    # Overflow boundary is 2^23 = 8_388_608us (~8.39s); use 10s to ensure overflow.
+    p.record_pkt(
+        total_us=UInt64(10_000_000),
+        ffi_us=UInt64(0), hp_us=UInt64(0), aead_us=UInt64(0),
+        header_parse_us=UInt64(0), frame_parse_us=UInt64(0), sm_us=UInt64(0),
+    )
+    assert_true(p.per_pkt_total_overflow == UInt64(1), "1 overflow sample")
+    # p50 over the 999 closed-bucket samples (excluding overflow) → 100us → bucket 7.
+    var n_closed = p.pkt_count - p.per_pkt_total_overflow
+    var p50 = _bucket_percentile(p.per_pkt_total_buckets, n_closed, 50.0)
+    # 100us is in bucket 7 ([64, 128)). Linear interp inside → estimator returns ~64..128.
+    assert_true(p50 >= UInt64(64) and p50 < UInt64(128), "p50 in bucket 7 range")
+    print("PASS: test_bucket_percentile_overflow")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -270,4 +320,6 @@ def main() raises:
     test_exact_percentile_basic()
     test_exact_percentile_empty_returns_zero()
     test_exact_percentile_unsorted_input()
+    test_bucket_percentile_uniform()
+    test_bucket_percentile_overflow()
     print("All Plan A tests passed.")

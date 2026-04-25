@@ -194,3 +194,41 @@ fn _exact_percentile(values: List[UInt64], p: Float64) -> UInt64:
     if idx >= n:
         idx = n - 1
     return sorted_v[idx]
+
+
+fn _bucket_percentile(buckets: List[UInt64], total: UInt64, p: Float64) -> UInt64:
+    """Linear-interp percentile inside the containing 24-bucket histogram.
+
+    `total` = sum of closed-bucket counts (overflow excluded). Returns 0 if total==0.
+    """
+    if total == UInt64(0):
+        return UInt64(0)
+    var target = (p / 100.0) * Float64(total)
+    var target_count = UInt64(target)
+    if Float64(target_count) < target:
+        target_count += UInt64(1)
+    if target_count == UInt64(0):
+        target_count = UInt64(1)
+    var cum: UInt64 = UInt64(0)
+    for b in range(24):
+        var c = buckets[b]
+        if c == UInt64(0):
+            continue
+        var new_cum = cum + c
+        if new_cum >= target_count:
+            # Bucket b contains the target. Linear-interp inside [lower, upper).
+            var lower: UInt64
+            var upper: UInt64
+            if b == 0:
+                lower = UInt64(0)
+                upper = UInt64(1)
+            else:
+                lower = UInt64(1) << UInt64(b - 1)
+                upper = UInt64(1) << UInt64(b)
+            var into = target_count - cum
+            var frac = Float64(into) / Float64(c)
+            var span = Float64(upper - lower)
+            return lower + UInt64(frac * span)
+        cum = new_cum
+    # Should not reach here when total > 0; clamp to top bucket upper bound.
+    return UInt64(1) << UInt64(23)
