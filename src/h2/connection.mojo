@@ -436,6 +436,27 @@ struct StreamState(Copyable, Movable):
 
 
 # ---------------------------------------------------------------------------
+# PendingDataChunk — DATA bytes that didn't fit in the window when
+# `send_data` was called and are queued until WINDOW_UPDATE arrives.
+# ---------------------------------------------------------------------------
+struct PendingDataChunk(Copyable, Movable):
+    var data: List[UInt8]
+    var end_stream: Bool
+
+    def __init__(out self, var data: List[UInt8], end_stream: Bool):
+        self.data = data^
+        self.end_stream = end_stream
+
+    def __init__(out self, *, other: Self):
+        self.data = other.data.copy()
+        self.end_stream = other.end_stream
+
+    def __init__(out self, *, deinit take: Self):
+        self.data = take.data^
+        self.end_stream = take.end_stream
+
+
+# ---------------------------------------------------------------------------
 # Helper: append a 6-byte SETTINGS entry to a payload
 # ---------------------------------------------------------------------------
 def _append_setting(mut payload: List[UInt8], id: Int, value: Int):
@@ -471,6 +492,7 @@ struct H2Connection(Movable):
     var _expecting_continuation_for: UInt32
     var _client_magic_validated: Bool
     var _closed_stream_count: Int
+    var _pending_data: Dict[Int, List[PendingDataChunk]]
 
     def __init__(out self, *, client_side: Bool, config: H2Config = H2Config()):
         self._config = H2Config(other=config)
@@ -497,6 +519,7 @@ struct H2Connection(Movable):
         self._expecting_continuation_for = UInt32(0)
         self._client_magic_validated = client_side
         self._closed_stream_count = 0
+        self._pending_data = Dict[Int, List[PendingDataChunk]]()
 
     def __init__(out self, *, deinit take: Self):
         self._config = take._config^
@@ -519,6 +542,7 @@ struct H2Connection(Movable):
         self._expecting_continuation_for = take._expecting_continuation_for
         self._client_magic_validated = take._client_magic_validated
         self._closed_stream_count = take._closed_stream_count
+        self._pending_data = take._pending_data^
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""
@@ -698,6 +722,8 @@ struct H2Connection(Movable):
                 self._remote_settings.initial_window_size = UInt32(new_value)
                 if delta != 0:
                     self._adjust_stream_send_windows(delta)
+                    if delta > 0:
+                        self._drain_pending_data(0)
             elif s.id == SETTINGS_MAX_FRAME_SIZE:
                 if s.value < 16384 or s.value > 16777215:
                     self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid MAX_FRAME_SIZE"))
@@ -826,7 +852,12 @@ struct H2Connection(Movable):
                 offset = end
 
     def send_data(mut self, stream_id: UInt32, data: List[UInt8], *, end_stream: Bool = False) raises:
-        """Send DATA frame(s). Fragments to max_frame_size. Checks send windows."""
+        """Send DATA frame(s). Fragments by max_frame_size. Bytes that
+        exceed the connection or stream send window are queued in
+        `_pending_data` and emitted when an inbound WINDOW_UPDATE
+        replenishes the window. Per RFC 7540 §5.2.1 senders MUST defer
+        oversized writes — never overshoot the window — so this method
+        does not raise on flow control."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
         var sid = Int(stream_id)
@@ -840,36 +871,214 @@ struct H2Connection(Movable):
         if stream.lifecycle != STREAM_OPEN and stream.lifecycle != STREAM_HALF_CLOSED_REMOTE:
             raise Error("Cannot send on stream in state " + String(stream.lifecycle))
         var total = len(data)
-        if total > self._send_window:
-            raise Error("Flow control error: connection send window exhausted")
-        if total > stream.send_window:
-            raise Error("Flow control error: stream send window exhausted")
-        var max_size = Int(self._remote_settings.max_frame_size)
-        var offset = 0
-        while offset < total or (offset == 0 and total == 0):
-            var end = offset + max_size
-            if end > total:
-                end = total
-            var chunk = List[UInt8]()
-            for i in range(offset, end):
-                chunk.append(data[i])
-            var flags = 0
-            var is_last = (end >= total)
-            if end_stream and is_last:
-                flags = FLAG_END_STREAM
-            var frame = Frame(len(chunk), FRAME_DATA, flags, sid, chunk)
-            self._queue_frame(frame)
-            offset = end
-            if offset == 0 and total == 0:
-                break
-        self._send_window -= total
-        stream.send_window -= total
-        if end_stream:
+
+        # Empty payload bypasses flow control. With END_STREAM it's a 0-byte
+        # close marker; without END_STREAM there's nothing to do. If bytes are
+        # already queued for this stream, we MUST NOT emit the close ahead of
+        # them — push the END_STREAM flag onto the last queued chunk instead.
+        if total == 0:
+            if not end_stream:
+                self._streams[sid] = stream^
+                return
+            if sid in self._pending_data:
+                var qsz: Int
+                try:
+                    qsz = len(self._pending_data[sid])
+                except:
+                    qsz = 0
+                if qsz > 0:
+                    try:
+                        self._pending_data[sid][qsz - 1].end_stream = True
+                    except:
+                        pass
+                    self._streams[sid] = stream^
+                    return
+            var frame0 = Frame(0, FRAME_DATA, FLAG_END_STREAM, sid, List[UInt8]())
+            self._queue_frame(frame0)
             if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
                 stream.lifecycle = STREAM_CLOSED
                 self._active_stream_count -= 1
             else:
                 stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+            self._streams[sid] = stream^
+            return
+
+        # If this stream already has queued bytes ahead of `data`,
+        # appending to the queue is the only way to preserve send order.
+        if sid in self._pending_data:
+            var qsize: Int
+            try:
+                qsize = len(self._pending_data[sid])
+            except:
+                qsize = 0
+            if qsize > 0:
+                var copy_buf = List[UInt8]()
+                for i in range(total):
+                    copy_buf.append(data[i])
+                var pc = PendingDataChunk(copy_buf^, end_stream)
+                try:
+                    self._pending_data[sid].append(pc^)
+                except:
+                    pass
+                self._streams[sid] = stream^
+                return
+
+        var available = self._send_window
+        if stream.send_window < available:
+            available = stream.send_window
+        if available < 0:
+            available = 0
+        var sendable = total if total < available else available
+
+        if sendable > 0:
+            var max_size = Int(self._remote_settings.max_frame_size)
+            var offset = 0
+            var emit_end = end_stream and sendable == total
+            while offset < sendable:
+                var end = offset + max_size
+                if end > sendable:
+                    end = sendable
+                var chunk_bytes = List[UInt8]()
+                for i in range(offset, end):
+                    chunk_bytes.append(data[i])
+                var is_last = (end >= sendable)
+                var flags = FLAG_END_STREAM if (emit_end and is_last) else 0
+                var frame = Frame(len(chunk_bytes), FRAME_DATA, flags, sid, chunk_bytes)
+                self._queue_frame(frame)
+                offset = end
+            self._send_window -= sendable
+            stream.send_window -= sendable
+
+        if sendable < total:
+            var remainder = List[UInt8]()
+            for i in range(sendable, total):
+                remainder.append(data[i])
+            var pchunk = PendingDataChunk(remainder^, end_stream)
+            if sid not in self._pending_data:
+                self._pending_data[sid] = List[PendingDataChunk]()
+            try:
+                self._pending_data[sid].append(pchunk^)
+            except:
+                pass
+
+        if end_stream and sendable >= total:
+            if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                stream.lifecycle = STREAM_CLOSED
+                self._active_stream_count -= 1
+            else:
+                stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+        self._streams[sid] = stream^
+
+    def _drain_pending_data(mut self, hint_stream_id: Int):
+        """Drain queued DATA bytes whose flow-control window has just been
+        replenished. `hint_stream_id == 0` means the connection-level
+        window grew (or INITIAL_WINDOW_SIZE changed), so walk every
+        stream with pending bytes; otherwise drain just that stream."""
+        if hint_stream_id == 0:
+            var sids = List[Int]()
+            for key in self._pending_data.keys():
+                sids.append(key)
+            for i in range(len(sids)):
+                self._drain_stream_pending(sids[i])
+        else:
+            if hint_stream_id in self._pending_data:
+                self._drain_stream_pending(hint_stream_id)
+
+    def _drain_stream_pending(mut self, sid: Int):
+        """Emit as many queued DATA bytes for `sid` as the current
+        connection-level and stream-level windows admit, then re-queue
+        any leftover. END_STREAM rides only the final byte of the queue."""
+        if not self._has_stream(sid):
+            try:
+                _ = self._pending_data.pop(sid)
+            except:
+                pass
+            return
+        var stream: StreamState
+        try:
+            stream = self._streams[sid].copy()
+        except:
+            return
+        if stream.lifecycle != STREAM_OPEN and stream.lifecycle != STREAM_HALF_CLOSED_REMOTE:
+            try:
+                _ = self._pending_data.pop(sid)
+            except:
+                pass
+            return
+
+        var queue: List[PendingDataChunk]
+        try:
+            queue = self._pending_data[sid].copy()
+        except:
+            return
+        try:
+            _ = self._pending_data.pop(sid)
+        except:
+            pass
+
+        var max_size = Int(self._remote_settings.max_frame_size)
+        var idx = 0
+        var stalled = False
+        var stall_remainder = List[UInt8]()
+        var stall_end_stream = False
+
+        while idx < len(queue):
+            var available = self._send_window
+            if stream.send_window < available:
+                available = stream.send_window
+            if available <= 0:
+                break
+
+            var data_bytes = queue[idx].data.copy()
+            var data_end_stream = queue[idx].end_stream
+            var data_len = len(data_bytes)
+            var sendable = data_len if data_len < available else available
+            var emit_full = (sendable == data_len)
+            var is_last_chunk = (idx == len(queue) - 1)
+
+            if sendable > 0:
+                var offset = 0
+                while offset < sendable:
+                    var end = offset + max_size
+                    if end > sendable:
+                        end = sendable
+                    var frame_bytes = List[UInt8]()
+                    for j in range(offset, end):
+                        frame_bytes.append(data_bytes[j])
+                    var is_last_part = (end >= sendable)
+                    var flags = FLAG_END_STREAM if (data_end_stream and emit_full and is_last_chunk and is_last_part) else 0
+                    var frame = Frame(len(frame_bytes), FRAME_DATA, flags, sid, frame_bytes)
+                    self._queue_frame(frame)
+                    offset = end
+                self._send_window -= sendable
+                stream.send_window -= sendable
+
+            if emit_full:
+                if data_end_stream and is_last_chunk:
+                    if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                        stream.lifecycle = STREAM_CLOSED
+                        self._active_stream_count -= 1
+                    else:
+                        stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+                idx += 1
+            else:
+                var rem = List[UInt8]()
+                for j in range(sendable, data_len):
+                    rem.append(data_bytes[j])
+                stall_remainder = rem^
+                stall_end_stream = data_end_stream
+                stalled = True
+                idx += 1
+                break
+
+        if stalled or idx < len(queue):
+            var new_queue = List[PendingDataChunk]()
+            if stalled:
+                new_queue.append(PendingDataChunk(stall_remainder^, stall_end_stream))
+            while idx < len(queue):
+                new_queue.append(PendingDataChunk(other=queue[idx]))
+                idx += 1
+            self._pending_data[sid] = new_queue^
         self._streams[sid] = stream^
 
     def _handle_goaway(mut self, frame: Frame, mut events: List[H2Event]):
@@ -981,6 +1190,7 @@ struct H2Connection(Movable):
                 return
             self._send_window += wp.window_increment
             events.append(H2Event.window_updated(UInt32(0), UInt32(wp.window_increment)))
+            self._drain_pending_data(0)
         else:
             # Stream-level
             if self._has_stream(frame.stream_id):
@@ -992,6 +1202,7 @@ struct H2Connection(Movable):
                     stream.send_window += wp.window_increment
                     self._streams[frame.stream_id] = stream^
                     events.append(H2Event.window_updated(UInt32(frame.stream_id), UInt32(wp.window_increment)))
+                    self._drain_pending_data(Int(frame.stream_id))
                 except:
                     pass
 
