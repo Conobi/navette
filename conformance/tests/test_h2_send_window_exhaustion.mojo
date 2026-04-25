@@ -1,4 +1,4 @@
-# tests/test_h2_send_window_exhaustion.mojo
+# conformance/tests/test_h2_send_window_exhaustion.mojo
 #
 # Reproduces the H2 connection-level send-window exhaustion bug at the codec
 # level. Pre-fix: `H2Connection.send_data()` raises when the sender's payload
