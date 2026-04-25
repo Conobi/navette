@@ -130,6 +130,16 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.per_pkt_total_buckets[b] += UInt64(1)
 
+    def record_handshake_arrival(mut self):
+        self.hs_arrivals += UInt64(1)
+
+    def record_handshake_complete(mut self, latency_us: UInt64):
+        self.hs_completed += UInt64(1)
+        self.hs_latency_us.append(latency_us)
+
+    def record_handshake_timeout(mut self, count: UInt64 = UInt64(1)):
+        self.hs_timed_out += count
+
 
 fn _pkts_per_flush_bucket(pkts: Int) -> Int:
     """Map fan-out count to bucket index 0..7. Buckets [1,2-3,4-7,...,128+]."""
