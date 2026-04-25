@@ -305,6 +305,70 @@ def test_bucket_percentile_overflow() raises:
     print("PASS: test_bucket_percentile_overflow")
 
 
+def test_report_text_canned() raises:
+    """Construct a canned profile, format, assert the report contains key markers.
+
+    Exact-string golden match is brittle (timestamps / minor format drift).
+    We assert on stable content markers + numeric values.
+    """
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Idle / busy.
+    p.record_idle(UInt64(31_830_000))
+    p.record_flush(1, UInt64(2_380_000))  # one wakeup with 2.38s busy
+    # Per-packet: one canned packet.
+    p.record_pkt(
+        total_us=UInt64(120),
+        ffi_us=UInt64(78),
+        hp_us=UInt64(12),
+        aead_us=UInt64(22),
+        header_parse_us=UInt64(6),
+        frame_parse_us=UInt64(11),
+        sm_us=UInt64(14),
+    )
+    p.record_drain(UInt64(39))
+    # Handshake.
+    p.record_handshake_arrival()
+    p.record_handshake_arrival()
+    p.record_handshake_complete(UInt64(8400))
+    p.record_handshake_timeout(UInt64(1))
+
+    var s = p.report_text()
+
+    # Header.
+    assert_true("=== mojo-net QUIC accept-loop profile ===" in s, "header present")
+    assert_true("=== end ===" in s, "footer present")
+    # Idle / busy section.
+    assert_true("On_flush events:" in s, "on_flush events line")
+    assert_true("Idle (boucle wait):" in s, "idle line")
+    assert_true("Busy (in loop):" in s, "busy line")
+    # Fan-out histogram header + bucket label.
+    assert_true("Datagrams batched per flush" in s, "fan-out header")
+    assert_true("size=1" in s, "size=1 label")
+    assert_true("size=128+" in s, "size=128+ label")
+    # Per-packet section.
+    assert_true("Per-packet wall-clock" in s, "per-packet header")
+    assert_true("header parse" in s, "header parse leg")
+    assert_true("HP unprotect" in s, "HP leg")
+    assert_true("AEAD decrypt" in s, "AEAD leg")
+    assert_true("frame parse" in s, "frame_parse leg")
+    assert_true("state machine" in s, "sm leg")
+    assert_true("residual" in s, "residual leg")
+    assert_true("shim FFI" in s, "shim FFI leg")
+    assert_true("drain (bench)" in s, "drain leg")
+    # Handshake section.
+    assert_true("Handshake accounting:" in s, "handshake header")
+    assert_true("Arrivals:" in s, "arrivals row")
+    assert_true("Successful:" in s, "successful row")
+    assert_true("Timed out:" in s, "timed-out row")
+    # Latency section.
+    assert_true("Successful handshake latency" in s, "latency header")
+    # Numeric checks: avg = total / count, so for a single packet with ffi=78
+    # avg should print as "avg= 78".
+    assert_true("avg= 78" in s, "shim FFI avg=78 (single sample)")
+    print("PASS: test_report_text_canned")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -322,4 +386,5 @@ def main() raises:
     test_exact_percentile_unsorted_input()
     test_bucket_percentile_uniform()
     test_bucket_percentile_overflow()
+    test_report_text_canned()
     print("All Plan A tests passed.")

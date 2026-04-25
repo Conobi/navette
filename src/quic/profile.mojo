@@ -140,6 +140,70 @@ struct AcceptProfile(Copyable, Movable):
     def record_handshake_timeout(mut self, count: UInt64 = UInt64(1)):
         self.hs_timed_out += count
 
+    def report_text(self) -> String:
+        var now = monotonic_us()
+        var run_us = now - self.run_start_us
+        var n_closed = self.pkt_count - self.per_pkt_total_overflow
+
+        var s = String("=== mojo-net QUIC accept-loop profile ===\n")
+        s += "Run wall-clock:           " + _fmt_duration_us(run_us) + "\n"
+        s += "On_flush events:          " + _fmt_count(self.on_flush_count) + "\n"
+        s += "  Idle (boucle wait):     " + _fmt_duration_us(self.idle_us_total)
+        s += "  " + _fmt_pct(self.idle_us_total, self.idle_us_total + self.busy_us_total) + "\n"
+        s += "  Busy (in loop):         " + _fmt_duration_us(self.busy_us_total)
+        s += "  " + _fmt_pct(self.busy_us_total, self.idle_us_total + self.busy_us_total) + "\n\n"
+
+        s += "Datagrams batched per flush (approx. CQE multishot batching):\n"
+        var labels = List[String]()
+        labels.append(String("size=1     "))
+        labels.append(String("size=2-3   "))
+        labels.append(String("size=4-7   "))
+        labels.append(String("size=8-15  "))
+        labels.append(String("size=16-31 "))
+        labels.append(String("size=32-63 "))
+        labels.append(String("size=64-127"))
+        labels.append(String("size=128+  "))
+        for i in range(8):
+            var c = self.pkts_per_flush_buckets[i]
+            s += "  " + labels[i] + " " + _fmt_count(c)
+            if c > UInt64(0):
+                s += "  " + _fmt_pct(c, self.on_flush_count)
+            s += "\n"
+        s += "\n"
+
+        s += "Per-packet wall-clock (bucket-estimated p_n, us):\n"
+        var p50 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 50.0)
+        var p90 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 90.0)
+        var p99 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 99.0)
+        s += "  total:           p50=" + String(p50) + "  p90=" + String(p90) + "  p99=" + String(p99)
+        s += "  (n=" + String(n_closed) + ", overflow=" + String(self.per_pkt_total_overflow) + ")\n"
+        s += "  " + _fmt_leg("header parse",  self.header_parse_us_total, self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("HP unprotect",  self.hp_us_total,            self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("AEAD decrypt",  self.aead_us_total,          self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("frame parse",   self.frame_parse_us_total,   self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("state machine", self.sm_us_total,            self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("residual",      self.residual_us_total,      self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("shim FFI",      self.ffi_shim_us_total,      self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("drain (bench)", self.drain_us_total,         self.pkt_count) + "\n\n"
+
+        s += "Handshake accounting:\n"
+        s += "  Arrivals:                  " + _fmt_count(self.hs_arrivals) + "\n"
+        s += "  Successful:                " + _fmt_count(self.hs_completed)
+        s += "  " + _fmt_pct(self.hs_completed, self.hs_arrivals) + "\n"
+        s += "  Timed out:                 " + _fmt_count(self.hs_timed_out)
+        s += "  " + _fmt_pct(self.hs_timed_out, self.hs_arrivals) + "\n\n"
+
+        s += "Successful handshake latency (exact percentiles, us):\n"
+        var lp50 = _exact_percentile(self.hs_latency_us, 50.0)
+        var lp90 = _exact_percentile(self.hs_latency_us, 90.0)
+        var lp99 = _exact_percentile(self.hs_latency_us, 99.0)
+        var lmax = _exact_percentile(self.hs_latency_us, 100.0)
+        s += "  p50=" + String(lp50) + "   p90=" + String(lp90)
+        s += "   p99=" + String(lp99) + "   max=" + String(lmax)
+        s += "   (n=" + String(len(self.hs_latency_us)) + ")\n"
+        s += "=== end ===\n"
+        return s^
+
 
 fn _pkts_per_flush_bucket(pkts: Int) -> Int:
     """Map fan-out count to bucket index 0..7. Buckets [1,2-3,4-7,...,128+]."""
@@ -232,3 +296,57 @@ fn _bucket_percentile(buckets: List[UInt64], total: UInt64, p: Float64) -> UInt6
         cum = new_cum
     # Should not reach here when total > 0; clamp to top bucket upper bound.
     return UInt64(1) << UInt64(23)
+
+
+fn _fmt_count(n: UInt64) -> String:
+    """Decimal with comma thousands separators. Uses byte-scan because Mojo 0.26.2 does not support String[i]."""
+    var raw = String(n)
+    var raw_b = raw.as_bytes()
+    var out = String()
+    var k = 0
+    for i in range(len(raw_b) - 1, -1, -1):
+        if k > 0 and k % 3 == 0:
+            out = String(",") + out
+        out = chr(Int(raw_b[i])) + out
+        k += 1
+    return out^
+
+
+fn _fmt_pct(part: UInt64, whole: UInt64) -> String:
+    if whole == UInt64(0):
+        return String("(0.0%)")
+    var pct = (Float64(part) * 100.0) / Float64(whole)
+    var pct_x10 = Int(pct * 10.0 + 0.5)  # round to 1 decimal
+    var whole_part = pct_x10 // 10
+    var frac_part = pct_x10 % 10
+    return String("(") + String(whole_part) + "." + String(frac_part) + "%)"
+
+
+fn _fmt_duration_us(us: UInt64) -> String:
+    """Format us as 'N.NNs' (>=1s) or 'N.NNNms' (<1s)."""
+    if us >= UInt64(1_000_000):
+        var secs_x100 = Int((Float64(us) / 10000.0) + 0.5)
+        var whole = secs_x100 // 100
+        var frac = secs_x100 % 100
+        var frac_str = String(frac)
+        if frac < 10:
+            frac_str = String("0") + frac_str
+        return String(whole) + "." + frac_str + "s"
+    var ms_x1000 = Int(Float64(us) + 0.5)  # us → us, displayed as ms.uuu
+    var ms_whole = ms_x1000 // 1000
+    var ms_frac = ms_x1000 % 1000
+    var frac_str = String(ms_frac)
+    while len(frac_str) < 3:
+        frac_str = String("0") + frac_str
+    return String(ms_whole) + "." + frac_str + "ms"
+
+
+fn _fmt_leg(label: String, total: UInt64, count: UInt64) -> String:
+    if count == UInt64(0):
+        return label + ":  avg=  0   total=        0us"
+    var avg = total / count
+    var avg_s = String(avg)
+    while len(avg_s) < 3:
+        avg_s = String(" ") + avg_s
+    var total_s = String(total)
+    return label + ":  avg=" + avg_s + "   total=" + total_s + "us"
