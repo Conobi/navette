@@ -64,9 +64,43 @@ def test_record_idle_accumulates() raises:
     print("PASS: test_record_idle_accumulates")
 
 
+def test_record_flush_buckets_and_sums() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Coverage of all 8 buckets.
+    p.record_flush(1, UInt64(10))      # bucket 0
+    p.record_flush(2, UInt64(20))      # bucket 1 (2-3)
+    p.record_flush(3, UInt64(30))      # bucket 1
+    p.record_flush(4, UInt64(40))      # bucket 2 (4-7)
+    p.record_flush(7, UInt64(50))      # bucket 2
+    p.record_flush(8, UInt64(60))      # bucket 3 (8-15)
+    p.record_flush(15, UInt64(70))     # bucket 3
+    p.record_flush(16, UInt64(80))     # bucket 4 (16-31)
+    p.record_flush(31, UInt64(90))     # bucket 4
+    p.record_flush(32, UInt64(100))    # bucket 5 (32-63)
+    p.record_flush(63, UInt64(110))    # bucket 5
+    p.record_flush(64, UInt64(120))    # bucket 6 (64-127)
+    p.record_flush(127, UInt64(130))   # bucket 6
+    p.record_flush(128, UInt64(140))   # bucket 7 (128+)
+    p.record_flush(500, UInt64(150))   # bucket 7
+    assert_true(p.on_flush_count == UInt64(15), "on_flush_count = 15")
+    var expected_busy = UInt64(10 + 20 + 30 + 40 + 50 + 60 + 70 + 80 + 90 + 100 + 110 + 120 + 130 + 140 + 150)
+    assert_true(p.busy_us_total == expected_busy, "busy_us accumulated")
+    assert_true(p.pkts_per_flush_buckets[0] == UInt64(1), "bucket[0] = 1")
+    assert_true(p.pkts_per_flush_buckets[1] == UInt64(2), "bucket[1] = 2")
+    assert_true(p.pkts_per_flush_buckets[2] == UInt64(2), "bucket[2] = 2")
+    assert_true(p.pkts_per_flush_buckets[3] == UInt64(2), "bucket[3] = 2")
+    assert_true(p.pkts_per_flush_buckets[4] == UInt64(2), "bucket[4] = 2")
+    assert_true(p.pkts_per_flush_buckets[5] == UInt64(2), "bucket[5] = 2")
+    assert_true(p.pkts_per_flush_buckets[6] == UInt64(2), "bucket[6] = 2")
+    assert_true(p.pkts_per_flush_buckets[7] == UInt64(2), "bucket[7] = 2")
+    print("PASS: test_record_flush_buckets_and_sums")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
     test_default_init()
     test_record_idle_accumulates()
+    test_record_flush_buckets_and_sums()
     print("All Plan A tests passed.")

@@ -89,3 +89,21 @@ struct AcceptProfile(Copyable, Movable):
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
+
+    def record_flush(mut self, pkts: Int, busy_us: UInt64):
+        self.on_flush_count += UInt64(1)
+        self.busy_us_total += busy_us
+        var b = _pkts_per_flush_bucket(pkts)
+        self.pkts_per_flush_buckets[b] += UInt64(1)
+
+
+fn _pkts_per_flush_bucket(pkts: Int) -> Int:
+    """Map fan-out count to bucket index 0..7. Buckets [1,2-3,4-7,...,128+]."""
+    if pkts <= 1: return 0
+    if pkts <= 3: return 1
+    if pkts <= 7: return 2
+    if pkts <= 15: return 3
+    if pkts <= 31: return 4
+    if pkts <= 63: return 5
+    if pkts <= 127: return 6
+    return 7
