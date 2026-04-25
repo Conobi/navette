@@ -1,17 +1,26 @@
 # bench/h1_server.mojo
 #
-# HTTP/1.1 plaintext benchmark server on port 8080.
-# Uses boucle CompletionLoop + H1HandlerServer[BenchHandler].
+# HTTP/1.1 benchmark server, plaintext or TLS-wrapped depending on env:
 #
-# Adapted from examples/reverse_proxy/main.mojo with all TLS and
-# backend-proxy logic stripped out.
+#   BENCH_H1_TLS=0|1   — enable TLS handshake + record layer (default 0)
+#   BENCH_H1_PORT      — listen port (default 8080 plaintext, 8081 TLS)
+#   BENCH_H1_ROLE      — log prefix tag (default "h1", set to "h1tls" by
+#                        the launcher for the TLS sidecar worker)
+#
+# Uses boucle CompletionLoop + H1HandlerServer[BenchHandler]. When TLS is
+# enabled, lifts the rustls glue from h2_server.mojo: TlsConnection wraps
+# every accepted socket, ALPN advertises "http/1.1" only, and recv/send
+# go through tls.receive_data / tls.drain_plaintext / tls.send_data /
+# tls.drain_ciphertext just like the H2 path.
 
 from std.collections import Dict
+from std.collections.optional import Optional
 from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from src.h1.handler_server import H1HandlerServer
+from src.tls import RustlsLibrary, TlsServerConfig, TlsConnection
 from bench.handler import (
     BenchHandler,
     BenchState,
@@ -19,7 +28,7 @@ from bench.handler import (
     _load_static_files,
     _load_dataset,
 )
-from interop.file_io import getenv_opt
+from interop.file_io import getenv_opt, read_file
 
 from boucle import CompletionLoop, CompletionHandler
 from boucle.handle import RawHandle, OwnedHandle
@@ -46,8 +55,13 @@ def encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
 # ---------------------------------------------------------------------------
 
 comptime _RECV_BUF_SIZE: Int = 8192
-comptime _LISTEN_PORT: UInt16 = 8080
+comptime _DEFAULT_PLAINTEXT_PORT: UInt16 = 8080
+comptime _DEFAULT_TLS_PORT: UInt16 = 8081
 comptime SO_REUSEPORT: Int32 = 15
+
+# TLS connection phases — only meaningful when tls_enabled.
+comptime _PHASE_TLS_HANDSHAKE: UInt8 = 0
+comptime _PHASE_READY: UInt8 = 1
 
 # ---------------------------------------------------------------------------
 # PendingSubmit
@@ -92,6 +106,8 @@ struct H1Conn(Movable):
     var conn_id: UInt64
     var fd: OwnedHandle
     var http: H1HandlerServer[BenchHandler]
+    var tls: Optional[TlsConnection]
+    var phase: UInt8
     var recv_buf: List[UInt8]
     var send_buf: List[UInt8]
     var send_pending: List[UInt8]
@@ -104,10 +120,13 @@ struct H1Conn(Movable):
         conn_id: UInt64,
         var fd: OwnedHandle,
         var http: H1HandlerServer[BenchHandler],
+        var tls: Optional[TlsConnection],
     ):
         self.conn_id = conn_id
         self.fd = fd^
         self.http = http^
+        self.tls = tls^
+        self.phase = _PHASE_TLS_HANDSHAKE if Bool(self.tls) else _PHASE_READY
         self.recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
         for _ in range(_RECV_BUF_SIZE):
             self.recv_buf.append(0)
@@ -121,6 +140,8 @@ struct H1Conn(Movable):
         self.conn_id = take.conn_id
         self.fd = take.fd^
         self.http = take.http^
+        self.tls = take.tls^
+        self.phase = take.phase
         self.recv_buf = take.recv_buf^
         self.send_buf = take.send_buf^
         self.send_pending = take.send_pending^
@@ -140,17 +161,25 @@ struct H1ServerHandler(CompletionHandler):
     var next_conn_id: UInt64
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
+    var tls_enabled: Bool
+    var tls_lib: Optional[RustlsLibrary]
+    var server_tls_config: Optional[TlsServerConfig]
 
     def __init__(
         out self,
         listener_fd: Int32,
         state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+        var tls_lib: Optional[RustlsLibrary],
+        var server_tls_config: Optional[TlsServerConfig],
     ):
         self.listener_fd = listener_fd
         self.connections = List[UnsafePointer[H1Conn, MutAnyOrigin]]()
         self.next_conn_id = 1
         self.state_ptr = state_ptr
         self.pending_submits = List[PendingSubmit]()
+        self.tls_enabled = Bool(tls_lib) and Bool(server_tls_config)
+        self.tls_lib = tls_lib^
+        self.server_tls_config = server_tls_config^
 
     def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
@@ -158,6 +187,9 @@ struct H1ServerHandler(CompletionHandler):
         self.next_conn_id = take.next_conn_id
         self.state_ptr = take.state_ptr
         self.pending_submits = take.pending_submits^
+        self.tls_enabled = take.tls_enabled
+        self.tls_lib = take.tls_lib^
+        self.server_tls_config = take.server_tls_config^
 
     # --- Conn lookup ---
 
@@ -277,10 +309,20 @@ struct H1ServerHandler(CompletionHandler):
         var handler = BenchHandler(self.state_ptr)
         var http = H1HandlerServer[BenchHandler](handler=handler^)
 
+        var tls_opt: Optional[TlsConnection]
+        if self.tls_enabled:
+            var tls_conn = TlsConnection.new_server(
+                self.tls_lib.value(), self.server_tls_config.value()
+            )
+            tls_opt = Optional[TlsConnection](tls_conn^)
+        else:
+            tls_opt = Optional[TlsConnection]()
+
         var conn = H1Conn(
             conn_id=conn_id,
             fd=handle^,
             http=http^,
+            tls=tls_opt^,
         )
 
         var conn_ptr = _heap_alloc[H1Conn](1).as_any_origin()
@@ -306,13 +348,45 @@ struct H1ServerHandler(CompletionHandler):
         for i in range(n):
             chunk.append(self.connections[idx][].recv_buf[i])
 
-        self.connections[idx][].http.feed(Span(chunk))
+        if self.tls_enabled:
+            self._handle_recv_tls(idx, chunk^)
+        else:
+            self.connections[idx][].http.feed(Span(chunk))
+            var response_bytes = self.connections[idx][].http.drain()
+            if len(response_bytes) > 0:
+                self._stage_send(idx, response_bytes^)
 
-        var response_bytes = self.connections[idx][].http.drain()
-        if len(response_bytes) > 0:
-            self._stage_send(idx, response_bytes^)
+            if not self.connections[idx][].send_in_flight:
+                if not self.connections[idx][].http.should_close():
+                    self._queue_recv(idx)
 
-        # If no response produced yet and connection still open, read more.
+    def _handle_recv_tls(mut self, idx: Int, var chunk: List[UInt8]) raises:
+        # Feed ciphertext into rustls.
+        self.connections[idx][].tls.value().receive_data(Span(chunk))
+
+        # Flush any handshake-reply ciphertext immediately.
+        if self.connections[idx][].tls.value().wants_write():
+            var ct = self.connections[idx][].tls.value().drain_ciphertext()
+            self._stage_send(idx, ct^)
+
+        # Still handshaking — keep reading more ciphertext.
+        if self.connections[idx][].tls.value().is_handshaking():
+            self._queue_recv(idx)
+            return
+
+        # Handshake done — switch phase and drain plaintext into H1 codec.
+        if self.connections[idx][].phase == _PHASE_TLS_HANDSHAKE:
+            self.connections[idx][].phase = _PHASE_READY
+
+        var plaintext = self.connections[idx][].tls.value().drain_plaintext()
+        if len(plaintext) > 0:
+            self.connections[idx][].http.feed(Span(plaintext))
+            var response_bytes = self.connections[idx][].http.drain()
+            if len(response_bytes) > 0:
+                self.connections[idx][].tls.value().send_data(Span(response_bytes))
+                var ct2 = self.connections[idx][].tls.value().drain_ciphertext()
+                self._stage_send(idx, ct2^)
+
         if not self.connections[idx][].send_in_flight:
             if not self.connections[idx][].http.should_close():
                 self._queue_recv(idx)
@@ -448,6 +522,23 @@ def _drain_pending_submits(mut loop: CompletionLoop[H1ServerHandler]) raises:
 
 
 def main() raises:
+    # Decide TLS mode + listen port from env.
+    var tls_env = getenv_opt("BENCH_H1_TLS")
+    var tls_enabled = tls_env.__bool__() and tls_env.value() == "1"
+
+    var port: UInt16 = _DEFAULT_TLS_PORT if tls_enabled else _DEFAULT_PLAINTEXT_PORT
+    var port_env = getenv_opt("BENCH_H1_PORT")
+    if port_env.__bool__():
+        try:
+            port = UInt16(Int(port_env.value()))
+        except:
+            pass
+
+    var role_env = getenv_opt("BENCH_H1_ROLE")
+    var role: String = role_env.value() if role_env.__bool__() else (
+        String("h1tls") if tls_enabled else String("h1")
+    )
+
     # Load static files from STATIC_DIR env var (default /data/static).
     var static_dir_opt = getenv_opt("STATIC_DIR")
     var static_dir: String
@@ -471,6 +562,31 @@ def main() raises:
     var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
     state_ptr.init_pointee_move(state^)
 
+    # Optionally build the rustls library + server config (TLS mode).
+    var tls_lib_opt: Optional[RustlsLibrary]
+    var server_tls_config_opt: Optional[TlsServerConfig]
+    if tls_enabled:
+        var certs_dir_opt = getenv_opt("CERTS_DIR")
+        var certs_dir: String
+        if certs_dir_opt.__bool__():
+            certs_dir = certs_dir_opt.value()
+        else:
+            certs_dir = String("/certs")
+        var cert_pem = read_file(certs_dir + "/server.crt")
+        var key_pem = read_file(certs_dir + "/server.key")
+        var tls_lib = RustlsLibrary()
+        var server_config = TlsServerConfig(
+            tls_lib, Span(cert_pem), Span(key_pem)
+        )
+        var alpn = List[String]()
+        alpn.append("http/1.1")
+        server_config.set_alpn_protocols(tls_lib, alpn)
+        tls_lib_opt = Optional[RustlsLibrary](tls_lib^)
+        server_tls_config_opt = Optional[TlsServerConfig](server_config^)
+    else:
+        tls_lib_opt = Optional[RustlsLibrary]()
+        server_tls_config_opt = Optional[TlsServerConfig]()
+
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
 
@@ -487,7 +603,7 @@ def main() raises:
     if sso < 0:
         print("h1-bench: warning: setsockopt(SO_REUSEPORT) failed")
 
-    var bind_addr = SocketAddrV4(0, 0, 0, 0, port=_LISTEN_PORT)
+    var bind_addr = SocketAddrV4(0, 0, 0, 0, port=port)
     listener.bind(bind_addr)
     listener.listen(Backlog.DEFAULT)
     var listener_fd = listener.raw()
@@ -495,15 +611,19 @@ def main() raises:
     var worker_id_opt = getenv_opt("BENCH_WORKER_ID")
     var prefix: String
     if worker_id_opt.__bool__():
-        prefix = "[h1-w" + worker_id_opt.value() + "] "
+        prefix = "[" + role + "-w" + worker_id_opt.value() + "] "
     else:
         prefix = ""
-    print(prefix + "h1-bench: listening on http://0.0.0.0:" + String(_LISTEN_PORT))
+    var scheme: String = "https" if tls_enabled else "http"
+    print(prefix + "h1-bench: listening on " + scheme + "://0.0.0.0:" + String(port)
+          + (" (TLS, ALPN=http/1.1)" if tls_enabled else ""))
 
     # Build handler + loop.
     var handler = H1ServerHandler(
         listener_fd=listener_fd,
         state_ptr=state_ptr,
+        tls_lib=tls_lib_opt^,
+        server_tls_config=server_tls_config_opt^,
     )
     var loop = CompletionLoop[H1ServerHandler](handler^, sq_entries=4096)
 
