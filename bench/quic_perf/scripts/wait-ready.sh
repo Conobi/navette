@@ -14,7 +14,7 @@ for i in $(seq 1 $MAX_TRIES); do
         --entrypoint /usr/local/bin/tquic_client tquic-bench:latest \
         --connect-to 127.0.0.1:8443 \
         --max-requests-per-conn 1 \
-        https://127.0.0.1:8443/1k.bin \
+        https://127.0.0.1:8443/static/1k.bin \
         > /tmp/wait-ready.log 2>&1; then
         echo "[wait-ready] server responded on attempt $i"
         exit 0
