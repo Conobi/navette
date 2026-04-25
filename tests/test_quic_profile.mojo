@@ -200,6 +200,25 @@ def test_record_drain_accumulates() raises:
     print("PASS: test_record_drain_accumulates")
 
 
+def test_handshake_records() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_handshake_arrival()
+    p.record_handshake_arrival()
+    p.record_handshake_arrival()
+    p.record_handshake_complete(UInt64(8400))
+    p.record_handshake_complete(UInt64(46000))
+    p.record_handshake_timeout(UInt64(7))
+    p.record_handshake_timeout()  # default count=1
+    assert_true(p.hs_arrivals == UInt64(3), "3 arrivals")
+    assert_true(p.hs_completed == UInt64(2), "2 completed")
+    assert_true(p.hs_timed_out == UInt64(8), "7 + 1 = 8 timeouts")
+    assert_true(len(p.hs_latency_us) == 2, "latency vector has 2 entries")
+    assert_true(p.hs_latency_us[0] == UInt64(8400), "first latency")
+    assert_true(p.hs_latency_us[1] == UInt64(46000), "second latency")
+    print("PASS: test_handshake_records")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -211,4 +230,5 @@ def main() raises:
     test_record_pkt_overflow()
     test_record_pkt_residual_underflow_safe()
     test_record_drain_accumulates()
+    test_handshake_records()
     print("All Plan A tests passed.")
