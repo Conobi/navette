@@ -90,6 +90,9 @@ struct AcceptProfile(Copyable, Movable):
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
 
+    def record_drain(mut self, drain_us: UInt64):
+        self.drain_us_total += drain_us
+
     def record_flush(mut self, pkts: Int, busy_us: UInt64):
         self.on_flush_count += UInt64(1)
         self.busy_us_total += busy_us
