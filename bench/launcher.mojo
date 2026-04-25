@@ -136,7 +136,11 @@ def _find_binary(name: String) raises -> String:
 
 
 def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) raises -> Int32:
-    """Fork and exec a server binary. Returns child PID."""
+    """Fork and exec a server binary. Returns child PID.
+
+    Role-specific env (BENCH_H1_TLS for the h1tls sidecar) is set inside
+    the child between fork and execv so it doesn't leak into siblings.
+    """
     _setenv("BENCH_WORKER_ID", String(worker_id))
 
     var pid = external_call["fork", Int32]()
@@ -144,8 +148,16 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
         raise "fork() failed"
 
     if pid == 0:
-        # Child process — exec the server binary.
-        # Use execv (not execve) to inherit parent's environment.
+        # Child process — apply role-specific env, then exec.
+        if server_type == "h1tls":
+            _setenv("BENCH_H1_TLS", String("1"))
+            _setenv("BENCH_H1_PORT", String("8081"))
+            _setenv("BENCH_H1_ROLE", String("h1tls"))
+        elif server_type == "h1":
+            _setenv("BENCH_H1_TLS", String("0"))
+            _setenv("BENCH_H1_PORT", String("8080"))
+            _setenv("BENCH_H1_ROLE", String("h1"))
+
         var path_bytes = binary_path.as_bytes()
         var path_buf = _heap_alloc[UInt8](len(path_bytes) + 1).as_any_origin()
         for i in range(len(path_bytes)):
@@ -163,6 +175,16 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
         _ = external_call["_exit", Int32](Int32(127))
 
     return pid
+
+
+def _binary_for_type(server_type: String) -> String:
+    """Map a server role to its binary basename.
+
+    h1 and h1tls share the same binary (TLS toggled via env).
+    """
+    if server_type == "h1tls":
+        return String("h1_server")
+    return server_type + "_server"
 
 
 def _kill_children(children: List[ProcessInfo], sig: Int32):
@@ -260,12 +282,13 @@ def main() raises:
 
     var all_types = List[String]()
     all_types.append("h1")
+    all_types.append("h1tls")
     all_types.append("h2")
     all_types.append("h3")
 
     for i in range(len(all_types)):
         if not protocol_filter or all_types[i] == protocol_filter:
-            var bin = _find_binary(all_types[i] + "_server")
+            var bin = _find_binary(_binary_for_type(all_types[i]))
             print("[launcher] " + all_types[i] + "=" + bin)
             server_types.append(String(copy=all_types[i]))
             server_bins.append(bin)
@@ -337,7 +360,7 @@ def main() raises:
 
                 if children[i].restart_count < MAX_RESTARTS and not shutdown:
                     children[i].restart_count += 1
-                    var bin_path = _find_binary(children[i].server_type + "_server")
+                    var bin_path = _find_binary(_binary_for_type(children[i].server_type))
 
                     try:
                         var new_pid = _spawn_worker(
