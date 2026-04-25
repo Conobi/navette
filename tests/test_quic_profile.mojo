@@ -369,6 +369,58 @@ def test_report_text_canned() raises:
     print("PASS: test_report_text_canned")
 
 
+def test_report_json_canned() raises:
+    """Verify JSON contains all required keys with the right values."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_idle(UInt64(1000))
+    p.record_flush(1, UInt64(500))
+    p.record_pkt(
+        total_us=UInt64(120),
+        ffi_us=UInt64(78),
+        hp_us=UInt64(12),
+        aead_us=UInt64(22),
+        header_parse_us=UInt64(6),
+        frame_parse_us=UInt64(11),
+        sm_us=UInt64(14),
+    )
+    p.record_drain(UInt64(39))
+    p.record_handshake_arrival()
+    p.record_handshake_complete(UInt64(8400))
+
+    var j = p.report_json()
+
+    # Top-level keys.
+    assert_true('"schema_version": 1' in j, "schema_version=1")
+    assert_true('"run_wall_clock_us":' in j, "run_wall_clock_us key")
+    assert_true('"on_flush_events": 1' in j, "on_flush_events=1")
+    assert_true('"idle_us_total": 1000' in j, "idle_us_total=1000")
+    assert_true('"busy_us_total": 500' in j, "busy_us_total=500")
+    # Histogram keys.
+    assert_true('"pkts_per_flush_histogram":' in j, "fan-out histogram key")
+    assert_true('"1": 1' in j, '"1" bucket = 1')
+    assert_true('"128+": 0' in j, '"128+" bucket = 0')
+    # Per-packet section.
+    assert_true('"per_pkt_us":' in j, "per_pkt_us key")
+    assert_true('"total":' in j, "total subkey")
+    assert_true('"header_parse":' in j, "header_parse subkey")
+    assert_true('"hp":' in j, "hp subkey")
+    assert_true('"aead":' in j, "aead subkey")
+    assert_true('"frame_parse":' in j, "frame_parse subkey")
+    assert_true('"sm":' in j, "sm subkey")
+    assert_true('"residual":' in j, "residual subkey")
+    assert_true('"shim_ffi":' in j, "shim_ffi subkey")
+    assert_true('"drain":' in j, "drain subkey")
+    assert_true('"avg": 78' in j, "shim_ffi avg=78")
+    # Handshake section.
+    assert_true('"handshake":' in j, "handshake key")
+    assert_true('"arrivals": 1' in j, "arrivals=1")
+    assert_true('"successful": 1' in j, "successful=1")
+    assert_true('"timed_out": 0' in j, "timed_out=0")
+    assert_true('"latency_us":' in j, "latency_us subkey")
+    print("PASS: test_report_json_canned")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -387,4 +439,5 @@ def main() raises:
     test_bucket_percentile_uniform()
     test_bucket_percentile_overflow()
     test_report_text_canned()
+    test_report_json_canned()
     print("All Plan A tests passed.")
