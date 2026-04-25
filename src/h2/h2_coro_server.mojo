@@ -549,25 +549,43 @@ struct H2CoroServer(Movable):
                 )
                 ctx.headers_sent = True
                 made_progress = True
-            # Drain body frames
+            # Drain body frames. Buffer data frames so we can fold END_STREAM
+            # onto the last DATA payload instead of emitting a 0-byte trailer
+            # — some H2 clients (h2load) misbehave on a separate empty
+            # DATA(END_STREAM) when many streams share a TLS record.
+            var pending_data = List[List[UInt8]]()
             while True:
                 var f_opt = ctx.resp_writer._pop_body_frame()
                 if not Bool(f_opt):
                     break
                 var f = f_opt.unsafe_take()
                 if f.is_data():
-                    self._conn.send_data(
-                        UInt32(sid), f.data().copy(), end_stream=False
-                    )
+                    pending_data.append(f.data().copy())
                     made_progress = True
                 elif f.is_end():
-                    self._conn.send_data(
-                        UInt32(sid), List[UInt8](), end_stream=True
-                    )
+                    if len(pending_data) == 0:
+                        self._conn.send_data(
+                            UInt32(sid), List[UInt8](), end_stream=True
+                        )
+                    else:
+                        var n = len(pending_data)
+                        for k in range(n - 1):
+                            self._conn.send_data(
+                                UInt32(sid), pending_data[k].copy(), end_stream=False
+                            )
+                        self._conn.send_data(
+                            UInt32(sid), pending_data[n - 1].copy(), end_stream=True
+                        )
+                        pending_data = List[List[UInt8]]()
                     ctx.response_ended = True
                     made_progress = True
                     break
                 elif f.is_trailers():
+                    for k in range(len(pending_data)):
+                        self._conn.send_data(
+                            UInt32(sid), pending_data[k].copy(), end_stream=False
+                        )
+                    pending_data = List[List[UInt8]]()
                     var trailer_h2 = headers_to_h2(f.trailers())
                     self._conn.send_headers(
                         UInt32(sid), trailer_h2^, end_stream=True
@@ -575,6 +593,11 @@ struct H2CoroServer(Movable):
                     ctx.response_ended = True
                     made_progress = True
                     break
+            # If body was popped but not yet ended, flush what we have.
+            for k in range(len(pending_data)):
+                self._conn.send_data(
+                    UInt32(sid), pending_data[k].copy(), end_stream=False
+                )
             # Move back into the heap and maybe cleanup
             ctx_ptr.init_pointee_move(ctx^)
             if made_progress:
