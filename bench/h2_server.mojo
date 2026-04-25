@@ -56,6 +56,12 @@ def encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
 comptime _RECV_BUF_SIZE: Int = 8192
 comptime _LISTEN_PORT: UInt16 = 8443
 comptime SO_REUSEPORT: Int32 = 15
+# Slice H2 plaintext into ~one-TLS-record-sized chunks before encrypting so
+# each batch of HTTP/2 frames lands in its own TLS record on the wire. This
+# matches what real servers (nginx) emit and gives clients more cut points
+# to interleave inbound WINDOW_UPDATEs and new HEADERS with our outbound
+# response stream.
+comptime _TLS_RECORD_CHUNK: Int = 16384
 
 
 # ---------------------------------------------------------------------------
@@ -373,10 +379,17 @@ struct H2ServerHandler(CompletionHandler):
         if len(plaintext) > 0:
             self.connections[idx][].h2.feed(Span(plaintext))
             var h2_out = self.connections[idx][].h2.drain()
-            if len(h2_out) > 0:
-                self.connections[idx][].tls.send_data(Span(h2_out))
-                var ct3 = self.connections[idx][].tls.drain_ciphertext()
-                self._stage_send(idx, ct3^)
+            var total = len(h2_out)
+            var off = 0
+            while off < total:
+                var end = off + _TLS_RECORD_CHUNK
+                if end > total:
+                    end = total
+                self.connections[idx][].tls.send_data(Span(h2_out)[off:end])
+                var ct = self.connections[idx][].tls.drain_ciphertext()
+                if len(ct) > 0:
+                    self._stage_send(idx, ct^)
+                off = end
 
         # Keep reading
         self._queue_recv(idx)
