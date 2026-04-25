@@ -62,3 +62,46 @@ The honest read: mojo-net is ~210× slower than TQUIC long-conn, ~2,500× slower
 short-conn, while using essentially zero CPU. The next optimisation pass should
 target **connection-establishment throughput** — handshake latency, accept
 loop, packet decryption pipelining — rather than steady-state stream throughput.
+
+## Hypothesis-pass log
+
+### 2026-04-25 — pacer-bypass-during-handshake — FALSIFIED
+
+**Spec:** `specs/2026-04-25-quic-pacer-bypass-handshake.md`. Hypothesis: the
+M4a universal `_can_send` gate paces Initial+Handshake-space packets;
+cold-start pacing rate (`2 × cwnd × 1e6 / smoothed_rtt ≈ 60 KiB/s`) blocks
+each subsequent datagram for ~20 ms in a multishot recvmsg burst, pushing
+~100 concurrent client handshakes past their handshake timeout. Fix: gate
+the pacer (and post-send token commit + timer-deadline branch) on
+`is_established()`; preserve anti-amp and CC cwnd unchanged.
+
+**Single-cell gate** (`bench.sh mojo-net 1k long-conn tquic_client --iters 3`):
+
+| iter | rps | CPU% | success | fail |
+|---|---|---|---|---|
+| 1 | 415.08 | 5.5% | 12,870 | 40 |
+| 2 | 432.81 | 4.4% | 13,420 | 40 |
+| 3 | 411.20 | 4.5% | 12,750 | 40 |
+
+**Median: 415 rps.** Threshold for confirmation was ≥ 4,000 rps (≥ 10× the
+412 pre-fix baseline). Result: 1.01× — within noise. **Hypothesis
+falsified: the pacer was not the cold-start handshake-throughput floor.**
+CPU% remains ~5%, same idle-waiting symptom. Something else gates accept /
+handshake throughput under concurrency.
+
+**Code shipped anyway as a code-quality improvement.** The fix is
+RFC-compatible (RFC 9002 §7's only normative MUST is "pace OR limit bursts
+to the initial congestion window"; retained anti-amp + cwnd checks satisfy
+the burst-limit clause). picoquic ships this exact design; quinn / TQUIC /
+ngtcp2 / quiche pace every encryption level. mojo-net is now in the
+picoquic camp on this point. Commits: `911601e..ba3c254` on
+`fix/quic-pacer-bypass-handshake`.
+
+**Next hypothesis (open question, severity: required-later, trigger:
+before any further QUIC perf work):** the multi-fiber accept fan-out / the
+serial single-fiber `on_flush` loop in `bench/h3_server.mojo:523-600`. The
+recvmsg burst delivers N Initial packets into one CQ wakeup; today they
+are processed strictly serially in one fiber. Even with the pacer out of
+the way, the serial nature plus per-packet FFI roundtrips through the
+rustls global lock would explain the symptom (low CPU + high handshake
+timeout rate under concurrency).
