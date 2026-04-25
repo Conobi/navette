@@ -61,15 +61,14 @@ for iter in $(seq 1 "$ITERS"); do
 
     "$HERE/scripts/start-server.sh" "$SERVER" >/dev/null
 
-    SERVER_PID="$("$HERE/scripts/resolve-server-pid.sh" "$CONTAINER")"
-
     # Warmup — discard output.
     "$RUN_CLIENT" "$PAYLOAD" "$SCENARIO" "$WARMUP_S" >/dev/null
 
     # Start CPU sampler in the background, aligned with the measurement window.
-    # Tolerate missing pidstat: the sampler may exit non-zero without writing /tmp/cpu.json.
+    # Sampler reads cgroup CPU% via `docker stats` (catches all container
+    # work, unlike pidstat on a single PID).
     rm -f /tmp/cpu.json
-    "$HERE/scripts/measure-cpu.sh" "$SERVER_PID" "$DURATION_S" &
+    "$HERE/scripts/measure-cpu.sh" "$CONTAINER" "$DURATION_S" &
     CPU_BG=$!
 
     # Measurement window.

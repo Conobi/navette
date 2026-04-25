@@ -2,6 +2,8 @@
 
 TQUIC-style HTTP/3 benchmark comparing mojo-net's `h3_server` to the TQUIC reference, under matched payloads, matched concurrency, and CPU-saturating load.
 
+> **Status: machinery shipped, calibration pending.** The harness orchestrates correctly end-to-end (build → run → parse → median → summarize), but the absolute numbers are not yet trustworthy. Three known issues — CPU sampling, cold-start variance, and `tquic_client` undersaturation on laptop hardware — must be resolved before `results/REFERENCE.md` is repopulated. See `results/REFERENCE.md` for details.
+
 ## What this measures
 
 The throughput (req/s, MB/s) and server CPU% of mojo-net's H3 stack vs `tquic_server` (pinned to upstream `v1.0.0`, commit `4dcec0f`) over loopback, using both `tquic_client` (multi-threaded, drives to saturation) and `h2load-h3` (single-threaded, kept for regression tracking against our prior numbers). Methodology mirrors https://tquic.net/docs/further_readings/benchmark/.
@@ -17,7 +19,7 @@ This is **not** the HttpArena leaderboard harness. For "do we beat nginx in Http
 | Linux kernel ≥ 5.19 | `IORING_REGISTER_PBUF_RING` for mojo-net's multishot recvmsg | `uname -r` |
 | x86_64 architecture | Mojo build targets x86_64 | `uname -m` |
 | Docker ≥ 20.10 with `--network host` | All images run on host networking | `docker version` |
-| `sysstat` (provides `pidstat`) | CPU sampling | `which pidstat` |
+| Docker CLI with `stats` access | CPU sampling | `docker stats --no-stream --help` |
 | `python3` ≥ 3.10 (stdlib only) | Output parsers + summarizer | `python3 --version` |
 | `git` | Repo root resolution + tquic source checkout in Docker | `git --version` |
 | ≥ 4 free physical cores | Server pinned to 1, client to 4 | `nproc` |
@@ -48,13 +50,13 @@ make bench-full
 | Client pinning | Docker `--cpuset-cpus=2-5` (4 cores, non-sibling of core 0) |
 | Duration | 30 s measurement window |
 | Warmup | 5 s discarded |
-| Iterations | `--iters 1` default; `--iters 3` for median |
+| Iterations | `make bench-mvp` defaults to 3 iters per cell (median); `bench.sh` single-cell defaults to `--iters 1` |
 | UDP payload size | `--send-udp-payload-size 1350` |
 | Cert | `${REPO_ROOT}/certs/server.{crt,key}` (ECDSA prime256v1) |
 | `tquic_client` concurrency | `--threads 4 --max-concurrent-conns 25 --max-concurrent-requests 10` (4×25 = 100 total conns) |
 | `h2load` concurrency | `-c 100 -m 10` (long-conn) / `-c 100 -m 1` (short-conn) — single-threaded, regression-tracking only |
 | `max_requests_per_conn` | `0` (long-conn) / `1` (short-conn) |
-| Server CPU% | `pidstat -p <pid> 1` averaged over the 30 s window |
+| Server CPU% | `docker stats --no-stream` polled per second over the 30 s window (cgroup-level, catches all container work including child processes) |
 
 ## Per-script reference
 
@@ -62,11 +64,11 @@ make bench-full
 - `scripts/start-server.sh <mojo-net|tquic>` — starts the server in Docker pinned to core 0, mounts payloads + certs read-only, then calls `wait-ready.sh`.
 - `scripts/stop-server.sh` — `docker rm -f` for both possible container names. Idempotent.
 - `scripts/wait-ready.sh` — probes `127.0.0.1:8443` with a real QUIC handshake (`tquic_client --max-requests-per-conn 1`) every 200 ms for up to 10 s. **Does not use `nc -uz`** — UDP nc is unreliable for QUIC.
-- `scripts/resolve-server-pid.sh <container>` — echoes `docker inspect -f '{{.State.Pid}}'`.
+- `scripts/resolve-server-pid.sh <container>` — echoes `docker inspect -f '{{.State.Pid}}'`. Unused by `bench.sh` since the switch to cgroup-level CPU sampling, kept for ad-hoc debugging.
 - `scripts/run-tquic-client.sh <payload> <scenario> <duration>` — drives the server with `tquic_client`, captures stdout to `/tmp/client-stdout.log`.
 - `scripts/run-h2load-client.sh <payload> <scenario> <duration>` — same shape, with `h2load-h3`.
 - `scripts/parse-tquic.py` / `scripts/parse-h2load.py` — read stdout from stdin, emit a results-dict JSON to stdout.
-- `scripts/measure-cpu.sh <pid> <duration>` — `pidstat` sampler that writes `/tmp/cpu.json` with mean and max %CPU.
+- `scripts/measure-cpu.sh <container> <duration>` — `docker stats` sampler that writes `/tmp/cpu.json` with mean and max %CPU at cgroup level.
 - `scripts/bench.sh <server> <payload> <scenario> <client> [--iters N]` — orchestrator: warmup → CPU sampler + measurement → JSON write.
 - `scripts/summarize.py` — reads `results/*.json`, computes median per cell, writes `results/SUMMARY.md`.
 
@@ -124,7 +126,7 @@ make bench-full
 | `rps` is suspiciously low and CPU% < 50 | Client is the bottleneck | Switch to `tquic_client`; if already using it, raise `--threads` |
 | `rps` varies wildly run-to-run | Core 0 noisy from softirqs | Set server core to 4 in `start-server.sh`; rerun |
 | `tquic-bench` build fails on submodule init | BoringSSL submodule fetch | Re-run; requires network to GitHub |
-| `pidstat: command not found` | `sysstat` not installed | `sudo apt install sysstat` (or distro equivalent) |
+| `server_cpu_percent: null` in JSON | `docker stats` failed (container down before sampler ran) | check `docker ps`; ensure `start-server.sh` succeeded before sampler started |
 
 ## Limitations
 
@@ -137,4 +139,6 @@ make bench-full
 
 ## Reference baseline
 
-`results/REFERENCE.md` contains numbers from the implementer's machine, with full host details, so reviewers on different hardware can sanity-check their setup. Treat REFERENCE.md as a snapshot, not as authoritative — re-run on your own hardware for actionable numbers.
+`results/REFERENCE.md` is currently a **calibration-pending placeholder**: it lists host details and the three issues blocking trustworthy numbers (PID-vs-cgroup CPU sampling, cold-start variance, `tquic_client` undersaturation on laptop hardware). It does not yet contain reference rps/bytes/CPU% rows.
+
+Treat the harness today as a working *machinery* you can run locally to compare *configurations on the same host* (relative signal). Absolute throughput claims should wait on the calibration follow-ups.
