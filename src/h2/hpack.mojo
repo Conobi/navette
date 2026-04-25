@@ -348,17 +348,20 @@ struct HpackDecoder(Movable):
         if pos + consumed + str_len > len(wire):
             return (String(""), 0, String("truncated string data"))
 
-        var raw = List[UInt8]()
-        for i in range(str_len):
-            raw.append(wire[pos + consumed + i])
+        var data_start = pos + consumed
+        var data_end = data_start + str_len
         consumed += str_len
 
         if huffman_flag:
+            var raw = List[UInt8](capacity=str_len)
+            raw.extend(Span(wire)[data_start:data_end])
             var huff_result = self.huffman.decode(raw)
             if len(huff_result[1]) > 0:
                 return (String(""), 0, huff_result[1])
             var s = String(unsafe_from_utf8=huff_result[0])
             return (s^, consumed, String(""))
         else:
+            var raw = List[UInt8](capacity=str_len)
+            raw.extend(Span(wire)[data_start:data_end])
             var s = String(unsafe_from_utf8=raw)
             return (s^, consumed, String(""))
