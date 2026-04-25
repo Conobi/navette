@@ -39,6 +39,7 @@ TESTS=(
     test_h2_connection_cross
     test_h2_stream
     test_h2_stream_cross
+    test_h2_send_window_exhaustion
     test_cross_quic_hs_keys
     test_cross_quic_packet_header
     test_h3_frame_cross
