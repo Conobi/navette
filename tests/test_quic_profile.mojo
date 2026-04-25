@@ -219,6 +219,42 @@ def test_handshake_records() raises:
     print("PASS: test_handshake_records")
 
 
+def test_exact_percentile_basic() raises:
+    from src.quic.profile import _exact_percentile
+    var v = List[UInt64]()
+    for i in range(1, 101):  # 1..100 inclusive
+        v.append(UInt64(i))
+    # Nearest-rank: p50 → ceil(0.50 * 100) = 50 → v[49] = 50
+    assert_true(_exact_percentile(v, 50.0) == UInt64(50), "p50 of 1..100 = 50")
+    # p90 → ceil(0.90 * 100) = 90 → v[89] = 90
+    assert_true(_exact_percentile(v, 90.0) == UInt64(90), "p90 of 1..100 = 90")
+    # p99 → ceil(0.99 * 100) = 99 → v[98] = 99
+    assert_true(_exact_percentile(v, 99.0) == UInt64(99), "p99 of 1..100 = 99")
+    # p100 → ceil(1.0 * 100) = 100 → v[99] = 100
+    assert_true(_exact_percentile(v, 100.0) == UInt64(100), "p100 of 1..100 = 100")
+    print("PASS: test_exact_percentile_basic")
+
+
+def test_exact_percentile_empty_returns_zero() raises:
+    from src.quic.profile import _exact_percentile
+    var v = List[UInt64]()
+    assert_true(_exact_percentile(v, 50.0) == UInt64(0), "empty → 0")
+    print("PASS: test_exact_percentile_empty_returns_zero")
+
+
+def test_exact_percentile_unsorted_input() raises:
+    from src.quic.profile import _exact_percentile
+    var v = List[UInt64]()
+    v.append(UInt64(50))
+    v.append(UInt64(10))
+    v.append(UInt64(30))
+    v.append(UInt64(40))
+    v.append(UInt64(20))
+    # After sort: [10, 20, 30, 40, 50]; p50 → ceil(2.5) = 3 → v[2] = 30
+    assert_true(_exact_percentile(v, 50.0) == UInt64(30), "p50 of [50,10,30,40,20] = 30")
+    print("PASS: test_exact_percentile_unsorted_input")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -231,4 +267,7 @@ def main() raises:
     test_record_pkt_residual_underflow_safe()
     test_record_drain_accumulates()
     test_handshake_records()
+    test_exact_percentile_basic()
+    test_exact_percentile_empty_returns_zero()
+    test_exact_percentile_unsorted_input()
     print("All Plan A tests passed.")

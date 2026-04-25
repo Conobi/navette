@@ -165,3 +165,32 @@ fn _per_pkt_bucket(us: UInt64) -> Int:
         v = v >> UInt64(1)
         i += 1
     return i  # floor(log2(us)) + 1 for us > 0
+
+
+fn _exact_percentile(values: List[UInt64], p: Float64) -> UInt64:
+    """Nearest-rank percentile of values. Sorts a copy. Returns 0 for empty."""
+    var n = len(values)
+    if n == 0:
+        return UInt64(0)
+    var sorted_v = List[UInt64](capacity=n)
+    for i in range(n):
+        sorted_v.append(values[i])
+    # Insertion sort (n is bounded — handshakes per run, low thousands).
+    for i in range(1, n):
+        var key = sorted_v[i]
+        var j = i - 1
+        while j >= 0 and sorted_v[j] > key:
+            sorted_v[j + 1] = sorted_v[j]
+            j -= 1
+        sorted_v[j + 1] = key
+    # Nearest-rank: idx = ceil(p/100 * n) - 1, clamped to [0, n-1].
+    var raw = (p / 100.0) * Float64(n)
+    var idx = Int(raw)
+    if Float64(idx) < raw:
+        idx += 1  # ceil
+    idx -= 1
+    if idx < 0:
+        idx = 0
+    if idx >= n:
+        idx = n - 1
+    return sorted_v[idx]
