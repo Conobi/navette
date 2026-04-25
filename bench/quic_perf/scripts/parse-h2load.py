@@ -45,6 +45,7 @@ def parse(stdout: str) -> dict:
         "requests_failed": requests_failed,
         "p50_latency_ms": None,
         "p99_latency_ms": None,
+        "server_cpu_percent": None,
         "raw_client_stdout": stdout,
     }
 
