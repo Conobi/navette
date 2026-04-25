@@ -6,6 +6,6 @@
   "description": "HTTP/1.1 + HTTP/2 + HTTP/3 server. Mojo, sans-I/O protocol layers, rustls TLS, io_uring I/O via boucle.",
   "repo": "https://github.com/Conobi/mojo-net",
   "enabled": true,
-  "tests": ["baseline", "baseline-h2", "baseline-h3", "static", "static-h2", "static-h3"],
+  "tests": ["baseline", "json", "baseline-h2", "json-tls", "baseline-h3", "static", "static-h2", "static-h3"],
   "maintainers": ["Conobi"]
 }
