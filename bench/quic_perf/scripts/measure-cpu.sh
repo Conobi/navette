@@ -21,7 +21,9 @@ fi
 
 # pidstat -h gives single-line, parse-friendly output.
 # Columns: Time UID PID %usr %system %guest %wait %CPU CPU Command
-RAW=$(pidstat -h -p "$PID" 1 "$DUR" 2>/dev/null | awk '/^[ \t]*[0-9]/ {print $8}')
+# LC_ALL=C forces a `.` decimal separator regardless of host locale (some
+# locales emit `,` and break the downstream float() parser).
+RAW=$(LC_ALL=C pidstat -h -p "$PID" 1 "$DUR" 2>/dev/null | awk '/^[ \t]*[0-9]/ {print $8}')
 
 if [[ -z "$RAW" ]]; then
     echo "[measure-cpu] pidstat produced no samples for pid=$PID" >&2
