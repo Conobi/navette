@@ -84,7 +84,9 @@ def request_from_h2_headers(
                 raise Error("unknown request pseudo-header: " + name)
         else:
             past_pseudo = True
-            headers.add(name, value)
+            # HPACK wire names are required to be lowercase
+            # (RFC 7540 §8.1.2), skip redundant _to_lower.
+            headers.add_lowercase(name, value)
 
     if not has_method:
         raise Error("missing required :method pseudo-header")
@@ -96,7 +98,7 @@ def request_from_h2_headers(
 
     # Map :authority -> host header if no host already present
     if has_authority and not headers.has("host"):
-        headers.add("host", authority_val)
+        headers.add_lowercase("host", authority_val)
 
     # Map :scheme -> x-h2-scheme synthetic header
     if has_scheme:
@@ -183,7 +185,8 @@ def response_from_h2_headers(
                 raise Error("unknown response pseudo-header: " + name)
         else:
             past_pseudo = True
-            headers.add(name, value)
+            # HPACK wire names are lowercase (RFC 7540 §8.1.2).
+            headers.add_lowercase(name, value)
 
     if not has_status:
         raise Error("missing required :status pseudo-header")
@@ -220,7 +223,8 @@ def headers_from_h2(h2_headers: List[Header]) -> Headers:
     var result = Headers()
     for i in range(len(h2_headers)):
         if not _is_pseudo(h2_headers[i].name):
-            result.add(h2_headers[i].name, h2_headers[i].value)
+            # HPACK wire names are lowercase (RFC 7540 §8.1.2).
+            result.add_lowercase(h2_headers[i].name, h2_headers[i].value)
     return result^
 
 
