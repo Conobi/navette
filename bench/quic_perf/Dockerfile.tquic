@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1
+# TQUIC reference server + client — multi-stage build.
+#
+# Pinned to upstream commit 4dcec0f2fcd6fd4a49366e2c759a169e4e81c48e (tag v1.0.0)
+# so numbers are reproducible regardless of when the image is rebuilt.
+#
+# Build:
+#   docker build -t tquic-bench:latest -f Dockerfile.tquic .
+#
+# Usage (server or client selected at run time via --entrypoint):
+#   docker run --rm --network host --entrypoint /usr/local/bin/tquic_server \
+#       tquic-bench:latest -l 0.0.0.0:8443 -c cert.crt -k key.pem -r /data
+#   docker run --rm --network host --entrypoint /usr/local/bin/tquic_client \
+#       tquic-bench:latest --connect-to 127.0.0.1:8443 https://127.0.0.1:8443/1k.bin
+
+# ---------------------------------------------------------------------------
+# Stage 1: build
+# ---------------------------------------------------------------------------
+FROM rust:1.88-bookworm AS build
+
+ARG TQUIC_COMMIT=4dcec0f2fcd6fd4a49366e2c759a169e4e81c48e
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        cmake \
+        ninja-build \
+        clang \
+        pkg-config \
+        ca-certificates \
+        perl \
+        golang \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+RUN git clone https://github.com/Tencent/tquic.git . \
+    && git checkout "${TQUIC_COMMIT}" \
+    && git submodule update --init --recursive
+
+# tquic builds its tools (server + client) from the tools/ workspace.
+RUN cargo build --release --manifest-path tools/Cargo.toml \
+        --bin tquic_server --bin tquic_client
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /src/target/release/tquic_server /usr/local/bin/tquic_server
+COPY --from=build /src/target/release/tquic_client /usr/local/bin/tquic_client
+
+# No fixed entrypoint: the caller picks server or client via --entrypoint.
+CMD ["/usr/local/bin/tquic_server", "--help"]
