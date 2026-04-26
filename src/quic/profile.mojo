@@ -70,6 +70,15 @@ struct AcceptProfile(Copyable, Movable):
     var hs_timed_out: UInt64
     var hs_latency_us: List[UInt64]
 
+    # Arrival-to-processing queueing latency (Plan: queueing-tail spec).
+    # Wall-clock interval between packet ingress (_handle_recvmsg) and
+    # flush-time processing (_flush_impl). Distinct from per_pkt_total
+    # which times the *processing*, not the wait. PROFILE_ACCEPT-gated
+    # at every measurement site in bench/h3_server.mojo.
+    var arrival_lat_us_buckets: List[UInt64]   # len = 24, same layout as per_pkt_total_buckets
+    var arrival_lat_us_overflow: UInt64
+    var arrival_lat_us_total: UInt64
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -95,6 +104,11 @@ struct AcceptProfile(Copyable, Movable):
         self.hs_completed = UInt64(0)
         self.hs_timed_out = UInt64(0)
         self.hs_latency_us = List[UInt64]()
+        self.arrival_lat_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.arrival_lat_us_buckets.append(UInt64(0))
+        self.arrival_lat_us_overflow = UInt64(0)
+        self.arrival_lat_us_total = UInt64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -148,6 +162,20 @@ struct AcceptProfile(Copyable, Movable):
 
     def record_handshake_timeout(mut self, count: UInt64 = UInt64(1)):
         self.hs_timed_out += count
+
+    def record_arrival_lat(mut self, us: UInt64):
+        """Record per-packet queueing latency (arrival → processing dispatch).
+
+        Dispatches into 24-bucket power-of-2 histogram via _per_pkt_bucket.
+        Values >= 2^23 us go to arrival_lat_us_overflow; total sum always
+        accumulated regardless of bucket vs overflow.
+        """
+        self.arrival_lat_us_total += us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.arrival_lat_us_overflow += UInt64(1)
+        else:
+            self.arrival_lat_us_buckets[b] += UInt64(1)
 
     def report_text(self) -> String:
         var now = monotonic_us()
