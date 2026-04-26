@@ -630,6 +630,11 @@ struct H3UdpHandler(BatchCompletionHandler):
             addr_bytes.append(buf_ptr[addr_offset + i])
         var key = _addr_to_key(addr_bytes)
 
+        var stamp_us: UInt64 = UInt64(0)
+        @parameter
+        if PROFILE_ACCEPT:
+            stamp_us = profile_monotonic_us()
+
         self.pending_rx.append(
             PendingDatagram(
                 buf_id=buf_id,
@@ -640,6 +645,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 addr_len=addr_len,
                 addr_key=key^,
                 dcid=dcid^,
+                arrival_us=stamp_us,
             )
         )
 
