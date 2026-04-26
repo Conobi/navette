@@ -10,11 +10,13 @@
 - Path C's primary angle is therefore **coroutine pooling**, not "suspend less."
 - Path B's primary angle stays **`__tls_get_addr` (6 % CPU) per-coro lookup elimination**.
 
-**Goal:** Recover ~12-15 % throughput across four mechanical changes, no architectural rewrite, no bet against Mojo's eventual `async`/`await`.
+**Phase 2 amendment (2026-04-26 evening):** boucle just landed `IORING_OP_PROVIDE_BUFFERS` + `IORING_REGISTER_PBUF_RING` + `submit_recvmsg_multishot(buf_group=...)` (commits `1a7a81e`, `2b39325`, `ad9754e`, `7846233`). The H2 server's recv path today does per-connection `recv_buf` alloc, single in-flight RECV gated by `recv_in_flight`, and a per-recv byte-by-byte copy out of `recv_buf` — all of which collapse into a registered buffer ring + multishot recv. **Task 0 inserted before Task 1.** It is non-blocking for Tasks 1-4 but lands a measurable win on its own and may shrink the marginal gain of the coro pool (less recv-path frequency = less per-request coro alloc weight).
+
+**Goal:** Recover ~12-18 % throughput across five mechanical changes, no architectural rewrite, no bet against Mojo's eventual `async`/`await`.
 
 **Architecture:** Two-target spread:
+- **mojo-net changes (Tasks 0, 3, 4):** provided-buffer recv ring; stream-state `Dict` → `InlineArray`; HPACK encoder fast paths.
 - **boucle changes (Tasks 1, 2):** coroutine pool + per-coro TLS-lookup elimination. Owned upstream — needs PR.
-- **mojo-net changes (Tasks 3, 4):** stream-state `Dict` → `InlineArray`; HPACK encoder fast paths.
 
 **Methodology rule (from Phase 1 retro):** Every per-task perf claim requires a **120 s minimum capture** with **3-run spread reporting** (median + min + max). Per-task 60 s captures are noisy enough to over-state wins by 3-5×.
 
@@ -26,6 +28,7 @@
 
 | File | Changes | Requirements |
 |------|---------|--------------|
+| `bench/h2_server.mojo` | Replace per-conn `recv_buf` + `recv_in_flight`-gated `submit_recv` with: per-worker buffer ring (`provide_buffers` at boot), `submit_recvmsg_multishot(buf_group=...)` per connection, decode `IORING_CQE_F_BUFFER`/`buf_id` from CQE flags, `reprovide_buffer` after copy-out | R0 |
 | `boucle/boucle/stackful.mojo` (upstream) | Coroutine pool: reuse stacks across coro spawn/destroy cycles; new `CoroutinePool` struct + `acquire`/`release` | R1 |
 | `boucle/boucle/_sys/linux/ucontext.mojo` (upstream) | If `__tls_get_addr` is reachable: switch current-coro pointer from TLS to per-CPU/`thread_local` register pattern (or `__thread` storage class) | R2 |
 | `src/h2/h2_coro_server.mojo` | Use `CoroutinePool` from boucle for per-request coro spawn | R1 |
@@ -39,6 +42,7 @@
 
 ## Requirements
 
+- **R0 — Provided-buffer recv ring.** Per worker, register a buffer pool via `provide_buffers(buf_base, buf_size=8192, count=512, group_id=1, base_buf_id=0)` at boot. Replace per-connection 8 KB `recv_buf` field + `recv_in_flight` gate + per-recv `submit_recv` with `submit_recvmsg_multishot(fd, msghdr_ptr, buf_group=1, token=...)` once per connection. CQE flags carry `IORING_CQE_F_BUFFER` + `buf_id = flags >> 16`. `IORING_CQE_F_MORE` cleared = multishot ended (re-submit). Copy out the kernel-selected buffer's payload, then `reprovide_buffer(buf_ptr, buf_size, group_id=1, buf_id)` to return it to the pool. Per-connection state shrinks; the recv-buffer 8 KB allocation moves from per-connection to per-worker (512×8K = 4 MiB total per worker, fixed).
 - **R1 — Coroutine pool.** Per spike: every request currently allocates+initializes a coro. Add a fixed-size pool (default 256) of pre-initialized coroutine slots. On request: `pool.acquire()` returns an idle slot or allocates a new one (capped). On request done: `pool.release(slot)` returns it to the freelist. Must be safe under multi-worker (per-worker pool, not global).
 - **R2 — `__tls_get_addr` elimination.** Phase 0 measured 5.96 % self. Investigate where in boucle the per-coro thread-local lookup happens. Switch to a faster mechanism: `__thread`-declared storage (linker-resolved offset, no `__tls_get_addr` call), or a per-CPU pointer accessed via `rseq` / `getcpu`. The first is much simpler and may suffice.
 - **R3 — Stream-state `InlineArray`.** Replace `Dict[Int, StreamState]` with `InlineArray[Optional[StreamState], 256]` (or whatever the negotiated `MAX_CONCURRENT_STREAMS` cap is). Stream IDs are sparse (1, 3, 5, …) but bounded — index by `(stream_id - 1) >> 1` modulo the cap. Pattern lifted from json-simd-mojo Plan 6 container-stack work.
@@ -46,6 +50,32 @@
   - **Static-table reverse map** (header-name → static-table index): a comptime-built `Dict[String, Int]` so the encoder doesn't linear-scan the static table per header.
   - **Inline `:status` for common codes** (200, 204, 301, 304, 404, 500): emit the static-table index as a 1-byte fixed sequence without going through the integer encoder.
 - **R5 — Per-task 120 s × 3-run measurement.** No per-task win is claimed without 3 captures. Report median rps and the spread (min/max). Reject any task whose median doesn't beat the prior median by more than the spread.
+
+---
+
+## Task 0: io_uring provided buffers in H2 recv path
+
+**Files:**
+- Modify: `bench/h2_server.mojo` (recv path: drop per-conn `recv_buf`, use multishot recvmsg + buffer ring)
+- Reference: `/home/donokami/Projets/perso/boucle/boucle/completion.mojo:209-285` for API
+- Reference: `/home/donokami/Projets/perso/boucle/tests/test_provide_buffers.mojo` for usage pattern
+- Reference: `/home/donokami/Projets/perso/boucle/tests/test_multishot_recvmsg.mojo` for CQE handling
+
+**Step plan:**
+
+- [ ] **Step 1: Read the boucle API + tests.** Confirm: `provide_buffers` registers contiguous buffers identified by `group_id` + `base_buf_id..base_buf_id+count`; `submit_recvmsg_multishot(fd, msghdr_ptr, buf_group, token)` requires a per-connection `msghdr` with zero `msg_iov`/`msg_iovlen` (kernel uses provided buffer); CQE.flags carries `IORING_CQE_F_BUFFER` + `buf_id` in upper 16 bits, `IORING_CQE_F_MORE` clear means multishot ended.
+- [ ] **Step 2: Test scaffolding.** Write `tests/test_h2_server_recv_ring.mojo` (or a minimal harness inside `bench/`) asserting one connection through the H2 server consumes provided buffers, returns them via `reprovide_buffer`, and survives the buffer ring being smaller than concurrent connections (back-pressure path).
+- [ ] **Step 3: Boot-time buffer-ring registration.** In `bench/h2_server.mojo:main`, after the `CompletionLoop` is built, allocate `BUF_RING_SIZE × 8 KB` once via `_heap_alloc[UInt8]`, call `loop.provide_buffers(buf_base, 8192, BUF_RING_SIZE, group_id=1, base_buf_id=0)`. Track `buf_base` for `reprovide_buffer` arithmetic: `buf_ptr_for(buf_id) = buf_base + buf_id * 8192`.
+- [ ] **Step 4: Per-connection msghdr.** Each `H2Conn` gets a heap-allocated `msghdr` (zero `iov`, zero `iovlen`, zero `msg_name`, etc). Drop the `recv_buf` field. On accept, replace `_queue_recv` with a single `submit_recvmsg_multishot(fd, msghdr_ptr, buf_group=1, token)`.
+- [ ] **Step 5: Recv CQE handling.** In `_handle_recv`, decode `IORING_CQE_F_BUFFER` + extract `buf_id = flags >> 16`. Compute `buf_ptr = buf_base + buf_id * 8192`. Copy `result` bytes (or pass `Span` if downstream allows) into the existing TLS receive path. Then `reprovide_buffer(buf_ptr, 8192, group_id=1, buf_id)`. If `IORING_CQE_F_MORE` is clear, re-submit `submit_recvmsg_multishot`.
+- [ ] **Step 6: Back-pressure / `-ENOBUFS`.** If recv completes with `result == -ENOBUFS`, reprovide a buffer if any are free or fall back to one-shot `submit_recv` for that connection until the ring has capacity. Document the chosen policy.
+- [ ] **Step 7: Run all H2 tests** (`scripts/run_tests.sh test_h2_*`). No regressions.
+- [ ] **Step 8: 3-run measurement.** `bench/profile/h2-perf-record.sh` × 3 at DURATION=120, capture median rps + spread. Also: confirm via `perf record` that the per-recv buffer-copy hotspot is gone or shrunken.
+- [ ] **Step 9: Commit.** `commit-smart` body must include: median rps + spread, before/after recv-path self-time %, and the `recv_buf` field removal.
+
+**Expected gain:** ~3-6 % rps. The per-recv `chunk = List[UInt8](capacity=n) + recv_buf[i] copy` loop in `_handle_recv` is removed; per-connection memory drops by 8 KB; outstanding-recv parallelism increases (multishot keeps draining without per-CQE re-submit).
+
+**Risk:** if mojo-net's connection count regularly exceeds `BUF_RING_SIZE` under high `-c`, we hit `-ENOBUFS` and need either a larger ring or the fallback path. h2load `-c 1000` is the stress case.
 
 ---
 
