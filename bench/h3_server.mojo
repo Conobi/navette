@@ -118,7 +118,7 @@ def _profile_install_signal_handlers() raises:
     )
     p[0] = Int32(0)
 
-    var fn_ptr: fn(Int32) thin -> None = _profile_signal_handler
+    var fn_ptr: fn(Int32) -> None = _profile_signal_handler
     var fp_value = UnsafePointer(to=fn_ptr).bitcast[UInt64]()[0]
     var handler_ptr = UnsafePointer[NoneType, MutAnyOrigin](
         unsafe_from_address=Int(fp_value)
