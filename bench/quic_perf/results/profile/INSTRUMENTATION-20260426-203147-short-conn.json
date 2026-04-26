@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 31966919,
+  "on_flush_events": 2415,
+  "idle_us_total": 31911979,
+  "busy_us_total": 54535,
+  "pkts_per_flush_histogram": {
+    "1": 1880,
+    "2-3": 323,
+    "4-7": 127,
+    "8-15": 55,
+    "16-31": 23,
+    "32-63": 5,
+    "64-127": 2,
+    "128+": 0
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 6, "p90": 101, "p99": 246, "max": 32768, "n": 233, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 41},
+    "hp":            {"avg": 0, "total": 89},
+    "aead":          {"avg": 0, "total": 177},
+    "frame_parse":   {"avg": 2, "total": 554},
+    "sm":            {"avg": 129, "total": 30208},
+    "residual":      {"avg": 0, "total": 193},
+    "shim_ffi":      {"avg": 127, "total": 29740},
+    "drain":         {"avg": 47, "total": 11141}
+  },
+  "handshake": {
+    "arrivals": 17, "successful": 17, "timed_out": 0,
+    "latency_us": {"p50": 879, "p90": 1261, "p99": 26272, "max": 26272, "count": 17}
+  }
+}
