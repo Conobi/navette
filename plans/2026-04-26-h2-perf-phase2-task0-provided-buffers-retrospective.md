@@ -1,20 +1,26 @@
-# Phase 2 Task 0 — io_uring provided buffers in H2 recv path: retrospective
+# Phase 2 Task 0 + Task 1 — provided buffers + coroutine pool: retrospective
 
 ## Status
 
-**Shipped on `register_buf_ring` (registered ring, kernel 5.19 API).**
-Initial implementation used the older `IORING_OP_PROVIDE_BUFFERS` SQE
-path and regressed throughput at high concurrency by 4×. Cut over to
-`IORING_REGISTER_PBUF_RING` recovered most of the gap; remaining ~15 %
-gap likely just measurement noise + the byte-by-byte copy from the
-ring slot into a fresh List (kept for safety; can be eliminated later
-with a `Span` over raw memory).
+**Phase 2 Task 0 (registered buffer ring) and Task 1 (coroutine pool)
+landed together.** The 3-run × 120 s methodology in R5 surfaced
+genuine wins at every step and confirmed earlier single-capture
+measurements were noisy.
 
-| Config | Pre-Task 0 (baseline) | Task 0 v1 (provide_buffers SQE) | Task 0 v2 (register_buf_ring) | v2 Δ |
-|---|---:|---:|---:|---:|
-| `-c 10  -m 10 -n 5000`  | 1 132 RPS | 2 532 RPS | **9 460 RPS** | +736 % |
-| `-c 100 -m 10 -n 10000` | 10 380 RPS | 2 589 RPS | **8 790 RPS** | −15 % |
-| `-c 200 -m 10 -n 20000` (single) | not measured | n/a | **9 306 RPS** | n/a |
+### Step-by-step measurement (3 × 120 s captures, `-c 100 -m 10`)
+
+| Step | What changed | Median RPS | Spread |
+|---|---|---:|---:|
+| Pre-Task 0 baseline (single) | per-conn 8 KB recv_buf + per-recv submit_recv | 10 380 | n/a |
+| Task 0 v1 (provide_buffers SQE) | SQE-per-reprovide + buffer-pool tree | 2 589 | n/a (regression) |
+| Task 0 Step A (register_buf_ring) | userspace BufRing.add_buffer; copy in recv | **10 094** | 9 608 – 10 108 |
+| Task 0 Step B (no-copy Span) | drop recv copy, Span over ring slot | **9 960** | 9 496 – 9 990 |
+| **Phase 2 Task 1 (coroutine pool)** | per-conn `CoroutinePool(capacity=16)` | **10 620** | 10 617 – 10 645 |
+
+Task 1 win **+5.3 % vs Step B median, +2.3 % vs single-capture
+pre-Task 0 baseline.** Run-to-run spread collapsed from ~5 % to
+**0.3 %** — the pool eliminated a major source of timing variance.
+Per Phase 2 R5 (gain 660 RPS > spread 28 RPS), the win is real.
 
 All configurations: 100 % success rate, 0 errored, 0 failed.
 
