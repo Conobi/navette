@@ -8,7 +8,7 @@
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from std.collections import Dict
+from std.collections import Dict, InlineArray
 
 from src.tls.lib import RustlsLibrary
 from src.quic.connection import QuicConnection
@@ -22,7 +22,7 @@ from bench.handler import (
     _load_static_files,
     _load_dataset,
 )
-from interop.file_io import read_file, getenv_opt
+from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
 from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us as profile_monotonic_us
 
@@ -146,6 +146,13 @@ def _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
 @always_inline
 def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
     return UInt32(ptr[0]) | (UInt32(ptr[1]) << 8) | (UInt32(ptr[2]) << 16) | (UInt32(ptr[3]) << 24)
+
+
+fn _zpad2_int(n: Int) -> String:
+    """Zero-pad an Int to 2 digits (used for UTC timestamp formatting)."""
+    if n < 10:
+        return String("0") + String(n)
+    return String(n)
 
 
 # ── helpers (kept from original) ───────────────────────────────────────
@@ -841,9 +848,65 @@ struct H3UdpHandler(BatchCompletionHandler):
             PendingSubmit(kind=_SUBMIT_TIMEOUT, slot_idx=UInt64(0))
         )
 
-    fn _write_profile_json_sidecar(self) -> None:
-        # B11 will fill this in (UTC timestamp + sidecar write).
-        pass
+    def _write_profile_json_sidecar(self) raises:
+        """Write profile JSON sidecar to bench/quic_perf/results/profile/.
+
+        Spec §"Report write": dump-pending writes
+        ``bench/quic_perf/results/profile/INSTRUMENTATION-<UTC ts>.json``
+        containing ``self.profile.report_json()``. Creates the directory
+        with mkdir -p semantics if absent.
+        """
+        # 1. Compute UTC timestamp via time(2) + gmtime_r(3).
+        # struct tm layout (Linux glibc): tm_sec, tm_min, tm_hour,
+        # tm_mday, tm_mon (0-11), tm_year (since 1900), tm_wday, tm_yday,
+        # tm_isdst — 9 Int32 fields = 36 bytes. Allocate 56 bytes to
+        # cover tm_gmtoff + tm_zone tail (Linux extension).
+        var now_t = external_call["time", Int64](
+            UnsafePointer[Int64, MutAnyOrigin]()
+        )
+        var t_buf = InlineArray[Int64, 1](fill=now_t)
+        var tm_buf = InlineArray[UInt8, 56](fill=0)
+        var tm_ptr = UnsafePointer(to=tm_buf).bitcast[UInt8]()
+        var t_ptr = UnsafePointer(to=t_buf).bitcast[Int64]()
+        _ = external_call[
+            "gmtime_r", UnsafePointer[UInt8, MutAnyOrigin]
+        ](t_ptr, tm_ptr)
+        var tm_i32 = UnsafePointer(to=tm_buf).bitcast[Int32]()
+        var sec = Int(tm_i32[0])
+        var minu = Int(tm_i32[1])
+        var hour = Int(tm_i32[2])
+        var mday = Int(tm_i32[3])
+        var mon = Int(tm_i32[4]) + 1
+        var year = Int(tm_i32[5]) + 1900
+
+        # 2. Format yyyymmdd-hhmmss with zero-padding.
+        var ts = (
+            String(year)
+            + _zpad2_int(mon)
+            + _zpad2_int(mday)
+            + "-"
+            + _zpad2_int(hour)
+            + _zpad2_int(minu)
+            + _zpad2_int(sec)
+        )
+
+        # 3. mkdir -p the sidecar directory (ignores EEXIST).
+        var dir_path = String("bench/quic_perf/results/profile")
+        try:
+            mkdir_p(dir_path)
+        except e:
+            print("h3-bench: profile sidecar mkdir_p failed:", e)
+            return
+
+        # 4. Write JSON via interop.file_io.write_file (open/pwrite64/close).
+        var path = dir_path + "/INSTRUMENTATION-" + ts + ".json"
+        var json_text = self.profile.report_json()
+        try:
+            write_file(path, json_text.as_bytes())
+        except e:
+            print("h3-bench: profile sidecar write failed:", path, "err=", e)
+            return
+        print("h3-bench: profile sidecar written:", path)
 
 
 # ── _drain_pending_submits ───────────────────────────────────────────
