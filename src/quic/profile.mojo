@@ -8,6 +8,7 @@
 # Hand-edit PROFILE_ACCEPT to True to produce a profile build (see Plan B
 # for how this gates instrumentation in connection.mojo + bench/h3_server.mojo).
 
+from collections import Dict
 from std.ffi import external_call
 from std.memory import UnsafePointer
 
@@ -79,6 +80,13 @@ struct AcceptProfile(Copyable, Movable):
     var arrival_lat_us_overflow: UInt64
     var arrival_lat_us_total: UInt64
 
+    # Per-connection packet counts and handshake-complete tracking.
+    # `conn_pkt_counts` maps addr_key (src_ip:src_port String) → packet count.
+    # `conn_hs_complete` is used as a Set: presence == hs_complete observed.
+    # Aggregated histogram + scalar derived at report time.
+    var conn_pkt_counts: Dict[String, UInt64]
+    var conn_hs_complete: Dict[String, Bool]
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -109,6 +117,8 @@ struct AcceptProfile(Copyable, Movable):
             self.arrival_lat_us_buckets.append(UInt64(0))
         self.arrival_lat_us_overflow = UInt64(0)
         self.arrival_lat_us_total = UInt64(0)
+        self.conn_pkt_counts = Dict[String, UInt64]()
+        self.conn_hs_complete = Dict[String, Bool]()
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -176,6 +186,21 @@ struct AcceptProfile(Copyable, Movable):
             self.arrival_lat_us_overflow += UInt64(1)
         else:
             self.arrival_lat_us_buckets[b] += UInt64(1)
+
+    def record_conn_pkt(mut self, addr_key: String) raises:
+        """Increment per-connection packet counter for `addr_key`."""
+        if addr_key in self.conn_pkt_counts:
+            self.conn_pkt_counts[addr_key] = self.conn_pkt_counts[addr_key] + UInt64(1)
+        else:
+            self.conn_pkt_counts[addr_key] = UInt64(1)
+
+    def record_conn_hs_complete(mut self, addr_key: String):
+        """Mark addr_key as having completed the QUIC handshake.
+
+        Idempotent: redundant calls (per-packet polling of is_established())
+        result in only one entry in conn_hs_complete.
+        """
+        self.conn_hs_complete[addr_key] = True
 
     def report_text(self) -> String:
         var now = monotonic_us()

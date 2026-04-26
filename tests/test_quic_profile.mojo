@@ -456,6 +456,46 @@ def test_record_arrival_lat_overflow() raises:
     print("PASS: test_record_arrival_lat_overflow")
 
 
+def test_record_conn_pkt_increment() raises:
+    """Verify record_conn_pkt increments addr_key counter."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_conn_pkt(String("1.2.3.4:5000"))
+    p.record_conn_pkt(String("1.2.3.4:5000"))
+    p.record_conn_pkt(String("1.2.3.4:5000"))
+    p.record_conn_pkt(String("9.9.9.9:6000"))
+    assert_true(p.conn_pkt_counts[String("1.2.3.4:5000")] == UInt64(3), "addr1 = 3")
+    assert_true(p.conn_pkt_counts[String("9.9.9.9:6000")] == UInt64(1), "addr2 = 1")
+    assert_true(len(p.conn_pkt_counts) == 2, "two distinct keys")
+    print("PASS: test_record_conn_pkt_increment")
+
+
+def test_record_conn_hs_complete_idempotent() raises:
+    """Verify record_conn_hs_complete dedupes and the no-complete scalar excludes it."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Conn A: 5 packets, completes handshake.
+    for _ in range(5):
+        p.record_conn_pkt(String("A:1"))
+    p.record_conn_hs_complete(String("A:1"))
+    p.record_conn_hs_complete(String("A:1"))   # idempotent
+    p.record_conn_hs_complete(String("A:1"))
+    # Conn B: 3 packets, never completes.
+    for _ in range(3):
+        p.record_conn_pkt(String("B:2"))
+    # Conn C: 1 packet, never completes.
+    p.record_conn_pkt(String("C:3"))
+    assert_true(len(p.conn_hs_complete) == 1, "only A:1 in hs_complete")
+    assert_true(p.conn_hs_complete[String("A:1")] == True, "A:1 marked True")
+    # Compute scalar manually for now — formal API in Task 4.
+    var no_hs: UInt64 = UInt64(0)
+    for entry in p.conn_pkt_counts.items():
+        if entry.key not in p.conn_hs_complete:
+            no_hs += UInt64(1)
+    assert_true(no_hs == UInt64(2), "B and C are no-hs-complete")
+    print("PASS: test_record_conn_hs_complete_idempotent")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -477,4 +517,6 @@ def main() raises:
     test_report_json_canned()
     test_record_arrival_lat_buckets()
     test_record_arrival_lat_overflow()
+    test_record_conn_pkt_increment()
+    test_record_conn_hs_complete_idempotent()
     print("All Plan A tests passed.")
