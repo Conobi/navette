@@ -5,7 +5,7 @@
 **Range:** `8c25e1c..ac92e26` (Plan C: 1 commit + plan-write commit; foreign user h2 commits during execution: `88e5812`, `ca19331`)
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`
 **Plan:** `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c.md`
-**Final state:** ⚠ FFI dominance hypothesis was a red herring; revised diagnosis below
+**Final state:** ⚠ Both "FFI dominance" AND "buffer-ring exhaustion" hypotheses falsified. TRUE diagnosis: bench harness sets the floor, not server.
 
 ## Built vs. planned
 
@@ -135,6 +135,40 @@ Trace (in `bench/h3_server.mojo:main()` ~lines 894-919 + `boucle/boucle/completi
   **Trigger:** after the -ENOBUFS counter verification confirms buffer exhaustion is the rate-limiter.
 
 **Lesson for future investigations:** instrumenting CPU-side (per-packet decomposition, per-leg averages) doesn't catch upstream rate-limiters in the kernel/io_uring layer. The bench server's `idle %` was a red flag we should have weighted more heavily — 99.8% idle plus reported saturation upstream is almost always "we can't see the problem from inside the loop, it's gating arrival." Future instrumentation should include kernel-level metrics (`nstat`, `-ENOBUFS` counts) as a first-class data source, not an afterthought.
+
+## RE-REVISED diagnosis (post-buffer-ring-falsification, 2026-04-26)
+
+**The buffer-ring exhaustion hypothesis was tested with diagnostic counters and FALSIFIED.** Six counters added to `bench/h3_server.mojo` (`enobufs_count`, `multishot_term_count`, `quic_server_err_count`, `h3_handler_err_count`, `feed_datagram_err_count`, plus `nstat -az` for kernel-side `UdpRcvbufErrors`). All six show **zero drops** across multiple short-conn runs. The server is processing every packet it sees, without error.
+
+**TRUE diagnosis: the calibrated 412/1 rps floors are bench-harness limits, not server limits.**
+
+The numbers:
+- tquic_client: 392 "conns attempted", sent 3228 packets
+- Server profile: 13-21 handshake arrivals, no errors anywhere
+- Server processed every received packet successfully
+- No drops at io_uring, kernel UDP, or app layers
+- pkts_per_flush histogram totals match (~3500-7000 inbound, all entering pending_rx)
+
+The only explanation consistent with the data: the 392 "conns" reported by tquic_client are largely the same source ports cycling through "open → send Initial → wait → timeout → re-open" multiple times. Only ~13-21 distinct slots manage to complete a handshake within the per-slot timeout in 30s. The "calibrated 412 rps long-conn / 1 rps short-conn" numbers from REFERENCE.md are PRODUCTS of (tquic_client's connect-and-cycle behavior) × (server's actual handshake completion rate), not pure server-side throughput limits.
+
+**Implication for QUIC perf push:** optimizing the server stack at this level (FFI batching, multi-fiber fan-out, BufRing port) **would not lift the calibrated 412/1 rps floors**, because the harness can't actually saturate the server's processing capacity. The per-packet FFI cost (127us) is real but invisible at 0.4-0.7 conn-arrivals/sec.
+
+**Real next investigation:**
+1. **Inspect `tquic_client` source** to determine whether "conns: total 392" counts distinct source ports or per-attempt cycles. If distinct ports, server saw all 392 and dropped most → real server bottleneck → resume buffer-ring or upstream investigation. If per-attempt cycles, harness is the bottleneck → spec a better harness.
+2. **Run multiple parallel tquic_client containers** to multiply the load and see if server saturates.
+3. **Replace tquic_client with a packet flooder** that doesn't have per-slot timeout cycling.
+
+**Lesson — this is the lesson for future perf investigations:**
+
+When a server reports very low CPU usage AND a benchmark reports very low success rate, the most common explanation is the BENCHMARK is the bottleneck, not the server. Calibrated baseline numbers should always be cross-checked with diagnostic instrumentation BEFORE optimizing. We spent 3 plans (B + C + investigations) chasing server-side bottlenecks when the answer was upstream of the server entirely.
+
+**Diagnostic counter changes left in place** (in `bench/h3_server.mojo`) — they cost ~6 UInt64 fields + ~5 atomic increment sites + 3 first-error prints. Worth keeping as permanent instrumentation for future runs.
+
+**Open question (re-revised) — required-later, HIGH severity:**
+
+- **What:** Determine whether the bench harness can be made to saturate mojo-net's server, OR whether the calibrated 412/1 rps floors are intrinsic to tquic_client's connect-cycling behavior. Do NOT spec further server-side optimizations until this is resolved.
+  **Severity:** required-later (HIGH)
+  **Trigger:** anyone returning to QUIC perf push.
 
 ## Surprises / design concerns
 

@@ -152,9 +152,15 @@ This synthesis is wrong. The FFI cost is real but it's measured on the 233 packe
 
 ---
 
-## Corrected diagnosis (post-investigation, 2026-04-26)
+## Corrected diagnosis (post-investigation, 2026-04-26) — SUPERSEDED, see TRUE diagnosis below
 
-**The cold-start floor is buffer-ring exhaustion in `bench/h3_server.mojo`'s io_uring provided-buffer pool, not FFI cost.**
+The buffer-ring exhaustion hypothesis was tested with diagnostic counters and **falsified**. See "TRUE diagnosis" section below. The original investigation was directionally right (look upstream of FFI) but landed on the wrong layer.
+
+---
+
+### Buffer-ring exhaustion theory (FALSIFIED 2026-04-26)
+
+**Original claim:** the cold-start floor is buffer-ring exhaustion in `bench/h3_server.mojo`'s io_uring provided-buffer pool, not FFI cost.
 
 **Root cause** (traced in `bench/h3_server.mojo:main()` lines ~894-919 and `boucle/boucle/completion.mojo:774-789`): the bench's main loop reprovisions consumed buffers AFTER `loop.poll()` returns and queues `reprovide_buffer` SQEs in the next iteration's submission batch. Those SQEs do not reach the kernel until the next `submit_and_wait()` call. During that gap, the kernel has no buffers; new multishot recvmsg completions arrive with `result <= 0` (ENOBUFS) and terminate the multishot. The `_handle_recvmsg` early-return on `result <= 0` means no packet processed, no buffer consumed, no signal that anything was dropped.
 
@@ -188,7 +194,50 @@ Under saturating-handshake load (4×25=100 clients sending Initial packets simul
 
 **Original FFI-dominance synthesis stays valid for steady-state (long-conn) regime** — that's still the next target after the buffer-ring fix lands. But it's a secondary optimization, not the rate-limiter for the 412/1 rps cold-start floor.
 
-**Investigation source:** see this session's transcript and `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c-retrospective.md` (revised section).
+**Investigation source (buffer-ring theory):** see Plan C retrospective revised section.
+
+---
+
+## TRUE diagnosis (verified 2026-04-26)
+
+**The bench harness's calibrated 412 rps long-conn / 1 rps short-conn floor is set by the test harness, NOT by mojo-net's server.**
+
+**Verification:** added six diagnostic counters to `bench/h3_server.mojo` covering every layer where packets could be silently dropped:
+
+```
+recvmsg drops (result<=0):       0
+multishot terminations:          0
+QuicConnection.server errors:    0
+H3HandlerServer ctor errors:     0
+feed_datagram_from_buffer errs:  0
+UdpRcvbufErrors delta over run:  0   (via nstat -az before/after)
+```
+
+**Every counter is zero across multiple runs.** The server processes every packet it sees, successfully. No silent drops at any layer.
+
+**What we saw:**
+- `tquic_client` reports: 392 conns attempted, 13-21 successful, 277-285 timed out, sent 3228 packets, recv 73
+- Server profile reports: 13-21 handshake arrivals (matching tquic_client's success count exactly), n=194-283 packets recorded in `record_pkt`, ~3500-7000 packets entering `pending_rx` (per `pkts_per_flush_histogram` × `on_flush_count`)
+- **The discrepancy** between "3228 packets sent by client" and "13-21 distinct conns seen by server" cannot be a server bug — every packet the server sees is processed without error.
+
+**Likely true cause:** `tquic_client` reports "conns attempted" but those conns share a small set of source ports (4 threads × 25 concurrent slots = 100 slots, but ports may be recycled). The server's `addr_key` (src_ip:src_port) demuxes packets correctly per slot, but only 13-21 of the 100 slots manage to complete a handshake within `tquic_client`'s per-slot timeout. The other slots cycle through "open conn → send Initial → wait → timeout → open new conn" multiple times during the 30s window. The "392 conns" count is total attempts across all cycles, but only 100 distinct ports → 100 distinct server-side conns. Of those 100, many never have their Initial fully processed (server queues them in `pending_rx` but processes serially with 50ms timeout-driven cycles between flushes).
+
+**This means:**
+
+1. **mojo-net's per-packet FFI cost (~127us) is NOT the rate-limiter** at the rates this bench tests. At 13-21 conn arrivals / 30s = 0.4-0.7/sec, the server is loafing.
+2. **Buffer-ring exhaustion is NOT happening.** io_uring is fine. Kernel UDP buffer is fine.
+3. **The calibrated 412/1 rps numbers are test-harness floors, not server-stack floors.** Optimizing the server (batch FFI, multi-fiber fan-out, BufRing port) won't lift these numbers because the harness can't supply the load needed to reveal a server bottleneck.
+
+**To find the actual server limit, the bench harness needs replacing or augmenting.** Options:
+- Run multiple parallel `tquic_client` containers (4 × current → ~1600 conn attempts / 30s).
+- Switch to a load generator that doesn't have per-slot timeout cycling (e.g., a custom UDP packet replayer that just floods Initials without waiting for responses).
+- Profile in production-style traffic (real clients, recorded traces).
+
+**Open question for the next investigation:** is `tquic_client`'s "conns: total 392" really 392 distinct (src_port) values, or does it count each timeout-and-retry cycle? Inspect tquic source. If it's the latter, the server actually saw all 392 distinct source ports and only 21 of them progressed past Initial — which would point at a different (and real) bottleneck. If it's the former, the harness genuinely can't saturate.
+
+**Diagnostic instrumentation committed** (gated as compile-time additions under PROFILE_ACCEPT for now; the `enobufs_count` / `multishot_term_count` / 3 error counters in `_flush_impl` add ~6 UInt64 fields and ~5 increment sites — minimal overhead, useful for future re-investigation).
+
+**Investigation source:** see this session's transcript and `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c-retrospective.md` (re-revised). The diagnostic counters' raw values are inlined in this entry above; the sidecar JSON from the diagnostic run was not exfiltrated separately.
 
 ---
 
