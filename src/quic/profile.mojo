@@ -326,6 +326,15 @@ struct AcceptProfile(Copyable, Movable):
         s += _json_leg("drain",        self.drain_us_total,        self.pkt_count) + "\n"
         s += "  },\n"
 
+        s += '  "arrival_lat_us_total": ' + String(self.arrival_lat_us_total) + ',\n'
+        s += '  "arrival_lat_us_overflow": ' + String(self.arrival_lat_us_overflow) + ',\n'
+        s += '  "arrival_lat_us_buckets": ['
+        for i in range(24):
+            s += String(self.arrival_lat_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+
         s += '  "handshake": {\n'
         s += '    "arrivals": ' + String(self.hs_arrivals) + ', '
         s += '"successful": ' + String(self.hs_completed) + ', '
