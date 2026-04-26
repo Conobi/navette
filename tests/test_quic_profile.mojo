@@ -496,6 +496,24 @@ def test_record_conn_hs_complete_idempotent() raises:
     print("PASS: test_record_conn_hs_complete_idempotent")
 
 
+def test_report_json_arrival_latency_block() raises:
+    """Verify report_json emits the arrival-latency block with correct keys + values."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_arrival_lat(UInt64(50))         # bucket 6 ([32, 64))
+    p.record_arrival_lat(UInt64(50))         # bucket 6
+    p.record_arrival_lat(UInt64(2_000_000))  # bucket 21 ([1048576, 2097152))
+    p.record_arrival_lat(UInt64(20_000_000)) # overflow
+    var j = p.report_json()
+    assert_true('"arrival_lat_us_total":' in j, "arrival_lat_us_total key present")
+    assert_true('"arrival_lat_us_buckets":' in j, "arrival_lat_us_buckets key present")
+    assert_true('"arrival_lat_us_overflow":' in j, "arrival_lat_us_overflow key present")
+    var expected_total = UInt64(50 + 50 + 2_000_000 + 20_000_000)
+    assert_true(String('"arrival_lat_us_total": ') + String(expected_total) in j, "total value matches")
+    assert_true('"arrival_lat_us_overflow": 1' in j, "overflow = 1")
+    print("PASS: test_report_json_arrival_latency_block")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -519,4 +537,5 @@ def main() raises:
     test_record_arrival_lat_overflow()
     test_record_conn_pkt_increment()
     test_record_conn_hs_complete_idempotent()
+    test_report_json_arrival_latency_block()
     print("All Plan A tests passed.")
