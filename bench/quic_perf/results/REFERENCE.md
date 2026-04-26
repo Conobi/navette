@@ -198,7 +198,11 @@ Under saturating-handshake load (4×25=100 clients sending Initial packets simul
 
 ---
 
-## TRUE diagnosis (verified 2026-04-26)
+## TRUE diagnosis (verified 2026-04-26) — SUPERSEDED, see CORRECTED diagnosis below
+
+The "harness is the bottleneck" claim below ignored cross-client data already in this file (rows 16-28). Both `tquic_client` AND `h2load --h3` drive `tquic_server` to 5-digit rps on the same hardware; both bring `mojo-net` to its knees. The harness *can* saturate. The bottleneck IS in mojo-net. Section preserved verbatim for audit.
+
+---
 
 **The bench harness's calibrated 412 rps long-conn / 1 rps short-conn floor is set by the test harness, NOT by mojo-net's server.**
 
@@ -238,6 +242,58 @@ UdpRcvbufErrors delta over run:  0   (via nstat -az before/after)
 **Diagnostic instrumentation committed** (gated as compile-time additions under PROFILE_ACCEPT for now; the `enobufs_count` / `multishot_term_count` / 3 error counters in `_flush_impl` add ~6 UInt64 fields and ~5 increment sites — minimal overhead, useful for future re-investigation).
 
 **Investigation source:** see this session's transcript and `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c-retrospective.md` (re-revised). The diagnostic counters' raw values are inlined in this entry above; the sidecar JSON from the diagnostic run was not exfiltrated separately.
+
+---
+
+## CORRECTED diagnosis (post-debate, 2026-04-26)
+
+**The 412 long-conn / 1 short-conn rps floors are REAL server-side bottlenecks. The harness is fine.**
+
+A multi-subagent debate over which next investigation to pursue surfaced a fact that had been in this file unread: rows 16-28 above already contain N=2 cross-client validation. Same hardware, same network path, same harness orchestration:
+
+| Client | mojo-net long-conn | tquic_server long-conn | mojo-net short-conn | tquic_server short-conn |
+|---|---|---|---|---|
+| `tquic_client` (4 threads, 25 conns) | 412 | 87,113 (88% CPU on core 0) | 1 | 2,535 |
+| `h2load --h3` (single-threaded) | 125 | 32,625 | 11 | 66,023 |
+
+**Both clients drive `tquic_server` into 5-digit rps. Both bring mojo-net to <1% of that.** A harness that can saturate one server but not another is not the bottleneck — the slower server is. The "harness limit" diagnosis was a misread of the data.
+
+**What the 6 zero counters DO and DO NOT prove:**
+- They prove: **packets that arrive at the server are processed without error.** No `-ENOBUFS`, no multishot termination, no kernel UDP drops, no QuicConnection construction failure.
+- They do NOT prove: that all packets sent by the client arrive in a *timely* manner. The 5-phase per-packet profiler only times packets that successfully reached `record_pkt`. Packets queued in `pending_rx` but processed *after* tquic_client's per-conn timeout fires never accrue an error counter — tquic_client's conn is gone, the packet is processed normally on the server side, and nothing fails.
+
+**Most-likely mechanism (re-instated from the pacer-bypass falsification's deferred next-hypothesis):**
+
+Serial single-fiber `_flush_impl` (`bench/h3_server.mojo:523-600`) processes Initial packets one at a time with ~127us FFI cost per packet on the handshake CRYPTO path. Under saturating-handshake load:
+- 100 client slots simultaneously send Initial packets → ~100 packets land in `pending_rx` per CQ wake
+- Serial drain at 127us/packet → tail packets wait 100 × 127us = ~12.7 ms before processing
+- Layered on top of the 50 ms `submit_timeout` tick cycle and TCP-style RTT estimation in tquic_client, queue tail packets blow past tquic_client's per-conn handshake timeout
+- Server eventually processes every packet (zero drops, zero errors); tquic_client has already moved on
+- Net: 13-21 of 100 simultaneous handshakes complete; the rest contribute zero rps
+
+This is consistent with every observation: low CPU% (server is blocked on rustls FFI calls, not computing); zero drop counters (every packet IS processed); tquic_server is fine under the same harness (it has a different — likely batched / parallel — accept-loop architecture); h2load shows the same shape with different absolute numbers (single-threaded h2load has a smaller concurrent-handshake burst, so it gets 11 short-conn rps vs tquic_client's 1 — fewer packets contend the serial drain).
+
+**What the existing 5-phase profiler can NOT see:**
+- **Per-packet arrival-to-processing latency.** The instrumentation starts the clock at `record_pkt`, not at packet arrival in `pending_rx`. The 127us avg is the *processing* cost; the queueing wait is invisible.
+- **Per-conn-id packet counts.** No way to see "this conn-id sent 8 Initials; server processed only 3 before tquic_client timed out."
+
+**Real next investigation (replaces all three previous "next steps"):**
+
+1. **Add arrival-to-processing-latency instrumentation.** In `_handle_recvmsg` / pending_rx queue insertion, stamp each datagram with arrival monotonic_us. In `record_pkt`, record `now - stamp` into a new histogram. Expected signal: under saturating-handshake load, queueing tail >> 12.7 ms.
+2. **Add per-conn-id packet counters.** Cheap: a Dict[ConnID, UInt64] incremented at packet-routing time; dump to sidecar on SIGINT. Expected signal: many conn-ids with N≥3 packets but no handshake completion.
+3. **THEN** decide between: (a) batch FFI for `quic_conn_read_hs/write_hs/take_keys` to amortize per-call cost across N packets, (b) multi-fiber accept fan-out to parallelize the serial drain, (c) BufRing migration for h3 (lower priority — buffer-ring exhaustion ruled out, but the legacy `IORING_OP_PROVIDE_BUFFERS` path's syscall cost is still real).
+
+**What this debate cost:**
+- Three diagnoses committed and superseded: FFI dominance (Plan C C5) → buffer-ring exhaustion (post-Plan-C investigation) → harness limits (commit `8c5325e`).
+- Each diagnosis was internally consistent with the data the previous investigation gathered. Each missed data the *previous* one had collected: FFI dominance ignored "99.8% idle"; buffer-ring exhaustion ignored that diagnostic counters disprove kernel-side drops; harness-limits ignored that h2load row 28 already provided cross-client validation.
+
+**Lesson — methodology, not technology:** before each new "TRUE diagnosis" entry, re-read the entire REFERENCE.md and check if the new claim contradicts any *existing* row. Cross-client data, kernel counters, and CPU% measurements live in different sections of the file and were each missed by exactly one investigation. A diagnosis is only as good as the data it integrates.
+
+**Open question (final, this iteration) — required-later, HIGH severity:**
+
+- **What:** Add arrival-to-processing-latency stamps + per-conn-id packet counts to the SIGINT sidecar. Re-run short-conn capture. Expected output: queueing-tail histogram showing P99 ≥ tquic_client's per-conn handshake timeout; per-conn-id counts showing 80+ conn-ids with N≥3 packets but no handshake-complete event.
+  **Severity:** required-later (HIGH) — this is the prerequisite for choosing the right cold-start fix.
+  **Trigger:** anyone returning to the QUIC perf push.
 
 ---
 
