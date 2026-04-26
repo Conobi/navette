@@ -33,6 +33,17 @@ fn monotonic_us() -> UInt64:
 
 
 struct AcceptProfile(Copyable, Movable):
+    """QUIC accept-loop profile counters.
+
+    WARNING: This struct is `Copyable, Movable` for ergonomic test setup,
+    but it holds 3 `List[UInt64]` fields (pkts_per_flush_buckets,
+    per_pkt_total_buckets, hs_latency_us). Each `=` or pass-by-value
+    triggers a deep copy of those lists — silently expensive on hot
+    paths. Plan B threads `AcceptProfile` exclusively via
+    `UnsafePointer[AcceptProfile, MutAnyOrigin]` (see QuicConnection
+    .profile_ptr and H3UdpHandler.profile). Do NOT copy.
+    """
+
     var run_start_us: UInt64
 
     var idle_us_total: UInt64
