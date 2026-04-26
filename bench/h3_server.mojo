@@ -432,6 +432,14 @@ struct H3UdpHandler(BatchCompletionHandler):
     # Plan B profile (always present; dead in off-build).
     var profile: AcceptProfile
     var last_flush_end_us: UInt64
+    # Plan C diagnostic — count kernel-level recvmsg drops + multishot terminations.
+    var enobufs_count: UInt64
+    var multishot_term_count: UInt64
+    # Plan C diagnostic — count silent error swallows in _flush_impl.
+    var quic_server_err_count: UInt64
+    var h3_handler_err_count: UInt64
+    var feed_datagram_err_count: UInt64
+    var quic_server_err_first: Bool   # print first error message only
 
     def __init__(
         out self,
@@ -481,6 +489,12 @@ struct H3UdpHandler(BatchCompletionHandler):
 
         self.profile = AcceptProfile()
         self.last_flush_end_us = UInt64(0)
+        self.enobufs_count = UInt64(0)
+        self.multishot_term_count = UInt64(0)
+        self.quic_server_err_count = UInt64(0)
+        self.h3_handler_err_count = UInt64(0)
+        self.feed_datagram_err_count = UInt64(0)
+        self.quic_server_err_first = False
 
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
@@ -503,6 +517,12 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.pending_submits = take.pending_submits^
         self.profile = take.profile^
         self.last_flush_end_us = take.last_flush_end_us
+        self.enobufs_count = take.enobufs_count
+        self.multishot_term_count = take.multishot_term_count
+        self.quic_server_err_count = take.quic_server_err_count
+        self.h3_handler_err_count = take.h3_handler_err_count
+        self.feed_datagram_err_count = take.feed_datagram_err_count
+        self.quic_server_err_first = take.quic_server_err_first
 
     # --- Conn lookup ---
 
@@ -541,9 +561,11 @@ struct H3UdpHandler(BatchCompletionHandler):
         # Check if multishot is still active.
         if (flags & UInt32(IORING_CQE_F_MORE)) == 0:
             self.multishot_active = False
+            self.multishot_term_count += UInt64(1)
 
         # Error or cancelled — nothing to process.
         if result <= 0:
+            self.enobufs_count += UInt64(1)
             return
 
         # Must have a buffer attached.
@@ -667,7 +689,11 @@ struct H3UdpHandler(BatchCompletionHandler):
                             Span(dcid_copy),
                             now,
                         )
-                except:
+                except e:
+                    self.quic_server_err_count += UInt64(1)
+                    if not self.quic_server_err_first:
+                        self.quic_server_err_first = True
+                        print("h3-bench DIAG: first QuicConnection.server error:", e)
                     self.consumed_bufs.append(pd.buf_id)
                     continue
 
@@ -675,7 +701,10 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var h3: H3HandlerServer[BenchHandler]
                 try:
                     h3 = H3HandlerServer[BenchHandler](quic=quic^, handler=handler^)
-                except:
+                except e:
+                    self.h3_handler_err_count += UInt64(1)
+                    if self.h3_handler_err_count == UInt64(1):
+                        print("h3-bench DIAG: first H3HandlerServer error:", e)
                     self.consumed_bufs.append(pd.buf_id)
                     continue
 
@@ -695,8 +724,10 @@ struct H3UdpHandler(BatchCompletionHandler):
             # Feed datagram to the connection.
             try:
                 self.conn_h3s[conn_idx][].feed_datagram_from_buffer(pd.payload_ptr, pd.payload_len, now)
-            except:
-                pass
+            except e:
+                self.feed_datagram_err_count += UInt64(1)
+                if self.feed_datagram_err_count == UInt64(1):
+                    print("h3-bench DIAG: first feed_datagram_from_buffer error:", e)
 
             # Update peer address.
             var addr_update = List[UInt8](capacity=pd.addr_len)
@@ -740,6 +771,14 @@ struct H3UdpHandler(BatchCompletionHandler):
                 # Write text report to stderr-equivalent (stdout is fine
                 # for the bench; B11 will add structured JSON sidecar).
                 print(self.profile.report_text(), end="")
+                # Plan C diagnostic: surface kernel-level recvmsg drops + multishot terminations + silent error swallows.
+                print("=== Plan C diagnostic counters ===")
+                print("  recvmsg drops (result<=0):       " + String(self.enobufs_count))
+                print("  multishot terminations:          " + String(self.multishot_term_count))
+                print("  QuicConnection.server errors:    " + String(self.quic_server_err_count))
+                print("  H3HandlerServer ctor errors:     " + String(self.h3_handler_err_count))
+                print("  feed_datagram_from_buffer errs:  " + String(self.feed_datagram_err_count))
+                print("=== end ===")
                 self._write_profile_json_sidecar()
                 # Exit cleanly via libc exit().
                 _ = external_call["exit", NoneType](Int32(0))
