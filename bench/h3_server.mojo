@@ -679,6 +679,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.profile.record_arrival_lat(now - pd.arrival_us)
                 else:
                     self.profile.record_arrival_lat(UInt64(0))
+            @parameter
+            if PROFILE_ACCEPT:
+                self.profile.record_conn_pkt(pd.addr_key)
             # Re-lookup conn_idx by addr_key — the index recorded at
             # _handle_recvmsg time may be stale if a timeout completion
             # in the same poll batch did swap-and-pop on conn_h3s.
@@ -750,6 +753,15 @@ struct H3UdpHandler(BatchCompletionHandler):
                 self.feed_datagram_err_count += UInt64(1)
                 if self.feed_datagram_err_count == UInt64(1):
                     print("h3-bench DIAG: first feed_datagram_from_buffer error:", e)
+
+            @parameter
+            if PROFILE_ACCEPT:
+                # Poll handshake-complete state; idempotent record.
+                # is_established() flips True only after CONN_ESTABLISHED bit is
+                # set atomically with QuicEvent.handshake_complete() event
+                # (verified at src/quic/connection.mojo:1779-1786).
+                if self.conn_h3s[conn_idx][]._h3.is_established():
+                    self.profile.record_conn_hs_complete(pd.addr_key)
 
             # Update peer address.
             var addr_update = List[UInt8](capacity=pd.addr_len)
