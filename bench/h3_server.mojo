@@ -24,6 +24,7 @@ from bench.handler import (
 )
 from interop.file_io import read_file, getenv_opt
 from interop.udp import monotonic_us
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle
@@ -342,6 +343,9 @@ struct H3UdpHandler(BatchCompletionHandler):
     var server_config: Int32
     var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
+    # Plan B profile (always present; dead in off-build).
+    var profile: AcceptProfile
+    var last_flush_end_us: UInt64
 
     def __init__(
         out self,
@@ -389,6 +393,9 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.timeout_ts[10] = 0xFA
         self.timeout_ts[11] = 0x02
 
+        self.profile = AcceptProfile()
+        self.last_flush_end_us = UInt64(0)
+
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
         self.conn_map = take.conn_map^
@@ -408,6 +415,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.server_config = take.server_config
         self.timeout_ts = take.timeout_ts
         self.pending_submits = take.pending_submits^
+        self.profile = take.profile^
+        self.last_flush_end_us = take.last_flush_end_us
 
     # --- Conn lookup ---
 
@@ -527,6 +536,15 @@ struct H3UdpHandler(BatchCompletionHandler):
             print("h3-bench: on_flush error:", e)
 
     def _flush_impl(mut self) raises:
+        var t_busy_start = UInt64(0)
+        var n_pkts_at_start = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_busy_start = profile_monotonic_us()
+            if self.last_flush_end_us > UInt64(0):
+                self.profile.record_idle(t_busy_start - self.last_flush_end_us)
+            n_pkts_at_start = len(self.pending_rx)
+
         var now = monotonic_us()
 
         for i in range(len(self.pending_rx)):
@@ -598,6 +616,12 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.consumed_bufs.append(pd.buf_id)
 
         self.pending_rx.clear()
+
+        @parameter
+        if PROFILE_ACCEPT:
+            var t_busy_end = profile_monotonic_us()
+            self.profile.record_flush(n_pkts_at_start, t_busy_end - t_busy_start)
+            self.last_flush_end_us = t_busy_end
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
         """Drain outgoing datagrams from a connection and queue sendmsg."""
