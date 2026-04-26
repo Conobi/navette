@@ -5,7 +5,7 @@
 **Range:** `8c25e1c..ac92e26` (Plan C: 1 commit + plan-write commit; foreign user h2 commits during execution: `88e5812`, `ca19331`)
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`
 **Plan:** `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c.md`
-**Final state:** ⚠ Both "FFI dominance" AND "buffer-ring exhaustion" hypotheses falsified. TRUE diagnosis: bench harness sets the floor, not server.
+**Final state:** ⚠ FOUR diagnoses recorded. (1) FFI dominance — falsified (only times processed packets, not the rate-limiter). (2) Buffer-ring exhaustion — falsified (zero drops on all six diagnostic counters). (3) Bench-harness floor — **also falsified** (REFERENCE.md rows 16-28 already contained N=2 cross-client validation showing both `tquic_client` AND `h2load --h3` drive `tquic_server` to 5-digit rps on the same harness). (4) **CORRECTED diagnosis:** server-side bottleneck is real; mechanism is most-plausibly serial single-fiber `_flush_impl` queueing under saturating-handshake load — invisible to existing 5-phase profiler because it only times *processed* packets, not arrival-to-processing latency. See REFERENCE.md "CORRECTED diagnosis (post-debate, 2026-04-26)" section for the full case.
 
 ## Built vs. planned
 
@@ -203,12 +203,20 @@ For a more robust dominant-cost claim, a longer run (60-90s) would help. But the
 
 ## Next spec recommendations
 
-### Immediate next (high priority)
+### Immediate next (high priority) — REVISED post-debate
 
-1. **Spec a Rust-side counters pass** in `librustls-mojo/quic_hs.rs`. Small (~50 LoC Rust + new FFI getter + bench server invocation). Output: a new sidecar field disambiguating FFI marshalling vs rustls processing time.
+1. **Spec arrival-to-processing-latency instrumentation** in `bench/h3_server.mojo`. Stamp each datagram with `monotonic_us()` at `_handle_recvmsg` / pending_rx insertion; record `now - stamp` into a new histogram at `record_pkt`. Add a per-conn-id packet counter (`Dict[ConnID, UInt64]`) dumped to sidecar on SIGINT. Re-run short-conn capture. Expected signal: queueing-tail P99 ≥ tquic_client's per-conn handshake timeout; per-conn-id counts showing 80+ conn-ids with N≥3 packets and no handshake-complete event. This disambiguates "queueing under saturating drain" from any other server-side mechanism.
 
-2. **After Rust-side counters land**, decide between batch FFI (if marshalling dominates) or handshake cache (if rustls work dominates). Spec the chosen path.
+2. **Conditional on the above:** if queueing tail confirms, spec **multi-fiber accept fan-out** OR **batch FFI** (decision deferred until queueing-tail data shows whether per-packet processing or serial dispatch is the dominant cost). The Rust-side counters pass is *still* useful but is downgraded — without arrival-to-processing data we can't choose between the FFI fixes and the dispatch fixes.
+
+3. **DO NOT** spec server-side optimizations until the queueing-tail data lands. Three preceding diagnoses each picked an optimization that the next investigation invalidated; the discipline now is: instrument, then optimize.
+
+### Methodology fix — required-later (HIGH severity)
+
+**What:** Before any future "TRUE diagnosis" entry in REFERENCE.md, re-read every existing row and verify the new claim doesn't contradict prior data. The four-diagnosis chain in this branch was caused by each investigation integrating only its own freshly-gathered data while ignoring REFERENCE.md's existing cross-client row (h2load) and tquic_server reference column.
+**Severity:** required-later (HIGH).
+**Trigger:** before drafting any future REFERENCE.md hypothesis-pass log entry.
 
 ### Before either spec — verify integration
 
-The branch `feat/quic-accept-loop-instrumentation` holds Plans B + C + the user's h2-perf work. Before specing the Rust-side counters, integrate this branch to main (FF-merge) so the next spec writes against current production code, not a feature branch. The user's pending h2 commits (`88e5812`, `ca19331`) ride along; coordinate.
+The branch `feat/quic-accept-loop-instrumentation` holds Plans B + C + the user's h2-perf work. Before specing the next instrumentation pass, integrate this branch to main (FF-merge) so the next spec writes against current production code, not a feature branch. The user's pending h2 commits (`88e5812`, `ca19331`) ride along; coordinate.
