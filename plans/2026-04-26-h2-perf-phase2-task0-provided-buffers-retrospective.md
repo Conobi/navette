@@ -15,7 +15,8 @@ measurements were noisy.
 | Task 0 v1 (provide_buffers SQE) | SQE-per-reprovide + buffer-pool tree | 2 589 | n/a (regression) |
 | Task 0 Step A (register_buf_ring) | userspace BufRing.add_buffer; copy in recv | **10 094** | 9 608 – 10 108 |
 | Task 0 Step B (no-copy Span) | drop recv copy, Span over ring slot | **9 960** | 9 496 – 9 990 |
-| **Phase 2 Task 1 (coroutine pool)** | per-conn `CoroutinePool(capacity=16)` | **10 620** | 10 617 – 10 645 |
+| Phase 2 Task 1 (coroutine pool) | per-conn `CoroutinePool(capacity=16)` | **10 620** | 10 617 – 10 645 |
+| **Phase 2 Task 1.5 (bulk extends)** | `_stage_send` / `_flush_outbound` / send-buf swap → `List.extend` | **17 893** | 17 733 – 17 895 |
 
 Task 1 win **+5.3 % vs Step B median, +2.3 % vs single-capture
 pre-Task 0 baseline.** Run-to-run spread collapsed from ~5 % to
