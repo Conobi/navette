@@ -11,3 +11,4 @@ See plans/2026-04-27-h2-perf-roadmap-sprint-sequence.md § Sprint 1.
 """
 
 from .io_trait import Io
+from .io_uring import IoUring

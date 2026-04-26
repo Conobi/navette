@@ -44,7 +44,7 @@ from boucle.handle import RawHandle
 from boucle.completion import BufRing
 
 
-trait Io(Movable):
+trait Io:
     """Submission-side I/O surface for mojo-net servers.
 
     All `submit_*` methods raise on submission-queue overflow; callers
