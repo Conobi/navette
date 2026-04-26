@@ -1588,11 +1588,19 @@ struct QuicConnection(Movable):
                     for i in range(len(crypto_data)):
                         data_buf[i] = crypto_data[i]
 
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            self.profile_rustls_us_accum -= monotonic_us()
                     var rc = lib[].quic_conn_read_hs(
                         self.conn_handle,
                         data_buf,
                         Int32(len(crypto_data)),
                     )
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            self.profile_rustls_us_accum += monotonic_us()
                     data_buf.free()
 
                     if rc < 0:
@@ -1609,6 +1617,10 @@ struct QuicConnection(Movable):
             out_written[0] = Int32(0)
             out_kc[0] = UInt8(0)
 
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_rustls_us_accum -= monotonic_us()
             var rc = lib[].quic_conn_write_hs(
                 self.conn_handle,
                 out_buf,
@@ -1616,6 +1628,10 @@ struct QuicConnection(Movable):
                 out_written,
                 out_kc,
             )
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_rustls_us_accum += monotonic_us()
 
             if rc < 0:
                 var err = lib[].last_error()
@@ -1646,9 +1662,17 @@ struct QuicConnection(Movable):
                 var keys_handle_buf = _heap_alloc[Int32](1).as_any_origin()
                 keys_handle_buf[0] = Int32(-1)
 
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        self.profile_rustls_us_accum -= monotonic_us()
                 var take_rc = lib[].quic_conn_take_keys(
                     self.conn_handle, keys_handle_buf
                 )
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        self.profile_rustls_us_accum += monotonic_us()
 
                 if take_rc < 0:
                     var err = lib[].last_error()
