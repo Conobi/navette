@@ -319,8 +319,8 @@ struct H2ServerHandler(CompletionHandler):
         if len(ct) == 0:
             return
         if self.connections[idx][].send_in_flight:
-            for i in range(len(ct)):
-                self.connections[idx][].send_pending.append(ct[i])
+            # Bulk move into pending (was per-byte append: ~16% self).
+            self.connections[idx][].send_pending.extend(ct^)
             return
         self.connections[idx][].send_buf = ct^
         self._queue_send(idx)
@@ -472,12 +472,9 @@ struct H2ServerHandler(CompletionHandler):
         var sent = Int(result)
         var buf_len = len(self.connections[idx][].send_buf)
         if sent < buf_len:
-            # Partial send — keep unsent tail
+            # Partial send — keep unsent tail. Bulk-extend (was per-byte loop).
             var remaining = List[UInt8](capacity=buf_len - sent)
-            var i = sent
-            while i < buf_len:
-                remaining.append(self.connections[idx][].send_buf[i])
-                i += 1
+            remaining.extend(Span(self.connections[idx][].send_buf)[sent:buf_len])
             self.connections[idx][].send_buf = remaining^
             self._queue_send(idx)
             return
@@ -485,12 +482,15 @@ struct H2ServerHandler(CompletionHandler):
         self.connections[idx][].send_buf = List[UInt8]()
 
         if len(self.connections[idx][].send_pending) > 0:
-            var n_pending = len(self.connections[idx][].send_pending)
-            var pending = List[UInt8](capacity=n_pending)
-            for i in range(n_pending):
-                pending.append(self.connections[idx][].send_pending[i])
+            # Bulk-extend send_buf from a Span over pending; cheaper than
+            # the prior per-byte append loop. (A direct field-move
+            # through `connections[idx][]` is rejected by Mojo's origin
+            # checker; this is a single bulk memcpy instead.)
+            var n = len(self.connections[idx][].send_pending)
+            var fresh = List[UInt8](capacity=n)
+            fresh.extend(Span(self.connections[idx][].send_pending))
             self.connections[idx][].send_pending = List[UInt8]()
-            self.connections[idx][].send_buf = pending^
+            self.connections[idx][].send_buf = fresh^
             self._queue_send(idx)
             return
 

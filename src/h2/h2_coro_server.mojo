@@ -300,10 +300,11 @@ struct H2CoroServer(Movable):
         ctx_ptr.free()
 
     def _flush_outbound(mut self):
-        """Move pending outbound bytes from the H2Connection into our buffer."""
+        """Move pending outbound bytes from the H2Connection into our buffer.
+        Bulk-extend (was per-byte append: ~12% self post-Task-1)."""
         var pending = self._conn.data_to_send()
-        for i in range(len(pending)):
-            self._outbuf.append(pending[i])
+        if len(pending) > 0:
+            self._outbuf.extend(pending^)
 
     def _resume_and_handle_error(mut self, stream_id: Int) raises:
         """Resume a stream's coroutine, catching errors and sending
