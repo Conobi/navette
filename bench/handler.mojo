@@ -765,20 +765,25 @@ struct BenchHandler(StreamHandler):
 # ---------------------------------------------------------------------------
 
 
-def bench_h2_body_fn(mut yielder: CoroYielder) raises:
-    """CoroBody for H2CoroServer: dispatch request from per-stream context."""
-    var ctx = yielder.user_data().bitcast[H2CoroStreamCtx]()
-    var state_ptr = ctx[].extra_data.bitcast[BenchState]().as_any_origin()
+def bench_h2_body_fn(
+    ctx_ptr: UnsafePointer[H2CoroStreamCtx, MutAnyOrigin],
+) raises:
+    """H2BodyFn for H2CoroServer (Sprint 1 Path A — sync handler)."""
+    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_any_origin()
     _dispatch_request(
-        ctx[].request.target,
-        ctx[].request.headers,
-        ctx[].resp_writer,
+        ctx_ptr[].request.target,
+        ctx_ptr[].request.headers,
+        ctx_ptr[].resp_writer,
         state_ptr,
     )
 
 
 def bench_h3_body_fn(mut yielder: CoroYielder) raises:
-    """CoroBody for H3CoroServer: dispatch request from per-stream context."""
+    """CoroBody for H3CoroServer: dispatch request from per-stream context.
+
+    Note: H3 still uses stackful coroutines until Sprint 2 brings Path A
+    to the H3 server. The signature divergence between H2 and H3 here is
+    temporary."""
     var ctx = yielder.user_data().bitcast[H3CoroStreamCtx]()
     var state_ptr = ctx[].extra_data.bitcast[BenchState]().as_any_origin()
     _dispatch_request(
