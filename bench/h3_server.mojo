@@ -260,10 +260,15 @@ struct PendingDatagram(Copyable, Movable):
     var addr_len: Int
     var addr_key: String
     var dcid: List[UInt8]
+    # Arrival-to-processing queueing-tail instrumentation.
+    # Read only when PROFILE_ACCEPT is True; off-build the value is always 0
+    # and any computed `now - arrival_us` delta is meaningless.
+    var arrival_us: UInt64
 
     def __init__(out self, buf_id: UInt16, buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
                  payload_ptr: UnsafePointer[UInt8, MutAnyOrigin], payload_len: Int,
-                 addr_offset: Int, addr_len: Int, var addr_key: String, var dcid: List[UInt8]):
+                 addr_offset: Int, addr_len: Int, var addr_key: String, var dcid: List[UInt8],
+                 arrival_us: UInt64 = UInt64(0)):
         self.buf_id = buf_id
         self.buf_ptr = buf_ptr
         self.payload_ptr = payload_ptr
@@ -272,6 +277,7 @@ struct PendingDatagram(Copyable, Movable):
         self.addr_len = addr_len
         self.addr_key = addr_key^
         self.dcid = dcid^
+        self.arrival_us = arrival_us
 
     def __init__(out self, *, other: Self):
         self.buf_id = other.buf_id
@@ -282,6 +288,7 @@ struct PendingDatagram(Copyable, Movable):
         self.addr_len = other.addr_len
         self.addr_key = String(other.addr_key)
         self.dcid = List[UInt8](copy=other.dcid)
+        self.arrival_us = other.arrival_us
 
     def __init__(out self, *, deinit take: Self):
         self.buf_id = take.buf_id
@@ -292,6 +299,7 @@ struct PendingDatagram(Copyable, Movable):
         self.addr_len = take.addr_len
         self.addr_key = take.addr_key^
         self.dcid = take.dcid^
+        self.arrival_us = take.arrival_us
 
 
 # ── UdpTxSlot ─────────────────────────────────────────────────────────
