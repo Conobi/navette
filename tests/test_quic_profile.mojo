@@ -514,6 +514,43 @@ def test_report_json_arrival_latency_block() raises:
     print("PASS: test_report_json_arrival_latency_block")
 
 
+def test_report_json_per_conn_aggregated_block() raises:
+    """Populate dict with conns of varying counts; verify 8-bucket histogram totals match."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Bucket 0 (size=1): 5 conns
+    for i in range(5):
+        p.record_conn_pkt(String("b0_") + String(i))
+    # Bucket 1 (size=2-3): 4 conns x 2 packets each
+    for i in range(4):
+        var k = String("b1_") + String(i)
+        p.record_conn_pkt(k)
+        p.record_conn_pkt(k)
+    # Bucket 2 (size=4-7): 3 conns x 5 packets each
+    for i in range(3):
+        var k = String("b2_") + String(i)
+        for _ in range(5):
+            p.record_conn_pkt(k)
+    # Bucket 3 (size=8-15): 2 conns x 10 packets each
+    for i in range(2):
+        var k = String("b3_") + String(i)
+        for _ in range(10):
+            p.record_conn_pkt(k)
+    # Mark some hs_complete: 2 from bucket 0, 1 from bucket 2
+    p.record_conn_hs_complete(String("b0_0"))
+    p.record_conn_hs_complete(String("b0_1"))
+    p.record_conn_hs_complete(String("b2_0"))
+
+    var j = p.report_json()
+    assert_true('"per_conn_pkts_buckets":' in j, "per_conn_pkts_buckets key present")
+    assert_true('"conns_total": 14' in j, "conns_total = 5+4+3+2 = 14")
+    # 14 total, 3 hs_complete -> 11 without hs_complete
+    assert_true('"conns_with_pkts_no_hs_complete": 11' in j, "no-hs scalar = 11")
+    # Histogram totals: bucket[0]=5, bucket[1]=4, bucket[2]=3, bucket[3]=2, others=0
+    assert_true('"per_conn_pkts_buckets": [5, 4, 3, 2, 0, 0, 0, 0]' in j, "8-bucket histogram matches")
+    print("PASS: test_report_json_per_conn_aggregated_block")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -538,4 +575,5 @@ def main() raises:
     test_record_conn_pkt_increment()
     test_record_conn_hs_complete_idempotent()
     test_report_json_arrival_latency_block()
+    test_report_json_per_conn_aggregated_block()
     print("All Plan A tests passed.")
