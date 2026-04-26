@@ -266,7 +266,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "=== end ===\n"
         return s^
 
-    def report_json(self) -> String:
+    def report_json(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
         var n_closed = self.pkt_count - self.per_pkt_total_overflow
@@ -334,6 +334,29 @@ struct AcceptProfile(Copyable, Movable):
             if i < 23:
                 s += ", "
         s += "],\n"
+
+        # Per-conn aggregated histogram + scalar.
+        # Walk conn_pkt_counts.items(); dispatch each conn's packet count via _pkts_per_flush_bucket.
+        var per_conn_buckets = List[UInt64]()
+        for _ in range(8):
+            per_conn_buckets.append(UInt64(0))
+        var conns_total: UInt64 = UInt64(0)
+        var conns_no_hs: UInt64 = UInt64(0)
+        for entry in self.conn_pkt_counts.items():
+            conns_total += UInt64(1)
+            var bkt = _pkts_per_flush_bucket(Int(entry.value))
+            per_conn_buckets[bkt] += UInt64(1)
+            if entry.key not in self.conn_hs_complete:
+                conns_no_hs += UInt64(1)
+
+        s += '  "per_conn_pkts_buckets": ['
+        for i in range(8):
+            s += String(per_conn_buckets[i])
+            if i < 7:
+                s += ", "
+        s += "],\n"
+        s += '  "conns_total": ' + String(conns_total) + ',\n'
+        s += '  "conns_with_pkts_no_hs_complete": ' + String(conns_no_hs) + ',\n'
 
         s += '  "handshake": {\n'
         s += '    "arrivals": ' + String(self.hs_arrivals) + ', '
