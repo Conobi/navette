@@ -202,7 +202,7 @@ struct AcceptProfile(Copyable, Movable):
         """
         self.conn_hs_complete[addr_key] = True
 
-    def report_text(self) -> String:
+    def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
         var n_closed = self.pkt_count - self.per_pkt_total_overflow
@@ -263,6 +263,74 @@ struct AcceptProfile(Copyable, Movable):
         s += "  p50=" + String(lp50) + "   p90=" + String(lp90)
         s += "   p99=" + String(lp99) + "   max=" + String(lmax)
         s += "   (n=" + String(len(self.hs_latency_us)) + ")\n"
+
+        # Arrival-to-processing latency.
+        s += "Arrival-to-processing latency (bucket-estimated p_n, us):\n"
+        var arr_total_obs: UInt64 = UInt64(0)
+        for i in range(24):
+            arr_total_obs += self.arrival_lat_us_buckets[i]
+        var arr_p50 = _bucket_percentile(self.arrival_lat_us_buckets, arr_total_obs, 50.0)
+        var arr_p90 = _bucket_percentile(self.arrival_lat_us_buckets, arr_total_obs, 90.0)
+        var arr_p99 = _bucket_percentile(self.arrival_lat_us_buckets, arr_total_obs, 99.0)
+        s += "  total:           p50=" + String(arr_p50) + "  p90=" + String(arr_p90) + "  p99=" + String(arr_p99)
+        s += "  (n=" + String(arr_total_obs) + ", overflow=" + String(self.arrival_lat_us_overflow) + ")\n"
+        s += "  total_us:        " + String(self.arrival_lat_us_total) + "\n\n"
+
+        # Per-connection packet counts (aggregated histogram).
+        s += "Per-connection packet counts (aggregated 8-bucket histogram):\n"
+        var pc_buckets = List[UInt64]()
+        for _ in range(8):
+            pc_buckets.append(UInt64(0))
+        var pc_total: UInt64 = UInt64(0)
+        var pc_no_hs: UInt64 = UInt64(0)
+        for entry in self.conn_pkt_counts.items():
+            pc_total += UInt64(1)
+            var b = _pkts_per_flush_bucket(Int(entry.value))
+            pc_buckets[b] += UInt64(1)
+            if entry.key not in self.conn_hs_complete:
+                pc_no_hs += UInt64(1)
+        var pc_labels = List[String]()
+        pc_labels.append(String("size=1     "))
+        pc_labels.append(String("size=2-3   "))
+        pc_labels.append(String("size=4-7   "))
+        pc_labels.append(String("size=8-15  "))
+        pc_labels.append(String("size=16-31 "))
+        pc_labels.append(String("size=32-63 "))
+        pc_labels.append(String("size=64-127"))
+        pc_labels.append(String("size=128+  "))
+        for i in range(8):
+            s += "  " + pc_labels[i] + " " + _fmt_count(pc_buckets[i]) + "\n"
+        s += "  conns_total:                  " + _fmt_count(pc_total) + "\n"
+        s += "  conns_with_pkts_no_hs_complete:" + _fmt_count(pc_no_hs) + "\n\n"
+
+        # Top-50 worst offenders (parallel insertion sort).
+        s += "Worst offenders (top 50 addr_keys by pkt_count, no hs_complete):\n"
+        var wo_keys = List[String]()
+        var wo_vals = List[UInt64]()
+        for entry in self.conn_pkt_counts.items():
+            if entry.key in self.conn_hs_complete:
+                continue
+            wo_keys.append(entry.key)
+            wo_vals.append(entry.value)
+        var wo_n = len(wo_vals)
+        for i in range(1, wo_n):
+            var v = wo_vals[i]
+            var k = wo_keys[i]
+            var j = i - 1
+            while j >= 0 and wo_vals[j] < v:
+                wo_vals[j + 1] = wo_vals[j]
+                wo_keys[j + 1] = wo_keys[j]
+                j -= 1
+            wo_vals[j + 1] = v
+            wo_keys[j + 1] = k
+        var wo_cap = wo_n
+        if wo_cap > 50:
+            wo_cap = 50
+        for i in range(wo_cap):
+            s += "  " + wo_keys[i] + "  pkt_count=" + String(wo_vals[i]) + "\n"
+        if wo_n == 0:
+            s += "  (none)\n"
+        s += "\n"
         s += "=== end ===\n"
         return s^
 

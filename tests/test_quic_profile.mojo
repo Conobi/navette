@@ -594,6 +594,26 @@ def test_report_json_worst_conns() raises:
     print("PASS: test_report_json_worst_conns")
 
 
+def test_report_text_new_sections() raises:
+    """Verify report_text emits human-readable sections for the three new blocks."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_arrival_lat(UInt64(150))
+    p.record_arrival_lat(UInt64(2_000_000))
+    p.record_conn_pkt(String("X:1"))
+    p.record_conn_pkt(String("Y:2"))
+    p.record_conn_pkt(String("Y:2"))
+    p.record_conn_pkt(String("Y:2"))
+    p.record_conn_hs_complete(String("X:1"))
+    var t = p.report_text()
+    assert_true("Arrival-to-processing latency" in t, "arrival-lat section header")
+    assert_true("Per-connection packet counts" in t, "per-conn section header")
+    assert_true("Worst offenders" in t, "worst-offenders section header")
+    # Sanity: Y:2 is not complete and has 3 packets — must surface in worst offenders
+    assert_true("Y:2" in t, "non-complete addr_key surfaces in worst offenders")
+    print("PASS: test_report_text_new_sections")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -620,4 +640,5 @@ def main() raises:
     test_report_json_arrival_latency_block()
     test_report_json_per_conn_aggregated_block()
     test_report_json_worst_conns()
+    test_report_text_new_sections()
     print("All Plan A tests passed.")
