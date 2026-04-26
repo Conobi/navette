@@ -671,6 +671,14 @@ struct H3UdpHandler(BatchCompletionHandler):
 
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
+            @parameter
+            if PROFILE_ACCEPT:
+                # Queueing wait: now (flush start) - arrival_us (recvmsg ingress).
+                # delta is the wall-clock time the packet sat in pending_rx.
+                if pd.arrival_us > UInt64(0) and now >= pd.arrival_us:
+                    self.profile.record_arrival_lat(now - pd.arrival_us)
+                else:
+                    self.profile.record_arrival_lat(UInt64(0))
             # Re-lookup conn_idx by addr_key — the index recorded at
             # _handle_recvmsg time may be stale if a timeout completion
             # in the same poll batch did swap-and-pop on conn_h3s.
