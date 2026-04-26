@@ -709,6 +709,10 @@ struct H3UdpHandler(BatchCompletionHandler):
 
             # Close dead connections (swap-and-pop).
             if self.conn_h3s[i][].should_close():
+                @parameter
+                if PROFILE_ACCEPT:
+                    if not self.conn_h3s[i][]._h3.is_established():
+                        self.profile.record_handshake_timeout(UInt64(1))
                 var ptr = self.conn_h3s[i]
                 ptr.destroy_pointee()
                 ptr.free()
