@@ -679,6 +679,16 @@ struct QuicConnection(Movable):
         header unprotection and payload decryption, eliminating intermediate
         copies where possible.
         """
+        # Plan B: per-iteration phase timestamps. Always-declared in
+        # off-build (compiler folds unused locals); only written by
+        # the @parameter if PROFILE_ACCEPT branches.
+        var t_iter_start = UInt64(0)
+        var ph_header_parse_us = UInt64(0)
+        var ph_hp_us = UInt64(0)
+        var ph_aead_us = UInt64(0)
+        var ph_frame_parse_us = UInt64(0)
+        var ph_sm_us = UInt64(0)
+
         self.bytes_received += UInt64(buf_len)
         self.idle_timer = now
 
@@ -688,6 +698,15 @@ struct QuicConnection(Movable):
 
         var offset = 0
         while offset < buf_len:
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    t_iter_start = monotonic_us()
+                    if self.profile_first_iter_done:
+                        self.profile_rustls_us_accum = UInt64(0)
+                    # Iter 1: do NOT reset; bleed in constructor cost.
+
+
             # Skip datagram-level zero padding (RFC 9000 §12.4).
             # A zero first byte is never a valid QUIC packet (long headers
             # require bit 7, short headers require bit 6).
@@ -704,11 +723,19 @@ struct QuicConnection(Movable):
                 remaining_list.append(remaining_ptr[i])
 
             # 2. Parse packet header.
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    ph_header_parse_us = monotonic_us()
             var header_result = parse_packet_header(
                 Span(remaining_list), len(self.local_cid)
             )
             var header = header_result[0].copy()
             var header_end = header_result[1]
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    ph_header_parse_us = monotonic_us() - ph_header_parse_us
 
             # 2b. Adopt peer's SCID as peer_cid (RFC 9000 §7.2).
             if header.is_long_header and len(header.scid) > 0:
@@ -750,9 +777,17 @@ struct QuicConnection(Movable):
             var decrypt_ok = True
             try:
                 # 6. Unprotect header in-place (zero-copy).
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_hp_us = monotonic_us()
                 var hp_result = self.protect.unprotect_header_ptr(
                     space_idx, pkt_ptr, pkt_len, header.pn_offset
                 )
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_hp_us = monotonic_us() - ph_hp_us
                 var first_byte = hp_result[0]
                 var pn_length = hp_result[1]
 
@@ -769,9 +804,17 @@ struct QuicConnection(Movable):
 
                 # 8. Decrypt payload in-place (zero-copy).
                 var header_len = header.pn_offset + pn_length
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_aead_us = monotonic_us()
                 var plaintext_len = self.protect.decrypt_payload_in_place(
                     space_idx, full_pn, header_len, pkt_ptr, pkt_len
                 )
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_aead_us = monotonic_us() - ph_aead_us
 
                 # 9. Server validates address on first Handshake decrypt.
                 if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
@@ -783,6 +826,10 @@ struct QuicConnection(Movable):
                 var pt_list = List[UInt8](capacity=plaintext_len)
                 for i in range(plaintext_len):
                     pt_list.append(pkt_ptr[header_len + i])
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_frame_parse_us = monotonic_us()
                 var reader = ByteReader(Span(pt_list))
                 var frames = parse_frames(reader)
                 var ack_eliciting = False
@@ -790,6 +837,10 @@ struct QuicConnection(Movable):
                     if frames[i].is_ack_eliciting():
                         ack_eliciting = True
                     self._dispatch_frame(frames[i], space_idx, now)
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
 
                 # 11. Update PN space.
                 self.spaces[space_idx].on_packet_received(full_pn, ack_eliciting)
@@ -816,10 +867,36 @@ struct QuicConnection(Movable):
             # 12. Drive handshake OUTSIDE try/except so TLS errors
             # propagate to the caller (they are fatal, not recoverable).
             if decrypt_ok:
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_sm_us = monotonic_us()
                 self._drive_handshake(now)
+                @parameter
+                if PROFILE_ACCEPT:
+                    if Int(self.profile_ptr) != 0:
+                        ph_sm_us = monotonic_us() - ph_sm_us
 
             if not decrypt_ok:
                 break  # Stop processing coalesced packets
+
+            # Plan B: emit per-packet record at iteration end. Bleed-in:
+            # iter 1 inherits constructor's profile_rustls_us_accum.
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    var t_iter_end = monotonic_us()
+                    var total_us = t_iter_end - t_iter_start
+                    self.profile_ptr[].record_pkt(
+                        total_us=total_us,
+                        ffi_us=self.profile_rustls_us_accum,
+                        hp_us=ph_hp_us,
+                        aead_us=ph_aead_us,
+                        header_parse_us=ph_header_parse_us,
+                        frame_parse_us=ph_frame_parse_us,
+                        sm_us=ph_sm_us,
+                    )
+                    self.profile_first_iter_done = True
 
             offset += pkt_len
 
