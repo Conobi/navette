@@ -421,6 +421,41 @@ def test_report_json_canned() raises:
     print("PASS: test_report_json_canned")
 
 
+def test_record_arrival_lat_buckets() raises:
+    """Verify record_arrival_lat dispatches into 24-bucket histogram and accumulates total."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Cover several bucket boundaries (mirrors _per_pkt_bucket: bucket[0]={0}; bucket[i]=[2^(i-1), 2^i)).
+    p.record_arrival_lat(UInt64(0))           # bucket 0
+    p.record_arrival_lat(UInt64(1))           # bucket 1
+    p.record_arrival_lat(UInt64(3))           # bucket 2
+    p.record_arrival_lat(UInt64(100))         # bucket 7 ([64, 128))
+    p.record_arrival_lat(UInt64(1_000_000))   # bucket 20 ([524288, 1048576))
+    assert_true(p.arrival_lat_us_buckets[0] == UInt64(1), "bucket 0 = 1")
+    assert_true(p.arrival_lat_us_buckets[1] == UInt64(1), "bucket 1 = 1")
+    assert_true(p.arrival_lat_us_buckets[2] == UInt64(1), "bucket 2 = 1")
+    assert_true(p.arrival_lat_us_buckets[7] == UInt64(1), "bucket 7 = 1")
+    assert_true(p.arrival_lat_us_buckets[20] == UInt64(1), "bucket 20 = 1")
+    assert_true(p.arrival_lat_us_total == UInt64(0 + 1 + 3 + 100 + 1_000_000), "total summed")
+    assert_true(p.arrival_lat_us_overflow == UInt64(0), "no overflow")
+    print("PASS: test_record_arrival_lat_buckets")
+
+
+def test_record_arrival_lat_overflow() raises:
+    """Verify values >= 2^23 us land in arrival_lat_us_overflow."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_arrival_lat(UInt64(8_388_608))   # 2^23 — overflow boundary
+    p.record_arrival_lat(UInt64(10_000_000))  # > 2^23 — overflow
+    assert_true(p.arrival_lat_us_overflow == UInt64(2), "overflow = 2")
+    assert_true(p.arrival_lat_us_total == UInt64(8_388_608 + 10_000_000), "overflow values still summed in total")
+    var sum_buckets: UInt64 = UInt64(0)
+    for i in range(24):
+        sum_buckets += p.arrival_lat_us_buckets[i]
+    assert_true(sum_buckets == UInt64(0), "no closed bucket entries")
+    print("PASS: test_record_arrival_lat_overflow")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -440,4 +475,6 @@ def main() raises:
     test_bucket_percentile_overflow()
     test_report_text_canned()
     test_report_json_canned()
+    test_record_arrival_lat_buckets()
+    test_record_arrival_lat_overflow()
     print("All Plan A tests passed.")
