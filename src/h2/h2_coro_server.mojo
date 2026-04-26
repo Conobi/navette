@@ -18,6 +18,7 @@
 from std.collections import Dict
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.sys.info import size_of
 
 from .connection import (
     H2Connection,
@@ -130,6 +131,32 @@ struct CoroStreamCtx(Movable):
 
 
 # ---------------------------------------------------------------------------
+# Per-stream memory budget (R8 in the sprint roadmap)
+# ---------------------------------------------------------------------------
+#
+# Pre-Path-A: 64 KiB stack + ~400 B ucontext + ~200 B CoroHandle = ~65 KiB.
+# Post-Path-A: just sizeof(CoroStreamCtx) for the heap-allocated context.
+#
+# The hard cap is 1024 B. Today we land around 608 B, dominated by:
+#   Request (248) + RecvBody (96) + ResponseWriter (216) + Capabilities (16)
+# = 576 B for the protocol holders, the rest being small ints/bools.
+#
+# Trimming the holders is out of scope for Sprint 1 (the architectural
+# 100× memory reduction is the headline). A future sprint may revisit.
+#
+# The check fires inside `_check_stream_ctx_size` below, called at the
+# top of every H2CoroServer constructor — `comptime assert` cannot live
+# at module scope in Mojo 0.26, so this is the cleanest workaround.
+
+
+fn _check_stream_ctx_size():
+    comptime assert size_of[CoroStreamCtx]() < 1024, (
+        "CoroStreamCtx exceeded R8 budget (1024 B) — investigate before"
+        " raising the cap"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _CoroStreamPtr — thin wrapper so Dict[Int, _CoroStreamPtr] satisfies
 # CollectionElement (Copyable + Movable) even if UnsafePointer does not.
 # ---------------------------------------------------------------------------
@@ -195,6 +222,7 @@ struct H2CoroServer(Movable):
         ](),
     ) raises:
         """Create with default production config (server-side)."""
+        _check_stream_ctx_size()
         self._conn = H2Connection(
             client_side=False,
             config=h2_production_config(client_side=False),
