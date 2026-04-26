@@ -106,7 +106,12 @@ the way, the serial nature plus per-packet FFI roundtrips through the
 rustls global lock would explain the symptom (low CPU + high handshake
 timeout rate under concurrency).
 
-### 2026-04-26 — accept-loop-instrumentation-saturating-handshake — DATA (CONFIRMED: FFI dominance)
+### 2026-04-26 — accept-loop-instrumentation-saturating-handshake — DATA (REVISED: buffer-ring exhaustion, not FFI dominance)
+
+**Post-capture independent investigation revealed the on-server "FFI dominance" finding below is a red herring.** A subagent traced the actual cold-start path and identified buffer-ring reprovision delay as the rate-limiter. Summary at end of this entry; the original analysis is preserved verbatim for audit.
+
+---
+
 
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`. Plan: `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c.md`. Goal: re-capture the missing cold-start data after Plan B's long-conn capture only saw 5 handshakes (steady-state).
 
@@ -139,17 +144,51 @@ vs calibrated 2026-04-25 baseline: long-conn 412 rps, short-conn 1 rps. **Gate: 
 
 **Methodology:** Plan C's two captures replace B14's single steady-state capture. C1 verified the off-build calibrated baseline still reproduces (within 2% on long-conn rps; short-conn slower than calibrated 1 rps, ~0.5 rps median — even more saturating-handshake-bottlenecked). Both on-build captures used the harness's `start-server.sh` + `run-tquic-client.sh` (or direct `docker run` for `--max-concurrent-conns 100` override) + manual `docker kill --signal=SIGINT bench-h3` + `docker cp` exfiltration pattern.
 
-**Next hypothesis (synthesis — required-later, high severity):**
+**Next hypothesis (synthesis — original, NOW SUPERSEDED — see corrected diagnosis below):**
 
-The cold-start floor is the per-packet rustls FFI roundtrip through `_drive_handshake`. At saturating-handshake load with serialized single-fiber `_flush_impl`, a 127us-per-packet FFI cost multiplies into the observed timeout floor (~400 attempts → 3-10 successes per 30s with 99% timeouts; calibrated baseline). Two follow-up specs are concrete and actionable:
+~~The cold-start floor is the per-packet rustls FFI roundtrip through `_drive_handshake`. At saturating-handshake load with serialized single-fiber `_flush_impl`, a 127us-per-packet FFI cost multiplies into the observed timeout floor.~~
 
-1. **Rust-side counters in `librustls-mojo/quic_hs.rs`** (PREREQUISITE for #2). Disambiguate FFI roundtrip overhead from rustls work itself. If most of the 127us is FFI marshalling (heap-alloc + copy + return-value-build), batch FFI is the fix. If most is rustls processing (TLS handshake state machine), the optimisation is much harder (requires either rustls upstream changes or a handshake-cache).
+This synthesis is wrong. The FFI cost is real but it's measured on the 233 packets that arrived; it cannot be the rate-limiter when those 233 packets accrue at only ~7/sec. Something upstream throttles arrival.
 
-2. **Either FFI batching OR multi-fiber accept fan-out**, depending on what #1 reveals:
-   - If FFI marshalling dominates: spec a batch FFI for `quic_conn_read_hs` / `quic_conn_write_hs` / `quic_conn_take_keys` to amortize per-call overhead.
-   - If rustls work dominates: multi-fiber accept fan-out won't help (rustls global lock would serialize); instead, spec a handshake-cache for repeated client-Initial patterns (Retry/0-RTT acceleration).
+---
 
-Trigger: anyone returning to the QUIC perf push.
+## Corrected diagnosis (post-investigation, 2026-04-26)
+
+**The cold-start floor is buffer-ring exhaustion in `bench/h3_server.mojo`'s io_uring provided-buffer pool, not FFI cost.**
+
+**Root cause** (traced in `bench/h3_server.mojo:main()` lines ~894-919 and `boucle/boucle/completion.mojo:774-789`): the bench's main loop reprovisions consumed buffers AFTER `loop.poll()` returns and queues `reprovide_buffer` SQEs in the next iteration's submission batch. Those SQEs do not reach the kernel until the next `submit_and_wait()` call. During that gap, the kernel has no buffers; new multishot recvmsg completions arrive with `result <= 0` (ENOBUFS) and terminate the multishot. The `_handle_recvmsg` early-return on `result <= 0` means no packet processed, no buffer consumed, no signal that anything was dropped.
+
+Under saturating-handshake load (4×25=100 clients sending Initial packets simultaneously):
+- First poll cycle: kernel drains all ~1024 pool buffers
+- `on_flush()` processes them serially with FFI cost (this is where the 127us number comes from — it's REAL but only for these few packets)
+- Returns to main; consumed_bufs queued for reprovision
+- Multishot terminates; main re-arms it but pool is empty → tight ENOBUFS loop
+- The 50ms `submit_timeout` tick is the only thing that breaks the loop: each tick fires a fresh `poll()`, which submits queued reprovides via `submit_and_wait`, kernel sees buffers, brief acceptance window before re-exhaustion
+- Effective handshake accept rate is gated by the 50ms cycle (~20 windows/sec)
+
+**This explains every observed paradox:**
+
+| Observed | Real cause |
+|---|---|
+| Server 99.8% idle | Blocked in `poll()` waiting for CQEs that can't arrive (no kernel buffers) |
+| Only 17 arrivals in 32s | Most Initials dropped at kernel-recvmsg layer before reaching pending_rx |
+| Server-side timeout count = 0 | Server only sees the connections that DID arrive; the 80+ that didn't never registered |
+| FFI dominance (127us shim_ffi) | Measured cost on the few packets that escaped buffer starvation |
+| Successful handshake p50=879us | Fast when packets do get through |
+
+**What "batch FFI" would NOT fix:** the dropped Initials. FFI cost is invisible to packets the server never sees. Batching FFI helps steady-state throughput (long-conn) but doesn't lift the short-conn floor.
+
+**What WILL fix it (two options, ranked):**
+
+1. **Port h3 to `BufRing.add_buffer()`** (Recommended). The user's commit `82905d5 perf(bench/h2): drop per-conn recv_buf, use boucle register_buf_ring` ports h2 to boucle's `BufRing` API — userspace store + atomic tail update, zero SQE, zero syscall, kernel sees buffer immediately. h3 currently uses the legacy `IORING_OP_PROVIDE_BUFFERS` SQE path. Mirror the h2 work for h3.
+
+2. **Move reprovision into `on_flush()`** (alternative, smaller change). Currently the consumed_bufs loop runs in `main()` after `poll()` returns. Move it to the top or bottom of `on_flush` so reprovides are queued before `poll()` returns, and they get submitted in the same `submit_and_wait` cycle. Doesn't fix the syscall round-trip but eliminates the one-poll-cycle delay.
+
+**Concrete verification step (next):** add a `-ENOBUFS` counter to `_handle_recvmsg` (`if result <= 0: enobufs_count += 1`) and a getter to expose it via the SIGINT-driven sidecar. Re-run short-conn capture; if the counter shows hundreds-thousands per second, hypothesis confirmed conclusively.
+
+**Original FFI-dominance synthesis stays valid for steady-state (long-conn) regime** — that's still the next target after the buffer-ring fix lands. But it's a secondary optimization, not the rate-limiter for the 412/1 rps cold-start floor.
+
+**Investigation source:** see this session's transcript and `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c-retrospective.md` (revised section).
 
 ---
 
