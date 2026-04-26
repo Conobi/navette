@@ -19,7 +19,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from src.tls.lib import RustlsLibrary
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from src.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION
-from src.quic.profile import AcceptProfile
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from src.quic.frame import (
     Frame,
     AckFrame,
@@ -548,12 +548,19 @@ struct QuicConnection(Movable):
         orig_dcid: Span[UInt8, _],
         client_dcid: Span[UInt8, _],
         now: UInt64,
+        profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
+            = UnsafePointer[AcceptProfile, MutAnyOrigin](),
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
 
         Derives initial keys from the client's DCID and waits for
         the client Initial to drive the handshake.
         """
+        # Plan B: stamp arrival timestamp BEFORE any FFI call so that
+        # handshake-latency does not under-report by Initial-key-derivation.
+        # The stamp is unconditional (8 bytes) — see spec §Constraints.
+        var profile_arrival_us = monotonic_us()
+
         # 1. Generate random 8-byte local CID (server's SCID).
         var local_cid = _generate_random_cid()
 
@@ -622,6 +629,17 @@ struct QuicConnection(Movable):
             initial_dcid=initial_dcid,
             now=now,
         )
+
+
+        # Plan B: thread profile_ptr + stamp arrival timestamp into the
+        # newly-constructed connection.
+        conn.profile_ptr = profile_ptr
+        conn.profile_first_initial_us = profile_arrival_us
+
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(profile_ptr) != 0:
+                profile_ptr[].record_handshake_arrival()
 
         # 7. Derive initial keys from client's DCID (server side).
         conn.protect.derive_initial_keys(client_dcid, is_client=False)
