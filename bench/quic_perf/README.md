@@ -140,3 +140,81 @@ make bench-full
 ## Reference baseline
 
 `results/REFERENCE.md` contains numbers from `make bench-mvp` on the implementer's machine, with full host details, so reviewers on different hardware can sanity-check their setup. Treat REFERENCE.md as a snapshot, not as authoritative — re-run on your own hardware for actionable numbers.
+
+## Profile build (Plan B instrumentation)
+
+The QUIC accept-loop profile (`specs/2026-04-25-quic-accept-loop-instrumentation.md`)
+is a comptime-gated instrumentation pass. To produce a profile build:
+
+1. **Hand-edit** `src/quic/profile.mojo` line 15:
+
+   ```mojo
+   comptime PROFILE_ACCEPT: Bool = False    # ← change to True
+   ```
+
+   We do not use `mojo build -D PROFILE_ACCEPT=true` because Mojo 0.26.2's
+   `-D`-into-`comptime` semantics are not used elsewhere in this repo.
+   Hand-editing one line is the documented recipe.
+
+2. **Rebuild** the bench server:
+
+   ```bash
+   bash bench/build.sh
+   # or rebuild via Docker:
+   docker build -t mojo-net-bench:profile -f bench/Dockerfile .
+   ```
+
+3. **Run** any bench cell as usual, e.g.:
+
+   ```bash
+   ./scripts/bench.sh mojo-net 1k long-conn tquic_client --iters 3
+   ```
+
+4. **Trigger a report dump.** Send `SIGINT` (Ctrl-C) or `SIGTERM` to the
+   running `bench/h3_server` process. The report is printed to stderr and
+   a JSON sidecar is written to
+   `bench/quic_perf/results/profile/INSTRUMENTATION-<UTC-yyyymmdd-hhmmss>.json`.
+
+   **Latency caveat.** The signal handler only flips an atomic flag (held
+   in an mmap'd page at the fixed virtual address `0x60000000`). The
+   actual flush happens on the next iteration of `_flush_impl`. Because
+   `BatchCompletionLoop.poll_completion` may block on `io_uring_enter`
+   for arbitrary duration when no CQEs arrive (idle gaps of seconds are
+   normal under short-conn 1 req/s load), the report may not appear for
+   seconds after the signal. Send a UDP datagram (or wait for the next
+   client connection) to wake the loop; a second SIGINT hard-exits without
+   a report. Future improvement: register `signalfd` as an io_uring `Read`
+   op so the signal generates a CQE — out of scope for this spec.
+
+   **Startup-fail caveat.** On profile builds, the bench server reserves
+   the virtual address `0x60000000` for the dump-pending flag using
+   `MAP_FIXED_NOREPLACE`. If that address is already in use at process
+   start, the server fails fast with `mmap failed (address already in
+   use or out of memory)`. This is intentional — the alternative is
+   silently clobbering an unrelated mapping. If you see this error,
+   inspect `/proc/self/maps` to find the conflict.
+
+## Reading the report
+
+The text report is human-readable; the JSON sidecar is the canonical
+artifact. Key sections:
+
+- **Idle vs busy.** `idle_us_total / busy_us_total` ratio reveals whether
+  the bench fiber is starved (idle high) or saturated (busy high). Plan A
+  retrospective: if idle > 90%, the bottleneck is upstream of the loop.
+- **`pkts_per_flush_histogram`.** If the weighted-mean fan-out is ≥ 8,
+  multishot recvmsg is delivering large CQE batches that the
+  single-fiber `_flush_impl` is serializing. This is the "fan-out" suspect.
+- **Per-packet decomposition.** 8 leg averages (`shim_ffi`, `header_parse`,
+  `hp`, `aead`, `frame_parse`, `sm`, `residual`, `drain`) plus the
+  bucket-estimated `total` percentiles. Decision rules:
+  - `shim_ffi.avg ≥ 2 ×` next-largest leg → FFI/rustls dominates.
+  - `aead.avg ≥ 2 ×` next-largest → crypto dominates.
+  - `sm.avg ≥ 2 ×` next-largest (and not via shim_ffi) → state-machine dispatch dominates.
+- **Handshake accounting.** `arrivals = successful + timed_out` should
+  hold; if not, the eviction-site or SIGINT-sweep accounting is buggy.
+  `successful / arrivals` is the bench's success rate (0.9% on the
+  pacer-bypass-falsified run; we want it ≥ 50% post-fix).
+- **Successful handshake latency.** Exact percentiles from a sorted vector;
+  the right-tail is the load-bearing data for the timeout-rate hypothesis.
+
