@@ -106,7 +106,54 @@ the way, the serial nature plus per-packet FFI roundtrips through the
 rustls global lock would explain the symptom (low CPU + high handshake
 timeout rate under concurrency).
 
-### 2026-04-26 — accept-loop-instrumentation-data-collection — DATA (steady-state only)
+### 2026-04-26 — accept-loop-instrumentation-saturating-handshake — DATA (CONFIRMED: FFI dominance)
+
+**Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`. Plan: `plans/2026-04-26-quic-accept-loop-instrumentation-plan-c.md`. Goal: re-capture the missing cold-start data after Plan B's long-conn capture only saw 5 handshakes (steady-state).
+
+**C1 baseline reproducibility gate (off-build, 3 iters each):**
+
+| Cell | Median rps | Failed (handshake timeouts per 30s) |
+|---|---|---|
+| 1k long-conn | 405.07 rps | 40 |
+| 1k short-conn | 0.42 rps | 0 (only 13 succeeded — saturating-handshake regime confirmed) |
+
+vs calibrated 2026-04-25 baseline: long-conn 412 rps, short-conn 1 rps. **Gate: PASS.** The B14 anomaly (only 5 handshakes in long-conn) was a one-off; today's runs reproduce the calibrated saturating-handshake regime cleanly.
+
+**On-build single-cell captures (30 s window each, manual SIGINT-driven sidecar):**
+
+| Cell | pkts_per_flush mean | per_pkt p50/p90/p99 (us) | shim_ffi | aead | sm | drain | arrivals/succ/timeout | hs lat p50/p99 (us) |
+|---|---|---|---|---|---|---|---|---|
+| short-conn (saturating-handshake; n=233 pkts) | 2.07 | 6/101/246 | **127** | 0 | **129** | 47 | 17/17/0 | 879/26,272 |
+| long-conn-c100 (mostly steady-state; n=3571 pkts) | 3.83 | 15/30/60 | 8 | 0 | 8 | 52 | 5/5/0 | 2,628/27,951 |
+
+`header_parse` / `hp` / `aead` / `residual` legs were sub-microsecond in both cells — fast RX continues to be a non-bottleneck.
+
+**Dominant cost (≥2× signal table):**
+
+- **short-conn → SM (state machine) dominates by 64.5×** (avg 129us vs next-in-recv frame_parse 2us). Critically, `shim_ffi` (127us) ≈ `sm` (129us) — almost ALL of the state-machine time IS FFI roundtrip into `librustls-mojo` (`quic_conn_read_hs` / `quic_conn_write_hs` / `quic_conn_take_keys`). **The cold-start bottleneck is per-packet rustls FFI on the handshake CRYPTO path.**
+- **long-conn-c100 → drain (bench TX) dominates by 4.7×** (avg 52us). Expected steady-state pattern (response generation + outgoing AEAD + sendmsg queue); not actionable as a hypothesis — see Plan B retro for the same finding.
+
+**Sidecars committed:**
+- `bench/quic_perf/results/profile/INSTRUMENTATION-20260426-203147-short-conn.json`
+- `bench/quic_perf/results/profile/INSTRUMENTATION-20260426-203304-long-conn-c100.json`
+
+**Methodology:** Plan C's two captures replace B14's single steady-state capture. C1 verified the off-build calibrated baseline still reproduces (within 2% on long-conn rps; short-conn slower than calibrated 1 rps, ~0.5 rps median — even more saturating-handshake-bottlenecked). Both on-build captures used the harness's `start-server.sh` + `run-tquic-client.sh` (or direct `docker run` for `--max-concurrent-conns 100` override) + manual `docker kill --signal=SIGINT bench-h3` + `docker cp` exfiltration pattern.
+
+**Next hypothesis (synthesis — required-later, high severity):**
+
+The cold-start floor is the per-packet rustls FFI roundtrip through `_drive_handshake`. At saturating-handshake load with serialized single-fiber `_flush_impl`, a 127us-per-packet FFI cost multiplies into the observed timeout floor (~400 attempts → 3-10 successes per 30s with 99% timeouts; calibrated baseline). Two follow-up specs are concrete and actionable:
+
+1. **Rust-side counters in `librustls-mojo/quic_hs.rs`** (PREREQUISITE for #2). Disambiguate FFI roundtrip overhead from rustls work itself. If most of the 127us is FFI marshalling (heap-alloc + copy + return-value-build), batch FFI is the fix. If most is rustls processing (TLS handshake state machine), the optimisation is much harder (requires either rustls upstream changes or a handshake-cache).
+
+2. **Either FFI batching OR multi-fiber accept fan-out**, depending on what #1 reveals:
+   - If FFI marshalling dominates: spec a batch FFI for `quic_conn_read_hs` / `quic_conn_write_hs` / `quic_conn_take_keys` to amortize per-call overhead.
+   - If rustls work dominates: multi-fiber accept fan-out won't help (rustls global lock would serialize); instead, spec a handshake-cache for repeated client-Initial patterns (Retry/0-RTT acceleration).
+
+Trigger: anyone returning to the QUIC perf push.
+
+---
+
+### 2026-04-26 — accept-loop-instrumentation-data-collection — DATA (steady-state only, B14)
 
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`. Goal:
 distinguish three suspects (fan-out / per-packet cost / FFI-AEAD-SM
