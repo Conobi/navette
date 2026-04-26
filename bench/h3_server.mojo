@@ -80,7 +80,7 @@ comptime RECVMSG_OUT_HDR_SIZE: Int = 16
 comptime PROFILE_FLAG_ADDR: Int = 0x60000000  # 1.5 GiB — well below any heap
 comptime PROFILE_MAP_PRIVATE: Int32 = 2
 comptime PROFILE_MAP_ANON: Int32 = 0x20
-comptime PROFILE_MAP_FIXED: Int32 = 0x10
+comptime PROFILE_MAP_FIXED: Int32 = 0x110  # MAP_FIXED | MAP_FIXED_NOREPLACE (Linux 4.17+) — fail with ENOMEM instead of clobbering an existing mapping
 comptime PROFILE_PROT_RW: Int32 = 3
 comptime PROFILE_SIGINT: Int32 = 2
 comptime PROFILE_SIGTERM: Int32 = 15
@@ -109,7 +109,10 @@ def _profile_install_signal_handlers() raises:
         Int(0),
     )
     if Int(mapped) != PROFILE_FLAG_ADDR:
-        raise "_profile_install_signal_handlers: mmap returned wrong address"
+        # MAP_FIXED_NOREPLACE returns MAP_FAILED with errno=EEXIST when the
+        # address is already mapped (instead of silently clobbering), or
+        # ENOMEM under low memory. Either way, we cannot use the flag page.
+        raise "_profile_install_signal_handlers: mmap failed (address already in use or out of memory)"
     var p = UnsafePointer[Int32, MutAnyOrigin](
         unsafe_from_address=PROFILE_FLAG_ADDR
     )
