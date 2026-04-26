@@ -407,18 +407,17 @@ struct H2ServerHandler(CompletionHandler):
         var n = Int(result)
         var buf_ptr = self.bring.buf_base + (Int(buf_id) * _RECV_BUF_SIZE)
 
-        # Copy the kernel-selected slice into a fresh List so the buffer
-        # is fully decoupled from the ring before we return it. (TLS
-        # receive_data forwards to rustls FFI synchronously, so a Span
-        # without copy would also be safe — kept simple here for now.)
-        var chunk = List[UInt8](capacity=n)
-        for i in range(n):
-            chunk.append(buf_ptr[i])
+        # TLS receive_data forwards to rustls' read_tls FFI synchronously
+        # (the rustls C call deframes + copies into its internal state
+        # before returning), so a Span over the ring slot is safe — the
+        # kernel can only re-use this buf_id after add_buffer() runs,
+        # which we sequence AFTER receive_data returns.
+        self.connections[idx][].tls.receive_data(
+            Span[UInt8](ptr=buf_ptr, length=n)
+        )
 
         # Userspace store — no SQE, no syscall.
         self.bring.add_buffer(buf_id)
-
-        self.connections[idx][].tls.receive_data(Span(chunk))
 
         # If the multishot ended on this CQE, re-arm it.
         if multishot_ended and not self.connections[idx][].closed:
