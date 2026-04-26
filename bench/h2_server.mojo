@@ -29,10 +29,16 @@ from bench.handler import (
 )
 
 from boucle import CompletionLoop, CompletionHandler
+from boucle.completion import BufRing
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4
 from boucle.net.options import Backlog
+from boucle._sys.linux.raw.x86_64.io_uring import (
+    IORING_CQE_F_BUFFER,
+    IORING_CQE_F_MORE,
+    IORING_CQE_BUFFER_SHIFT,
+)
 
 from interop.file_io import read_file, getenv_opt
 
@@ -62,6 +68,12 @@ comptime SO_REUSEPORT: Int32 = 15
 # to interleave inbound WINDOW_UPDATEs and new HEADERS with our outbound
 # response stream.
 comptime _TLS_RECORD_CHUNK: Int = 16384
+# Per-worker registered buffer ring (IORING_REGISTER_PBUF_RING). Returning
+# a consumed buffer is a userspace store on `BufRing.add_buffer(buf_id)` —
+# no SQE, no syscall, no kernel buffer-pool tree.
+comptime _BUF_GROUP_ID: UInt16 = 1
+comptime _BUF_RING_SIZE: Int = 1024  # 1024 × 8 KB = 8 MiB resident per worker
+comptime _ENOBUFS: Int32 = -105
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +88,9 @@ comptime _PHASE_DONE: UInt8 = 2
 # PendingSubmit
 # ---------------------------------------------------------------------------
 comptime _SUBMIT_ACCEPT: UInt8 = 0
-comptime _SUBMIT_RECV: UInt8 = 1
+comptime _SUBMIT_RECV: UInt8 = 1            # legacy, unused with multishot
 comptime _SUBMIT_SEND: UInt8 = 2
+comptime _SUBMIT_RECV_MULTISHOT: UInt8 = 3
 
 
 struct PendingSubmit(Copyable, Movable):
@@ -116,10 +129,13 @@ struct H2Conn(Movable):
     var tls: TlsConnection
     var h2: H2CoroServer
     var phase: UInt8
-    var recv_buf: List[UInt8]
     var send_buf: List[UInt8]
     var send_pending: List[UInt8]
     var send_in_flight: Bool
+    # `recv_in_flight` now means "kernel multishot recv is registered" —
+    # set at accept-time submit, cleared when a CQE arrives without
+    # IORING_CQE_F_MORE. (No per-conn recv_buf — buffers come from the
+    # registered ring.)
     var recv_in_flight: Bool
     var closed: Bool
 
@@ -135,9 +151,6 @@ struct H2Conn(Movable):
         self.tls = tls^
         self.h2 = h2^
         self.phase = _PHASE_TLS_HANDSHAKE
-        self.recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
-        for _ in range(_RECV_BUF_SIZE):
-            self.recv_buf.append(0)
         self.send_buf = List[UInt8]()
         self.send_pending = List[UInt8]()
         self.send_in_flight = False
@@ -150,7 +163,6 @@ struct H2Conn(Movable):
         self.tls = take.tls^
         self.h2 = take.h2^
         self.phase = take.phase
-        self.recv_buf = take.recv_buf^
         self.send_buf = take.send_buf^
         self.send_pending = take.send_pending^
         self.send_in_flight = take.send_in_flight
@@ -171,6 +183,10 @@ struct H2ServerHandler(CompletionHandler):
     var server_tls_config: TlsServerConfig
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
+    # Registered provided-buffer ring. CQE.flags >> IORING_CQE_BUFFER_SHIFT
+    # gives buf_id; the buffer pointer is bring.buf_base + buf_id * buf_size.
+    # Returning a buffer is bring.add_buffer(buf_id) — userspace store.
+    var bring: BufRing
 
     def __init__(
         out self,
@@ -178,6 +194,7 @@ struct H2ServerHandler(CompletionHandler):
         var tls_lib: RustlsLibrary,
         var server_tls_config: TlsServerConfig,
         state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+        var bring: BufRing,
     ):
         self.listener_fd = listener_fd
         self.connections = List[UnsafePointer[H2Conn, MutAnyOrigin]]()
@@ -186,6 +203,7 @@ struct H2ServerHandler(CompletionHandler):
         self.server_tls_config = server_tls_config^
         self.state_ptr = state_ptr
         self.pending_submits = List[PendingSubmit]()
+        self.bring = bring^
 
     def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
@@ -195,6 +213,7 @@ struct H2ServerHandler(CompletionHandler):
         self.server_tls_config = take.server_tls_config^
         self.state_ptr = take.state_ptr
         self.pending_submits = take.pending_submits^
+        self.bring = take.bring^
 
     # --- Conn lookup ---
 
@@ -224,10 +243,18 @@ struct H2ServerHandler(CompletionHandler):
         if idx < 0:
             return
 
+        # Multishot recv lifetime: clear `recv_in_flight` only when the
+        # multishot ends (no F_MORE). Until then the kernel keeps
+        # producing CQEs into ring buffers, so the connection must stay
+        # alive for buf_id-decoded reads to be valid.
+        var multishot_ended = False
+        if op_kind == OP_RECV:
+            multishot_ended = (flags & UInt32(IORING_CQE_F_MORE)) == 0
+
         # If connection is marked closed (deferred), clear in-flight flag
         # and free if no more operations are outstanding.
         if self.connections[idx][].closed:
-            if op_kind == OP_RECV:
+            if op_kind == OP_RECV and multishot_ended:
                 self.connections[idx][].recv_in_flight = False
             elif op_kind == OP_SEND:
                 self.connections[idx][].send_in_flight = False
@@ -239,7 +266,7 @@ struct H2ServerHandler(CompletionHandler):
             return
 
         if op_kind == OP_RECV:
-            self._handle_recv(idx, result)
+            self._handle_recv(idx, result, flags)
         elif op_kind == OP_SEND:
             self._handle_send(idx, result)
 
@@ -255,13 +282,16 @@ struct H2ServerHandler(CompletionHandler):
             )
         )
 
-    def _queue_recv(mut self, idx: Int):
+    def _queue_recv_multishot(mut self, idx: Int):
+        """Submit a multishot recv for the connection — produces one CQE
+        per arrival until the multishot ends (peer close, error, or
+        ENOBUFS). Idempotent."""
         if self.connections[idx][].recv_in_flight:
             return
         self.connections[idx][].recv_in_flight = True
         self.pending_submits.append(
             PendingSubmit(
-                kind=_SUBMIT_RECV,
+                kind=_SUBMIT_RECV_MULTISHOT,
                 fd=self.connections[idx][].handle.raw(),
                 conn_id=self.connections[idx][].conn_id,
                 op_kind=OP_RECV,
@@ -334,33 +364,73 @@ struct H2ServerHandler(CompletionHandler):
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1
 
-        self._queue_recv(idx)
+        self._queue_recv_multishot(idx)
         if not more:
             self._queue_accept()
 
     # --- RECV ---
 
-    def _handle_recv(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].recv_in_flight = False
+    def _handle_recv(mut self, idx: Int, result: Int32, flags: UInt32) raises:
+        # Multishot lifetime: clear in_flight only when this CQE marks
+        # the multishot's end (no F_MORE).
+        var multishot_ended = (flags & UInt32(IORING_CQE_F_MORE)) == 0
+        if multishot_ended:
+            self.connections[idx][].recv_in_flight = False
 
-        if result <= 0:
+        # -ENOBUFS: ring transiently empty when data arrived. Kernel ends
+        # the multishot; re-arm it. (Should be rare with a 1024-buffer
+        # ring; stays defensive in case of a burst.)
+        if result == _ENOBUFS:
+            if multishot_ended and not self.connections[idx][].closed:
+                self._queue_recv_multishot(idx)
+            return
+
+        if result < 0:
             self._close_connection(idx)
             return
 
+        # result == 0: peer closed cleanly.
+        if result == 0:
+            self._close_connection(idx)
+            return
+
+        # Successful recv: kernel selected a buffer for us. Decode buf_id
+        # from the upper 16 bits of `flags` and read directly from the
+        # ring-mapped buffer.
+        if (flags & UInt32(IORING_CQE_F_BUFFER)) == 0:
+            if multishot_ended:
+                self._close_connection(idx)
+            return
+
+        var buf_id_u32 = (flags >> UInt32(IORING_CQE_BUFFER_SHIFT)) & UInt32(0xFFFF)
+        var buf_id = UInt16(buf_id_u32)
         var n = Int(result)
+        var buf_ptr = self.bring.buf_base + (Int(buf_id) * _RECV_BUF_SIZE)
+
+        # Copy the kernel-selected slice into a fresh List so the buffer
+        # is fully decoupled from the ring before we return it. (TLS
+        # receive_data forwards to rustls FFI synchronously, so a Span
+        # without copy would also be safe — kept simple here for now.)
         var chunk = List[UInt8](capacity=n)
         for i in range(n):
-            chunk.append(self.connections[idx][].recv_buf[i])
+            chunk.append(buf_ptr[i])
+
+        # Userspace store — no SQE, no syscall.
+        self.bring.add_buffer(buf_id)
+
         self.connections[idx][].tls.receive_data(Span(chunk))
+
+        # If the multishot ended on this CQE, re-arm it.
+        if multishot_ended and not self.connections[idx][].closed:
+            self._queue_recv_multishot(idx)
 
         # If TLS has ciphertext to send (handshake reply), stage it
         if self.connections[idx][].tls.wants_write():
             var ct = self.connections[idx][].tls.drain_ciphertext()
             self._stage_send(idx, ct^)
 
-        # Still handshaking — just keep reading
+        # Still handshaking — multishot keeps draining.
         if self.connections[idx][].tls.is_handshaking():
-            self._queue_recv(idx)
             return
 
         # TLS handshake done — drain plaintext
@@ -390,9 +460,6 @@ struct H2ServerHandler(CompletionHandler):
                 if len(ct) > 0:
                     self._stage_send(idx, ct^)
                 off = end
-
-        # Keep reading
-        self._queue_recv(idx)
 
     # --- SEND ---
 
@@ -477,18 +544,12 @@ def _drain_pending_submits(mut loop: CompletionLoop[H2ServerHandler]) raises:
             except:
                 # SQ full — re-queue for next poll iteration.
                 loop._handler.pending_submits.append(s.copy())
-        elif s.kind == _SUBMIT_RECV:
+        elif s.kind == _SUBMIT_RECV_MULTISHOT:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
-            var raw_addr = Int(
-                loop._handler.connections[idx][].recv_buf.unsafe_ptr()
-            )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
             try:
-                loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
+                loop.submit_recv_multishot(s.fd, _BUF_GROUP_ID, token)
             except:
                 # SQ full — mark not-in-flight so it can be re-queued.
                 loop._handler.connections[idx][].recv_in_flight = False
@@ -591,14 +652,31 @@ def main() raises:
         prefix = ""
     print(prefix + "h2-bench: listening on https://127.0.0.1:" + String(_LISTEN_PORT))
 
-    # Build handler + loop
+    # Allocate the per-worker buffer pool (data buffers; the ring
+    # metadata is allocated separately by register_buf_ring).
+    var buf_base = _heap_alloc[UInt8](_BUF_RING_SIZE * _RECV_BUF_SIZE).as_any_origin()
+
+    # Build handler with an empty BufRing, then move-replace after the
+    # CompletionLoop is built (since register_buf_ring is on the loop).
     var handler = H2ServerHandler(
         listener_fd=listener_fd,
         tls_lib=tls_lib^,
         server_tls_config=server_config^,
         state_ptr=state_ptr,
+        bring=BufRing(),
     )
     var loop = CompletionLoop[H2ServerHandler](handler^, sq_entries=4096)
+
+    # Register the buffer ring with the kernel and move the resulting
+    # BufRing handle into the handler. From here on, returning a buffer
+    # is a userspace store (BufRing.add_buffer).
+    var bring = loop.register_buf_ring(
+        buf_base,
+        buf_size=UInt32(_RECV_BUF_SIZE),
+        count=_BUF_RING_SIZE,
+        group_id=_BUF_GROUP_ID,
+    )
+    loop._handler.bring = bring^
 
     loop.submit_accept_multishot(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
