@@ -561,14 +561,26 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var dcid_copy = List[UInt8](copy=pd.dcid)
                 var quic: QuicConnection
                 try:
-                    quic = QuicConnection.server(
-                        self.lib_addr,
-                        self.server_config,
-                        tp,
-                        Span(pd.dcid),
-                        Span(dcid_copy),
-                        now,
-                    )
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        quic = QuicConnection.server(
+                            self.lib_addr,
+                            self.server_config,
+                            tp,
+                            Span(pd.dcid),
+                            Span(dcid_copy),
+                            now,
+                            UnsafePointer(to=self.profile),
+                        )
+                    else:
+                        quic = QuicConnection.server(
+                            self.lib_addr,
+                            self.server_config,
+                            tp,
+                            Span(pd.dcid),
+                            Span(dcid_copy),
+                            now,
+                        )
                 except:
                     self.consumed_bufs.append(pd.buf_id)
                     continue
@@ -607,10 +619,18 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.conn_addrs[conn_idx] = addr_update^
 
             # Drain and send outgoing datagrams.
+            var t_drain_start = UInt64(0)
+            @parameter
+            if PROFILE_ACCEPT:
+                t_drain_start = profile_monotonic_us()
             try:
                 self._drain_and_send(conn_idx, now)
             except:
                 pass
+            @parameter
+            if PROFILE_ACCEPT:
+                var drain_us = profile_monotonic_us() - t_drain_start
+                self.profile.record_drain(drain_us)
 
             # Save buf_id for reprovision in main loop.
             self.consumed_bufs.append(pd.buf_id)
