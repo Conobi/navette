@@ -1,15 +1,23 @@
 # src/h2/h2_coro_server.mojo
 #
-# HTTP/2 server-side coroutine adapter.  Sans-I/O: feed inbound wire bytes,
-# drain outbound bytes.  Translates H2Connection events into per-stream
-# stackful coroutines (from boucle) instead of callback-based StreamHandler.
-# (M2.6 Task 1)
+# HTTP/2 server-side adapter — sans-IO codec wrapper.  Feed inbound wire
+# bytes via `feed()`; drain outbound bytes via `drain()`.
+#
+# As of Sprint 1 Step 3 (Path A), per-stream concurrency is a
+# hand-written state machine, not a stackful coroutine.  The user's
+# request handler is invoked synchronously when a request is complete:
+# headers parsed, body (if any) accumulated.  This eliminates the
+# 64 KiB stack + ucontext swap + TLS reload per stream.
+#
+# The "Coro" in the names is preserved to minimise churn in callers
+# (bench/h2_server.mojo, tests/test_h2_coro_server.mojo); a follow-up
+# sprint can rename to H2StreamServer / H2StreamCtx if needed.
+#
+# See plans/2026-04-27-h2-perf-roadmap-sprint-sequence.md § Sprint 1.
 
 from std.collections import Dict
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-
-from boucle.stackful import CoroHandle, CoroYielder, CoroBody, CoroutinePool
 
 from .connection import (
     H2Connection,
@@ -42,15 +50,42 @@ from src.h2.pseudo_headers import (
 
 
 # ---------------------------------------------------------------------------
-# CoroStreamCtx — per-stream shared state (heap-allocated, move-only)
+# H2BodyFn — synchronous handler invoked once per request
+# ---------------------------------------------------------------------------
+#
+# The handler receives a pointer to the per-stream context, reads
+# `ctx.request` (or for streaming bodies, repeatedly polls
+# `ctx.recv_body`), and writes the response into `ctx.resp_writer`.
+# It runs to completion in one call — no `yield_to_caller`.
+#
+# For streaming POST bodies that need to span multiple DATA frames,
+# the handler should not block on body data that isn't there yet;
+# it should write whatever response it can and return.  A future
+# sprint will add a state-machine entry point that re-enters the
+# handler when more body data arrives (for now, the bench server's
+# handlers are headers-only, so this is sufficient).
+
+comptime H2BodyFn = fn (
+    UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+) raises -> None
+
+
+# ---------------------------------------------------------------------------
+# CoroStreamCtx — per-stream state (heap-allocated, move-only)
 # ---------------------------------------------------------------------------
 
 
 struct CoroStreamCtx(Movable):
-    """Per-stream context for coroutine-based H2 serving.  Heap-allocated
-    so both the adapter and the coroutine body can access it via pointer.
-    Contains the request, body receiver, response writer, capabilities,
-    and coroutine lifecycle bookkeeping."""
+    """Per-stream context for H2 serving.  Heap-allocated so the
+    adapter and the handler can reach it via pointer.  Holds the
+    request, body receiver, response writer, capabilities, and
+    request/response bookkeeping.
+
+    Post-Path-A: no `coro_addr` field.  The handler runs synchronously,
+    so there's no suspended coroutine state to track.  R8 in the sprint
+    roadmap caps `sizeof(StreamState) < 512`; the legacy CoroStreamCtx
+    name stays until a follow-up rename pass.
+    """
 
     var request: Request
     var recv_body: RecvBody
@@ -58,7 +93,6 @@ struct CoroStreamCtx(Movable):
     var caps: Capabilities
     var stream_id: UInt32
     var extra_data: UnsafePointer[NoneType, MutExternalOrigin]
-    var coro_addr: UInt64  # address of heap-allocated CoroHandle
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
@@ -77,7 +111,6 @@ struct CoroStreamCtx(Movable):
         self.caps = Capabilities(other=caps)
         self.stream_id = stream_id
         self.extra_data = extra_data
-        self.coro_addr = UInt64(0)
         self.request_ended = False
         self.response_ended = False
         self.headers_sent = False
@@ -90,17 +123,10 @@ struct CoroStreamCtx(Movable):
         self.caps = take.caps^
         self.stream_id = take.stream_id
         self.extra_data = take.extra_data
-        self.coro_addr = take.coro_addr
         self.request_ended = take.request_ended
         self.response_ended = take.response_ended
         self.headers_sent = take.headers_sent
         self.unacked_bytes = take.unacked_bytes
-
-    def coro_ptr(self) -> UnsafePointer[CoroHandle, MutAnyOrigin]:
-        """Return pointer to the heap-allocated CoroHandle."""
-        return UnsafePointer[CoroHandle, MutAnyOrigin](
-            unsafe_from_address=Int(self.coro_addr)
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -130,51 +156,40 @@ struct _CoroStreamPtr(Copyable, Movable):
 
 
 # ---------------------------------------------------------------------------
-# _free_stream — single cleanup path for CoroHandle + CoroStreamCtx
+# _free_stream — single cleanup path for CoroStreamCtx
 # ---------------------------------------------------------------------------
 
 
 def _free_stream(ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
-    """Hard-destroy the CoroHandle and CoroStreamCtx allocations. Used
-    only on shutdown / unrecoverable error paths where the pool is not
-    available (or the coro is in a non-DONE, non-poolable state)."""
-    if ctx_ptr[].coro_addr != UInt64(0):
-        var coro_p = ctx_ptr[].coro_ptr()
-        coro_p.destroy_pointee()
-        coro_p.free()
+    """Hard-destroy the CoroStreamCtx allocation."""
     ctx_ptr.destroy_pointee()
     ctx_ptr.free()
 
 
 # ---------------------------------------------------------------------------
-# H2CoroServer — server adapter using per-stream coroutines
+# H2CoroServer — server adapter using a per-stream state machine
 # ---------------------------------------------------------------------------
 
 
 struct H2CoroServer(Movable):
-    """Drive per-stream coroutines from an HTTP/2 H2Connection.  Sans-I/O:
-    the caller feeds inbound bytes via `feed()` and drains outbound bytes
-    via `drain()`.  Each stream gets a stackful coroutine that is resumed
-    when events arrive for that stream."""
+    """Drive per-stream state from an HTTP/2 H2Connection.  Sans-IO:
+    the caller feeds inbound bytes via `feed()` and drains outbound
+    bytes via `drain()`.  Each stream's user handler runs synchronously
+    when the request arrives (Sprint 1 Path A — no stackful coroutines).
+    """
 
     var _conn: H2Connection
-    var _body_fn: CoroBody
+    var _body_fn: H2BodyFn
     var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, _CoroStreamPtr]
-    # Per-connection coroutine pool. With h2load -m 10 the steady-state
-    # idle count rarely exceeds 10; capacity=16 keeps the high-water
-    # bounded under bursty traffic. The first request on a connection
-    # pays the full mmap+setup_context cost; every subsequent stream
-    # reuses an idle handle with just `getcontext + setup_context`.
-    var _pool: CoroutinePool
 
     # --- Constructors -------------------------------------------------------
 
     def __init__(
         out self,
         *,
-        body_fn: CoroBody,
+        body_fn: H2BodyFn,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
         ](),
@@ -189,13 +204,12 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, _CoroStreamPtr]()
-        self._pool = CoroutinePool(capacity=16)
         self._flush_outbound()
 
     def __init__(
         out self,
         *,
-        body_fn: CoroBody,
+        body_fn: H2BodyFn,
         config: H2Config,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
@@ -208,7 +222,6 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, _CoroStreamPtr]()
-        self._pool = CoroutinePool(capacity=16)
         self._flush_outbound()
 
     def __init__(out self, *, deinit take: Self):
@@ -217,33 +230,15 @@ struct H2CoroServer(Movable):
         self._extra_data = take._extra_data
         self._outbuf = take._outbuf^
         self._streams = take._streams^
-        self._pool = take._pool^
 
     fn __del__(deinit self):
-        """Destroy and free all heap-allocated stream contexts. For any
-        suspended coroutines, push an error into recv_body so the coroutine
-        can unwind cleanly, then destroy."""
+        """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
         for i in range(len(keys)):
             try:
                 var ctx_ptr = self._streams[keys[i]].ptr()
-                # Push error into recv_body so a suspended coroutine sees it
-                var ctx = ctx_ptr.take_pointee()
-                ctx.recv_body._set_error(
-                    StreamError.connection_closed()
-                )
-                ctx_ptr.init_pointee_move(ctx^)
-                # If coroutine is still resumable, resume it so it can
-                # observe the error and exit.
-                if ctx_ptr[].coro_addr != UInt64(0):
-                    var coro_p = ctx_ptr[].coro_ptr()
-                    if coro_p[].can_resume():
-                        try:
-                            coro_p[].resume()
-                        except:
-                            pass
                 _free_stream(ctx_ptr)
             except:
                 pass
@@ -266,15 +261,6 @@ struct H2CoroServer(Movable):
         self._outbuf = List[UInt8]()
         return out^
 
-    def resume_stream(mut self, stream_id: Int) raises:
-        """Externally resume a stream's coroutine (e.g. after async I/O
-        completes).  Drains any response data produced."""
-        if not self._has_stream(stream_id):
-            return
-        self._resume_and_handle_error(stream_id)
-        self._drain_responses()
-        self._flush_outbound()
-
     def should_close(self) -> Bool:
         """True when the H2 connection has reached terminal state."""
         return self._conn.is_closed()
@@ -285,50 +271,35 @@ struct H2CoroServer(Movable):
         """Check whether stream ID is present in the streams dict."""
         return sid in self._streams
 
-    fn _release_stream(mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
-        """Release a stream's CoroHandle to the pool when DONE so its
-        stack and ucontext can be reused; hard-destroy otherwise. Always
-        destroys the CoroStreamCtx itself."""
-        if ctx_ptr[].coro_addr != UInt64(0):
-            var coro_p = ctx_ptr[].coro_ptr()
-            if coro_p[].is_done():
-                self._pool.release(coro_p)
-            else:
-                coro_p.destroy_pointee()
-                coro_p.free()
+    fn _release_stream(
+        mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ):
+        """Free the CoroStreamCtx allocation. Path-A simplification:
+        no coro pool to return to."""
         ctx_ptr.destroy_pointee()
         ctx_ptr.free()
 
     def _flush_outbound(mut self):
-        """Move pending outbound bytes from the H2Connection into our buffer.
-        Bulk-extend (was per-byte append: ~12% self post-Task-1)."""
+        """Move pending outbound bytes from the H2Connection into our
+        buffer.  Bulk-extend (was per-byte append: ~12% self post-Task-1)."""
         var pending = self._conn.data_to_send()
         if len(pending) > 0:
             self._outbuf.extend(pending^)
 
-    def _resume_and_handle_error(mut self, stream_id: Int) raises:
-        """Resume a stream's coroutine, catching errors and sending
-        RST_STREAM if the coroutine raises."""
+    def _run_handler(mut self, stream_id: Int) raises:
+        """Invoke the user handler synchronously. On error, send
+        RST_STREAM and clean up. On success, response data is in
+        `ctx.resp_writer` for `_drain_responses` to flush."""
         if not self._has_stream(stream_id):
             return
         var ctx_ptr = self._streams[stream_id].ptr()
-        if ctx_ptr[].coro_addr == UInt64(0):
-            return
-        var coro_p = ctx_ptr[].coro_ptr()
-        if not coro_p[].can_resume():
-            return
         try:
-            coro_p[].resume()
+            self._body_fn(ctx_ptr)
         except e:
-            # Coroutine raised an error — send RST_STREAM with INTERNAL_ERROR
             self._conn.send_rst_stream(
                 UInt32(stream_id), UInt32(2)  # INTERNAL_ERROR
             )
             self._cleanup_stream(stream_id)
-            return
-        # If coroutine is done, check if we need cleanup
-        if coro_p[].is_done():
-            self._maybe_cleanup_stream(stream_id)
 
     def _cleanup_stream(mut self, stream_id: Int) raises:
         """Unconditionally free stream context and remove from dict."""
@@ -343,7 +314,6 @@ struct H2CoroServer(Movable):
         if not self._has_stream(stream_id):
             return
         var ctx_ptr = self._streams[stream_id].ptr()
-        # Read through pointer — Bool is trivially copyable
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
             self._release_stream(ctx_ptr)
             _ = self._streams.pop(stream_id)
@@ -351,7 +321,7 @@ struct H2CoroServer(Movable):
     # --- Event dispatch -----------------------------------------------------
 
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
-        """Dispatch H2 events to stream coroutines."""
+        """Dispatch H2 events to per-stream state."""
         for i in range(len(events)):
             var evt = H2Event(other=events[i])
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
@@ -370,13 +340,12 @@ struct H2CoroServer(Movable):
                 self._on_goaway(evt)
 
     def _on_request_received(mut self, evt: H2Event) raises:
-        """Handle REQUEST_RECEIVED: parse headers, allocate CoroStreamCtx on
-        heap, create CoroHandle on heap, set coro_addr, first resume."""
+        """Handle REQUEST_RECEIVED: parse headers, allocate CoroStreamCtx
+        on heap, register in streams dict, and run the handler now."""
         var req = request_from_h2_headers(evt.stream_id, evt.headers)
         var stream_id = Int(evt.stream_id)
         var stream_ended = evt.stream_ended
 
-        # Allocate CoroStreamCtx on the heap
         var ctx_ptr = _heap_alloc[CoroStreamCtx](1).as_any_origin()
         var ctx = CoroStreamCtx(
             request=req^,
@@ -385,135 +354,90 @@ struct H2CoroServer(Movable):
             extra_data=self._extra_data,
         )
 
-        # If END_STREAM was set on the HEADERS frame, mark body ended
         if stream_ended:
             ctx.recv_body._set_end()
             ctx.request_ended = True
 
         ctx_ptr.init_pointee_move(ctx^)
-
-        # Acquire a CoroHandle from the per-connection pool. First
-        # request on this connection pays the full mmap+setup_context
-        # cost; subsequent acquires return a recycled handle that just
-        # gets re-initialised via CoroHandle.reset().
-        var user_data = UnsafePointer[NoneType, MutExternalOrigin](
-            unsafe_from_address=Int(ctx_ptr)
-        )
-        var coro_heap = self._pool.acquire(self._body_fn, user_data)
-
-        # Set coro_addr in the ctx
-        ctx_ptr[].coro_addr = UInt64(Int(coro_heap))
-
-        # Store in streams dict
         self._streams[stream_id] = _CoroStreamPtr(UInt64(Int(ctx_ptr)))
 
-        # First resume — the coroutine body starts executing
-        self._resume_and_handle_error(stream_id)
+        # Run handler synchronously — Path A simplification.
+        self._run_handler(stream_id)
 
     def _on_data_received(mut self, evt: H2Event) raises:
-        """Handle DATA_RECEIVED: push data into RecvBody, manage flow control,
-        resume coroutine.  If END_STREAM, mark body ended."""
+        """Handle DATA_RECEIVED: push data into RecvBody, manage flow
+        control. Path A: handler ran already on REQUEST_RECEIVED, so
+        DATA arriving here is body content for streaming clients —
+        accumulate it and acknowledge."""
         var sid = Int(evt.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        # take_pointee to get mut access to recv_body
         var ctx = ctx_ptr.take_pointee()
-        # Push data into RecvBody
         if len(evt.data) > 0:
             var data_copy = evt.data.copy()
             ctx.recv_body._push(BodyFrame.data(data_copy^))
-        # Flow control: acknowledge unless paused
         if not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
                 evt.flow_controlled_length, evt.stream_id
             )
         else:
             ctx.unacked_bytes += evt.flow_controlled_length
-        # Check if paused state cleared after data push
         if ctx.unacked_bytes > 0 and not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
                 ctx.unacked_bytes, evt.stream_id
             )
             ctx.unacked_bytes = 0
-        # If END_STREAM was set on the DATA frame, mark body ended
         if evt.stream_ended and not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        # Move back into the heap
         ctx_ptr.init_pointee_move(ctx^)
-        # Resume coroutine so it can consume the new data
-        self._resume_and_handle_error(sid)
-        # Check if both sides are done
         if evt.stream_ended:
             self._maybe_cleanup_stream(sid)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
-        """Handle TRAILERS_RECEIVED: convert headers, push as trailer BodyFrame.
-        Trailers always carry END_STREAM."""
+        """Handle TRAILERS_RECEIVED: convert headers, push as trailer
+        BodyFrame.  Trailers always carry END_STREAM."""
         var sid = Int(evt.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var trailer_headers = headers_from_h2(evt.headers)
-        # take_pointee to get mut access to recv_body
         var ctx = ctx_ptr.take_pointee()
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
-        # Trailers always carry END_STREAM — mark body ended
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
         ctx_ptr.init_pointee_move(ctx^)
-        # Resume coroutine so it can process trailers
-        self._resume_and_handle_error(sid)
-        # Trailers carry END_STREAM — check if both sides done
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
-        """Handle STREAM_ENDED: mark the body as ended, resume coroutine."""
+        """Handle STREAM_ENDED: mark the body as ended."""
         var sid = Int(evt.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        # Read request_ended through the pointer (Bool is trivially copyable)
         if ctx_ptr[].request_ended:
-            return  # already ended (e.g. END_STREAM on HEADERS)
-        # take_pointee to get mut access to body
+            return
         var ctx = ctx_ptr.take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
         ctx_ptr.init_pointee_move(ctx^)
-        # Resume coroutine so it sees the end
-        self._resume_and_handle_error(sid)
-        # Check if both sides done
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
-        """Handle STREAM_RESET: push error into body, resume so coroutine
-        can see the error, then clean up."""
+        """Handle STREAM_RESET: tear down the stream."""
         var sid = Int(evt.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
-        var err = StreamError.rst_stream(evt.error_code)
-        ctx.recv_body._set_error(StreamError(other=err))
-        ctx_ptr.init_pointee_move(ctx^)
-        # Resume coroutine so it observes the error and can unwind
-        if ctx_ptr[].coro_addr != UInt64(0):
-            var coro_p = ctx_ptr[].coro_ptr()
-            if coro_p[].can_resume():
-                try:
-                    coro_p[].resume()
-                except:
-                    pass
-        # Clean up — both directions are dead after RST
         self._release_stream(ctx_ptr)
         _ = self._streams.pop(sid)
 
     def _on_goaway(mut self, evt: H2Event) raises:
-        """Handle GOAWAY_RECEIVED / CONNECTION_TERMINATED: push connection-closed
-        error into all open streams and resume their coroutines."""
+        """Handle GOAWAY_RECEIVED / CONNECTION_TERMINATED: free all
+        streams.  The handler has already returned, so there's nothing
+        to wake up — just reclaim memory."""
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
@@ -522,17 +446,6 @@ struct H2CoroServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.take_pointee()
-            ctx.recv_body._set_error(StreamError.connection_closed())
-            ctx_ptr.init_pointee_move(ctx^)
-            # Resume coroutine so it sees the error
-            if ctx_ptr[].coro_addr != UInt64(0):
-                var coro_p = ctx_ptr[].coro_ptr()
-                if coro_p[].can_resume():
-                    try:
-                        coro_p[].resume()
-                    except:
-                        pass
             _free_stream(ctx_ptr)
             _ = self._streams.pop(sid)
 
@@ -540,9 +453,8 @@ struct H2CoroServer(Movable):
 
     def _drain_responses(mut self) raises:
         """Drain pending response data from stream contexts into the H2
-        connection.  Uses take_pointee/init_pointee_move to safely interleave
-        ctx access with self._conn mutations."""
-        # Snapshot stream IDs to avoid mutating dict while iterating
+        connection.  Uses take_pointee/init_pointee_move to safely
+        interleave ctx access with self._conn mutations."""
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)
@@ -551,14 +463,11 @@ struct H2CoroServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            # Use take_pointee to get mut access
             var ctx = ctx_ptr.take_pointee()
             var made_progress = False
-            # Skip if response not started
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
                 ctx_ptr.init_pointee_move(ctx^)
                 continue
-            # Send response headers if not yet sent
             if not ctx.headers_sent and ctx.resp_writer._has_status():
                 var status_opt = ctx.resp_writer._take_status()
                 var headers_opt = ctx.resp_writer._take_headers()
@@ -618,12 +527,10 @@ struct H2CoroServer(Movable):
                     ctx.response_ended = True
                     made_progress = True
                     break
-            # If body was popped but not yet ended, flush what we have.
             for k in range(len(pending_data)):
                 self._conn.send_data(
                     UInt32(sid), pending_data[k].copy(), end_stream=False
                 )
-            # Move back into the heap and maybe cleanup
             ctx_ptr.init_pointee_move(ctx^)
             if made_progress:
                 self._maybe_cleanup_stream(sid)
