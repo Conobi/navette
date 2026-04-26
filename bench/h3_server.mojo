@@ -59,6 +59,82 @@ comptime PBUF_SIZE: Int = 1600
 comptime PBUF_GROUP_ID: UInt16 = 0
 comptime RECVMSG_OUT_HDR_SIZE: Int = 16
 
+# ── Plan B SIGINT plumbing ────────────────────────────────────────────
+#
+# Mojo 0.26.2 forbids module-level `var`, so we cannot declare a global
+# `Atomic[Int32]` flag. `comptime _heap_alloc(...)` is also unusable
+# because each function captures its own copy of the comptime value
+# (verified empirically — the address differs across `main` and
+# `_profile_signal_handler`).
+#
+# Workaround: mmap a one-page anonymous mapping at a fixed low address.
+# Both `main` and the signal handler agree on the literal `Int` constant
+# `PROFILE_FLAG_ADDR`, so they read/write the same word. This is the
+# simplest async-signal-safe state-sharing scheme available in 0.26.2.
+# The signal handler itself does no allocation, no Mojo runtime calls,
+# and no I/O — it just stores `1` to that word.
+#
+# `signal(2)` FFI signature: signal(int signum, void (*handler)(int))
+# returns void (*)(int). We cast our `thin` fn pointer through Int and
+# pass it as an opaque pointer. Empirically validated against libc.
+comptime PROFILE_FLAG_ADDR: Int = 0x60000000  # 1.5 GiB — well below any heap
+comptime PROFILE_MAP_PRIVATE: Int32 = 2
+comptime PROFILE_MAP_ANON: Int32 = 0x20
+comptime PROFILE_MAP_FIXED: Int32 = 0x10
+comptime PROFILE_PROT_RW: Int32 = 3
+comptime PROFILE_SIGINT: Int32 = 2
+comptime PROFILE_SIGTERM: Int32 = 15
+
+
+fn _profile_signal_handler(signo: Int32):
+    # Async-signal-safe: store `1` to the fixed-address flag word. No
+    # allocation, no print, no Mojo runtime.
+    var p = UnsafePointer[Int32, MutAnyOrigin](
+        unsafe_from_address=PROFILE_FLAG_ADDR
+    )
+    p[0] = Int32(1)
+
+
+def _profile_install_signal_handlers() raises:
+    """Map the flag page and install SIGINT/SIGTERM handlers."""
+    var hint = UnsafePointer[NoneType, MutAnyOrigin](
+        unsafe_from_address=PROFILE_FLAG_ADDR
+    )
+    var mapped = external_call["mmap", UnsafePointer[NoneType, MutAnyOrigin]](
+        hint,
+        Int(4096),
+        PROFILE_PROT_RW,
+        PROFILE_MAP_PRIVATE | PROFILE_MAP_ANON | PROFILE_MAP_FIXED,
+        Int32(-1),
+        Int(0),
+    )
+    if Int(mapped) != PROFILE_FLAG_ADDR:
+        raise "_profile_install_signal_handlers: mmap returned wrong address"
+    var p = UnsafePointer[Int32, MutAnyOrigin](
+        unsafe_from_address=PROFILE_FLAG_ADDR
+    )
+    p[0] = Int32(0)
+
+    var fn_ptr: fn(Int32) thin -> None = _profile_signal_handler
+    var fp_value = UnsafePointer(to=fn_ptr).bitcast[UInt64]()[0]
+    var handler_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+        unsafe_from_address=Int(fp_value)
+    )
+    _ = external_call["signal", UnsafePointer[NoneType, MutAnyOrigin]](
+        PROFILE_SIGINT, handler_ptr
+    )
+    _ = external_call["signal", UnsafePointer[NoneType, MutAnyOrigin]](
+        PROFILE_SIGTERM, handler_ptr
+    )
+
+
+@always_inline
+fn _profile_dump_pending() -> Bool:
+    var p = UnsafePointer[Int32, MutAnyOrigin](
+        unsafe_from_address=PROFILE_FLAG_ADDR
+    )
+    return p[0] != Int32(0)
+
 
 def _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
     return (slot_idx << 8) | UInt64(op_kind)
@@ -643,6 +719,21 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.profile.record_flush(n_pkts_at_start, t_busy_end - t_busy_start)
             self.last_flush_end_us = t_busy_end
 
+        @parameter
+        if PROFILE_ACCEPT:
+            if _profile_dump_pending():
+                # Timeout sweep: count surviving non-established conns
+                # (B9 already counted evicted ones).
+                for i in range(len(self.conn_h3s)):
+                    if not self.conn_h3s[i][]._h3.is_established():
+                        self.profile.record_handshake_timeout(UInt64(1))
+                # Write text report to stderr-equivalent (stdout is fine
+                # for the bench; B11 will add structured JSON sidecar).
+                print(self.profile.report_text(), end="")
+                self._write_profile_json_sidecar()
+                # Exit cleanly via libc exit().
+                _ = external_call["exit", NoneType](Int32(0))
+
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
         """Drain outgoing datagrams from a connection and queue sendmsg."""
         var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
@@ -746,6 +837,10 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.pending_submits.append(
             PendingSubmit(kind=_SUBMIT_TIMEOUT, slot_idx=UInt64(0))
         )
+
+    fn _write_profile_json_sidecar(self) -> None:
+        # B11 will fill this in (UTC timestamp + sidecar write).
+        pass
 
 
 # ── _drain_pending_submits ───────────────────────────────────────────
@@ -908,6 +1003,13 @@ def main() raises:
     else:
         prefix = ""
     print(prefix + "h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
+
+    # Plan B: install SIGINT/SIGTERM handler so that Ctrl-C / kill
+    # triggers a profile dump + clean exit at the next flush boundary.
+    # Off-build: zero overhead (no comptime branch elided at compile time).
+    @parameter
+    if PROFILE_ACCEPT:
+        _profile_install_signal_handlers()
 
     # Build handler + loop.
     var handler = H3UdpHandler(
