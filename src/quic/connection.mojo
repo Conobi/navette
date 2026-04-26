@@ -1712,6 +1712,15 @@ struct QuicConnection(Movable):
         if (self.state & CONN_ESTABLISHED) != 0:
             return  # Already processed
 
+        # Plan B: record handshake latency on the SERVER side. Clients
+        # have profile_first_initial_us = 0 (default) and are skipped.
+        @parameter
+        if PROFILE_ACCEPT:
+            if self.is_server and Int(self.profile_ptr) != 0:
+                if self.profile_first_initial_us > UInt64(0):
+                    var latency_us = now - self.profile_first_initial_us
+                    self.profile_ptr[].record_handshake_complete(latency_us)
+
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
 
