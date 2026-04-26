@@ -551,6 +551,49 @@ def test_report_json_per_conn_aggregated_block() raises:
     print("PASS: test_report_json_per_conn_aggregated_block")
 
 
+def test_report_json_worst_conns() raises:
+    """Populate 100 non-complete conns + 20 complete; verify top-50 sorted descending and capped."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 100 non-complete conns: pkt_count = i+1 (1..100)
+    for i in range(100):
+        var k = String("nc_") + String(i)
+        for _ in range(i + 1):
+            p.record_conn_pkt(k)
+    # 20 complete conns with very high counts (200+) — must be excluded from top-50
+    for i in range(20):
+        var k = String("c_") + String(i)
+        for _ in range(200 + i):
+            p.record_conn_pkt(k)
+        p.record_conn_hs_complete(k)
+    var j = p.report_json()
+    assert_true('"worst_conns":' in j, "worst_conns key present")
+    # Top entry must be nc_99 (100 packets, not complete)
+    assert_true('"addr_key": "nc_99"' in j, "top offender is nc_99")
+    assert_true('"pkt_count": 100' in j, "top pkt_count = 100")
+    # No complete conn should appear
+    assert_true('"addr_key": "c_19"' not in j, "complete conn excluded")
+    # Verify cap at 50: count occurrences of '"addr_key":' — exactly 50
+    var n_entries = 0
+    var idx = 0
+    var search = String('"addr_key":')
+    var search_b = search.as_bytes()
+    var j_b = j.as_bytes()
+    while idx < len(j_b) - len(search_b):
+        var matched = True
+        for k in range(len(search_b)):
+            if j_b[idx + k] != search_b[k]:
+                matched = False
+                break
+        if matched:
+            n_entries += 1
+            idx += len(search_b)
+        else:
+            idx += 1
+    assert_true(n_entries == 50, "exactly 50 worst_conns entries (cap)")
+    print("PASS: test_report_json_worst_conns")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -576,4 +619,5 @@ def main() raises:
     test_record_conn_hs_complete_idempotent()
     test_report_json_arrival_latency_block()
     test_report_json_per_conn_aggregated_block()
+    test_report_json_worst_conns()
     print("All Plan A tests passed.")

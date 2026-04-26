@@ -358,6 +358,40 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "conns_total": ' + String(conns_total) + ',\n'
         s += '  "conns_with_pkts_no_hs_complete": ' + String(conns_no_hs) + ',\n'
 
+        # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
+        # Materialize parallel List[String] + List[UInt64], insertion-sort descending.
+        # Report time is non-hot; clarity > heap-select.
+        var off_keys = List[String]()
+        var off_vals = List[UInt64]()
+        for entry in self.conn_pkt_counts.items():
+            if entry.key in self.conn_hs_complete:
+                continue
+            off_keys.append(entry.key)
+            off_vals.append(entry.value)
+        # Insertion sort by val descending.
+        var n_off = len(off_vals)
+        for i in range(1, n_off):
+            var v = off_vals[i]
+            var k = off_keys[i]
+            var j = i - 1
+            while j >= 0 and off_vals[j] < v:
+                off_vals[j + 1] = off_vals[j]
+                off_keys[j + 1] = off_keys[j]
+                j -= 1
+            off_vals[j + 1] = v
+            off_keys[j + 1] = k
+
+        var cap = n_off
+        if cap > 50:
+            cap = 50
+        s += '  "worst_conns": [\n'
+        for i in range(cap):
+            s += '    {"addr_key": "' + off_keys[i] + '", "pkt_count": ' + String(off_vals[i]) + ', "hs_complete": false}'
+            if i < cap - 1:
+                s += ","
+            s += "\n"
+        s += "  ],\n"
+
         s += '  "handshake": {\n'
         s += '    "arrivals": ' + String(self.hs_arrivals) + ', '
         s += '"successful": ' + String(self.hs_completed) + ', '
