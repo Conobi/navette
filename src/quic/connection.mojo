@@ -19,6 +19,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from src.tls.lib import RustlsLibrary
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from src.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION
+from src.quic.profile import AcceptProfile
 from src.quic.frame import (
     Frame,
     AckFrame,
@@ -319,6 +320,22 @@ struct QuicConnection(Movable):
     var ecn_probe_pkts_sent: Int   # ECT(0) packets sent during probing phase
     var ecn_probe_first_pn: UInt64 # PN of first ECT(0) probe packet
 
+    # ── Plan B profile instrumentation (always present; off-build = dead) ──
+    #
+    # struct-layout drift accepted in spec §Constraints. The profile_ptr field
+    # is null for non-bench callers (client tests, conformance suite). Server
+    # constructors stamp profile_first_initial_us before any FFI call so
+    # handshake-latency does not under-report by Initial-key-derivation cost.
+    #
+    # First-iteration bleed-in semantic: profile_first_iter_done starts False.
+    # Iter 1 of recv_from_buffer does NOT reset profile_rustls_us_accum at
+    # its top — it inherits the constructor's accumulator (zero for server,
+    # Initial-key-derivation cost for client). Iter 2+ resets at top.
+    var profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
+    var profile_first_initial_us: UInt64
+    var profile_rustls_us_accum: UInt64
+    var profile_first_iter_done: Bool
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit take: Self):
@@ -353,6 +370,10 @@ struct QuicConnection(Movable):
         self.ecn_probe_pkts_needed = take.ecn_probe_pkts_needed
         self.ecn_probe_pkts_sent = take.ecn_probe_pkts_sent
         self.ecn_probe_first_pn = take.ecn_probe_first_pn
+        self.profile_ptr = take.profile_ptr
+        self.profile_first_initial_us = take.profile_first_initial_us
+        self.profile_rustls_us_accum = take.profile_rustls_us_accum
+        self.profile_first_iter_done = take.profile_first_iter_done
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -401,6 +422,10 @@ struct QuicConnection(Movable):
         self.ecn_probe_pkts_needed = 10
         self.ecn_probe_pkts_sent = 0
         self.ecn_probe_first_pn = UInt64(0)
+        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin]()
+        self.profile_first_initial_us = UInt64(0)
+        self.profile_rustls_us_accum = UInt64(0)
+        self.profile_first_iter_done = False
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
