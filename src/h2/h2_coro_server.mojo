@@ -9,7 +9,7 @@ from std.collections import Dict
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from boucle.stackful import CoroHandle, CoroYielder, CoroBody
+from boucle.stackful import CoroHandle, CoroYielder, CoroBody, CoroutinePool
 
 from .connection import (
     H2Connection,
@@ -135,9 +135,9 @@ struct _CoroStreamPtr(Copyable, Movable):
 
 
 def _free_stream(ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
-    """Free both the CoroHandle (if allocated) and the CoroStreamCtx heap
-    allocations.  Single cleanup path used by __del__, _on_stream_reset,
-    and _cleanup_stream."""
+    """Hard-destroy the CoroHandle and CoroStreamCtx allocations. Used
+    only on shutdown / unrecoverable error paths where the pool is not
+    available (or the coro is in a non-DONE, non-poolable state)."""
     if ctx_ptr[].coro_addr != UInt64(0):
         var coro_p = ctx_ptr[].coro_ptr()
         coro_p.destroy_pointee()
@@ -162,6 +162,12 @@ struct H2CoroServer(Movable):
     var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, _CoroStreamPtr]
+    # Per-connection coroutine pool. With h2load -m 10 the steady-state
+    # idle count rarely exceeds 10; capacity=16 keeps the high-water
+    # bounded under bursty traffic. The first request on a connection
+    # pays the full mmap+setup_context cost; every subsequent stream
+    # reuses an idle handle with just `getcontext + setup_context`.
+    var _pool: CoroutinePool
 
     # --- Constructors -------------------------------------------------------
 
@@ -183,6 +189,7 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, _CoroStreamPtr]()
+        self._pool = CoroutinePool(capacity=16)
         self._flush_outbound()
 
     def __init__(
@@ -201,6 +208,7 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, _CoroStreamPtr]()
+        self._pool = CoroutinePool(capacity=16)
         self._flush_outbound()
 
     def __init__(out self, *, deinit take: Self):
@@ -209,6 +217,7 @@ struct H2CoroServer(Movable):
         self._extra_data = take._extra_data
         self._outbuf = take._outbuf^
         self._streams = take._streams^
+        self._pool = take._pool^
 
     fn __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts. For any
@@ -276,6 +285,20 @@ struct H2CoroServer(Movable):
         """Check whether stream ID is present in the streams dict."""
         return sid in self._streams
 
+    fn _release_stream(mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
+        """Release a stream's CoroHandle to the pool when DONE so its
+        stack and ucontext can be reused; hard-destroy otherwise. Always
+        destroys the CoroStreamCtx itself."""
+        if ctx_ptr[].coro_addr != UInt64(0):
+            var coro_p = ctx_ptr[].coro_ptr()
+            if coro_p[].is_done():
+                self._pool.release(coro_p)
+            else:
+                coro_p.destroy_pointee()
+                coro_p.free()
+        ctx_ptr.destroy_pointee()
+        ctx_ptr.free()
+
     def _flush_outbound(mut self):
         """Move pending outbound bytes from the H2Connection into our buffer."""
         var pending = self._conn.data_to_send()
@@ -311,7 +334,7 @@ struct H2CoroServer(Movable):
         if not self._has_stream(stream_id):
             return
         var ctx_ptr = self._streams[stream_id].ptr()
-        _free_stream(ctx_ptr)
+        self._release_stream(ctx_ptr)
         _ = self._streams.pop(stream_id)
 
     def _maybe_cleanup_stream(mut self, stream_id: Int) raises:
@@ -321,7 +344,7 @@ struct H2CoroServer(Movable):
         var ctx_ptr = self._streams[stream_id].ptr()
         # Read through pointer — Bool is trivially copyable
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
-            _free_stream(ctx_ptr)
+            self._release_stream(ctx_ptr)
             _ = self._streams.pop(stream_id)
 
     # --- Event dispatch -----------------------------------------------------
@@ -368,13 +391,14 @@ struct H2CoroServer(Movable):
 
         ctx_ptr.init_pointee_move(ctx^)
 
-        # Allocate CoroHandle on the heap — user_data points to the ctx
+        # Acquire a CoroHandle from the per-connection pool. First
+        # request on this connection pays the full mmap+setup_context
+        # cost; subsequent acquires return a recycled handle that just
+        # gets re-initialised via CoroHandle.reset().
         var user_data = UnsafePointer[NoneType, MutExternalOrigin](
             unsafe_from_address=Int(ctx_ptr)
         )
-        var coro_heap = _heap_alloc[CoroHandle](1).as_any_origin()
-        var coro = CoroHandle(self._body_fn, user_data)
-        coro_heap.init_pointee_move(coro^)
+        var coro_heap = self._pool.acquire(self._body_fn, user_data)
 
         # Set coro_addr in the ctx
         ctx_ptr[].coro_addr = UInt64(Int(coro_heap))
@@ -483,7 +507,7 @@ struct H2CoroServer(Movable):
                 except:
                     pass
         # Clean up — both directions are dead after RST
-        _free_stream(ctx_ptr)
+        self._release_stream(ctx_ptr)
         _ = self._streams.pop(sid)
 
     def _on_goaway(mut self, evt: H2Event) raises:
