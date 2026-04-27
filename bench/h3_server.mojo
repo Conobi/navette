@@ -687,6 +687,15 @@ struct H3UdpHandler(BatchCompletionHandler):
             # in the same poll batch did swap-and-pop on conn_h3s.
             var conn_idx = self._find_conn(pd.addr_key)
 
+            @parameter
+            if PROFILE_ACCEPT:
+                if conn_idx >= 0:
+                    if not self.conn_h3s[conn_idx][]._h3._quic.is_expected_dcid(Span(pd.dcid)):
+                        try:
+                            self.profile.record_dcid_mismatch(pd.addr_key)
+                        except:
+                            pass
+
             if conn_idx < 0:
                 # Create new QUIC connection. DCID was already extracted in
                 # _handle_recvmsg and travels in PendingDatagram.
