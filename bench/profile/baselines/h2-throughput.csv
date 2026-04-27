@@ -23,3 +23,9 @@ timestamp,git_sha,server,endpoint,n,c,m,reqs_per_s,p50_us,p99_us,p999_us,bytes_p
 2026-04-27T02:35:00Z,3919f7d,mojo-net-baseline-pin8,/json/50?m=6,1152639,100,10,19210.65,0,0,0,8418
 2026-04-27T02:35:00Z,0d1445d,mojo-net-pathA-pin8,/baseline2?a=1&b=2,8414840,100,10,140247.33,0,0,0,22
 2026-04-27T02:35:00Z,0d1445d,mojo-net-pathA-pin8,/json/50?m=6,1062798,100,10,17713.30,0,0,0,8418
+2026-04-27T03:10:00Z,00143e5,mojo-net-pathA-pool-pin8,/baseline2?a=1&b=2,9386110,100,10,156435.17,0,0,0,22
+2026-04-27T03:10:00Z,00143e5,mojo-net-pathA-pool-pin8,/json/50?m=6,1139865,100,10,18997.75,0,0,0,8418
+2026-04-27T03:10:00Z,00143e5,mojo-net-pathA-pool-pin4,/baseline2?a=1&b=2,9410350,100,10,156839.17,0,0,0,22
+2026-04-27T03:10:00Z,00143e5,mojo-net-pathA-pool-pin4,/json/50?m=6,1199495,100,10,19991.58,0,0,0,8418
+2026-04-27T03:10:00Z,00143e5,mojo-net-pathA-pool-unpinned,/baseline2?a=1&b=2,8143320,100,10,135722.00,0,0,0,22
+2026-04-27T03:10:00Z,00143e5,mojo-net-pathA-pool-unpinned,/json/50?m=6,1185769,100,10,19762.82,0,0,0,8418
