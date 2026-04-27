@@ -4,7 +4,9 @@
 **Plan:** `plans/2026-04-27-quic-addr-key-to-dcid-demux-migration.md`
 **Branch:** `feat/quic-addr-key-to-dcid-demux-migration`
 **Range:** `a9b947e..1bb91bd` (10 commits)
-**Final state:** ✅ All 10 plan tasks complete. **Verdict: SHIPPED.** Migration drove `dcid_mismatch_pkts` from 3000+ per 30s to 0 in both cells. Throughput uplift: long-conn +1005% (420→4643 rps); short-conn +2520× (0.26→655 rps).
+**Final state:** ✅ All 10 plan tasks complete. **Verdict: SHIPPED.** Migration drove `dcid_mismatch_pkts` from 3000+ per 30s to 0 in both cells (the regression-detector invariant — primary "fixed" signal). Throughput uplift: on-build long-conn +1005% (420→4643 rps); on-build short-conn +2520× (0.26→655 rps).
+
+**Post-finalisation correction:** the T0 "off-build baseline" (420.23 / 0.26) was contaminated by an on-build docker image left over from the prior counter pass — bench.sh used the existing image without rebuilding. A clean true-off-build baseline was captured post-T9 (image rebuilt with `PROFILE_ACCEPT=False`): post-migration **off-build** measures **13850 long-conn / 1090 short-conn rps**. This surfaces a new finding: the counter's per-packet overhead costs ~66% on long-conn and ~40% on short-conn in the post-migration regime (hidden pre-migration by the demux-bottleneck CPU idle). See `bench/quic_perf/results/profile/T-smoke-postmigration-2026-04-27.md` §"CORRECTION" for full numbers + comparison shapes. Becomes new open question 7 below.
 
 ---
 
@@ -102,7 +104,19 @@ Plan placed assertions after `quic^` moved into `H3HandlerServer`. Mojo's flow a
 - **Severity:** LOW (no QUIC tests depend on it; doesn't gate any acceptance criterion). But MEDIUM-impact for developer experience (new tests must be verified individually).
 - **Trigger:** rustls version bump or any TLS-related work. Or: reorder `scripts/run_tests.sh`'s TESTS array to run quic tests BEFORE TLS tests.
 
-### 6. Demux module organisation — optional, severity LOW
+### 7. Counter overhead is now visible — required-later, severity MEDIUM
+
+- **What:** Post-migration true-off-build (13850 long / 1090 short rps) vs post-migration on-build (4643 / 655 rps) shows the diagnostic counter (`dcid_mismatch_pkts` + `addr_key_mismatch_counts` + arrival-latency from queueing-tail + per-conn pkt counts from queueing-tail) costs **~66% on long-conn and ~40% on short-conn**. Pre-migration this overhead was hidden by the demux-bottleneck CPU idle (server was at 0.1% CPU; counter cost was invisible). Post-migration the server is actually doing work and the counter is a non-trivial drag.
+- **Severity:** MEDIUM — the counter is a regression detector (per open question 1) but the cost is now significant on the production-shape build path. Two paths forward: (a) **accept** the cost as the price of the regression detector and run on-build only when actively investigating, (b) **lighten** the counter via sampling (1-of-N packets), flush-boundary-only counting, or moving fields to a heavier `PROFILE_ACCEPT_HEAVY` tier so the always-on path is cheap.
+- **Trigger:** any future perf investigation that wants on-build measurements as the comparison baseline. The `≤10% drift` smoke gate can no longer assume "counter overhead is negligible" — the next spec must explicitly account for it.
+
+### 8. T0 baseline image-state hygiene — required-later, severity MEDIUM
+
+- **What:** This pass's T0 baseline (and likely prior counter pass's T0) was contaminated because bench.sh uses whatever `mojo-net-bench:latest` image is current — and that image carries whatever `PROFILE_ACCEPT` value it was compiled with, regardless of the source-code flag. A clean off-build baseline requires rebuilding the image with `PROFILE_ACCEPT=False` BEFORE running bench.sh.
+- **Severity:** MEDIUM — affects every smoke-gate measurement going forward.
+- **Trigger:** any future plan that captures an off-build baseline. Add to T0 hard-gate template: "**Step X: rebuild docker image with current source state** (e.g. `docker build -t mojo-net-bench:latest ...`) BEFORE the off-build baseline capture. Verify the image's compiled flag matches the source flag." Document this lesson in `docs/project-context.md` for future-author reference.
+
+### 9. Demux module organisation — optional, severity LOW
 
 - **What:** All four reference impls (TQUIC, quiche, lsquic, quic-go) inline demux in their server entrypoint. mojo-net mirrors this. If a SECOND H3 server harness is ever added (e.g. for a different transport), the demux pattern would need to be lifted to `src/quic/`. Currently single-consumer.
 - **Severity:** LOW (YAGNI).

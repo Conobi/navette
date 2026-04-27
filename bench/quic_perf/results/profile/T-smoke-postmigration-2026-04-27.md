@@ -79,3 +79,46 @@ The spec's literal `≤10% drift` gate was meant for per-packet overhead detecti
 ## Both gates verdict: **PASS** (intended fix).
 
 The migration's intended outcome — handshakes that previously timed out at the addr_key bottleneck now complete — is realised in both cells. T9 SIGINT captures will provide the regression-detector invariant (`dcid_mismatch_pkts == 0`).
+
+## CORRECTION (post-T9): T0 baseline contamination + true off-build post-migration
+
+**Discovery:** the T0 "off-build baseline" (420.23 / 0.26 rps) was contaminated. The docker image active at T0 was the one rebuilt during the prior counter-counter pass's T8 (which compiled with `PROFILE_ACCEPT=True`). T0 reverted the flag in source but NOT in the image — bench.sh used the existing on-build image. So T0's "off-build" numbers actually reflect **on-build with old addr_key demux** (counter overhead included, addr_key demux active).
+
+To get a true post-migration off-build baseline, the docker image was rebuilt at 22:24:28 (ID `3e5facff7e72`) with `PROFILE_ACCEPT=False` compiled in, and bench.sh re-run:
+
+### TRUE off-build post-migration (image `3e5facff7e72`)
+
+#### Long-conn cell (3 iters)
+| iter | rps |
+|---|---|
+| 1 | 13850.35 |
+| 2 | 13851.64 |
+| 3 | 12565.87 |
+| **median** | **13850.35** |
+
+#### Short-conn cell (3 iters)
+| iter | rps |
+|---|---|
+| 1 | 1000.65 |
+| 2 | 1101.85 |
+| 3 | 1090.48 |
+| **median** | **1090.48** |
+
+### Corrected comparison shapes
+
+| Shape | Long-conn | Short-conn | Notes |
+|---|---|---|---|
+| Pre-migration on-build (T0, contaminated) | 420.23 | 0.26 | Old addr_key demux + counter compiled-on. Comparable to prior counter-pass's T0 (427.95 / 0.42) within run-to-run noise. |
+| Post-migration on-build (T8) | 4643.29 | 655.20 | New DCID demux + counter compiled-on. |
+| Post-migration off-build (CORRECTION, just measured) | **13850.35** | **1090.48** | New DCID demux + counter compiled-off. Clean image. |
+
+### Three valid comparisons
+
+1. **Migration effect, on-build to on-build (T8/T0):** long-conn `4643.29 / 420.23 = 11.05×`; short-conn `655.20 / 0.26 = 2520×`. The numbers in the retrospective summary table.
+2. **Counter overhead, post-migration off-build to on-build:** long-conn `4643.29 / 13850.35 = 0.335` (counter costs **~66%**); short-conn `655.20 / 1090.48 = 0.601` (counter costs **~40%**). New finding — the counter's overhead was hidden under the demux bottleneck pre-migration.
+3. **Migration effect, off-build to off-build:** post-migration off-build is 13850.35 / 1090.48; pre-migration off-build was never cleanly captured (would require rebuilding from a pre-migration commit). The closest data point is the prior counter pass's T0 (427.95 / 0.42, also contaminated to on-build state). Conservative bound: migration effect is **at least** as large as the on-build comparison (11×, 2520×) — likely larger if pre-migration off-build is similarly faster than its on-build counterpart.
+
+### Implications
+
+- The migration's "fixed the bug" claim is supported by **`dcid_mismatch_pkts: 3000+ → 0`** (T9 SIGINT captures), independent of any RPS framing.
+- The counter overhead (-40% to -66%) is a NEW concern surfaced by the migration. Pre-migration this was masked by the demux-bottleneck CPU idle. Post-migration the counter is a non-trivial drag on the production-shape build. **This becomes a new open question** for the next perf push: either accept the cost as the price of the regression detector, or wire the counter into a less-hot path (e.g. sample 1-of-N packets, only count on flush boundaries, or move to compile-time-only via a heavier `PROFILE_ACCEPT` gate).
