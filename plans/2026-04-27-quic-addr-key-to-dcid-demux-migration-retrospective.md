@@ -4,9 +4,20 @@
 **Plan:** `plans/2026-04-27-quic-addr-key-to-dcid-demux-migration.md`
 **Branch:** `feat/quic-addr-key-to-dcid-demux-migration`
 **Range:** `a9b947e..1bb91bd` (10 commits)
-**Final state:** ✅ All 10 plan tasks complete. **Verdict: SHIPPED.** Migration drove `dcid_mismatch_pkts` from 3000+ per 30s to 0 in both cells (the regression-detector invariant — primary "fixed" signal). Throughput uplift: on-build long-conn +1005% (420→4643 rps); on-build short-conn +2520× (0.26→655 rps).
+**Final state:** ✅ All 10 plan tasks complete. **Verdict: SHIPPED.** Migration drove `dcid_mismatch_pkts` from 3000+ per 30s to 0 in both cells (the regression-detector invariant — primary "fixed" signal).
 
-**Post-finalisation correction:** the T0 "off-build baseline" (420.23 / 0.26) was contaminated by an on-build docker image left over from the prior counter pass — bench.sh used the existing image without rebuilding. A clean true-off-build baseline was captured post-T9 (image rebuilt with `PROFILE_ACCEPT=False`): post-migration **off-build** measures **13850 long-conn / 1090 short-conn rps**. This surfaces a new finding: the counter's per-packet overhead costs ~66% on long-conn and ~40% on short-conn in the post-migration regime (hidden pre-migration by the demux-bottleneck CPU idle). See `bench/quic_perf/results/profile/T-smoke-postmigration-2026-04-27.md` §"CORRECTION" for full numbers + comparison shapes. Becomes new open question 7 below.
+**Throughput uplift (10-iter median, post-correction):**
+- Long-conn on-build: 420 → **14109 rps** (33.6× — the corrected number; original 3-iter T8 reading of 4643 was an anomalous-low outlier).
+- Short-conn on-build: 0.26 → **1186 rps** (4562×).
+- Counter overhead (post-migration off-build vs on-build, 10-iter): **−2.3% / −1.8% — within noise**.
+
+**vs tquic_server reference (same machine + harness, tquic_client driver):** mojo-net is at **16.2%** of tquic_server long-conn (14109 / 87113) and **46.8%** of short-conn (1186 / 2535). Long-conn gap > short-conn gap → next-investigation hint: post-migration bottleneck is in the steady-state per-packet hot path, not handshake throughput.
+
+**Two corrections were applied post-finalisation:**
+1. **T0 baseline contamination** (open question 8 — STILL valid): T0's "off-build" was actually on-build because the docker image carried `PROFILE_ACCEPT=True` from the prior pass. Lesson: always rebuild the image with current source-flag value before off-build capture.
+2. **Counter-overhead claim WITHDRAWN** (open question 7 — withdrawn after 10-iter rerun): the original 3-iter T8 sample produced "66%/40%" overhead due to anomalous low iters; 10-iter rerun shows true overhead is <3%, within noise. Lesson: 3-iter medians insufficient for high-variance measurements.
+
+See `bench/quic_perf/results/profile/T-smoke-postmigration-2026-04-27.md` for full corrected numbers including IQR + StDev.
 
 ---
 
@@ -104,11 +115,12 @@ Plan placed assertions after `quic^` moved into `H3HandlerServer`. Mojo's flow a
 - **Severity:** LOW (no QUIC tests depend on it; doesn't gate any acceptance criterion). But MEDIUM-impact for developer experience (new tests must be verified individually).
 - **Trigger:** rustls version bump or any TLS-related work. Or: reorder `scripts/run_tests.sh`'s TESTS array to run quic tests BEFORE TLS tests.
 
-### 7. Counter overhead is now visible — required-later, severity MEDIUM
+### 7. Counter overhead — WITHDRAWN
 
-- **What:** Post-migration true-off-build (13850 long / 1090 short rps) vs post-migration on-build (4643 / 655 rps) shows the diagnostic counter (`dcid_mismatch_pkts` + `addr_key_mismatch_counts` + arrival-latency from queueing-tail + per-conn pkt counts from queueing-tail) costs **~66% on long-conn and ~40% on short-conn**. Pre-migration this overhead was hidden by the demux-bottleneck CPU idle (server was at 0.1% CPU; counter cost was invisible). Post-migration the server is actually doing work and the counter is a non-trivial drag.
-- **Severity:** MEDIUM — the counter is a regression detector (per open question 1) but the cost is now significant on the production-shape build path. Two paths forward: (a) **accept** the cost as the price of the regression detector and run on-build only when actively investigating, (b) **lighten** the counter via sampling (1-of-N packets), flush-boundary-only counting, or moving fields to a heavier `PROFILE_ACCEPT_HEAVY` tier so the always-on path is cheap.
-- **Trigger:** any future perf investigation that wants on-build measurements as the comparison baseline. The `≤10% drift` smoke gate can no longer assume "counter overhead is negligible" — the next spec must explicitly account for it.
+- **What was claimed:** Post-migration on-build vs off-build shows the diagnostic counter costs ~66% on long-conn / ~40% on short-conn.
+- **Why withdrawn:** A 10-iter-per-cell rerun (vs the original 3-iter T8 sample) showed counter overhead is **−2.3% on long-conn / −1.8% on short-conn — within run-to-run noise**. T8's iters 2-3 (4643 / 655 rps) were anomalous low-state outliers; iter 1 (13016) was the true steady-state and matches the 10-iter median (14109 / 1186). The "66%/40%" claim was a noise artefact.
+- **Status:** No lightening work needed. Counter remains as deployed.
+- **Lesson preserved:** 3-iter medians are insufficient for measurements with high run-to-run variance. Future smoke gates should default to ≥10 iters with IQR-based comparison.
 
 ### 8. T0 baseline image-state hygiene — required-later, severity MEDIUM
 

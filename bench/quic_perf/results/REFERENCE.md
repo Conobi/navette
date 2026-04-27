@@ -517,9 +517,26 @@ Short-conn handshake throughput jumped from ~10 successful handshakes/30s (pre-m
 
 **Throughput uplift summary (acceptance #5):** the migration unblocks the calibrated 1 rps short-conn floor confirmed by the prior 4 hypothesis-pass investigations. Both cells now operate at 4-digit rps regimes consistent with healthy QUIC server behaviour.
 
-**CORRECTION (post-T10): T0 baseline was contaminated.** The T0 "off-build" baseline (420.23 / 0.26 rps) was actually on-build — the docker image left over from the prior counter pass had `PROFILE_ACCEPT=True` compiled in. bench.sh used the existing image without rebuilding. A clean post-migration off-build baseline (image rebuilt at 22:24:28, ID `3e5facff7e72`, `PROFILE_ACCEPT=False`): **long-conn 13850 / short-conn 1090 rps** (3-iter medians). This surfaces a new finding: post-migration the diagnostic counter costs ~66% on long-conn and ~40% on short-conn (hidden pre-migration by the demux-bottleneck CPU idle). The migration's "fixed the bug" claim rests on **`dcid_mismatch_pkts: 3000+ → 0`** (regression-detector invariant), independent of any RPS framing. The +1005% / +2520× drift figures reported above are valid as on-build-to-on-build comparisons but should be read with this contamination context. Counter overhead becomes a new open question (recorded in the retrospective as items 7+8): either lighten the counter (sample 1-of-N packets, flush-boundary-only counting, heavier `PROFILE_ACCEPT_HEAVY` tier) or accept the cost as the price of the regression detector.
+**CORRECTION CHAIN (post-T10):**
 
-**Lesson:** future smoke-gate captures must rebuild the docker image with the current source-code `PROFILE_ACCEPT` value BEFORE running bench.sh. The flag-flip-in-source pattern alone is insufficient — the image carries whatever it was compiled with. T0 hard-gate templates need an explicit "rebuild image with current source state" step before the off-build baseline capture.
+1. **T0 baseline was contaminated.** T0's "off-build" baseline (420.23 / 0.26 rps) was actually on-build — the docker image left over from the prior counter pass had `PROFILE_ACCEPT=True` compiled in. bench.sh used the existing image without rebuilding. **Lesson stands** (recorded as retrospective open question 8): future smoke-gate captures must rebuild the docker image with the current source-code `PROFILE_ACCEPT` value BEFORE running bench.sh.
+
+2. **Initial "counter overhead −66%/−40%" claim WITHDRAWN after 10-iter rerun.** A follow-up 10-iter-per-cell rerun (4 cells × 10 iters, 2026-04-28 ~00:06-00:34) showed:
+
+   | Build | Cell | n | Median rps | IQR |
+   |---|---|---|---|---|
+   | OFF-BUILD | long-conn | 10 | **14436** | 488 |
+   | OFF-BUILD | short-conn | 10 | **1208** | 55 |
+   | ON-BUILD | long-conn | 9 | **14109** | 691 |
+   | ON-BUILD | short-conn | 10 | **1186** | 103 |
+
+   **Counter overhead on-build vs off-build: −2.3% long-conn, −1.8% short-conn — within run-to-run noise.** T8's iters 2-3 (4643 / 655) were anomalous-low outliers; iter 1 (13016) was the true steady-state. The corrected migration effect (pre-migration on-build T0 contaminated → post-migration on-build 10-iter median) is **33.6× long-conn** (420 → 14109) and **4562× short-conn** (0.26 → 1186). The migration's "fixed the bug" claim still rests on `dcid_mismatch_pkts: 3000+ → 0` (regression-detector invariant).
+
+3. **Cross-implementation reference (REFERENCE.md rows 254-257):** vs tquic_server (same machine + harness, tquic_client driver), mojo-net post-migration is at **16.2% of tquic_server long-conn** (14109 / 87113) and **46.8% of short-conn** (1186 / 2535). Long-conn gap > short-conn gap → next-investigation hint: post-migration bottleneck is in the steady-state per-packet hot path, not handshake throughput.
+
+**Two lessons preserved:**
+- Future smoke gates must rebuild the docker image with current source-flag value before off-build capture (T0 hygiene).
+- 3-iter medians are insufficient for high-variance measurements; default to ≥10 iters with IQR-based comparison.
 
 **Pre-migration baseline (for reference):** the prior counter pass (this REFERENCE.md, "2026-04-27 — addr-key-dcid-collision-counter — DATA — CONFIRMED") showed 3125 / 3165 mismatches across the same 2 cells over 30s. Migration drove both to 0.
 
