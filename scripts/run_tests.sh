@@ -59,6 +59,7 @@ TESTS=(
     test_h2_sync_server
     test_h3_sync_server
     test_h3_streaming_server
+    test_h2_streaming_server
     test_url
     test_http_client
     test_decode
@@ -124,6 +125,9 @@ for t in "${TESTS[@]}"; do
         EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h3_streaming_server" ]; then
+        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+    fi
+    if [ "$t" = "test_h2_streaming_server" ]; then
         EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
     fi
     if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
