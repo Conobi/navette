@@ -121,4 +121,48 @@ To get a true post-migration off-build baseline, the docker image was rebuilt at
 ### Implications
 
 - The migration's "fixed the bug" claim is supported by **`dcid_mismatch_pkts: 3000+ → 0`** (T9 SIGINT captures), independent of any RPS framing.
-- The counter overhead (-40% to -66%) is a NEW concern surfaced by the migration. Pre-migration this was masked by the demux-bottleneck CPU idle. Post-migration the counter is a non-trivial drag on the production-shape build. **This becomes a new open question** for the next perf push: either accept the cost as the price of the regression detector, or wire the counter into a less-hot path (e.g. sample 1-of-N packets, only count on flush boundaries, or move to compile-time-only via a heavier `PROFILE_ACCEPT` gate).
+
+## CORRECTION 2 (10-iter rerun): counter overhead is effectively zero
+
+After the post-T10 correction recorded a "-40% to -66% counter overhead" claim, a follow-up 10-iter-per-cell rerun (vs the earlier 3-iter sample) showed that finding was a noise artefact. T8's iters 2-3 happened to land in an anomalously low state (likely transient docker/system pressure); the iter-1 reading of 13016 was the true steady-state.
+
+### 10-iter rerun results (4 cells × 10 iters; 2026-04-28 ~00:06-00:34)
+
+| Build | Cell | n | Median rps | IQR | Mean | StDev |
+|---|---|---|---|---|---|---|
+| OFF-BUILD (`PROFILE_ACCEPT=False`) | long-conn | 10 | **14435.93** | 488 | 14319 | 352 |
+| OFF-BUILD | short-conn | 10 | **1208.19** | 55 | 1188 | 49 |
+| ON-BUILD (`PROFILE_ACCEPT=True`) | long-conn | 9 | **14108.77** | 691 | 14062 | 643 |
+| ON-BUILD | short-conn | 10 | **1186.43** | 103 | 1112 | 201 |
+
+(One ON-BUILD long-conn iter fell outside the timestamp window collected; n=9.)
+
+### Corrected counter-overhead finding
+
+| Cell | Off-build median | On-build median | Drift | Within noise? |
+|---|---|---|---|---|
+| Long-conn | 14436 | 14109 | **−2.3%** | ✓ (IQR ±3.4%) |
+| Short-conn | 1208 | 1186 | **−1.8%** | ✓ (IQR ±4.5%) |
+
+**Counter overhead is effectively zero** on the post-migration high-throughput regime. The earlier "−66%/−40%" claim is **WITHDRAWN** — it reflected T8's anomalous low iters, not a real per-packet cost.
+
+The retrospective's open question 7 (counter overhead lightening) is downgraded from MEDIUM to **WITHDRAWN** — no lightening needed. Open question 8 (T0 docker image hygiene before off-build baseline) **stands** — that's a real lesson independent of the overhead-finding withdrawal.
+
+### Corrected migration effect (with high-confidence numbers)
+
+| Comparison | Long-conn | Short-conn |
+|---|---|---|
+| Pre-migration on-build (T0 contaminated, but represents the on-build pre-migration shape) | 420 | 0.26 |
+| Post-migration on-build (10-iter median) | **14109** | **1186** |
+| **Migration effect** | **33.6×** | **4562×** |
+
+### vs tquic_server (same machine + harness, 2026-04-25)
+
+tquic_server (reference Tencent QUIC server) under `tquic_client --threads 4 --max-concurrent-conns 25`, 3-iter medians (REFERENCE.md rows 254-257):
+
+| Cell | tquic_server | mojo-net post-migration | mojo-net / tquic_server |
+|---|---|---|---|
+| Long-conn | 87113 | 14109 | **16.2%** |
+| Short-conn | 2535 | 1186 | **46.8%** |
+
+**Long-conn gap (16%) > short-conn gap (47%)** suggests the post-migration mojo-net bottleneck is in the **steady-state per-packet hot path** (where long-conn lives) rather than handshake throughput (where short-conn lives). Useful next-investigation hint for the post-migration perf push.
