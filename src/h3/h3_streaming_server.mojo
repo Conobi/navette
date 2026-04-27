@@ -465,6 +465,22 @@ struct H3StreamingServer(Movable):
     def _has_stream(self, sid: Int) -> Bool:
         return sid in self._streams
 
+    def _free_streaming_stream(
+        mut self, ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin]
+    ):
+        """Destroy the stream's CoroHandle + H3StreamingCtx and return the
+        ctx slot to the per-connection pool. The pool's release() decides
+        whether to keep the slot for reuse (under capacity) or free it
+        (beyond capacity), so this restores the freelist that earlier
+        revisions silently bypassed by calling ctx_ptr.free() directly.
+        ALWAYS call _streams.pop(sid) BEFORE invoking this method."""
+        if ctx_ptr[].coro_addr != UInt64(0):
+            var coro_p = ctx_ptr[].coro_ptr()
+            coro_p.destroy_pointee()
+            coro_p.free()
+        ctx_ptr.destroy_pointee()
+        self._ctx_pool.release(ctx_ptr)
+
     def _flush_outbound(mut self, now: UInt64) raises:
         """Move pending outbound QUIC datagrams from H3Connection into buffer."""
         var pending = self._h3.drain_datagrams(now)
@@ -477,7 +493,7 @@ struct H3StreamingServer(Movable):
             return
         var ctx_ptr = self._streams[stream_id].ptr()
         _ = self._streams.pop(stream_id)
-        _free_streaming_stream(ctx_ptr)
+        self._free_streaming_stream(ctx_ptr)
 
     def _maybe_cleanup_stream(mut self, stream_id: Int) raises:
         """Free stream if both request and response sides are done."""
@@ -486,7 +502,7 @@ struct H3StreamingServer(Movable):
         var ctx_ptr = self._streams[stream_id].ptr()
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
             _ = self._streams.pop(stream_id)
-            _free_streaming_stream(ctx_ptr)
+            self._free_streaming_stream(ctx_ptr)
 
     def _resume_stream(mut self, sid: Int) raises:
         """Resume the coroutine for stream sid. On error, set cancelled + free.
@@ -514,7 +530,7 @@ struct H3StreamingServer(Movable):
             except:
                 pass
             _ = self._streams.pop(sid)
-            _free_streaming_stream(ctx_ptr)
+            self._free_streaming_stream(ctx_ptr)
             return
         # Coro finished or suspended — if done, drain will clean up via
         # _maybe_cleanup_stream (called at end of _drain_responses).
@@ -677,7 +693,7 @@ struct H3StreamingServer(Movable):
                 except:
                     pass
         _ = self._streams.pop(sid)  # pop BEFORE free
-        _free_streaming_stream(ctx_ptr)
+        self._free_streaming_stream(ctx_ptr)
 
     def _on_goaway(mut self, ev: H3Event) raises:
         """GOAWAY_RECEIVED / CONNECTION_CLOSED: set cancelled for ALL streams,
@@ -699,7 +715,7 @@ struct H3StreamingServer(Movable):
                     except:
                         pass
             _ = self._streams.pop(sid)  # pop BEFORE free
-            _free_streaming_stream(ctx_ptr)
+            self._free_streaming_stream(ctx_ptr)
 
     # --- Response draining --------------------------------------------------
 
