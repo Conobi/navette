@@ -8,7 +8,7 @@
 #   cd ~/Projets/perso/mojo-net && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_connection.mojo
 
-from std.collections import Optional
+from std.collections import Dict, Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
@@ -2852,6 +2852,58 @@ def test_quic_connection_dcid_lengths_are_8_bytes() raises:
     print("PASS: test_quic_connection_dcid_lengths_are_8_bytes")
 
 
+def test_dcid_demux_disambiguates_two_conns() raises:
+    """Conn-table-level invariant: two distinct DCIDs map to two distinct
+    conn_idx values via _bytes_to_hex hashing, and a third (unrelated)
+    DCID is a miss.
+
+    Validates the migration's data-structure correctness without spinning
+    up a full H3UdpHandler. End-to-end behaviour is exercised by the
+    smoke gate (T8) and SIGINT captures (T9).
+    """
+    from bench.h3_server import _bytes_to_hex
+
+    # Three distinct 8-byte DCIDs.
+    var dcid_a = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xAA)):
+        dcid_a.append(b)
+    var dcid_b = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xBB)):
+        dcid_b.append(b)
+    var dcid_c = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xCC)):
+        dcid_c.append(b)
+
+    var hex_a = _bytes_to_hex(Span(dcid_a))
+    var hex_b = _bytes_to_hex(Span(dcid_b))
+    var hex_c = _bytes_to_hex(Span(dcid_c))
+
+    # Build a conn_dcid_map mirroring the bench's shape.
+    var table = Dict[String, Int]()
+    table[hex_a] = 0
+    table[hex_b] = 1
+
+    # Lookup-by-A returns 0; lookup-by-B returns 1; lookup-by-C is a miss.
+    assert_equal_int(
+        table[hex_a], 0, "expected hex_a -> 0"
+    )
+    assert_equal_int(
+        table[hex_b], 1, "expected hex_b -> 1"
+    )
+    assert_false(
+        hex_c in table,
+        "expected hex_c to be a miss",
+    )
+
+    # Sanity: the three hex strings are themselves distinct.
+    assert_true(
+        hex_a != hex_b and hex_b != hex_c and hex_a != hex_c,
+        "expected all three hex encodings to be distinct",
+    )
+
+    print("PASS: test_dcid_demux_disambiguates_two_conns")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2889,4 +2941,5 @@ def main() raises:
     test_batch_crypto_roundtrip()
     test_is_expected_dcid_initial_and_local()
     test_quic_connection_dcid_lengths_are_8_bytes()
+    test_dcid_demux_disambiguates_two_conns()
     print("All test_quic_connection tests passed.")
