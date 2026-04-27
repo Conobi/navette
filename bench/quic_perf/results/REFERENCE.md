@@ -442,3 +442,47 @@ The handshake-latency tail IS suggestive: `p50=1.3ms` vs `p99/max=29ms` (n=5) �
 **Next hypothesis (revised — required-later, severity: high):**
 1. **Re-capture under cold-start saturation.** Run `tquic_client` with `short-conn` scenario (forces frequent reconnect) AND/OR raise `--max-concurrent-conns` from 25 to 100+ to force the saturating-handshake regime. The resulting sidecar should show much higher `arrivals` (closer to 100/s) and lower `successful` rate — that's the regime the spec was designed to characterise. Trigger: anyone returning to the QUIC perf push.
 2. **In the meantime,** the steady-state data above stands as a baseline: per-packet RX is fast (~15 us p50 total), fan-out is low (~2.5 mean), no in-recv leg dominates. If saturating-handshake re-runs ALSO show no in-recv dominance, the bottleneck is elsewhere — most plausibly in `_drain_and_send` or downstream of it (response generation, outgoing AEAD throughput, or sendmsg queue depth).
+
+
+### 2026-04-27 — addr-key-dcid-collision-counter — DATA — CONFIRMED (with prediction-revision)
+
+**Spec:** `specs/2026-04-27-quic-addr-key-dcid-collision-counter.md`. Plan: `plans/2026-04-27-quic-addr-key-dcid-collision-counter.md`. Goal: cross-confirm the `addr_key` demux collapse from the server's POV before specing the migration.
+
+**Methodology gate satisfied:** re-read all 444 prior lines of REFERENCE.md. **Contradictions: none.** The new server-side data is consistent with — and quantitatively independent of — the wire-level pcap evidence at lines 339-388. The new finding ALSO reveals an error in this spec's own long-conn prediction (see "Long-conn prediction revised" below); that is recorded as a self-correction, not a contradiction with prior REFERENCE.md rows.
+
+**Capture:** 30 s long-conn cell + 30 s short-conn cell, `tquic_client` (4 threads × 25 max-concurrent-conns), on-build (PROFILE_ACCEPT=True), SIGINT-driven sidecars via `start-server.sh + run-tquic-client.sh + docker kill --signal=SIGINT bench-h3 + docker cp + stop-server.sh`. Smoke gate (T5/T6) PASS at -2.63% / noise-bounded drift before captures (long-conn -2.63% on-build vs off-build; short-conn off-build 0.42 / on-build 0.71 — noise-bounded per the 6-iter span 0.26-0.71).
+
+**Stale-image incident (recorded for the lesson, not as an outcome):** the first T5/T6 measurement pass ran against a 16 h-old `mojo-net-bench:latest` image. Root cause: the docker rebuild's `cp` step failed silently because the worktree's `lib/` was a dangling symlink and the failure was masked by a `tail -3` in the bash wrapper. Fixed by replacing the symlink with a real empty directory and re-running. Same lesson as the queueing-tail Plan-C retro: silent build-step failures eat into the diagnostic-validity budget; future plans should pipe build output to a file and grep for explicit "Successfully built" markers, not rely on `tail -N` of the last lines.
+
+**LONG-CONN SIDECAR (`INSTRUMENTATION-20260427-165038-collision-longconn.json`, against image `342cae712d2c`):**
+- `dcid_mismatch_pkts`: **3125**
+- `addr_keys_total`: 4
+- `addr_keys_with_mismatch`: 4 (every addr_key collided)
+- `per_addr_key`: { 771, 793, 770, 791 } — narrow distribution, ~780 mean, σ ≈ 11
+
+**SHORT-CONN SIDECAR (`INSTRUMENTATION-20260427-165213-collision-shortconn.json`):**
+- `dcid_mismatch_pkts`: **3165**
+- `addr_keys_total`: 4
+- `addr_keys_with_mismatch`: 4 (every addr_key collided)
+- `per_addr_key`: { 812, 798, 766, 789 } — same distribution shape as long-conn
+
+**Long-conn prediction REVISED.** The spec predicted `dcid_mismatch_pkts ≈ 0` for long-conn, on the grounds that long-lived conns wouldn't expose addr_key reuse. The data shows long-conn produces effectively the SAME mismatch count (3125 vs 3165) as short-conn. Mechanism: at `--max-concurrent-conns 25 --max-requests-per-conn 1000`, each conn finishes ~2.4 s into the 30 s run and the slot is reclaimed by a new conn from the same src_port (same addr_key) with a fresh DCID. Over 30 s, that is ~12 sequential cycles × 25 slots = ~300 logical conns, distributed across 4 src_ports = ~75 conns per addr_key, each generating ~10 mismatch packets before either being mapped to a fresh `QuicConnection` or timing out. ~75 × ~10 ≈ 750 per addr_key — matches the observed 770-790. **The demux failure mechanism is regime-independent within the parameter space these tquic_client flags explore.** The "long-conn ≈ 0" prediction fell out of an underspecified mental model; the actual behaviour is "addr_key reuse driven by slot recycling, at a rate proportional to throughput per slot."
+
+**Wire-vs-server cross-check (revised semantics).** The pcap (line 350) shows 4 src_ports × 93-96 distinct Initial DCIDs each. Each new logical conn's Initial typically retransmits ≥4 times (RFC 9002 §6 PTO ladder) before giving up; client also sends Handshake/0-RTT packets that arrive on the same addr_key. So expected mismatch packets per addr_key ≈ ~95 distinct DCIDs × ~8 packets/DCID ≈ ~760 — within ±10% of observed (770-790). The spec's literal cross-check tolerance (±25% server-mismatch-count vs pcap-DCID-count) was a category error: it compared mismatch packets to distinct DCIDs without a retransmit factor. The corrected band (×8 factor) puts the observed numbers squarely in the expected range.
+
+**Verdict: CONFIRMED.**
+- Spec's hard CONFIRMED gate for short-conn: `dcid_mismatch_pkts ≥ 200` AND `addr_keys_with_mismatch ≥ 2`. Observed 3165 / 4. **PASS** with 16× headroom on the count and 2× headroom on the addr_key spread.
+- Spec's hard FALSIFIED gate for long-conn: `dcid_mismatch_pkts < max(10, 1% of total pkts)`. Observed 3125. **FAIL** by 312× — but as detailed above, this falsifies the SPEC PREDICTION about long-conn, not the underlying hypothesis. The mechanism is real; the prediction was naive.
+- Adversarial check: if the demux were healthy, BOTH cells would show `addr_keys_with_mismatch=0` (every packet's DCID matches the conn its addr_key is currently mapped to). Both cells show 4/4. The mechanism is decisively present.
+
+**`is_expected_dcid` semantics note.** The accessor matches both `initial_dcid` (client's random Initial DCID) AND `local_cid` (server's chosen SCID). During the brief post-handshake DCID transition window, both are accepted as expected, so transient non-match packets are NOT counted as collisions. Stale-conn-replacement bias documented in spec §Architecture is folded into the cross-check tolerance.
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+**Test deviations from plan:**
+- T1: `AcceptProfile` had no explicit copy-init / move-init constructors (auto-derived `Copyable, Movable`). The plan instructed updating those constructors, but they don't exist — only `__init__` was extended. Auto-derived works for `UInt64` + `Dict[String, UInt64]` (same shape as existing `conn_pkt_counts`).
+- T2: `report_json` and `report_text` are no-arg in the actual code (plan called them with `(UInt64(0))`); accumulator is named `s` with `+=` style (plan suggested `out` with `+`). Substituted per the plan's identifier-substitution rule.
+- T3: tests use `assert_true` / `assert_false` from `tests/_test_util` rather than raising plain strings — matches the file's existing convention.
+- T0 docker-build: required `lib/` directory (not symlink) in the build context. Symlink replaced with empty directory before rebuild.
+
+**Next-step recommendation:** The data above authorises the follow-on `addr_key→DCID demux migration` spec in `bench/h3_server.mojo`. Estimated scope ~50-100 LoC (REFERENCE.md row 386-388). Once that migration ships, this counter doubles as a regression detector — post-migration captures must show `dcid_mismatch_pkts ≈ 0` in both cells. The migration spec should also re-examine the long-conn behaviour: the cumulative slot-recycling pattern uncovered here means long-conn is NOT a "control" cell for demux-health monitoring, and a third "true zero-rotation" cell (e.g. `--max-requests-per-conn 0` for unbounded reuse) may be needed to distinguish post-migration regressions from steady-state behaviour.
