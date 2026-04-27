@@ -6,7 +6,7 @@ trait surface. Method bodies delegate 1:1 to the loop, so swapping
 and semantically a no-op.
 
 Step 2 of Sprint 1 — ships the wrapper. Step 3 rewires
-`bench/h2_server.mojo` and `src/h2/h2_coro_server.mojo` to use it
+`bench/h2_server.mojo` and `src/h2/h2_sync_server.mojo` to use it
 (co-located with the StreamState replacement, since both touch the
 same hot paths).
 
