@@ -150,6 +150,25 @@ fn _simple_get_body(
     ctx_ptr[].resp_writer.end()
 
 
+fn _path_echo_body(
+    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+) raises:
+    """Respond with 200 OK and an x-path header echoing the request target.
+    Used by the multi-stream test to verify each concurrent stream gets a
+    response keyed to its own request rather than another stream's."""
+    var hdrs = Headers()
+    hdrs.add("x-path", String(ctx_ptr[].request.target))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
+    ctx_ptr[].resp_writer.end()
+
+
+fn _error_body(
+    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+) raises:
+    """Always raise — exercises the RST_STREAM-on-handler-error path."""
+    raise Error("h3 handler error")
+
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
@@ -245,9 +264,132 @@ def test_h3_sync_goaway() raises:
     print("  test_h3_sync_goaway: PASS")
 
 
+def test_h3_sync_multiple_streams() raises:
+    """Open 3 concurrent bidi streams with distinct paths; each handler
+    runs synchronously and responds with x-path: <its own target>.
+    Verify every stream gets its own response — proves per-stream ctx
+    isolation in the H3 sync server. Mirrors test_multiple_streams in
+    test_h2_sync_server.mojo."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3CoroServer(quic=server_quic^, body_fn=_path_echo_body)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_sync_client(server, client, now, 50)
+
+    # Open 3 streams concurrently with distinct paths.
+    var paths = List[String]()
+    paths.append(String("/alpha"))
+    paths.append(String("/bravo"))
+    paths.append(String("/charlie"))
+    var stream_ids = List[UInt64]()
+    for i in range(len(paths)):
+        var sid = client.open_bidi_stream()
+        stream_ids.append(sid)
+        var fields = List[QpackHeaderField]()
+        fields.append(QpackHeaderField(":method", "GET"))
+        fields.append(QpackHeaderField(":path", paths[i]))
+        fields.append(QpackHeaderField(":scheme", "https"))
+        fields.append(QpackHeaderField(":authority", "localhost"))
+        client.send_headers(sid, fields, True)  # fin=True (no body)
+
+    now = _pump_sync_client(server, client, now, 30)
+
+    # Map sid -> observed x-path
+    var observed = List[String]()
+    for _ in range(len(paths)):
+        observed.append(String(""))
+
+    while True:
+        var ev = client.poll_event()
+        if not ev:
+            break
+        var e = ev.unsafe_take()
+        if e.kind == H3Event.HEADERS_RECEIVED:
+            var got_200 = False
+            var path_value = String("")
+            for i in range(len(e.fields)):
+                if e.fields[i].name == ":status" and e.fields[i].value == "200":
+                    got_200 = True
+                elif e.fields[i].name == "x-path":
+                    path_value = e.fields[i].value
+            if got_200:
+                # Find the index of this stream id in stream_ids
+                for i in range(len(stream_ids)):
+                    if stream_ids[i] == e.stream_id:
+                        observed[i] = path_value
+
+    for i in range(len(paths)):
+        assert_true(
+            observed[i] == paths[i],
+            "stream " + String(stream_ids[i])
+            + " expected x-path '" + paths[i]
+            + "', got '" + observed[i] + "'"
+        )
+    print("  test_h3_sync_multiple_streams: PASS")
+
+
+def test_h3_sync_error_propagation() raises:
+    """Handler raises an Error → server sends RST_STREAM and survives.
+    Mirrors test_error_propagation in test_h2_sync_server.mojo."""
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3CoroServer(quic=server_quic^, body_fn=_error_body)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_sync_client(server, client, now, 50)
+
+    var stream_id = client.open_bidi_stream()
+    var req_fields = List[QpackHeaderField]()
+    req_fields.append(QpackHeaderField(":method", "GET"))
+    req_fields.append(QpackHeaderField(":path", "/boom"))
+    req_fields.append(QpackHeaderField(":scheme", "https"))
+    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    client.send_headers(stream_id, req_fields, True)
+
+    now = _pump_sync_client(server, client, now, 30)
+
+    var got_reset = False
+    while True:
+        var ev = client.poll_event()
+        if not ev:
+            break
+        var e = ev.unsafe_take()
+        if e.kind == H3Event.STREAM_RESET and e.stream_id == stream_id:
+            got_reset = True
+
+    assert_true(got_reset, "client did not observe STREAM_RESET on the failed stream")
+    assert_true(not server.should_close(), "server connection closed after handler error — must survive")
+    print("  test_h3_sync_error_propagation: PASS")
+
+
 def main() raises:
     print("=== test_h3_sync_server ===")
     test_h3_sync_simple_get()
     test_h3_sync_goaway()
+    test_h3_sync_multiple_streams()
+    test_h3_sync_error_propagation()
     print("All H3SyncServer tests passed.")
     print("ok")
