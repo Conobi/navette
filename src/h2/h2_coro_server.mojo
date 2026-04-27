@@ -194,6 +194,72 @@ def _free_stream(ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
 
 
 # ---------------------------------------------------------------------------
+# CoroStreamCtxPool — per-connection allocation pool
+# ---------------------------------------------------------------------------
+#
+# Recycles `CoroStreamCtx`-sized heap blocks across requests on the same
+# connection. The pool holds typed but uninitialised pointers (the
+# pointee has been destroyed before re-entry). On `acquire`, the caller
+# initialises the block in place via `init_pointee_move`; on `release`,
+# the caller destroys the pointee then hands the bare memory back here.
+#
+# Why this exists: the old `CoroutinePool` (boucle.stackful) implicitly
+# warmed the per-connection cache lines because it recycled 64 KiB
+# stack frames at the same address across requests. Path A's sync
+# handler killed that locality (every `_heap_alloc[CoroStreamCtx]` is
+# a fresh address), and the cleanest pinned bench measured a -7.8% RPS
+# regression on /json/50 — the workload most sensitive to L1/L2 reuse.
+#
+# Capacity 16 mirrors the prior `CoroutinePool` default and matches
+# typical h2load `-m 10` active-streams-per-connection.
+
+struct CoroStreamCtxPool(Movable):
+    """Free-list of typed `CoroStreamCtx`-sized heap blocks. Caller
+    owns initialisation/destruction of the pointee; the pool only
+    manages the underlying memory."""
+
+    var _free: List[UInt64]
+    var _capacity: Int
+
+    def __init__(out self, *, capacity: Int = 16):
+        self._free = List[UInt64]()
+        self._capacity = capacity
+
+    def __init__(out self, *, deinit take: Self):
+        self._free = take._free^
+        self._capacity = take._capacity
+
+    fn __del__(deinit self):
+        for i in range(len(self._free)):
+            var p = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+                unsafe_from_address=Int(self._free[i])
+            )
+            p.free()
+
+    fn acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
+        """Take a free slot if one is available, else allocate fresh."""
+        if len(self._free) > 0:
+            var addr = self._free.pop()
+            return UnsafePointer[CoroStreamCtx, MutAnyOrigin](
+                unsafe_from_address=Int(addr)
+            )
+        return _heap_alloc[CoroStreamCtx](1).as_any_origin()
+
+    fn release(
+        mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ):
+        """Return a slot whose pointee has already been destroyed.
+        Beyond capacity → free; under capacity → keep for reuse."""
+        if len(self._free) < self._capacity:
+            self._free.append(UInt64(Int(ptr)))
+        else:
+            ptr.free()
+
+    fn idle_count(self) -> Int:
+        return len(self._free)
+
+
+# ---------------------------------------------------------------------------
 # H2CoroServer — server adapter using a per-stream state machine
 # ---------------------------------------------------------------------------
 
@@ -210,6 +276,7 @@ struct H2CoroServer(Movable):
     var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, _CoroStreamPtr]
+    var _ctx_pool: CoroStreamCtxPool
 
     # --- Constructors -------------------------------------------------------
 
@@ -232,6 +299,7 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, _CoroStreamPtr]()
+        self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._flush_outbound()
 
     def __init__(
@@ -244,12 +312,14 @@ struct H2CoroServer(Movable):
         ](),
     ) raises:
         """Create with a custom H2Config (server-side)."""
+        _check_stream_ctx_size()
         self._conn = H2Connection(client_side=False, config=config)
         self._conn.initiate_connection()
         self._body_fn = body_fn
         self._extra_data = extra_data
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, _CoroStreamPtr]()
+        self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._flush_outbound()
 
     def __init__(out self, *, deinit take: Self):
@@ -258,6 +328,7 @@ struct H2CoroServer(Movable):
         self._extra_data = take._extra_data
         self._outbuf = take._outbuf^
         self._streams = take._streams^
+        self._ctx_pool = take._ctx_pool^
 
     fn __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
@@ -302,10 +373,12 @@ struct H2CoroServer(Movable):
     fn _release_stream(
         mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
-        """Free the CoroStreamCtx allocation. Path-A simplification:
-        no coro pool to return to."""
+        """Destroy the CoroStreamCtx pointee and return its memory
+        block to the per-connection pool (or free if over capacity).
+        Recycling preserves L1/L2 locality across requests on the
+        same connection — the JSON encoder's working set stays warm."""
         ctx_ptr.destroy_pointee()
-        ctx_ptr.free()
+        self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self):
         """Move pending outbound bytes from the H2Connection into our
@@ -374,7 +447,7 @@ struct H2CoroServer(Movable):
         var stream_id = Int(evt.stream_id)
         var stream_ended = evt.stream_ended
 
-        var ctx_ptr = _heap_alloc[CoroStreamCtx](1).as_any_origin()
+        var ctx_ptr = self._ctx_pool.acquire()
         var ctx = CoroStreamCtx(
             request=req^,
             caps=Capabilities.for_h2(),
