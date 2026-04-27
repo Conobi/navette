@@ -282,13 +282,15 @@ struct _StreamingPtr(Copyable, Movable):
 
 
 # ---------------------------------------------------------------------------
-# _free_streaming_stream — single cleanup path for H2StreamingCtx
+# _free_streaming_stream — DESTRUCTOR-PATH-ONLY cleanup for H2StreamingCtx
 # ---------------------------------------------------------------------------
 
 
 def _free_streaming_stream(ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin]):
-    """Free the CoroHandle (if allocated) and the H2StreamingCtx.
-    ALWAYS call _streams.pop(sid) BEFORE calling this function."""
+    """DESTRUCTOR PATH ONLY. Bypasses the ctx pool. Runtime sites must use
+    H2StreamingServer._free_streaming_stream() instead — this module-level
+    variant exists only because __del__(deinit self) cannot call mut-self
+    methods. ALWAYS call _streams.pop(sid) BEFORE calling this function."""
     if ctx_ptr[].coro_addr != UInt64(0):
         var coro_p = ctx_ptr[].coro_ptr()
         coro_p.destroy_pointee()
