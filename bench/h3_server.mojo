@@ -463,9 +463,14 @@ struct H3UdpHandler(BatchCompletionHandler):
     with multishot recvmsg and provided buffer rings."""
 
     var udp_fd: Int32
-    var conn_map: Dict[String, Int]
+    var conn_dcid_map: Dict[String, Int]
     var conn_h3s: List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]
     var conn_addrs: List[List[UInt8]]
+    # Per-conn list of DCID-hex keys we inserted into conn_dcid_map.
+    # Used by _handle_timeout to remove ALL of a conn's entries on swap-and-pop
+    # (B-permissive dual-DCID strategy: each conn has 2 entries — initial_dcid
+    # AND local_cid).
+    var conn_dcids: List[List[String]]
     var pbuf_pool: UnsafePointer[UInt8, MutAnyOrigin]
     var pending_rx: List[PendingDatagram]
     var multishot_active: Bool
@@ -500,9 +505,10 @@ struct H3UdpHandler(BatchCompletionHandler):
         server_config: Int32,
     ):
         self.udp_fd = udp_fd
-        self.conn_map = Dict[String, Int]()
+        self.conn_dcid_map = Dict[String, Int]()
         self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
+        self.conn_dcids = List[List[String]]()
         self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
             self.pbuf_pool[i] = 0
@@ -549,9 +555,10 @@ struct H3UdpHandler(BatchCompletionHandler):
 
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
-        self.conn_map = take.conn_map^
+        self.conn_dcid_map = take.conn_dcid_map^
         self.conn_h3s = take.conn_h3s^
         self.conn_addrs = take.conn_addrs^
+        self.conn_dcids = take.conn_dcids^
         self.pbuf_pool = take.pbuf_pool
         self.pending_rx = take.pending_rx^
         self.multishot_active = take.multishot_active
@@ -577,10 +584,10 @@ struct H3UdpHandler(BatchCompletionHandler):
 
     # --- Conn lookup ---
 
-    def _find_conn(self, key: String) -> Int:
-        if key in self.conn_map:
+    def _find_conn_by_dcid(self, dcid_hex: String) -> Int:
+        if dcid_hex in self.conn_dcid_map:
             try:
-                return self.conn_map[key]
+                return self.conn_dcid_map[dcid_hex]
             except:
                 return -1
         return -1
@@ -725,10 +732,21 @@ struct H3UdpHandler(BatchCompletionHandler):
             @parameter
             if PROFILE_ACCEPT:
                 self.profile.record_conn_pkt(pd.addr_key)
-            # Re-lookup conn_idx by addr_key — the index recorded at
-            # _handle_recvmsg time may be stale if a timeout completion
-            # in the same poll batch did swap-and-pop on conn_h3s.
-            var conn_idx = self._find_conn(pd.addr_key)
+            # DCID-keyed lookup (migrated from addr_key). pd.dcid was extracted
+            # at _handle_recvmsg (long+short header).
+            var dcid_hex = _bytes_to_hex(Span(pd.dcid))
+            var conn_idx = self._find_conn_by_dcid(dcid_hex)
+
+            # Strict new-conn gate per RFC 9000 §12.4: only long-header Initial
+            # packets create new conns. All other DCID-misses are dropped
+            # silently (matches TQUIC, quiche, quic-go, aioquic).
+            if conn_idx < 0:
+                var first_byte_span = Span[UInt8, MutAnyOrigin](
+                    ptr=pd.payload_ptr, length=pd.payload_len)
+                if not _is_long_header_initial(first_byte_span):
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+                # Fall through to QuicConnection.server(...) construction below.
 
             @parameter
             if PROFILE_ACCEPT:
@@ -774,6 +792,19 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.consumed_bufs.append(pd.buf_id)
                     continue
 
+                # B-permissive dual-DCID extract (BEFORE quic^ is moved into
+                # H3HandlerServer): both initial_dcid (client's random ICID)
+                # and local_cid (server's chosen SCID) map to the same
+                # conn_idx. Both stay until conn teardown.
+                #
+                # 8-byte invariant locked by tests/test_quic_connection.mojo
+                # (test_quic_connection_dcid_lengths_are_8_bytes).
+                debug_assert(len(quic.initial_dcid) == 8, "initial_dcid != 8 bytes")
+                debug_assert(len(quic.local_cid) == 8, "local_cid != 8 bytes")
+
+                var icid_hex = _bytes_to_hex(Span(quic.initial_dcid))
+                var lcid_hex = _bytes_to_hex(Span(quic.local_cid))
+
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
                 try:
@@ -794,9 +825,15 @@ struct H3UdpHandler(BatchCompletionHandler):
                     addr.append(pd.buf_ptr[pd.addr_offset + j])
 
                 conn_idx = len(self.conn_h3s)
-                self.conn_map[pd.addr_key] = conn_idx
+                self.conn_dcid_map[icid_hex] = conn_idx
+                self.conn_dcid_map[lcid_hex] = conn_idx
                 self.conn_h3s.append(h3_ptr)
                 self.conn_addrs.append(addr^)
+
+                var dcids = List[String]()
+                dcids.append(icid_hex^)
+                dcids.append(lcid_hex^)
+                self.conn_dcids.append(dcids^)
 
             # Feed datagram to the connection.
             try:
@@ -945,12 +982,12 @@ struct H3UdpHandler(BatchCompletionHandler):
 
                 # Find the key that maps to index i and remove it.
                 var dead_key = String()
-                for entry in self.conn_map.items():
+                for entry in self.conn_dcid_map.items():
                     if entry.value == i:
                         dead_key = entry.key
                         break
                 if dead_key:
-                    _ = self.conn_map.pop(dead_key)
+                    _ = self.conn_dcid_map.pop(dead_key)
 
                 var last = len(self.conn_h3s) - 1
                 if i != last:
@@ -958,9 +995,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.conn_h3s[i] = self.conn_h3s[last]
                     self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
                     # Update the Dict entry for the swapped-in connection.
-                    for entry in self.conn_map.items():
+                    for entry in self.conn_dcid_map.items():
                         if entry.value == last:
-                            self.conn_map[entry.key] = i
+                            self.conn_dcid_map[entry.key] = i
                             break
                 _ = self.conn_h3s.pop()
                 _ = self.conn_addrs.pop()
