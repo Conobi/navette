@@ -980,27 +980,30 @@ struct H3UdpHandler(BatchCompletionHandler):
                 ptr.destroy_pointee()
                 ptr.free()
 
-                # Find the key that maps to index i and remove it.
-                var dead_key = String()
-                for entry in self.conn_dcid_map.items():
-                    if entry.value == i:
-                        dead_key = entry.key
-                        break
-                if dead_key:
-                    _ = self.conn_dcid_map.pop(dead_key)
+                # B-permissive teardown: pop ALL of dying conn's DCID entries
+                # (typically 2: initial_dcid + local_cid). The pre-migration
+                # single-DCID single-pop with first-match-break is incorrect
+                # for the dual-key shape.
+                for dcid_hex in self.conn_dcids[i]:
+                    _ = self.conn_dcid_map.pop(dcid_hex)
 
                 var last = len(self.conn_h3s) - 1
                 if i != last:
-                    # Swap the last element into position i.
+                    # Swap the last element into position i in all parallel
+                    # lists (conn_h3s, conn_addrs, conn_dcids).
                     self.conn_h3s[i] = self.conn_h3s[last]
                     self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
-                    # Update the Dict entry for the swapped-in connection.
-                    for entry in self.conn_dcid_map.items():
-                        if entry.value == last:
-                            self.conn_dcid_map[entry.key] = i
-                            break
+                    self.conn_dcids[i] = List[String](copy=self.conn_dcids[last])
+
+                    # Remap ALL of the swapped-in conn's DCID entries from
+                    # `last` → `i`. CRITICAL: do NOT break after first match
+                    # (the survivor has 2 entries; both must be remapped).
+                    for dcid_hex in self.conn_dcids[i]:
+                        self.conn_dcid_map[dcid_hex] = i
+
                 _ = self.conn_h3s.pop()
                 _ = self.conn_addrs.pop()
+                _ = self.conn_dcids.pop()
                 # Don't increment i — the swapped-in element needs checking.
                 continue
             i += 1
