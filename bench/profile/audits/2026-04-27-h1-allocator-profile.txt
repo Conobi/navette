@@ -1,0 +1,132 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cpu/cycles/Pu'
+# Event count (approx.): 47581043320
+#
+# Overhead  Command    Shared Object                Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+# ........  .........  ...........................  ...........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    19.99%  h1_server  h1_server                    [.] h1_server::main()
+            |          
+             --19.96%--h1_server::main()
+                       |          
+                        --0.89%--0x33b8ffe0c1c0
+                                  0x4
+
+    13.52%  h1_server  h1_server                    [.] src::h1::connection::H1Connection::next_request(src::h1::connection::H1Connection&)
+            |          
+             --13.49%--src::h1::connection::H1Connection::next_request(src::h1::connection::H1Connection&)
+
+    10.62%  h1_server  h1_server                    [.] src::h1::handler_server::H1HandlerServer::_dispatch_one(src::h1::handler_server::H1HandlerServer[$0]&,src::http::request::Request$),H=[typevalue<#kgen.instref<"bench::handler::BenchHandler">>, struct<(pointer<none>) memoryOnly>]
+            |          
+             --10.34%--src::h1::handler_server::H1HandlerServer::_dispatch_one(src::h1::handler_server::H1HandlerServer[$0]&,src::http::request::Request$),H=[typevalue<#kgen.instref<"bench::handler::BenchHandler">>, struct<(pointer<none>) memoryOnly>]
+                       |          
+                        --0.93%--0x303830383a31
+
+     7.13%  h1_server  h1_server                    [.] std::collections::optional::Optional::take(::Optional[$0]&),T=[typevalue<#kgen.instref<"src::http::request::Request">>, struct<(struct<(index, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>, struct<(index) memoryOnly>, struct<(struct<(pointer<none>, index, index) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>, struct<(index, struct<(pointer<none>, index, index) memoryOnly>, struct<(struct<(struct<(variant<struct<()>, struct<(struct<(struct<(pointer<none>, index, index, index, index, index, i1) memoryOnly>, index, scalar<uindex>, scalar<uindex>, scalar<uindex>, i1, i1) memoryOnly>) memoryOnly>>) memoryOnly>) memoryOnly>) memoryOnly>) memoryOnly>) memoryOnly>]
+            |          
+             --7.11%--std::collections::optional::Optional::take(::Optional[$0]&),T=[typevalue<#kgen.instref<"src::http::request::Request">>, struct<(struct<(index, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>, struct<(index) memoryOnly>, struct<(struct<(pointer<none>, index, index) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>, struct<(index, struct<(pointer<none>, index, index) memoryOnly>, struct<(struct<(struct<(variant<struct<()>, struct<(struct<(struct<(pointer<none>, index, index, index, index, index, i1) memoryOnly>, index, scalar<uindex>, scalar<uindex>, scalar<uindex>, i1, i1) memoryOnly>) memoryOnly>>) memoryOnly>) memoryOnly>) memoryOnly>) memoryOnly>) memoryOnly>]
+
+     6.04%  h1_server  h1_server                    [.] src::h1::parser::try_parse_request(::List[::SIMD[::DType(uint8), ::Int(1)]],::Int,::Int,src::h1::config::ParseConfig)
+            |          
+             --5.96%--src::h1::parser::try_parse_request(::List[::SIMD[::DType(uint8), ::Int(1)]],::Int,::Int,src::h1::config::ParseConfig)
+
+     3.31%  h1_server  h1_server                    [.] std::collections::string::string::String::_iadd[LITImmutOrigin,::Origin[::Bool(False), $0]](::String&,::Span[::Bool(False), $0, ::SIMD[::DType(uint8), ::Int(1)], $1])
+            |          
+             --2.88%--std::collections::string::string::String::_iadd[LITImmutOrigin,::Origin[::Bool(False), $0]](::String&,::Span[::Bool(False), $0, ::SIMD[::DType(uint8), ::Int(1)], $1])
+
+     3.09%  h1_server  h1_server                    [.] src::h1::parser::_bytes_to_string(::List[::SIMD[::DType(uint8), ::Int(1)]],::Int,::Int)
+            |          
+             --2.86%--src::h1::parser::_bytes_to_string(::List[::SIMD[::DType(uint8), ::Int(1)]],::Int,::Int)
+                       |          
+                       |--1.60%--0
+                       |          
+                        --0.58%--0x6226313d613f3265
+
+     2.64%  h1_server  ld-linux-x86-64.so.2         [.] __tls_get_addr
+            |          
+             --1.64%--__tls_get_addr
+                       |          
+                        --0.75%--std::collections::list::List::_realloc(::List[$0]&,::Int),T=[typevalue<#kgen.instref<"std::builtin::simd::SIMD,dtype=ui8,size=1">>, scalar<ui8>]
+
+     1.98%  h1_server  h1_server                    [.] std::collections::string::string::String::unsafe_ptr_mut(::String&,::Int$)
+            |          
+             --1.84%--std::collections::string::string::String::unsafe_ptr_mut(::String&,::Int$)
+
+     1.46%  h1_server  libAsyncRTRuntimeGlobals.so  [.] TCMallocInternalCfree
+            |          
+             --1.18%--TCMallocInternalCfree
+                       |          
+                        --0.63%--std::collections::list::List::_realloc(::List[$0]&,::Int),T=[typevalue<#kgen.instref<"std::builtin::simd::SIMD,dtype=ui8,size=1">>, scalar<ui8>]
+
+     1.44%  h1_server  h1_server                    [.] src::http::headers::_to_lower(::String)
+            |          
+             --1.34%--src::http::headers::_to_lower(::String)
+
+     1.24%  h1_server  h1_server                    [.] std::collections::string::string::chr(::Int)
+            |          
+            |--0.57%--std::collections::string::string::String::unsafe_ptr_mut(::String&,::Int$)
+            |          
+             --0.51%--std::collections::string::string::chr(::Int)
+
+     1.09%  h1_server  h1_server                    [.] std::collections::deque::Deque::append(::Deque[$0]&,$0$),ElementType=[typevalue<#kgen.instref<"src::http::body::BodyFrame">>, struct<(index, struct<(pointer<none>, index, index) memoryOnly>, struct<(struct<(pointer<none>, index, index) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>, struct<(struct<(struct<(variant<struct<()>, struct<(index, scalar<ui32>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>>) memoryOnly>) memoryOnly>) memoryOnly>) memoryOnly>]
+            |
+            ---std::collections::deque::Deque::append(::Deque[$0]&,$0$),ElementType=[typevalue<#kgen.instref<"src::http::body::BodyFrame">>, struct<(index, struct<(pointer<none>, index, index) memoryOnly>, struct<(struct<(pointer<none>, index, index) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>, struct<(struct<(struct<(variant<struct<()>, struct<(index, scalar<ui32>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>>) memoryOnly>) memoryOnly>) memoryOnly>) memoryOnly>]
+
+     1.07%  h1_server  h1_server                    [.] src::h1::parser::_parse_headers(::List[::SIMD[::DType(uint8), ::Int(1)]],::Int,src::h1::config::ParseConfig)
+            |          
+             --1.01%--src::h1::parser::_parse_headers(::List[::SIMD[::DType(uint8), ::Int(1)]],::Int,src::h1::config::ParseConfig)
+
+     1.05%  h1_server  h1_server                    [.] std::utils::variant::Variant::__init__(take:::Variant[$0]$),Ts=[[typevalue<#kgen.instref<"std::collections::optional::_NoneType">>, struct<()>], [typevalue<#kgen.instref<"src::http::handler::StreamError">>, struct<(index, scalar<ui32>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>]]
+            |          
+             --1.02%--std::utils::variant::Variant::__init__(take:::Variant[$0]$),Ts=[[typevalue<#kgen.instref<"std::collections::optional::_NoneType">>, struct<()>], [typevalue<#kgen.instref<"src::http::handler::StreamError">>, struct<(index, scalar<ui32>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>]]
+                       |          
+                        --0.80%--0
+
+     1.04%  h1_server  h1_server                    [.] src::h1::serializer::_serialize_headers(::List[::SIMD[::DType(uint8), ::Int(1)]]&,src::http::headers::Headers)
+            |
+            ---src::h1::serializer::_serialize_headers(::List[::SIMD[::DType(uint8), ::Int(1)]]&,src::http::headers::Headers)
+
+     0.98%  h1_server  libAsyncRTRuntimeGlobals.so  [.] __tls_get_addr@plt
+            |
+            ---__tls_get_addr
+               |          
+                --0.57%--std::collections::list::List::_realloc(::List[$0]&,::Int),T=[typevalue<#kgen.instref<"std::builtin::simd::SIMD,dtype=ui8,size=1">>, scalar<ui8>]
+
+     0.96%  h1_server  h1_server                    [.] std::collections::list::List::_realloc(::List[$0]&,::Int),T=[typevalue<#kgen.instref<"std::builtin::simd::SIMD,dtype=ui8,size=1">>, scalar<ui8>]
+            |          
+             --0.65%--std::collections::list::List::_realloc(::List[$0]&,::Int),T=[typevalue<#kgen.instref<"std::builtin::simd::SIMD,dtype=ui8,size=1">>, scalar<ui8>]
+
+     0.83%  h1_server  h1_server                    [.] src::h1::parser::ParseResult::__init__(take:src::h1::parser::ParseResult$)
+            |
+            ---src::h1::parser::ParseResult::__init__(take:src::h1::parser::ParseResult$)
+
+     0.75%  h1_server  h1_server                    [.] src::http::request::RequestBody::__init__(take:src::http::request::RequestBody$)
+            |          
+             --0.67%--src::http::request::RequestBody::__init__(take:src::http::request::RequestBody$)
+
+     0.74%  h1_server  h1_server                    [.] src::http::handler::ResponseWriter::try_send_body(src::http::handler::ResponseWriter&,src::http::body::BodyFrame$)
+            |
+            ---src::http::handler::ResponseWriter::try_send_body(src::http::handler::ResponseWriter&,src::http::body::BodyFrame$)
+
+     0.66%  h1_server  h1_server                    [.] bench::handler::_parse_query_int(::String,::String)
+            |          
+             --0.63%--bench::handler::_parse_query_int(::String,::String)
+
+     0.59%  h1_server  libAsyncRTRuntimeGlobals.so  [.] 0x00000000000498e3
+            |
+            ---0x7f3091a4a8e6
+
+     0.54%  h1_server  libKGENCompilerRTShared.so   [.] KGEN_CompilerRT_AlignedAlloc
+     0.53%  h1_server  h1_server                    [.] std::utils::variant::Variant::__init__(take:::Variant[$0]$),Ts=[[typevalue<#kgen.instref<"std::collections::optional::_NoneType">>, struct<()>], [typevalue<#kgen.instref<"src::http::headers::Headers">>, struct<(struct<(pointer<none>, index, index) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>]]
+            |
+            ---std::utils::variant::Variant::__init__(take:::Variant[$0]$),Ts=[[typevalue<#kgen.instref<"std::collections::optional::_NoneType">>, struct<()>], [typevalue<#kgen.instref<"src::http::headers::Headers">>, struct<(struct<(pointer<none>, index, index) memoryOnly>, struct<(pointer<none>, index, index) memoryOnly>) memoryOnly>]]
+
+
+
+#
+# (Tip: Show estimate cycles per function and IPC in annotate use perf record -b ... ; perf report --total-cycles)
+#
