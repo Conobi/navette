@@ -2672,6 +2672,39 @@ struct QuicConnection(Movable):
         """True if the handshake is complete and the connection is usable."""
         return (self.state & CONN_ESTABLISHED) != 0
 
+    fn is_expected_dcid(self, dcid: Span[UInt8, _]) -> Bool:
+        """True if `dcid` matches either initial_dcid or local_cid.
+
+        - `initial_dcid` is the client's random Initial DCID, used for
+          Initial-key derivation. Valid pre-handshake and during the brief
+          post-handshake transition before the client switches over.
+        - `local_cid` is the server's chosen SCID (or, on a client conn,
+          the locally-chosen SCID). The peer uses it as DCID after the
+          first server Initial.
+
+        Connection migration is a project non-goal in v1 of M3 (project
+        non-goal line 28 of docs/project-context.md). Once
+        NEW_CONNECTION_ID emission lands, expand this accessor to a set
+        membership over all active local CIDs.
+        """
+        if len(dcid) == len(self.initial_dcid):
+            var match_initial = True
+            for i in range(len(dcid)):
+                if dcid[i] != self.initial_dcid[i]:
+                    match_initial = False
+                    break
+            if match_initial:
+                return True
+        if len(dcid) == len(self.local_cid):
+            var match_local = True
+            for i in range(len(dcid)):
+                if dcid[i] != self.local_cid[i]:
+                    match_local = False
+                    break
+            if match_local:
+                return True
+        return False
+
     def is_closed(self) -> Bool:
         """True if the connection has fully terminated."""
         return (self.state & CONN_CLOSED) != 0
