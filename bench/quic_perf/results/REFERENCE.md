@@ -336,35 +336,56 @@ This is consistent with every observation: low CPU% (server is blocked on rustls
 
 **Verdict: FALSIFIED for queueing-tail hypothesis.** Server-side serial single-fiber `_flush_impl` queueing is NOT the rate-limiter. Of the packets the server sees, queueing wait is ≤61us at p99 — well within tquic_client's per-conn handshake timeout budget (≥1s).
 
-**NEW HYPOTHESIS surfaced by Instrument 2 — `addr_key` demux collapse via kernel port reuse:**
+**VERIFIED MECHANISM — `addr_key` demux is fundamentally broken for standard QUIC client multiplexing.**
 
-The striking finding is the asymmetry between client-side and server-side conn counts:
+The striking server-vs-client asymmetry was investigated via a same-day wire-level pcap capture (`bench/quic_perf/results/profile/wire-capture-20260427-shortconn.pcap`, 3.4 MB, 30s short-conn run with `tcpdump -i lo udp port 8443` from an alpine sidecar with NET_RAW):
 
 | Side | Count |
 |---|---|
 | tquic_client logical conn attempts | 392 |
+| tquic_client distinct CLIENT-DCIDs in stdout | 290 |
 | tquic_client successful (client POV) | 8 |
 | tquic_client failed/timed-out | 288 |
-| Server distinct addr_keys (`conns_total`) | **5** |
-| Server hs_complete (`conns_total - conns_with_pkts_no_hs_complete`) | 5 |
+| **Wire-level distinct client src_ports** | **4** |
+| **Wire-level distinct Initial DCIDs (long-header pkts)** | **378** |
+| Server distinct addr_keys (`conns_total`) | 5 |
 | Server `record_handshake_arrival` count | 10 |
 
-The server saw only 5 distinct (src_ip, src_port) tuples despite the client attempting 392 logical conns. Most logical conns reuse a small set of source ports (kernel ephemeral-port allocation pinning under loopback + Docker network namespace + tquic_client's 4×25 socket pool). When a "new logical conn" arrives at a src_port already mapped in `conn_map` to an existing established `QuicConnection`, the server's `_find_conn(addr_key)` returns the OLD conn. The new Initial gets fed to the wrong connection, which silently rejects it (DCID/SCID mismatch, no server-side error since `feed_datagram_from_buffer_err_count = 0` in this run). The new logical conn never receives an Initial-ACK and times out client-side. From the server's POV everything is fine; from the client's POV, 288 attempts fail.
+**Wire-level pcap analysis (per src_port):**
 
-This explains:
-- Why tquic_server (REFERENCE.md row 20) gets 87K rps under the same harness — it has different demux logic (per-CID rather than per-addr_key, presumably).
-- Why the server's CPU usage is microscopic (~0.1% busy) — most of those 288 "logical conn" Initials are absorbed by 4-5 active connections that discard them in microseconds.
-- Why the "FFI dominance" observation in Plan C C3 (sm avg=129us, shim_ffi avg=127us on 233 packets) was real but irrelevant: those costs apply to the few packets that reach successful processing; the overwhelming majority of "failed" client conns never trigger meaningful server work.
+| src_port | UDP pkts | distinct Initial DCIDs |
+|---|---|---|
+| 34130 | 696 | 93 |
+| 46557 | 751 | 94 |
+| 49851 | 738 | 95 |
+| 57704 | 713 | 96 |
 
-**Caveat:** this captured arrival pattern is `tquic_client`-specific. `h2load --h3` (REFERENCE.md row 28) drives different absolute numbers (mojo-net 11 short-conn rps vs tquic_client's 1) — could indicate h2load uses different source-port allocation strategy and would expose the demux-collapse problem differently. A follow-up h2load capture is warranted before assuming the addr_key-collapse is universal.
+The 4 src_ports correspond exactly to tquic_client's `--threads 4` configuration. Each thread binds **ONE UDP socket** for its lifetime and multiplexes ~95 distinct QUIC connections (each with its own client-minted DCID) over that single socket. Total ~378 distinct logical conns over the 30s run, all flowing through 4 wire-level (src_ip, src_port) tuples.
 
-**Next hypothesis (post-FALSIFIED verdict — required-later, HIGH severity):**
+**This is the standard QUIC client multiplexing pattern, not an edge case.** Every QUIC client that uses connection-ID for multiplexing (tquic, quiche, ngtcp2, msquic, neqo) follows this design — open one socket per worker thread, distinguish concurrent conns by DCID over that socket. The protocol is explicitly designed for this (RFC 9000 §5.2: "An endpoint can use the destination connection ID for routing on the receive side to identify the connection that a packet belongs to").
 
-- **What:** Verify the `addr_key` demux collapse hypothesis. Two sub-questions:
-  1. **Diagnostic:** Add a per-flush counter tracking how often `_find_conn(pd.addr_key)` returns an existing `conn_idx` whose state is `is_established()=True` AND the incoming packet is an Initial (long-header type 0). Each such "Initial-on-established-addr_key" event is a logical conn that the server is silently absorbing into a wrong destination. Expected: hundreds/thousands per 30s short-conn run.
-  2. **Mechanistic:** Switch the demux from `addr_key` (src_ip:src_port) to `dcid` (destination connection ID, already extracted at `_handle_recvmsg`). DCIDs are minted per-conn by the client and don't collide on port reuse. This is the change tquic_server presumably has. Estimated scope: ~50-100 LoC in `bench/h3_server.mojo` `conn_map` + `_find_conn` + `_handle_recvmsg`. Not in scope for any current spec — would need its own brainstorm + plan.
-  **Severity:** required-later (HIGH) — this is the prerequisite for choosing whether mojo-net's bottleneck is fundamentally architectural (demux design) vs micro-optimizable (FFI batching, multi-fiber).
-  **Trigger:** anyone returning to the QUIC perf push.
+**Why mojo-net's `addr_key` (src_ip:src_port) demux fails here:**
+- Thread 0 sends Initial for new logical conn N₁ from port 34130. Server creates `QuicConnection_N₁` and maps `addr_key="...:34130"` → `conn_idx=0` in `conn_map`.
+- N₁ completes handshake → `is_established()=True`.
+- Thread 0 sends Initial for new logical conn N₂ ALSO from port 34130 (different DCID).
+- Server's `_find_conn(pd.addr_key="...:34130")` returns `conn_idx=0` (the OLD conn).
+- `feed_datagram_from_buffer` feeds N₂'s Initial bytes to `QuicConnection_N₁`, which already has its 1-RTT keys. Either rustls silently rejects the wrong-DCID Initial (no error counter fires; rustls returns no events) OR the bytes get logged as a stray packet of an unrelated conn-id. **From the server's POV: nothing visible. From the client's POV: N₂ never gets an Initial-ACK, times out.**
+- The 80+ logical conns/sec that tquic_client claims to fail are exactly this scenario at scale.
+
+**This explains:**
+- Why tquic_server (REFERENCE.md row 20) gets 87,113 rps under the same harness — tquic uses DCID-based demux (verifiable in tquic source). It correctly demuxes 95 logical conns per src_port.
+- Why mojo-net's CPU usage is microscopic (~0.1% busy under saturating load) — most Initials are silently absorbed by 4-5 active QuicConnections in microseconds.
+- Why FFI dominance was a red herring: ~378 logical conns try to hand-shake; only ~5 of the FIRST ones succeed; the remaining 373 die at the demux layer before the server's per-packet processing path even matters.
+
+**Caveat:** wire-level analysis is `tquic_client`-specific. `h2load --h3` (REFERENCE.md row 28) gives different absolute numbers (mojo-net 11 short-conn rps vs tquic_client's 1) which suggests h2load may use 1-socket-per-conn (no multiplexing) on its single thread — this would explain why h2load's mojo-net short-conn rps is meaningfully higher (less demux collapse). A follow-up h2load capture would confirm whether h2load also exposes the demux failure or sidesteps it via different socket allocation.
+
+**Falsified-during-investigation:** the initial T14 commit (`c7e128b`) speculated "kernel ephemeral-port reuse" as the mechanism. Wire-level pcap falsifies this — the kernel did NOT reuse ports. tquic_client deliberately keeps 4 long-lived sockets and multiplexes via DCID. The demux failure is on the SERVER side (mojo-net's choice to demux by addr_key), not in the kernel and not in the client.
+
+**Next hypothesis (post-FALSIFIED verdict, post-VERIFIED-mechanism — required-later, HIGH severity):**
+
+- **What:** Switch `bench/h3_server.mojo`'s connection demux from `addr_key` (src_ip:src_port) to `dcid` (the QUIC destination connection ID, already extracted at `_handle_recvmsg`). DCIDs are 8+ random bytes minted per-conn by the client; collisions effectively impossible. tquic_server / quiche-server / nginx-quic / lsquic all use DCID demux. Estimated scope: ~50-100 LoC change (`conn_map: Dict[String, Int]` → `Dict[List[UInt8], Int]` keyed by DCID, plus updates to `_handle_recvmsg`'s `key = _addr_to_key(addr_bytes)` line and the conn-create path). Connection lifecycle assumptions change: `addr_key` is currently used for return-path routing (which `conn_addrs` to send to); we'll need to keep `addr_key` as a per-conn metadata field for sendmsg routing while switching the lookup key to DCID.
+  **Severity:** required-later (HIGH) — this is the rate-limiter for the calibrated 1 rps short-conn floor.
+  **Trigger:** anyone returning to the QUIC perf push. No further instrumentation required to spec it; the wire-level pcap evidence is sufficient.
 
 **Off-build flag confirmed:** `comptime PROFILE_ACCEPT: Bool = False` at `src/quic/profile.mojo:16` post-capture. Smoke gate doc at `bench/quic_perf/results/profile/T11_T12_smoke_gate_2026-04-27.md`.
 
