@@ -59,9 +59,19 @@ Lift: **+15-25% RPS**. Memory: **64 KiB → ~256 B per stream**.
 
 ---
 
-## Sprint 2 — Path A to H1 and H3 (1 week, possibly preceded by Path B spike)
+## Sprint 2 — Path A on H1/H3 + tiered streaming server on H2 (2 weeks)
 
-**Goal:** uniform shape across all three protocols.
+**Goal:** (a) uniform sync-handler shape across all three protocols,
+(b) usable streaming-handler API for LLM/SSE/proxy/gRPC workloads.
+
+**Why streaming is in this sprint**: Sprint 1's user review surfaced
+that streaming workloads are 30-60 % of real production HTTP/2 traffic
+(LLM responses, SSE, gRPC server-streaming, reverse proxies, file
+upload, chunked DB pagination, WebSocket-over-H2). The Path A sync
+handler is correct for TechEmpower-shape REST traffic but inadequate
+for these. Shipping mojo-net 1.0 without streaming-handler ergonomics
+would limit it to micro-benchmark territory. See
+`plans/2026-04-27-tiered-handler-design.md` for the full design.
 
 Optional 2-day spike first: **Path B feasibility** — can Mojo
 `comptime` synthesise a `StreamState` struct + phase enum from a
@@ -69,17 +79,37 @@ linearised description? If yes, Path B subsumes manual H1/H3 work.
 If no, hand-roll H1 and H3 mirroring the H2 sprint.
 
 Scope:
-1. Apply Path A to `bench/h1_server.mojo` and `src/h1/`.
-2. Apply Path A to `bench/h3_server.mojo` and `src/h3/`.
-3. Same `Io` trait used by all three.
+1. **Sync-handler mirror for H1 + H3.** Apply Path A to
+   `bench/h1_server.mojo` + `src/h1/` and `bench/h3_server.mojo` +
+   `src/h3/`. Same `Io` trait used by all three. Effort: 1 week.
+2. **Tiered streaming server for H2.** Effort: 1 week.
+   - Rename `src/h2/h2_coro_server.mojo` → `src/h2/h2_sync_server.mojo`
+     (Path A as it stands).
+   - Create `src/h2/h2_streaming_server.mojo` — a parallel server
+     type using `boucle.stackful.CoroutinePool`. Restores the
+     previously-removed suspending body helpers and the
+     `resume_stream` external-resume API. Streaming connections pay
+     64 KiB per stream; sync connections continue to pay 608 B.
+   - Add `bench/streaming_handler.mojo` demonstrating an
+     LLM-stream pattern (mock upstream emitting tokens on a timer).
+   - Add `tests/test_h2_streaming_server.mojo` re-exercising the
+     originally-disabled `test_body_yield` / `test_resume_stream`
+     cases against the streaming server.
+3. **Apply the tiered split to H1 + H3** (or defer one protocol if
+   Sprint 2 runs long).
 
 Acceptance:
 - All three benchmarks build clean.
 - HttpArena validate.sh passes for all three protocols.
-- 120s × 3-run captures show no regressions vs. Sprint 0 (per-protocol
-  baselines preserved or improved).
+- 120s × 3-run captures show no regressions vs. Sprint 1 baselines.
+- `bench/streaming_handler.mojo` demonstrates an end-to-end
+  streaming response (LLM-shape, multiple body chunks emitted as the
+  handler suspends/resumes).
+- `grep -r 'boucle.stackful' src/ | grep -vE '(_streaming_server|_ffi_bridge|/tests/)'`
+  returns zero (revised R1' enforced).
 
-Lift on H1/H3: same +15-25% pattern as H2.
+Lift on H1/H3 sync: same +15-25 % pattern as H2.
+Lift on streaming H2: not a perf goal — the deliverable is *shape*.
 
 ---
 
@@ -188,44 +218,83 @@ Lift: **near-linear in cores** (independent of all other levers).
 These are the YAGNI/SOLID rules that keep the two implementations
 from drifting into a tangled coexistence. Enforced by CI and review.
 
-**R1.** `boucle.stackful` has exactly one allowed entry point per use
-case, and zero shared types with the state machine layer. CI grep:
-`grep -r 'boucle.stackful' src/h{1,2,3}/` returns zero. Allowed
-locations: tests and modules clearly named `*_ffi_bridge.mojo`.
+**Revision history.** R1 and R3 were tightened in Sprint 1 (no
+`boucle.stackful` outside FFI bridges) but loosened in the
+post-Sprint-1 design review (see
+`plans/2026-04-27-tiered-handler-design.md`) once we acknowledged
+streaming workloads as a real, common second use case.  The current
+versions are R1' and R3' — narrower than "free-for-all" but broader
+than the original "FFI only".
 
-**R2.** The hand-written state machine never imports anything
+**R1' (revised).** `boucle.stackful` is allowed in:
+- Modules clearly named `*_streaming_server.mojo` (the streaming
+  HTTP servers added in Sprint 2)
+- Modules clearly named `*_ffi_bridge.mojo` (FFI integrations)
+- Tests for either of the above
+
+CI grep enforcement:
+```
+grep -r 'boucle.stackful' src/ | \
+  grep -vE '(_streaming_server|_ffi_bridge|/tests/)'
+```
+must return zero. The original "no `boucle.stackful` in
+`src/h{1,2,3}/`" check is replaced by this stricter file-naming
+enforcement.
+
+**R2.** The sync-handler state machine never imports anything
 coroutine-shaped. No `CoroBody`, `Yielder`, or `yield_to_caller` in
-protocol or server-loop code.
+the sync-server file, codec, or protocol-data types — only inside
+`*_streaming_server.mojo`.
 
-**R3.** One reason to use `boucle.stackful` — separate stack required
-for non-invertible FFI (e.g. C library callbacks where the C code
-holds the stack). No other reason. "More ergonomic" doesn't qualify.
+**R3' (revised).** Reasons to use `boucle.stackful`:
+- Non-invertible FFI requiring a separate stack (e.g. C library
+  callbacks where the C code holds the stack).
+- **Streaming HTTP handlers that need to suspend on body data,
+  upstream I/O, or wire backpressure** — the streaming server
+  subsystem's per-stream concurrency primitive.
+
+No other reason. "More ergonomic for sync code" still doesn't
+qualify; sync handlers stay sync.
 
 **R4.** The `Io` trait is the only allowed injection point. Extensions
 go via "extend `Io` by addition," never "add a coroutine."
 
-**R5.** `boucle.stackful` evolves only when an FFI bridge needs it.
+**R5.** `boucle.stackful` evolves only when an FFI bridge or the
+streaming server needs it.
 Unused parameters and methods get deleted, not preserved.
 
 **R6.** State machine phase enums are local to their module
 (`src/h2/h2_state.mojo`, `src/h3/h3_state.mojo`, etc.). No
 cross-protocol "common phase" abstraction. DRY is wrong here.
 
-**R7.** Tests for `boucle.stackful` use the FFI bridge use case as
-their fixture. If we can't write a real-world fixture, the use case
-isn't real and the library should be deleted.
+**R7.** Tests for `boucle.stackful` use either an FFI bridge use case
+or a streaming-handler use case as their fixture. If neither fits,
+the use case isn't real and shouldn't be added.
 
-**R8.** `sizeof(StreamState) < 512 bytes` asserted at compile time.
-Build fails on drift.
+**R8.** `sizeof(CoroStreamCtx) < 1024 bytes` asserted at compile
+time (revised from <512 in Sprint 1 once protocol-holder sizes were
+audited — Request 248 + RecvBody 96 + ResponseWriter 216 + bookkeeping
+≈ 608 B today). Build fails on drift.
 
 **R9.** No `Future`, `Promise`, `Awaiter`, or `Continuation` types
-until Mojo's async lands. The `Io` trait + event handlers cover every
-case the server actually has.
+until Mojo's async lands. The `Io` trait + sync handlers + (Sprint 2)
+streaming-handler coroutines cover every case the server actually has.
 
-**R10.** The user-handler layer is sync today, single function call at
-the boundary. Signature: `fn handle(req: Request, mut io: Io) -> Response`.
-When Mojo async stabilises, this signature flips in one place; the
-server loop adapts. Until then, no async sugar leaks downward.
+**R10' (revised).** Two handler tiers, each with a fixed signature:
+- **Sync handler** (default): `fn(ctx_ptr) raises -> None` —
+  used by 80 % of endpoints (REST, static, JSON CRUD). 608 B / stream,
+  zero coroutine overhead.
+- **Streaming handler** (opt-in, Sprint 2): `fn(ctx_ptr, mut yld: CoroYielder) raises -> None`
+  — used by LLM / SSE / gRPC / proxy / file-upload endpoints.
+  64 KiB / stream, but only connections that opted in pay it.
+
+When Mojo async stabilises:
+- Sync handler signature stays unchanged.
+- Streaming handler signature flips to `async fn(ctx, body, resp) raises`;
+  `CoroYielder.yield_to_caller()` calls become `await something()`.
+- Codec, `Io` trait, connection mgmt, sync server: unchanged.
+
+Until then, no async sugar leaks downward into either tier.
 
 ---
 
@@ -247,16 +316,25 @@ retrospective in `plans/YYYY-MM-DD-sprint-N-retrospective.md`.
 By end of Sprint 6, mojo-net should credibly claim:
 
 1. **As fast as h2o on CPU** — `/baseline2` and `/json/50` RPS within
-   5% of h2o on equivalent hardware.
-2. **Smaller than hyper in memory** — per-stream memory 10-100× less
-   than hyper (256 B vs. tens of KB).
-3. **~3K-line core codebase** — vs. h2o's ~50K, via comptime-generated
+   5 % of h2o on equivalent hardware.
+2. **Smaller than hyper in memory** — sync-handler streams hold
+   ~608 B each (vs. hyper's tens of KB); streaming-handler streams
+   hold ~64 KiB each but only when explicitly opted into.
+3. **Streaming-handler ergonomics** — LLM/SSE/gRPC/proxy/file-upload
+   handlers write top-to-bottom code with `CoroYielder` suspension;
+   no callback-state-machine boilerplate. Migrates 1:1 to Mojo
+   `async fn` when it lands.
+4. **~3K-line core codebase** — vs. h2o's ~50K, via comptime-generated
    dispatch instead of hand-written tables.
-4. **Type-safe end-to-end** — origin-checked zero-copy throughout.
-5. **First-class GPU story** as long-term differentiator.
-6. **None of this depends on Mojo async stabilising** — all sprints
+5. **Type-safe end-to-end** — origin-checked zero-copy throughout.
+6. **First-class GPU story** as long-term differentiator.
+7. **None of this depends on Mojo async stabilising** — all sprints
    ship on top of the architectural shape committed in
    `2026-04-27-mojo-async-direction-and-server-architecture.md`.
+
+Updated tagline: *"as fast as h2o on small responses, ergonomic
+streaming for LLM/SSE/proxy workloads, smaller than hyper in memory
+on the common path, GPU upside nobody else has."*
 
 That's the news-making outcome. Anything less and we revisit the
 sprint plan.
