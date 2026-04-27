@@ -20,6 +20,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from src.h1.handler_server import H1HandlerServer
+from src.io.io_uring import IoUring
 from src.tls import RustlsLibrary, TlsServerConfig, TlsConnection
 from bench.handler import (
     BenchHandler,
@@ -463,9 +464,9 @@ struct H1ServerHandler(CompletionHandler):
 # ---------------------------------------------------------------------------
 
 
-def _drain_pending_submits(mut loop: CompletionLoop[H1ServerHandler]) raises:
-    var submits = loop._handler.pending_submits^
-    loop._handler.pending_submits = List[PendingSubmit]()
+def _drain_pending_submits(mut io: IoUring[H1ServerHandler]) raises:
+    var submits = io.loop._handler.pending_submits^
+    io.loop._handler.pending_submits = List[PendingSubmit]()
 
     for i in range(len(submits)):
         var s = submits[i].copy()
@@ -473,47 +474,47 @@ def _drain_pending_submits(mut loop: CompletionLoop[H1ServerHandler]) raises:
 
         if s.kind == _SUBMIT_ACCEPT:
             try:
-                loop.submit_accept_multishot(s.fd, token)
+                io.loop.submit_accept_multishot(s.fd, token)
             except:
                 # SQ full — re-queue for next poll iteration.
-                loop._handler.pending_submits.append(s.copy())
+                io.loop._handler.pending_submits.append(s.copy())
         elif s.kind == _SUBMIT_RECV:
-            var idx = loop._handler._find_index(s.conn_id)
+            var idx = io.loop._handler._find_index(s.conn_id)
             if idx < 0:
                 # Connection gone — clear the in-flight flag would be moot,
                 # just skip.
                 continue
             var raw_addr = Int(
-                loop._handler.connections[idx][].recv_buf.unsafe_ptr()
+                io.loop._handler.connections[idx][].recv_buf.unsafe_ptr()
             )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
             try:
-                loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
+                io.loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
             except:
                 # SQ full — mark not-in-flight so it can be re-queued.
-                loop._handler.connections[idx][].recv_in_flight = False
-                loop._handler.pending_submits.append(s.copy())
+                io.loop._handler.connections[idx][].recv_in_flight = False
+                io.loop._handler.pending_submits.append(s.copy())
         elif s.kind == _SUBMIT_SEND:
-            var idx = loop._handler._find_index(s.conn_id)
+            var idx = io.loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
-            var n = len(loop._handler.connections[idx][].send_buf)
+            var n = len(io.loop._handler.connections[idx][].send_buf)
             if n == 0:
                 continue
             var raw_addr = Int(
-                loop._handler.connections[idx][].send_buf.unsafe_ptr()
+                io.loop._handler.connections[idx][].send_buf.unsafe_ptr()
             )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
             try:
-                loop.submit_send(s.fd, buf_ptr, UInt(n), token)
+                io.loop.submit_send(s.fd, buf_ptr, UInt(n), token)
             except:
                 # SQ full — mark not-in-flight so it can be re-queued.
-                loop._handler.connections[idx][].send_in_flight = False
-                loop._handler.pending_submits.append(s.copy())
+                io.loop._handler.connections[idx][].send_in_flight = False
+                io.loop._handler.pending_submits.append(s.copy())
 
 
 # ---------------------------------------------------------------------------
@@ -625,13 +626,13 @@ def main() raises:
         tls_lib=tls_lib_opt^,
         server_tls_config=server_tls_config_opt^,
     )
-    var loop = CompletionLoop[H1ServerHandler](handler^, sq_entries=4096)
+    var io = IoUring[H1ServerHandler](handler^, sq_entries=4096)
 
     # Initial accept submission.
-    loop.submit_accept_multishot(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
+    io.loop.submit_accept_multishot(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
     # Event loop.
     while True:
-        loop.poll(wait_nr=1)
-        _drain_pending_submits(loop)
+        io.loop.poll(wait_nr=1)
+        _drain_pending_submits(io)
         _ = listener
