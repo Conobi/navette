@@ -169,6 +169,42 @@ fn _blocking_body_streaming(mut yld: CoroYielder) raises:
         signal_ptr[0] = Int(42)
 
 
+fn _multi_chunk_concat_body(mut yld: CoroYielder) raises:
+    """POST handler: yield once to let multiple DATA frames queue into
+    body_frame_ring before draining, then read chunks in arrival order
+    and concatenate into extra_data (max 64 bytes).
+
+    This exercises the FIFO ordering invariant: the explicit pre-drain
+    yield is what causes ≥2 frames to coexist in the ring at the moment
+    next_chunk pops the first one. Without that, the server delivers
+    one frame at a time and a LIFO pop hides itself."""
+    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
+    var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]().as_any_origin()
+    var written = Int(0)
+    # Yield once before reading so the adapter can deliver several DATA
+    # events into body_frame_ring while we're suspended.
+    yld.yield_to_caller()
+    yld.yield_to_caller()
+    yld.yield_to_caller()
+    while True:
+        var chunk_opt = next_chunk(ctx_ptr, yld)
+        if not chunk_opt:
+            break
+        var chunk = chunk_opt.unsafe_take()
+        if chunk.is_data():
+            var data = chunk.data().copy()
+            for i in range(len(data)):
+                if written < 64:
+                    sink_ptr[written] = data[i]
+                    written += 1
+    var hdrs = Headers()
+    hdrs.add("x-chunks-len", String(written))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
+    var empty = List[UInt8]()
+    write_chunk(ctx_ptr, yld, empty^)
+    finish(ctx_ptr, yld)
+
+
 fn _cancel_signal_handler(mut yld: CoroYielder) raises:
     """Streaming handler for cancel test. Writes 99 to extra_data on cancellation."""
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
@@ -373,11 +409,75 @@ def test_h2_streaming_cancel_via_rst_stream() raises:
     print("  test_h2_streaming_cancel_via_rst_stream: PASS")
 
 
+def test_h2_streaming_multi_chunk_body_fifo_order() raises:
+    """Regression test: 3 separate DATA frames must be delivered to
+    next_chunk in arrival order (FIFO), not reverse order (LIFO).
+
+    Caught a real bug where body_frame_ring.pop() (default = pop last)
+    paired with append() to deliver multi-chunk POST bodies in REVERSE
+    order — silent data corruption."""
+    var sink_ptr = _heap_alloc[UInt8](64).as_any_origin()
+    for i in range(64):
+        sink_ptr[i] = UInt8(0)
+    var extra = UnsafePointer[NoneType, MutExternalOrigin](
+        unsafe_from_address=Int(sink_ptr)
+    )
+
+    var server = H2StreamingServer(handler_fn=_multi_chunk_concat_body, extra_data=extra)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+
+    var client_events = List[H2Event]()
+    _do_preface(server, client)
+
+    var headers = List[Header]()
+    headers.append(Header(":method", "POST"))
+    headers.append(Header(":path", "/multi"))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(1), headers^, end_stream=False)
+
+    # Send 3 distinct body chunks via 3 separate DATA frames, batched
+    # in a single feed() so the server queues all three into
+    # body_frame_ring BEFORE the handler drains them. This is the
+    # condition under which a LIFO pop() reverses the order; if we
+    # interleaved feed/resume per chunk the handler would consume each
+    # chunk before the next arrived and the LIFO bug would be hidden.
+    var c1 = List[UInt8]()
+    c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A")))
+    client.send_data(UInt32(1), c1^, end_stream=False)
+    var c2 = List[UInt8]()
+    c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B")))
+    client.send_data(UInt32(1), c2^, end_stream=False)
+    var c3 = List[UInt8]()
+    c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C")))
+    client.send_data(UInt32(1), c3^, end_stream=True)
+
+    var batched = client.data_to_send()
+    server.feed(Span(batched))
+    _pump(server, client, client_events, 5)
+
+    # Read sink and free
+    var observed = List[UInt8]()
+    for i in range(9):
+        observed.append(sink_ptr[i])
+    sink_ptr.free()
+
+    var observed_str = String(unsafe_from_utf8=observed)
+    assert_true(
+        observed_str == "AAABBBCCC",
+        "expected FIFO order 'AAABBBCCC', got: '" + observed_str + "'"
+        " — body chunk ring is delivering in reverse order"
+    )
+    print("  test_h2_streaming_multi_chunk_body_fifo_order: PASS")
+
+
 def main() raises:
     print("=== test_h2_streaming_server ===")
     test_h2_streaming_post_with_body()
     test_h2_streaming_trailers()
     test_h2_streaming_rst_stream()
     test_h2_streaming_cancel_via_rst_stream()
+    test_h2_streaming_multi_chunk_body_fifo_order()
     print("All H2StreamingServer tests passed.")
     print("ok")

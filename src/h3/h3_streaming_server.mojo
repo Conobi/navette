@@ -183,7 +183,9 @@ def next_chunk(
             raise Error("H3StreamCancelled")
         yld.yield_to_caller()
     if len(ctx_ptr[].body_frame_ring) > 0:
-        var frame = ctx_ptr[].body_frame_ring.pop()
+        # FIFO: pop(0) preserves arrival order. Default pop() is LIFO and
+        # would deliver multi-chunk bodies to the handler in reverse order.
+        var frame = ctx_ptr[].body_frame_ring.pop(0)
         return Optional[BodyFrame](frame^)
     return Optional[BodyFrame](None)
 
