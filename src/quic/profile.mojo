@@ -87,6 +87,15 @@ struct AcceptProfile(Copyable, Movable):
     var conn_pkt_counts: Dict[String, UInt64]
     var conn_hs_complete: Dict[String, Bool]
 
+    # Plan: 2026-04-27-quic-addr-key-dcid-collision-counter
+    # Total packets where _find_conn(pd.addr_key) returned a hit but
+    # pd.dcid was not in the conn's expected-DCID set.  Direct measure
+    # of demux failure under PROFILE_ACCEPT.
+    var dcid_mismatch_pkts: UInt64
+
+    # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
+    var addr_key_mismatch_counts: Dict[String, UInt64]
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -119,6 +128,8 @@ struct AcceptProfile(Copyable, Movable):
         self.arrival_lat_us_total = UInt64(0)
         self.conn_pkt_counts = Dict[String, UInt64]()
         self.conn_hs_complete = Dict[String, Bool]()
+        self.dcid_mismatch_pkts = UInt64(0)
+        self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -201,6 +212,19 @@ struct AcceptProfile(Copyable, Movable):
         result in only one entry in conn_hs_complete.
         """
         self.conn_hs_complete[addr_key] = True
+
+    def record_dcid_mismatch(mut self, addr_key: String) raises:
+        """Record a packet whose dcid did not match the conn for its addr_key.
+
+        Caller has already done the membership test against
+        QuicConnection.is_expected_dcid; this method only counts.
+        """
+        self.dcid_mismatch_pkts = self.dcid_mismatch_pkts + UInt64(1)
+        if addr_key in self.addr_key_mismatch_counts:
+            self.addr_key_mismatch_counts[addr_key] = (
+                self.addr_key_mismatch_counts[addr_key] + UInt64(1))
+        else:
+            self.addr_key_mismatch_counts[addr_key] = UInt64(1)
 
     def report_text(self) raises -> String:
         var now = monotonic_us()
