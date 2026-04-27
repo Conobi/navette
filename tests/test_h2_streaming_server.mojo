@@ -181,8 +181,9 @@ fn _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
     var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]().as_any_origin()
     var written = Int(0)
-    # Yield once before reading so the adapter can deliver several DATA
-    # events into body_frame_ring while we're suspended.
+    # Yield three times before reading so the adapter can deliver all
+    # three DATA events into body_frame_ring while we're suspended —
+    # this is what forces multiple frames to coexist when next_chunk pops.
     yld.yield_to_caller()
     yld.yield_to_caller()
     yld.yield_to_caller()
