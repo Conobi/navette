@@ -2770,6 +2770,50 @@ def test_batch_crypto_roundtrip() raises:
     print("  test_batch_crypto_roundtrip: PASS")
 
 
+def test_is_expected_dcid_initial_and_local() raises:
+    """is_expected_dcid matches initial_dcid and local_cid; rejects others."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+    )
+
+    # Expected DCID #1: matches initial_dcid (== client_dcid in this fixture).
+    var initial = List[UInt8](copy=client_dcid)
+    assert_true(
+        server.is_expected_dcid(Span(initial)),
+        "is_expected_dcid should match initial_dcid",
+    )
+
+    # Expected DCID #2: matches local_cid (server-chosen SCID).
+    var local = List[UInt8](copy=server.local_cid)
+    assert_true(
+        server.is_expected_dcid(Span(local)),
+        "is_expected_dcid should match local_cid",
+    )
+
+    # NOT expected: an arbitrary unrelated DCID.
+    var other = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xCD)):
+        other.append(b)
+    assert_false(
+        server.is_expected_dcid(Span(other)),
+        "is_expected_dcid should reject unrelated DCIDs",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_is_expected_dcid_initial_and_local: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2805,4 +2849,5 @@ def main() raises:
     test_streams_blocked_bidi_emitted()
     test_streams_blocked_dedup_no_resend()
     test_batch_crypto_roundtrip()
+    test_is_expected_dcid_initial_and_local()
     print("All test_quic_connection tests passed.")
