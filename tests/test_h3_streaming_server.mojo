@@ -207,6 +207,41 @@ fn _trailer_check_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
+fn _multi_chunk_concat_body(mut yld: CoroYielder) raises:
+    """POST handler: yield several times to let multiple DATA frames queue
+    into body_frame_ring before draining, then read chunks in arrival
+    order and concatenate into extra_data (max 64 bytes).
+
+    The pre-drain yields are what cause ≥2 frames to coexist in the ring
+    at the moment next_chunk pops the first one. Without that, the
+    adapter delivers one frame at a time and a LIFO pop hides itself."""
+    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_any_origin()
+    var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]().as_any_origin()
+    var written = Int(0)
+    # Yield several times before reading so the adapter can deliver
+    # multiple DATA events into body_frame_ring while we're suspended.
+    yld.yield_to_caller()
+    yld.yield_to_caller()
+    yld.yield_to_caller()
+    while True:
+        var chunk_opt = next_chunk(ctx_ptr, yld)
+        if not chunk_opt:
+            break
+        var chunk = chunk_opt.unsafe_take()
+        if chunk.is_data():
+            var data = chunk.data().copy()
+            for i in range(len(data)):
+                if written < 64:
+                    sink_ptr[written] = data[i]
+                    written += 1
+    var hdrs = Headers()
+    hdrs.add("x-chunks-len", String(written))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
+    var empty = List[UInt8]()
+    write_chunk(ctx_ptr, yld, empty^)
+    finish(ctx_ptr, yld)
+
+
 fn _blocking_body_streaming(mut yld: CoroYielder) raises:
     """POST handler that suspends in next_chunk waiting for body.
     On cancellation (H3StreamCancelled), writes signal=42 to extra_data."""
@@ -469,11 +504,82 @@ fn _cancel_signal_handler(mut yld: CoroYielder) raises:
         signal_ptr[0] = Int(99)
 
 
+def test_h3_streaming_multi_chunk_body_fifo_order() raises:
+    """Regression test: 3 separate DATA frames must be delivered to
+    next_chunk in arrival order (FIFO), not reverse order (LIFO).
+
+    Caught a real bug where body_frame_ring.pop() (default = pop last)
+    paired with append() to deliver multi-chunk POST bodies in REVERSE
+    order — silent data corruption."""
+    var sink_ptr = _heap_alloc[UInt8](64).as_any_origin()
+    for i in range(64):
+        sink_ptr[i] = UInt8(0)
+    var extra = UnsafePointer[NoneType, MutExternalOrigin](
+        unsafe_from_address=Int(sink_ptr)
+    )
+
+    var configs = _make_lib_and_configs()
+    var lib_addr = configs[0]
+    var srv_cfg = configs[1]
+    var cli_cfg = configs[2]
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(lib_addr, cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        lib_addr, srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3StreamingServer(quic=server_quic^, handler_fn=_multi_chunk_concat_body, extra_data=extra)
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_streaming_client(server, client, now, 50)
+
+    var stream_id = client.open_bidi_stream()
+    var req_fields = List[QpackHeaderField]()
+    req_fields.append(QpackHeaderField(":method", "POST"))
+    req_fields.append(QpackHeaderField(":path", "/multi"))
+    req_fields.append(QpackHeaderField(":scheme", "https"))
+    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    client.send_headers(stream_id, req_fields, False)
+
+    # Send 3 distinct body chunks via 3 separate DATA frames, all queued
+    # before draining to the server so multiple frames coexist in the
+    # body_frame_ring when the handler runs next_chunk. Coupled with the
+    # pre-drain yields in the handler, this exposes any LIFO pop bug.
+    var c1 = List[UInt8]()
+    c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A")))
+    client.send_data(stream_id, c1^, False)
+    var c2 = List[UInt8]()
+    c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B")))
+    client.send_data(stream_id, c2^, False)
+    var c3 = List[UInt8]()
+    c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C")))
+    client.send_data(stream_id, c3^, True)  # fin
+    now = _pump_streaming_client(server, client, now, 30)
+
+    # Read sink and free
+    var observed = List[UInt8]()
+    for i in range(9):
+        observed.append(sink_ptr[i])
+    sink_ptr.free()
+
+    var observed_str = String(unsafe_from_utf8=observed)
+    assert_true(
+        observed_str == "AAABBBCCC",
+        "expected FIFO order 'AAABBBCCC', got: '" + observed_str + "'"
+        " — body chunk ring is delivering in reverse order"
+    )
+    print("  test_h3_streaming_multi_chunk_body_fifo_order: PASS")
+
+
 def main() raises:
     print("=== test_h3_streaming_server ===")
     test_h3_streaming_post_with_body()
     test_h3_streaming_trailers()
     test_h3_streaming_rst_stream()
     test_h3_streaming_cancel_via_rst_stream()
+    test_h3_streaming_multi_chunk_body_fifo_order()
     print("All H3StreamingServer tests passed.")
     print("ok")
