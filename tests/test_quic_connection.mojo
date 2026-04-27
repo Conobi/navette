@@ -2814,6 +2814,44 @@ def test_is_expected_dcid_initial_and_local() raises:
     print("  test_is_expected_dcid_initial_and_local: PASS")
 
 
+def test_quic_connection_dcid_lengths_are_8_bytes() raises:
+    """Lock the invariant that QuicConnection.server produces 8-byte DCIDs.
+
+    The bench server's short-header DCID parser (_extract_dcid) assumes
+    8-byte CIDs (parse_packet_header(data, 8)). Any future change to
+    _generate_random_cid that breaks this invariant must update both
+    the parser AND this test together.
+    """
+    # Mirror the construction from test_is_expected_dcid_initial_and_local.
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+    )
+
+    # New invariant assertions: both server-side CIDs must be 8 bytes.
+    assert_true(
+        len(server.local_cid) == 8,
+        "expected len(local_cid) == 8, got " + String(len(server.local_cid)),
+    )
+    assert_true(
+        len(server.initial_dcid) == 8,
+        "expected len(initial_dcid) == 8, got " + String(len(server.initial_dcid)),
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("PASS: test_quic_connection_dcid_lengths_are_8_bytes")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2850,4 +2888,5 @@ def main() raises:
     test_streams_blocked_dedup_no_resend()
     test_batch_crypto_roundtrip()
     test_is_expected_dcid_initial_and_local()
+    test_quic_connection_dcid_lengths_are_8_bytes()
     print("All test_quic_connection tests passed.")
