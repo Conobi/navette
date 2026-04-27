@@ -614,6 +614,32 @@ def test_report_text_new_sections() raises:
     print("PASS: test_report_text_new_sections")
 
 
+def test_record_dcid_mismatch_increments() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    if p.dcid_mismatch_pkts != UInt64(1):
+        raise "expected dcid_mismatch_pkts=1, got " + String(p.dcid_mismatch_pkts)
+    if p.addr_key_mismatch_counts[String("ip:port:34130")] != UInt64(1):
+        raise "expected per-addr_key count=1"
+    print("PASS: test_record_dcid_mismatch_increments")
+
+
+def test_record_dcid_mismatch_accumulates() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34131"))
+    if p.dcid_mismatch_pkts != UInt64(3):
+        raise "expected total=3, got " + String(p.dcid_mismatch_pkts)
+    if p.addr_key_mismatch_counts[String("ip:port:34130")] != UInt64(2):
+        raise "expected key1=2"
+    if p.addr_key_mismatch_counts[String("ip:port:34131")] != UInt64(1):
+        raise "expected key2=1"
+    print("PASS: test_record_dcid_mismatch_accumulates")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -641,4 +667,6 @@ def main() raises:
     test_report_json_per_conn_aggregated_block()
     test_report_json_worst_conns()
     test_report_text_new_sections()
+    test_record_dcid_mismatch_increments()
+    test_record_dcid_mismatch_accumulates()
     print("All Plan A tests passed.")
