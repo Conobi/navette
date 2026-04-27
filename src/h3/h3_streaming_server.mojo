@@ -216,11 +216,22 @@ def finish(
     ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin],
     mut yld: CoroYielder,
 ) raises:
-    """Close the response body. After this, the handler should return.
-    Adapter's _drain_responses sends the final FIN on next pass."""
+    """Close the response body. The handler should return immediately after
+    this call. Adapter's _drain_responses sends the final FIN on the next
+    event-loop pass.
+
+    Design note: finish() is synchronous — it buffers the end BodyFrame into
+    resp_writer but does NOT call yield_to_caller(). The handler returns and
+    the coro reaches DONE state. On the next feed_datagram call, _drain_responses
+    processes the buffered end frame and sets response_ended=True.
+
+    Why no yield_to_caller here? If finish() suspended, the coro would be in
+    SUSPENDED state when _maybe_cleanup_stream (called from _on_stream_ended)
+    runs — which triggers a boucle debug_assert when destroying the still-
+    suspended CoroHandle. Keeping finish() synchronous avoids that invariant
+    violation and is simpler: the handler just returns and the coro is DONE."""
     ctx_ptr[].resp_writer.end()
-    ctx_ptr[].response_ended = True
-    yld.yield_to_caller()  # let the adapter run its drain pass
+    # yld is accepted for API symmetry; not used because finish is synchronous.
 
 
 def cancelled(
@@ -476,7 +487,13 @@ struct H3StreamingServer(Movable):
             _free_streaming_stream(ctx_ptr)
 
     def _resume_stream(mut self, sid: Int) raises:
-        """Resume the coroutine for stream sid. On error, set cancelled + free."""
+        """Resume the coroutine for stream sid. On error, set cancelled + free.
+
+        When the coro finishes normally (DONE after finish() returns), the
+        stream is NOT freed here. Instead, _drain_responses will drain the
+        queued end BodyFrame, set response_ended=True, and _maybe_cleanup_stream
+        will free the stream. This deferred cleanup ensures response data is
+        actually sent before the H3StreamingCtx is freed."""
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -484,10 +501,7 @@ struct H3StreamingServer(Movable):
             return
         var coro_p = ctx_ptr[].coro_ptr()
         if not coro_p[].can_resume():
-            # Coroutine already done — check if we should clean up
-            if coro_p[].is_done():
-                _ = self._streams.pop(sid)
-                _free_streaming_stream(ctx_ptr)
+            # Coroutine already done — nothing to do here; drain will handle cleanup
             return
         try:
             coro_p[].resume()
@@ -500,10 +514,9 @@ struct H3StreamingServer(Movable):
             _ = self._streams.pop(sid)
             _free_streaming_stream(ctx_ptr)
             return
-        # If coroutine finished, remove the stream
-        if coro_p[].is_done():
-            _ = self._streams.pop(sid)
-            _free_streaming_stream(ctx_ptr)
+        # Coro finished or suspended — if done, drain will clean up via
+        # _maybe_cleanup_stream (called at end of _drain_responses).
+        # No immediate pop/free here.
 
     # --- Event dispatch -----------------------------------------------------
 
