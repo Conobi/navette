@@ -297,6 +297,81 @@ This is consistent with every observation: low CPU% (server is blocked on rustls
 
 ---
 
+### 2026-04-27 — queueing-tail-instrumentation — DATA — FALSIFIED (queueing-tail) + NEW HYPOTHESIS (addr_key demux collapse)
+
+**Spec:** `specs/2026-04-27-quic-queueing-tail-instrumentation.md`. Plan: `plans/2026-04-27-quic-queueing-tail-instrumentation.md`. Goal: test the queueing-tail hypothesis (most-plausible mechanism after the 4-diagnosis chain on `feat/quic-accept-loop-instrumentation`). Branch: `feat/quic-queueing-tail-instrumentation` off main `3919f7d`.
+
+**Methodology gate satisfied:** re-read all 348 lines of `REFERENCE.md` (rows 1-279 from prior context + rows 280-348 just before drafting). Flagged contradictions: **none** — the "5 distinct addr_keys vs ~392 logical conns" asymmetry seen in this capture is consistent with prior CORRECTED-diagnosis section's note that the server saw "13-21 distinct conns" while tquic_client reported 392 attempts. The new data does not contradict any prior row; it gives the asymmetry quantitative bounds.
+
+**Capture cell:** 1k short-conn, tquic_client (4 threads × 25 max-concurrent-conns × max-requests-per-conn=1), 30s, on-build (PROFILE_ACCEPT=True), manual SIGINT-driven sidecar via `start-server.sh + run-tquic-client.sh + docker kill --signal=SIGINT bench-h3 + docker cp + stop-server.sh`. Smoke gate (T11 long-conn / T12 short-conn) PASS at -2.12% / within-noise drift before this capture.
+
+**Sidecar:** `bench/quic_perf/results/profile/INSTRUMENTATION-20260427-001113-queueing-tail.json`
+
+**tquic_client report (client-side POV):** `conns: total 392, finish 296, success 8, failure 288`.
+
+**Server-side (sidecar):**
+- Run wall-clock: 44.94s, 99.9% idle / 0.1% busy (~57ms total work)
+- `pkts_per_flush_histogram`: 1=75% / 2-3=14% / 4-7=7% / 8-15=3% / 16-31=1% / 32-63=0.3% / 64-127=0% / 128+=0%
+- Per-packet processing (n=163 records, only counts records that hit `record_pkt`): p50=6 p90=92 p99=512us. Drain avg=71us. **shim_ffi avg=187us, sm avg=190us** — FFI/SM still dominate per-packet *processing* cost on the few packets that get processed (consistent with prior FFI-dominance OBSERVATION; not the rate-limiter for the calibrated 1 rps short-conn floor).
+- **Handshake accounting: 10 arrivals, 10 successful (100%), 0 timed out.** Latency p50=778us p90=1023us p99/max=29.7ms.
+- Plan C diagnostic counters all zero (recvmsg drops, multishot terms, 3 server-side error counters).
+
+**NEW INSTRUMENT 1 — Arrival-to-processing latency (n=3369, overflow=0):**
+- `arrival_lat_us_total`: 20,005us (sum across all observations)
+- `arrival_lat_us_buckets`: [855, 596, 615, 593, 438, 205, 37, 9, 21, 0, 0, ...0] (24 buckets; non-zero only in buckets 0-8)
+- **p50=2us, p90=14us, p99=61us** (computed: bucket 6 [32,64) holds rank 3336/3369; linear-interp at 0.92 of span → 61us).
+- Wider distribution: bucket 0 (zero-wait) holds 25% of observations; buckets 0-3 (wait ≤8us) hold 79%.
+
+**NEW INSTRUMENT 2 — Per-conn packet trajectory:**
+- `conns_total`: 5 (distinct addr_keys = src_ip:src_port tuples)
+- `conns_with_pkts_no_hs_complete`: **0** (every conn the server saw completed its handshake)
+- `per_conn_pkts_buckets`: [0, 0, 1, 0, 0, 0, 0, 4] (1 conn in 4-7 pkt range, 4 conns in 128+ range)
+- `worst_conns`: `[]` (no non-complete entries to report)
+
+**3-verdict signal table — applied to queueing-tail hypothesis:**
+- CONFIRMED if P99 ≥ 1,000,000us (1s) OR overflow ≥ 50% of pkt_count: **NO** (P99=61us; overflow=0)
+- FALSIFIED if P99 ≤ 100,000us (100ms): **YES** (61us is 1638× below the FALSIFIED threshold)
+- INCONCLUSIVE if 100,000 < P99 < 1,000,000: NO
+- Corroboration: `conns_with_pkts_no_hs_complete = 0 ≤ 5` → **weakens hypothesis** (no "received N packets but never completed handshake" population at all)
+
+**Verdict: FALSIFIED for queueing-tail hypothesis.** Server-side serial single-fiber `_flush_impl` queueing is NOT the rate-limiter. Of the packets the server sees, queueing wait is ≤61us at p99 — well within tquic_client's per-conn handshake timeout budget (≥1s).
+
+**NEW HYPOTHESIS surfaced by Instrument 2 — `addr_key` demux collapse via kernel port reuse:**
+
+The striking finding is the asymmetry between client-side and server-side conn counts:
+
+| Side | Count |
+|---|---|
+| tquic_client logical conn attempts | 392 |
+| tquic_client successful (client POV) | 8 |
+| tquic_client failed/timed-out | 288 |
+| Server distinct addr_keys (`conns_total`) | **5** |
+| Server hs_complete (`conns_total - conns_with_pkts_no_hs_complete`) | 5 |
+| Server `record_handshake_arrival` count | 10 |
+
+The server saw only 5 distinct (src_ip, src_port) tuples despite the client attempting 392 logical conns. Most logical conns reuse a small set of source ports (kernel ephemeral-port allocation pinning under loopback + Docker network namespace + tquic_client's 4×25 socket pool). When a "new logical conn" arrives at a src_port already mapped in `conn_map` to an existing established `QuicConnection`, the server's `_find_conn(addr_key)` returns the OLD conn. The new Initial gets fed to the wrong connection, which silently rejects it (DCID/SCID mismatch, no server-side error since `feed_datagram_from_buffer_err_count = 0` in this run). The new logical conn never receives an Initial-ACK and times out client-side. From the server's POV everything is fine; from the client's POV, 288 attempts fail.
+
+This explains:
+- Why tquic_server (REFERENCE.md row 20) gets 87K rps under the same harness — it has different demux logic (per-CID rather than per-addr_key, presumably).
+- Why the server's CPU usage is microscopic (~0.1% busy) — most of those 288 "logical conn" Initials are absorbed by 4-5 active connections that discard them in microseconds.
+- Why the "FFI dominance" observation in Plan C C3 (sm avg=129us, shim_ffi avg=127us on 233 packets) was real but irrelevant: those costs apply to the few packets that reach successful processing; the overwhelming majority of "failed" client conns never trigger meaningful server work.
+
+**Caveat:** this captured arrival pattern is `tquic_client`-specific. `h2load --h3` (REFERENCE.md row 28) drives different absolute numbers (mojo-net 11 short-conn rps vs tquic_client's 1) — could indicate h2load uses different source-port allocation strategy and would expose the demux-collapse problem differently. A follow-up h2load capture is warranted before assuming the addr_key-collapse is universal.
+
+**Next hypothesis (post-FALSIFIED verdict — required-later, HIGH severity):**
+
+- **What:** Verify the `addr_key` demux collapse hypothesis. Two sub-questions:
+  1. **Diagnostic:** Add a per-flush counter tracking how often `_find_conn(pd.addr_key)` returns an existing `conn_idx` whose state is `is_established()=True` AND the incoming packet is an Initial (long-header type 0). Each such "Initial-on-established-addr_key" event is a logical conn that the server is silently absorbing into a wrong destination. Expected: hundreds/thousands per 30s short-conn run.
+  2. **Mechanistic:** Switch the demux from `addr_key` (src_ip:src_port) to `dcid` (destination connection ID, already extracted at `_handle_recvmsg`). DCIDs are minted per-conn by the client and don't collide on port reuse. This is the change tquic_server presumably has. Estimated scope: ~50-100 LoC in `bench/h3_server.mojo` `conn_map` + `_find_conn` + `_handle_recvmsg`. Not in scope for any current spec — would need its own brainstorm + plan.
+  **Severity:** required-later (HIGH) — this is the prerequisite for choosing whether mojo-net's bottleneck is fundamentally architectural (demux design) vs micro-optimizable (FFI batching, multi-fiber).
+  **Trigger:** anyone returning to the QUIC perf push.
+
+**Off-build flag confirmed:** `comptime PROFILE_ACCEPT: Bool = False` at `src/quic/profile.mojo:16` post-capture. Smoke gate doc at `bench/quic_perf/results/profile/T11_T12_smoke_gate_2026-04-27.md`.
+
+**Diagnostic counters left in place** (all six, plus the new arrival-latency + per-conn instruments). Off-build cost: zero (PROFILE_ACCEPT-gated everywhere).
+
+---
+
 ### 2026-04-26 — accept-loop-instrumentation-data-collection — DATA (steady-state only, B14)
 
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`. Goal:
