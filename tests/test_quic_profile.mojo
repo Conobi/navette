@@ -640,6 +640,36 @@ def test_record_dcid_mismatch_accumulates() raises:
     print("PASS: test_record_dcid_mismatch_accumulates")
 
 
+def test_report_json_dcid_mismatch_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34131"))
+    var s = p.report_json()
+    if "addr_key_dcid_mismatch" not in s:
+        raise "missing addr_key_dcid_mismatch block"
+    if "\"dcid_mismatch_pkts\": 3" not in s:
+        raise "missing total counter"
+    if "\"addr_keys_with_mismatch\": 2" not in s:
+        raise "missing addr_keys_with_mismatch"
+    if "ip:port:34130" not in s:
+        raise "missing per_addr_key entry"
+    print("PASS: test_report_json_dcid_mismatch_block")
+
+
+def test_report_text_dcid_mismatch_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    var s = p.report_text()
+    if "addr_key DCID mismatch" not in s:
+        raise "missing text section heading"
+    if "1" not in s:
+        raise "expected count=1 to appear"
+    print("PASS: test_report_text_dcid_mismatch_block")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -669,4 +699,6 @@ def main() raises:
     test_report_text_new_sections()
     test_record_dcid_mismatch_increments()
     test_record_dcid_mismatch_accumulates()
+    test_report_json_dcid_mismatch_block()
+    test_report_text_dcid_mismatch_block()
     print("All Plan A tests passed.")
