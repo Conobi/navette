@@ -18,8 +18,7 @@ from src.http.status import StatusCode
 from src.http.headers import Headers
 from src.http.request import Request
 from src.h2.h2_coro_server import CoroStreamCtx as H2CoroStreamCtx
-from src.h3.h3_coro_server import CoroStreamCtx as H3CoroStreamCtx
-from boucle.stackful import CoroYielder
+from src.h3.h3_sync_server import CoroStreamCtx as H3CoroStreamCtx
 from interop.file_io import read_file
 
 from simdjson.parser import Parser
@@ -778,17 +777,14 @@ def bench_h2_body_fn(
     )
 
 
-def bench_h3_body_fn(mut yielder: CoroYielder) raises:
-    """CoroBody for H3CoroServer: dispatch request from per-stream context.
-
-    Note: H3 still uses stackful coroutines until Sprint 2 brings Path A
-    to the H3 server. The signature divergence between H2 and H3 here is
-    temporary."""
-    var ctx = yielder.user_data().bitcast[H3CoroStreamCtx]()
-    var state_ptr = ctx[].extra_data.bitcast[BenchState]().as_any_origin()
+def bench_h3_body_fn(
+    ctx_ptr: UnsafePointer[H3CoroStreamCtx, MutAnyOrigin],
+) raises:
+    """H3BodyFn for H3CoroServer (Sprint 2A Path A — sync handler)."""
+    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_any_origin()
     _dispatch_request(
-        ctx[].request.target,
-        ctx[].request.headers,
-        ctx[].resp_writer,
+        ctx_ptr[].request.target,
+        ctx_ptr[].request.headers,
+        ctx_ptr[].resp_writer,
         state_ptr,
     )

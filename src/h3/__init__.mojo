@@ -52,4 +52,4 @@ from src.h3.qpack import (
 from src.h3.connection import H3Event, H3Connection
 from src.h3.h3_handler_server import H3HandlerServer
 from src.h3.h3_session import H3Session
-from src.h3.h3_coro_server import H3CoroServer
+from src.h3.h3_sync_server import H3CoroServer
