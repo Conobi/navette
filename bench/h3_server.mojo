@@ -158,6 +158,49 @@ fn _zpad2_int(n: Int) -> String:
 # ── helpers (kept from original) ───────────────────────────────────────
 
 
+alias _HEX_DIGITS = "0123456789abcdef"
+
+
+fn _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
+    """Hex-encode bytes for use as a Dict[String, Int] key.
+
+    Mirrors `_addr_to_key`'s encoding to keep Dict-key shape consistent
+    across the codebase. Pinned to 8-byte DCIDs (server SCID length is
+    pinned at 8 bytes; client Initial DCIDs are RFC 9000 §7.2 minimum 8).
+    Span parameter so call sites pass `Span(quic.initial_dcid)` or
+    `Span(pd.dcid)` without consuming the source list.
+    """
+    var key = String()
+    var hex_bytes = _HEX_DIGITS.as_bytes()
+    for i in range(len(bytes)):
+        var b = Int(bytes[i])
+        key += chr(Int(hex_bytes[b >> 4]))
+        key += chr(Int(hex_bytes[b & 0x0F]))
+    return key^
+
+
+fn _is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
+    """True iff the QUIC packet's first byte indicates a long-header Initial.
+
+    First byte (RFC 9000 v1):
+      bit 7 (0x80): header form. 1 = long, 0 = short.
+      bits 5-4 (0x30): packet type for long header.
+        0b00 = 0x00 = Initial
+        0b01 = 0x10 = 0-RTT
+        0b10 = 0x20 = Handshake
+        0b11 = 0x30 = Retry
+
+    Empty `payload` returns False (defensive).
+    QUIC v1 only (project non-goal: gQUIC, draft versions).
+    """
+    if len(payload) == 0:
+        return False
+    var first = payload[0]
+    if (first & 0x80) == 0:
+        return False  # short header
+    return (first & 0x30) == 0x00
+
+
 def _addr_to_key(addr: List[UInt8]) -> String:
     """Convert raw 16-byte sockaddr to a string key for connection demux."""
     var key = String()
