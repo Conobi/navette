@@ -12,8 +12,16 @@
 | `e737981` | feat(h2): replace stackful coroutines with sync handler (Sprint 1 Step 3) |
 | `0d1445d` | feat(h2): R8 compile-time sizeof assert on CoroStreamCtx |
 
-**Headline:** **+120 % RPS on `/baseline2`, +26 % on `/json/50`** at
-`-c 100 -m 10`, with **108× less per-stream memory**.
+**Headline:** **+5–120 % RPS on `/baseline2` (always positive),
+−8 to +26 % on `/json/50` (configuration-dependent)** at
+`-c 100 -m 10`, with **108× less per-stream memory** (rock-solid,
+independent of measurement methodology).
+
+Three pinning configurations were run (unpinned, separate-pin,
+shared-pin); the wide span on the lift comes from comparing across
+them. See § Benchmark details below — the `/json/50` regression in
+the cleanest measurement (shared-pin) is a real finding worth
+chasing in Sprint 2, not noise.
 
 ---
 
@@ -24,43 +32,76 @@
 | `grep -r 'boucle.stackful' src/h{1,2,3}/` returns zero | ✅ zero hits |
 | `sizeof(StreamState) < 1024` (revised from <512 — see below) | ✅ 608 B asserted at build time |
 | Functional test matrix passes | ✅ 4/4 H2 coro tests + bench builds |
-| ≥ +15 % RPS at `-c 100 -m 10` on `/json/50?m=6` | ✅ +26 % median |
-| ≥ +15 % RPS at `-c 100 -m 10` on `/baseline2` | ✅ +120 % median |
+| ≥ +15 % RPS at `-c 100 -m 10` on `/baseline2` | ✅ +38 % geometric mean across pin configs (always positive) |
+| ≥ +15 % RPS at `-c 100 -m 10` on `/json/50?m=6` | ⚠️ +7 % geometric mean; clean shared-pin shows −7.8 %. Below target on JSON-bound workloads — investigate in Sprint 2 |
 
 ## Benchmark details
 
-**Setup:** 3 captures × 60 s × `-c 100 -m 10` per (binary, endpoint).
-Single-worker, single-host, h2load (Docker, `--network=host`),
-TLS 1.3 / `TLS_AES_128_GCM_SHA256`. Quiet system (no parallel docker
-build, no other cores stressed). Baseline binary built from main HEAD
-(`3919f7d`); Path A binary built from this branch HEAD (`0d1445d`).
+**Setup:** 3 captures × 60 s × `-c 100 -m 10` per (binary, endpoint),
+h2load via Docker `--network=host`, TLS 1.3 / `TLS_AES_128_GCM_SHA256`.
+Baseline binary built from main HEAD (`3919f7d`); Path A binary built
+from this branch HEAD (`0d1445d`). 8-CPU host (4 cores × 2 SMT threads).
+
+We ran the same comparison under **three pinning configurations** to
+separate architectural lift from measurement noise:
+
+1. **Unpinned** — both server and h2load run on any of the 8 CPUs;
+   competes with browser/IDE for cycles.
+2. **Separate-pin** — server pinned to cores A+B (cpus `0,1,4,5`);
+   h2load pinned to cores C+D (`2,3,6,7`). Isolates from background
+   contention but each side gets only 4 CPUs.
+3. **Shared-pin** — both server and h2load share all 8 CPUs. Best
+   loopback locality (kernel can elide some cross-core work) but
+   the two compete with each other rather than with background.
 
 ### `/baseline2?a=1&b=2` (small response, headers-dominated)
 
-| | run 1 | run 2 | run 3 | **median** |
-|---|---:|---:|---:|---:|
-| baseline | 106 051 | 93 100 | 100 006 | **100 006** |
-| pathA    | 251 269 | 218 267 | 220 422 | **220 422** |
+| config | baseline median | pathA median | lift |
+|---|---:|---:|---:|
+| unpinned | 100 006 | 220 422 | **+120 %** |
+| separate-pin (4+4 CPUs) | 121 862 | 168 801 | **+38 %** |
+| shared-pin (8+8 CPUs) | 132 777 | 140 247 | **+5.6 %** |
 
-**Lift: +120 % (2.20×) median. Worst-case (min pathA / max baseline):
-+106 %.** Decisive win.
+**Geometric mean of lifts: +47 %.** Lift is positive in every
+configuration — the architectural change wins. Magnitude is
+configuration-sensitive: the unpinned +120 % was inflated by
+background-process penalty falling harder on baseline; the
+shared-pin +5.6 % is the cleanest read.
 
-### `/json/50?m=6` (~8 KB JSON response, codec + serialisation)
+### `/json/50?m=6` (~8 KB JSON response, serialisation-dominated)
 
-| | run 1 | run 2 | run 3 | **median** |
-|---|---:|---:|---:|---:|
-| baseline | 17 173 | 17 846 | 18 707 | **17 846** |
-| pathA    | 24 413 | 22 497 | 18 745 | **22 497** |
+| config | baseline median | pathA median | lift |
+|---|---:|---:|---:|
+| unpinned | 17 846 | 22 497 | **+26 %** |
+| separate-pin (4+4 CPUs) | 19 485 | 20 340 | **+4.4 %** |
+| shared-pin (8+8 CPUs) | 19 211 | 17 713 | **−7.8 %** |
 
-**Lift: +26 % median. Worst-case (min pathA / max baseline):
-near zero (18 745 vs. 18 707).** Real win, noisy spread.
+**Geometric mean of lifts: +7 %.** /json/50 is JSON-serialisation-bound,
+so coroutine-overhead removal is a smaller fraction of total work.
+Under the cleanest measurement (shared-pin, run-to-run spread <1.5 %),
+Path A is **slightly slower** — likely a cache-locality artefact of
+losing the per-stream stack reuse the CoroutinePool provided.
 
-The /json/50 endpoint has a non-trivial JSON serialiser in the
-handler, so coroutine overhead is a smaller fraction of total work
-than on /baseline2. The +26 % median is consistent with that;
-the worst-case-flat is consistent with the high run-to-run variance
-the bench harness has shown historically (per the Phase 2 R5 note
-about 5 % spread before bulk extends landed).
+This is a genuine finding, not measurement noise. Spreads in shared-pin
+mode were extremely tight (baseline range 0.8 %, pathA range 1.5 %).
+The architectural change is still correct (memory savings, transition
+resilience) but the perf headline on JSON-bound workloads is at best
+break-even, not the +26 % the unpinned data suggested.
+
+### What the three configs tell us
+
+| | dominant signal |
+|---|---|
+| unpinned | how the change behaves on a "real" desktop with browser/IDE noise |
+| separate-pin | how the change behaves with restricted CPU + isolation |
+| shared-pin | how the change behaves with maximum CPU + minimum noise |
+
+The truth lies somewhere across all three. The per-stream memory win
+is independent of all three (108×, structural). The /baseline2 lift
+is consistently positive. The /json/50 lift is configuration-dependent
+and worth investigating in Sprint 2 (suspected cause: cache-line
+locality of `CoroStreamCtx` allocations vs. the recycled coro stacks
+the pool used to hand out).
 
 ## Per-stream memory
 
