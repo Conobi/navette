@@ -31,7 +31,7 @@ Single native dependency: rustls via a thin C FFI shim (`librustls-mojo`).
 
 ## Key architectural decisions
 
-- **Sans-I/O at every protocol layer (`src/h1/`, `src/h2/`, `src/h3/`, `src/quic/`, `src/http/`).** Application code composes the protocol layer with an I/O loop. The `src/io/` capability layer is the explicit exception — it owns the `Io` trait + `IoUring[H]` impl and is the only place inside `src/` that imports `boucle.completion` (`CompletionLoop`, `CompletionHandler`, `BufRing`) and `boucle.handle` (`RawHandle`). Sprint 1 introduced this layer to centralise the io_uring binding behind a stable trait surface. `boucle.stackful` (CoroHandle, CoroYielder) is allowed in `src/` because it is a control-flow mechanism with no I/O dependency, and is constrained by R1' (only `*_streaming_server.mojo` files inside `src/` plus `src/tls/lib.mojo`).
+- **Sans-I/O at every protocol layer (`src/h1/`, `src/h2/`, `src/h3/`, `src/quic/`).** Application code composes the protocol layer with an I/O loop. The `src/io/` capability layer is the explicit exception — it owns the `Io` trait + `IoUring` impl and is the only place inside `src/` that imports `boucle.completion`. `boucle.stackful` (CoroHandle, CoroYielder) is allowed in `src/` because it is a control-flow mechanism with no I/O dependency.
 - **Strict-by-default parsing** with opt-in leniency via per-rule flags (24 flags in HTTP/1.1 ParserStrictness).
 - **Conformance-driven development.** Each milestone has its own conformance suite with test vectors and oracle cross-validation before production code is written.
 - **Test oracles:** h11 + httptools (HTTP/1.1), hyperframe (H2 frames), Python `hpack` (HPACK), hyper-h2 (HC-4 future), aioquic + quiche (H3/QUIC future).
