@@ -17,7 +17,7 @@ from src.http.body import BodyFrame
 from src.http.status import StatusCode
 from src.http.headers import Headers
 from src.http.request import Request
-from src.h2.h2_coro_server import CoroStreamCtx as H2CoroStreamCtx
+from src.h2.h2_sync_server import CoroStreamCtx as H2CoroStreamCtx
 from src.h3.h3_sync_server import CoroStreamCtx as H3CoroStreamCtx
 from interop.file_io import read_file
 
