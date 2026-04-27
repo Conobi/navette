@@ -25,13 +25,12 @@ from src.h3.h3_streaming_server import (
     finish as h3_finish,
 )
 
-# H2 streaming server imports will be added in Phase 2 Task 2.4:
-# from src.h2.h2_streaming_server import (
-#     H2StreamingCtx,
-#     next_chunk as h2_next_chunk,
-#     write_chunk as h2_write_chunk,
-#     finish as h2_finish,
-# )
+from src.h2.h2_streaming_server import (
+    H2StreamingCtx,
+    next_chunk as h2_next_chunk,
+    write_chunk as h2_write_chunk,
+    finish as h2_finish,
+)
 
 
 comptime LLM_TOKEN_COUNT: Int = 64
@@ -77,9 +76,26 @@ def llm_stream_h3_handler(mut yld: CoroYielder) raises:
     h3_finish(ctx_ptr, yld)
 
 
-# Phase 2 Task 2.4 will add:
-#
-# fn llm_stream_h2_handler(mut yld: CoroYielder) raises:
-#     """LLM-stream demo handler for H2. Same logic as H3 variant."""
-#     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
-#     ...
+fn llm_stream_h2_handler(mut yld: CoroYielder) raises:
+    """LLM-stream demo handler for H2.
+
+    Mirrors llm_stream_h3_handler with H2StreamingCtx substitution. Sends
+    HTTP 200 + SSE headers, then emits LLM_TOKEN_COUNT chunks of
+    LLM_TOKEN_BYTES via h2_write_chunk + h2_finish.
+    """
+    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
+
+    # Send response headers: 200 OK + SSE content-type
+    from src.http.headers import Headers
+    from src.http.status import StatusCode
+    var hdrs = Headers()
+    hdrs.add("content-type", "text/event-stream")
+    hdrs.add("cache-control", "no-cache")
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
+
+    for _ in range(LLM_TOKEN_COUNT):
+        var bytes = List[UInt8]()
+        for b in LLM_TOKEN_BYTES.as_bytes():
+            bytes.append(b)
+        h2_write_chunk(ctx_ptr, yld, bytes^)
+    h2_finish(ctx_ptr, yld)
