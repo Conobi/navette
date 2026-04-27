@@ -10,6 +10,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export LD_LIBRARY_PATH="$REPO_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cd "$REPO_ROOT"
+
+# R1' grep gate — boucle.stackful is allowed only in *_streaming_server.mojo
+# files inside src/, plus src/tls/lib.mojo (FFI bridge slot, currently
+# unused). Tests at repo-root tests/ are not scoped here. See
+# specs/2026-04-27-sprint-2-h1h2h3-sync-streaming.md and
+# plans/2026-04-27-sprint-2-retrospective.md.
+
+R1_VIOLATIONS=$(grep -rEn 'from boucle\.stackful|import boucle\.stackful' src/ \
+  | grep -vE '^src/(h2/h2_streaming_server|h3/h3_streaming_server)\.mojo:' \
+  | grep -vE '^src/tls/lib\.mojo:' \
+  || true)
+if [ -n "$R1_VIOLATIONS" ]; then
+    echo "R1' violation: boucle.stackful imported outside allowed files:"
+    echo "$R1_VIOLATIONS"
+    exit 1
+fi
+echo "R1' grep gate: PASS"
+
 rm -f src.mojopkg tests.mojopkg
 
 TESTS=(
