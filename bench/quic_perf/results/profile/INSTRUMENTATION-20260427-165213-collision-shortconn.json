@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 33547688,
+  "on_flush_events": 2589,
+  "idle_us_total": 33483033,
+  "busy_us_total": 63849,
+  "pkts_per_flush_histogram": {
+    "1": 1965,
+    "2-3": 371,
+    "4-7": 176,
+    "8-15": 55,
+    "16-31": 18,
+    "32-63": 3,
+    "64-127": 1,
+    "128+": 0
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 6, "p90": 106, "p99": 248, "max": 32768, "n": 249, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 52},
+    "hp":            {"avg": 0, "total": 101},
+    "aead":          {"avg": 0, "total": 234},
+    "frame_parse":   {"avg": 2, "total": 709},
+    "sm":            {"avg": 136, "total": 34010},
+    "residual":      {"avg": 0, "total": 239},
+    "shim_ffi":      {"avg": 134, "total": 33456},
+    "drain":         {"avg": 49, "total": 12407}
+  },
+  "arrival_lat_us_total": 16317,
+  "arrival_lat_us_overflow": 0,
+  "arrival_lat_us_buckets": [1102, 707, 584, 526, 333, 147, 75, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "per_conn_pkts_buckets": [0, 0, 1, 0, 0, 0, 0, 4],
+  "conns_total": 5,
+  "conns_with_pkts_no_hs_complete": 0,
+  "addr_key_dcid_mismatch": {
+    "dcid_mismatch_pkts": 3165,
+    "addr_keys_total": 4,
+    "addr_keys_with_mismatch": 4,
+    "per_addr_key": {
+      "0a00b7be0000000000000000000000000000ffff7f00000100000000": 812,
+      "0a008c3b0000000000000000000000000000ffff7f00000100000000": 798,
+      "0a00ea410000000000000000000000000000ffff7f00000100000000": 766,
+      "0a0081830000000000000000000000000000ffff7f00000100000000": 789
+    }
+  },
+  "worst_conns": [
+  ],
+  "handshake": {
+    "arrivals": 19, "successful": 19, "timed_out": 0,
+    "latency_us": {"p50": 658, "p90": 1247, "p99": 29368, "max": 29368, "count": 19}
+  }
+}
