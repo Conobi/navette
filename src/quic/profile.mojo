@@ -327,6 +327,19 @@ struct AcceptProfile(Copyable, Movable):
         s += "  conns_total:                  " + _fmt_count(pc_total) + "\n"
         s += "  conns_with_pkts_no_hs_complete:" + _fmt_count(pc_no_hs) + "\n\n"
 
+        # addr_key DCID-mismatch section (Plan: 2026-04-27 collision counter).
+        s += "-- addr_key DCID mismatch --\n"
+        s += "  total mismatch pkts:    " + String(self.dcid_mismatch_pkts) + "\n"
+        s += "  addr_keys total:        " + String(len(self.addr_key_mismatch_counts)) + "\n"
+        var addr_keys_with_mismatch_t: UInt64 = UInt64(0)
+        for entry in self.addr_key_mismatch_counts.items():
+            if entry.value > UInt64(0):
+                addr_keys_with_mismatch_t = addr_keys_with_mismatch_t + UInt64(1)
+        s += "  addr_keys w/ mismatch:  " + String(addr_keys_with_mismatch_t) + "\n"
+        for entry in self.addr_key_mismatch_counts.items():
+            s += "    " + entry.key + ": " + String(entry.value) + "\n"
+        s += "\n"
+
         # Top-50 worst offenders (parallel insertion sort).
         s += "Worst offenders (top 50 addr_keys by pkt_count, no hs_complete):\n"
         var wo_keys = List[String]()
@@ -449,6 +462,24 @@ struct AcceptProfile(Copyable, Movable):
         s += "],\n"
         s += '  "conns_total": ' + String(conns_total) + ',\n'
         s += '  "conns_with_pkts_no_hs_complete": ' + String(conns_no_hs) + ',\n'
+
+        # addr_key DCID-mismatch block (Plan: 2026-04-27 collision counter).
+        var addr_keys_with_mismatch: UInt64 = UInt64(0)
+        for entry in self.addr_key_mismatch_counts.items():
+            if entry.value > UInt64(0):
+                addr_keys_with_mismatch = addr_keys_with_mismatch + UInt64(1)
+        s += '  "addr_key_dcid_mismatch": {\n'
+        s += '    "dcid_mismatch_pkts": ' + String(self.dcid_mismatch_pkts) + ',\n'
+        s += '    "addr_keys_total": ' + String(len(self.addr_key_mismatch_counts)) + ',\n'
+        s += '    "addr_keys_with_mismatch": ' + String(addr_keys_with_mismatch) + ',\n'
+        s += '    "per_addr_key": {'
+        var first_mm = True
+        for entry in self.addr_key_mismatch_counts.items():
+            if not first_mm:
+                s += ","
+            first_mm = False
+            s += '\n      "' + entry.key + '": ' + String(entry.value)
+        s += "\n    }\n  },\n"
 
         # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
         # Materialize parallel List[String] + List[UInt64], insertion-sort descending.
