@@ -627,3 +627,63 @@ Phase A's content (DCID hex encoding via `_bytes_to_hex` + `Dict[String, Int]` l
 3. **`loop_pop_dispatch` finer split** — estimate share of DCID-hex / Dict lookup / cold conn-create within Phase A's 958ms; recommend the highest-ROI microoptimisation (likely `Dict[String, Int]` → `Dict[UInt64, Int]` to eliminate per-pkt String alloc).
 
 The follow-on optimisation spec(s) will draw scope from those three reports — NOT from intuition. Per `feedback_byte_size_cpu_share_fallacy.md`, no future "predicted shares" claim ships without library-source citation or microbench evidence.
+
+
+### 2026-04-28 — quic-bench-dcid-u64-demux — IMPLEMENTATION — SHIPPED (Q3 follow-on)
+
+**Spec/plan:** `specs/2026-04-28-quic-bench-dcid-u64-demux.md` / `plans/2026-04-28-quic-bench-dcid-u64-demux.md`
+**Branch:** `feat/quic-bench-dcid-u64-demux` off main `b1274d11`
+**Predecessor:** sub-leg pass shipped at `488f113` (above); 4 parallel research subagents (Topics 1-4: codebase verification post-Sprint-2, Mojo Dict internals, reference QUIC stacks, bench gate design) produced evidence-grounded scope.
+
+**Goal:** replace the bench-server's per-connection DCID demux table from `Dict[String, Int]` (16-char hex-string keyed) to `Dict[UInt64, Int]` (packed-u64 keyed) via `_dcid_to_u64` helper. Predicted: ≥8% drop on `loop_pop_dispatch.total` (≈77 ms / 30 s); 0.5–1.4% short-conn RPS conservative.
+
+**Implementation:** ~60 LoC delta in `bench/h3_server.mojo` (helper +14, field types +2, hot-path call site +2, cold-create call sites ~6, `_find_conn_by_dcid` signature +1, teardown remap ~16, mechanical change-everywhere). +2 unit tests (`test_dcid_to_u64_basic_cases`, `test_dcid_to_u64_injective_on_distinct_inputs`) in `tests/test_quic_connection.mojo`. `_bytes_to_hex` retained per spec D4 (off-hot-path utility; retention comment added).
+
+**Bench gates — all PASS:**
+
+| Gate | Pre median | Post median | Delta | Threshold | Verdict |
+|---|---|---|---|---|---|
+| Hard Gate 1 — long-conn RPS on-build | 14,121 rps | 14,232 rps | **+0.79%** | ≥ −2.0% | ✅ PASS |
+| Hard Gate 2 — `loop_pop_dispatch.total` short-conn (n=5+5) | 905,094 μs | 763,277 μs | **−15.67%** | ≥ 8% drop | ✅ PASS (mid-range of 8-22% predicted) |
+| Hard Gate 3 — `dcid_mismatch_pkts == 0` | 0 | 0 | — | == 0 | ✅ PASS (10/10 sidecars) |
+| AC#5 — long-conn off-build | 13,311 rps | 14,122 rps | **+6.09%** | ≥ −2.0% | ✅ PASS |
+| Soft — short-conn off-build RPS | 1,143 rps | 1,194 rps | **+4.49%** | not gated | (informational; landed at upper end of 2-3% optimistic estimate) |
+
+Hard Gate 2 decision rule: treatment stdev 1.55% (≤5%, no escalation), drop 15.67% > 10% (outside marginal zone), drop ≥ 8% threshold → PASS direct on n=5+5; no escalation to n=10+10 needed.
+
+Notable: variance also tightened post-migration (sub-leg stdev 2.69% → 1.55%; off-build long-conn CV 5.59% → 2.59%). Plausibly because UInt64 packing has constant cost while hex-encoding has variable allocator cost.
+
+**Acceptance criteria:**
+
+| AC | Verdict | Detail |
+|---|---|---|
+| AC#1 (+2 unit tests) | ✅ PASS | `TESTS_FILTER=test_quic_connection` count 36 → 38 (filtered); full src suite 72/72 → 74/74. |
+| AC#2 (Hard Gate 1) | ✅ PASS | +0.79% on-build long-conn drift. |
+| AC#3 (Hard Gate 2) | ✅ PASS | 15.67% sub-leg drop (predicted 8-22%, mid-range hit). |
+| AC#4 (Hard Gate 3) | ✅ PASS | All 10 sidecars `dcid_mismatch_pkts == 0`. |
+| AC#5 (off-build long-conn) | ✅ PASS | +6.09% off-build long-conn drift. |
+| AC#6 (REFERENCE.md entry) | ✅ PASS | This entry. |
+| AC#7 (flag revert) | ✅ PASS | `comptime PROFILE_ACCEPT: Bool = False` verified at `src/quic/profile.mojo:16`. |
+
+**Verdict: SHIPPED.** Q3 microoptimisation lands all gates without escalation. The migration moves mojo-net's bench-side demux key shape from outlier (hex-string) to mainstream (every surveyed prod stack — TQUIC, quiche, lsquic, quic-go, aioquic — uses byte-keyed maps; mojo-net's 8-byte SCID invariant lets us go further to packed-u64).
+
+**Predicted vs observed:**
+- `loop_pop_dispatch.total` drop: predicted 8-22%, observed **15.67%** (mid-range hit)
+- Short-conn RPS lift: predicted 0.5-1.4% conservative / 2-3% optimistic, observed **+4.49%** (above optimistic; soft-gated, treat with caution as it sits near short-conn noise floor)
+- Long-conn RPS impact: predicted negligible, observed **+0.79% / +6.09%** (positive in both build modes; the off-build +6% may include host-noise contribution but is consistent with constant-cost u64 packing replacing variable-cost hex encoding)
+
+**Open questions deferred to follow-on specs (per spec §9):**
+- Q1 — long-conn 24.4s unaccounted gap → trigger: next non-Q3 perf spec; needs Subagent B's research as input.
+- Q2 — `ffi_read_hs` / TLS 1.3 session resumption → trigger: after Q1 lands sub-leg visibility into H3-handler/drain paths.
+- Cold-create FFI accounting (Subagent C Rank 3) → trigger: post-Q1 budget-gap-closure.
+- AHash distribution check (skipped, sanity-only) → optional; DCIDs are random by construction.
+
+**Image SHAs (tag-isolated per `feedback_bench_offbuild_image_hygiene.md`):**
+- `mojo-net-bench:q3-pre-off`: `58355c391e7b...`
+- `mojo-net-bench:q3-pre-on`: `7dc8312bff74...`
+- `mojo-net-bench:q3-post-off`: `84acc5848671...`
+- `mojo-net-bench:q3-post-on`: `4c475002d91c...`
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+Sub-leg sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-2026042817{0732..3109}-q3-{pre,post}-shortconn-iter[1-5].json` (10 total). Detailed evidence: `bench/quic_perf/results/profile/Q3_pre_baselines_2026-04-28.md` + `bench/quic_perf/results/profile/Q3_post_evidence_2026-04-28.md`.
