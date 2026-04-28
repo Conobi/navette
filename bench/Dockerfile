@@ -55,7 +55,7 @@ COPY . .
 RUN cargo build --release --features skip-locks --manifest-path crates/librustls-mojo/Cargo.toml
 
 # Copy the .so into the conventional lib/ directory
-RUN cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
+RUN mkdir -p lib && cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
 
 # Build the three benchmark server binaries (h1 covers both plaintext and TLS modes)
 RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h1_server.mojo -o /bench-h1
