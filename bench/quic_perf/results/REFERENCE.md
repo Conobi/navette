@@ -657,7 +657,7 @@ Notable: variance also tightened post-migration (sub-leg stdev 2.69% → 1.55%; 
 
 | AC | Verdict | Detail |
 |---|---|---|
-| AC#1 (+2 unit tests) | ✅ PASS | `TESTS_FILTER=test_quic_connection` count 36 → 38 (filtered); full src suite 72/72 → 74/74. |
+| AC#1 (+2 unit tests) | ✅ PASS | `test_quic_connection.mojo` function-level count 36 → 38; full src suite remains 72/72 file-level (the +2 lives within one already-counted test file). |
 | AC#2 (Hard Gate 1) | ✅ PASS | +0.79% on-build long-conn drift. |
 | AC#3 (Hard Gate 2) | ✅ PASS | 15.67% sub-leg drop (predicted 8-22%, mid-range hit). |
 | AC#4 (Hard Gate 3) | ✅ PASS | All 10 sidecars `dcid_mismatch_pkts == 0`. |
