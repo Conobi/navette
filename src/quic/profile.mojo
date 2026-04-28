@@ -13,7 +13,7 @@ from std.ffi import external_call
 from std.memory import UnsafePointer
 
 
-comptime PROFILE_ACCEPT: Bool = True
+comptime PROFILE_ACCEPT: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
