@@ -161,6 +161,10 @@ fn _zpad2_int(n: Int) -> String:
 alias _HEX_DIGITS = "0123456789abcdef"
 
 
+# unused at hot-path post-2026-04-28-quic-bench-dcid-u64-demux; retained
+# for ad-hoc debug rendering and for `tests/test_quic_connection.mojo`'s
+# `test_dcid_demux_disambiguates_two_conns`. Do not delete without
+# re-grepping across the repo.
 fn _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
     """Hex-encode bytes for use as a Dict[String, Int] key.
 
@@ -480,14 +484,14 @@ struct H3UdpHandler(BatchCompletionHandler):
     with multishot recvmsg and provided buffer rings."""
 
     var udp_fd: Int32
-    var conn_dcid_map: Dict[String, Int]
+    var conn_dcid_map: Dict[UInt64, Int]
     var conn_h3s: List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]
     var conn_addrs: List[List[UInt8]]
-    # Per-conn list of DCID-hex keys we inserted into conn_dcid_map.
+    # Per-conn list of DCID-u64 keys we inserted into conn_dcid_map.
     # Used by _handle_timeout to remove ALL of a conn's entries on swap-and-pop
     # (B-permissive dual-DCID strategy: each conn has 2 entries — initial_dcid
     # AND local_cid).
-    var conn_dcids: List[List[String]]
+    var conn_dcids: List[List[UInt64]]
     var pbuf_pool: UnsafePointer[UInt8, MutAnyOrigin]
     var pending_rx: List[PendingDatagram]
     var multishot_active: Bool
@@ -522,10 +526,10 @@ struct H3UdpHandler(BatchCompletionHandler):
         server_config: Int32,
     ):
         self.udp_fd = udp_fd
-        self.conn_dcid_map = Dict[String, Int]()
+        self.conn_dcid_map = Dict[UInt64, Int]()
         self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
-        self.conn_dcids = List[List[String]]()
+        self.conn_dcids = List[List[UInt64]]()
         self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
             self.pbuf_pool[i] = 0
@@ -601,10 +605,10 @@ struct H3UdpHandler(BatchCompletionHandler):
 
     # --- Conn lookup ---
 
-    def _find_conn_by_dcid(self, dcid_hex: String) -> Int:
-        if dcid_hex in self.conn_dcid_map:
+    def _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
+        if dcid_u64 in self.conn_dcid_map:
             try:
-                return self.conn_dcid_map[dcid_hex]
+                return self.conn_dcid_map[dcid_u64]
             except:
                 return -1
         return -1
@@ -756,8 +760,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                 self.profile.record_conn_pkt(pd.addr_key)
             # DCID-keyed lookup (migrated from addr_key). pd.dcid was extracted
             # at _handle_recvmsg (long+short header).
-            var dcid_hex = _bytes_to_hex(Span(pd.dcid))
-            var conn_idx = self._find_conn_by_dcid(dcid_hex)
+            var dcid_u64 = _dcid_to_u64(Span(pd.dcid))
+            var conn_idx = self._find_conn_by_dcid(dcid_u64)
 
             # Strict new-conn gate per RFC 9000 §12.4: only long-header Initial
             # packets create new conns. All other DCID-misses are dropped
@@ -830,8 +834,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                 debug_assert(len(quic.initial_dcid) == 8, "initial_dcid != 8 bytes")
                 debug_assert(len(quic.local_cid) == 8, "local_cid != 8 bytes")
 
-                var icid_hex = _bytes_to_hex(Span(quic.initial_dcid))
-                var lcid_hex = _bytes_to_hex(Span(quic.local_cid))
+                var icid_u64 = _dcid_to_u64(Span(quic.initial_dcid))
+                var lcid_u64 = _dcid_to_u64(Span(quic.local_cid))
 
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
@@ -856,14 +860,14 @@ struct H3UdpHandler(BatchCompletionHandler):
                     addr.append(pd.buf_ptr[pd.addr_offset + j])
 
                 conn_idx = len(self.conn_h3s)
-                self.conn_dcid_map[icid_hex] = conn_idx
-                self.conn_dcid_map[lcid_hex] = conn_idx
+                self.conn_dcid_map[icid_u64] = conn_idx
+                self.conn_dcid_map[lcid_u64] = conn_idx
                 self.conn_h3s.append(h3_ptr)
                 self.conn_addrs.append(addr^)
 
-                var dcids = List[String]()
-                dcids.append(icid_hex^)
-                dcids.append(lcid_hex^)
+                var dcids = List[UInt64]()
+                dcids.append(icid_u64)
+                dcids.append(lcid_u64)
                 self.conn_dcids.append(dcids^)
 
             @parameter
@@ -1032,8 +1036,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                 # (typically 2: initial_dcid + local_cid). The pre-migration
                 # single-DCID single-pop with first-match-break is incorrect
                 # for the dual-key shape.
-                for dcid_hex in self.conn_dcids[i]:
-                    _ = self.conn_dcid_map.pop(dcid_hex)
+                for dcid_u64 in self.conn_dcids[i]:
+                    _ = self.conn_dcid_map.pop(dcid_u64)
 
                 var last = len(self.conn_h3s) - 1
                 if i != last:
@@ -1041,13 +1045,13 @@ struct H3UdpHandler(BatchCompletionHandler):
                     # lists (conn_h3s, conn_addrs, conn_dcids).
                     self.conn_h3s[i] = self.conn_h3s[last]
                     self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
-                    self.conn_dcids[i] = List[String](copy=self.conn_dcids[last])
+                    self.conn_dcids[i] = List[UInt64](copy=self.conn_dcids[last])
 
                     # Remap ALL of the swapped-in conn's DCID entries from
                     # `last` → `i`. CRITICAL: do NOT break after first match
                     # (the survivor has 2 entries; both must be remapped).
-                    for dcid_hex in self.conn_dcids[i]:
-                        self.conn_dcid_map[dcid_hex] = i
+                    for dcid_u64 in self.conn_dcids[i]:
+                        self.conn_dcid_map[dcid_u64] = i
 
                 _ = self.conn_h3s.pop()
                 _ = self.conn_addrs.pop()
