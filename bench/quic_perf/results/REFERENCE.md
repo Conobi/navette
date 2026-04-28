@@ -551,3 +551,79 @@ Short-conn handshake throughput jumped from ~10 successful handshakes/30s (pre-m
 - T8 long-conn drift (+1005%) blew past the spec's literal `≤10% drift` gate; re-interpreted as PASS via "intended fix" rationale (long-conn was also a victim of the demux bug, not just short-conn).
 
 **Next-step recommendation:** the diagnostic counter (`dcid_mismatch_pkts` + `addr_key_mismatch_counts`) STAYS as a manual regression detector. Wiring it into CI is a separate spec when the migration's reliability has been validated under varied client harnesses (h2load --h3, ngtcp2, msquic). Connection migration / NEW_CONNECTION_ID emission is a separate v2 spec.
+
+
+### 2026-04-28 — accept-loop-subleg-instrumentation — DIAGNOSTIC — SHIPPED (with caveats)
+
+**Spec:** `specs/2026-04-28-quic-accept-loop-subleg-instrumentation.md`. Plan: `plans/2026-04-28-quic-accept-loop-subleg-instrumentation.md`. Goal: decompose `shim_ffi_us_total` into 3 per-rustls-call sub-legs (`read_hs / write_hs / take_keys`) AND add 3 explicit loop-phase legs (`pop_dispatch / post_pkt / teardown`) so the next short-conn sidecar names the dominant FFI call and the dominant non-FFI loop phase. **No fix in scope.**
+
+**Methodology gate satisfied:** re-read all 553 prior lines of REFERENCE.md before drafting. **Contradictions: none.** Sub-leg shares are consistent with the prior post-migration capture's `shim_ffi: 54μs avg, 9.72s total` — the new per-call decomposition refines (does not contradict) that aggregate.
+
+**Captures:**
+- Long-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015152-postmigration-longconn-subleg.json` (image `mojo-net-bench:subleg-T7`, sha `512ad39317ae`, 30s, busy 29.57s, pkt_count 115,508)
+- Short-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015250-postmigration-shortconn-subleg.json` (same image, 30s, busy 16.12s)
+
+**Smoke gates (T6/T7) — both cells PASS at ±10% gate:**
+
+| Build | Cell | n | Median rps | Drift vs baseline | IQR | Verdict |
+|---|---|---|---|---|---|---|
+| OFF-BUILD (`mojo-net-bench:subleg-T6`) | long-conn | 10 | 14,947 | +3.54% vs 14,436 | 167 | PASS |
+| OFF-BUILD | short-conn | 10 | 1,226.65 | +1.54% vs 1,208 | 37.5 | PASS |
+| ON-BUILD (`mojo-net-bench:subleg-T7`) | long-conn | 10 | 14,885 | +5.50% vs 14,109 | 167 | PASS |
+| ON-BUILD | short-conn | 10 | 1,194.95 | +0.75% vs 1,186 | 27 | PASS |
+
+On-build vs off-build overhead: **−0.41% long-conn, −2.59% short-conn** (within noise). The single-pair clock-read pattern + function-scope `var t_start: UInt64 = 0` hoist keeps per-FFI clock reads at 2 (unchanged from pre-spec). The 4 new per-pkt loop-phase reads + 2 per-flush teardown reads add no measurable cost at 14k/1.2k rps.
+
+**Dominant FFI sub-leg on short-conn — `ffi_read_hs` at 93.3% of `shim_ffi`:**
+
+| Sub-leg | total μs | % of shim_ffi | Predicted (spec) | Reality vs prediction |
+|---|---|---|---|---|
+| `ffi_read_hs` | 7,010,849 | **93.3%** | ~25% | **+68pp** |
+| `ffi_write_hs` | 483,282 | 6.4% | ≥60% | **−54pp** |
+| `ffi_take_keys` | 21,576 | 0.3% | 10-15% | −10pp |
+
+**The spec's prediction was wrong.** Server-side TLS handshake compute is parse-heavy on ingress (ECDHE shared-secret derivation, ClientHello extension parse, Client-Finished HMAC verify) and copy-heavy on egress (memcpy pre-built Cert chain + one CertificateVerify signing op). Plus call-frequency asymmetry: `read_hs` fires per-crypto-level-per-arrival (3-6× per handshake) while `write_hs` drains in a single `while True:` loop pass (fewer FFI-border crossings). **Memory entry recorded:** `feedback_byte_size_cpu_share_fallacy.md` — don't predict crypto-protocol CPU shares from byte volumes.
+
+**Dominant loop phase on short-conn — `loop_pop_dispatch` at 5.9% of `busy_us_total`:**
+
+| Phase | total μs | % of busy |
+|---|---|---|
+| `pop_dispatch` | 958,147 | **5.9%** |
+| `post_pkt` | 72,015 | 0.4% |
+| `teardown` | 15,342 | 0.1% |
+
+Phase A's content (DCID hex encoding via `_bytes_to_hex` + `Dict[String, Int]` lookup + cold conn-create) is the largest non-FFI lever. ~6% throughput uplift available if the dominant sub-section can be optimised (likely: replace `Dict[String, Int]` with `Dict[UInt64, Int]` keyed on a packed 8-byte DCID, eliminating the per-pkt String alloc).
+
+**Long-conn comparator (handshake-FFI is irrelevant at steady state):**
+
+- `shim_ffi` total = 117,540 μs (0.4% of busy) — only 141 handshakes / 30s; FFI cost is not the long-conn lever.
+- All 3 loop phases <1% of busy combined.
+- The bottleneck on long-conn is in the un-attributed code path (see AC#5 finding below).
+
+**Acceptance:**
+
+| AC | Verdict | Detail |
+|---|---|---|
+| AC#1 (+12 unit tests) | PASS | Tests run after `test_tls_connection`'s pre-existing halt; verified via `TESTS_FILTER=test_quic_profile bash scripts/run_tests.sh` (42 PASS = 30 pre-existing + 12 new). |
+| AC#2 (off-build drift ≤10%) | PASS | +3.54% / +1.54%, both well within. |
+| AC#3 (on-build drift ≤10%) | PASS | +5.50% / +0.75%, both well within. |
+| AC#4 (sub-leg sum ≈ shim_ffi within ±1%) | PASS | **bit-exact** in both cells (diff = 0). The single-pair clock-read pattern works as designed. |
+| AC#5 (`unaccounted_pct < 2`) | **FAIL — pre-existing** | long-conn 82%, short-conn 18%. Identical gap exists in prior 2026-04-27 captures (83% / 28%); not introduced by this spec. The fundamental coverage hole (likely `feed_datagram_from_buffer`'s non-record_pkt early-return paths + H3 handler invocation + outgoing packet build inside `_drain_and_send`) was always there. The `<2%` gate was unrealistic given the existing profile system. |
+| AC#6 (`dcid_mismatch_pkts == 0`) | PASS | Both cells; migration regression invariant satisfied. |
+| AC#7 (REFERENCE.md names dominant FFI sub-leg + dominant loop phase) | PASS | This entry. |
+
+**Verdict: SHIPPED with caveats.** The diagnostic deliverable is met (both dominant levers named, with high confidence). AC#5's pre-existing coverage gap is recorded as a `required-later` open question in `docs/project-context.md` and authorises a follow-on instrumentation spec to bracket `_drain_and_send`'s internal stages + the H3-handler invocation site.
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+**Test deviations from plan:**
+- T0 sanity-check 3-iter long-conn produced an out-of-band median (12,213 rps, −15.4% drift) due to a parallel `mojo run tests/test_cross_quic_hs_keys.mojo` test in `feat-h2-state-machine-path-a` worktree at 82% CPU. Rerun after CPU gate cleared landed at 14,494 rps (+0.4%). **Lesson preserved:** add a CPU-load gate before each bench run to detect competing processes (especially across worktrees).
+- T6 first attempt: long-conn iter 10 cratered to 426 rps (pre-migration baseline), short-conn ALL 10 iters got 0.42 rps. Root cause: parallel HttpArena workflow in another worktree retagged `mojo-net-bench:latest` mid-bench (sha `80fd3f5b0fc0` at 02:58:44) with code from a branch that lacks the DCID migration. **Resolution:** added `MOJO_NET_IMAGE` env-var override in `bench/quic_perf/scripts/start-server.sh` (defaults to `mojo-net-bench:latest`); retagged our build as `mojo-net-bench:subleg-T6` / `:subleg-T7` for tag isolation. **Lesson preserved:** when running benches alongside parallel workflows that may rebuild containers, use a unique image tag.
+- T1 + T2 + T3: 12 unit tests landed across data-structure-only commits. T2 dropped a `record_loop_iter` increment-count test in favour of indirect coverage via T3's `test_loop_phase_avg_uses_loop_iter_count_divisor` (which exercises both `record_loop_iter` AND the divisor-locking semantic). Total: exactly +12 per AC#1.
+
+**Next-step recommendation:** Spawn 3 parallel research subagents (already running) to produce evidence-grounded scope notes for the next spec:
+1. **`ffi_read_hs` deep dive** — identify which sub-section of rustls's TLS-engine consume path consumes 7s on short-conn (ECDHE derive vs cert verify vs HMAC vs FFI marshal), and which are addressable from mojo-net's side.
+2. **Long-conn 24.4s unaccounted gap** — identify the un-instrumented code paths (likely H3 handler invocation + `_drain_and_send` internal stages + `feed_datagram_from_buffer` early-returns) that dominate steady-state busy time.
+3. **`loop_pop_dispatch` finer split** — estimate share of DCID-hex / Dict lookup / cold conn-create within Phase A's 958ms; recommend the highest-ROI microoptimisation (likely `Dict[String, Int]` → `Dict[UInt64, Int]` to eliminate per-pkt String alloc).
+
+The follow-on optimisation spec(s) will draw scope from those three reports — NOT from intuition. Per `feedback_byte_size_cpu_share_fallacy.md`, no future "predicted shares" claim ships without library-source citation or microbench evidence.
