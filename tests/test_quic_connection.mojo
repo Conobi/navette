@@ -2904,6 +2904,92 @@ def test_dcid_demux_disambiguates_two_conns() raises:
     print("PASS: test_dcid_demux_disambiguates_two_conns")
 
 
+def test_dcid_to_u64_basic_cases() raises:
+    """Lock 5-case bijection of `_dcid_to_u64` 8-byte → UInt64 packing.
+
+    Big-endian pack: result = (b[0]<<56) | (b[1]<<48) | ... | b[7].
+    """
+    from bench.h3_server import _dcid_to_u64
+
+    # Case 1: All-zero bytes → 0.
+    var z = List[UInt8]()
+    for _ in range(8):
+        z.append(UInt8(0))
+    assert_equal_int(
+        Int(_dcid_to_u64(Span(z))), 0, "all-zero -> 0"
+    )
+
+    # Case 2: All-0xff bytes → UInt64.MAX.
+    var f = List[UInt8]()
+    for _ in range(8):
+        f.append(UInt8(0xFF))
+    assert_true(
+        _dcid_to_u64(Span(f)) == UInt64.MAX,
+        "all-0xff -> UInt64.MAX",
+    )
+
+    # Case 3: Ascending [0x01..0x08] → 0x0102030405060708.
+    var asc = List[UInt8]()
+    for i in range(8):
+        asc.append(UInt8(i + 1))
+    assert_true(
+        _dcid_to_u64(Span(asc)) == UInt64(0x0102030405060708),
+        "ascending -> 0x0102030405060708",
+    )
+
+    # Case 4: Descending [0x08..0x01] → 0x0807060504030201.
+    var desc = List[UInt8]()
+    for i in range(8):
+        desc.append(UInt8(8 - i))
+    assert_true(
+        _dcid_to_u64(Span(desc)) == UInt64(0x0807060504030201),
+        "descending -> 0x0807060504030201",
+    )
+
+    # Case 5: Random 8-byte vector with a known reference value.
+    # bytes = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]
+    # expected = 0xDEADBEEFCAFEBABE
+    var r = List[UInt8]()
+    r.append(UInt8(0xDE)); r.append(UInt8(0xAD))
+    r.append(UInt8(0xBE)); r.append(UInt8(0xEF))
+    r.append(UInt8(0xCA)); r.append(UInt8(0xFE))
+    r.append(UInt8(0xBA)); r.append(UInt8(0xBE))
+    assert_true(
+        _dcid_to_u64(Span(r)) == UInt64(0xDEADBEEFCAFEBABE),
+        "DEADBEEFCAFEBABE roundtrip",
+    )
+
+    print("PASS: test_dcid_to_u64_basic_cases")
+
+
+def test_dcid_to_u64_injective_on_distinct_inputs() raises:
+    """Sample 64 distinct 8-byte vectors; assert pairwise distinctness of
+    `_dcid_to_u64` outputs. Trivially true for a bijection on 8-byte → UInt64;
+    locked anyway as a regression guard.
+    """
+    from bench.h3_server import _dcid_to_u64
+
+    var outputs = List[UInt64]()
+    for n in range(64):
+        # Construct 8 bytes from a deterministic LCG so inputs are distinct.
+        var bytes = List[UInt8]()
+        var seed = UInt32(n) * UInt32(2654435761) + UInt32(0xDEADBEEF)
+        for _ in range(8):
+            seed = seed * UInt32(1103515245) + UInt32(12345)
+            bytes.append(UInt8((seed >> 16) & UInt32(0xFF)))
+        outputs.append(_dcid_to_u64(Span(bytes)))
+
+    # All-pairs distinctness.
+    for i in range(len(outputs)):
+        for j in range(i + 1, len(outputs)):
+            assert_true(
+                outputs[i] != outputs[j],
+                "expected distinct outputs for distinct inputs",
+            )
+
+    print("PASS: test_dcid_to_u64_injective_on_distinct_inputs")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2942,4 +3028,6 @@ def main() raises:
     test_is_expected_dcid_initial_and_local()
     test_quic_connection_dcid_lengths_are_8_bytes()
     test_dcid_demux_disambiguates_two_conns()
+    test_dcid_to_u64_basic_cases()
+    test_dcid_to_u64_injective_on_distinct_inputs()
     print("All test_quic_connection tests passed.")

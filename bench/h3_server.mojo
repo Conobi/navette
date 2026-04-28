@@ -179,6 +179,23 @@ fn _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
     return key^
 
 
+fn _dcid_to_u64(bytes: Span[UInt8, _]) -> UInt64:
+    """Pack 8 bytes (big-endian) into a UInt64 for use as a Dict[UInt64, Int]
+    key. Replaces `_bytes_to_hex` on the bench's hot DCID-demux path.
+
+    Precondition: `len(bytes) == 8` (locked by upstream
+    `test_quic_connection_dcid_lengths_are_8_bytes` and by debug_assert at
+    the conn-create site). When ASSERT mode is `none` (the bench's
+    measurement-build configuration), the assert below is compiled out and
+    the function is a pure 8-iter shift loop (~20 ns).
+    """
+    debug_assert(len(bytes) == 8, "DCID must be 8 bytes")
+    var result: UInt64 = 0
+    for i in range(8):
+        result = (result << 8) | UInt64(bytes[i])
+    return result
+
+
 fn _is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
     """True iff the QUIC packet's first byte indicates a long-header Initial.
 
