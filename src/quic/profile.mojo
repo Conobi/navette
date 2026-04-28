@@ -386,6 +386,31 @@ struct AcceptProfile(Copyable, Movable):
             s += "    " + entry.key + ": " + String(entry.value) + "\n"
         s += "\n"
 
+        # FFI sub-legs (Plan: 2026-04-28).
+        s += "FFI sub-legs:\n"
+        s += "  " + _fmt_leg("read_hs",   self.ffi_read_hs_us_total,   self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("write_hs",  self.ffi_write_hs_us_total,  self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("take_keys", self.ffi_take_keys_us_total, self.pkt_count) + "\n\n"
+
+        # Loop phases (Plan: 2026-04-28).
+        s += "Loop phases:\n"
+        s += "  " + _fmt_leg("pop_dispatch", self.loop_pop_dispatch_us_total, self.loop_iter_count) + "\n"
+        s += "  " + _fmt_leg("post_pkt",     self.loop_post_pkt_us_total,     self.loop_iter_count) + "\n"
+        s += "  " + _fmt_leg("teardown",     self.loop_teardown_us_total,     self.on_flush_count) + "\n"
+        s += "  loop_iter_count:                  " + _fmt_count(self.loop_iter_count) + "\n"
+        # Budget closure (mirrors report_json computation).
+        var pp_legs = (self.header_parse_us_total + self.hp_us_total + self.aead_us_total
+            + self.frame_parse_us_total + self.sm_us_total + self.residual_us_total)
+        var acct = (pp_legs + self.drain_us_total + self.loop_pop_dispatch_us_total
+            + self.loop_post_pkt_us_total + self.loop_teardown_us_total)
+        var unacct: UInt64 = UInt64(0)
+        if self.busy_us_total > acct:
+            unacct = self.busy_us_total - acct
+        var unacct_pct: UInt64 = UInt64(0)
+        if self.busy_us_total > UInt64(0):
+            unacct_pct = (unacct * UInt64(100)) / self.busy_us_total
+        s += "  unaccounted_us_total:             " + _fmt_count(unacct) + "  (" + String(unacct_pct) + "% of busy)\n\n"
+
         # Top-50 worst offenders (parallel insertion sort).
         s += "Worst offenders (top 50 addr_keys by pkt_count, no hs_complete):\n"
         var wo_keys = List[String]()
@@ -526,6 +551,58 @@ struct AcceptProfile(Copyable, Movable):
             first_mm = False
             s += '\n      "' + entry.key + '": ' + String(entry.value)
         s += "\n    }\n  },\n"
+
+        # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
+        var read_hs_avg: UInt64 = UInt64(0)
+        var write_hs_avg: UInt64 = UInt64(0)
+        var take_keys_avg: UInt64 = UInt64(0)
+        if self.pkt_count > UInt64(0):
+            read_hs_avg = self.ffi_read_hs_us_total / self.pkt_count
+            write_hs_avg = self.ffi_write_hs_us_total / self.pkt_count
+            take_keys_avg = self.ffi_take_keys_us_total / self.pkt_count
+        s += '  "ffi_subleg_us": {\n'
+        s += '    "read_hs":   {"avg": ' + String(read_hs_avg) + ', "total": ' + String(self.ffi_read_hs_us_total) + '},\n'
+        s += '    "write_hs":  {"avg": ' + String(write_hs_avg) + ', "total": ' + String(self.ffi_write_hs_us_total) + '},\n'
+        s += '    "take_keys": {"avg": ' + String(take_keys_avg) + ', "total": ' + String(self.ffi_take_keys_us_total) + '}\n'
+        s += "  },\n"
+
+        # Loop phases (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
+        var pop_dispatch_avg: UInt64 = UInt64(0)
+        var post_pkt_avg: UInt64 = UInt64(0)
+        if self.loop_iter_count > UInt64(0):
+            pop_dispatch_avg = self.loop_pop_dispatch_us_total / self.loop_iter_count
+            post_pkt_avg = self.loop_post_pkt_us_total / self.loop_iter_count
+        var teardown_avg: UInt64 = UInt64(0)
+        if self.on_flush_count > UInt64(0):
+            teardown_avg = self.loop_teardown_us_total / self.on_flush_count
+        # Budget closure ε:
+        # busy = per_pkt_total_sum + drain + pop_dispatch + post_pkt + teardown + ε
+        # per_pkt_total_sum is reconstructed from leg sums (ffi excluded — overlaps sm).
+        var per_pkt_legs_sum = (self.header_parse_us_total
+            + self.hp_us_total
+            + self.aead_us_total
+            + self.frame_parse_us_total
+            + self.sm_us_total
+            + self.residual_us_total)
+        var accounted = (per_pkt_legs_sum
+            + self.drain_us_total
+            + self.loop_pop_dispatch_us_total
+            + self.loop_post_pkt_us_total
+            + self.loop_teardown_us_total)
+        var unaccounted: UInt64 = UInt64(0)
+        if self.busy_us_total > accounted:
+            unaccounted = self.busy_us_total - accounted
+        var unaccounted_pct: UInt64 = UInt64(0)
+        if self.busy_us_total > UInt64(0):
+            unaccounted_pct = (unaccounted * UInt64(100)) / self.busy_us_total
+        s += '  "loop_phases_us": {\n'
+        s += '    "pop_dispatch": {"avg": ' + String(pop_dispatch_avg) + ', "total": ' + String(self.loop_pop_dispatch_us_total) + '},\n'
+        s += '    "post_pkt":     {"avg": ' + String(post_pkt_avg) + ', "total": ' + String(self.loop_post_pkt_us_total) + '},\n'
+        s += '    "teardown":     {"avg": ' + String(teardown_avg) + ', "total": ' + String(self.loop_teardown_us_total) + '},\n'
+        s += '    "loop_iter_count": ' + String(self.loop_iter_count) + ',\n'
+        s += '    "unaccounted_us_total": ' + String(unaccounted) + ',\n'
+        s += '    "unaccounted_pct": ' + String(unaccounted_pct) + '\n'
+        s += "  },\n"
 
         # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
         # Materialize parallel List[String] + List[UInt64], insertion-sort descending.

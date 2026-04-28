@@ -731,6 +731,154 @@ def test_record_loop_teardown_increments_total() raises:
     print("PASS: test_record_loop_teardown_increments_total")
 
 
+def test_ffi_subleg_sum_matches_shim_ffi_within_tolerance() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Simulate 3 FFI calls within one pkt accumulating into shim_ffi via record_pkt.
+    # Then directly populate sub-legs with the same per-call deltas.
+    p.record_pkt(
+        total_us=UInt64(120),
+        ffi_us=UInt64(100),     # 30 + 50 + 20 = 100
+        hp_us=UInt64(1),
+        aead_us=UInt64(1),
+        header_parse_us=UInt64(1),
+        frame_parse_us=UInt64(5),
+        sm_us=UInt64(60),
+    )
+    p.record_ffi_read_hs(UInt64(30))
+    p.record_ffi_write_hs(UInt64(50))
+    p.record_ffi_take_keys(UInt64(20))
+    var subleg_sum = p.ffi_read_hs_us_total + p.ffi_write_hs_us_total + p.ffi_take_keys_us_total
+    var diff: UInt64
+    if subleg_sum >= p.ffi_shim_us_total:
+        diff = subleg_sum - p.ffi_shim_us_total
+    else:
+        diff = p.ffi_shim_us_total - subleg_sum
+    var tol = p.ffi_shim_us_total // UInt64(100)
+    if tol < UInt64(1):
+        tol = UInt64(1)
+    if diff > tol:
+        raise "ffi_subleg sum (" + String(subleg_sum) + ") differs from shim_ffi (" + String(p.ffi_shim_us_total) + ") by more than 1%"
+    print("PASS: test_ffi_subleg_sum_matches_shim_ffi_within_tolerance")
+
+
+def test_loop_budget_closure_zero_residual() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # busy = 1000us = 200 (per_pkt total) + 100 (drain) + 400 (pop_dispatch) + 200 (post_pkt) + 100 (teardown)
+    p.busy_us_total = UInt64(1000)
+    p.record_pkt(
+        total_us=UInt64(200),
+        ffi_us=UInt64(0),
+        hp_us=UInt64(0),
+        aead_us=UInt64(0),
+        header_parse_us=UInt64(0),
+        frame_parse_us=UInt64(0),
+        sm_us=UInt64(200),
+    )
+    p.record_drain(UInt64(100))
+    p.record_loop_pop_dispatch(UInt64(400))
+    p.record_loop_post_pkt(UInt64(200))
+    p.record_loop_teardown(UInt64(100))
+    var s = p.report_json()
+    if "\"unaccounted_us_total\": 0" not in s:
+        raise "expected unaccounted_us_total=0; got snippet: " + s
+    if "\"unaccounted_pct\": 0" not in s:
+        raise "expected unaccounted_pct=0; got snippet: " + s
+    print("PASS: test_loop_budget_closure_zero_residual")
+
+
+def test_loop_budget_closure_nonzero_residual() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # busy = 10000us; sum of legs = 9900us; residual = 100us = 1% (integer-truncated).
+    p.busy_us_total = UInt64(10000)
+    p.record_pkt(
+        total_us=UInt64(2000),
+        ffi_us=UInt64(0),
+        hp_us=UInt64(0),
+        aead_us=UInt64(0),
+        header_parse_us=UInt64(0),
+        frame_parse_us=UInt64(0),
+        sm_us=UInt64(2000),
+    )
+    p.record_drain(UInt64(1000))
+    p.record_loop_pop_dispatch(UInt64(4000))
+    p.record_loop_post_pkt(UInt64(2000))
+    p.record_loop_teardown(UInt64(900))
+    var s = p.report_json()
+    if "\"unaccounted_us_total\": 100" not in s:
+        raise "expected unaccounted_us_total=100; got snippet: " + s
+    if "\"unaccounted_pct\": 1" not in s:
+        raise "expected unaccounted_pct=1; got snippet: " + s
+    print("PASS: test_loop_budget_closure_nonzero_residual")
+
+
+def test_report_json_emits_ffi_subleg_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_read_hs(UInt64(100))
+    p.record_ffi_write_hs(UInt64(200))
+    p.record_ffi_take_keys(UInt64(50))
+    var s = p.report_json()
+    if "\"ffi_subleg_us\"" not in s:
+        raise "missing ffi_subleg_us block"
+    if "\"read_hs\"" not in s:
+        raise "missing read_hs key"
+    if "\"write_hs\"" not in s:
+        raise "missing write_hs key"
+    if "\"take_keys\"" not in s:
+        raise "missing take_keys key"
+    if "\"total\": 100" not in s:
+        raise "missing read_hs total=100"
+    if "\"total\": 200" not in s:
+        raise "missing write_hs total=200"
+    print("PASS: test_report_json_emits_ffi_subleg_block")
+
+
+def test_report_json_emits_loop_phases_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_pop_dispatch(UInt64(150))
+    p.record_loop_post_pkt(UInt64(50))
+    p.record_loop_teardown(UInt64(20))
+    p.record_loop_iter()
+    p.record_loop_iter()
+    var s = p.report_json()
+    if "\"loop_phases_us\"" not in s:
+        raise "missing loop_phases_us block"
+    if "\"pop_dispatch\"" not in s:
+        raise "missing pop_dispatch key"
+    if "\"post_pkt\"" not in s:
+        raise "missing post_pkt key"
+    if "\"teardown\"" not in s:
+        raise "missing teardown key"
+    if "\"loop_iter_count\": 2" not in s:
+        raise "missing loop_iter_count=2"
+    if "\"unaccounted_us_total\"" not in s:
+        raise "missing unaccounted_us_total key"
+    if "\"unaccounted_pct\"" not in s:
+        raise "missing unaccounted_pct key"
+    print("PASS: test_report_json_emits_loop_phases_block")
+
+
+def test_loop_phase_avg_uses_loop_iter_count_divisor() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 100 iters, 50 pkts (some continue'd). pop_dispatch total = 10000 us.
+    # Expected avg = 10000 / 100 = 100 (NOT 10000 / 50 = 200).
+    p.record_loop_pop_dispatch(UInt64(10000))
+    for _ in range(100):
+        p.record_loop_iter()
+    # Synthetically populate pkt_count = 50 to ensure divisor is loop_iter_count.
+    p.pkt_count = UInt64(50)
+    var s = p.report_json()
+    # Look for the pop_dispatch.avg = 100 (not 200).
+    if "\"pop_dispatch\": {\"avg\": 100" not in s:
+        raise "expected pop_dispatch.avg=100 (loop_iter_count divisor); got snippet: " + s
+    print("PASS: test_loop_phase_avg_uses_loop_iter_count_divisor")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -768,4 +916,10 @@ def main() raises:
     test_record_loop_pop_dispatch_increments_total()
     test_record_loop_post_pkt_increments_total()
     test_record_loop_teardown_increments_total()
+    test_ffi_subleg_sum_matches_shim_ffi_within_tolerance()
+    test_loop_budget_closure_zero_residual()
+    test_loop_budget_closure_nonzero_residual()
+    test_report_json_emits_ffi_subleg_block()
+    test_report_json_emits_loop_phases_block()
+    test_loop_phase_avg_uses_loop_iter_count_divisor()
     print("All Plan A tests passed.")
