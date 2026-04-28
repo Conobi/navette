@@ -58,4 +58,60 @@ The tag-isolated image (`mojo-net-bench:subleg-T6`, sha `e40a46bdc896`) reflects
 
 ## T7 — On-build (`comptime PROFILE_ACCEPT: Bool = True`)
 
-Pending.
+Image: `mojo-net-bench:subleg-T7` (sha `512ad39317ae`, built 2026-04-28 03:35:34 with `PROFILE_ACCEPT=True`).
+
+### Long-conn cell (10 iters)
+
+| iter | rps |
+|---|---|
+| 1 | 14957.74 |
+| 2 | 14960.33 |
+| 3 | 14808.08 |
+| 4 | 14571.47 |
+| 5 | 14916.62 |
+| 6 | 14830.18 |
+| 7 | 14854.20 |
+| 8 | 14740.02 |
+| 9 | 15044.03 |
+| 10 | 14957.10 |
+
+**Median: 14,885.41 rps** | mean=14,864 | stdev=136.31 | IQR=167.32
+
+**Drift vs post-migration on-build baseline (14,109 rps): +5.50%**  (gate: ±10%)
+
+Verdict: **PASS**.
+
+### Short-conn cell (10 iters)
+
+| iter | rps |
+|---|---|
+| 1 | 1205.86 |
+| 2 | 1211.38 |
+| 3 | 1214.41 |
+| 4 | 1180.59 |
+| 5 | 1203.81 |
+| 6 | 1168.47 |
+| 7 | 1183.16 |
+| 8 | 1192.88 |
+| 9 | 1179.99 |
+| 10 | 1197.01 |
+
+**Median: 1,194.95 rps** | mean=1,194 | stdev=15.31 | IQR=26.80
+
+**Drift vs post-migration on-build baseline (1,186 rps): +0.75%**  (gate: ±10%)
+
+Verdict: **PASS**.
+
+### T7 verdict: **PASS** (both cells)
+
+### On-build overhead (T7 vs T6, same source state, only PROFILE_ACCEPT differs)
+
+| Cell | T6 off-build median | T7 on-build median | Overhead |
+|---|---|---|---|
+| Long-conn | 14,947.01 | 14,885.41 | **−0.41%** |
+| Short-conn | 1,226.65 | 1,194.95 | **−2.59%** |
+
+Both within run-to-run noise. Consistent with the migration spec's 10-iter rerun finding (−2.3% long-conn / −1.8% short-conn overhead, also noise-bounded). The single-pair clock-read pattern + function-scope `var t_start: UInt64 = 0` hoist successfully kept the per-FFI-call clock-read count at 2 (unchanged); the 4 new per-pkt loop-phase clock reads (pop_dispatch + post_pkt) and 2 per-flush teardown reads add no measurable cost at this throughput.
+
+The instrumentation is ready for T8 SIGINT sidecar capture.
+
