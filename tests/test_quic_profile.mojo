@@ -701,6 +701,36 @@ def test_record_ffi_take_keys_increments_total() raises:
     print("PASS: test_record_ffi_take_keys_increments_total")
 
 
+def test_record_loop_pop_dispatch_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_pop_dispatch(UInt64(50))
+    p.record_loop_pop_dispatch(UInt64(75))
+    if p.loop_pop_dispatch_us_total != UInt64(125):
+        raise "expected loop_pop_dispatch_us_total=125, got " + String(p.loop_pop_dispatch_us_total)
+    print("PASS: test_record_loop_pop_dispatch_increments_total")
+
+
+def test_record_loop_post_pkt_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_post_pkt(UInt64(20))
+    p.record_loop_post_pkt(UInt64(30))
+    if p.loop_post_pkt_us_total != UInt64(50):
+        raise "expected loop_post_pkt_us_total=50, got " + String(p.loop_post_pkt_us_total)
+    print("PASS: test_record_loop_post_pkt_increments_total")
+
+
+def test_record_loop_teardown_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_teardown(UInt64(8))
+    p.record_loop_teardown(UInt64(12))
+    if p.loop_teardown_us_total != UInt64(20):
+        raise "expected loop_teardown_us_total=20, got " + String(p.loop_teardown_us_total)
+    print("PASS: test_record_loop_teardown_increments_total")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -735,4 +765,7 @@ def main() raises:
     test_record_ffi_read_hs_increments_total()
     test_record_ffi_write_hs_increments_total()
     test_record_ffi_take_keys_increments_total()
+    test_record_loop_pop_dispatch_increments_total()
+    test_record_loop_post_pkt_increments_total()
+    test_record_loop_teardown_increments_total()
     print("All Plan A tests passed.")
