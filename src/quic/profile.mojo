@@ -101,6 +101,16 @@ struct AcceptProfile(Copyable, Movable):
     var ffi_write_hs_us_total: UInt64
     var ffi_take_keys_us_total: UInt64
 
+    # 3 loop phase totals — decompose un-attributed bench-loop overhead.
+    # pop_dispatch + post_pkt are per-pkt accumulators; teardown is
+    # per-flush. Divisor for pop_dispatch.avg / post_pkt.avg is
+    # loop_iter_count (NOT pkt_count, which excludes continue'd iters);
+    # divisor for teardown.avg is on_flush_count.
+    var loop_pop_dispatch_us_total: UInt64
+    var loop_post_pkt_us_total: UInt64
+    var loop_teardown_us_total: UInt64
+    var loop_iter_count: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -140,6 +150,10 @@ struct AcceptProfile(Copyable, Movable):
         self.ffi_read_hs_us_total = UInt64(0)
         self.ffi_write_hs_us_total = UInt64(0)
         self.ffi_take_keys_us_total = UInt64(0)
+        self.loop_pop_dispatch_us_total = UInt64(0)
+        self.loop_post_pkt_us_total = UInt64(0)
+        self.loop_teardown_us_total = UInt64(0)
+        self.loop_iter_count = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -245,6 +259,18 @@ struct AcceptProfile(Copyable, Movable):
 
     def record_ffi_take_keys(mut self, us: UInt64):
         self.ffi_take_keys_us_total = self.ffi_take_keys_us_total + us
+
+    def record_loop_pop_dispatch(mut self, us: UInt64):
+        self.loop_pop_dispatch_us_total = self.loop_pop_dispatch_us_total + us
+
+    def record_loop_post_pkt(mut self, us: UInt64):
+        self.loop_post_pkt_us_total = self.loop_post_pkt_us_total + us
+
+    def record_loop_teardown(mut self, us: UInt64):
+        self.loop_teardown_us_total = self.loop_teardown_us_total + us
+
+    def record_loop_iter(mut self):
+        self.loop_iter_count = self.loop_iter_count + UInt64(1)
 
     def report_text(self) raises -> String:
         var now = monotonic_us()
