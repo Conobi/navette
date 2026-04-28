@@ -6,8 +6,8 @@ CRATE_DIR="$REPO_ROOT/crates/librustls-mojo"
 LIB_DIR="$REPO_ROOT/lib"
 
 cd "$CRATE_DIR"
-cargo test
-cargo build --release
+cargo test --features insecure
+cargo build --release --features insecure
 
 mkdir -p "$LIB_DIR"
 case "$(uname -s)" in
