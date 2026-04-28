@@ -1588,10 +1588,12 @@ struct QuicConnection(Movable):
                     for i in range(len(crypto_data)):
                         data_buf[i] = crypto_data[i]
 
+                    var t_start: UInt64 = 0
                     @parameter
                     if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
-                            self.profile_rustls_us_accum -= monotonic_us()
+                            t_start = monotonic_us()
+                            self.profile_rustls_us_accum -= t_start
                     var rc = lib[].quic_conn_read_hs(
                         self.conn_handle,
                         data_buf,
@@ -1600,7 +1602,9 @@ struct QuicConnection(Movable):
                     @parameter
                     if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
-                            self.profile_rustls_us_accum += monotonic_us()
+                            var t_end = monotonic_us()
+                            self.profile_rustls_us_accum += t_end
+                            self.profile_ptr[].record_ffi_read_hs(t_end - t_start)
                     data_buf.free()
 
                     if rc < 0:
@@ -1617,10 +1621,12 @@ struct QuicConnection(Movable):
             out_written[0] = Int32(0)
             out_kc[0] = UInt8(0)
 
+            var t_start: UInt64 = 0
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
-                    self.profile_rustls_us_accum -= monotonic_us()
+                    t_start = monotonic_us()
+                    self.profile_rustls_us_accum -= t_start
             var rc = lib[].quic_conn_write_hs(
                 self.conn_handle,
                 out_buf,
@@ -1631,7 +1637,9 @@ struct QuicConnection(Movable):
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
-                    self.profile_rustls_us_accum += monotonic_us()
+                    var t_end = monotonic_us()
+                    self.profile_rustls_us_accum += t_end
+                    self.profile_ptr[].record_ffi_write_hs(t_end - t_start)
 
             if rc < 0:
                 var err = lib[].last_error()
@@ -1662,17 +1670,21 @@ struct QuicConnection(Movable):
                 var keys_handle_buf = _heap_alloc[Int32](1).as_any_origin()
                 keys_handle_buf[0] = Int32(-1)
 
+                var t_start: UInt64 = 0
                 @parameter
                 if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
-                        self.profile_rustls_us_accum -= monotonic_us()
+                        t_start = monotonic_us()
+                        self.profile_rustls_us_accum -= t_start
                 var take_rc = lib[].quic_conn_take_keys(
                     self.conn_handle, keys_handle_buf
                 )
                 @parameter
                 if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
-                        self.profile_rustls_us_accum += monotonic_us()
+                        var t_end = monotonic_us()
+                        self.profile_rustls_us_accum += t_end
+                        self.profile_ptr[].record_ffi_take_keys(t_end - t_start)
 
                 if take_rc < 0:
                     var err = lib[].last_error()
@@ -2671,6 +2683,39 @@ struct QuicConnection(Movable):
     def is_established(self) -> Bool:
         """True if the handshake is complete and the connection is usable."""
         return (self.state & CONN_ESTABLISHED) != 0
+
+    fn is_expected_dcid(self, dcid: Span[UInt8, _]) -> Bool:
+        """True if `dcid` matches either initial_dcid or local_cid.
+
+        - `initial_dcid` is the client's random Initial DCID, used for
+          Initial-key derivation. Valid pre-handshake and during the brief
+          post-handshake transition before the client switches over.
+        - `local_cid` is the server's chosen SCID (or, on a client conn,
+          the locally-chosen SCID). The peer uses it as DCID after the
+          first server Initial.
+
+        Connection migration is a project non-goal in v1 of M3 (project
+        non-goal line 28 of docs/project-context.md). Once
+        NEW_CONNECTION_ID emission lands, expand this accessor to a set
+        membership over all active local CIDs.
+        """
+        if len(dcid) == len(self.initial_dcid):
+            var match_initial = True
+            for i in range(len(dcid)):
+                if dcid[i] != self.initial_dcid[i]:
+                    match_initial = False
+                    break
+            if match_initial:
+                return True
+        if len(dcid) == len(self.local_cid):
+            var match_local = True
+            for i in range(len(dcid)):
+                if dcid[i] != self.local_cid[i]:
+                    match_local = False
+                    break
+            if match_local:
+                return True
+        return False
 
     def is_closed(self) -> Bool:
         """True if the connection has fully terminated."""

@@ -15,6 +15,11 @@ SERVER="$1"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 
+# Image tag override (defaults preserve existing behaviour).
+# Set when parallel workflows might overwrite mojo-net-bench:latest.
+MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-mojo-net-bench:latest}"
+TQUIC_IMAGE="${TQUIC_IMAGE:-tquic-bench:latest}"
+
 # Always start from a clean slate.
 "$HERE/scripts/stop-server.sh"
 
@@ -28,7 +33,7 @@ case "$SERVER" in
             -v "$HERE/payloads:/data/static:ro" \
             -v "$REPO_ROOT/certs:/certs:ro" \
             --entrypoint /usr/local/bin/h3_server \
-            mojo-net-bench:latest --workers 1 \
+            "$MOJO_NET_IMAGE" --workers 1 \
             > /tmp/start-server.log
         CONTAINER=bench-h3
         ;;
@@ -41,7 +46,7 @@ case "$SERVER" in
             -v "$HERE/payloads:/data/static:ro" \
             -v "$REPO_ROOT/certs:/certs:ro" \
             --entrypoint /usr/local/bin/tquic_server \
-            tquic-bench:latest \
+            "$TQUIC_IMAGE" \
             -l 0.0.0.0:8443 \
             -c /certs/server.crt \
             -k /certs/server.key \

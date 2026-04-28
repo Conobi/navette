@@ -8,7 +8,7 @@
 #   cd ~/Projets/perso/mojo-net && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_connection.mojo
 
-from std.collections import Optional
+from std.collections import Dict, Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
@@ -2770,6 +2770,140 @@ def test_batch_crypto_roundtrip() raises:
     print("  test_batch_crypto_roundtrip: PASS")
 
 
+def test_is_expected_dcid_initial_and_local() raises:
+    """is_expected_dcid matches initial_dcid and local_cid; rejects others."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+    )
+
+    # Expected DCID #1: matches initial_dcid (== client_dcid in this fixture).
+    var initial = List[UInt8](copy=client_dcid)
+    assert_true(
+        server.is_expected_dcid(Span(initial)),
+        "is_expected_dcid should match initial_dcid",
+    )
+
+    # Expected DCID #2: matches local_cid (server-chosen SCID).
+    var local = List[UInt8](copy=server.local_cid)
+    assert_true(
+        server.is_expected_dcid(Span(local)),
+        "is_expected_dcid should match local_cid",
+    )
+
+    # NOT expected: an arbitrary unrelated DCID.
+    var other = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xCD)):
+        other.append(b)
+    assert_false(
+        server.is_expected_dcid(Span(other)),
+        "is_expected_dcid should reject unrelated DCIDs",
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_is_expected_dcid_initial_and_local: PASS")
+
+
+def test_quic_connection_dcid_lengths_are_8_bytes() raises:
+    """Lock the invariant that QuicConnection.server produces 8-byte DCIDs.
+
+    The bench server's short-header DCID parser (_extract_dcid) assumes
+    8-byte CIDs (parse_packet_header(data, 8)). Any future change to
+    _generate_random_cid that breaks this invariant must update both
+    the parser AND this test together.
+    """
+    # Mirror the construction from test_is_expected_dcid_initial_and_local.
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+    )
+
+    # New invariant assertions: both server-side CIDs must be 8 bytes.
+    assert_true(
+        len(server.local_cid) == 8,
+        "expected len(local_cid) == 8, got " + String(len(server.local_cid)),
+    )
+    assert_true(
+        len(server.initial_dcid) == 8,
+        "expected len(initial_dcid) == 8, got " + String(len(server.initial_dcid)),
+    )
+
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("PASS: test_quic_connection_dcid_lengths_are_8_bytes")
+
+
+def test_dcid_demux_disambiguates_two_conns() raises:
+    """Conn-table-level invariant: two distinct DCIDs map to two distinct
+    conn_idx values via _bytes_to_hex hashing, and a third (unrelated)
+    DCID is a miss.
+
+    Validates the migration's data-structure correctness without spinning
+    up a full H3UdpHandler. End-to-end behaviour is exercised by the
+    smoke gate (T8) and SIGINT captures (T9).
+    """
+    from bench.h3_server import _bytes_to_hex
+
+    # Three distinct 8-byte DCIDs.
+    var dcid_a = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xAA)):
+        dcid_a.append(b)
+    var dcid_b = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xBB)):
+        dcid_b.append(b)
+    var dcid_c = List[UInt8]()
+    for b in InlineArray[UInt8, 8](fill=UInt8(0xCC)):
+        dcid_c.append(b)
+
+    var hex_a = _bytes_to_hex(Span(dcid_a))
+    var hex_b = _bytes_to_hex(Span(dcid_b))
+    var hex_c = _bytes_to_hex(Span(dcid_c))
+
+    # Build a conn_dcid_map mirroring the bench's shape.
+    var table = Dict[String, Int]()
+    table[hex_a] = 0
+    table[hex_b] = 1
+
+    # Lookup-by-A returns 0; lookup-by-B returns 1; lookup-by-C is a miss.
+    assert_equal_int(
+        table[hex_a], 0, "expected hex_a -> 0"
+    )
+    assert_equal_int(
+        table[hex_b], 1, "expected hex_b -> 1"
+    )
+    assert_false(
+        hex_c in table,
+        "expected hex_c to be a miss",
+    )
+
+    # Sanity: the three hex strings are themselves distinct.
+    assert_true(
+        hex_a != hex_b and hex_b != hex_c and hex_a != hex_c,
+        "expected all three hex encodings to be distinct",
+    )
+
+    print("PASS: test_dcid_demux_disambiguates_two_conns")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2805,4 +2939,7 @@ def main() raises:
     test_streams_blocked_bidi_emitted()
     test_streams_blocked_dedup_no_resend()
     test_batch_crypto_roundtrip()
+    test_is_expected_dcid_initial_and_local()
+    test_quic_connection_dcid_lengths_are_8_bytes()
+    test_dcid_demux_disambiguates_two_conns()
     print("All test_quic_connection tests passed.")
