@@ -721,6 +721,11 @@ struct H3UdpHandler(BatchCompletionHandler):
 
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
+            var t_pop_dispatch_start: UInt64 = 0
+            @parameter
+            if PROFILE_ACCEPT:
+                t_pop_dispatch_start = profile_monotonic_us()
+                self.profile.record_loop_iter()
             @parameter
             if PROFILE_ACCEPT:
                 # Queueing wait: now (flush start) - arrival_us (recvmsg ingress).
@@ -745,6 +750,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                     ptr=pd.payload_ptr, length=pd.payload_len)
                 if not _is_long_header_initial(first_byte_span):
                     self.consumed_bufs.append(pd.buf_id)
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
                 # Fall through to QuicConnection.server(...) construction below.
 
@@ -790,6 +798,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                         self.quic_server_err_first = True
                         print("h3-bench DIAG: first QuicConnection.server error:", e)
                     self.consumed_bufs.append(pd.buf_id)
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
                 # B-permissive dual-DCID extract (BEFORE quic^ is moved into
@@ -814,6 +825,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                     if self.h3_handler_err_count == UInt64(1):
                         print("h3-bench DIAG: first H3HandlerServer error:", e)
                     self.consumed_bufs.append(pd.buf_id)
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
                 var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
@@ -835,6 +849,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                 dcids.append(lcid_hex^)
                 self.conn_dcids.append(dcids^)
 
+            @parameter
+            if PROFILE_ACCEPT:
+                self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
             # Feed datagram to the connection.
             try:
                 self.conn_h3s[conn_idx][].feed_datagram_from_buffer(pd.payload_ptr, pd.payload_len, now)
@@ -843,6 +860,10 @@ struct H3UdpHandler(BatchCompletionHandler):
                 if self.feed_datagram_err_count == UInt64(1):
                     print("h3-bench DIAG: first feed_datagram_from_buffer error:", e)
 
+            var t_post_pkt_start: UInt64 = 0
+            @parameter
+            if PROFILE_ACCEPT:
+                t_post_pkt_start = profile_monotonic_us()
             @parameter
             if PROFILE_ACCEPT:
                 # Poll handshake-complete state; idempotent record.
@@ -858,6 +879,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                 addr_update.append(pd.buf_ptr[pd.addr_offset + j])
             self.conn_addrs[conn_idx] = addr_update^
 
+            @parameter
+            if PROFILE_ACCEPT:
+                self.profile.record_loop_post_pkt(profile_monotonic_us() - t_post_pkt_start)
             # Drain and send outgoing datagrams.
             var t_drain_start = UInt64(0)
             @parameter
@@ -875,7 +899,14 @@ struct H3UdpHandler(BatchCompletionHandler):
             # Save buf_id for reprovision in main loop.
             self.consumed_bufs.append(pd.buf_id)
 
+        var t_teardown_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_teardown_start = profile_monotonic_us()
         self.pending_rx.clear()
+        @parameter
+        if PROFILE_ACCEPT:
+            self.profile.record_loop_teardown(profile_monotonic_us() - t_teardown_start)
 
         @parameter
         if PROFILE_ACCEPT:
