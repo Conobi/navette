@@ -1,6 +1,8 @@
 .git
 .venv
 .worktrees
+lib
+bench/.httparena
 research
 plans
 specs
