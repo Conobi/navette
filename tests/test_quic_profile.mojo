@@ -670,6 +670,37 @@ def test_report_text_dcid_mismatch_block() raises:
     print("PASS: test_report_text_dcid_mismatch_block")
 
 
+def test_record_ffi_read_hs_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_read_hs(UInt64(100))
+    p.record_ffi_read_hs(UInt64(150))
+    p.record_ffi_read_hs(UInt64(50))
+    if p.ffi_read_hs_us_total != UInt64(300):
+        raise "expected ffi_read_hs_us_total=300, got " + String(p.ffi_read_hs_us_total)
+    print("PASS: test_record_ffi_read_hs_increments_total")
+
+
+def test_record_ffi_write_hs_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_write_hs(UInt64(200))
+    p.record_ffi_write_hs(UInt64(300))
+    if p.ffi_write_hs_us_total != UInt64(500):
+        raise "expected ffi_write_hs_us_total=500, got " + String(p.ffi_write_hs_us_total)
+    print("PASS: test_record_ffi_write_hs_increments_total")
+
+
+def test_record_ffi_take_keys_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_take_keys(UInt64(40))
+    p.record_ffi_take_keys(UInt64(60))
+    if p.ffi_take_keys_us_total != UInt64(100):
+        raise "expected ffi_take_keys_us_total=100, got " + String(p.ffi_take_keys_us_total)
+    print("PASS: test_record_ffi_take_keys_increments_total")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -701,4 +732,7 @@ def main() raises:
     test_record_dcid_mismatch_accumulates()
     test_report_json_dcid_mismatch_block()
     test_report_text_dcid_mismatch_block()
+    test_record_ffi_read_hs_increments_total()
+    test_record_ffi_write_hs_increments_total()
+    test_record_ffi_take_keys_increments_total()
     print("All Plan A tests passed.")

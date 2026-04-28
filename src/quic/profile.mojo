@@ -93,6 +93,14 @@ struct AcceptProfile(Copyable, Movable):
     # of demux failure under PROFILE_ACCEPT.
     var dcid_mismatch_pkts: UInt64
 
+    # 3 FFI sub-leg totals — decompose ffi_shim_us_total per rustls call-site.
+    # Lifetime-accumulated (NEVER reset per-pkt). Cross-validation:
+    # ffi_read_hs + ffi_write_hs + ffi_take_keys must equal ffi_shim_us_total
+    # within ±1% across a 30s capture.
+    var ffi_read_hs_us_total: UInt64
+    var ffi_write_hs_us_total: UInt64
+    var ffi_take_keys_us_total: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -129,6 +137,9 @@ struct AcceptProfile(Copyable, Movable):
         self.conn_pkt_counts = Dict[String, UInt64]()
         self.conn_hs_complete = Dict[String, Bool]()
         self.dcid_mismatch_pkts = UInt64(0)
+        self.ffi_read_hs_us_total = UInt64(0)
+        self.ffi_write_hs_us_total = UInt64(0)
+        self.ffi_take_keys_us_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -225,6 +236,15 @@ struct AcceptProfile(Copyable, Movable):
                 self.addr_key_mismatch_counts[addr_key] + UInt64(1))
         else:
             self.addr_key_mismatch_counts[addr_key] = UInt64(1)
+
+    def record_ffi_read_hs(mut self, us: UInt64):
+        self.ffi_read_hs_us_total = self.ffi_read_hs_us_total + us
+
+    def record_ffi_write_hs(mut self, us: UInt64):
+        self.ffi_write_hs_us_total = self.ffi_write_hs_us_total + us
+
+    def record_ffi_take_keys(mut self, us: UInt64):
+        self.ffi_take_keys_us_total = self.ffi_take_keys_us_total + us
 
     def report_text(self) raises -> String:
         var now = monotonic_us()
