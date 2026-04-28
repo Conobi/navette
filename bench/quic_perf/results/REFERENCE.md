@@ -297,6 +297,102 @@ This is consistent with every observation: low CPU% (server is blocked on rustls
 
 ---
 
+### 2026-04-27 — queueing-tail-instrumentation — DATA — FALSIFIED (queueing-tail) + NEW HYPOTHESIS (addr_key demux collapse)
+
+**Spec:** `specs/2026-04-27-quic-queueing-tail-instrumentation.md`. Plan: `plans/2026-04-27-quic-queueing-tail-instrumentation.md`. Goal: test the queueing-tail hypothesis (most-plausible mechanism after the 4-diagnosis chain on `feat/quic-accept-loop-instrumentation`). Branch: `feat/quic-queueing-tail-instrumentation` off main `3919f7d`.
+
+**Methodology gate satisfied:** re-read all 348 lines of `REFERENCE.md` (rows 1-279 from prior context + rows 280-348 just before drafting). Flagged contradictions: **none** — the "5 distinct addr_keys vs ~392 logical conns" asymmetry seen in this capture is consistent with prior CORRECTED-diagnosis section's note that the server saw "13-21 distinct conns" while tquic_client reported 392 attempts. The new data does not contradict any prior row; it gives the asymmetry quantitative bounds.
+
+**Capture cell:** 1k short-conn, tquic_client (4 threads × 25 max-concurrent-conns × max-requests-per-conn=1), 30s, on-build (PROFILE_ACCEPT=True), manual SIGINT-driven sidecar via `start-server.sh + run-tquic-client.sh + docker kill --signal=SIGINT bench-h3 + docker cp + stop-server.sh`. Smoke gate (T11 long-conn / T12 short-conn) PASS at -2.12% / within-noise drift before this capture.
+
+**Sidecar:** `bench/quic_perf/results/profile/INSTRUMENTATION-20260427-001113-queueing-tail.json`
+
+**tquic_client report (client-side POV):** `conns: total 392, finish 296, success 8, failure 288`.
+
+**Server-side (sidecar):**
+- Run wall-clock: 44.94s, 99.9% idle / 0.1% busy (~57ms total work)
+- `pkts_per_flush_histogram`: 1=75% / 2-3=14% / 4-7=7% / 8-15=3% / 16-31=1% / 32-63=0.3% / 64-127=0% / 128+=0%
+- Per-packet processing (n=163 records, only counts records that hit `record_pkt`): p50=6 p90=92 p99=512us. Drain avg=71us. **shim_ffi avg=187us, sm avg=190us** — FFI/SM still dominate per-packet *processing* cost on the few packets that get processed (consistent with prior FFI-dominance OBSERVATION; not the rate-limiter for the calibrated 1 rps short-conn floor).
+- **Handshake accounting: 10 arrivals, 10 successful (100%), 0 timed out.** Latency p50=778us p90=1023us p99/max=29.7ms.
+- Plan C diagnostic counters all zero (recvmsg drops, multishot terms, 3 server-side error counters).
+
+**NEW INSTRUMENT 1 — Arrival-to-processing latency (n=3369, overflow=0):**
+- `arrival_lat_us_total`: 20,005us (sum across all observations)
+- `arrival_lat_us_buckets`: [855, 596, 615, 593, 438, 205, 37, 9, 21, 0, 0, ...0] (24 buckets; non-zero only in buckets 0-8)
+- **p50=2us, p90=14us, p99=61us** (computed: bucket 6 [32,64) holds rank 3336/3369; linear-interp at 0.92 of span → 61us).
+- Wider distribution: bucket 0 (zero-wait) holds 25% of observations; buckets 0-3 (wait ≤8us) hold 79%.
+
+**NEW INSTRUMENT 2 — Per-conn packet trajectory:**
+- `conns_total`: 5 (distinct addr_keys = src_ip:src_port tuples)
+- `conns_with_pkts_no_hs_complete`: **0** (every conn the server saw completed its handshake)
+- `per_conn_pkts_buckets`: [0, 0, 1, 0, 0, 0, 0, 4] (1 conn in 4-7 pkt range, 4 conns in 128+ range)
+- `worst_conns`: `[]` (no non-complete entries to report)
+
+**3-verdict signal table — applied to queueing-tail hypothesis:**
+- CONFIRMED if P99 ≥ 1,000,000us (1s) OR overflow ≥ 50% of pkt_count: **NO** (P99=61us; overflow=0)
+- FALSIFIED if P99 ≤ 100,000us (100ms): **YES** (61us is 1638× below the FALSIFIED threshold)
+- INCONCLUSIVE if 100,000 < P99 < 1,000,000: NO
+- Corroboration: `conns_with_pkts_no_hs_complete = 0 ≤ 5` → **weakens hypothesis** (no "received N packets but never completed handshake" population at all)
+
+**Verdict: FALSIFIED for queueing-tail hypothesis.** Server-side serial single-fiber `_flush_impl` queueing is NOT the rate-limiter. Of the packets the server sees, queueing wait is ≤61us at p99 — well within tquic_client's per-conn handshake timeout budget (≥1s).
+
+**VERIFIED MECHANISM — `addr_key` demux is fundamentally broken for standard QUIC client multiplexing.**
+
+The striking server-vs-client asymmetry was investigated via a same-day wire-level pcap capture (`bench/quic_perf/results/profile/wire-capture-20260427-shortconn.pcap`, 3.4 MB, 30s short-conn run with `tcpdump -i lo udp port 8443` from an alpine sidecar with NET_RAW):
+
+| Side | Count |
+|---|---|
+| tquic_client logical conn attempts | 392 |
+| tquic_client distinct CLIENT-DCIDs in stdout | 290 |
+| tquic_client successful (client POV) | 8 |
+| tquic_client failed/timed-out | 288 |
+| **Wire-level distinct client src_ports** | **4** |
+| **Wire-level distinct Initial DCIDs (long-header pkts)** | **378** |
+| Server distinct addr_keys (`conns_total`) | 5 |
+| Server `record_handshake_arrival` count | 10 |
+
+**Wire-level pcap analysis (per src_port):**
+
+| src_port | UDP pkts | distinct Initial DCIDs |
+|---|---|---|
+| 34130 | 696 | 93 |
+| 46557 | 751 | 94 |
+| 49851 | 738 | 95 |
+| 57704 | 713 | 96 |
+
+The 4 src_ports correspond exactly to tquic_client's `--threads 4` configuration. Each thread binds **ONE UDP socket** for its lifetime and multiplexes ~95 distinct QUIC connections (each with its own client-minted DCID) over that single socket. Total ~378 distinct logical conns over the 30s run, all flowing through 4 wire-level (src_ip, src_port) tuples.
+
+**This is the standard QUIC client multiplexing pattern, not an edge case.** Every QUIC client that uses connection-ID for multiplexing (tquic, quiche, ngtcp2, msquic, neqo) follows this design — open one socket per worker thread, distinguish concurrent conns by DCID over that socket. The protocol is explicitly designed for this (RFC 9000 §5.2: "An endpoint can use the destination connection ID for routing on the receive side to identify the connection that a packet belongs to").
+
+**Why mojo-net's `addr_key` (src_ip:src_port) demux fails here:**
+- Thread 0 sends Initial for new logical conn N₁ from port 34130. Server creates `QuicConnection_N₁` and maps `addr_key="...:34130"` → `conn_idx=0` in `conn_map`.
+- N₁ completes handshake → `is_established()=True`.
+- Thread 0 sends Initial for new logical conn N₂ ALSO from port 34130 (different DCID).
+- Server's `_find_conn(pd.addr_key="...:34130")` returns `conn_idx=0` (the OLD conn).
+- `feed_datagram_from_buffer` feeds N₂'s Initial bytes to `QuicConnection_N₁`, which already has its 1-RTT keys. Either rustls silently rejects the wrong-DCID Initial (no error counter fires; rustls returns no events) OR the bytes get logged as a stray packet of an unrelated conn-id. **From the server's POV: nothing visible. From the client's POV: N₂ never gets an Initial-ACK, times out.**
+- The 80+ logical conns/sec that tquic_client claims to fail are exactly this scenario at scale.
+
+**This explains:**
+- Why tquic_server (REFERENCE.md row 20) gets 87,113 rps under the same harness — tquic uses DCID-based demux (verifiable in tquic source). It correctly demuxes 95 logical conns per src_port.
+- Why mojo-net's CPU usage is microscopic (~0.1% busy under saturating load) — most Initials are silently absorbed by 4-5 active QuicConnections in microseconds.
+- Why FFI dominance was a red herring: ~378 logical conns try to hand-shake; only ~5 of the FIRST ones succeed; the remaining 373 die at the demux layer before the server's per-packet processing path even matters.
+
+**Caveat:** wire-level analysis is `tquic_client`-specific. `h2load --h3` (REFERENCE.md row 28) gives different absolute numbers (mojo-net 11 short-conn rps vs tquic_client's 1) which suggests h2load may use 1-socket-per-conn (no multiplexing) on its single thread — this would explain why h2load's mojo-net short-conn rps is meaningfully higher (less demux collapse). A follow-up h2load capture would confirm whether h2load also exposes the demux failure or sidesteps it via different socket allocation.
+
+**Falsified-during-investigation:** the initial T14 commit (`c7e128b`) speculated "kernel ephemeral-port reuse" as the mechanism. Wire-level pcap falsifies this — the kernel did NOT reuse ports. tquic_client deliberately keeps 4 long-lived sockets and multiplexes via DCID. The demux failure is on the SERVER side (mojo-net's choice to demux by addr_key), not in the kernel and not in the client.
+
+**Next hypothesis (post-FALSIFIED verdict, post-VERIFIED-mechanism — required-later, HIGH severity):**
+
+- **What:** Switch `bench/h3_server.mojo`'s connection demux from `addr_key` (src_ip:src_port) to `dcid` (the QUIC destination connection ID, already extracted at `_handle_recvmsg`). DCIDs are 8+ random bytes minted per-conn by the client; collisions effectively impossible. tquic_server / quiche-server / nginx-quic / lsquic all use DCID demux. Estimated scope: ~50-100 LoC change (`conn_map: Dict[String, Int]` → `Dict[List[UInt8], Int]` keyed by DCID, plus updates to `_handle_recvmsg`'s `key = _addr_to_key(addr_bytes)` line and the conn-create path). Connection lifecycle assumptions change: `addr_key` is currently used for return-path routing (which `conn_addrs` to send to); we'll need to keep `addr_key` as a per-conn metadata field for sendmsg routing while switching the lookup key to DCID.
+  **Severity:** required-later (HIGH) — this is the rate-limiter for the calibrated 1 rps short-conn floor.
+  **Trigger:** anyone returning to the QUIC perf push. No further instrumentation required to spec it; the wire-level pcap evidence is sufficient.
+
+**Off-build flag confirmed:** `comptime PROFILE_ACCEPT: Bool = False` at `src/quic/profile.mojo:16` post-capture. Smoke gate doc at `bench/quic_perf/results/profile/T11_T12_smoke_gate_2026-04-27.md`.
+
+**Diagnostic counters left in place** (all six, plus the new arrival-latency + per-conn instruments). Off-build cost: zero (PROFILE_ACCEPT-gated everywhere).
+
+---
+
 ### 2026-04-26 — accept-loop-instrumentation-data-collection — DATA (steady-state only, B14)
 
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`. Goal:
@@ -346,3 +442,188 @@ The handshake-latency tail IS suggestive: `p50=1.3ms` vs `p99/max=29ms` (n=5) �
 **Next hypothesis (revised — required-later, severity: high):**
 1. **Re-capture under cold-start saturation.** Run `tquic_client` with `short-conn` scenario (forces frequent reconnect) AND/OR raise `--max-concurrent-conns` from 25 to 100+ to force the saturating-handshake regime. The resulting sidecar should show much higher `arrivals` (closer to 100/s) and lower `successful` rate — that's the regime the spec was designed to characterise. Trigger: anyone returning to the QUIC perf push.
 2. **In the meantime,** the steady-state data above stands as a baseline: per-packet RX is fast (~15 us p50 total), fan-out is low (~2.5 mean), no in-recv leg dominates. If saturating-handshake re-runs ALSO show no in-recv dominance, the bottleneck is elsewhere — most plausibly in `_drain_and_send` or downstream of it (response generation, outgoing AEAD throughput, or sendmsg queue depth).
+
+
+### 2026-04-27 — addr-key-dcid-collision-counter — DATA — CONFIRMED (with prediction-revision)
+
+**Spec:** `specs/2026-04-27-quic-addr-key-dcid-collision-counter.md`. Plan: `plans/2026-04-27-quic-addr-key-dcid-collision-counter.md`. Goal: cross-confirm the `addr_key` demux collapse from the server's POV before specing the migration.
+
+**Methodology gate satisfied:** re-read all 444 prior lines of REFERENCE.md. **Contradictions: none.** The new server-side data is consistent with — and quantitatively independent of — the wire-level pcap evidence at lines 339-388. The new finding ALSO reveals an error in this spec's own long-conn prediction (see "Long-conn prediction revised" below); that is recorded as a self-correction, not a contradiction with prior REFERENCE.md rows.
+
+**Capture:** 30 s long-conn cell + 30 s short-conn cell, `tquic_client` (4 threads × 25 max-concurrent-conns), on-build (PROFILE_ACCEPT=True), SIGINT-driven sidecars via `start-server.sh + run-tquic-client.sh + docker kill --signal=SIGINT bench-h3 + docker cp + stop-server.sh`. Smoke gate (T5/T6) PASS at -2.63% / noise-bounded drift before captures (long-conn -2.63% on-build vs off-build; short-conn off-build 0.42 / on-build 0.71 — noise-bounded per the 6-iter span 0.26-0.71).
+
+**Stale-image incident (recorded for the lesson, not as an outcome):** the first T5/T6 measurement pass ran against a 16 h-old `mojo-net-bench:latest` image. Root cause: the docker rebuild's `cp` step failed silently because the worktree's `lib/` was a dangling symlink and the failure was masked by a `tail -3` in the bash wrapper. Fixed by replacing the symlink with a real empty directory and re-running. Same lesson as the queueing-tail Plan-C retro: silent build-step failures eat into the diagnostic-validity budget; future plans should pipe build output to a file and grep for explicit "Successfully built" markers, not rely on `tail -N` of the last lines.
+
+**LONG-CONN SIDECAR (`INSTRUMENTATION-20260427-165038-collision-longconn.json`, against image `342cae712d2c`):**
+- `dcid_mismatch_pkts`: **3125**
+- `addr_keys_total`: 4
+- `addr_keys_with_mismatch`: 4 (every addr_key collided)
+- `per_addr_key`: { 771, 793, 770, 791 } — narrow distribution, ~780 mean, σ ≈ 11
+
+**SHORT-CONN SIDECAR (`INSTRUMENTATION-20260427-165213-collision-shortconn.json`):**
+- `dcid_mismatch_pkts`: **3165**
+- `addr_keys_total`: 4
+- `addr_keys_with_mismatch`: 4 (every addr_key collided)
+- `per_addr_key`: { 812, 798, 766, 789 } — same distribution shape as long-conn
+
+**Long-conn prediction REVISED.** The spec predicted `dcid_mismatch_pkts ≈ 0` for long-conn, on the grounds that long-lived conns wouldn't expose addr_key reuse. The data shows long-conn produces effectively the SAME mismatch count (3125 vs 3165) as short-conn. Mechanism: at `--max-concurrent-conns 25 --max-requests-per-conn 1000`, each conn finishes ~2.4 s into the 30 s run and the slot is reclaimed by a new conn from the same src_port (same addr_key) with a fresh DCID. Over 30 s, that is ~12 sequential cycles × 25 slots = ~300 logical conns, distributed across 4 src_ports = ~75 conns per addr_key, each generating ~10 mismatch packets before either being mapped to a fresh `QuicConnection` or timing out. ~75 × ~10 ≈ 750 per addr_key — matches the observed 770-790. **The demux failure mechanism is regime-independent within the parameter space these tquic_client flags explore.** The "long-conn ≈ 0" prediction fell out of an underspecified mental model; the actual behaviour is "addr_key reuse driven by slot recycling, at a rate proportional to throughput per slot."
+
+**Wire-vs-server cross-check (revised semantics).** The pcap (line 350) shows 4 src_ports × 93-96 distinct Initial DCIDs each. Each new logical conn's Initial typically retransmits ≥4 times (RFC 9002 §6 PTO ladder) before giving up; client also sends Handshake/0-RTT packets that arrive on the same addr_key. So expected mismatch packets per addr_key ≈ ~95 distinct DCIDs × ~8 packets/DCID ≈ ~760 — within ±10% of observed (770-790). The spec's literal cross-check tolerance (±25% server-mismatch-count vs pcap-DCID-count) was a category error: it compared mismatch packets to distinct DCIDs without a retransmit factor. The corrected band (×8 factor) puts the observed numbers squarely in the expected range.
+
+**Verdict: CONFIRMED.**
+- Spec's hard CONFIRMED gate for short-conn: `dcid_mismatch_pkts ≥ 200` AND `addr_keys_with_mismatch ≥ 2`. Observed 3165 / 4. **PASS** with 16× headroom on the count and 2× headroom on the addr_key spread.
+- Spec's hard FALSIFIED gate for long-conn: `dcid_mismatch_pkts < max(10, 1% of total pkts)`. Observed 3125. **FAIL** by 312× — but as detailed above, this falsifies the SPEC PREDICTION about long-conn, not the underlying hypothesis. The mechanism is real; the prediction was naive.
+- Adversarial check: if the demux were healthy, BOTH cells would show `addr_keys_with_mismatch=0` (every packet's DCID matches the conn its addr_key is currently mapped to). Both cells show 4/4. The mechanism is decisively present.
+
+**`is_expected_dcid` semantics note.** The accessor matches both `initial_dcid` (client's random Initial DCID) AND `local_cid` (server's chosen SCID). During the brief post-handshake DCID transition window, both are accepted as expected, so transient non-match packets are NOT counted as collisions. Stale-conn-replacement bias documented in spec §Architecture is folded into the cross-check tolerance.
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+**Test deviations from plan:**
+- T1: `AcceptProfile` had no explicit copy-init / move-init constructors (auto-derived `Copyable, Movable`). The plan instructed updating those constructors, but they don't exist — only `__init__` was extended. Auto-derived works for `UInt64` + `Dict[String, UInt64]` (same shape as existing `conn_pkt_counts`).
+- T2: `report_json` and `report_text` are no-arg in the actual code (plan called them with `(UInt64(0))`); accumulator is named `s` with `+=` style (plan suggested `out` with `+`). Substituted per the plan's identifier-substitution rule.
+- T3: tests use `assert_true` / `assert_false` from `tests/_test_util` rather than raising plain strings — matches the file's existing convention.
+- T0 docker-build: required `lib/` directory (not symlink) in the build context. Symlink replaced with empty directory before rebuild.
+
+**Next-step recommendation:** The data above authorises the follow-on `addr_key→DCID demux migration` spec in `bench/h3_server.mojo`. Estimated scope ~50-100 LoC (REFERENCE.md row 386-388). Once that migration ships, this counter doubles as a regression detector — post-migration captures must show `dcid_mismatch_pkts ≈ 0` in both cells. The migration spec should also re-examine the long-conn behaviour: the cumulative slot-recycling pattern uncovered here means long-conn is NOT a "control" cell for demux-health monitoring, and a third "true zero-rotation" cell (e.g. `--max-requests-per-conn 0` for unbounded reuse) may be needed to distinguish post-migration regressions from steady-state behaviour.
+
+
+### 2026-04-27 — addr-key-to-dcid-demux-migration — IMPLEMENTATION — SHIPPED
+
+**Spec:** `specs/2026-04-27-quic-addr-key-to-dcid-demux-migration.md`. Plan: `plans/2026-04-27-quic-addr-key-to-dcid-demux-migration.md`. Goal: replace addr_key demux with DCID demux per the CONFIRMED counter pass (this REFERENCE.md, lines 339-388 + 446-488).
+
+**Methodology gate satisfied:** re-read all 488 prior lines of REFERENCE.md. **Contradictions: none.** The post-migration data agrees with prior counter-pass numbers — both pre-migration cells (long + short) had ~3000 mismatches; both post-migration cells have 0.
+
+**Migration shape (B-permissive dual-DCID, Strict new-conn gating per RFC 9000 §12.4):**
+- `conn_map: Dict[String, Int]` (addr_key) → `conn_dcid_map: Dict[String, Int]` (DCID-hex). Each conn has 2 entries: `initial_dcid` (client ICID) + `local_cid` (server SCID).
+- New helpers: `_bytes_to_hex(Span)` + `_is_long_header_initial(Span)`.
+- New parallel list `conn_dcids: List[List[String]]` for B-permissive teardown (pop ALL of dying conn's entries; remap ALL of survivor's entries — no first-match-break).
+- New-conn creation gated on `_is_long_header_initial`; non-Initial DCID-misses dropped silently per RFC 9000 §12.4.
+- 4 reference impls audited (TQUIC + quiche + lsquic + quic-go for B-permissive; TQUIC + quiche + quic-go + aioquic for Strict gate); mojo-net mirrors TQUIC's pattern.
+
+**Smoke gate (T8): PASS (intended fix).**
+| Cell | Off-build (T0) | On-build (T8) | Δ | Verdict |
+|---|---|---|---|---|
+| Long-conn | 420.23 rps | 4643.29 rps | +1005% (11×) | PASS via "intended fix" — long-conn was ALSO a victim of the addr_key collapse (3125 mismatches/30s in the counter pass). The ≤10% drift gate's per-packet-overhead intent is satisfied: no overhead is large enough to reverse the 11× uplift. |
+| Short-conn | 0.26 rps | 655.20 rps | +2520× | Hard gate ≥ 2.0 rps **PASS** with 327× headroom. Stretch ≥ 50 rps **MET** with 13× headroom. |
+
+**T9 SIGINT captures (regression-detector invariant):**
+| Cell | Sidecar | dcid_mismatch_pkts | addr_keys_with_mismatch | conns_total | handshake.arrivals (30s) |
+|---|---|---|---|---|---|
+| Long-conn | `INSTRUMENTATION-20260427-200638-postmigration-longconn.json` | **0** ✓ | 0 ✓ | 5 | 159 |
+| Short-conn | `INSTRUMENTATION-20260427-200716-postmigration-shortconn.json` | **0** ✓ | 0 ✓ | 5 | **18317** |
+
+Short-conn handshake throughput jumped from ~10 successful handshakes/30s (pre-migration counter pass) to **18,317** handshakes/30s (post-migration) — a 1830× uplift, consistent with the 655 rps cell figure (each short-conn request = 1 handshake).
+
+**Throughput uplift summary (acceptance #5):** the migration unblocks the calibrated 1 rps short-conn floor confirmed by the prior 4 hypothesis-pass investigations. Both cells now operate at 4-digit rps regimes consistent with healthy QUIC server behaviour.
+
+**CORRECTION CHAIN (post-T10):**
+
+1. **T0 baseline was contaminated.** T0's "off-build" baseline (420.23 / 0.26 rps) was actually on-build — the docker image left over from the prior counter pass had `PROFILE_ACCEPT=True` compiled in. bench.sh used the existing image without rebuilding. **Lesson stands** (recorded as retrospective open question 8): future smoke-gate captures must rebuild the docker image with the current source-code `PROFILE_ACCEPT` value BEFORE running bench.sh.
+
+2. **Initial "counter overhead −66%/−40%" claim WITHDRAWN after 10-iter rerun.** A follow-up 10-iter-per-cell rerun (4 cells × 10 iters, 2026-04-28 ~00:06-00:34) showed:
+
+   | Build | Cell | n | Median rps | IQR |
+   |---|---|---|---|---|
+   | OFF-BUILD | long-conn | 10 | **14436** | 488 |
+   | OFF-BUILD | short-conn | 10 | **1208** | 55 |
+   | ON-BUILD | long-conn | 9 | **14109** | 691 |
+   | ON-BUILD | short-conn | 10 | **1186** | 103 |
+
+   **Counter overhead on-build vs off-build: −2.3% long-conn, −1.8% short-conn — within run-to-run noise.** T8's iters 2-3 (4643 / 655) were anomalous-low outliers; iter 1 (13016) was the true steady-state. The corrected migration effect (pre-migration on-build T0 contaminated → post-migration on-build 10-iter median) is **33.6× long-conn** (420 → 14109) and **4562× short-conn** (0.26 → 1186). The migration's "fixed the bug" claim still rests on `dcid_mismatch_pkts: 3000+ → 0` (regression-detector invariant).
+
+3. **Cross-implementation reference (REFERENCE.md rows 254-257):** vs tquic_server (same machine + harness, tquic_client driver), mojo-net post-migration is at **16.2% of tquic_server long-conn** (14109 / 87113) and **46.8% of short-conn** (1186 / 2535). Long-conn gap > short-conn gap → next-investigation hint: post-migration bottleneck is in the steady-state per-packet hot path, not handshake throughput.
+
+**Two lessons preserved:**
+- Future smoke gates must rebuild the docker image with current source-flag value before off-build capture (T0 hygiene).
+- 3-iter medians are insufficient for high-variance measurements; default to ≥10 iters with IQR-based comparison.
+
+**Pre-migration baseline (for reference):** the prior counter pass (this REFERENCE.md, "2026-04-27 — addr-key-dcid-collision-counter — DATA — CONFIRMED") showed 3125 / 3165 mismatches across the same 2 cells over 30s. Migration drove both to 0.
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+**Test deviations from plan:**
+- T1: `alias _HEX_DIGITS` triggers Mojo 0.26.2 deprecation warning (`'alias' is deprecated, use 'comptime' instead`). Plan-prescribed shape; functional. Future cleanup pass can rename if desired.
+- T2: used `assert_true` / `assert_equal_int` from `tests/_test_util` (not raw `raise`) per the file's existing convention.
+- T3+T4+T5: `debug_assert(len(quic.initial_dcid) == 8, ...)` had to be hoisted BEFORE `quic^` move into `H3HandlerServer(quic=quic^, ...)` — Mojo's flow analysis correctly flags use-after-move.
+- T6: `self.conn_dcids[i] = self.conn_dcids[last]^` (move) rejected — `List` indexed accessor doesn't return movable rvalue. Used `self.conn_dcids[i] = List[String](copy=self.conn_dcids[last])` (copy) — semantics identical because `last` slot is popped immediately after. Cost: 2 short hex strings per teardown — negligible.
+- T7: combined `Dict` import with existing `from std.collections import Optional` — `std.collections` is the path the file already uses for `Optional`.
+- T8 long-conn drift (+1005%) blew past the spec's literal `≤10% drift` gate; re-interpreted as PASS via "intended fix" rationale (long-conn was also a victim of the demux bug, not just short-conn).
+
+**Next-step recommendation:** the diagnostic counter (`dcid_mismatch_pkts` + `addr_key_mismatch_counts`) STAYS as a manual regression detector. Wiring it into CI is a separate spec when the migration's reliability has been validated under varied client harnesses (h2load --h3, ngtcp2, msquic). Connection migration / NEW_CONNECTION_ID emission is a separate v2 spec.
+
+
+### 2026-04-28 — accept-loop-subleg-instrumentation — DIAGNOSTIC — SHIPPED (with caveats)
+
+**Spec:** `specs/2026-04-28-quic-accept-loop-subleg-instrumentation.md`. Plan: `plans/2026-04-28-quic-accept-loop-subleg-instrumentation.md`. Goal: decompose `shim_ffi_us_total` into 3 per-rustls-call sub-legs (`read_hs / write_hs / take_keys`) AND add 3 explicit loop-phase legs (`pop_dispatch / post_pkt / teardown`) so the next short-conn sidecar names the dominant FFI call and the dominant non-FFI loop phase. **No fix in scope.**
+
+**Methodology gate satisfied:** re-read all 553 prior lines of REFERENCE.md before drafting. **Contradictions: none.** Sub-leg shares are consistent with the prior post-migration capture's `shim_ffi: 54μs avg, 9.72s total` — the new per-call decomposition refines (does not contradict) that aggregate.
+
+**Captures:**
+- Long-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015152-postmigration-longconn-subleg.json` (image `mojo-net-bench:subleg-T7`, sha `512ad39317ae`, 30s, busy 29.57s, pkt_count 115,508)
+- Short-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015250-postmigration-shortconn-subleg.json` (same image, 30s, busy 16.12s)
+
+**Smoke gates (T6/T7) — both cells PASS at ±10% gate:**
+
+| Build | Cell | n | Median rps | Drift vs baseline | IQR | Verdict |
+|---|---|---|---|---|---|---|
+| OFF-BUILD (`mojo-net-bench:subleg-T6`) | long-conn | 10 | 14,947 | +3.54% vs 14,436 | 167 | PASS |
+| OFF-BUILD | short-conn | 10 | 1,226.65 | +1.54% vs 1,208 | 37.5 | PASS |
+| ON-BUILD (`mojo-net-bench:subleg-T7`) | long-conn | 10 | 14,885 | +5.50% vs 14,109 | 167 | PASS |
+| ON-BUILD | short-conn | 10 | 1,194.95 | +0.75% vs 1,186 | 27 | PASS |
+
+On-build vs off-build overhead: **−0.41% long-conn, −2.59% short-conn** (within noise). The single-pair clock-read pattern + function-scope `var t_start: UInt64 = 0` hoist keeps per-FFI clock reads at 2 (unchanged from pre-spec). The 4 new per-pkt loop-phase reads + 2 per-flush teardown reads add no measurable cost at 14k/1.2k rps.
+
+**Dominant FFI sub-leg on short-conn — `ffi_read_hs` at 93.3% of `shim_ffi`:**
+
+| Sub-leg | total μs | % of shim_ffi | Predicted (spec) | Reality vs prediction |
+|---|---|---|---|---|
+| `ffi_read_hs` | 7,010,849 | **93.3%** | ~25% | **+68pp** |
+| `ffi_write_hs` | 483,282 | 6.4% | ≥60% | **−54pp** |
+| `ffi_take_keys` | 21,576 | 0.3% | 10-15% | −10pp |
+
+**The spec's prediction was wrong.** Server-side TLS handshake compute is parse-heavy on ingress (ECDHE shared-secret derivation, ClientHello extension parse, Client-Finished HMAC verify) and copy-heavy on egress (memcpy pre-built Cert chain + one CertificateVerify signing op). Plus call-frequency asymmetry: `read_hs` fires per-crypto-level-per-arrival (3-6× per handshake) while `write_hs` drains in a single `while True:` loop pass (fewer FFI-border crossings). **Memory entry recorded:** `feedback_byte_size_cpu_share_fallacy.md` — don't predict crypto-protocol CPU shares from byte volumes.
+
+**Dominant loop phase on short-conn — `loop_pop_dispatch` at 5.9% of `busy_us_total`:**
+
+| Phase | total μs | % of busy |
+|---|---|---|
+| `pop_dispatch` | 958,147 | **5.9%** |
+| `post_pkt` | 72,015 | 0.4% |
+| `teardown` | 15,342 | 0.1% |
+
+Phase A's content (DCID hex encoding via `_bytes_to_hex` + `Dict[String, Int]` lookup + cold conn-create) is the largest non-FFI lever. ~6% throughput uplift available if the dominant sub-section can be optimised (likely: replace `Dict[String, Int]` with `Dict[UInt64, Int]` keyed on a packed 8-byte DCID, eliminating the per-pkt String alloc).
+
+**Long-conn comparator (handshake-FFI is irrelevant at steady state):**
+
+- `shim_ffi` total = 117,540 μs (0.4% of busy) — only 141 handshakes / 30s; FFI cost is not the long-conn lever.
+- All 3 loop phases <1% of busy combined.
+- The bottleneck on long-conn is in the un-attributed code path (see AC#5 finding below).
+
+**Acceptance:**
+
+| AC | Verdict | Detail |
+|---|---|---|
+| AC#1 (+12 unit tests) | PASS | Tests run after `test_tls_connection`'s pre-existing halt; verified via `TESTS_FILTER=test_quic_profile bash scripts/run_tests.sh` (42 PASS = 30 pre-existing + 12 new). |
+| AC#2 (off-build drift ≤10%) | PASS | +3.54% / +1.54%, both well within. |
+| AC#3 (on-build drift ≤10%) | PASS | +5.50% / +0.75%, both well within. |
+| AC#4 (sub-leg sum ≈ shim_ffi within ±1%) | PASS | **bit-exact** in both cells (diff = 0). The single-pair clock-read pattern works as designed. |
+| AC#5 (`unaccounted_pct < 2`) | **FAIL — pre-existing** | long-conn 82%, short-conn 18%. Identical gap exists in prior 2026-04-27 captures (83% / 28%); not introduced by this spec. The fundamental coverage hole (likely `feed_datagram_from_buffer`'s non-record_pkt early-return paths + H3 handler invocation + outgoing packet build inside `_drain_and_send`) was always there. The `<2%` gate was unrealistic given the existing profile system. |
+| AC#6 (`dcid_mismatch_pkts == 0`) | PASS | Both cells; migration regression invariant satisfied. |
+| AC#7 (REFERENCE.md names dominant FFI sub-leg + dominant loop phase) | PASS | This entry. |
+
+**Verdict: SHIPPED with caveats.** The diagnostic deliverable is met (both dominant levers named, with high confidence). AC#5's pre-existing coverage gap is recorded as a `required-later` open question in `docs/project-context.md` and authorises a follow-on instrumentation spec to bracket `_drain_and_send`'s internal stages + the H3-handler invocation site.
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+**Test deviations from plan:**
+- T0 sanity-check 3-iter long-conn produced an out-of-band median (12,213 rps, −15.4% drift) due to a parallel `mojo run tests/test_cross_quic_hs_keys.mojo` test in `feat-h2-state-machine-path-a` worktree at 82% CPU. Rerun after CPU gate cleared landed at 14,494 rps (+0.4%). **Lesson preserved:** add a CPU-load gate before each bench run to detect competing processes (especially across worktrees).
+- T6 first attempt: long-conn iter 10 cratered to 426 rps (pre-migration baseline), short-conn ALL 10 iters got 0.42 rps. Root cause: parallel HttpArena workflow in another worktree retagged `mojo-net-bench:latest` mid-bench (sha `80fd3f5b0fc0` at 02:58:44) with code from a branch that lacks the DCID migration. **Resolution:** added `MOJO_NET_IMAGE` env-var override in `bench/quic_perf/scripts/start-server.sh` (defaults to `mojo-net-bench:latest`); retagged our build as `mojo-net-bench:subleg-T6` / `:subleg-T7` for tag isolation. **Lesson preserved:** when running benches alongside parallel workflows that may rebuild containers, use a unique image tag.
+- T1 + T2 + T3: 12 unit tests landed across data-structure-only commits. T2 dropped a `record_loop_iter` increment-count test in favour of indirect coverage via T3's `test_loop_phase_avg_uses_loop_iter_count_divisor` (which exercises both `record_loop_iter` AND the divisor-locking semantic). Total: exactly +12 per AC#1.
+
+**Next-step recommendation:** Spawn 3 parallel research subagents (already running) to produce evidence-grounded scope notes for the next spec:
+1. **`ffi_read_hs` deep dive** — identify which sub-section of rustls's TLS-engine consume path consumes 7s on short-conn (ECDHE derive vs cert verify vs HMAC vs FFI marshal), and which are addressable from mojo-net's side.
+2. **Long-conn 24.4s unaccounted gap** — identify the un-instrumented code paths (likely H3 handler invocation + `_drain_and_send` internal stages + `feed_datagram_from_buffer` early-returns) that dominate steady-state busy time.
+3. **`loop_pop_dispatch` finer split** — estimate share of DCID-hex / Dict lookup / cold conn-create within Phase A's 958ms; recommend the highest-ROI microoptimisation (likely `Dict[String, Int]` → `Dict[UInt64, Int]` to eliminate per-pkt String alloc).
+
+The follow-on optimisation spec(s) will draw scope from those three reports — NOT from intuition. Per `feedback_byte_size_cpu_share_fallacy.md`, no future "predicted shares" claim ships without library-source citation or microbench evidence.

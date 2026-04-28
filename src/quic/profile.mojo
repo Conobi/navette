@@ -8,6 +8,7 @@
 # Hand-edit PROFILE_ACCEPT to True to produce a profile build (see Plan B
 # for how this gates instrumentation in connection.mojo + bench/h3_server.mojo).
 
+from collections import Dict
 from std.ffi import external_call
 from std.memory import UnsafePointer
 
@@ -70,6 +71,49 @@ struct AcceptProfile(Copyable, Movable):
     var hs_timed_out: UInt64
     var hs_latency_us: List[UInt64]
 
+    # Arrival-to-processing queueing latency (Plan: queueing-tail spec).
+    # Wall-clock interval between packet ingress (_handle_recvmsg) and
+    # flush-time processing (_flush_impl). Distinct from per_pkt_total
+    # which times the *processing*, not the wait. PROFILE_ACCEPT-gated
+    # at every measurement site in bench/h3_server.mojo.
+    var arrival_lat_us_buckets: List[UInt64]   # len = 24, same layout as per_pkt_total_buckets
+    var arrival_lat_us_overflow: UInt64
+    var arrival_lat_us_total: UInt64
+
+    # Per-connection packet counts and handshake-complete tracking.
+    # `conn_pkt_counts` maps addr_key (src_ip:src_port String) → packet count.
+    # `conn_hs_complete` is used as a Set: presence == hs_complete observed.
+    # Aggregated histogram + scalar derived at report time.
+    var conn_pkt_counts: Dict[String, UInt64]
+    var conn_hs_complete: Dict[String, Bool]
+
+    # Plan: 2026-04-27-quic-addr-key-dcid-collision-counter
+    # Total packets where _find_conn(pd.addr_key) returned a hit but
+    # pd.dcid was not in the conn's expected-DCID set.  Direct measure
+    # of demux failure under PROFILE_ACCEPT.
+    var dcid_mismatch_pkts: UInt64
+
+    # 3 FFI sub-leg totals — decompose ffi_shim_us_total per rustls call-site.
+    # Lifetime-accumulated (NEVER reset per-pkt). Cross-validation:
+    # ffi_read_hs + ffi_write_hs + ffi_take_keys must equal ffi_shim_us_total
+    # within ±1% across a 30s capture.
+    var ffi_read_hs_us_total: UInt64
+    var ffi_write_hs_us_total: UInt64
+    var ffi_take_keys_us_total: UInt64
+
+    # 3 loop phase totals — decompose un-attributed bench-loop overhead.
+    # pop_dispatch + post_pkt are per-pkt accumulators; teardown is
+    # per-flush. Divisor for pop_dispatch.avg / post_pkt.avg is
+    # loop_iter_count (NOT pkt_count, which excludes continue'd iters);
+    # divisor for teardown.avg is on_flush_count.
+    var loop_pop_dispatch_us_total: UInt64
+    var loop_post_pkt_us_total: UInt64
+    var loop_teardown_us_total: UInt64
+    var loop_iter_count: UInt64
+
+    # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
+    var addr_key_mismatch_counts: Dict[String, UInt64]
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -95,6 +139,22 @@ struct AcceptProfile(Copyable, Movable):
         self.hs_completed = UInt64(0)
         self.hs_timed_out = UInt64(0)
         self.hs_latency_us = List[UInt64]()
+        self.arrival_lat_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.arrival_lat_us_buckets.append(UInt64(0))
+        self.arrival_lat_us_overflow = UInt64(0)
+        self.arrival_lat_us_total = UInt64(0)
+        self.conn_pkt_counts = Dict[String, UInt64]()
+        self.conn_hs_complete = Dict[String, Bool]()
+        self.dcid_mismatch_pkts = UInt64(0)
+        self.ffi_read_hs_us_total = UInt64(0)
+        self.ffi_write_hs_us_total = UInt64(0)
+        self.ffi_take_keys_us_total = UInt64(0)
+        self.loop_pop_dispatch_us_total = UInt64(0)
+        self.loop_post_pkt_us_total = UInt64(0)
+        self.loop_teardown_us_total = UInt64(0)
+        self.loop_iter_count = UInt64(0)
+        self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -149,7 +209,70 @@ struct AcceptProfile(Copyable, Movable):
     def record_handshake_timeout(mut self, count: UInt64 = UInt64(1)):
         self.hs_timed_out += count
 
-    def report_text(self) -> String:
+    def record_arrival_lat(mut self, us: UInt64):
+        """Record per-packet queueing latency (arrival → processing dispatch).
+
+        Dispatches into 24-bucket power-of-2 histogram via _per_pkt_bucket.
+        Values >= 2^23 us go to arrival_lat_us_overflow; total sum always
+        accumulated regardless of bucket vs overflow.
+        """
+        self.arrival_lat_us_total += us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.arrival_lat_us_overflow += UInt64(1)
+        else:
+            self.arrival_lat_us_buckets[b] += UInt64(1)
+
+    def record_conn_pkt(mut self, addr_key: String) raises:
+        """Increment per-connection packet counter for `addr_key`."""
+        if addr_key in self.conn_pkt_counts:
+            self.conn_pkt_counts[addr_key] = self.conn_pkt_counts[addr_key] + UInt64(1)
+        else:
+            self.conn_pkt_counts[addr_key] = UInt64(1)
+
+    def record_conn_hs_complete(mut self, addr_key: String):
+        """Mark addr_key as having completed the QUIC handshake.
+
+        Idempotent: redundant calls (per-packet polling of is_established())
+        result in only one entry in conn_hs_complete.
+        """
+        self.conn_hs_complete[addr_key] = True
+
+    def record_dcid_mismatch(mut self, addr_key: String) raises:
+        """Record a packet whose dcid did not match the conn for its addr_key.
+
+        Caller has already done the membership test against
+        QuicConnection.is_expected_dcid; this method only counts.
+        """
+        self.dcid_mismatch_pkts = self.dcid_mismatch_pkts + UInt64(1)
+        if addr_key in self.addr_key_mismatch_counts:
+            self.addr_key_mismatch_counts[addr_key] = (
+                self.addr_key_mismatch_counts[addr_key] + UInt64(1))
+        else:
+            self.addr_key_mismatch_counts[addr_key] = UInt64(1)
+
+    def record_ffi_read_hs(mut self, us: UInt64):
+        self.ffi_read_hs_us_total = self.ffi_read_hs_us_total + us
+
+    def record_ffi_write_hs(mut self, us: UInt64):
+        self.ffi_write_hs_us_total = self.ffi_write_hs_us_total + us
+
+    def record_ffi_take_keys(mut self, us: UInt64):
+        self.ffi_take_keys_us_total = self.ffi_take_keys_us_total + us
+
+    def record_loop_pop_dispatch(mut self, us: UInt64):
+        self.loop_pop_dispatch_us_total = self.loop_pop_dispatch_us_total + us
+
+    def record_loop_post_pkt(mut self, us: UInt64):
+        self.loop_post_pkt_us_total = self.loop_post_pkt_us_total + us
+
+    def record_loop_teardown(mut self, us: UInt64):
+        self.loop_teardown_us_total = self.loop_teardown_us_total + us
+
+    def record_loop_iter(mut self):
+        self.loop_iter_count = self.loop_iter_count + UInt64(1)
+
+    def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
         var n_closed = self.pkt_count - self.per_pkt_total_overflow
@@ -210,10 +333,116 @@ struct AcceptProfile(Copyable, Movable):
         s += "  p50=" + String(lp50) + "   p90=" + String(lp90)
         s += "   p99=" + String(lp99) + "   max=" + String(lmax)
         s += "   (n=" + String(len(self.hs_latency_us)) + ")\n"
+
+        # Arrival-to-processing latency.
+        s += "Arrival-to-processing latency (bucket-estimated p_n, us):\n"
+        var arr_total_obs: UInt64 = UInt64(0)
+        for i in range(24):
+            arr_total_obs += self.arrival_lat_us_buckets[i]
+        var arr_p50 = _bucket_percentile(self.arrival_lat_us_buckets, arr_total_obs, 50.0)
+        var arr_p90 = _bucket_percentile(self.arrival_lat_us_buckets, arr_total_obs, 90.0)
+        var arr_p99 = _bucket_percentile(self.arrival_lat_us_buckets, arr_total_obs, 99.0)
+        s += "  total:           p50=" + String(arr_p50) + "  p90=" + String(arr_p90) + "  p99=" + String(arr_p99)
+        s += "  (n=" + String(arr_total_obs) + ", overflow=" + String(self.arrival_lat_us_overflow) + ")\n"
+        s += "  total_us:        " + String(self.arrival_lat_us_total) + "\n\n"
+
+        # Per-connection packet counts (aggregated histogram).
+        s += "Per-connection packet counts (aggregated 8-bucket histogram):\n"
+        var pc_buckets = List[UInt64]()
+        for _ in range(8):
+            pc_buckets.append(UInt64(0))
+        var pc_total: UInt64 = UInt64(0)
+        var pc_no_hs: UInt64 = UInt64(0)
+        for entry in self.conn_pkt_counts.items():
+            pc_total += UInt64(1)
+            var b = _pkts_per_flush_bucket(Int(entry.value))
+            pc_buckets[b] += UInt64(1)
+            if entry.key not in self.conn_hs_complete:
+                pc_no_hs += UInt64(1)
+        var pc_labels = List[String]()
+        pc_labels.append(String("size=1     "))
+        pc_labels.append(String("size=2-3   "))
+        pc_labels.append(String("size=4-7   "))
+        pc_labels.append(String("size=8-15  "))
+        pc_labels.append(String("size=16-31 "))
+        pc_labels.append(String("size=32-63 "))
+        pc_labels.append(String("size=64-127"))
+        pc_labels.append(String("size=128+  "))
+        for i in range(8):
+            s += "  " + pc_labels[i] + " " + _fmt_count(pc_buckets[i]) + "\n"
+        s += "  conns_total:                  " + _fmt_count(pc_total) + "\n"
+        s += "  conns_with_pkts_no_hs_complete:" + _fmt_count(pc_no_hs) + "\n\n"
+
+        # addr_key DCID-mismatch section (Plan: 2026-04-27 collision counter).
+        s += "-- addr_key DCID mismatch --\n"
+        s += "  total mismatch pkts:    " + String(self.dcid_mismatch_pkts) + "\n"
+        s += "  addr_keys total:        " + String(len(self.addr_key_mismatch_counts)) + "\n"
+        var addr_keys_with_mismatch_t: UInt64 = UInt64(0)
+        for entry in self.addr_key_mismatch_counts.items():
+            if entry.value > UInt64(0):
+                addr_keys_with_mismatch_t = addr_keys_with_mismatch_t + UInt64(1)
+        s += "  addr_keys w/ mismatch:  " + String(addr_keys_with_mismatch_t) + "\n"
+        for entry in self.addr_key_mismatch_counts.items():
+            s += "    " + entry.key + ": " + String(entry.value) + "\n"
+        s += "\n"
+
+        # FFI sub-legs (Plan: 2026-04-28).
+        s += "FFI sub-legs:\n"
+        s += "  " + _fmt_leg("read_hs",   self.ffi_read_hs_us_total,   self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("write_hs",  self.ffi_write_hs_us_total,  self.pkt_count) + "\n"
+        s += "  " + _fmt_leg("take_keys", self.ffi_take_keys_us_total, self.pkt_count) + "\n\n"
+
+        # Loop phases (Plan: 2026-04-28).
+        s += "Loop phases:\n"
+        s += "  " + _fmt_leg("pop_dispatch", self.loop_pop_dispatch_us_total, self.loop_iter_count) + "\n"
+        s += "  " + _fmt_leg("post_pkt",     self.loop_post_pkt_us_total,     self.loop_iter_count) + "\n"
+        s += "  " + _fmt_leg("teardown",     self.loop_teardown_us_total,     self.on_flush_count) + "\n"
+        s += "  loop_iter_count:                  " + _fmt_count(self.loop_iter_count) + "\n"
+        # Budget closure (mirrors report_json computation).
+        var pp_legs = (self.header_parse_us_total + self.hp_us_total + self.aead_us_total
+            + self.frame_parse_us_total + self.sm_us_total + self.residual_us_total)
+        var acct = (pp_legs + self.drain_us_total + self.loop_pop_dispatch_us_total
+            + self.loop_post_pkt_us_total + self.loop_teardown_us_total)
+        var unacct: UInt64 = UInt64(0)
+        if self.busy_us_total > acct:
+            unacct = self.busy_us_total - acct
+        var unacct_pct: UInt64 = UInt64(0)
+        if self.busy_us_total > UInt64(0):
+            unacct_pct = (unacct * UInt64(100)) / self.busy_us_total
+        s += "  unaccounted_us_total:             " + _fmt_count(unacct) + "  (" + String(unacct_pct) + "% of busy)\n\n"
+
+        # Top-50 worst offenders (parallel insertion sort).
+        s += "Worst offenders (top 50 addr_keys by pkt_count, no hs_complete):\n"
+        var wo_keys = List[String]()
+        var wo_vals = List[UInt64]()
+        for entry in self.conn_pkt_counts.items():
+            if entry.key in self.conn_hs_complete:
+                continue
+            wo_keys.append(entry.key)
+            wo_vals.append(entry.value)
+        var wo_n = len(wo_vals)
+        for i in range(1, wo_n):
+            var v = wo_vals[i]
+            var k = wo_keys[i]
+            var j = i - 1
+            while j >= 0 and wo_vals[j] < v:
+                wo_vals[j + 1] = wo_vals[j]
+                wo_keys[j + 1] = wo_keys[j]
+                j -= 1
+            wo_vals[j + 1] = v
+            wo_keys[j + 1] = k
+        var wo_cap = wo_n
+        if wo_cap > 50:
+            wo_cap = 50
+        for i in range(wo_cap):
+            s += "  " + wo_keys[i] + "  pkt_count=" + String(wo_vals[i]) + "\n"
+        if wo_n == 0:
+            s += "  (none)\n"
+        s += "\n"
         s += "=== end ===\n"
         return s^
 
-    def report_json(self) -> String:
+    def report_json(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
         var n_closed = self.pkt_count - self.per_pkt_total_overflow
@@ -272,6 +501,142 @@ struct AcceptProfile(Copyable, Movable):
         s += _json_leg("shim_ffi",     self.ffi_shim_us_total,     self.pkt_count) + ",\n"
         s += _json_leg("drain",        self.drain_us_total,        self.pkt_count) + "\n"
         s += "  },\n"
+
+        s += '  "arrival_lat_us_total": ' + String(self.arrival_lat_us_total) + ',\n'
+        s += '  "arrival_lat_us_overflow": ' + String(self.arrival_lat_us_overflow) + ',\n'
+        s += '  "arrival_lat_us_buckets": ['
+        for i in range(24):
+            s += String(self.arrival_lat_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+
+        # Per-conn aggregated histogram + scalar.
+        # Walk conn_pkt_counts.items(); dispatch each conn's packet count via _pkts_per_flush_bucket.
+        var per_conn_buckets = List[UInt64]()
+        for _ in range(8):
+            per_conn_buckets.append(UInt64(0))
+        var conns_total: UInt64 = UInt64(0)
+        var conns_no_hs: UInt64 = UInt64(0)
+        for entry in self.conn_pkt_counts.items():
+            conns_total += UInt64(1)
+            var bkt = _pkts_per_flush_bucket(Int(entry.value))
+            per_conn_buckets[bkt] += UInt64(1)
+            if entry.key not in self.conn_hs_complete:
+                conns_no_hs += UInt64(1)
+
+        s += '  "per_conn_pkts_buckets": ['
+        for i in range(8):
+            s += String(per_conn_buckets[i])
+            if i < 7:
+                s += ", "
+        s += "],\n"
+        s += '  "conns_total": ' + String(conns_total) + ',\n'
+        s += '  "conns_with_pkts_no_hs_complete": ' + String(conns_no_hs) + ',\n'
+
+        # addr_key DCID-mismatch block (Plan: 2026-04-27 collision counter).
+        var addr_keys_with_mismatch: UInt64 = UInt64(0)
+        for entry in self.addr_key_mismatch_counts.items():
+            if entry.value > UInt64(0):
+                addr_keys_with_mismatch = addr_keys_with_mismatch + UInt64(1)
+        s += '  "addr_key_dcid_mismatch": {\n'
+        s += '    "dcid_mismatch_pkts": ' + String(self.dcid_mismatch_pkts) + ',\n'
+        s += '    "addr_keys_total": ' + String(len(self.addr_key_mismatch_counts)) + ',\n'
+        s += '    "addr_keys_with_mismatch": ' + String(addr_keys_with_mismatch) + ',\n'
+        s += '    "per_addr_key": {'
+        var first_mm = True
+        for entry in self.addr_key_mismatch_counts.items():
+            if not first_mm:
+                s += ","
+            first_mm = False
+            s += '\n      "' + entry.key + '": ' + String(entry.value)
+        s += "\n    }\n  },\n"
+
+        # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
+        var read_hs_avg: UInt64 = UInt64(0)
+        var write_hs_avg: UInt64 = UInt64(0)
+        var take_keys_avg: UInt64 = UInt64(0)
+        if self.pkt_count > UInt64(0):
+            read_hs_avg = self.ffi_read_hs_us_total / self.pkt_count
+            write_hs_avg = self.ffi_write_hs_us_total / self.pkt_count
+            take_keys_avg = self.ffi_take_keys_us_total / self.pkt_count
+        s += '  "ffi_subleg_us": {\n'
+        s += '    "read_hs":   {"avg": ' + String(read_hs_avg) + ', "total": ' + String(self.ffi_read_hs_us_total) + '},\n'
+        s += '    "write_hs":  {"avg": ' + String(write_hs_avg) + ', "total": ' + String(self.ffi_write_hs_us_total) + '},\n'
+        s += '    "take_keys": {"avg": ' + String(take_keys_avg) + ', "total": ' + String(self.ffi_take_keys_us_total) + '}\n'
+        s += "  },\n"
+
+        # Loop phases (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
+        var pop_dispatch_avg: UInt64 = UInt64(0)
+        var post_pkt_avg: UInt64 = UInt64(0)
+        if self.loop_iter_count > UInt64(0):
+            pop_dispatch_avg = self.loop_pop_dispatch_us_total / self.loop_iter_count
+            post_pkt_avg = self.loop_post_pkt_us_total / self.loop_iter_count
+        var teardown_avg: UInt64 = UInt64(0)
+        if self.on_flush_count > UInt64(0):
+            teardown_avg = self.loop_teardown_us_total / self.on_flush_count
+        # Budget closure ε:
+        # busy = per_pkt_total_sum + drain + pop_dispatch + post_pkt + teardown + ε
+        # per_pkt_total_sum is reconstructed from leg sums (ffi excluded — overlaps sm).
+        var per_pkt_legs_sum = (self.header_parse_us_total
+            + self.hp_us_total
+            + self.aead_us_total
+            + self.frame_parse_us_total
+            + self.sm_us_total
+            + self.residual_us_total)
+        var accounted = (per_pkt_legs_sum
+            + self.drain_us_total
+            + self.loop_pop_dispatch_us_total
+            + self.loop_post_pkt_us_total
+            + self.loop_teardown_us_total)
+        var unaccounted: UInt64 = UInt64(0)
+        if self.busy_us_total > accounted:
+            unaccounted = self.busy_us_total - accounted
+        var unaccounted_pct: UInt64 = UInt64(0)
+        if self.busy_us_total > UInt64(0):
+            unaccounted_pct = (unaccounted * UInt64(100)) / self.busy_us_total
+        s += '  "loop_phases_us": {\n'
+        s += '    "pop_dispatch": {"avg": ' + String(pop_dispatch_avg) + ', "total": ' + String(self.loop_pop_dispatch_us_total) + '},\n'
+        s += '    "post_pkt":     {"avg": ' + String(post_pkt_avg) + ', "total": ' + String(self.loop_post_pkt_us_total) + '},\n'
+        s += '    "teardown":     {"avg": ' + String(teardown_avg) + ', "total": ' + String(self.loop_teardown_us_total) + '},\n'
+        s += '    "loop_iter_count": ' + String(self.loop_iter_count) + ',\n'
+        s += '    "unaccounted_us_total": ' + String(unaccounted) + ',\n'
+        s += '    "unaccounted_pct": ' + String(unaccounted_pct) + '\n'
+        s += "  },\n"
+
+        # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
+        # Materialize parallel List[String] + List[UInt64], insertion-sort descending.
+        # Report time is non-hot; clarity > heap-select.
+        var off_keys = List[String]()
+        var off_vals = List[UInt64]()
+        for entry in self.conn_pkt_counts.items():
+            if entry.key in self.conn_hs_complete:
+                continue
+            off_keys.append(entry.key)
+            off_vals.append(entry.value)
+        # Insertion sort by val descending.
+        var n_off = len(off_vals)
+        for i in range(1, n_off):
+            var v = off_vals[i]
+            var k = off_keys[i]
+            var j = i - 1
+            while j >= 0 and off_vals[j] < v:
+                off_vals[j + 1] = off_vals[j]
+                off_keys[j + 1] = off_keys[j]
+                j -= 1
+            off_vals[j + 1] = v
+            off_keys[j + 1] = k
+
+        var cap = n_off
+        if cap > 50:
+            cap = 50
+        s += '  "worst_conns": [\n'
+        for i in range(cap):
+            s += '    {"addr_key": "' + off_keys[i] + '", "pkt_count": ' + String(off_vals[i]) + ', "hs_complete": false}'
+            if i < cap - 1:
+                s += ","
+            s += "\n"
+        s += "  ],\n"
 
         s += '  "handshake": {\n'
         s += '    "arrivals": ' + String(self.hs_arrivals) + ', '

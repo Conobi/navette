@@ -421,6 +421,464 @@ def test_report_json_canned() raises:
     print("PASS: test_report_json_canned")
 
 
+def test_record_arrival_lat_buckets() raises:
+    """Verify record_arrival_lat dispatches into 24-bucket histogram and accumulates total."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Cover several bucket boundaries (mirrors _per_pkt_bucket: bucket[0]={0}; bucket[i]=[2^(i-1), 2^i)).
+    p.record_arrival_lat(UInt64(0))           # bucket 0
+    p.record_arrival_lat(UInt64(1))           # bucket 1
+    p.record_arrival_lat(UInt64(3))           # bucket 2
+    p.record_arrival_lat(UInt64(100))         # bucket 7 ([64, 128))
+    p.record_arrival_lat(UInt64(1_000_000))   # bucket 20 ([524288, 1048576))
+    assert_true(p.arrival_lat_us_buckets[0] == UInt64(1), "bucket 0 = 1")
+    assert_true(p.arrival_lat_us_buckets[1] == UInt64(1), "bucket 1 = 1")
+    assert_true(p.arrival_lat_us_buckets[2] == UInt64(1), "bucket 2 = 1")
+    assert_true(p.arrival_lat_us_buckets[7] == UInt64(1), "bucket 7 = 1")
+    assert_true(p.arrival_lat_us_buckets[20] == UInt64(1), "bucket 20 = 1")
+    assert_true(p.arrival_lat_us_total == UInt64(0 + 1 + 3 + 100 + 1_000_000), "total summed")
+    assert_true(p.arrival_lat_us_overflow == UInt64(0), "no overflow")
+    print("PASS: test_record_arrival_lat_buckets")
+
+
+def test_record_arrival_lat_overflow() raises:
+    """Verify values >= 2^23 us land in arrival_lat_us_overflow."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_arrival_lat(UInt64(8_388_608))   # 2^23 — overflow boundary
+    p.record_arrival_lat(UInt64(10_000_000))  # > 2^23 — overflow
+    assert_true(p.arrival_lat_us_overflow == UInt64(2), "overflow = 2")
+    assert_true(p.arrival_lat_us_total == UInt64(8_388_608 + 10_000_000), "overflow values still summed in total")
+    var sum_buckets: UInt64 = UInt64(0)
+    for i in range(24):
+        sum_buckets += p.arrival_lat_us_buckets[i]
+    assert_true(sum_buckets == UInt64(0), "no closed bucket entries")
+    print("PASS: test_record_arrival_lat_overflow")
+
+
+def test_record_conn_pkt_increment() raises:
+    """Verify record_conn_pkt increments addr_key counter."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_conn_pkt(String("1.2.3.4:5000"))
+    p.record_conn_pkt(String("1.2.3.4:5000"))
+    p.record_conn_pkt(String("1.2.3.4:5000"))
+    p.record_conn_pkt(String("9.9.9.9:6000"))
+    assert_true(p.conn_pkt_counts[String("1.2.3.4:5000")] == UInt64(3), "addr1 = 3")
+    assert_true(p.conn_pkt_counts[String("9.9.9.9:6000")] == UInt64(1), "addr2 = 1")
+    assert_true(len(p.conn_pkt_counts) == 2, "two distinct keys")
+    print("PASS: test_record_conn_pkt_increment")
+
+
+def test_record_conn_hs_complete_idempotent() raises:
+    """Verify record_conn_hs_complete dedupes and the no-complete scalar excludes it."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Conn A: 5 packets, completes handshake.
+    for _ in range(5):
+        p.record_conn_pkt(String("A:1"))
+    p.record_conn_hs_complete(String("A:1"))
+    p.record_conn_hs_complete(String("A:1"))   # idempotent
+    p.record_conn_hs_complete(String("A:1"))
+    # Conn B: 3 packets, never completes.
+    for _ in range(3):
+        p.record_conn_pkt(String("B:2"))
+    # Conn C: 1 packet, never completes.
+    p.record_conn_pkt(String("C:3"))
+    assert_true(len(p.conn_hs_complete) == 1, "only A:1 in hs_complete")
+    assert_true(p.conn_hs_complete[String("A:1")] == True, "A:1 marked True")
+    # Compute scalar manually for now — formal API in Task 4.
+    var no_hs: UInt64 = UInt64(0)
+    for entry in p.conn_pkt_counts.items():
+        if entry.key not in p.conn_hs_complete:
+            no_hs += UInt64(1)
+    assert_true(no_hs == UInt64(2), "B and C are no-hs-complete")
+    print("PASS: test_record_conn_hs_complete_idempotent")
+
+
+def test_report_json_arrival_latency_block() raises:
+    """Verify report_json emits the arrival-latency block with correct keys + values."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_arrival_lat(UInt64(50))         # bucket 6 ([32, 64))
+    p.record_arrival_lat(UInt64(50))         # bucket 6
+    p.record_arrival_lat(UInt64(2_000_000))  # bucket 21 ([1048576, 2097152))
+    p.record_arrival_lat(UInt64(20_000_000)) # overflow
+    var j = p.report_json()
+    assert_true('"arrival_lat_us_total":' in j, "arrival_lat_us_total key present")
+    assert_true('"arrival_lat_us_buckets":' in j, "arrival_lat_us_buckets key present")
+    assert_true('"arrival_lat_us_overflow":' in j, "arrival_lat_us_overflow key present")
+    var expected_total = UInt64(50 + 50 + 2_000_000 + 20_000_000)
+    assert_true(String('"arrival_lat_us_total": ') + String(expected_total) in j, "total value matches")
+    assert_true('"arrival_lat_us_overflow": 1' in j, "overflow = 1")
+    print("PASS: test_report_json_arrival_latency_block")
+
+
+def test_report_json_per_conn_aggregated_block() raises:
+    """Populate dict with conns of varying counts; verify 8-bucket histogram totals match."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Bucket 0 (size=1): 5 conns
+    for i in range(5):
+        p.record_conn_pkt(String("b0_") + String(i))
+    # Bucket 1 (size=2-3): 4 conns x 2 packets each
+    for i in range(4):
+        var k = String("b1_") + String(i)
+        p.record_conn_pkt(k)
+        p.record_conn_pkt(k)
+    # Bucket 2 (size=4-7): 3 conns x 5 packets each
+    for i in range(3):
+        var k = String("b2_") + String(i)
+        for _ in range(5):
+            p.record_conn_pkt(k)
+    # Bucket 3 (size=8-15): 2 conns x 10 packets each
+    for i in range(2):
+        var k = String("b3_") + String(i)
+        for _ in range(10):
+            p.record_conn_pkt(k)
+    # Mark some hs_complete: 2 from bucket 0, 1 from bucket 2
+    p.record_conn_hs_complete(String("b0_0"))
+    p.record_conn_hs_complete(String("b0_1"))
+    p.record_conn_hs_complete(String("b2_0"))
+
+    var j = p.report_json()
+    assert_true('"per_conn_pkts_buckets":' in j, "per_conn_pkts_buckets key present")
+    assert_true('"conns_total": 14' in j, "conns_total = 5+4+3+2 = 14")
+    # 14 total, 3 hs_complete -> 11 without hs_complete
+    assert_true('"conns_with_pkts_no_hs_complete": 11' in j, "no-hs scalar = 11")
+    # Histogram totals: bucket[0]=5, bucket[1]=4, bucket[2]=3, bucket[3]=2, others=0
+    assert_true('"per_conn_pkts_buckets": [5, 4, 3, 2, 0, 0, 0, 0]' in j, "8-bucket histogram matches")
+    print("PASS: test_report_json_per_conn_aggregated_block")
+
+
+def test_report_json_worst_conns() raises:
+    """Populate 100 non-complete conns + 20 complete; verify top-50 sorted descending and capped."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 100 non-complete conns: pkt_count = i+1 (1..100)
+    for i in range(100):
+        var k = String("nc_") + String(i)
+        for _ in range(i + 1):
+            p.record_conn_pkt(k)
+    # 20 complete conns with very high counts (200+) — must be excluded from top-50
+    for i in range(20):
+        var k = String("c_") + String(i)
+        for _ in range(200 + i):
+            p.record_conn_pkt(k)
+        p.record_conn_hs_complete(k)
+    var j = p.report_json()
+    assert_true('"worst_conns":' in j, "worst_conns key present")
+    # Top entry must be nc_99 (100 packets, not complete)
+    assert_true('"addr_key": "nc_99"' in j, "top offender is nc_99")
+    assert_true('"pkt_count": 100' in j, "top pkt_count = 100")
+    # No complete conn should appear
+    assert_true('"addr_key": "c_19"' not in j, "complete conn excluded")
+    # Verify cap at 50: count occurrences of '"addr_key":' — exactly 50
+    var n_entries = 0
+    var idx = 0
+    var search = String('"addr_key":')
+    var search_b = search.as_bytes()
+    var j_b = j.as_bytes()
+    while idx < len(j_b) - len(search_b):
+        var matched = True
+        for k in range(len(search_b)):
+            if j_b[idx + k] != search_b[k]:
+                matched = False
+                break
+        if matched:
+            n_entries += 1
+            idx += len(search_b)
+        else:
+            idx += 1
+    assert_true(n_entries == 50, "exactly 50 worst_conns entries (cap)")
+    print("PASS: test_report_json_worst_conns")
+
+
+def test_report_text_new_sections() raises:
+    """Verify report_text emits human-readable sections for the three new blocks."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_arrival_lat(UInt64(150))
+    p.record_arrival_lat(UInt64(2_000_000))
+    p.record_conn_pkt(String("X:1"))
+    p.record_conn_pkt(String("Y:2"))
+    p.record_conn_pkt(String("Y:2"))
+    p.record_conn_pkt(String("Y:2"))
+    p.record_conn_hs_complete(String("X:1"))
+    var t = p.report_text()
+    assert_true("Arrival-to-processing latency" in t, "arrival-lat section header")
+    assert_true("Per-connection packet counts" in t, "per-conn section header")
+    assert_true("Worst offenders" in t, "worst-offenders section header")
+    # Sanity: Y:2 is not complete and has 3 packets — must surface in worst offenders
+    assert_true("Y:2" in t, "non-complete addr_key surfaces in worst offenders")
+    print("PASS: test_report_text_new_sections")
+
+
+def test_record_dcid_mismatch_increments() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    if p.dcid_mismatch_pkts != UInt64(1):
+        raise "expected dcid_mismatch_pkts=1, got " + String(p.dcid_mismatch_pkts)
+    if p.addr_key_mismatch_counts[String("ip:port:34130")] != UInt64(1):
+        raise "expected per-addr_key count=1"
+    print("PASS: test_record_dcid_mismatch_increments")
+
+
+def test_record_dcid_mismatch_accumulates() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34131"))
+    if p.dcid_mismatch_pkts != UInt64(3):
+        raise "expected total=3, got " + String(p.dcid_mismatch_pkts)
+    if p.addr_key_mismatch_counts[String("ip:port:34130")] != UInt64(2):
+        raise "expected key1=2"
+    if p.addr_key_mismatch_counts[String("ip:port:34131")] != UInt64(1):
+        raise "expected key2=1"
+    print("PASS: test_record_dcid_mismatch_accumulates")
+
+
+def test_report_json_dcid_mismatch_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    p.record_dcid_mismatch(String("ip:port:34131"))
+    var s = p.report_json()
+    if "addr_key_dcid_mismatch" not in s:
+        raise "missing addr_key_dcid_mismatch block"
+    if "\"dcid_mismatch_pkts\": 3" not in s:
+        raise "missing total counter"
+    if "\"addr_keys_with_mismatch\": 2" not in s:
+        raise "missing addr_keys_with_mismatch"
+    if "ip:port:34130" not in s:
+        raise "missing per_addr_key entry"
+    print("PASS: test_report_json_dcid_mismatch_block")
+
+
+def test_report_text_dcid_mismatch_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_dcid_mismatch(String("ip:port:34130"))
+    var s = p.report_text()
+    if "addr_key DCID mismatch" not in s:
+        raise "missing text section heading"
+    if "1" not in s:
+        raise "expected count=1 to appear"
+    print("PASS: test_report_text_dcid_mismatch_block")
+
+
+def test_record_ffi_read_hs_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_read_hs(UInt64(100))
+    p.record_ffi_read_hs(UInt64(150))
+    p.record_ffi_read_hs(UInt64(50))
+    if p.ffi_read_hs_us_total != UInt64(300):
+        raise "expected ffi_read_hs_us_total=300, got " + String(p.ffi_read_hs_us_total)
+    print("PASS: test_record_ffi_read_hs_increments_total")
+
+
+def test_record_ffi_write_hs_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_write_hs(UInt64(200))
+    p.record_ffi_write_hs(UInt64(300))
+    if p.ffi_write_hs_us_total != UInt64(500):
+        raise "expected ffi_write_hs_us_total=500, got " + String(p.ffi_write_hs_us_total)
+    print("PASS: test_record_ffi_write_hs_increments_total")
+
+
+def test_record_ffi_take_keys_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_take_keys(UInt64(40))
+    p.record_ffi_take_keys(UInt64(60))
+    if p.ffi_take_keys_us_total != UInt64(100):
+        raise "expected ffi_take_keys_us_total=100, got " + String(p.ffi_take_keys_us_total)
+    print("PASS: test_record_ffi_take_keys_increments_total")
+
+
+def test_record_loop_pop_dispatch_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_pop_dispatch(UInt64(50))
+    p.record_loop_pop_dispatch(UInt64(75))
+    if p.loop_pop_dispatch_us_total != UInt64(125):
+        raise "expected loop_pop_dispatch_us_total=125, got " + String(p.loop_pop_dispatch_us_total)
+    print("PASS: test_record_loop_pop_dispatch_increments_total")
+
+
+def test_record_loop_post_pkt_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_post_pkt(UInt64(20))
+    p.record_loop_post_pkt(UInt64(30))
+    if p.loop_post_pkt_us_total != UInt64(50):
+        raise "expected loop_post_pkt_us_total=50, got " + String(p.loop_post_pkt_us_total)
+    print("PASS: test_record_loop_post_pkt_increments_total")
+
+
+def test_record_loop_teardown_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_teardown(UInt64(8))
+    p.record_loop_teardown(UInt64(12))
+    if p.loop_teardown_us_total != UInt64(20):
+        raise "expected loop_teardown_us_total=20, got " + String(p.loop_teardown_us_total)
+    print("PASS: test_record_loop_teardown_increments_total")
+
+
+def test_ffi_subleg_sum_matches_shim_ffi_within_tolerance() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Simulate 3 FFI calls within one pkt accumulating into shim_ffi via record_pkt.
+    # Then directly populate sub-legs with the same per-call deltas.
+    p.record_pkt(
+        total_us=UInt64(120),
+        ffi_us=UInt64(100),     # 30 + 50 + 20 = 100
+        hp_us=UInt64(1),
+        aead_us=UInt64(1),
+        header_parse_us=UInt64(1),
+        frame_parse_us=UInt64(5),
+        sm_us=UInt64(60),
+    )
+    p.record_ffi_read_hs(UInt64(30))
+    p.record_ffi_write_hs(UInt64(50))
+    p.record_ffi_take_keys(UInt64(20))
+    var subleg_sum = p.ffi_read_hs_us_total + p.ffi_write_hs_us_total + p.ffi_take_keys_us_total
+    var diff: UInt64
+    if subleg_sum >= p.ffi_shim_us_total:
+        diff = subleg_sum - p.ffi_shim_us_total
+    else:
+        diff = p.ffi_shim_us_total - subleg_sum
+    var tol = p.ffi_shim_us_total // UInt64(100)
+    if tol < UInt64(1):
+        tol = UInt64(1)
+    if diff > tol:
+        raise "ffi_subleg sum (" + String(subleg_sum) + ") differs from shim_ffi (" + String(p.ffi_shim_us_total) + ") by more than 1%"
+    print("PASS: test_ffi_subleg_sum_matches_shim_ffi_within_tolerance")
+
+
+def test_loop_budget_closure_zero_residual() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # busy = 1000us = 200 (per_pkt total) + 100 (drain) + 400 (pop_dispatch) + 200 (post_pkt) + 100 (teardown)
+    p.busy_us_total = UInt64(1000)
+    p.record_pkt(
+        total_us=UInt64(200),
+        ffi_us=UInt64(0),
+        hp_us=UInt64(0),
+        aead_us=UInt64(0),
+        header_parse_us=UInt64(0),
+        frame_parse_us=UInt64(0),
+        sm_us=UInt64(200),
+    )
+    p.record_drain(UInt64(100))
+    p.record_loop_pop_dispatch(UInt64(400))
+    p.record_loop_post_pkt(UInt64(200))
+    p.record_loop_teardown(UInt64(100))
+    var s = p.report_json()
+    if "\"unaccounted_us_total\": 0" not in s:
+        raise "expected unaccounted_us_total=0; got snippet: " + s
+    if "\"unaccounted_pct\": 0" not in s:
+        raise "expected unaccounted_pct=0; got snippet: " + s
+    print("PASS: test_loop_budget_closure_zero_residual")
+
+
+def test_loop_budget_closure_nonzero_residual() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # busy = 10000us; sum of legs = 9900us; residual = 100us = 1% (integer-truncated).
+    p.busy_us_total = UInt64(10000)
+    p.record_pkt(
+        total_us=UInt64(2000),
+        ffi_us=UInt64(0),
+        hp_us=UInt64(0),
+        aead_us=UInt64(0),
+        header_parse_us=UInt64(0),
+        frame_parse_us=UInt64(0),
+        sm_us=UInt64(2000),
+    )
+    p.record_drain(UInt64(1000))
+    p.record_loop_pop_dispatch(UInt64(4000))
+    p.record_loop_post_pkt(UInt64(2000))
+    p.record_loop_teardown(UInt64(900))
+    var s = p.report_json()
+    if "\"unaccounted_us_total\": 100" not in s:
+        raise "expected unaccounted_us_total=100; got snippet: " + s
+    if "\"unaccounted_pct\": 1" not in s:
+        raise "expected unaccounted_pct=1; got snippet: " + s
+    print("PASS: test_loop_budget_closure_nonzero_residual")
+
+
+def test_report_json_emits_ffi_subleg_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_ffi_read_hs(UInt64(100))
+    p.record_ffi_write_hs(UInt64(200))
+    p.record_ffi_take_keys(UInt64(50))
+    var s = p.report_json()
+    if "\"ffi_subleg_us\"" not in s:
+        raise "missing ffi_subleg_us block"
+    if "\"read_hs\"" not in s:
+        raise "missing read_hs key"
+    if "\"write_hs\"" not in s:
+        raise "missing write_hs key"
+    if "\"take_keys\"" not in s:
+        raise "missing take_keys key"
+    if "\"total\": 100" not in s:
+        raise "missing read_hs total=100"
+    if "\"total\": 200" not in s:
+        raise "missing write_hs total=200"
+    print("PASS: test_report_json_emits_ffi_subleg_block")
+
+
+def test_report_json_emits_loop_phases_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_loop_pop_dispatch(UInt64(150))
+    p.record_loop_post_pkt(UInt64(50))
+    p.record_loop_teardown(UInt64(20))
+    p.record_loop_iter()
+    p.record_loop_iter()
+    var s = p.report_json()
+    if "\"loop_phases_us\"" not in s:
+        raise "missing loop_phases_us block"
+    if "\"pop_dispatch\"" not in s:
+        raise "missing pop_dispatch key"
+    if "\"post_pkt\"" not in s:
+        raise "missing post_pkt key"
+    if "\"teardown\"" not in s:
+        raise "missing teardown key"
+    if "\"loop_iter_count\": 2" not in s:
+        raise "missing loop_iter_count=2"
+    if "\"unaccounted_us_total\"" not in s:
+        raise "missing unaccounted_us_total key"
+    if "\"unaccounted_pct\"" not in s:
+        raise "missing unaccounted_pct key"
+    print("PASS: test_report_json_emits_loop_phases_block")
+
+
+def test_loop_phase_avg_uses_loop_iter_count_divisor() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 100 iters, 50 pkts (some continue'd). pop_dispatch total = 10000 us.
+    # Expected avg = 10000 / 100 = 100 (NOT 10000 / 50 = 200).
+    p.record_loop_pop_dispatch(UInt64(10000))
+    for _ in range(100):
+        p.record_loop_iter()
+    # Synthetically populate pkt_count = 50 to ensure divisor is loop_iter_count.
+    p.pkt_count = UInt64(50)
+    var s = p.report_json()
+    # Look for the pop_dispatch.avg = 100 (not 200).
+    if "\"pop_dispatch\": {\"avg\": 100" not in s:
+        raise "expected pop_dispatch.avg=100 (loop_iter_count divisor); got snippet: " + s
+    print("PASS: test_loop_phase_avg_uses_loop_iter_count_divisor")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -440,4 +898,28 @@ def main() raises:
     test_bucket_percentile_overflow()
     test_report_text_canned()
     test_report_json_canned()
+    test_record_arrival_lat_buckets()
+    test_record_arrival_lat_overflow()
+    test_record_conn_pkt_increment()
+    test_record_conn_hs_complete_idempotent()
+    test_report_json_arrival_latency_block()
+    test_report_json_per_conn_aggregated_block()
+    test_report_json_worst_conns()
+    test_report_text_new_sections()
+    test_record_dcid_mismatch_increments()
+    test_record_dcid_mismatch_accumulates()
+    test_report_json_dcid_mismatch_block()
+    test_report_text_dcid_mismatch_block()
+    test_record_ffi_read_hs_increments_total()
+    test_record_ffi_write_hs_increments_total()
+    test_record_ffi_take_keys_increments_total()
+    test_record_loop_pop_dispatch_increments_total()
+    test_record_loop_post_pkt_increments_total()
+    test_record_loop_teardown_increments_total()
+    test_ffi_subleg_sum_matches_shim_ffi_within_tolerance()
+    test_loop_budget_closure_zero_residual()
+    test_loop_budget_closure_nonzero_residual()
+    test_report_json_emits_ffi_subleg_block()
+    test_report_json_emits_loop_phases_block()
+    test_loop_phase_avg_uses_loop_iter_count_divisor()
     print("All Plan A tests passed.")
