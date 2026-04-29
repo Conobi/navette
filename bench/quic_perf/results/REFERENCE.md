@@ -687,3 +687,74 @@ Notable: variance also tightened post-migration (sub-leg stdev 2.69% → 1.55%; 
 **Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
 
 Sub-leg sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-2026042817{0732..3109}-q3-{pre,post}-shortconn-iter[1-5].json` (10 total). Detailed evidence: `bench/quic_perf/results/profile/Q3_pre_baselines_2026-04-28.md` + `bench/quic_perf/results/profile/Q3_post_evidence_2026-04-28.md`.
+
+
+### 2026-04-29 — quic-h3-phase-leg-instrumentation — DIAGNOSTIC — SHIPPED (Q1 follow-on)
+
+**Spec/plan:** `specs/2026-04-29-quic-h3-phase-leg-instrumentation.md` / `plans/2026-04-29-quic-h3-phase-leg-instrumentation.md`
+**Branch:** `feat/quic-h3-phase-leg-instrumentation` off main `978389b`
+**Predecessor:** Q3 shipped at `cd12818` (above); predecessor research at `research/2026-04-28-long-conn-unaccounted-gap.md` (Subagent B's analysis from sub-leg pass).
+
+**Goal:** decompose long-conn 24.4s `unaccounted_pct` (82% of busy at sub-leg pass; ballooned to 93.4% post-Q3 due to Q3 hot-path tightening) into 3 named H3 phase legs. Diagnostic-only; no RPS lift expected; success metric is `unaccounted_pct` reduction + naming the dominant phase.
+
+**Implementation:** ~80 LoC across `src/quic/profile.mojo` (3 fields + 3 record methods + JSON/text emit + budget closure refresh) + `src/h3/h3_handler_server.mojo` (profile_ptr field + ctor threading + 2 brackets) + `src/h3/connection.mojo` (profile_ptr field + 1 bracket around post-recv tail) + `bench/h3_server.mojo` (cold-create call-site `@parameter if PROFILE_ACCEPT/else` split mirroring `QuicConnection.server`). Shape B post-construction setter for `profile_ptr` threading (`H3HandlerServer.__init__` does `self._h3.profile_ptr = profile_ptr` after `H3Connection.server(...)` returns; no changes to H3Connection.server/.client factory call sites). +6 unit tests.
+
+**Bench gates — all PASS (no escalation):**
+
+| Gate | Pre median | Post median | Delta | Threshold | Verdict |
+|---|---|---|---|---|---|
+| Hard Gate 1 — long-conn `unaccounted_pct` (PRIMARY) | 93.4% | **9.82%** | **−83.6pp** | <15% | ✅ PASS (way below threshold) |
+| Hard Gate 2 — long-conn RPS on-build | 14,173 rps | 14,532 rps | +2.54% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 3 — short-conn RPS on-build | 1,174 rps | 1,205 rps | +2.64% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 4 — RPS off-build long-conn | 13,858 rps | 14,620 rps | +5.50% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 4 — RPS off-build short-conn | 1,180 rps | 1,225 rps | +3.77% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 5 — sum invariant (h3_legs ≤ pre-h3 unacct bucket) | — | — | — | all sidecars OK | ✅ PASS (all 6 post sidecars) |
+| Hard Gate 6 — `dcid_mismatch_pkts == 0` | 0 | 0 | — | == 0 | ✅ PASS (all 12 sidecars) |
+
+**🎯 Dominant phase named — PREDICTION OVERTURNED (long-conn medians):**
+
+| Leg | Subagent B prediction | Observed median (μs / 30s) | vs prediction |
+|---|---|---|---|
+| **`quic_post_recv_us`** (timeout + poll-loop + `_drain_stream`) | 5–8s (Rank 2) | **19,355,006** ≈ 19.4s | **+11s above prediction; LARGEST** |
+| `h3_drain_resp_us` (QPACK encode + frame build + STREAM-buffer writes) | 12–16s (Rank 1) | 4,458,769 ≈ 4.5s | **−8s below prediction; SECOND** |
+| `h3_dispatch_us` (handler invoke + Request/Response/Body construction) | 1–3s (Rank 3) | 1,064,250 ≈ 1.1s | within prediction |
+
+**Interpretation:** Subagent B's per-call cost analysis was probably right, but the call-frequency was underestimated for `_drain_stream`. At long-conn 14k rps with multiple STREAM_READABLE events per request × H3 frame-parse + QPACK-decode per chunk, this dominates over the response-build path. The next long-conn-targeted optimisation should target `_drain_stream` inside `quic_post_recv_us` — likely QPACK decode batching, varint length-prefix parsing, or stream-buffer chunk handling.
+
+Same shape on short-conn (median): `quic_post_recv` 2,085,686 μs > `drain_resp` 453,465 μs > `dispatch` 153,691 μs. Short-conn `unaccounted_pct` 31.1% → 14.43% as a side benefit (also below 15% threshold without being gated).
+
+**Acceptance criteria:**
+
+| AC | Verdict | Detail |
+|---|---|---|
+| AC#1 (+6 unit tests) | ✅ PASS | Filtered count 42 → 48; full src suite 72/72 unchanged. |
+| AC#2 (Hard Gate 1) | ✅ PASS | long-conn `unaccounted_pct` 9.82% (target <15%; soft floor 15-25%). |
+| AC#3 (Hard Gate 2 on-build long-conn) | ✅ PASS | +2.54% drift. |
+| AC#4 (Hard Gate 3 on-build short-conn) | ✅ PASS | +2.64% drift. |
+| AC#5 (Hard Gate 4 off-build) | ✅ PASS | +5.50% / +3.77% drift. |
+| AC#6 (Hard Gate 5 sum invariant) | ✅ PASS | All 6 post sidecars satisfy `h3_legs ≤ pre-h3_unacct`. |
+| AC#7 (Hard Gate 6 dcid_mismatch_pkts == 0) | ✅ PASS | All 12 sidecars (6 pre + 6 post). |
+| AC#8 (REFERENCE.md entry) | ✅ PASS | This entry. |
+| AC#9 (flag revert) | ✅ PASS | `comptime PROFILE_ACCEPT: Bool = False` verified at `src/quic/profile.mojo:16`. |
+
+**Verdict: SHIPPED.** Q1 lands all 9 ACs without escalation. Spec's primary diagnostic deliverable (name the dominant long-conn phase) is met with high confidence (3× spread between #1 and #2 legs, n=3 sidecars stable to within 0.07pp on `unaccounted_pct`).
+
+**Predicted vs observed (`unaccounted_pct` reduction):** spec predicted Hard Gate 1 threshold <15% with soft-floor 15-25%; observed **9.82%** — well below the threshold and outside the soft-floor zone. The 3 H3 legs absorb ~89% of the previous-pass unaccounted bucket on long-conn; residual ε is the un-instrumented leftovers (likely `_quic.timeout` early-returns, `consumed_bufs.append`, etc. from Subagent B's honourable mentions).
+
+**Variance tightening recurs (3rd pass — Q3, Q1, ...):** off-build long-conn CV 3.91% → 0.93%; off-build short-conn CV 8.05% → 1.18%; on-build long-conn CV 3.68% → 0.47%. Stronger than Q3's tightening. Mechanism unclear; emergent benefit. Bench harness sensitivity floor continues to drop pass-over-pass.
+
+**Open questions deferred to follow-on specs:**
+- **Next opt-spec target** = `_drain_stream` (inside `quic_post_recv_us`); likely QPACK decode batching or varint length-prefix parsing. Required-later, high-priority — this IS the long-conn bottleneck.
+- Sub-bracket of `quic_post_recv_us` (split `_quic.timeout` vs `_drain_stream` vs poll-loop) — optional; trigger if a later optimisation needs to disambiguate inside the dominant phase.
+- Short-conn `_drain_stream` cost is 10× smaller than long-conn (2.1M vs 19.4M); short-conn optimisation continues to be `ffi_read_hs` (Q2) per sub-leg pass diagnostic.
+- TLS 1.3 session resumption (Q2) becomes the next short-conn-targeted spec.
+
+**Image SHAs (tag-isolated):**
+- `mojo-net-bench:q1-pre-off`: `84acc5848671...`
+- `mojo-net-bench:q1-pre-on`: `db320611e265...`
+- `mojo-net-bench:q1-post-off`: `e77d7eb425ec...`
+- `mojo-net-bench:q1-post-on`: `6b3a214097a2...`
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+Sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-*-q1-{pre,post}-{long,short}-conn-iter[1-3].json` (12 total). Detailed evidence: `bench/quic_perf/results/profile/Q1_pre_baselines_2026-04-29.md` + `bench/quic_perf/results/profile/Q1_post_evidence_2026-04-29.md`.
