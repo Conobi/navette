@@ -9,7 +9,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from src.quic.connection import QuicConnection
-from src.quic.profile import AcceptProfile, profile_monotonic_us, PROFILE_ACCEPT
+from src.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from src.h3.connection import H3Connection, H3Event
 from src.h3.qpack import QpackHeaderField
 from src.http.handler import (
@@ -151,12 +151,12 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         @parameter
         if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
-                t_dispatch_start = profile_monotonic_us()
+                t_dispatch_start = monotonic_us()
         self._dispatch_h3_events(now)
         @parameter
         if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
-                self.profile_ptr[].record_h3_dispatch(profile_monotonic_us() - t_dispatch_start)
+                self.profile_ptr[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
 
         # Bracket _drain_responses (only when established)
         if self._h3.is_established():
@@ -164,12 +164,12 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
-                    t_drain_resp_start = profile_monotonic_us()
+                    t_drain_resp_start = monotonic_us()
             self._drain_responses(now)
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
-                    self.profile_ptr[].record_h3_drain_resp(profile_monotonic_us() - t_drain_resp_start)
+                    self.profile_ptr[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         return self._h3.drain_datagrams(now)
