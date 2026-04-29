@@ -106,10 +106,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # Shape B threading: H3Connection.server/.client have ~15 call sites
         # in src/h3/ and tests/; we set profile_ptr post-construction here
         # rather than threading it through 15 call sites.
-        # NOTE: self._h3.profile_ptr assignment deferred to T3 — H3Connection's
-        # profile_ptr field does not exist yet. T3 adds the field and uncomments
-        # this line.
-        # self._h3.profile_ptr = profile_ptr
+        self._h3.profile_ptr = profile_ptr
 
     def __init__(out self, *, deinit take: Self):
         self._h3 = take._h3^
