@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 31948161,
+  "on_flush_events": 6458,
+  "idle_us_total": 2226060,
+  "busy_us_total": 29721310,
+  "pkts_per_flush_histogram": {
+    "1": 453,
+    "2-3": 118,
+    "4-7": 228,
+    "8-15": 1107,
+    "16-31": 4043,
+    "32-63": 502,
+    "64-127": 5,
+    "128+": 2
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 18, "p90": 29, "p99": 52, "max": 32768, "n": 124471, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 11921},
+    "hp":            {"avg": 0, "total": 46528},
+    "aead":          {"avg": 0, "total": 62609},
+    "frame_parse":   {"avg": 11, "total": 1470462},
+    "sm":            {"avg": 1, "total": 154328},
+    "residual":      {"avg": 0, "total": 81492},
+    "shim_ffi":      {"avg": 0, "total": 105604},
+    "drain":         {"avg": 23, "total": 2886441}
+  },
+  "arrival_lat_us_total": 9058562,
+  "arrival_lat_us_overflow": 0,
+  "arrival_lat_us_buckets": [3818, 4078, 8707, 17552, 31784, 38960, 10898, 619, 168, 202, 7286, 455, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "per_conn_pkts_buckets": [0, 0, 1, 0, 0, 0, 0, 4],
+  "conns_total": 5,
+  "conns_with_pkts_no_hs_complete": 0,
+  "addr_key_dcid_mismatch": {
+    "dcid_mismatch_pkts": 0,
+    "addr_keys_total": 0,
+    "addr_keys_with_mismatch": 0,
+    "per_addr_key": {
+    }
+  },
+  "ffi_subleg_us": {
+    "read_hs":   {"avg": 0, "total": 59862},
+    "write_hs":  {"avg": 0, "total": 45613},
+    "take_keys": {"avg": 0, "total": 129}
+  },
+  "loop_phases_us": {
+    "pop_dispatch": {"avg": 0, "total": 49740},
+    "post_pkt":     {"avg": 0, "total": 20823},
+    "teardown":     {"avg": 0, "total": 3960},
+    "loop_iter_count": 124527,
+    "unaccounted_us_total": 40715,
+    "unaccounted_pct": 0
+  },
+  "h3_phases_us": {
+    "drain_resp": {"total": 4458769},
+    "post_recv":  {"total": 19369272},
+    "dispatch":   {"total": 1064250}
+  },
+  "worst_conns": [
+  ],
+  "handshake": {
+    "arrivals": 162, "successful": 162, "timed_out": 0,
+    "latency_us": {"p50": 13084, "p90": 17796, "p99": 24850, "max": 27560, "count": 162}
+  }
+}
