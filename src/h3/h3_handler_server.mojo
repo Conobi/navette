@@ -9,6 +9,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from src.quic.connection import QuicConnection
+from src.quic.profile import AcceptProfile, profile_monotonic_us, PROFILE_ACCEPT
 from src.h3.connection import H3Connection, H3Event
 from src.h3.qpack import QpackHeaderField
 from src.http.handler import (
@@ -88,16 +89,33 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _h3:      H3Connection
     var handler:  Self.H
     var _streams: Dict[Int, _H3StreamPtr]
+    var profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
 
-    def __init__(out self, *, var quic: QuicConnection, var handler: Self.H) raises:
+    def __init__(
+        out self,
+        *,
+        var quic: QuicConnection,
+        var handler: Self.H,
+        profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
+            = UnsafePointer[AcceptProfile, MutAnyOrigin](),
+    ) raises:
         self._h3 = H3Connection.server(quic^)
         self.handler = handler^
         self._streams = Dict[Int, _H3StreamPtr]()
+        self.profile_ptr = profile_ptr
+        # Shape B threading: H3Connection.server/.client have ~15 call sites
+        # in src/h3/ and tests/; we set profile_ptr post-construction here
+        # rather than threading it through 15 call sites.
+        # NOTE: self._h3.profile_ptr assignment deferred to T3 — H3Connection's
+        # profile_ptr field does not exist yet. T3 adds the field and uncomments
+        # this line.
+        # self._h3.profile_ptr = profile_ptr
 
     def __init__(out self, *, deinit take: Self):
         self._h3 = take._h3^
         self.handler = take.handler^
         self._streams = take._streams^
+        self.profile_ptr = take.profile_ptr
 
     fn __del__(deinit self):
         var keys = List[Int]()
@@ -127,9 +145,31 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     ) raises:
         """Feed one inbound QUIC datagram from a mutable buffer (zero-copy)."""
         self._h3.feed_datagram_from_buffer(buf, buf_len, now)
+
+        # Bracket _dispatch_h3_events
+        var t_dispatch_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                t_dispatch_start = profile_monotonic_us()
         self._dispatch_h3_events(now)
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                self.profile_ptr[].record_h3_dispatch(profile_monotonic_us() - t_dispatch_start)
+
+        # Bracket _drain_responses (only when established)
         if self._h3.is_established():
+            var t_drain_resp_start: UInt64 = 0
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    t_drain_resp_start = profile_monotonic_us()
             self._drain_responses(now)
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_ptr[].record_h3_drain_resp(profile_monotonic_us() - t_drain_resp_start)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         return self._h3.drain_datagrams(now)
