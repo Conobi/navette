@@ -925,6 +925,70 @@ def test_report_json_emits_h3_phases_block() raises:
     print("PASS: test_report_json_emits_h3_phases_block")
 
 
+def test_h3_phase_legs_sum_within_unaccounted_bucket() raises:
+    """Synthetic profile: 3 H3 legs cumulatively are bounded by the
+    pre-existing unaccounted bucket. Catches bracket overlap (a future
+    bug where two brackets time the same code path)."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Synthetic busy with known leg shapes:
+    #   busy = 1000
+    #   per_pkt = 200 (split equally across 6 legs)
+    #   drain = 100
+    #   loop = 100 (across 3 loop legs)
+    #   ε bucket = busy - per_pkt - drain - loop = 600
+    p.busy_us_total = UInt64(1000)
+    p.header_parse_us_total = UInt64(33)
+    p.hp_us_total = UInt64(33)
+    p.aead_us_total = UInt64(33)
+    p.frame_parse_us_total = UInt64(34)
+    p.sm_us_total = UInt64(33)
+    p.residual_us_total = UInt64(34)
+    p.drain_us_total = UInt64(100)
+    p.loop_pop_dispatch_us_total = UInt64(34)
+    p.loop_post_pkt_us_total = UInt64(33)
+    p.loop_teardown_us_total = UInt64(33)
+    # Now introduce 3 H3 legs cumulatively summing to 500 (< 600 unacct bucket).
+    p.record_h3_drain_resp(UInt64(300))
+    p.record_quic_post_recv(UInt64(150))
+    p.record_h3_dispatch(UInt64(50))
+    var per_pkt = (p.header_parse_us_total + p.hp_us_total + p.aead_us_total
+        + p.frame_parse_us_total + p.sm_us_total + p.residual_us_total)
+    var loop_phases = (p.loop_pop_dispatch_us_total + p.loop_post_pkt_us_total + p.loop_teardown_us_total)
+    var pre_h3_unacct = p.busy_us_total - per_pkt - p.drain_us_total - loop_phases
+    var h3_sum = p.h3_drain_resp_us_total + p.quic_post_recv_us_total + p.h3_dispatch_us_total
+    assert_true(h3_sum <= pre_h3_unacct, "h3 legs must fit within pre-h3 unaccounted bucket")
+    print("PASS: test_h3_phase_legs_sum_within_unaccounted_bucket")
+
+
+def test_budget_closure_subtracts_h3_legs() raises:
+    """Synthetic profile with all leg types populated. Budget-closure ε must
+    subtract h3 legs in addition to per_pkt + drain + loop."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.busy_us_total = UInt64(1000)
+    p.header_parse_us_total = UInt64(50)
+    p.hp_us_total = UInt64(50)
+    p.aead_us_total = UInt64(50)
+    p.frame_parse_us_total = UInt64(50)
+    p.sm_us_total = UInt64(50)
+    p.residual_us_total = UInt64(50)   # per_pkt sum = 300
+    p.drain_us_total = UInt64(100)
+    p.loop_pop_dispatch_us_total = UInt64(50)
+    p.loop_post_pkt_us_total = UInt64(50)
+    p.loop_teardown_us_total = UInt64(50)  # loop sum = 150
+    p.record_h3_drain_resp(UInt64(200))
+    p.record_quic_post_recv(UInt64(100))
+    p.record_h3_dispatch(UInt64(50))   # h3 sum = 350
+
+    var out = p.report_json()
+    # Expected unaccounted = 1000 - 300 - 100 - 150 - 350 = 100
+    assert_true('"unaccounted_us_total": 100,' in out, "unaccounted_us_total should be 100")
+    # Expected unaccounted_pct = 100 / 1000 * 100 = 10
+    assert_true('"unaccounted_pct": 10' in out, "unaccounted_pct should be 10")
+    print("PASS: test_budget_closure_subtracts_h3_legs")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -972,4 +1036,6 @@ def main() raises:
     test_record_quic_post_recv_increments_total()
     test_record_h3_dispatch_increments_total()
     test_report_json_emits_h3_phases_block()
+    test_h3_phase_legs_sum_within_unaccounted_bucket()
+    test_budget_closure_subtracts_h3_legs()
     print("All Plan A tests passed.")

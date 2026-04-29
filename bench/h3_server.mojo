@@ -840,7 +840,18 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
                 try:
-                    h3 = H3HandlerServer[BenchHandler](quic=quic^, handler=handler^)
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        h3 = H3HandlerServer[BenchHandler](
+                            quic=quic^,
+                            handler=handler^,
+                            profile_ptr=UnsafePointer(to=self.profile),
+                        )
+                    else:
+                        h3 = H3HandlerServer[BenchHandler](
+                            quic=quic^,
+                            handler=handler^,
+                        )
                 except e:
                     self.h3_handler_err_count += UInt64(1)
                     if self.h3_handler_err_count == UInt64(1):
