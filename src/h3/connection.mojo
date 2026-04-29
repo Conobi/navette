@@ -9,6 +9,7 @@ from std.memory import Span, UnsafePointer
 
 from src.quic.connection import QuicConnection, QuicEvent
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
+from src.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from src.h3.frame import (
     H3RawFrame,
     DataFrame,
@@ -138,6 +139,7 @@ struct H3Connection(Movable):
     var _peer_goaway_sid:            Optional[UInt64]
     var _enc:                        QpackEncoder
     var _dec:                        QpackDecoder
+    var profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
@@ -157,6 +159,7 @@ struct H3Connection(Movable):
         self._peer_goaway_sid = Optional[UInt64]()
         self._enc = QpackEncoder(False)
         self._dec = QpackDecoder()
+        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin]()
 
     def __init__(out self, *, deinit take: Self):
         self._quic = take._quic^
@@ -176,6 +179,7 @@ struct H3Connection(Movable):
         self._peer_goaway_sid = take._peer_goaway_sid^
         self._enc = take._enc^
         self._dec = take._dec^
+        self.profile_ptr = take.profile_ptr
 
     @staticmethod
     def server(var quic: QuicConnection) raises -> H3Connection:
@@ -261,6 +265,18 @@ struct H3Connection(Movable):
         """Feed one inbound QUIC datagram from a mutable buffer pointer.
         Zero-copy variant — buffer is modified in-place."""
         self._quic.recv_from_buffer(buf, buf_len, now)
+
+        # Bracket the post-recv tail (timeout + poll-loop including _drain_stream).
+        # record_pkt at connection.mojo:890 fires INSIDE recv_from_buffer's
+        # coalesced-packet for-loop and is bounded by it; this bracket covers
+        # the disjoint H3-application-event-drain phase. Single-pair clock-read
+        # with hoisted t_start (sub-leg pass T4 lesson — Mojo lexical scope).
+        var t_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                t_start = monotonic_us()
+
         _ = self._quic.timeout(now)
         while True:
             var ev_opt = self._quic.poll()
@@ -294,6 +310,11 @@ struct H3Connection(Movable):
                 h3ev.error_code = ev.error_code
                 h3ev.reason = ev.reason
                 self._h3_events.append(h3ev^)
+
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                self.profile_ptr[].record_quic_post_recv(monotonic_us() - t_start)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         """Drain outbound QUIC datagrams. Returns list of UDP payloads."""
