@@ -111,6 +111,12 @@ struct AcceptProfile(Copyable, Movable):
     var loop_teardown_us_total: UInt64
     var loop_iter_count: UInt64
 
+    # 3 H3 phase totals — decompose long-conn unaccounted ε (Plan: 2026-04-29).
+    # All three live in the post-recv tail of feed_datagram_from_buffer.
+    var h3_drain_resp_us_total: UInt64
+    var quic_post_recv_us_total: UInt64
+    var h3_dispatch_us_total: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -154,6 +160,9 @@ struct AcceptProfile(Copyable, Movable):
         self.loop_post_pkt_us_total = UInt64(0)
         self.loop_teardown_us_total = UInt64(0)
         self.loop_iter_count = UInt64(0)
+        self.h3_drain_resp_us_total = UInt64(0)
+        self.quic_post_recv_us_total = UInt64(0)
+        self.h3_dispatch_us_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -271,6 +280,15 @@ struct AcceptProfile(Copyable, Movable):
 
     def record_loop_iter(mut self):
         self.loop_iter_count = self.loop_iter_count + UInt64(1)
+
+    def record_h3_drain_resp(mut self, us: UInt64):
+        self.h3_drain_resp_us_total = self.h3_drain_resp_us_total + us
+
+    def record_quic_post_recv(mut self, us: UInt64):
+        self.quic_post_recv_us_total = self.quic_post_recv_us_total + us
+
+    def record_h3_dispatch(mut self, us: UInt64):
+        self.h3_dispatch_us_total = self.h3_dispatch_us_total + us
 
     def report_text(self) raises -> String:
         var now = monotonic_us()
@@ -398,11 +416,19 @@ struct AcceptProfile(Copyable, Movable):
         s += "  " + _fmt_leg("post_pkt",     self.loop_post_pkt_us_total,     self.loop_iter_count) + "\n"
         s += "  " + _fmt_leg("teardown",     self.loop_teardown_us_total,     self.on_flush_count) + "\n"
         s += "  loop_iter_count:                  " + _fmt_count(self.loop_iter_count) + "\n"
+        # H3 phases (Plan: 2026-04-29-quic-h3-phase-leg-instrumentation).
+        s += "H3 phases:\n"
+        s += "  drain_resp.total: " + _fmt_count(self.h3_drain_resp_us_total) + "\n"
+        s += "  post_recv.total:  " + _fmt_count(self.quic_post_recv_us_total) + "\n"
+        s += "  dispatch.total:   " + _fmt_count(self.h3_dispatch_us_total) + "\n\n"
         # Budget closure (mirrors report_json computation).
         var pp_legs = (self.header_parse_us_total + self.hp_us_total + self.aead_us_total
             + self.frame_parse_us_total + self.sm_us_total + self.residual_us_total)
         var acct = (pp_legs + self.drain_us_total + self.loop_pop_dispatch_us_total
-            + self.loop_post_pkt_us_total + self.loop_teardown_us_total)
+            + self.loop_post_pkt_us_total + self.loop_teardown_us_total
+            + self.h3_drain_resp_us_total
+            + self.quic_post_recv_us_total
+            + self.h3_dispatch_us_total)
         var unacct: UInt64 = UInt64(0)
         if self.busy_us_total > acct:
             unacct = self.busy_us_total - acct
@@ -588,7 +614,10 @@ struct AcceptProfile(Copyable, Movable):
             + self.drain_us_total
             + self.loop_pop_dispatch_us_total
             + self.loop_post_pkt_us_total
-            + self.loop_teardown_us_total)
+            + self.loop_teardown_us_total
+            + self.h3_drain_resp_us_total
+            + self.quic_post_recv_us_total
+            + self.h3_dispatch_us_total)
         var unaccounted: UInt64 = UInt64(0)
         if self.busy_us_total > accounted:
             unaccounted = self.busy_us_total - accounted
@@ -602,6 +631,11 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "loop_iter_count": ' + String(self.loop_iter_count) + ',\n'
         s += '    "unaccounted_us_total": ' + String(unaccounted) + ',\n'
         s += '    "unaccounted_pct": ' + String(unaccounted_pct) + '\n'
+        s += "  },\n"
+        s += '  "h3_phases_us": {\n'
+        s += '    "drain_resp": {"total": ' + String(self.h3_drain_resp_us_total) + '},\n'
+        s += '    "post_recv":  {"total": ' + String(self.quic_post_recv_us_total) + '},\n'
+        s += '    "dispatch":   {"total": ' + String(self.h3_dispatch_us_total) + '}\n'
         s += "  },\n"
 
         # Top-50 worst offenders: addr_keys with most packets but no hs_complete.

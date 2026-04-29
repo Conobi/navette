@@ -4,6 +4,7 @@
 
 from src.quic.profile import PROFILE_ACCEPT, monotonic_us
 from testing import assert_true
+from tests._test_util import assert_equal_int
 
 
 def test_monotonic_us_increases() raises:
@@ -879,6 +880,51 @@ def test_loop_phase_avg_uses_loop_iter_count_divisor() raises:
     print("PASS: test_loop_phase_avg_uses_loop_iter_count_divisor")
 
 
+def test_record_h3_drain_resp_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_h3_drain_resp(UInt64(123))
+    p.record_h3_drain_resp(UInt64(456))
+    assert_equal_int(Int(p.h3_drain_resp_us_total), 579, "h3_drain_resp accumulates")
+    print("PASS: test_record_h3_drain_resp_increments_total")
+
+
+def test_record_quic_post_recv_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_quic_post_recv(UInt64(100))
+    p.record_quic_post_recv(UInt64(200))
+    assert_equal_int(Int(p.quic_post_recv_us_total), 300, "quic_post_recv accumulates")
+    print("PASS: test_record_quic_post_recv_increments_total")
+
+
+def test_record_h3_dispatch_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_h3_dispatch(UInt64(50))
+    p.record_h3_dispatch(UInt64(75))
+    assert_equal_int(Int(p.h3_dispatch_us_total), 125, "h3_dispatch accumulates")
+    print("PASS: test_record_h3_dispatch_increments_total")
+
+
+def test_report_json_emits_h3_phases_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_h3_drain_resp(UInt64(1000))
+    p.record_quic_post_recv(UInt64(2000))
+    p.record_h3_dispatch(UInt64(3000))
+    var out = p.report_json()
+    # Spot-check: the h3_phases_us block must appear with 3 named keys.
+    assert_true('"h3_phases_us":' in out, "h3_phases_us block missing")
+    assert_true('"drain_resp":' in out, "drain_resp key missing")
+    assert_true('"post_recv":' in out, "post_recv key missing")
+    assert_true('"dispatch":' in out, "dispatch key missing")
+    assert_true('"total": 1000' in out, "drain_resp total missing")
+    assert_true('"total": 2000' in out, "post_recv total missing")
+    assert_true('"total": 3000' in out, "dispatch total missing")
+    print("PASS: test_report_json_emits_h3_phases_block")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -922,4 +968,8 @@ def main() raises:
     test_report_json_emits_ffi_subleg_block()
     test_report_json_emits_loop_phases_block()
     test_loop_phase_avg_uses_loop_iter_count_divisor()
+    test_record_h3_drain_resp_increments_total()
+    test_record_quic_post_recv_increments_total()
+    test_record_h3_dispatch_increments_total()
+    test_report_json_emits_h3_phases_block()
     print("All Plan A tests passed.")
