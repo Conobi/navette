@@ -792,7 +792,14 @@ Sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-*-q1-{pre,post}-
 | `frame_parse_us` | small | 122,168 ≈ 0.1s | 0.5% |
 | `event_dispatch_us` (residual) | small | 139,129 ≈ 0.1s | 0.6% |
 
-**Interpretation:** at long-conn 14k rps, ≈14k HEADERS frames/sec; observed `qpack_decode_us` ÷ HEADERS-rate ≈ **50 μs per HEADERS frame**. Reference QPACK (TQUIC + quiche static-only) is sub-µs/req per Topic 1 §4. mojo-net's QPACK decode is **~50× slower per call** than the reference. Topic 1's structural-difference critique of mojo-net's `_H3StreamBuf` accumulator was correct in principle but the magnitude of that gap (~1%) is below the bench harness sensitivity floor — the architectural-novelty argument was right, the magnitude prediction was 100× off.
+**Interpretation:** at long-conn 14k rps, ≈14k HEADERS frames/sec; observed `qpack_decode_us` ÷ HEADERS-rate ≈ **50 μs per call** to `self._dec.decode(frame.payload)`. Reference QPACK (TQUIC + quiche static-only) is sub-µs/req per Topic 1 §4. mojo-net's `_dec.decode` call-site is **~50× slower** than the reference at the call boundary.
+
+**Scope of the 95% claim:**
+
+- **What it proves:** `self._dec.decode(frame.payload)` end-to-end is 95.4% of `_drain_stream` wall-clock. Sum invariant closes exactly across all 6 sidecars (sum_legs = drain_stream_us_total to the byte) — no hidden bucket. `_H3StreamBuf` work was directly measured (B3a + B3b combined into `buf_accumulate_us`); it accounts for 1.1% on long-conn.
+- **What it does NOT prove:** *where inside* `_dec.decode` the 50 μs goes. Could be varint length-prefix parsing, 99-entry static-table lookup, per-call `List[QpackHeaderField]` allocation, header-name/value String construction, Mojo function-call / parameter-passing / result-allocation overhead, or some combination. The B5 bracket wraps the call, not its internals. No isolated microbench cross-check was performed, so we cannot separate "amortised algorithmic QPACK cost" from "per-invocation overhead".
+
+Topic 1's structural-difference critique of mojo-net's `_H3StreamBuf` accumulator was correct in principle (the accumulator + per-frame O(residual) shift IS architecturally novel vs reference stacks) but the magnitude gap (~1.1%) is below the bench harness sensitivity floor. The architectural-novelty argument was right; the magnitude prediction was 100× off.
 
 Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream); other legs <10% each.
 
@@ -819,7 +826,7 @@ Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream);
 4. **Bench infrastructure gap** — Q1's `start-server.sh` did NOT bind-mount `bench/quic_perf/results/profile`; SIGINT-handler sidecars were destroyed by `docker rm -f`. T0 added the bind mount + switched stop-server.sh to `docker stop -t 10` for SIGTERM grace. Lasting infrastructure fix.
 
 **Open questions deferred to follow-on specs:**
-- **Next opt-spec target = `src/h3/qpack/decoder.mojo`.** Candidate angles: linear-scan static-table lookup (99 entries; `Dict[String,Int]` over 14k rps could explain 50× overhead vs reference); per-call `List[QpackHeaderField]` allocation; varint length-prefix decoding hot path. Required-later, high-priority — this IS the long-conn bottleneck.
+- **Next spec target = `self._dec.decode(...)` call-path, DIAGNOSTIC first (not optimisation).** B5 bracket measures the call end-to-end at 95% of drain time but cannot tell us where inside. Required-later, high-priority. Methodology: sub-sub-leg the decoder body (varint / static-table-lookup / result-alloc / String construction) AND write an isolated microbench to separate amortised algorithmic cost from per-invocation Mojo overhead, BEFORE any optimisation spec. Predict-then-optimise has 0/3 record on this codebase.
 - Topic 2's optimization candidates (`extend(Span)`, `ref slot = d[k]`, head-cursor pattern in `_H3StreamBuf`) accounted for only ~1% of `drain_stream_us_total` — they remain valid micro-optimisations but should NOT be the next spec's primary target. Optional; trigger if QPACK refactor delivers <expected-gain.
 - Topic 1's recommended sub-leg taxonomy was structurally sound (5 legs map cleanly onto reference FSMs); the 0/3 prediction track record is on dominance-of-leg, not on taxonomy itself. Future diagnostic specs should keep using structural-mirror taxonomy + drop dominance predictions entirely.
 
