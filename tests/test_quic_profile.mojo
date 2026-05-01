@@ -989,6 +989,81 @@ def test_budget_closure_subtracts_h3_legs() raises:
     print("PASS: test_budget_closure_subtracts_h3_legs")
 
 
+def test_record_drain_stream_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_stream(UInt64(123))
+    p.record_drain_stream(UInt64(456))
+    assert_equal_int(Int(p.drain_stream_us_total), 579, "drain_stream accumulates")
+    print("PASS: test_record_drain_stream_increments_total")
+
+
+def test_record_drain_recv_ffi_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_recv_ffi(UInt64(100))
+    p.record_drain_recv_ffi(UInt64(200))
+    assert_equal_int(Int(p.drain_recv_ffi_us_total), 300, "drain_recv_ffi accumulates")
+    print("PASS: test_record_drain_recv_ffi_increments_total")
+
+
+def test_record_drain_buf_accumulate_increments_total() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # Verify accumulation across multiple calls (B3a + B3b both call this method).
+    p.record_drain_buf_accumulate(UInt64(11))
+    p.record_drain_buf_accumulate(UInt64(22))
+    p.record_drain_buf_accumulate(UInt64(33))
+    assert_equal_int(Int(p.drain_buf_accumulate_us_total), 66,
+        "drain_buf_accumulate accumulates across calls (B3a + B3b summed)")
+    print("PASS: test_record_drain_buf_accumulate_increments_total")
+
+
+def test_record_drain_frame_parse_and_qpack_decode_independent() raises:
+    """Both methods on a fresh AcceptProfile target separate fields.
+    Catches a future bug where frame_parse and qpack_decode aliased the same field."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_frame_parse(UInt64(50))
+    p.record_drain_qpack_decode(UInt64(75))
+    assert_equal_int(Int(p.drain_frame_parse_us_total), 50, "frame_parse field independent")
+    assert_equal_int(Int(p.drain_qpack_decode_us_total), 75, "qpack_decode field independent")
+    # Cross-check: each call did NOT touch the other field.
+    p.record_drain_frame_parse(UInt64(10))
+    assert_equal_int(Int(p.drain_qpack_decode_us_total), 75,
+        "qpack_decode unchanged after second frame_parse call")
+    print("PASS: test_record_drain_frame_parse_and_qpack_decode_independent")
+
+
+def test_report_json_emits_drain_stream_subleg_block() raises:
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_stream(UInt64(10000))
+    p.record_drain_recv_ffi(UInt64(1000))
+    p.record_drain_buf_accumulate(UInt64(2000))
+    p.record_drain_frame_parse(UInt64(500))
+    p.record_drain_qpack_decode(UInt64(300))
+    var out = p.report_json()
+    # Spot-check: drain_stream_subleg block exists with all 8 keys.
+    assert_true('"drain_stream_subleg":' in out, "drain_stream_subleg block missing")
+    assert_true('"drain_stream_us_total":' in out, "drain_stream_us_total key missing")
+    assert_true('"recv_ffi_us":' in out, "recv_ffi_us key missing")
+    assert_true('"buf_accumulate_us":' in out, "buf_accumulate_us key missing")
+    assert_true('"frame_parse_us":' in out, "frame_parse_us key missing")
+    assert_true('"qpack_decode_us":' in out, "qpack_decode_us key missing")
+    assert_true('"event_dispatch_us":' in out, "event_dispatch_us key missing")
+    assert_true('"sum_legs_us":' in out, "sum_legs_us key missing")
+    assert_true('"unaccounted_pct":' in out, "unaccounted_pct key missing")
+    # Numeric spot-checks for raw fields.
+    assert_true('"drain_stream_us_total": 10000' in out, "drain_stream value")
+    assert_true('"recv_ffi_us": 1000' in out, "recv_ffi value")
+    # Residual = 10000 - (1000+2000+500+300) = 6200.
+    assert_true('"event_dispatch_us": 6200' in out, "event_dispatch residual=6200")
+    # sum_legs = 1000+2000+500+300+6200 = 10000.
+    assert_true('"sum_legs_us": 10000' in out, "sum_legs=10000")
+    print("PASS: test_report_json_emits_drain_stream_subleg_block")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1038,4 +1113,9 @@ def main() raises:
     test_report_json_emits_h3_phases_block()
     test_h3_phase_legs_sum_within_unaccounted_bucket()
     test_budget_closure_subtracts_h3_legs()
+    test_record_drain_stream_increments_total()
+    test_record_drain_recv_ffi_increments_total()
+    test_record_drain_buf_accumulate_increments_total()
+    test_record_drain_frame_parse_and_qpack_decode_independent()
+    test_report_json_emits_drain_stream_subleg_block()
     print("All Plan A tests passed.")

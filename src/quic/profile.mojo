@@ -117,6 +117,14 @@ struct AcceptProfile(Copyable, Movable):
     var quic_post_recv_us_total: UInt64
     var h3_dispatch_us_total: UInt64
 
+    # 5 sub-legs of quic_post_recv_us → _drain_stream (Plan: 2026-05-01-quic-h3-drain-stream-subleg).
+    # event_dispatch is computed via residual at emit time, no field.
+    var drain_stream_us_total: UInt64
+    var drain_recv_ffi_us_total: UInt64
+    var drain_buf_accumulate_us_total: UInt64
+    var drain_frame_parse_us_total: UInt64
+    var drain_qpack_decode_us_total: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -163,6 +171,11 @@ struct AcceptProfile(Copyable, Movable):
         self.h3_drain_resp_us_total = UInt64(0)
         self.quic_post_recv_us_total = UInt64(0)
         self.h3_dispatch_us_total = UInt64(0)
+        self.drain_stream_us_total = UInt64(0)
+        self.drain_recv_ffi_us_total = UInt64(0)
+        self.drain_buf_accumulate_us_total = UInt64(0)
+        self.drain_frame_parse_us_total = UInt64(0)
+        self.drain_qpack_decode_us_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -289,6 +302,21 @@ struct AcceptProfile(Copyable, Movable):
 
     def record_h3_dispatch(mut self, us: UInt64):
         self.h3_dispatch_us_total = self.h3_dispatch_us_total + us
+
+    def record_drain_stream(mut self, us: UInt64):
+        self.drain_stream_us_total = self.drain_stream_us_total + us
+
+    def record_drain_recv_ffi(mut self, us: UInt64):
+        self.drain_recv_ffi_us_total = self.drain_recv_ffi_us_total + us
+
+    def record_drain_buf_accumulate(mut self, us: UInt64):
+        self.drain_buf_accumulate_us_total = self.drain_buf_accumulate_us_total + us
+
+    def record_drain_frame_parse(mut self, us: UInt64):
+        self.drain_frame_parse_us_total = self.drain_frame_parse_us_total + us
+
+    def record_drain_qpack_decode(mut self, us: UInt64):
+        self.drain_qpack_decode_us_total = self.drain_qpack_decode_us_total + us
 
     def report_text(self) raises -> String:
         var now = monotonic_us()
@@ -421,6 +449,15 @@ struct AcceptProfile(Copyable, Movable):
         s += "  drain_resp.total: " + _fmt_count(self.h3_drain_resp_us_total) + "\n"
         s += "  post_recv.total:  " + _fmt_count(self.quic_post_recv_us_total) + "\n"
         s += "  dispatch.total:   " + _fmt_count(self.h3_dispatch_us_total) + "\n\n"
+        # Drain-stream sub-leg decomposition (Plan: 2026-05-01-quic-h3-drain-stream-subleg).
+        var de_t_us = self._compute_drain_event_dispatch_us()
+        s += "Drain-stream sub-legs:\n"
+        s += "  drain_stream.total:     " + _fmt_count(self.drain_stream_us_total) + "\n"
+        s += "  recv_ffi.total:         " + _fmt_count(self.drain_recv_ffi_us_total) + "\n"
+        s += "  buf_accumulate.total:   " + _fmt_count(self.drain_buf_accumulate_us_total) + "\n"
+        s += "  frame_parse.total:      " + _fmt_count(self.drain_frame_parse_us_total) + "\n"
+        s += "  qpack_decode.total:     " + _fmt_count(self.drain_qpack_decode_us_total) + "\n"
+        s += "  event_dispatch.derived: " + _fmt_count(de_t_us) + "\n\n"
         # Budget closure (mirrors report_json computation).
         var pp_legs = (self.header_parse_us_total + self.hp_us_total + self.aead_us_total
             + self.frame_parse_us_total + self.sm_us_total + self.residual_us_total)
@@ -467,6 +504,19 @@ struct AcceptProfile(Copyable, Movable):
         s += "\n"
         s += "=== end ===\n"
         return s^
+
+    def _compute_drain_event_dispatch_us(self) -> UInt64:
+        """Residual = drain_stream_us_total - sum(measured legs), clamped >= 0.
+        Clamp absorbs (a) clock-read jitter where measured legs slightly
+        exceed parent and (b) any accumulation bug — large overshoot still
+        surfaces as Hard Gate 5 violation against the RAW unclamped fields."""
+        var sum_legs = (self.drain_recv_ffi_us_total
+            + self.drain_buf_accumulate_us_total
+            + self.drain_frame_parse_us_total
+            + self.drain_qpack_decode_us_total)
+        if sum_legs >= self.drain_stream_us_total:
+            return UInt64(0)
+        return self.drain_stream_us_total - sum_legs
 
     def report_json(self) raises -> String:
         var now = monotonic_us()
@@ -636,6 +686,25 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "drain_resp": {"total": ' + String(self.h3_drain_resp_us_total) + '},\n'
         s += '    "post_recv":  {"total": ' + String(self.quic_post_recv_us_total) + '},\n'
         s += '    "dispatch":   {"total": ' + String(self.h3_dispatch_us_total) + '}\n'
+        s += "  },\n"
+        var de_us = self._compute_drain_event_dispatch_us()
+        var sum_legs_us = (self.drain_recv_ffi_us_total
+            + self.drain_buf_accumulate_us_total
+            + self.drain_frame_parse_us_total
+            + self.drain_qpack_decode_us_total
+            + de_us)
+        var unacct_drain_pct: UInt64 = UInt64(0)
+        if self.drain_stream_us_total > UInt64(0) and sum_legs_us < self.drain_stream_us_total:
+            unacct_drain_pct = ((self.drain_stream_us_total - sum_legs_us) * UInt64(100)) / self.drain_stream_us_total
+        s += '  "drain_stream_subleg": {\n'
+        s += '    "drain_stream_us_total": ' + String(self.drain_stream_us_total) + ',\n'
+        s += '    "recv_ffi_us": ' + String(self.drain_recv_ffi_us_total) + ',\n'
+        s += '    "buf_accumulate_us": ' + String(self.drain_buf_accumulate_us_total) + ',\n'
+        s += '    "frame_parse_us": ' + String(self.drain_frame_parse_us_total) + ',\n'
+        s += '    "qpack_decode_us": ' + String(self.drain_qpack_decode_us_total) + ',\n'
+        s += '    "event_dispatch_us": ' + String(de_us) + ',\n'
+        s += '    "sum_legs_us": ' + String(sum_legs_us) + ',\n'
+        s += '    "unaccounted_pct": ' + String(unacct_drain_pct) + '\n'
         s += "  },\n"
 
         # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
