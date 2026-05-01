@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 39301610,
+  "on_flush_events": 89943,
+  "idle_us_total": 19058260,
+  "busy_us_total": 19262709,
+  "pkts_per_flush_histogram": {
+    "1": 57245,
+    "2-3": 13949,
+    "4-7": 8730,
+    "8-15": 4401,
+    "16-31": 2470,
+    "32-63": 2059,
+    "64-127": 862,
+    "128+": 227
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 6, "p90": 112, "p99": 241, "max": 32768, "n": 398415, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 63579},
+    "hp":            {"avg": 0, "total": 166553},
+    "aead":          {"avg": 0, "total": 255253},
+    "frame_parse":   {"avg": 2, "total": 1131675},
+    "sm":            {"avg": 25, "total": 10143861},
+    "residual":      {"avg": 1, "total": 461711},
+    "shim_ffi":      {"avg": 23, "total": 9488448},
+    "drain":         {"avg": 6, "total": 2408553}
+  },
+  "arrival_lat_us_total": 16669218,
+  "arrival_lat_us_overflow": 0,
+  "arrival_lat_us_buckets": [48831, 36565, 41662, 43952, 47681, 56699, 62935, 46931, 20391, 3185, 2114, 1015, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "per_conn_pkts_buckets": [0, 0, 1, 0, 0, 0, 0, 8],
+  "conns_total": 9,
+  "conns_with_pkts_no_hs_complete": 0,
+  "addr_key_dcid_mismatch": {
+    "dcid_mismatch_pkts": 0,
+    "addr_keys_total": 0,
+    "addr_keys_with_mismatch": 0,
+    "per_addr_key": {
+    }
+  },
+  "ffi_subleg_us": {
+    "read_hs":   {"avg": 22, "total": 8879400},
+    "write_hs":  {"avg": 1, "total": 582691},
+    "take_keys": {"avg": 0, "total": 26357}
+  },
+  "loop_phases_us": {
+    "pop_dispatch": {"avg": 2, "total": 907430},
+    "post_pkt":     {"avg": 0, "total": 78293},
+    "teardown":     {"avg": 0, "total": 15758},
+    "loop_iter_count": 411961,
+    "unaccounted_us_total": 410671,
+    "unaccounted_pct": 2
+  },
+  "h3_phases_us": {
+    "drain_resp": {"total": 535755},
+    "post_recv":  {"total": 2490130},
+    "dispatch":   {"total": 193487}
+  },
+  "worst_conns": [
+  ],
+  "handshake": {
+    "arrivals": 41037, "successful": 41037, "timed_out": 0,
+    "latency_us": {"p50": 3947, "p90": 11085, "p99": 15974, "max": 29718, "count": 41037}
+  }
+}
