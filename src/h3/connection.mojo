@@ -409,7 +409,33 @@ struct H3Connection(Movable):
         if key not in self._stream_bufs:
             return  # locally-initiated stream or unknown — ignore
 
+        # Hoisted clock-read state for B1 (parent), B2 (recv_ffi), B3a (buf_accumulate).
+        # Single-pair pattern per Q1 lessons (sub-leg pass T4 — Mojo lexical scope).
+        var t_start_drain: UInt64 = 0
+        var t_start_ffi: UInt64 = 0
+        var t_start_buf: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                t_start_drain = monotonic_us()
+
+        # B2 entry — wrap the FFI recv_stream_data call.
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                t_start_ffi = monotonic_us()
         var recv_result = self._quic.recv_stream_data(stream_id)
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                self.profile_ptr[].record_drain_recv_ffi(monotonic_us() - t_start_ffi)
+
+        # B3a entry — wrap from recv_result.copy() through the bidi-check exit.
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                t_start_buf = monotonic_us()
+
         var new_bytes = recv_result[0].copy()
         var fin = recv_result[1]
 
@@ -425,6 +451,12 @@ struct H3Connection(Movable):
             if not sbuf2.type_byte:
                 if len(sbuf2.buf) == 0:
                     self._stream_bufs[key] = sbuf2^
+                    # B3a + B1 exit (return path 1 — UNI empty buf).
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
+                            self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
                 var type_byte = sbuf2.buf[0]
                 var new_buf = List[UInt8]()
@@ -440,6 +472,12 @@ struct H3Connection(Movable):
                 elif type_byte == UInt8(0x03):
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                 else:
+                    # B3a + B1 exit (return path 2 — unknown UNI type).
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
+                            self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
             else:
                 self._stream_bufs[key] = sbuf2^
@@ -449,6 +487,12 @@ struct H3Connection(Movable):
         if not sbuf3.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
             self._stream_bufs[key] = sbuf3^
             self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
+            # B3a + B1 exit (return path 3 — bidi rejection).
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
+                    self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
             return
         self._stream_bufs[key] = sbuf3^
 
@@ -457,6 +501,12 @@ struct H3Connection(Movable):
         if self._peer_ctrl_sid:
             if self._peer_ctrl_sid.value() == stream_id:
                 is_ctrl = True
+
+        # B3a exit — buf_accumulate phase ends BEFORE parse-loop entry.
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
 
         self._parse_frames_from_buf(stream_id, is_ctrl, now)
 
@@ -468,9 +518,18 @@ struct H3Connection(Movable):
             self._h3_events.append(h3ev^)
         self._stream_bufs[key] = sbuf4^
 
+        # B1 exit (fall-through path 4).
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
+
     def _parse_frames_from_buf(mut self, stream_id: UInt64, is_ctrl: Bool, now: UInt64) raises:
         """Parse H3 frames from accumulated bytes. Consumes one frame per iteration."""
         var key = Int(stream_id)
+        # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
+        var t_start_parse: UInt64 = 0
+        var t_start_buf: UInt64 = 0
         while True:
             var sbuf = self._stream_bufs[key].copy()
             if len(sbuf.buf) == 0:
@@ -482,20 +541,38 @@ struct H3Connection(Movable):
             var ok = True
             var frame = H3RawFrame(UInt64(0), List[UInt8]())
             var consumed = 0
+            # B4 entry — wrap parse_h3_frame only.
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    t_start_parse = monotonic_us()
             try:
                 frame = parse_h3_frame(r)
                 consumed = r.pos
             except:
                 ok = False
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_ptr[].record_drain_frame_parse(monotonic_us() - t_start_parse)
             if not ok:
                 self._stream_bufs[key] = sbuf^
                 break
+            # B3b entry — wrap residual rebuild + Dict reassign.
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    t_start_buf = monotonic_us()
             # Remove consumed bytes from front of buf
             var new_buf = List[UInt8]()
             for i in range(consumed, len(sbuf.buf)):
                 new_buf.append(sbuf.buf[i])
             sbuf.buf = new_buf^
             self._stream_bufs[key] = sbuf^
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
             if is_ctrl:
                 self._handle_control_frame(stream_id, frame, now)
             else:
@@ -535,8 +612,18 @@ struct H3Connection(Movable):
 
     def _handle_request_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on a request/response bidi stream."""
+        var t_start_qpack: UInt64 = 0
         if frame.frame_type == H3_FRAME_HEADERS:
+            # B5 — wrap QPACK decode only.
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    t_start_qpack = monotonic_us()
             var fields = self._dec.decode(frame.payload)
+            @parameter
+            if PROFILE_ACCEPT:
+                if Int(self.profile_ptr) != 0:
+                    self.profile_ptr[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)
             var h3ev = H3Event(H3Event.HEADERS_RECEIVED)
             h3ev.stream_id = stream_id
             h3ev.fields = fields^
