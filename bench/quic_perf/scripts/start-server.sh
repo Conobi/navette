@@ -25,6 +25,12 @@ TQUIC_IMAGE="${TQUIC_IMAGE:-tquic-bench:latest}"
 
 case "$SERVER" in
     mojo-net)
+        # Ensure profile sidecar dir exists on host so the bind mount below
+        # has a target to attach to. Server writes
+        # bench/quic_perf/results/profile/INSTRUMENTATION-<ts>.json on
+        # SIGTERM/SIGINT under PROFILE_ACCEPT=True; the bind mount makes
+        # those files visible on the host filesystem.
+        mkdir -p "$REPO_ROOT/bench/quic_perf/results/profile"
         docker run -d --name bench-h3 \
             --network host \
             --security-opt seccomp=unconfined \
@@ -32,6 +38,7 @@ case "$SERVER" in
             --cpuset-cpus=0 \
             -v "$HERE/payloads:/data/static:ro" \
             -v "$REPO_ROOT/certs:/certs:ro" \
+            -v "$REPO_ROOT/bench/quic_perf/results/profile:/app/bench/quic_perf/results/profile" \
             --entrypoint /usr/local/bin/h3_server \
             "$MOJO_NET_IMAGE" --workers 1 \
             > /tmp/start-server.log
