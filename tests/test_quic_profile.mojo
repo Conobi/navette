@@ -1064,6 +1064,48 @@ def test_report_json_emits_drain_stream_subleg_block() raises:
     print("PASS: test_report_json_emits_drain_stream_subleg_block")
 
 
+def test_drain_subleg_sum_invariant_residual() raises:
+    """Synthetic profile: sum of measured legs <= parent; residual fills the gap."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_stream(UInt64(1000))
+    p.record_drain_recv_ffi(UInt64(100))
+    p.record_drain_buf_accumulate(UInt64(400))
+    p.record_drain_frame_parse(UInt64(200))
+    p.record_drain_qpack_decode(UInt64(100))
+    # Sum of measured legs = 800; total = 1000; residual = 200.
+    var de = p._compute_drain_event_dispatch_us()
+    assert_equal_int(Int(de), 200, "event_dispatch residual = total - sum_legs = 200")
+    var out = p.report_json()
+    assert_true('"event_dispatch_us": 200' in out, "JSON event_dispatch=200")
+    # sum_legs (with derived event_dispatch) == total exactly.
+    assert_true('"sum_legs_us": 1000' in out, "sum_legs (with derived) = 1000")
+    # unaccounted_pct after residual = 0.
+    assert_true('"unaccounted_pct": 0' in out, "unaccounted_pct=0 (closed)")
+    print("PASS: test_drain_subleg_sum_invariant_residual")
+
+
+def test_drain_subleg_residual_clamp_overshoot() raises:
+    """Synthetic profile: sum of measured legs > parent. Clamp residual to 0.
+    Guards against UInt64 underflow-wrap regression (would surface as a huge
+    spurious event_dispatch_us)."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_stream(UInt64(1000))
+    p.record_drain_recv_ffi(UInt64(400))
+    p.record_drain_buf_accumulate(UInt64(400))
+    p.record_drain_frame_parse(UInt64(200))
+    p.record_drain_qpack_decode(UInt64(100))
+    # Sum of measured legs = 1100; total = 1000 -> overshoot by 100.
+    var de = p._compute_drain_event_dispatch_us()
+    assert_equal_int(Int(de), 0, "event_dispatch clamped to 0 on overshoot")
+    var out_json = p.report_json()
+    assert_true('"event_dispatch_us": 0' in out_json, "JSON event_dispatch=0 (clamped)")
+    var out_text = p.report_text()
+    assert_true("event_dispatch.derived: 0" in out_text, "text event_dispatch=0 (clamped)")
+    print("PASS: test_drain_subleg_residual_clamp_overshoot")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1118,4 +1160,6 @@ def main() raises:
     test_record_drain_buf_accumulate_increments_total()
     test_record_drain_frame_parse_and_qpack_decode_independent()
     test_report_json_emits_drain_stream_subleg_block()
+    test_drain_subleg_sum_invariant_residual()
+    test_drain_subleg_residual_clamp_overshoot()
     print("All Plan A tests passed.")
