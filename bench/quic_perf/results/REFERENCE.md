@@ -758,3 +758,77 @@ Same shape on short-conn (median): `quic_post_recv` 2,085,686 μs > `drain_resp`
 **Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
 
 Sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-*-q1-{pre,post}-{long,short}-conn-iter[1-3].json` (12 total). Detailed evidence: `bench/quic_perf/results/profile/Q1_pre_baselines_2026-04-29.md` + `bench/quic_perf/results/profile/Q1_post_evidence_2026-04-29.md`.
+
+
+### 2026-05-01 — quic-h3-drain-stream-subleg — DIAGNOSTIC — SHIPPED (Q1 follow-on)
+
+**Spec/plan:** `specs/2026-05-01-quic-h3-drain-stream-subleg.md` / `plans/2026-05-01-quic-h3-drain-stream-subleg.md`
+**Branch:** `feat/quic-h3-drain-stream-subleg` off main `7e2eb01`
+**Predecessor:** Q1 shipped at `70ba90c` (above); 2-topic predecessor research at `research/2026-05-01-tquic-quiche-stream-read-paths.md` + `research/2026-05-01-mojo-list-dict-batch-apis.md`.
+
+**Goal:** decompose Q1's named-dominant `quic_post_recv_us` (~19.4M μs / 30s long-conn at Q1 ship) into 5 named sub-legs (`recv_ffi`, `buf_accumulate`, `frame_parse`, `qpack_decode`, `event_dispatch` via residual) plus a parent `drain_stream_us_total`. Diagnostic-only; no RPS lift expected; success metric = name the dominant cost center inside `_drain_stream` for the follow-on optimization spec.
+
+**Implementation:** ~150 LoC across `src/quic/profile.mojo` (5 fields + 5 record methods + private `_compute_drain_event_dispatch_us` helper + JSON `drain_stream_subleg` block + text emit) + `src/h3/connection.mojo` (7 brackets: B1 parent ×4 exit sites at `:428`/`:443`/`:452`/`:469`, B2 around `:412` recv_stream_data, B3a contiguous L413-460, B3b L494-498 in `_parse_frames_from_buf`, B4 around `:486` parse_h3_frame, B5 around `:539` `_dec.decode`). +7 unit tests.
+
+**Bench gates — all PASS (no escalation):**
+
+| Gate | Pre median (same-window) | Post median (same-window) | Delta | Threshold | Verdict |
+|---|---|---|---|---|---|
+| Hard Gate 1 — long-conn `unaccounted_pct` (Q1 budget) | ~10% | **10.14%** | preserved | <15% | ✅ PASS |
+| Hard Gate 2 — long-conn RPS on-build | 13,452 rps | 13,641 rps | +1.4% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 3 — short-conn RPS on-build | 1,159 rps | 1,196 rps | +3.2% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 4 — RPS off-build long-conn | 13,712 rps | 13,790 rps | +0.6% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 4 — RPS off-build short-conn | 1,180 rps | 1,234 rps | +4.6% | ≥ −2.0% | ✅ PASS |
+| Hard Gate 5 — sub-leg sum invariant (legs ≤ parent × 1.05) | — | — | ε=0% | ≤5% | ✅ PASS (all 6 post sidecars) |
+| Hard Gate 6 — `dcid_mismatch_pkts == 0` | 0 | 0 | — | == 0 | ✅ PASS (all 12 sidecars) |
+
+**🎯 Dominant sub-leg named — BOTH research predictions OVERTURNED (long-conn medians):**
+
+| Sub-leg | Topic 1 prediction | Observed median (μs / 30s) | % of `drain_stream_us_total` |
+|---|---|---|---|
+| **`qpack_decode_us`** | sub-µs/req → unlikely dominant | **21,251,812** ≈ 21.2s | **95.4%** |
+| `recv_ffi_us` | timing-of-FFI baseline | 499,326 ≈ 0.5s | 2.2% |
+| `buf_accumulate_us` | predicted DOMINANT (architectural-gap) | 246,097 ≈ 0.25s | 1.1% |
+| `frame_parse_us` | small | 122,168 ≈ 0.1s | 0.5% |
+| `event_dispatch_us` (residual) | small | 139,129 ≈ 0.1s | 0.6% |
+
+**Interpretation:** at long-conn 14k rps, ≈14k HEADERS frames/sec; observed `qpack_decode_us` ÷ HEADERS-rate ≈ **50 μs per HEADERS frame**. Reference QPACK (TQUIC + quiche static-only) is sub-µs/req per Topic 1 §4. mojo-net's QPACK decode is **~50× slower per call** than the reference. Topic 1's structural-difference critique of mojo-net's `_H3StreamBuf` accumulator was correct in principle but the magnitude of that gap (~1%) is below the bench harness sensitivity floor — the architectural-novelty argument was right, the magnitude prediction was 100× off.
+
+Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream); other legs <10% each.
+
+**Acceptance criteria:**
+
+| AC | Verdict | Detail |
+|---|---|---|
+| AC#1 (+7 unit tests) | ✅ PASS | Filtered count 48 → 55; full src suite 72/72 unchanged. |
+| AC#2 (Hard Gate 1) | ✅ PASS | long-conn `unaccounted_pct` 10.14% (target <15%). |
+| AC#3 (Hard Gate 2 on-build long-conn) | ✅ PASS | +1.4% drift, same-window. |
+| AC#4 (Hard Gate 3 on-build short-conn) | ✅ PASS | +3.2% drift. |
+| AC#5 (Hard Gate 4 off-build) | ✅ PASS | +0.6% / +4.6% drift, same-window. |
+| AC#6 (Hard Gate 5 sum invariant) | ✅ PASS | ε=0% all 6 post sidecars (clamp absorbs all gap). |
+| AC#7 (Hard Gate 6 dcid_mismatch_pkts == 0) | ✅ PASS | All 12 sidecars (6 pre + 6 post). |
+| AC#8 (REFERENCE.md entry) | ✅ PASS | This entry. |
+| AC#9 (flag revert) | ✅ PASS | `comptime PROFILE_ACCEPT: Bool = False` verified at `src/quic/profile.mojo:16`. |
+
+**Verdict: SHIPPED.** Q-drain-subleg lands all 9 ACs without escalation. Spec's primary diagnostic deliverable (name the dominant cost center inside `quic_post_recv_us`) is met with very high confidence (50× spread between #1 (`qpack_decode_us` at 95%) and #2 (`recv_ffi_us` at 2.2%); n=3 sidecars stable to within 0.5pp).
+
+**Surprises (recorded for retrospective):**
+1. **Both Topic 1 predictions overturned** — `buf_accumulate` predicted dominant via architectural-difference argument; reality is 1.1%. QPACK predicted sub-µs/req; reality is 50µs/HEADERS-frame, dwarfing everything. **Inspection-driven dominant-phase predictions now have a 0/3 track record on this codebase** (Subagent B's Q1 prediction; sub-leg pass's `write_hs` prediction; Topic 1's `buf_accumulate` prediction).
+2. **Architectural critique was correct, magnitude was wrong** — Topic 1's claim that mojo-net's `_H3StreamBuf.buf` accumulator + per-frame O(residual) shift has no reference analogue is structurally true. But the magnitude is below the bench harness sensitivity floor. quiche maintainers were right to leave their framing FSM alone (per `b60449c` applying BufFactory only to body data) — mojo-net's framing cost is also negligible.
+3. **Host noise amplified at long-conn cell** — pre-baselines under loadavg 1.5 = 14.5k rps; same image under loadavg 2.0+ = 13.5k rps (intrinsic ~7% noise floor). Same-window pre/post comparison required for valid drift gates. Future diagnostic plans should require pre+post captured back-to-back.
+4. **Bench infrastructure gap** — Q1's `start-server.sh` did NOT bind-mount `bench/quic_perf/results/profile`; SIGINT-handler sidecars were destroyed by `docker rm -f`. T0 added the bind mount + switched stop-server.sh to `docker stop -t 10` for SIGTERM grace. Lasting infrastructure fix.
+
+**Open questions deferred to follow-on specs:**
+- **Next opt-spec target = `src/h3/qpack/decoder.mojo`.** Candidate angles: linear-scan static-table lookup (99 entries; `Dict[String,Int]` over 14k rps could explain 50× overhead vs reference); per-call `List[QpackHeaderField]` allocation; varint length-prefix decoding hot path. Required-later, high-priority — this IS the long-conn bottleneck.
+- Topic 2's optimization candidates (`extend(Span)`, `ref slot = d[k]`, head-cursor pattern in `_H3StreamBuf`) accounted for only ~1% of `drain_stream_us_total` — they remain valid micro-optimisations but should NOT be the next spec's primary target. Optional; trigger if QPACK refactor delivers <expected-gain.
+- Topic 1's recommended sub-leg taxonomy was structurally sound (5 legs map cleanly onto reference FSMs); the 0/3 prediction track record is on dominance-of-leg, not on taxonomy itself. Future diagnostic specs should keep using structural-mirror taxonomy + drop dominance predictions entirely.
+
+**Image SHAs (tag-isolated):**
+- `mojo-net-bench:drain-subleg-pre-off`: `e77d7eb425ec...` (re-tag of `q1-post-off` — zero src/+bench/ changes since Q1 merge)
+- `mojo-net-bench:drain-subleg-pre-on`: `6b3a214097a2...` (re-tag of `q1-post-on`)
+- `mojo-net-bench:drain-subleg-post-off`: `312b09299f99...`
+- `mojo-net-bench:drain-subleg-post-on`: `beefa96efcfb...`
+
+**Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
+
+Sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-*-q-drain-subleg-{pre,post}-{long,short}-conn-iter[1-3].json` (12 total). Detailed evidence: `bench/quic_perf/results/profile/Q-drain-subleg_pre_baselines_2026-05-01.md` + `bench/quic_perf/results/profile/Q-drain-subleg_post_evidence_2026-05-01.md`.
