@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 38771845,
+  "on_flush_events": 7822,
+  "idle_us_total": 3520021,
+  "busy_us_total": 35251046,
+  "pkts_per_flush_histogram": {
+    "1": 620,
+    "2-3": 179,
+    "4-7": 356,
+    "8-15": 1617,
+    "16-31": 4710,
+    "32-63": 327,
+    "64-127": 9,
+    "128+": 4
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 20, "p90": 31, "p99": 62, "max": 32768, "n": 139520, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 14910},
+    "hp":            {"avg": 0, "total": 70959},
+    "aead":          {"avg": 0, "total": 90965},
+    "frame_parse":   {"avg": 13, "total": 1859507},
+    "sm":            {"avg": 1, "total": 214036},
+    "residual":      {"avg": 0, "total": 120770},
+    "shim_ffi":      {"avg": 1, "total": 147588},
+    "drain":         {"avg": 25, "total": 3517106}
+  },
+  "arrival_lat_us_total": 11374087,
+  "arrival_lat_us_overflow": 0,
+  "arrival_lat_us_buckets": [4325, 4719, 9867, 19742, 36130, 43665, 10855, 694, 425, 390, 5462, 3046, 138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "per_conn_pkts_buckets": [0, 0, 1, 0, 0, 0, 0, 8],
+  "conns_total": 9,
+  "conns_with_pkts_no_hs_complete": 0,
+  "addr_key_dcid_mismatch": {
+    "dcid_mismatch_pkts": 0,
+    "addr_keys_total": 0,
+    "addr_keys_with_mismatch": 0,
+    "per_addr_key": {
+    }
+  },
+  "ffi_subleg_us": {
+    "read_hs":   {"avg": 0, "total": 77279},
+    "write_hs":  {"avg": 0, "total": 70143},
+    "take_keys": {"avg": 0, "total": 166}
+  },
+  "loop_phases_us": {
+    "pop_dispatch": {"avg": 0, "total": 79790},
+    "post_pkt":     {"avg": 0, "total": 28944},
+    "teardown":     {"avg": 0, "total": 6380},
+    "loop_iter_count": 139458,
+    "unaccounted_us_total": 57983,
+    "unaccounted_pct": 0
+  },
+  "h3_phases_us": {
+    "drain_resp": {"total": 5239431},
+    "post_recv":  {"total": 22671740},
+    "dispatch":   {"total": 1278525}
+  },
+  "drain_stream_subleg": {
+    "drain_stream_us_total": 22261238,
+    "recv_ffi_us": 499832,
+    "buf_accumulate_us": 246097,
+    "frame_parse_us": 121825,
+    "qpack_decode_us": 21251812,
+    "event_dispatch_us": 141672,
+    "sum_legs_us": 22261238,
+    "unaccounted_pct": 0
+  },
+  "worst_conns": [
+  ],
+  "handshake": {
+    "arrivals": 239, "successful": 239, "timed_out": 0,
+    "latency_us": {"p50": 14649, "p90": 22526, "p99": 33800, "max": 34079, "count": 239}
+  }
+}
