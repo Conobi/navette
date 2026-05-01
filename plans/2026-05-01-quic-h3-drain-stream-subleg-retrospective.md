@@ -10,18 +10,26 @@
 
 **🎯 BOTH research predictions OVERTURNED.** Topic 1 predicted `buf_accumulate_us` would dominate (architectural-gap argument: mojo-net's accumulator + per-frame O(residual) shift has no reference analogue). Topic 1 also predicted QPACK would be sub-µs/req → unlikely dominant. Reality:
 
-- `qpack_decode_us` = **95.4%** of `drain_stream_us_total` (~21.2M μs / 30s on long-conn)
-- `buf_accumulate_us` = **1.1%**
+- `qpack_decode_us` (the wall-clock wrapping `self._dec.decode(frame.payload)` end-to-end) = **95.4%** of `drain_stream_us_total` (~21.2M μs / 30s on long-conn)
+- `buf_accumulate_us` (B3a + B3b combined — the `_H3StreamBuf.buf` accumulator: copy + per-byte append + Dict copy/reassign + residual rebuild) = **1.1%**
 - `recv_ffi_us` = 2.2%, `frame_parse_us` = 0.5%, `event_dispatch_us` = 0.6%
 
-At long-conn 14k rps × ~14k HEADERS frames/sec, observed QPACK at ~50 μs/HEADERS-frame = **~50× slower** than TQUIC + quiche reference stacks (sub-µs/req for static-only QPACK per Topic 1 §4).
+At long-conn 14k rps × ~14k HEADERS frames/sec, the bracket measures ~50 μs/HEADERS-frame inside `_dec.decode(...)`. For comparison, TQUIC + quiche static-only QPACK is sub-µs/req per Topic 1 §4 — but those are reference *algorithm* costs, not direct apples-to-apples wall-clock measurements of the same call.
+
+**What the 95% proves:** The wall-clock cost of invoking `self._dec.decode(frame.payload)` end-to-end is the dominant `_drain_stream` cost. Sum invariant closes exactly (sum of 5 legs = `drain_stream_us_total` to the byte across all 6 post sidecars), so there is no hidden bucket — the 95% is genuinely inside that call.
+
+**What the 95% does NOT prove:**
+
+1. **Where inside `_dec.decode` the time goes.** Could be varint length-prefix parsing, the 99-entry static-table lookup loop, per-call `List[QpackHeaderField]` allocation, header-name/value String construction, or some combination. The B5 bracket wraps the call, not the call's internals.
+2. **Whether some of the 50 μs is Mojo function-call / parameter-passing / result-allocation overhead** rather than algorithmic QPACK work. `frame.payload: List[UInt8]` may incur an implicit copy on parameter binding; `List[QpackHeaderField]` result requires allocation. Both count toward the measured 50 μs but aren't "QPACK algorithm" cost.
+3. **Whether 50 μs/call reproduces in a microbench.** We measured only under live bench load; no isolated cross-check.
 
 **Inspection-driven dominant-phase predictions now have a 0/3 track record on this codebase**:
 1. Subagent B's Q1 prediction (`drain_resp` rank 1 at 12-16s) → overturned by `quic_post_recv` (~19.4M μs)
 2. Sub-leg pass's prediction (`write_hs ≥60%`) → overturned by `read_hs` 93%
-3. Topic 1's `buf_accumulate` prediction → overturned by `qpack_decode_us` at 95%
+3. Topic 1's `buf_accumulate` prediction → overturned by `qpack_decode_us` (call-site) at 95%
 
-**Implication for next spec:** target `src/h3/qpack/decoder.mojo`, not `_drain_stream` byte-shift / Dict-copy patterns. Topic 2's optimisations (`extend(Span)`, `ref slot = d[k]`, head-cursor) account for ~1% of drain time and are below bench harness sensitivity floor.
+**Implication for next spec:** target the `_dec.decode` call-path — but **diagnose before optimising**. Sub-sub-leg the decoder body (varint / table-lookup / result-alloc / String construction) AND consider an isolated microbench to separate "Mojo call/copy/alloc overhead" from "algorithmic QPACK". Otherwise we'll be predicting again. Topic 2's `_drain_stream` optimisations (`extend(Span)`, `ref slot = d[k]`, head-cursor) account for ~1% combined and are below bench harness sensitivity floor — not the right primary target.
 
 ## Built vs. planned
 
@@ -87,9 +95,9 @@ docker tag httparena-mojo-net:latest mojo-net-bench:latest
 
 ## Open questions for follow-on specs
 
-1. **What:** Why is mojo-net's QPACK decoder ~50× slower than TQUIC/quiche static-only QPACK? Candidate angles: linear-scan static-table lookup (99 entries); per-call `List[QpackHeaderField]` allocation; varint length-prefix decoding; possible `Dict[String, Int]` over the static table at 14k rps amplifying any constant cost.
+1. **What:** Where inside `self._dec.decode(frame.payload)` does the ~50 μs/HEADERS-frame wall-clock go? Our B5 bracket measures the call-site end-to-end but cannot distinguish: (a) algorithmic QPACK work — varint length-prefix + 99-entry static-table lookup + Huffman; (b) per-call allocation — `List[QpackHeaderField]` result + per-header String name/value construction; (c) Mojo parameter-passing overhead — implicit copy of `frame.payload: List[UInt8]` if `decode` doesn't borrow; (d) Some other Mojo runtime cost not visible in the source.
    **Severity:** **required-later** (this IS the long-conn bottleneck — next opt-spec target).
-   **Trigger:** Next QPACK-decoder optimisation spec. Read `src/h3/qpack/decoder.mojo` end-to-end first; consider adding sub-sub-leg timing inside the decoder before guessing the dominant cost (4th diagnostic pass to avoid 0/4 prediction).
+   **Trigger:** Next QPACK-decoder diagnostic spec (NOT optimisation spec — predict-then-optimise has a 0/3 record on this codebase). Methodology: (i) read `src/h3/qpack/decoder.mojo` end-to-end with no prior assumption about which sub-step dominates; (ii) add 4-5 sub-sub-leg timers inside the decoder body matching the candidate angles above; (iii) write an isolated microbench that calls `decode()` in a tight loop with synthetic inputs to separate "amortised algorithmic cost" from "per-invocation overhead"; (iv) capture under same-window bench protocol per D2; (v) only THEN write the optimisation spec.
 
 2. **What:** Topic 2's optimisations (`extend(Span)`, `ref slot = d[k]`, head-cursor pattern in `_H3StreamBuf`) are valid micro-improvements but account for only ~1% of `drain_stream_us_total`.
    **Severity:** optional.
@@ -105,7 +113,7 @@ docker tag httparena-mojo-net:latest mojo-net-bench:latest
 
 ## Next spec recommendation
 
-**Q-qpack-decode-deep-dive** — target `src/h3/qpack/decoder.mojo`. Reduce per-HEADERS-frame decode cost from ~50 μs to <5 μs (10× target; competitive with reference stacks). Diagnostic-first: add sub-sub-legs INSIDE QPACK decoder before optimising. Methodology refinement: drop dominant-phase prediction, name candidate angles only.
+**Q-qpack-decode-subleg** — DIAGNOSTIC-first sub-leg pass on `self._dec.decode(...)`. Goal: name what fraction of the 50 μs/HEADERS-frame is algorithmic QPACK work vs allocation vs Mojo call overhead. ~4-5 sub-sub-leg timers inside `src/h3/qpack/decoder.mojo` + an isolated microbench cross-check. Only AFTER this lands should an optimisation spec be written. Methodology refinements (codify into the spec template): (a) drop dominant-phase prediction entirely — record candidate angles, not rankings; (b) require same-window pre+post bench captures back-to-back per D2; (c) require an isolated microbench cross-check whenever a single function call is the named target (so we can tell amortised algorithmic cost apart from per-invocation overhead).
 
 **Followup options to bundle if QPACK refactor doesn't fully close the gap:**
 - Topic 2's `_drain_stream` micro-optimisations (small wins; bundle for a Sprint-3 H3 streamlining pass)
