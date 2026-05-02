@@ -773,18 +773,31 @@ def qpack_encode_int(value: UInt64, prefix_bits: UInt8) -> List[UInt8]:
     """Encode an integer with N-bit prefix per RFC 7541 §5.1.
     Returns only the integer bytes; caller OR-s the high flag bits into first byte.
     """
-    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
     var result = List[UInt8]()
+    _ = qpack_encode_int_into(value, prefix_bits, result)
+    return result^
+
+
+def qpack_encode_int_into(
+    value: UInt64, prefix_bits: UInt8, mut out: List[UInt8]
+) -> Int:
+    """Encode integer per RFC 7541 §5.1 directly into `out`. Returns the
+    index of the first appended byte so the caller can OR flag bits into
+    it. Avoids the per-field List[UInt8] allocation that the older
+    qpack_encode_int return-and-extend pattern triggers in hot encode
+    paths."""
+    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
+    var first_idx = len(out)
     if value < max_first:
-        result.append(UInt8(value))
-        return result^
-    result.append(UInt8(max_first))
+        out.append(UInt8(value))
+        return first_idx
+    out.append(UInt8(max_first))
     var v = value - max_first
     while v >= 128:
-        result.append(UInt8((v & 0x7F) | 0x80))
+        out.append(UInt8((v & 0x7F) | 0x80))
         v >>= 7
-    result.append(UInt8(v))
-    return result^
+    out.append(UInt8(v))
+    return first_idx
 
 
 struct _IntDecodeResult(Copyable, Movable):
@@ -1024,9 +1037,8 @@ struct QpackEncoder(Copyable, Movable):
         var exact = self._static_find(name, value)
         if exact.__bool__():
             var idx = exact.value()
-            var idx_bytes = qpack_encode_int(UInt64(idx), 6)
-            idx_bytes[0] |= 0xC0  # bits 7-6 = 11
-            out.extend(Span(idx_bytes))
+            var first_idx = qpack_encode_int_into(UInt64(idx), 6, out)
+            out[first_idx] |= 0xC0  # bits 7-6 = 11
             return
 
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
@@ -1035,9 +1047,8 @@ struct QpackEncoder(Copyable, Movable):
         var name_match = self._static_find_name(name)
         if name_match.__bool__():
             var idx = name_match.value()
-            var idx_bytes = qpack_encode_int(UInt64(idx), 4)
-            idx_bytes[0] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0 (may-index), bit 4 = T=1 (static)
-            out.extend(Span(idx_bytes))
+            var first_idx = qpack_encode_int_into(UInt64(idx), 4, out)
+            out[first_idx] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0, bit 4 = T=1
             var val_bytes = self._encode_string(value, self.use_huffman)
             out.extend(Span(val_bytes))
             return
@@ -1054,9 +1065,8 @@ struct QpackEncoder(Copyable, Movable):
             var name_span = name.as_bytes()
             name_raw = List[UInt8](capacity=len(name_span))
             name_raw.extend(name_span)
-        var name_len_bytes = qpack_encode_int(UInt64(len(name_raw)), 3)
-        name_len_bytes[0] |= 0x20 | name_h_bit  # 001 N=0 H nnn
-        out.extend(Span(name_len_bytes))
+        var first_idx = qpack_encode_int_into(UInt64(len(name_raw)), 3, out)
+        out[first_idx] |= 0x20 | name_h_bit  # 001 N=0 H nnn
         out.extend(Span(name_raw))
         var val_bytes = _qpack_encode_string(value, self.use_huffman)
         out.extend(Span(val_bytes))
