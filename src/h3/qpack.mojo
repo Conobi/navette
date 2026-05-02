@@ -629,26 +629,35 @@ struct QpackSharedTables(Movable):
 def huffman_decode_sm(data: List[UInt8], read tbl: HuffDecodeTable) raises -> String:
     """4-bit state-machine Huffman decoder. ~89× faster than `huffman_decode`.
     Mirrors TQUIC's `decode4` loop (`tquic/src/h3/qpack/huffman.rs:90-108`)."""
-    if len(data) == 0:
+    var n = len(data)
+    if n == 0:
         return String("")
     var FLAG_DECODED: UInt8 = 2
     var FLAG_ERROR: UInt8 = 4
-    var out = List[UInt8]()
+    # Worst-case decode is ~8/5 compression ratio; reserve 2× to avoid
+    # List re-allocations across the inner loop.
+    var out = List[UInt8](capacity=n * 2)
     var state: Int = 0
-    for i in range(len(data)):
-        var byte = data[i]
+    var data_ptr = data.unsafe_ptr()
+    var flags_ptr = tbl.flags.unsafe_ptr()
+    var out_byte_ptr = tbl.output_byte.unsafe_ptr()
+    var next_state_ptr = tbl.next_state.unsafe_ptr()
+    for i in range(n):
+        var byte = data_ptr[i]
         var idx_hi = state * 16 + Int(byte >> 4)
-        if tbl.flags[idx_hi] == FLAG_ERROR:
+        var f_hi = flags_ptr[idx_hi]
+        if f_hi == FLAG_ERROR:
             raise "Huffman: invalid bit pattern (high nibble)"
-        if tbl.flags[idx_hi] & FLAG_DECODED:
-            out.append(tbl.output_byte[idx_hi])
-        state = Int(tbl.next_state[idx_hi])
+        if f_hi & FLAG_DECODED:
+            out.append(out_byte_ptr[idx_hi])
+        state = Int(next_state_ptr[idx_hi])
         var idx_lo = state * 16 + Int(byte & 0xf)
-        if tbl.flags[idx_lo] == FLAG_ERROR:
+        var f_lo = flags_ptr[idx_lo]
+        if f_lo == FLAG_ERROR:
             raise "Huffman: invalid bit pattern (low nibble)"
-        if tbl.flags[idx_lo] & FLAG_DECODED:
-            out.append(tbl.output_byte[idx_lo])
-        state = Int(tbl.next_state[idx_lo])
+        if f_lo & FLAG_DECODED:
+            out.append(out_byte_ptr[idx_lo])
+        state = Int(next_state_ptr[idx_lo])
     return String(unsafe_from_utf8=out)
 
 
