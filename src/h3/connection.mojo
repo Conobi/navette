@@ -602,8 +602,7 @@ struct H3Connection(Movable):
                     t_start_buf = monotonic_us()
             # Remove consumed bytes from front of buf
             var new_buf = List[UInt8]()
-            for i in range(consumed, len(sbuf.buf)):
-                new_buf.append(sbuf.buf[i])
+            new_buf.extend(Span(sbuf.buf)[consumed:])
             sbuf.buf = new_buf^
             self._stream_bufs[key] = sbuf^
             @parameter
