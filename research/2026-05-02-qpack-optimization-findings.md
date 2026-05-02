@@ -239,3 +239,47 @@ After v7, the long-conn `drain_resp` should drop substantially. Need a fresh SIG
 - Whether per-flush bookkeeping (Dict ops, per-conn state) dominates
 
 The trajectory `+143% → +175%` suggests there's still room. Realistic projection: another ~50% lift from fixing `drain_resp` internals, getting to ~60-70% of TQUIC. Beyond that, FFI batching (send_stream_data at the wire layer) is likely the next structural change.
+
+
+## v7 sidecar profile (post-encoder-caching)
+
+```json
+{
+  "busy_us_total":      34237800,
+  "drain_stream_us_total": 4309321,    // unchanged from v6 (decoder already optimized)
+  "qpack_decode_us":     1513996,      // 35% of drain_stream
+  "recv_ffi_us":         1403423,      // 33%
+  "buf_accumulate_us":    661899,
+  "frame_parse_us":       349472,
+  "event_dispatch_us":    380531,
+
+  "h3_phases_us": {
+    "drain_resp": 10072761,    // 29% of busy — STILL DOMINANT (was 38% pre-v7)
+    "post_recv":   5406922,    // 16% of busy
+    "dispatch":    3622578     // 11% of busy
+  }
+}
+```
+
+drain_resp dropped 24% (13.2M → 10.1M μs) from v6's encoder caching, but it remains the H3 phase to attack. Without sub-leg visibility inside drain_resp we can only hypothesize what's left:
+- QPACK encode (now cached) — ~3-5 M μs
+- HeadersFrame/DataFrame wire build — ~1-2 M μs
+- `_quic.send_stream_data` FFI calls — ~3-5 M μs (each call has FFI overhead)
+- Dict ops, `_h3_events.append()`, etc. — small
+
+The next diagnostic pass would sub-leg `H3HandlerServer._drain_responses` (3 brackets analogous to what Q-drain-subleg did for `_drain_stream`):
+- `qpack_encode_us` — wraps `self._enc.encode(fields)`
+- `frame_build_us` — wraps `HeadersFrame.encode()` + `DataFrame.encode()`
+- `send_stream_data_us` — wraps `_quic.send_stream_data` FFI calls
+
+If FFI is dominant, the next structural change is **batched FFI writes** — gather multiple frames per syscall.
+
+## What ships from this loop session
+
+Branch `perf/qpack-decode-fast` ready for review/merge:
+- `7d708b8`: v4 — instance-cached static table on QpackDecoder
+- `89ca855`: v6 — TQUIC-style state-machine Huffman decoder
+- `4edb39a`: v7 — instance-cached static + Huffman tables on QpackEncoder
+- Plus 4 research doc commits
+
+**Headline:** mojo-net long-conn RPS **14,847 → 40,776 (2.75× / +175%)**, from **16.2% → 46.8% of TQUIC reference**. All conformance + tests green. Binary +4 KB.
