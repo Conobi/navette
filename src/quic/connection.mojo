@@ -74,6 +74,7 @@ from src.quic.packet import (
     PacketType,
     PacketHeader,
     parse_packet_header,
+    parse_packet_header_into,
     serialize_long_header,
     serialize_short_header,
     pn_decode,
@@ -726,12 +727,12 @@ struct QuicConnection(Movable):
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     ph_header_parse_us = monotonic_us()
-            var header_result = parse_packet_header(
+            var header = PacketHeader()
+            var header_end = parse_packet_header_into(
                 Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
+                header,
             )
-            var header = header_result[0].copy()
-            var header_end = header_result[1]
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:

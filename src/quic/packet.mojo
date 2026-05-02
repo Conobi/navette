@@ -127,15 +127,19 @@ struct PacketHeader(Copyable, Movable):
 # --- parse_packet_header ---
 
 
-def parse_packet_header[
+def parse_packet_header_into[
     origin: Origin
-](buf: Span[UInt8, origin], local_cid_len: Int) raises -> Tuple[PacketHeader, Int]:
+](buf: Span[UInt8, origin], local_cid_len: Int, mut header: PacketHeader) raises -> Int:
+    """Parse a QUIC packet header in-place. Returns the byte offset just
+    past the header. Avoids the Tuple[PacketHeader, Int] return + caller
+    .copy() that parse_packet_header forces in Mojo 0.26.2 (where
+    `t[0]^` for tuple-element move is broken).
+    """
     if len(buf) < 1:
         raise "packet too short"
 
     var reader = ByteReader[origin](buf)
     var first_byte = reader.read_u8()
-    var header = PacketHeader()
 
     var is_long = Bool((first_byte & 0x80) != 0)
     header.is_long_header = is_long
@@ -167,7 +171,7 @@ def parse_packet_header[
                 versions.append(reader.read_u32_be())
             header.supported_versions = versions^
             header.pn_offset = 0
-            return Tuple[PacketHeader, Int](header^, reader.pos)
+            return reader.pos
 
         # Fixed bit (bit 6) must be 1 for non-VN long header packets.
         if (first_byte & 0x40) == 0:
@@ -193,7 +197,7 @@ def parse_packet_header[
             header.token = reader.read_bytes(token_len)
             header.retry_integrity_tag = reader.read_bytes(16)
             header.pn_offset = 0
-            return Tuple[PacketHeader, Int](header^, reader.pos)
+            return reader.pos
 
         if header.packet_type == PacketType.initial():
             # Read token length (varint) and token.
@@ -204,7 +208,7 @@ def parse_packet_header[
         # Read payload length (varint) for Initial, Handshake, 0-RTT.
         header.payload_length = varint_decode[origin](reader)
         header.pn_offset = reader.pos
-        return Tuple[PacketHeader, Int](header^, reader.pos)
+        return reader.pos
 
     else:
         # Short header (1-RTT).
@@ -218,7 +222,19 @@ def parse_packet_header[
             raise "packet too short for DCID"
         header.dcid = reader.read_bytes(local_cid_len)
         header.pn_offset = 1 + local_cid_len
-        return Tuple[PacketHeader, Int](header^, reader.pos)
+        return reader.pos
+
+
+def parse_packet_header[
+    origin: Origin
+](buf: Span[UInt8, origin], local_cid_len: Int) raises -> Tuple[PacketHeader, Int]:
+    """Tuple-returning wrapper. Backward-compatible for callers that
+    don't have a pre-allocated PacketHeader to fill; new hot-path
+    callers should prefer `parse_packet_header_into` to skip the
+    Tuple element copy."""
+    var header = PacketHeader()
+    var pos = parse_packet_header_into(buf, local_cid_len, header)
+    return Tuple[PacketHeader, Int](header^, pos)
 
 
 # --- Serialize functions ---
