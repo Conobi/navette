@@ -33,6 +33,7 @@ from src.quic.frame import (
     NewConnectionIdFrame,
     StreamDataBlockedFrame,
     StreamsBlockedFrame,
+    parse_frame,
     parse_frames,
     serialize_frames,
     FRAME_PADDING,
@@ -829,12 +830,19 @@ struct QuicConnection(Movable):
                     if Int(self.profile_ptr) != 0:
                         ph_frame_parse_us = monotonic_us()
                 var reader = ByteReader(Span(pt_list))
-                var frames = parse_frames(reader)
                 var ack_eliciting = False
-                for i in range(len(frames)):
-                    if frames[i].is_ack_eliciting():
+                # Inline parse + dispatch: avoids the List[Frame] build +
+                # iterate, and lets _dispatch_frame consume each Frame
+                # directly so heap variants (STREAM data, CRYPTO data)
+                # can be moved instead of copied. Mojo 0.26.2's borrowed-
+                # element iteration would otherwise force a .copy() per
+                # variant. RFC 9000 §13.1 imposes no within-packet ordering
+                # on frame processing, so streaming + dispatch is safe.
+                while reader.remaining() > 0:
+                    var frame = parse_frame(reader)
+                    if frame.is_ack_eliciting():
                         ack_eliciting = True
-                    self._dispatch_frame(frames[i], space_idx, now)
+                    self._dispatch_frame(frame^, space_idx, now)
                 @parameter
                 if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
@@ -1104,9 +1112,11 @@ struct QuicConnection(Movable):
     # ── Frame dispatch ───────────────────────────────────────────────
 
     def _dispatch_frame(
-        mut self, frame: Frame, space_idx: Int, now: UInt64
+        mut self, var frame: Frame, space_idx: Int, now: UInt64
     ) raises:
-        """Route a parsed frame to its handler."""
+        """Route a parsed frame to its handler. Takes ownership of frame so
+        heap-carrying variants (STREAM, CRYPTO) can be moved out via the
+        consume_X(deinit self) methods on Frame instead of being copied."""
         var tid = frame.type_id
 
         # PADDING: no-op
@@ -1127,7 +1137,7 @@ struct QuicConnection(Movable):
         # CRYPTO
         if tid == FRAME_CRYPTO:
             if frame._crypto:
-                var cf = frame._crypto.value().copy()
+                var cf = frame^.consume_crypto()
                 self.crypto_streams[space_idx].receive(
                     cf.offset, Span(cf.data)
                 )
@@ -1186,7 +1196,7 @@ struct QuicConnection(Movable):
         # STREAM frames (0x08-0x0F).
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
             if frame._stream:
-                var sf = frame._stream.value().copy()
+                var sf = frame^.consume_stream()
                 self._handle_stream_frame(sf)
             return
 

@@ -369,6 +369,19 @@ struct Frame(Copyable, Movable):
         self._new_token = take._new_token^
         self._path_data = take._path_data^
 
+    # ── Variant-consuming accessors (deinit self) ─────────────────────
+    # These let _dispatch_frame move heap-carrying variants out of a
+    # consumed Frame instead of `frame._stream.value().copy()`. Only the
+    # variants that own significant heap data have consume methods —
+    # the other tagged frames (ACK ranges, etc.) are kept via .value().copy()
+    # which is cheap relative to STREAM/CRYPTO data payloads.
+
+    def consume_stream(deinit self) -> StreamFrame:
+        return self._stream.unsafe_take()
+
+    def consume_crypto(deinit self) -> CryptoFrame:
+        return self._crypto.unsafe_take()
+
     # ── Factory methods ───────────────────────────────────────────────
 
     @staticmethod
