@@ -1,0 +1,154 @@
+# QPACK Optimization Findings — 2026-05-02
+
+**Branch:** `perf/qpack-decode-fast` (off main `f22647b`)
+**Status:** v4 shipped on branch, +3.6% long-conn / +1.9% short-conn RPS lift. Conformance + tests green.
+
+## Current state on branch
+
+Single commit `7d708b8`: instance-cached QPACK static table on `QpackDecoder`. The 99-entry static table is built once per decoder (one per H3Connection) instead of being rebuilt on every indexed lookup. Microbench: `static_get` 391 ns → 1 ns (391× faster). Macro bench: long-conn 14,870 → 15,403 rps.
+
+## What we tried that didn't work
+
+### Attempt 1: comptime-for unroll for static_get + huffman_decode
+
+```mojo
+comptime for k in range(99):
+    if k == idx: return ...
+```
+
+- **Result:** 5× binary bloat (805 KB → 4 MB), -36% RPS regression.
+- **Cause:** the compiler emits unrolled comparisons as generated code, not data. icache pressure dwarfs any per-call savings.
+
+### Attempt 2: comptime InlineArray for static + Huffman tables
+
+```mojo
+comptime _STATIC_NAMES = InlineArray[StaticString, 99](...)
+comptime _HUFF_CODES = InlineArray[UInt32, 256](...)
+```
+
+- **Result for static (99 entries):** binary unchanged at 805 KB; macro bench -13%; microbench `static_get` 50 ns. Mixed.
+- **Result for Huffman (256 entries):** binary unchanged but `huffman_decode` 8.5× SLOWER in production. Inner-loop `_HUFF_NBITS[sym]` access is somehow expensive at runtime despite isolated read benchmarking at 3 ns.
+- **Cause (hypothesis):** Mojo 0.26.2 partially folds `comptime InlineArray` of 256+ entries — falls back to runtime construction with apparent indexing overhead inside hot loops. A 256-arg `__list_literal__` constructor failed to compile-fold in our standalone test (variadic depth exceeded).
+
+### Attempt 3: Instance-cached `huff_table` on QpackDecoder + method-form decode
+
+- **Result:** macro bench -2.6% regression vs v4.
+- **Cause:** `self.huff_table[sym].nbits` access inside the hot inner loop is slower than the existing `var table = _huffman_encode_table(); table[sym].nbits` pattern. Two extra pointer-dereferences per access (struct field, then List data) compounded over ~128 iters/char × 11 chars × 14k req/s.
+- **`ref` binding test:** `ref table = self.huff_table` to alias without copy — same 14,671 ns/call (vs original 13,190 ns), no improvement.
+- **Conclusion:** caching the encode table per-instance does NOT help. The current per-call rebuild is as fast as the inner loop allows.
+
+## What works (v4 — shipped on branch)
+
+Per-instance cache of the **static table only** on `QpackDecoder`:
+
+```mojo
+struct QpackDecoder:
+    var static_table: List[QpackStaticEntry]
+
+    def __init__(out self):
+        self.static_table = _qpack_static_table()  # built once per H3Connection
+
+    def decode(mut self, data: List[UInt8]) raises -> List[QpackHeaderField]:
+        ...
+        var entry = self.static_table[idx].copy()  # O(1), no rebuild
+        ...
+```
+
+This works because:
+- Static lookups happen 3-5× per request (vs Huffman's ~128 inner iters per char × multiple chars)
+- Eliminating the 99-String-alloc rebuild has high leverage
+- Outer-loop access (per indexed-FL parse) doesn't suffer the `self.field` overhead the way inner-loop access does
+
+## Where the gap remains
+
+mojo-net is at 16.2% of TQUIC long-conn RPS post-Q3-merge. With v4 we're now ~16.8%. Closing the gap requires fixing Huffman.
+
+Per Q-drain-subleg evidence:
+- 95% of `_drain_stream` time is in `self._dec.decode(...)`
+- Of that, microbench shows ~85% is in `huffman_decode` (14 μs out of 16 μs for a 4-header decode with 1 Huffman value)
+- TQUIC's Huffman is sub-µs/req per Topic 1 §4 — **~30× faster**
+
+## The next big win: state-machine Huffman decoder
+
+TQUIC and quiche both use a **4-bit state-machine decoder**:
+
+```rust
+const DECODE_TABLE: [[(usize, u8, u8); 16]; 256] = [...];
+
+fn decode4(&mut self, input: u8) -> Result<Option<u8>> {
+    let (next, byte, flags) = DECODE_TABLE[self.state][input as usize];
+    // ... return Some(byte) if FLAG_DECODED ...
+}
+```
+
+- 256 states × 16 nibbles = 4096 transition entries
+- Each input byte decodes to 2 nibble lookups = **O(1) per byte**
+- For an 11-char Huffman value: ~22 lookups vs current ~1408 inner-loop iters
+- **Estimated ~30-50× speedup on huffman_decode**
+
+### Implementation plan
+
+1. **Build the decode table at QpackDecoder `__init__` time** from the encode table:
+   - Build a binary tree from `_huffman_encode_table()` (each leaf = a symbol)
+   - For each (state, nibble): walk 4 bits, identify next state + emitted symbol
+   - Output 4096 (next_state, output_byte, flags) tuples
+   - ~80-100 LoC; one-time cost ~10-30 μs at decoder init
+   - **Note: the SHORTEST Huffman code is 5 bits; no nibble can complete two codes — at most 1 symbol emit per nibble. This makes the table-build straightforward.**
+
+2. **New decode method on QpackDecoder:**
+   ```mojo
+   def _decode_huffman_sm(self, data: List[UInt8]) raises -> String:
+       var state: Int = 0
+       var out = List[UInt8]()
+       for byte in data:
+           # high nibble
+           var entry = self.huff_decode_table[state * 16 + Int(byte >> 4)]
+           if entry.flags & FLAG_DECODED:
+               out.append(entry.byte)
+           state = Int(entry.next)
+           # low nibble
+           entry = self.huff_decode_table[state * 16 + Int(byte & 0xf)]
+           if entry.flags & FLAG_DECODED:
+               out.append(entry.byte)
+           state = Int(entry.next)
+       if state != 0 and not (entry.flags & FLAG_MAYBE_EOS):
+           raise "Huffman: incomplete code"
+       return String(unsafe_from_utf8=out)
+   ```
+
+3. **Wire into QpackDecoder.decode** (replace the existing `huffman_decode` calls in §4.5.4 / §4.5.6 paths).
+
+4. **Conformance check:** the existing 6 huffman tests in `tests/test_h3_qpack.mojo` cover roundtrip + edge cases. Plus `bash conformance/scripts/run_tests.sh` for the full 36-test conformance suite.
+
+### Risks
+
+- **Table-build correctness:** the 4-bit state-machine derivation is a known algorithm but easy to get wrong on edge cases (EOS, partial-byte padding). Need to cross-validate against TQUIC's hardcoded table values for the first few states (TQUIC `huffman.rs:422-...`).
+- **The "self.field overhead" found in v5:** even with a precomputed table, accessing `self.huff_decode_table[state * 16 + nibble]` may still pay the struct-field indirection cost. **However:** the access pattern is O(1) per nibble (constant 2 accesses per byte) vs the current O(N×K), so even with overhead the result will be dramatically faster.
+
+### Estimated impact
+
+- `huffman_decode` 14 μs → ~500 ns = ~28× faster per Huffman string
+- Per HEADERS frame (with ~3 Huffman values): 50 μs → ~5 μs = ~10× faster
+- Long-conn RPS: 14k → ~30-50k rps = **~2-3× speedup**
+
+This is the biggest remaining structural win. Worth a dedicated follow-up spec.
+
+## Reusable lessons
+
+1. **Mojo 0.26.2 doesn't have const-array equivalents for >100 entries.** TQUIC's `const STATIC_DECODE_TABLE: [(&[u8], &[u8]); 99]` and `const DECODE_TABLE: [[(usize, u8, u8); 16]; 256]` are the cleanest implementation in Rust. Mojo's `comptime InlineArray` works for ≤99 entries but breaks down at 256+ and has unexplained runtime indexing overhead in inner loops. Per-instance List cache built at __init__ is the workable approximation.
+
+2. **Microbench != macro bench.** Even with same-window measurements, isolated lookups optimized 391× translate to ~3.6% RPS win. The dominant factor in production is wall-clock per HEADERS frame, where many costs compound.
+
+3. **Comptime-for unroll bloats binary 5× and regresses production by 36%** despite 21× microbench speedup on the unrolled lookup. Avoid for tables larger than ~10-20 entries.
+
+4. **Inner-loop `self.field` access is measurably slower** than local `var x = ...` patterns (Mojo 0.26.2). For state-machine decoders we need to test whether `ref table = self.huff_decode_table` aliasing recovers the speed; if not, the table-build cost may need to be paid differently (one-time global-init via UnsafePointer).
+
+5. **The microbench-to-macro discrepancy must be empirically verified.** The static-table fix microbench → macro pipeline gave +391× → +3.6% RPS, which is consistent given share-of-time. The Huffman cache microbench → macro went +0% → -2.6% — different from prediction because the inner-loop overhead amplified at scale.
+
+## Files / References
+
+- Branch HEAD: `7d708b8`
+- TQUIC reference: `tquic/src/h3/qpack/huffman.rs:422+` (DECODE_TABLE), `tquic/src/h3/qpack/static_table.rs:381` (STATIC_DECODE_TABLE)
+- quiche reference: `quiche/src/h3/qpack/decoder.rs:204` (lookup_static)
+- Q-drain-subleg evidence: `bench/quic_perf/results/profile/Q-drain-subleg_post_evidence_2026-05-01.md`
+- Predecessor research: `research/2026-05-01-tquic-quiche-stream-read-paths.md`
