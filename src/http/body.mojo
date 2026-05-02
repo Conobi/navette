@@ -139,3 +139,11 @@ struct BodyFrame(Copyable, Movable):
     def error(self) -> StreamError:
         """Return a copy of the stream error. Only valid when is_error() is True."""
         return self._error.value().copy()
+
+    def consume_data(deinit self) -> List[UInt8]:
+        """Consume self and return the data bytes. Only valid when is_data() is True."""
+        return self._data^
+
+    def consume_trailers(deinit self) -> Headers:
+        """Consume self and return the trailing headers. Only valid when is_trailers() is True."""
+        return self._headers^

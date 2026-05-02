@@ -338,9 +338,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     break
                 var f = f_opt.unsafe_take()
                 if f.is_data():
-                    var data_copy = f.data().copy()
                     try:
-                        self._h3.send_data(UInt64(sid), data_copy^, False)
+                        self._h3.send_data(UInt64(sid), f^.consume_data(), False)
                     except:
                         pass
                 elif f.is_end():
@@ -351,7 +350,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     ctx.response_ended = True
                     break
                 elif f.is_trailers():
-                    var trailer_hdrs = f.trailers().copy()
+                    var trailer_hdrs = f^.consume_trailers()
                     var t_fields = List[QpackHeaderField]()
                     for j in range(len(trailer_hdrs)):
                         t_fields.append(QpackHeaderField(trailer_hdrs.name_at(j), trailer_hdrs.value_at(j)))
