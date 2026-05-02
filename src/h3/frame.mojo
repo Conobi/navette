@@ -16,9 +16,9 @@ struct H3RawFrame(Copyable, Movable):
     var frame_type: UInt64
     var payload: List[UInt8]
 
-    def __init__(out self, frame_type: UInt64, payload: List[UInt8]):
+    def __init__(out self, frame_type: UInt64, var payload: List[UInt8]):
         self.frame_type = frame_type
-        self.payload = List[UInt8](copy=payload)
+        self.payload = payload^
 
     def __init__(out self, *, copy_from: Self):
         self.frame_type = copy_from.frame_type
@@ -30,6 +30,9 @@ struct H3RawFrame(Copyable, Movable):
         varint_encode(w, UInt64(len(self.payload)))
         w.write_bytes(Span(self.payload))
         return w.finish()
+
+    def consume_payload(deinit self) -> List[UInt8]:
+        return self.payload^
 
 
 struct DataFrame(Copyable, Movable):
@@ -46,7 +49,7 @@ struct DataFrame(Copyable, Movable):
         return DataFrame(payload)
 
     def encode(self) raises -> List[UInt8]:
-        var raw = H3RawFrame(H3_FRAME_DATA, self.data)
+        var raw = H3RawFrame(H3_FRAME_DATA, self.data.copy())
         return raw.encode()
 
 
@@ -64,7 +67,7 @@ struct HeadersFrame(Copyable, Movable):
         return HeadersFrame(payload)
 
     def encode(self) raises -> List[UInt8]:
-        var raw = H3RawFrame(H3_FRAME_HEADERS, self.encoded_fields)
+        var raw = H3RawFrame(H3_FRAME_HEADERS, self.encoded_fields.copy())
         return raw.encode()
 
 
@@ -106,7 +109,7 @@ struct SettingsFrame(Copyable, Movable):
             varint_encode(pw, self.pairs[i].id)
             varint_encode(pw, self.pairs[i].value)
         var payload = pw.finish()
-        var raw = H3RawFrame(H3_FRAME_SETTINGS, payload)
+        var raw = H3RawFrame(H3_FRAME_SETTINGS, payload^)
         return raw.encode()
 
     def get(self, id: UInt64) -> Optional[UInt64]:

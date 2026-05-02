@@ -390,7 +390,7 @@ struct H3Connection(Movable):
         var w = ByteWriter()
         varint_encode(w, last_stream_id)
         var payload = w.finish()
-        var raw = H3RawFrame(H3_FRAME_GOAWAY, payload)
+        var raw = H3RawFrame(H3_FRAME_GOAWAY, payload^)
         var wire = raw.encode()
         self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(wire), False)
         self._goaway_sent = Optional[UInt64](last_stream_id)
@@ -612,7 +612,7 @@ struct H3Connection(Movable):
             if is_ctrl:
                 self._handle_control_frame(stream_id, frame, now)
             else:
-                self._handle_request_frame(stream_id, frame, now)
+                self._handle_request_frame(stream_id, frame^, now)
 
     def _handle_control_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on the peer control stream."""
@@ -646,7 +646,7 @@ struct H3Connection(Movable):
 
         # else: unknown frame types are ignored (RFC 9114 §7.2.8)
 
-    def _handle_request_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
+    def _handle_request_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on a request/response bidi stream."""
         var t_start_qpack: UInt64 = 0
         if frame.frame_type == H3_FRAME_HEADERS:
@@ -668,7 +668,7 @@ struct H3Connection(Movable):
         elif frame.frame_type == H3_FRAME_DATA:
             var h3ev = H3Event(H3Event.DATA_RECEIVED)
             h3ev.stream_id = stream_id
-            h3ev.data = List[UInt8](copy=frame.payload)
+            h3ev.data = frame^.consume_payload()
             self._h3_events.append(h3ev^)
 
         elif frame.frame_type == H3_FRAME_SETTINGS or frame.frame_type == H3_FRAME_GOAWAY:
