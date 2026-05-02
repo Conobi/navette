@@ -2786,22 +2786,32 @@ struct QuicConnection(Movable):
 
         Returns (bytes, fin_reached). Consumes FC credit for the drained bytes
         and flags MAX_DATA / MAX_STREAM_DATA updates as needed.
+
+        Per long-conn sidecar (2026-05-02 latest-long): recv_ffi_us is the
+        dominant sub-leg of _drain_stream (39.7%). The previous shape did
+        get_stream → mutate → set_stream, which deep-cloned the Stream
+        struct (including its 4 Optional buffers) on entry and again
+        downstream in maybe_cleanup. Now mutate via Dict ref binding so
+        the live Stream is read and updated in place — no clone. Mirrors
+        TQUIC's `Connection::stream_recv` which takes `&mut Stream` out
+        of the streams HashMap.
         """
         var key = Int(stream_id)
         if key not in self.stream_map.streams:
             raise "unknown stream"
-        var stream = self.stream_map.get_stream(key)
+        var data = List[UInt8]()
+        var fin_reached = False
+        var drained = UInt64(0)
+        # Block-scoped ref so it falls out of scope before maybe_cleanup
+        # (which mutates self.stream_map.streams via pop).
+        ref stream = self.stream_map.streams[key]
         if not stream.recv_buf or not stream.fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
         # unsafe_take + put-back avoids per-call RecvBuf + FlowControl
         # copies that Optional.value().copy() would force.
         var rb = stream.recv_buf.unsafe_take()
-        # Drain into a caller-owned List instead of getting a Tuple back —
-        # Mojo 0.26.2 can't move out of tuple elements so the tuple form
-        # would force a per-call List[UInt8] copy of the drained bytes.
-        var data = List[UInt8]()
-        var fin_reached = rb.read_into(stream.fin_offset, data)
-        var drained = UInt64(len(data))
+        fin_reached = rb.read_into(stream.fin_offset, data)
+        drained = UInt64(len(data))
         var fc = stream.fc_recv.unsafe_take()
         if drained > 0:
             fc.add_consumed(drained)
@@ -2816,7 +2826,8 @@ struct QuicConnection(Movable):
             var rs = stream.recv_state.value()
             if rs == RECV_DATA_RECVD and fin_reached:
                 stream.recv_state = Optional[UInt8](RECV_DATA_READ)
-        self.stream_map.set_stream(key, stream^)
+        # `stream` ref's last use is the line above; ASAP-destruction
+        # releases the borrow before maybe_cleanup needs Dict access.
         _ = self.stream_map.maybe_cleanup(key)
         return (data^, fin_reached)
 

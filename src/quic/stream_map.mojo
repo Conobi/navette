@@ -322,12 +322,21 @@ struct StreamMap(Movable):
     # ── Stream cleanup (§4.3) ────────────────────────────────────────────────
 
     def maybe_cleanup(mut self, stream_id: Int) raises -> Bool:
-        """Remove a fully-closed stream. Returns True if removed."""
+        """Remove a fully-closed stream. Returns True if removed.
+
+        Inspect via Dict ref-binding instead of `Stream(other=...)` clone:
+        the read-only is_fully_closed() check fired per recv_stream_data
+        in the bench's hot path and was deep-cloning the entire Stream
+        struct just to read a few flags.
+        """
         if stream_id not in self.streams:
             return False
 
-        var s = Stream(other=self.streams[stream_id])
-        if not s.is_fully_closed():
+        # Block-scoped ref — released before the pop() below.
+        var fully_closed: Bool
+        ref s_ref = self.streams[stream_id]
+        fully_closed = s_ref.is_fully_closed()
+        if not fully_closed:
             return False
 
         # Track peer-initiated completions for MAX_STREAMS update
