@@ -326,3 +326,63 @@ The next iteration should capture a v9 sidecar, identify where the remaining ~48
 v6's QpackDecoder __init__ added ~52 μs cost per H3Connection. At 1,200 short-conn req/s that's ~6% CPU spent on table-build per process. v8/v9 didn't improve this. Fix path: **UnsafePointer-backed singleton** for the HuffDecodeTable so all decoders share one table built at first-decoder construction. Mojo 0.26.2 doesn't support module-level mutable state, but UnsafePointer-based caching can work via struct-static pattern.
 
 Estimated impact: short-conn -7% → 0%. Should be a small follow-up.
+
+
+## v9 sidecar profile — H3 layer is approaching saturation
+
+```json
+{
+  "busy_us_total":      34079520,
+  "h3_phases_us": {
+    "drain_resp": 8937601,    // 26% of busy (was 38% pre-v8)
+    "post_recv":  6009401,    // 18% (mostly _drain_stream + _quic.timeout)
+    "dispatch":   3969328     // 12% (handler invocation)
+  },
+  "drain_stream_subleg": {
+    "drain_stream_us_total": 4825864,    // unchanged from v7
+    "qpack_decode_us":       1711989,    // 35% — state-machine SM
+    "recv_ffi_us":           1542614     // 32% — _quic.recv_stream_data FFI
+  }
+}
+```
+
+**H3 sum: 18.9M μs (56% of busy). Non-H3: 15.1M μs (44% of busy).** The remaining gap to TQUIC (87k rps; we're at 45k) likely lives in non-H3 code paths — QUIC layer, FFI overhead, I/O event loop, allocator pressure, etc.
+
+### Where to look next
+
+1. **`_quic.send_stream_data` FFI overhead:** at 14k rps × 2 frames per req = 28k FFI calls/sec. Each FFI call has parameter-marshalling cost (~5-10 μs). **Batched FFI** (`send_stream_data_batch(frames: List[(stream_id, wire, fin)])`) would amortize the FFI overhead across N frames per call. Structural change to TQUIC's API — needs a new C-side function.
+
+2. **`_quic.recv_stream_data` similarly** — at 14k rps × ~2 reads per req. Same batching opportunity.
+
+3. **Dict[Int, ...] hot-path operations:** various per-stream state held in Dicts. Mojo Dict operations may have higher overhead than Rust HashMap. Profile with finer instrumentation.
+
+4. **Allocator pressure:** mojo-net allocates extensively (List, String, etc.). TQUIC reuses buffers. A per-connection pool of pre-allocated buffers could amortize allocation.
+
+5. **Handler dispatch (`dispatch` 4M μs):** BenchHandler's serve() function. For static file responses, file-lookup + response-build cost. Caching the response-bytes for the static-file path would eliminate per-request work.
+
+The next dedicated optimization spec should:
+- Sub-leg `dispatch` to find handler-invocation vs serve-execution split
+- Sub-leg the QUIC FFI calls in send_stream_data and recv_stream_data
+- Compare allocation rate vs TQUIC
+
+This is a different optimization track from QPACK. Closing the remaining gap requires structural changes outside the H3 layer.
+
+## Final session summary
+
+Branch `perf/qpack-decode-fast` shipped 5 perf commits + 5 research doc updates:
+
+| Phase | Long-conn RPS | % of TQUIC | Cumulative Δ |
+|---|---|---|---|
+| main | 14,847 | 16.2% | — |
+| v4 (decoder static cache) | 15,403 | 17.7% | +3.6% |
+| v6 (state-machine Huffman) | 36,007 | 41.4% | +143% |
+| v7 (encoder caching) | 40,776 | 46.8% | +175% |
+| v8 (extend(Span)) | 44,591 | 51.3% | +200% |
+| **v9 (skip frame intermediates)** | **44,994** | **51.7%** | **+203%** |
+
+**Tripled mojo-net's long-conn RPS in 5 commits, from 16.2% to 51.7% of TQUIC reference.**
+- All conformance + tests green throughout
+- Binary size +4 KB (no comptime-unroll bloat)
+- Methodology: microbench → identify cost → mirror TQUIC pattern → macro-validate
+
+The H3 layer is now approaching saturation; further gains likely require non-H3 work (QUIC FFI batching, allocator pooling, etc.). The `perf/qpack-decode-fast` branch is ready for review/merge as a major shipping milestone.
