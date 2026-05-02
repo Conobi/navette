@@ -1380,20 +1380,23 @@ struct QuicConnection(Movable):
         if self.spaces[space_idx].largest_acked_pn < 0:
             return
 
-        # Collect sent packet info for loss detection.
-        var sent_pns = List[Int]()
-        var sent_times = List[UInt64]()
-        var sent_in_flight = List[Bool]()
+        # Collect sent packet info for loss detection. Pre-reserve so the
+        # parallel Lists don't pay growth-during-append per ACK call —
+        # this loop fires per inbound packet under per_pkt_us.frame_parse
+        # 18.5% bracket. The sent_in_flight List that previously also
+        # accumulated here was never read by detect_lost_packets, so it's
+        # dropped entirely (one alloc + N appends per ACK saved).
+        var n_sent = len(self.spaces[space_idx].sent_packets)
+        var sent_pns = List[Int](capacity=n_sent)
+        var sent_times = List[UInt64](capacity=n_sent)
 
         for entry in self.spaces[space_idx].sent_packets.items():
             sent_pns.append(entry.key)
             sent_times.append(entry.value.time_sent)
-            sent_in_flight.append(entry.value.in_flight)
 
         var lost_pns = self.recovery.detect_lost_packets(
             sent_pns,
             sent_times,
-            sent_in_flight,
             self.spaces[space_idx].largest_acked_pn,
             now,
         )

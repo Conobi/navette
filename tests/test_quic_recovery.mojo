@@ -127,15 +127,8 @@ def test_packet_threshold_loss() raises:
     times.append(UInt64(0))
     times.append(UInt64(0))
     times.append(UInt64(0))
-    var in_flight = List[Bool]()
-    in_flight.append(True)
-    in_flight.append(True)
-    in_flight.append(True)
-    in_flight.append(True)
-    in_flight.append(True)
-
     # largest_acked=4, now=0 (no time-based loss).
-    var lost = r.detect_lost_packets(pns, times, in_flight, 4, UInt64(0))
+    var lost = r.detect_lost_packets(pns, times, 4, UInt64(0))
     # PNs 0, 1 have gap >= 3 (4-0=4, 4-1=3). PN 2 gap=2, not lost.
     if len(lost) != 2:
         raise "expected 2 lost, got " + String(len(lost))
@@ -156,12 +149,9 @@ def test_time_threshold_loss() raises:
     pns.append(5)
     var times = List[UInt64]()
     times.append(UInt64(1_000_000))
-    var in_flight = List[Bool]()
-    in_flight.append(True)
-
     # largest_acked=6, now = sent_time + loss_delay + 1 -> time loss.
     var now = UInt64(1_000_000) + ld + UInt64(1)
-    var lost = r.detect_lost_packets(pns, times, in_flight, 6, now)
+    var lost = r.detect_lost_packets(pns, times, 6, now)
     if len(lost) != 1:
         raise "expected 1 lost, got " + String(len(lost))
     if lost[0] != 5:
@@ -169,7 +159,7 @@ def test_time_threshold_loss() raises:
 
     # now = sent_time + loss_delay - 1 -> NOT lost (gap=1 < 3).
     var now2 = UInt64(1_000_000) + ld - UInt64(1)
-    var lost2 = r.detect_lost_packets(pns, times, in_flight, 6, now2)
+    var lost2 = r.detect_lost_packets(pns, times, 6, now2)
     if len(lost2) != 0:
         raise "expected 0 lost at time threshold boundary, got " + String(len(lost2))
     print("  time_threshold_loss: PASS")

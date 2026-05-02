@@ -189,7 +189,6 @@ struct Recovery(Movable):
         self,
         sent_pns: List[Int],
         sent_times: List[UInt64],
-        sent_in_flight: List[Bool],
         largest_acked_pn: Int,
         now: UInt64,
     ) -> List[Int]:
