@@ -820,16 +820,17 @@ struct QuicConnection(Movable):
                 if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
                     self.state = self.state | CONN_ADDR_VALIDATED
 
-                # 10. Parse and dispatch frames.
-                # Copy plaintext into list for ByteReader (known remaining
-                # copy — ByteReader needs Span from List).
-                var pt_list = List[UInt8](capacity=plaintext_len)
-                pt_list.extend(Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len))
+                # 10. Parse and dispatch frames — read directly from the
+                # decrypted region of the buffer; ByteReader takes a Span
+                # parameterised by origin so we can feed a MutAnyOrigin
+                # span over pkt_ptr+header_len without intermediate List.
                 @parameter
                 if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_frame_parse_us = monotonic_us()
-                var reader = ByteReader(Span(pt_list))
+                var reader = ByteReader[MutAnyOrigin](
+                    Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len)
+                )
                 var ack_eliciting = False
                 # Inline parse + dispatch: avoids the List[Frame] build +
                 # iterate, and lets _dispatch_frame consume each Frame
