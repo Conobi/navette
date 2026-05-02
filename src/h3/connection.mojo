@@ -371,18 +371,20 @@ struct H3Connection(Movable):
     ) raises:
         """Encode trailing headers directly into a HEADERS frame without
         building a List[QpackHeaderField] intermediate. No :status — RFC
-        9114 §4.1 forbids pseudo-headers in trailers."""
+        9114 §4.1 forbids pseudo-headers in trailers.
+
+        Two-span send: prefix + encoded into SendBuf with no wire-buffer
+        intermediate copy. Same sourcing as send_response_headers."""
         var encoded = List[UInt8]()
         encoded.append(0x00)
         encoded.append(0x00)
         for j in range(len(trailers)):
             self._enc._encode_field_into(trailers.name_at(j), trailers.value_at(j), encoded)
-        var w = ByteWriter()
-        varint_encode(w, H3_FRAME_HEADERS)
-        varint_encode(w, UInt64(len(encoded)))
-        w.write_bytes(Span(encoded))
-        var wire = w.finish()
-        self._quic.send_stream_data(stream_id, Span(wire), fin)
+        var pw = ByteWriter()
+        varint_encode(pw, H3_FRAME_HEADERS)
+        varint_encode(pw, UInt64(len(encoded)))
+        var prefix = pw.finish()
+        self._quic.send_stream_data_2(stream_id, Span(prefix), Span(encoded), fin)
 
     def send_response_headers(
         mut self,
@@ -396,7 +398,11 @@ struct H3Connection(Movable):
         saves ~2 String auto-copies per header (the var-binding copies
         that QpackHeaderField construction triggers when fed name_at/value_at
         refs). Borrowed-name encode path inside QpackEncoder._encode_field
-        already takes name + value by-borrow."""
+        already takes name + value by-borrow.
+
+        Sends `prefix + encoded` as two spans into SendBuf via
+        send_stream_data_2 — drops the wire-buffer intermediate that
+        previously double-copied the encoded headers."""
         var encoded = List[UInt8]()
         encoded.append(0x00)  # Required Insert Count = 0
         encoded.append(0x00)  # S = 0, Delta Base = 0
@@ -406,20 +412,23 @@ struct H3Connection(Movable):
         # User headers — name_at/value_at return refs, no per-field copy.
         for j in range(len(headers)):
             self._enc._encode_field_into(headers.name_at(j), headers.value_at(j), encoded)
-        var w = ByteWriter()
-        varint_encode(w, H3_FRAME_HEADERS)
-        varint_encode(w, UInt64(len(encoded)))
-        w.write_bytes(Span(encoded))
-        var wire = w.finish()
-        self._quic.send_stream_data(stream_id, Span(wire), fin)
+        # Build the H3 frame prefix into a tiny ByteWriter (varint type +
+        # varint length, ≤8 bytes total). Avoids re-extending `encoded`.
+        var pw = ByteWriter()
+        varint_encode(pw, H3_FRAME_HEADERS)
+        varint_encode(pw, UInt64(len(encoded)))
+        var prefix = pw.finish()
+        self._quic.send_stream_data_2(stream_id, Span(prefix), Span(encoded), fin)
 
     def send_data(
         mut self, stream_id: UInt64, data: List[UInt8], fin: Bool
     ) raises:
         """Build H3 DATA wire frame → send_stream_data. Empty data + fin=True sends FIN only.
 
-        Builds the wire bytes directly via ByteWriter, bypassing the
-        DataFrame intermediate (saves 2 List[UInt8] copies per call).
+        Two-span variant of the wire build: hand the (frame prefix, body)
+        pair to send_stream_data_2 instead of building a wire-buffer
+        intermediate. Saves one full body memcpy per send — sourced by
+        h3_phases_us.drain_resp = 18.8% of run wall-clock.
         """
         if len(data) == 0 and fin:
             var empty = List[UInt8]()
@@ -427,12 +436,11 @@ struct H3Connection(Movable):
             return
         if len(data) == 0:
             return
-        var w = ByteWriter()
-        varint_encode(w, H3_FRAME_DATA)
-        varint_encode(w, UInt64(len(data)))
-        w.write_bytes(Span(data))
-        var wire = w.finish()
-        self._quic.send_stream_data(stream_id, Span(wire), fin)
+        var pw = ByteWriter()
+        varint_encode(pw, H3_FRAME_DATA)
+        varint_encode(pw, UInt64(len(data)))
+        var prefix = pw.finish()
+        self._quic.send_stream_data_2(stream_id, Span(prefix), Span(data), fin)
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
         """Write GOAWAY frame to local control stream."""

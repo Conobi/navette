@@ -2781,16 +2781,47 @@ struct QuicConnection(Movable):
         if (ss == SEND_DATA_SENT or ss == SEND_DATA_RECVD
                 or ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD):
             raise "STREAM_STATE_ERROR: send side terminal or FIN already queued"
-        # unsafe_take + put-back avoids the per-call SendBuf copy that
-        # `Optional.value().copy()` forces. Per-conn the Optional stays
-        # populated end-to-end, and the take/put pair is balanced.
         var sb = stream.send_buf.unsafe_take()
         sb.write(data, fin)
         has_pending = sb.has_pending()
         stream.send_buf = Optional[SendBuf](sb^)
-        # ref's last use was the line above; ASAP-destruction releases
-        # the borrow before add_sendable mutates the sendable_ids list
-        # (which lives on stream_map alongside but separate from streams).
+        if has_pending:
+            self.stream_map.add_sendable(key)
+
+    def send_stream_data_2(
+        mut self,
+        stream_id: UInt64,
+        prefix: Span[UInt8, _],
+        data: Span[UInt8, _],
+        fin: Bool,
+    ) raises:
+        """Two-span variant: queues `prefix + data` as a single contiguous
+        write to the stream's send buffer, with no intermediate wire-buffer
+        copy. Sourced by h3_phases_us.drain_resp = 18.8% of run wall-clock
+        — H3's send_data / send_response_headers / send_trailers were
+        building a ByteWriter `wire = [varint frame_type, varint length,
+        body]` and then doing `send_stream_data(Span(wire), fin)`, which
+        copied the body twice (once into wire, once into SendBuf.data).
+        Pass the H3 frame prefix as `prefix` and the body as `data` and
+        only one extend per buffer fires.
+        """
+        var key = Int(stream_id)
+        if key not in self.stream_map.streams:
+            raise "unknown stream"
+        var has_pending: Bool
+        ref stream = self.stream_map.streams[key]
+        if not stream.send_state or not stream.send_buf:
+            raise "STREAM_STATE_ERROR: no send side"
+        var ss = stream.send_state.value()
+        if (ss == SEND_DATA_SENT or ss == SEND_DATA_RECVD
+                or ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD):
+            raise "STREAM_STATE_ERROR: send side terminal or FIN already queued"
+        var sb = stream.send_buf.unsafe_take()
+        if len(prefix) > 0:
+            sb.write(prefix, False)
+        sb.write(data, fin)
+        has_pending = sb.has_pending()
+        stream.send_buf = Optional[SendBuf](sb^)
         if has_pending:
             self.stream_map.add_sendable(key)
 
