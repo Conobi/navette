@@ -424,12 +424,13 @@ struct PacketNumberSpace(Copyable, Movable):
         if ack_largest_int > self.largest_acked_pn:
             self.largest_acked_pn = ack_largest_int
 
-        # Remove acked packets from sent_packets and collect them.
+        # Remove acked packets from sent_packets and collect them via
+        # Dict.pop (returns by-move). Was copy-then-pop, which cloned the
+        # SentPacket (+ its frames Vec) only to free the original.
         for i in range(len(acked_pns)):
             var key = acked_pns[i]
             if key in self.sent_packets:
-                acked.append(SentPacket(other=self.sent_packets[key]))
-                _ = self.sent_packets.pop(key)
+                acked.append(self.sent_packets.pop(key))
 
         return acked^
 
