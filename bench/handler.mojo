@@ -553,11 +553,15 @@ def handle_static(
     name_bytes.extend(Span(target_bytes)[prefix_len:end])
     var filename = String(unsafe_from_utf8=name_bytes^)
 
-    # Look up in cache
+    # Look up in cache. Ref-bind the entry: the previous .copy() cloned
+    # all 3 body variants + content_type just to read fields. Combined
+    # with the chosen-variant .copy() below, that was ~4 List[UInt8]
+    # clones per request × 49.8k rps = ~200k clones/sec on the response
+    # build path. Sourced by h3_phases_us.dispatch 13.56% wall-clock.
     if filename not in state_ptr[].static_cache:
         handle_404(resp)
         return
-    var entry = state_ptr[].static_cache[filename].copy()
+    ref entry = state_ptr[].static_cache[filename]
 
     # Content negotiation
     var use_br = _accepts_encoding(headers, String("br")) and len(entry.br_data) > 0
@@ -577,6 +581,8 @@ def handle_static(
     else:
         body_data = entry.data.copy()
 
+    # ref `entry` released here by ASAP-destruction; body_data owns its
+    # own copy of the chosen variant for the response.
     hdrs.add("content-length", String(len(body_data)))
     resp.send_status(StatusCode(200), hdrs^)
     _ = resp.try_send_body(BodyFrame.data(body_data^))
