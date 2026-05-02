@@ -1004,9 +1004,8 @@ struct QpackDecoder(Copyable, Movable):
         var pos = ir.new_offset
         if pos + length > len(data):
             raise "QPACK: string data truncated"
-        var raw = List[UInt8]()
-        for i in range(length):
-            raw.append(data[pos + i])
+        var raw = List[UInt8](capacity=length)
+        raw.extend(Span(data)[pos:pos + length])
         pos += length
         if h_bit:
             return _StrDecodeResult(huffman_decode_sm(raw, self.huff_decode), pos)

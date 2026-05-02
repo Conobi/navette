@@ -127,8 +127,6 @@ def parse_h3_frame[origin: Origin](mut r: ByteReader[origin]) raises -> H3RawFra
     var length = varint_decode(r)
     if UInt64(r.remaining()) < length:
         raise "H3: truncated frame payload (declared " + String(length) + " bytes, got " + String(r.remaining()) + ")"
-    var payload = List[UInt8]()
     var n = Int(length)
-    for _ in range(n):
-        payload.append(r.read_u8())
-    return H3RawFrame(frame_type, payload)
+    var payload = r.read_bytes(n)
+    return H3RawFrame(frame_type, payload^)
