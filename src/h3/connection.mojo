@@ -527,20 +527,20 @@ struct H3Connection(Movable):
 
         var fin = recv_result[1]
 
-        # Single load + single store of the stream buf — was previously
-        # three separate Dict-copy/store pairs (sbuf, sbuf2, sbuf3) on
-        # the bench's bidi path, which copied the entire _H3StreamBuf
-        # (including its List[UInt8] buf) twice for no benefit. Now: one
-        # load, mutate locally through both branches, store once at the
-        # end (or before each early-return).
-        var sbuf = self._stream_bufs[key].copy()
+        # Mutate the stream buf in place via Dict ref binding — was
+        # previously a copy + write-back round trip that cloned the
+        # entire _H3StreamBuf (including its List[UInt8] buf). Sourced
+        # by buf_accumulate_us 12.9% long-conn / 14.7% short-conn.
+        # Ref's last use is just before _parse_frames_from_buf (which
+        # also mutates _stream_bufs[key]), so ASAP-destruction releases
+        # the borrow in time.
+        ref sbuf = self._stream_bufs[key]
         sbuf.buf.extend(Span(recv_result[0]))
 
         # Handle unidirectional stream type byte (first byte = stream type)
         if sbuf.is_uni:
             if not sbuf.type_byte:
                 if len(sbuf.buf) == 0:
-                    self._stream_bufs[key] = sbuf^
                     # B3a + B1 exit (return path 1 — UNI empty buf).
                     @parameter
                     if PROFILE_ACCEPT:
@@ -560,7 +560,6 @@ struct H3Connection(Movable):
                 elif type_byte == UInt8(0x03):
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                 else:
-                    self._stream_bufs[key] = sbuf^
                     # B3a + B1 exit (return path 2 — unknown UNI type).
                     @parameter
                     if PROFILE_ACCEPT:
@@ -571,7 +570,6 @@ struct H3Connection(Movable):
 
         # Reject server-initiated bidi from peer (RFC 9114 §6.1)
         if not sbuf.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
-            self._stream_bufs[key] = sbuf^
             self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
             # B3a + B1 exit (return path 3 — bidi rejection).
             @parameter
@@ -580,7 +578,6 @@ struct H3Connection(Movable):
                     self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                     self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
             return
-        self._stream_bufs[key] = sbuf^
 
         # Determine if this is the peer control stream
         var is_ctrl = False
@@ -596,13 +593,13 @@ struct H3Connection(Movable):
 
         self._parse_frames_from_buf(stream_id, is_ctrl, now)
 
-        # FIN on bidi request stream → STREAM_ENDED event
-        var sbuf4 = self._stream_bufs[key].copy()
+        # FIN on bidi request stream → STREAM_ENDED event.
+        # Read-only Dict access via ref — no clone of the _H3StreamBuf.
+        ref sbuf4 = self._stream_bufs[key]
         if not sbuf4.is_uni and fin:
             var h3ev = H3Event(H3Event.STREAM_ENDED)
             h3ev.stream_id = stream_id
             self._h3_events.append(h3ev^)
-        self._stream_bufs[key] = sbuf4^
 
         # B1 exit (fall-through path 4).
         @parameter
@@ -611,15 +608,22 @@ struct H3Connection(Movable):
                 self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
 
     def _parse_frames_from_buf(mut self, stream_id: UInt64, is_ctrl: Bool, now: UInt64) raises:
-        """Parse H3 frames from accumulated bytes. Consumes one frame per iteration."""
+        """Parse H3 frames from accumulated bytes. Consumes one frame per iteration.
+
+        Per-iteration ref binding into self._stream_bufs[key] — same
+        sourcing as _drain_stream's prologue: buf_accumulate_us 12.9%
+        long-conn / 14.7% short-conn. The handler calls below
+        (_handle_control_frame, _handle_request_frame) don't touch
+        _stream_bufs themselves, so the ref's borrow extends safely
+        across them when a frame was successfully parsed.
+        """
         var key = Int(stream_id)
         # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
         var t_start_parse: UInt64 = 0
         var t_start_buf: UInt64 = 0
         while True:
-            var sbuf = self._stream_bufs[key].copy()
+            ref sbuf = self._stream_bufs[key]
             if len(sbuf.buf) == 0:
-                self._stream_bufs[key] = sbuf^
                 break
             var ok = True
             var frame = H3RawFrame(UInt64(0), List[UInt8]())
@@ -632,8 +636,7 @@ struct H3Connection(Movable):
             try:
                 # ByteReader Span borrow ends with the try-block scope below;
                 # `parse_h3_frame.read_bytes` already extends into a fresh
-                # List, so the borrow on sbuf.buf is short-lived. Avoids
-                # the previous List[UInt8](copy=sbuf.buf) workaround.
+                # List, so the borrow on sbuf.buf is short-lived.
                 var r = ByteReader(Span(sbuf.buf))
                 frame = parse_h3_frame(r)
                 consumed = r.pos
@@ -644,18 +647,16 @@ struct H3Connection(Movable):
                 if Int(self.profile_ptr) != 0:
                     self.profile_ptr[].record_drain_frame_parse(monotonic_us() - t_start_parse)
             if not ok:
-                self._stream_bufs[key] = sbuf^
                 break
-            # B3b entry — wrap residual rebuild + Dict reassign.
+            # B3b entry — wrap residual rebuild via in-place mutation.
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_start_buf = monotonic_us()
-            # Remove consumed bytes from front of buf
+            # Remove consumed bytes from front of buf — in place.
             var new_buf = List[UInt8]()
             new_buf.extend(Span(sbuf.buf)[consumed:])
             sbuf.buf = new_buf^
-            self._stream_bufs[key] = sbuf^
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
