@@ -94,8 +94,7 @@ struct CryptoStream(Copyable, Movable):
                     )
                     if frag_end > buf_end:
                         var skip = Int(buf_end - self.pending_fragments[i].offset)
-                        for j in range(skip, len(self.pending_fragments[i].data)):
-                            self.recv_buf.append(self.pending_fragments[i].data[j])
+                        self.recv_buf.extend(Span(self.pending_fragments[i].data)[skip:])
                     # Remove this fragment: rebuild list without index i.
                     var new_frags = List[CryptoFragment]()
                     for k in range(len(self.pending_fragments)):
@@ -120,8 +119,7 @@ struct CryptoStream(Copyable, Movable):
 
     def write(mut self, data: Span[UInt8, _]):
         """Append data to the outgoing send buffer for CRYPTO frames."""
-        for i in range(len(data)):
-            self.send_buf.append(data[i])
+        self.send_buf.extend(data)
 
     def requeue(mut self, offset: UInt64, data: Span[UInt8, _]):
         """Re-queue CRYPTO data for retransmission at its original offset.
