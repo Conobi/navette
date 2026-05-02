@@ -30,6 +30,7 @@
 # See plans/2026-04-27-sprint-2b-streaming.md.
 
 from std.collections import Dict, Optional
+from std.collections.deque import Deque
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.sys.info import size_of
@@ -102,7 +103,7 @@ struct H3StreamingCtx(Movable):
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
-    var body_frame_ring: List[BodyFrame]
+    var body_frame_ring: Deque[BodyFrame]
     var cancelled: Bool
     var coro_addr: UInt64
 
@@ -122,7 +123,7 @@ struct H3StreamingCtx(Movable):
         self.request_ended = False
         self.response_ended = False
         self.headers_sent = False
-        self.body_frame_ring = List[BodyFrame]()
+        self.body_frame_ring = Deque[BodyFrame]()
         self.cancelled = False
         self.coro_addr = UInt64(0)
 
@@ -183,9 +184,8 @@ def next_chunk(
             raise Error("H3StreamCancelled")
         yld.yield_to_caller()
     if len(ctx_ptr[].body_frame_ring) > 0:
-        # FIFO: pop(0) preserves arrival order. Default pop() is LIFO and
-        # would deliver multi-chunk bodies to the handler in reverse order.
-        var frame = ctx_ptr[].body_frame_ring.pop(0)
+        # FIFO via Deque popleft — O(1) per call (was List.pop(0) at O(N)).
+        var frame = ctx_ptr[].body_frame_ring.popleft()
         return Optional[BodyFrame](frame^)
     return Optional[BodyFrame](None)
 
