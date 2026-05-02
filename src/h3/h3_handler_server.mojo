@@ -367,11 +367,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     break
                 elif f.is_trailers():
                     var trailer_hdrs = f^.consume_trailers()
-                    var t_fields = List[QpackHeaderField]()
-                    for j in range(len(trailer_hdrs)):
-                        t_fields.append(QpackHeaderField(trailer_hdrs.name_at(j), trailer_hdrs.value_at(j)))
                     try:
-                        self._h3.send_headers(UInt64(sid), t_fields, True)
+                        self._h3.send_trailers(UInt64(sid), trailer_hdrs, True)
                     except:
                         pass
                     ctx.response_ended = True

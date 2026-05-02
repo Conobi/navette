@@ -363,6 +363,28 @@ struct H3Connection(Movable):
         var wire = w.finish()
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
+    def send_trailers(
+        mut self,
+        stream_id: UInt64,
+        trailers: Headers,
+        fin: Bool,
+    ) raises:
+        """Encode trailing headers directly into a HEADERS frame without
+        building a List[QpackHeaderField] intermediate. No :status — RFC
+        9114 §4.1 forbids pseudo-headers in trailers."""
+        var encoded = List[UInt8]()
+        encoded.append(0x00)
+        encoded.append(0x00)
+        for j in range(len(trailers)):
+            var field_bytes = self._enc._encode_field(trailers.name_at(j), trailers.value_at(j))
+            encoded.extend(Span(field_bytes))
+        var w = ByteWriter()
+        varint_encode(w, H3_FRAME_HEADERS)
+        varint_encode(w, UInt64(len(encoded)))
+        w.write_bytes(Span(encoded))
+        var wire = w.finish()
+        self._quic.send_stream_data(stream_id, Span(wire), fin)
+
     def send_response_headers(
         mut self,
         stream_id: UInt64,
