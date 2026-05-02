@@ -37,6 +37,11 @@ struct QuicConnEntry {
     pending: Option<(u8, Keys)>,        // (kind, keys) — None when no pending change
     next_secrets: Option<Secrets>,      // 1-RTT Secrets from OneRtt; used by take_next_keys
     alert_cache: Option<u8>,            // cached AlertDescription code; cleared on read
+    // Reusable scratch buffer for write_hs. Allocated once per connection and
+    // grown as TLS records demand it; subsequent calls truncate (keep capacity)
+    // instead of reallocating. Removes the per-handshake-step Vec::new() that
+    // showed up as a large fraction of `shim_ffi` in the short-conn sidecar.
+    write_hs_buf: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +305,9 @@ pub extern "C" fn rlsm_quic_client_conn_new(
         pending: None,
         next_secrets: None,
         alert_cache: None,
+        // Pre-allocate ~2 KB which covers the typical Initial+Handshake
+        // exchange without reallocating.
+        write_hs_buf: Vec::with_capacity(2048),
     };
 
     match quic_conn_table().insert(entry) {
@@ -355,6 +363,7 @@ pub extern "C" fn rlsm_quic_server_conn_new(
         pending: None,
         next_secrets: None,
         alert_cache: None,
+        write_hs_buf: Vec::with_capacity(2048),
     };
 
     match quic_conn_table().insert(entry) {
@@ -406,23 +415,27 @@ pub extern "C" fn rlsm_quic_conn_write_hs(
             return -1;
         }
 
-        let mut vec: Vec<u8> = Vec::new();
+        // Reuse the connection-scoped scratch buffer; truncate keeps the
+        // allocation across handshake steps. After the first Initial the
+        // capacity stabilises and rustls writes in place.
+        entry.write_hs_buf.clear();
         let key_change = match &mut entry.conn {
-            QuicConn::Client(c) => c.write_hs(&mut vec),
-            QuicConn::Server(c) => c.write_hs(&mut vec),
+            QuicConn::Client(c) => c.write_hs(&mut entry.write_hs_buf),
+            QuicConn::Server(c) => c.write_hs(&mut entry.write_hs_buf),
         };
+        let written = entry.write_hs_buf.len();
 
-        if vec.len() > out_capacity as usize {
+        if written > out_capacity as usize {
             set_last_error(format!(
                 "rlsm_quic_conn_write_hs: output buffer too small (need {}, have {})",
-                vec.len(), out_capacity
+                written, out_capacity
             ));
             return -1;
         }
 
         unsafe {
-            std::ptr::copy_nonoverlapping(vec.as_ptr(), out_buf, vec.len());
-            *out_written = vec.len() as i32;
+            std::ptr::copy_nonoverlapping(entry.write_hs_buf.as_ptr(), out_buf, written);
+            *out_written = written as i32;
         }
 
         let kind: u8 = match key_change {
