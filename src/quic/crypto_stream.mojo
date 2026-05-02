@@ -132,8 +132,7 @@ struct CryptoStream(Copyable, Movable):
         if len(self.send_buf) == 0:
             self.send_offset = offset
             self.send_buf = List[UInt8](capacity=len(data))
-            for i in range(len(data)):
-                self.send_buf.append(data[i])
+            self.send_buf.extend(data)
             return
 
         # Already have data queued.  If new offset is before current
@@ -143,13 +142,11 @@ struct CryptoStream(Copyable, Movable):
             # New data starts earlier -- replace entirely.
             self.send_offset = offset
             self.send_buf = List[UInt8](capacity=len(data))
-            for i in range(len(data)):
-                self.send_buf.append(data[i])
+            self.send_buf.extend(data)
         elif offset <= current_end:
             # Contiguous or overlapping: append only the new portion.
             var skip = Int(current_end - offset)
-            for i in range(skip, len(data)):
-                self.send_buf.append(data[i])
+            self.send_buf.extend(data[skip:])
 
     def pending_crypto_frames(self, max_frame_size: Int) -> List[CryptoFrame]:
         """Fragment send_buf into CryptoFrame list, each at most max_frame_size bytes."""
@@ -161,8 +158,7 @@ struct CryptoStream(Copyable, Movable):
             if chunk_size > max_frame_size:
                 chunk_size = max_frame_size
             var chunk = List[UInt8](capacity=chunk_size)
-            for i in range(chunk_size):
-                chunk.append(self.send_buf[pos + i])
+            chunk.extend(Span(self.send_buf)[pos:pos + chunk_size])
             frames.append(CryptoFrame(offset, chunk^))
             offset += UInt64(chunk_size)
             pos += chunk_size
@@ -175,7 +171,6 @@ struct CryptoStream(Copyable, Movable):
             advance = len(self.send_buf)
         # Remove consumed bytes from front of send_buf.
         var new_buf = List[UInt8](capacity=len(self.send_buf) - advance)
-        for i in range(advance, len(self.send_buf)):
-            new_buf.append(self.send_buf[i])
+        new_buf.extend(Span(self.send_buf)[advance:])
         self.send_buf = new_buf^
         self.send_offset += UInt64(advance)
