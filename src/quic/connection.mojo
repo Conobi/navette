@@ -718,18 +718,17 @@ struct QuicConnection(Movable):
             var remaining_len = buf_len - offset
             var remaining_ptr = buf + offset
 
-            # 1. Copy remaining bytes for parse_packet_header (needs Span
-            # from List — known remaining copy, to be removed later).
-            var remaining_list = List[UInt8](capacity=remaining_len)
-            remaining_list.extend(Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len))
-
-            # 2. Parse packet header.
+            # 1. Parse packet header — directly from the buffer, no copy.
+            # parse_packet_header takes Span[UInt8, origin]; we feed it a
+            # Span over the remaining_ptr region instead of the previous
+            # List[UInt8] copy that was holding the whole datagram.
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     ph_header_parse_us = monotonic_us()
             var header_result = parse_packet_header(
-                Span(remaining_list), len(self.local_cid)
+                Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len),
+                len(self.local_cid),
             )
             var header = header_result[0].copy()
             var header_end = header_result[1]
