@@ -215,7 +215,7 @@ def _pump(
     return now
 
 
-def _drain_events(mut conn: QuicConnection):
+def _drain_events(mut conn: QuicConnection) raises:
     """Drain and discard all queued events on `conn`."""
     while True:
         var ev = conn.poll()

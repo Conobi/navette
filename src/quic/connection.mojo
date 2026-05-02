@@ -12,6 +12,7 @@
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
 
 from std.collections import Dict, Optional
+from std.collections.deque import Deque
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
@@ -301,7 +302,7 @@ struct QuicConnection(Movable):
     var initial_dcid: List[UInt8]
     var bytes_received: UInt64
     var bytes_sent: UInt64
-    var events: List[QuicEvent]
+    var events: Deque[QuicEvent]
     var pending_close: Optional[ConnectionCloseFrame]
     var close_timer: UInt64
     var drain_timer: UInt64
@@ -410,7 +411,7 @@ struct QuicConnection(Movable):
         self.initial_dcid = List[UInt8](copy=initial_dcid)
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
-        self.events = List[QuicEvent]()
+        self.events = Deque[QuicEvent]()
         self.pending_close = None
         self.close_timer = UInt64(0)
         self.drain_timer = UInt64(0)
@@ -2656,15 +2657,11 @@ struct QuicConnection(Movable):
 
     # ── Public API ───────────────────────────────────────────────────
 
-    def poll(mut self) -> Optional[QuicEvent]:
-        """Return the next pending event, or None."""
+    def poll(mut self) raises -> Optional[QuicEvent]:
+        """Return the next pending event, or None. O(1) via Deque popleft —
+        was O(N²) total to drain N events when backed by List."""
         if len(self.events) > 0:
-            # Pop the first event.
-            var ev = self.events[0].copy()
-            var new_events = List[QuicEvent]()
-            for i in range(1, len(self.events)):
-                new_events.append(self.events[i].copy())
-            self.events = new_events^
+            var ev = self.events.popleft()
             return ev^
         return None
 

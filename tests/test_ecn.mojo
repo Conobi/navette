@@ -169,7 +169,7 @@ def _pump(
     return now
 
 
-def _drain_events(mut conn: QuicConnection):
+def _drain_events(mut conn: QuicConnection) raises:
     while True:
         var ev = conn.poll()
         if not ev:
