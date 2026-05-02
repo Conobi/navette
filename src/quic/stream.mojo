@@ -259,27 +259,35 @@ struct RecvBuf(Copyable, Movable):
             # No overlap: insert as a new segment at sorted position
             var new_seg = List[UInt8](capacity=len(clamped))
             new_seg.extend(Span(clamped))
-            # Find insertion point
-            var insert_pos = len(self.seg_offsets)
-            for i in range(len(self.seg_offsets)):
-                if new_start < self.seg_offsets[i]:
-                    insert_pos = i
-                    break
-            # Rebuild with new segment inserted
-            var new_offsets = List[UInt64]()
-            var new_segs = List[List[UInt8]]()
-            for i in range(len(self.seg_offsets)):
-                if i == insert_pos:
-                    new_offsets.append(new_start)
-                    new_segs.append(new_seg^)
-                    new_seg = List[UInt8]()  # clear after move
-                new_offsets.append(self.seg_offsets[i])
-                new_segs.append(List[UInt8](copy=self.seg_data[i]))
-            if insert_pos == len(self.seg_offsets):
-                new_offsets.append(new_start)
-                new_segs.append(new_seg^)
-            self.seg_offsets = new_offsets^
-            self.seg_data = new_segs^
+            # Fast path: empty seg list (typical at start of each request
+            # at long-conn — drain just consumed all prior segments).
+            if len(self.seg_offsets) == 0:
+                self.seg_offsets.append(new_start)
+                self.seg_data.append(new_seg^)
+            else:
+                # Find insertion point
+                var insert_pos = len(self.seg_offsets)
+                for i in range(len(self.seg_offsets)):
+                    if new_start < self.seg_offsets[i]:
+                        insert_pos = i
+                        break
+                # Append-tail fast path: insertion at end, no rebuild needed.
+                if insert_pos == len(self.seg_offsets):
+                    self.seg_offsets.append(new_start)
+                    self.seg_data.append(new_seg^)
+                else:
+                    # Rebuild with new segment inserted at sorted position
+                    var new_offsets = List[UInt64]()
+                    var new_segs = List[List[UInt8]]()
+                    for i in range(len(self.seg_offsets)):
+                        if i == insert_pos:
+                            new_offsets.append(new_start)
+                            new_segs.append(new_seg^)
+                            new_seg = List[UInt8]()  # clear after move
+                        new_offsets.append(self.seg_offsets[i])
+                        new_segs.append(List[UInt8](copy=self.seg_data[i]))
+                    self.seg_offsets = new_offsets^
+                    self.seg_data = new_segs^
         else:
             # Merge: build a new merged segment
             # The merged region spans from merged_start to merged_end
