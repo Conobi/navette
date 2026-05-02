@@ -1597,11 +1597,15 @@ struct QuicConnection(Movable):
             if self.crypto_streams[level].has_pending():
                 var crypto_data = self.crypto_streams[level].drain()
                 if len(crypto_data) > 0:
-                    var data_buf = _heap_alloc[UInt8](
-                        len(crypto_data)
-                    ).as_any_origin()
-                    for i in range(len(crypto_data)):
-                        data_buf[i] = crypto_data[i]
+                    # Pass the List's storage straight to FFI — no heap alloc
+                    # + byte-copy intermediate. crypto_data owns the memory
+                    # for the FFI call's duration; rustls reads only.
+                    var data_ptr = (
+                        crypto_data.unsafe_ptr()
+                        .unsafe_mut_cast[True]()
+                        .as_any_origin()
+                    )
+                    var data_len = Int32(len(crypto_data))
 
                     var t_start: UInt64 = 0
                     @parameter
@@ -1611,8 +1615,8 @@ struct QuicConnection(Movable):
                             self.profile_rustls_us_accum -= t_start
                     var rc = lib[].quic_conn_read_hs(
                         self.conn_handle,
-                        data_buf,
-                        Int32(len(crypto_data)),
+                        data_ptr,
+                        data_len,
                     )
                     @parameter
                     if PROFILE_ACCEPT:
@@ -1620,7 +1624,6 @@ struct QuicConnection(Movable):
                             var t_end = monotonic_us()
                             self.profile_rustls_us_accum += t_end
                             self.profile_ptr[].record_ffi_read_hs(t_end - t_start)
-                    data_buf.free()
 
                     if rc < 0:
                         raise (
