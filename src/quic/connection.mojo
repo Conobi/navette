@@ -2324,12 +2324,9 @@ struct QuicConnection(Movable):
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
             # Encrypt + protect in a single buffer (zero-copy).
-            # Append payload to header_bytes.
-            for i in range(len(payload)):
-                header_bytes.append(payload[i])
-            # Append zero space for AEAD tag.
-            for i in range(_AEAD_TAG_LEN):
-                header_bytes.append(UInt8(0))
+            # Bulk append payload + AEAD tag space.
+            header_bytes.extend(Span(payload))
+            header_bytes.resize(len(header_bytes) + _AEAD_TAG_LEN, UInt8(0))
 
             # header_bytes is now: [header | PN | payload | tag_space]
             var total_len = len(header_bytes)
@@ -2373,16 +2370,15 @@ struct QuicConnection(Movable):
             # for a 1-byte PN.  Pad with QUIC PADDING (0x00) if needed.
             # Pad payload to minimum size for HP sample.
             var min_payload_len = _MAX_PN_LEN
-            for i in range(len(payload)):
-                header_bytes.append(payload[i])
+            header_bytes.extend(Span(payload))
             var current_payload_len = len(payload)
-            while current_payload_len < min_payload_len:
-                header_bytes.append(UInt8(0))
-                current_payload_len += 1
+            if current_payload_len < min_payload_len:
+                var pad = min_payload_len - current_payload_len
+                header_bytes.resize(len(header_bytes) + pad, UInt8(0))
+                current_payload_len = min_payload_len
 
             # Append zero space for AEAD tag.
-            for i in range(_AEAD_TAG_LEN):
-                header_bytes.append(UInt8(0))
+            header_bytes.resize(len(header_bytes) + _AEAD_TAG_LEN, UInt8(0))
 
             var total_len = len(header_bytes)
             var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin()
