@@ -865,10 +865,10 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
                 h3_ptr.init_pointee_move(h3^)
 
-                # Build address from buffer for the new connection.
+                # Build address from buffer for the new connection (bulk extend).
                 var addr = List[UInt8](capacity=pd.addr_len)
-                for j in range(pd.addr_len):
-                    addr.append(pd.buf_ptr[pd.addr_offset + j])
+                addr.extend(Span[UInt8, MutAnyOrigin](
+                    ptr=pd.buf_ptr + pd.addr_offset, length=pd.addr_len))
 
                 conn_idx = len(self.conn_h3s)
                 self.conn_dcid_map[icid_u64] = conn_idx
@@ -905,10 +905,10 @@ struct H3UdpHandler(BatchCompletionHandler):
                 if self.conn_h3s[conn_idx][]._h3.is_established():
                     self.profile.record_conn_hs_complete(pd.addr_key)
 
-            # Update peer address.
+            # Update peer address (bulk extend instead of byte loop).
             var addr_update = List[UInt8](capacity=pd.addr_len)
-            for j in range(pd.addr_len):
-                addr_update.append(pd.buf_ptr[pd.addr_offset + j])
+            addr_update.extend(Span[UInt8, MutAnyOrigin](
+                ptr=pd.buf_ptr + pd.addr_offset, length=pd.addr_len))
             self.conn_addrs[conn_idx] = addr_update^
 
             @parameter
