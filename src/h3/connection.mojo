@@ -89,6 +89,9 @@ struct H3Event(Copyable, Movable):
         self.reason = take.reason^
         self.last_stream_id = take.last_stream_id
 
+    def consume_data(deinit self) -> List[UInt8]:
+        return self.data^
+
 
 # ---------------------------------------------------------------------------
 # _H3StreamBuf — per-stream byte accumulator (Copyable for Dict storage)

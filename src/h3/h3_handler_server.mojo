@@ -189,7 +189,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             if ev.kind == H3Event.HEADERS_RECEIVED:
                 self._on_request(ev, now)
             elif ev.kind == H3Event.DATA_RECEIVED:
-                self._on_data(ev)
+                self._on_data(ev^)
             elif ev.kind == H3Event.STREAM_ENDED:
                 self._on_stream_ended(ev)
             elif ev.kind == H3Event.STREAM_RESET:
@@ -247,14 +247,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx_ptr.init_pointee_move(ctx^)
         self._streams[Int(ev.stream_id)] = _H3StreamPtr(UInt64(Int(ctx_ptr)))
 
-    def _on_data(mut self, ev: H3Event) raises:
+    def _on_data(mut self, var ev: H3Event) raises:
         var sid = Int(ev.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
-        ctx.recv_body._push(BodyFrame.data(data_copy^))
+        ctx.recv_body._push(BodyFrame.data(ev^.consume_data()))
         if not ctx.detached:
             try:
                 self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)

@@ -553,7 +553,7 @@ struct H3StreamingServer(Movable):
                 else:
                     self._on_trailers(ev)
             elif ev.kind == H3Event.DATA_RECEIVED:
-                self._on_data(ev)
+                self._on_data(ev^)
             elif ev.kind == H3Event.STREAM_ENDED:
                 self._on_stream_ended(ev)
             elif ev.kind == H3Event.STREAM_RESET:
@@ -651,7 +651,7 @@ struct H3StreamingServer(Movable):
         ctx_ptr.init_pointee_move(ctx^)
         self._resume_stream(sid)
 
-    def _on_data(mut self, ev: H3Event) raises:
+    def _on_data(mut self, var ev: H3Event) raises:
         """DATA_RECEIVED: push data into body_frame_ring, resume coroutine.
         No flow-control ACK — QUIC handles FC internally."""
         var sid = Int(ev.stream_id)
@@ -659,8 +659,7 @@ struct H3StreamingServer(Movable):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
-        ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
+        ctx.body_frame_ring.append(BodyFrame.data(ev^.consume_data()))
         ctx_ptr.init_pointee_move(ctx^)
         self._resume_stream(sid)
 
