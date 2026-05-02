@@ -386,3 +386,58 @@ Branch `perf/qpack-decode-fast` shipped 5 perf commits + 5 research doc updates:
 - Methodology: microbench → identify cost → mirror TQUIC pattern → macro-validate
 
 The H3 layer is now approaching saturation; further gains likely require non-H3 work (QUIC FFI batching, allocator pooling, etc.). The `perf/qpack-decode-fast` branch is ready for review/merge as a major shipping milestone.
+
+
+## Next-iteration target: src/quic/connection.mojo Dict-with-struct .copy() patterns
+
+After v9/v10 the H3 layer is approaching saturation. Tracing the next bottleneck into the QUIC layer reveals **the same Q1 anti-pattern at higher scale**:
+
+```mojo
+# src/quic/connection.mojo:2738 send_stream_data
+var stream = self.stream_map.get_stream(key)              # implicit copy (Dict get)
+var sb = stream.send_buf.value().copy()                   # explicit copy of send buffer
+sb.write(data, fin)
+stream.send_buf = sb^
+self.stream_map.set_stream(key, stream^)                  # set back (move)
+```
+
+```mojo
+# src/quic/connection.mojo:2760 recv_stream_data
+var stream = self.stream_map.get_stream(key)              # implicit copy
+var rb = stream.recv_buf.value().copy()                   # explicit copy of recv buffer
+var result = rb.read(stream.fin_offset)
+var data = result[0].copy()                               # explicit copy of bytes
+var fc = stream.fc_recv.value().copy()                    # explicit copy of flow-control state
+... fc.add_consumed(drained) ...
+stream.recv_buf = rb^
+stream.fc_recv = fc^
+self.stream_map.set_stream(key, stream^)                  # set back
+```
+
+Each call has **5-6 `.copy()` calls** on `recv_buf`/`send_buf`/`fc_recv` — substantial heap allocations on every stream-data operation. At 28k frames/sec × 6 copies × N bytes, this is real wall-clock time.
+
+The Q1 + v4 + v5 experience showed:
+- `ref slot = d[k]` is zero-copy in Mojo 0.26.2 (verified)
+- Direct chained mutation `d[k].buf.append(x)` is zero-copy (verified)
+- The fortress of defensive `.copy()` calls is mostly avoidable
+
+Refactoring `src/quic/connection.mojo` (3000+ LoC) to use `ref` bindings + chained mutation would eliminate these copies. **Estimated impact:** 20-50% additional RPS lift on long-conn (hard to predict without bench).
+
+This is a significant refactor — multi-day work, not single-loop. Should be a dedicated optimization spec. Same pattern is in `src/quic/stream_map.mojo`, `src/quic/cid.mojo`, etc.
+
+## Final session-end state
+
+Branch `perf/qpack-decode-fast` (12 commits since main `f22647b`):
+
+- 6 perf commits (v4 → v10): cumulative +203% / 3.04× long-conn RPS
+- 6 research commits documenting findings + methodology + open questions
+- All conformance (36/36) + src tests (72/72) green throughout
+- Binary 805 KB → 809 KB
+
+**Result: mojo-net long-conn RPS 14,847 → 45,083 (16.2% → 51.8% of TQUIC reference).**
+
+Recommended next steps (in priority order):
+1. **Merge `perf/qpack-decode-fast` to main** — major shipping milestone, low-risk
+2. **Spec the next pass** — `src/quic/connection.mojo` Dict-with-struct .copy() removal via `ref` bindings + chained mutation. Mirror Q1 finding on `_H3StreamBuf`. Estimated +20-50% RPS lift, but multi-day refactor
+3. **Address short-conn regression** — UnsafePointer-backed singleton for HuffDecodeTable. Should be small follow-up (~1 day)
+4. **Pursue FFI batching** for `send_stream_data` / `recv_stream_data` — requires TQUIC C-side changes. Bigger structural project.
