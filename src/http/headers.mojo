@@ -56,12 +56,14 @@ struct Headers(Copyable, Movable, Sized):
 
     # --- Add / Set / Remove ---
 
-    def add(mut self, name: String, value: String):
-        """Append a header. Name is lowercased on insert."""
+    def add(mut self, name: String, var value: String):
+        """Append a header. Name is lowercased on insert. Value is taken
+        by-transfer so owned-temporary callers (literal, returned String,
+        local var passed via ^) avoid the auto-copy on append."""
         self._names.append(_to_lower(name))
-        self._values.append(value)
+        self._values.append(value^)
 
-    def add_lowercase(mut self, name: String, value: String):
+    def add_lowercase(mut self, var name: String, var value: String):
         """Append a header where `name` is already lowercase.
 
         Caller MUST guarantee `name` contains no ASCII A-Z. Used by
@@ -69,9 +71,12 @@ struct Headers(Copyable, Movable, Sized):
         to be lowercase by RFC 7540 Section 8.1.2, so the decoder
         output is already valid input here. Skips `_to_lower` to
         avoid the duplicate scan + allocation.
+
+        Both name and value are taken by-transfer to avoid auto-copy
+        on append.
         """
-        self._names.append(name)
-        self._values.append(value)
+        self._names.append(name^)
+        self._values.append(value^)
 
     def set(mut self, name: String, value: String):
         """Set a header, replacing all existing values for this name."""
