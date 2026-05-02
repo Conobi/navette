@@ -1676,8 +1676,7 @@ struct QuicConnection(Movable):
             if written > 0:
                 var target_level = self.current_level
                 var tls_data = List[UInt8](capacity=written)
-                for i in range(written):
-                    tls_data.append(out_buf[i])
+                tls_data.extend(Span[UInt8, MutAnyOrigin](ptr=out_buf, length=written))
                 self.crypto_streams[target_level].write(Span(tls_data))
 
             # Now handle key change AFTER writing data.
