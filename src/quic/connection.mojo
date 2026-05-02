@@ -2777,9 +2777,11 @@ struct QuicConnection(Movable):
         if not stream.recv_buf or not stream.fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
         var rb = stream.recv_buf.value().copy()
-        var result = rb.read(stream.fin_offset)
-        var data = result[0].copy()
-        var fin_reached = result[1]
+        # Drain into a caller-owned List instead of getting a Tuple back —
+        # Mojo 0.26.2 can't move out of tuple elements so the tuple form
+        # would force a per-call List[UInt8] copy of the drained bytes.
+        var data = List[UInt8]()
+        var fin_reached = rb.read_into(stream.fin_offset, data)
         var drained = UInt64(len(data))
         var fc = stream.fc_recv.value().copy()
         if drained > 0:

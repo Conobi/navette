@@ -334,6 +334,47 @@ struct RecvBuf(Copyable, Movable):
             self.seg_offsets = new_offsets^
             self.seg_data = new_segs^
 
+    def read_into(mut self, fin_offset: Optional[UInt64], mut data_out: List[UInt8]) -> Bool:
+        """Drain contiguous bytes into the caller's `data_out` list. Returns
+        fin_reached. Avoids the Tuple[List, Bool] boxing of `read()` and the
+        attendant per-call .copy() on the data list — Mojo 0.26.2 cannot
+        move out of a tuple element. Hot-path callers (recv_stream_data)
+        should prefer this; tests use the tuple form via `read()`."""
+        if len(self.seg_offsets) == 0:
+            if fin_offset:
+                if self.read_offset >= fin_offset.value():
+                    return True
+            return False
+
+        # Check if the first segment covers read_offset
+        if self.seg_offsets[0] > self.read_offset:
+            if fin_offset:
+                if self.read_offset >= fin_offset.value():
+                    return True
+            return False
+
+        # Deliver bytes from read_offset to end of first segment
+        var deliver_end = self._seg_end(0)
+        var skip = Int(self.read_offset - self.seg_offsets[0])
+        var n = Int(deliver_end - self.read_offset)
+        data_out.extend(Span(self.seg_data[0])[skip:skip + n])
+
+        self.read_offset = deliver_end
+
+        # Remove the consumed segment
+        var new_offsets = List[UInt64]()
+        var new_segs = List[List[UInt8]]()
+        for i in range(1, len(self.seg_offsets)):
+            new_offsets.append(self.seg_offsets[i])
+            new_segs.append(List[UInt8](copy=self.seg_data[i]))
+        self.seg_offsets = new_offsets^
+        self.seg_data = new_segs^
+
+        if fin_offset:
+            if self.read_offset >= fin_offset.value():
+                return True
+        return False
+
     def read(mut self, fin_offset: Optional[UInt64]) -> Tuple[List[UInt8], Bool]:
         """Drain contiguous bytes starting from read_offset.
 
