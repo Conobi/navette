@@ -28,8 +28,7 @@ struct H3RawFrame(Copyable, Movable):
         var w = ByteWriter()
         varint_encode(w, self.frame_type)
         varint_encode(w, UInt64(len(self.payload)))
-        for i in range(len(self.payload)):
-            w.write_u8(self.payload[i])
+        w.write_bytes(Span(self.payload))
         return w.finish()
 
 

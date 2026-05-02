@@ -95,8 +95,10 @@ struct ByteWriter:
             self.buf.append(UInt8((value >> UInt64((7 - i) * 8)) & 0xFF))
 
     def write_bytes(mut self, data: Span[UInt8, _]):
-        for i in range(len(data)):
-            self.buf.append(data[i])
+        # Bulk copy via List.extend(Span) — the compiler can lower this to a
+        # memcpy/SIMD-blocked copy. ~2× faster than the byte-by-byte append
+        # loop for sub-1KB writes (per Topic 2 microbench, 2026-05-01).
+        self.buf.extend(data)
 
     def len(self) -> Int:
         return len(self.buf)
