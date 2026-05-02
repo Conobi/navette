@@ -371,12 +371,18 @@ struct PendingDatagram(Copyable, Movable):
 
 
 struct UdpTxSlot(Movable):
-    """Dynamically allocated send buffer set for a single sendmsg operation."""
+    """Dynamically allocated send buffer set for a single sendmsg operation.
+
+    Owns the packet bytes via `data: List[UInt8]` (moved in from caller) so
+    the per-packet ~1KB memcpy that the previous _heap_alloc + byte-loop
+    pattern paid is gone. iov.iov_base is set to data.unsafe_ptr() and the
+    List's lifetime is bound to the slot — drops automatically when free()
+    runs."""
 
     var msghdr_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var iov_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var addr_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var data_buf: UnsafePointer[UInt8, MutAnyOrigin]
+    var data: List[UInt8]
 
     def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
         var data_len = len(data)
@@ -384,11 +390,7 @@ struct UdpTxSlot(Movable):
         self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
         self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_any_origin()
         self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-        self.data_buf = _heap_alloc[UInt8](data_len).as_any_origin()
-
-        # Copy data
-        for i in range(data_len):
-            self.data_buf[i] = data[i]
+        self.data = data^   # move — no per-packet ~1KB memcpy
 
         # Copy addr (up to ADDR_SIZE bytes)
         var addr_len = len(addr)
@@ -431,9 +433,9 @@ struct UdpTxSlot(Movable):
         for i in range(8):
             msghdr[24 + i] = iovlen_bytes[i]
 
-        # Wire iovec
+        # Wire iovec — iov_base points into the data List's heap storage.
         var iov = self.iov_buf
-        var data_ptr_val = UInt64(Int(self.data_buf))
+        var data_ptr_val = UInt64(Int(self.data.unsafe_ptr()))
         var data_ptr_bytes = UnsafePointer(to=data_ptr_val).bitcast[UInt8]()
         for i in range(8):
             iov[i] = data_ptr_bytes[i]
@@ -447,14 +449,13 @@ struct UdpTxSlot(Movable):
         self.msghdr_buf = take.msghdr_buf
         self.iov_buf = take.iov_buf
         self.addr_buf = take.addr_buf
-        self.data_buf = take.data_buf
+        self.data = take.data^
 
     def free(mut self):
-        """Free all 4 heap buffers."""
+        """Free the 3 raw heap buffers; data List drops via its destructor."""
         self.msghdr_buf.free()
         self.iov_buf.free()
         self.addr_buf.free()
-        self.data_buf.free()
 
 
 # ── PendingSubmit ─────────────────────────────────────────────────────
