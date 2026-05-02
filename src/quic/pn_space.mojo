@@ -444,8 +444,7 @@ struct PacketNumberSpace(Copyable, Movable):
         for key in self.sent_packets.keys():
             keys.append(key)
         for i in range(len(keys)):
-            result.append(SentPacket(other=self.sent_packets[keys[i]]))
-            _ = self.sent_packets.pop(keys[i])
+            result.append(self.sent_packets.pop(keys[i]))
         self.keys_handle = Int32(-1)
         return result^
 
