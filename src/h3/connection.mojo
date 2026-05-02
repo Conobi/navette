@@ -451,13 +451,13 @@ struct H3Connection(Movable):
             if Int(self.profile_ptr) != 0:
                 t_start_buf = monotonic_us()
 
-        var new_bytes = recv_result[0].copy()
         var fin = recv_result[1]
 
-        # Append new bytes to accumulator
+        # Append new bytes to accumulator (bulk extend; skips redundant
+        # `recv_result[0].copy()` and byte-by-byte append loop — saves
+        # one List allocation + replaces O(n) loop with memcpy).
         var sbuf = self._stream_bufs[key].copy()
-        for i in range(len(new_bytes)):
-            sbuf.buf.append(new_bytes[i])
+        sbuf.buf.extend(Span(recv_result[0]))
         self._stream_bufs[key] = sbuf^
 
         # Handle unidirectional stream type byte (first byte = stream type)
