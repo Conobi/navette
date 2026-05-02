@@ -2100,9 +2100,9 @@ struct QuicConnection(Movable):
 
             # MAX_STREAM_DATA
             if stream.needs_max_stream_data and stream.fc_recv:
-                var fc = stream.fc_recv.value().copy()
+                var fc = stream.fc_recv.unsafe_take()
                 var new_limit = fc.update_limit()
-                stream.fc_recv = fc^
+                stream.fc_recv = Optional[FlowControl](fc^)
                 stream.needs_max_stream_data = False
                 frames.append(Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit)))
                 var rec = SentStreamFrame()
