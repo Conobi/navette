@@ -991,18 +991,25 @@ struct QpackEncoder(Copyable, Movable):
     def _encode_string(self, s: String, use_huffman: Bool) raises -> List[UInt8]:
         """Method form of `_qpack_encode_string` using cached Huffman table."""
         var result = List[UInt8]()
+        self._encode_string_into(s, use_huffman, result)
+        return result^
+
+    def _encode_string_into(
+        self, s: String, use_huffman: Bool, mut out: List[UInt8]
+    ) raises:
+        """Append a QPACK length-prefixed string directly into `out`.
+        Drops the per-field-value temp List that the older _encode_string
+        return-and-extend pattern triggered."""
         if use_huffman:
             var huff = self._huffman_encode(s)
-            var len_bytes = qpack_encode_int(UInt64(len(huff)), 7)
-            len_bytes[0] |= 0x80
-            result.extend(Span(len_bytes))
-            result.extend(Span(huff))
+            var first_idx = qpack_encode_int_into(UInt64(len(huff)), 7, out)
+            out[first_idx] |= 0x80
+            out.extend(Span(huff))
         else:
             var raw = s.as_bytes()
-            var len_bytes = qpack_encode_int(UInt64(len(raw)), 7)
-            result.extend(Span(len_bytes))
-            result.extend(raw)
-        return result^
+            var first_idx = qpack_encode_int_into(UInt64(len(raw)), 7, out)
+            _ = first_idx
+            out.extend(raw)
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
         """Encode a header list as a QPACK field section block.
@@ -1049,8 +1056,7 @@ struct QpackEncoder(Copyable, Movable):
             var idx = name_match.value()
             var first_idx = qpack_encode_int_into(UInt64(idx), 4, out)
             out[first_idx] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0, bit 4 = T=1
-            var val_bytes = self._encode_string(value, self.use_huffman)
-            out.extend(Span(val_bytes))
+            self._encode_string_into(value, self.use_huffman, out)
             return
 
         # 3. Literal Without Name Reference (§4.5.6)
