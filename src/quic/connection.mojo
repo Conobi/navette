@@ -966,14 +966,17 @@ struct QuicConnection(Movable):
         # 5. Per-stream flow-control enforcement.
         if not stream.fc_recv:
             raise "internal: missing fc_recv"
-        var fc_r = stream.fc_recv.value().copy()
+        # unsafe_take + put-back avoids per-call FC + RecvBuf copies.
+        var fc_r = stream.fc_recv.unsafe_take()
         if offset + data_len > fc_r.limit:
+            # Restore on early-out so the stream remains valid for state.
+            stream.fc_recv = Optional[FlowControl](fc_r^)
             raise "FLOW_CONTROL_ERROR: stream FC exceeded"
 
         # 6. Write to the receive buffer (may update stream.fin_offset).
         if not stream.recv_buf:
             raise "internal: missing recv_buf"
-        var rb = stream.recv_buf.value().copy()
+        var rb = stream.recv_buf.unsafe_take()
         var new_bytes = rb.write(
             offset, Span(stream_frame.data), fin, stream.fin_offset
         )
@@ -993,8 +996,8 @@ struct QuicConnection(Movable):
 
         # 10. Emit readable event if data is now deliverable.
         var had_readable = rb.has_readable()
-        stream.recv_buf = rb^
-        stream.fc_recv = fc_r^
+        stream.recv_buf = Optional[RecvBuf](rb^)
+        stream.fc_recv = Optional[FlowControl](fc_r^)
 
         if had_readable:
             self.events.append(QuicEvent.stream_readable(stream_id))
