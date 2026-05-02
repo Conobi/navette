@@ -71,16 +71,14 @@ struct CryptoStream(Copyable, Movable):
         # Contiguous or overlapping with recv_buf.
         if offset <= buf_end:
             var skip = Int(buf_end - offset)
-            for j in range(skip, len(data)):
-                self.recv_buf.append(data[j])
+            self.recv_buf.extend(data[skip:])
             # After extending recv_buf, try to merge pending fragments.
             self._merge_pending()
             return
 
         # Out-of-order: store as pending fragment.
         var frag_data = List[UInt8](capacity=len(data))
-        for i in range(len(data)):
-            frag_data.append(data[i])
+        frag_data.extend(data)
         self.pending_fragments.append(CryptoFragment(offset, frag_data^))
         self._merge_pending()
 
