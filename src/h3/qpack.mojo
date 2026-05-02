@@ -589,6 +589,38 @@ struct HuffDecodeTable(Copyable, Movable):
         self.flags = List[UInt8]()
 
 
+# ---------------------------------------------------------------------------
+# QpackSharedTables — process-shared rodata-equivalent for QPACK
+# ---------------------------------------------------------------------------
+
+struct QpackSharedTables(Movable):
+    """Process-shared QPACK constant tables: Huffman decode SM (4096
+    entries), Huffman encode (256 entries), static table (99 entries).
+
+    Allocated once at server startup; the pointer is threaded into every
+    new H3Connection's QpackDecoder + QpackEncoder so per-connection
+    __init__ skips the table builds. At ~1k new conn/sec (short-conn
+    workload) this eliminates the dominant per-conn QPACK init cost.
+
+    Mirrors TQUIC's `const STATIC_ENCODE_TABLE` + `const DECODE_TABLE`
+    rodata pattern; Mojo 0.26.2 lacks module-level mutable state so the
+    pointer must be threaded explicitly.
+    """
+    var huff_decode: HuffDecodeTable
+    var huff_encode: List[HuffmanEntry]
+    var static_table: List[QpackStaticEntry]
+
+    def __init__(out self):
+        self.huff_decode = HuffDecodeTable()
+        self.huff_encode = _huffman_encode_table()
+        self.static_table = _qpack_static_table()
+
+    def __init__(out self, *, deinit take: Self):
+        self.huff_decode = take.huff_decode^
+        self.huff_encode = take.huff_encode^
+        self.static_table = take.static_table^
+
+
 def huffman_decode_sm(data: List[UInt8], read tbl: HuffDecodeTable) raises -> String:
     """4-bit state-machine Huffman decoder. ~89× faster than `huffman_decode`.
     Mirrors TQUIC's `decode4` loop (`tquic/src/h3/qpack/huffman.rs:90-108`)."""
@@ -842,29 +874,53 @@ struct QpackEncoder(Copyable, Movable):
     var use_huffman: Bool
     var static_table: List[QpackStaticEntry]
     var huff_table: List[HuffmanEntry]
+    # When non-null, the shared tables override `static_table` + `huff_table`.
+    # The local fields stay as empty Lists in that mode (no heap alloc).
+    var shared_tables_ptr: UnsafePointer[QpackSharedTables, MutAnyOrigin]
 
     def __init__(out self, use_huffman: Bool = True):
+        # Default path: build local. Used by tests + clients + fallback.
         self.use_huffman = use_huffman
         self.static_table = _qpack_static_table()
         self.huff_table = _huffman_encode_table()
+        self.shared_tables_ptr = UnsafePointer[QpackSharedTables, MutAnyOrigin]()
+
+    def __init__(out self, use_huffman: Bool, *, shared: UnsafePointer[QpackSharedTables, MutAnyOrigin]):
+        # Shared path: skip both local builds.
+        self.use_huffman = use_huffman
+        self.static_table = List[QpackStaticEntry]()
+        self.huff_table = List[HuffmanEntry]()
+        self.shared_tables_ptr = shared
 
     def __init__(out self, *, copy_from: Self):
         self.use_huffman = copy_from.use_huffman
         self.static_table = copy_from.static_table.copy()
         self.huff_table = copy_from.huff_table.copy()
+        self.shared_tables_ptr = copy_from.shared_tables_ptr
 
     def _huffman_encode(self, s: String) raises -> List[UInt8]:
-        """Method form of `huffman_encode` using `self.huff_table` (cached)."""
+        """Method form of `huffman_encode` using either `self.huff_table`
+        or `self.shared_tables_ptr[].huff_encode` (skips per-conn build)."""
         var result = List[UInt8]()
         var acc: UInt64 = 0
         var bits: Int = 0
         var sbytes = s.as_bytes()
+        var use_shared = Int(self.shared_tables_ptr) != 0
         for i in range(len(sbytes)):
             var sym = Int(sbytes[i])
-            if sym >= len(self.huff_table):
-                raise "Huffman: symbol out of range: " + String(sym)
-            var code = self.huff_table[sym].code
-            var nbits = Int(self.huff_table[sym].nbits)
+            var code: UInt32
+            var nbits: Int
+            if use_shared:
+                ref tbl = self.shared_tables_ptr[].huff_encode
+                if sym >= len(tbl):
+                    raise "Huffman: symbol out of range: " + String(sym)
+                code = tbl[sym].code
+                nbits = Int(tbl[sym].nbits)
+            else:
+                if sym >= len(self.huff_table):
+                    raise "Huffman: symbol out of range: " + String(sym)
+                code = self.huff_table[sym].code
+                nbits = Int(self.huff_table[sym].nbits)
             acc = (acc << UInt64(nbits)) | UInt64(code)
             bits += nbits
             while bits >= 8:
@@ -878,17 +934,28 @@ struct QpackEncoder(Copyable, Movable):
         return result^
 
     def _static_find(self, name: String, value: String) -> Optional[Int]:
-        """Linear scan over the cached static table. mojo-net's table is
-        non-contiguous by name (e.g. :status occupies idx 24-28 + 63-71),
-        so TQUIC's range-keyed dispatch doesn't fit cleanly here without
-        re-ordering the table — left as future work."""
+        """Linear scan over the static table (local or shared). mojo-net's
+        table is non-contiguous by name so TQUIC's range-keyed dispatch
+        doesn't fit cleanly without re-ordering — left as future work."""
+        if Int(self.shared_tables_ptr) != 0:
+            ref tbl = self.shared_tables_ptr[].static_table
+            for i in range(len(tbl)):
+                if tbl[i].name == name and tbl[i].value == value:
+                    return Optional[Int](i)
+            return Optional[Int](None)
         for i in range(len(self.static_table)):
             if self.static_table[i].name == name and self.static_table[i].value == value:
                 return Optional[Int](i)
         return Optional[Int](None)
 
     def _static_find_name(self, name: String) -> Optional[Int]:
-        """Linear scan over the cached static table — first matching name."""
+        """Linear scan over the static table (local or shared) — first matching name."""
+        if Int(self.shared_tables_ptr) != 0:
+            ref tbl = self.shared_tables_ptr[].static_table
+            for i in range(len(tbl)):
+                if tbl[i].name == name:
+                    return Optional[Int](i)
+            return Optional[Int](None)
         for i in range(len(self.static_table)):
             if self.static_table[i].name == name:
                 return Optional[Int](i)
@@ -1000,32 +1067,32 @@ struct QpackDecoder(Copyable, Movable):
 
     var static_table: List[QpackStaticEntry]
     var huff_decode: HuffDecodeTable
-    # When non-null, points at a process-shared HuffDecodeTable (allocated
-    # once at server startup). The local `huff_decode` field is unbuilt
-    # in that case (HuffDecodeTable.empty()) — saves the ~25-30k op build
-    # per QpackDecoder __init__, which dominates short-conn per-connection
-    # cost. Mojo 0.26.2 lacks module-level mutable state, so the pointer
-    # is threaded explicitly through the construction chain.
-    var huff_decode_ptr: UnsafePointer[HuffDecodeTable, MutAnyOrigin]
+    # When non-null, points at a process-shared QpackSharedTables (allocated
+    # once at server startup). The local `static_table` and `huff_decode`
+    # fields stay empty in that mode (List[]() / HuffDecodeTable.empty())
+    # — saves ~25-30k ops (HuffDecodeTable) + 99 list appends (static_table)
+    # per QpackDecoder __init__. The bulk of short-conn per-connection cost.
+    # Mojo 0.26.2 lacks module-level mutable state, so the pointer is
+    # threaded explicitly through the construction chain.
+    var shared_tables_ptr: UnsafePointer[QpackSharedTables, MutAnyOrigin]
 
     def __init__(out self):
-        # Default path: build the table locally. Used by tests + clients +
+        # Default path: build the tables locally. Used by tests + clients +
         # any caller that hasn't been migrated to the shared-pointer path.
         self.static_table = _qpack_static_table()
         self.huff_decode = HuffDecodeTable()
-        self.huff_decode_ptr = UnsafePointer[HuffDecodeTable, MutAnyOrigin]()
+        self.shared_tables_ptr = UnsafePointer[QpackSharedTables, MutAnyOrigin]()
 
-    def __init__(out self, *, shared_huff_decode: UnsafePointer[HuffDecodeTable, MutAnyOrigin]):
-        # Shared path: skip the 4096-entry HuffDecodeTable build; defer to
-        # the externally-allocated table via `shared_huff_decode`.
-        self.static_table = _qpack_static_table()
+    def __init__(out self, *, shared: UnsafePointer[QpackSharedTables, MutAnyOrigin]):
+        # Shared path: skip both local builds (static_table + HuffDecodeTable).
+        self.static_table = List[QpackStaticEntry]()
         self.huff_decode = HuffDecodeTable.empty()
-        self.huff_decode_ptr = shared_huff_decode
+        self.shared_tables_ptr = shared
 
     def __init__(out self, *, copy_from: Self):
         self.static_table = copy_from.static_table.copy()
         self.huff_decode = HuffDecodeTable(copy_from=copy_from.huff_decode)
-        self.huff_decode_ptr = copy_from.huff_decode_ptr
+        self.shared_tables_ptr = copy_from.shared_tables_ptr
 
     def _decode_string(self, data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
         """Method form of `_qpack_decode_string` using the cached state-machine
@@ -1042,8 +1109,8 @@ struct QpackDecoder(Copyable, Movable):
         raw.extend(Span(data)[pos:pos + length])
         pos += length
         if h_bit:
-            if Int(self.huff_decode_ptr) != 0:
-                return _StrDecodeResult(huffman_decode_sm(raw, self.huff_decode_ptr[]), pos)
+            if Int(self.shared_tables_ptr) != 0:
+                return _StrDecodeResult(huffman_decode_sm(raw, self.shared_tables_ptr[].huff_decode), pos)
             return _StrDecodeResult(huffman_decode_sm(raw, self.huff_decode), pos)
         return _StrDecodeResult(String(unsafe_from_utf8=raw), pos)
 
@@ -1087,8 +1154,12 @@ struct QpackDecoder(Copyable, Movable):
                     # Static table reference — O(1) read from cached table.
                     if idx < 0 or idx >= QPACK_STATIC_TABLE_SIZE:
                         raise "QPACK: static table index out of range: " + String(idx)
-                    var entry = self.static_table[idx].copy()
-                    result.append(QpackHeaderField(entry.name, entry.value))
+                    if Int(self.shared_tables_ptr) != 0:
+                        var entry = self.shared_tables_ptr[].static_table[idx].copy()
+                        result.append(QpackHeaderField(entry.name, entry.value))
+                    else:
+                        var entry = self.static_table[idx].copy()
+                        result.append(QpackHeaderField(entry.name, entry.value))
                 else:
                     raise "QPACK: dynamic table not supported (indexed)"
 
@@ -1105,8 +1176,12 @@ struct QpackDecoder(Copyable, Movable):
                 if t_bit:
                     if idx < 0 or idx >= QPACK_STATIC_TABLE_SIZE:
                         raise "QPACK: static table index out of range: " + String(idx)
-                    var entry = self.static_table[idx].copy()
-                    result.append(QpackHeaderField(entry.name, value))
+                    if Int(self.shared_tables_ptr) != 0:
+                        var entry = self.shared_tables_ptr[].static_table[idx].copy()
+                        result.append(QpackHeaderField(entry.name, value))
+                    else:
+                        var entry = self.static_table[idx].copy()
+                        result.append(QpackHeaderField(entry.name, value))
                 else:
                     raise "QPACK: dynamic table not supported (literal name ref)"
 
@@ -1125,7 +1200,10 @@ struct QpackDecoder(Copyable, Movable):
                 pos += name_len
                 var field_name: String
                 if name_huffman:
-                    field_name = huffman_decode_sm(name_raw, self.huff_decode)
+                    if Int(self.shared_tables_ptr) != 0:
+                        field_name = huffman_decode_sm(name_raw, self.shared_tables_ptr[].huff_decode)
+                    else:
+                        field_name = huffman_decode_sm(name_raw, self.huff_decode)
                 else:
                     field_name = String(unsafe_from_utf8=name_raw)
                 var vr = self._decode_string(data, pos)

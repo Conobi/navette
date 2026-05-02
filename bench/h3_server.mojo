@@ -15,7 +15,7 @@ from src.quic.connection import QuicConnection
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.packet import parse_packet_header
 from src.h3.h3_handler_server import H3HandlerServer
-from src.h3.qpack import HuffDecodeTable
+from src.h3.qpack import QpackSharedTables
 from bench.handler import (
     BenchHandler,
     BenchState,
@@ -518,13 +518,13 @@ struct H3UdpHandler(BatchCompletionHandler):
     var h3_handler_err_count: UInt64
     var feed_datagram_err_count: UInt64
     var quic_server_err_first: Bool   # print first error message only
-    # Process-shared QPACK Huffman decode state machine. Allocated once at
-    # server construction; the pointer is threaded into every new
-    # H3HandlerServer's H3Connection → QpackDecoder so that the 4096-entry
-    # build runs ONCE for the process instead of per QUIC connection.
-    # ~25-30k operations saved per new connection — the dominant per-conn
-    # cost on short-conn workloads.
-    var huff_decode_singleton: UnsafePointer[HuffDecodeTable, MutAnyOrigin]
+    # Process-shared QPACK constant tables (HuffDecodeTable + Huffman
+    # encode + static table). Allocated once at server construction; the
+    # pointer is threaded into every new H3HandlerServer's H3Connection
+    # → QpackDecoder + QpackEncoder so the per-conn table builds (4096
+    # entries Huff-decode, 256 Huff-encode, 99 static) run ONCE for the
+    # process. The bulk of short-conn per-conn QPACK init cost.
+    var qpack_tables_singleton: UnsafePointer[QpackSharedTables, MutAnyOrigin]
 
     def __init__(
         out self,
@@ -582,9 +582,9 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.feed_datagram_err_count = UInt64(0)
         self.quic_server_err_first = False
 
-        # Build the QPACK Huffman decode SM exactly once for this process.
-        self.huff_decode_singleton = _heap_alloc[HuffDecodeTable](1).as_any_origin()
-        self.huff_decode_singleton.init_pointee_move(HuffDecodeTable())
+        # Build the QPACK shared tables exactly once for this process.
+        self.qpack_tables_singleton = _heap_alloc[QpackSharedTables](1).as_any_origin()
+        self.qpack_tables_singleton.init_pointee_move(QpackSharedTables())
 
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
@@ -614,7 +614,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.h3_handler_err_count = take.h3_handler_err_count
         self.feed_datagram_err_count = take.feed_datagram_err_count
         self.quic_server_err_first = take.quic_server_err_first
-        self.huff_decode_singleton = take.huff_decode_singleton
+        self.qpack_tables_singleton = take.qpack_tables_singleton
 
     # --- Conn lookup ---
 
@@ -859,13 +859,13 @@ struct H3UdpHandler(BatchCompletionHandler):
                             quic=quic^,
                             handler=handler^,
                             profile_ptr=UnsafePointer(to=self.profile),
-                            shared_huff_decode=self.huff_decode_singleton,
+                            shared_qpack_tables=self.qpack_tables_singleton,
                         )
                     else:
                         h3 = H3HandlerServer[BenchHandler](
                             quic=quic^,
                             handler=handler^,
-                            shared_huff_decode=self.huff_decode_singleton,
+                            shared_qpack_tables=self.qpack_tables_singleton,
                         )
                 except e:
                     self.h3_handler_err_count += UInt64(1)
