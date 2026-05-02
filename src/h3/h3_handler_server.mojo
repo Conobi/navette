@@ -216,12 +216,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
-        var user_headers = Headers()
+        var req_headers = Headers()
 
         # LIFO drain: pseudo-header order isn't position-bound (RFC 9114
-        # §4.2), so reversing iteration is conformant. consume_value
-        # moves the value String out of each popped field; the name is
-        # still read as a borrow before the consume.
+        # §4.2), so reversing iteration is conformant. Drain user headers
+        # straight into req_headers; the host: <authority> pseudo-mapped
+        # entry is appended after the drain. Saves the user_headers
+        # intermediate Headers struct + a second iteration that would
+        # have copied each (name, value) into req_headers.
         while len(fields) > 0:
             var field = fields.pop()
             if field.name == ":method":
@@ -233,13 +235,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             elif field.name == ":scheme":
                 pass
             else:
-                user_headers.add(field.name.copy(), field^.consume_value())
+                req_headers.add(field.name.copy(), field^.consume_value())
 
-        var req_headers = Headers()
         if authority_str != "":
             req_headers.add("host", authority_str^)
-        for i in range(len(user_headers)):
-            req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
         var req = Request(
             method=Method.custom(method_str),
