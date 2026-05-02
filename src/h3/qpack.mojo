@@ -780,17 +780,13 @@ def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[UInt8]:
         var huff = huffman_encode(s)
         var len_bytes = qpack_encode_int(UInt64(len(huff)), 7)
         len_bytes[0] |= 0x80  # Set H bit
-        for i in range(len(len_bytes)):
-            result.append(len_bytes[i])
-        for i in range(len(huff)):
-            result.append(huff[i])
+        result.extend(Span(len_bytes))
+        result.extend(Span(huff))
     else:
         var raw = s.as_bytes()
         var len_bytes = qpack_encode_int(UInt64(len(raw)), 7)
-        for i in range(len(len_bytes)):
-            result.append(len_bytes[i])
-        for i in range(len(raw)):
-            result.append(raw[i])
+        result.extend(Span(len_bytes))
+        result.extend(raw)
     return result^
 
 
@@ -804,9 +800,8 @@ def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeRes
     var pos = ir.new_offset
     if pos + length > len(data):
         raise "QPACK: string data truncated"
-    var raw = List[UInt8]()
-    for i in range(length):
-        raw.append(data[pos + i])
+    var raw = List[UInt8](capacity=length)
+    raw.extend(Span(data)[pos:pos + length])
     pos += length
     if h_bit:
         return _StrDecodeResult(huffman_decode(raw), pos)
@@ -890,17 +885,13 @@ struct QpackEncoder(Copyable, Movable):
             var huff = self._huffman_encode(s)
             var len_bytes = qpack_encode_int(UInt64(len(huff)), 7)
             len_bytes[0] |= 0x80
-            for i in range(len(len_bytes)):
-                result.append(len_bytes[i])
-            for i in range(len(huff)):
-                result.append(huff[i])
+            result.extend(Span(len_bytes))
+            result.extend(Span(huff))
         else:
             var raw = s.as_bytes()
             var len_bytes = qpack_encode_int(UInt64(len(raw)), 7)
-            for i in range(len(len_bytes)):
-                result.append(len_bytes[i])
-            for i in range(len(raw)):
-                result.append(raw[i])
+            result.extend(Span(len_bytes))
+            result.extend(raw)
         return result^
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
@@ -918,8 +909,7 @@ struct QpackEncoder(Copyable, Movable):
 
         for i in range(len(headers)):
             var field_bytes = self._encode_field(headers[i].name, headers[i].value)
-            for j in range(len(field_bytes)):
-                result.append(field_bytes[j])
+            result.extend(Span(field_bytes))
 
         return result^
 
@@ -941,11 +931,9 @@ struct QpackEncoder(Copyable, Movable):
             var idx_bytes = qpack_encode_int(UInt64(idx), 4)
             idx_bytes[0] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0 (may-index), bit 4 = T=1 (static)
             var result = List[UInt8]()
-            for i in range(len(idx_bytes)):
-                result.append(idx_bytes[i])
+            result.extend(Span(idx_bytes))
             var val_bytes = self._encode_string(value, self.use_huffman)
-            for i in range(len(val_bytes)):
-                result.append(val_bytes[i])
+            result.extend(Span(val_bytes))
             return result^
 
         # 3. Literal Without Name Reference (§4.5.6)
@@ -959,17 +947,14 @@ struct QpackEncoder(Copyable, Movable):
             name_h_bit = 0x08  # bit 3 = H=1
         else:
             var name_span = name.as_bytes()
-            for k in range(len(name_span)):
-                name_raw.append(name_span[k])
+            name_raw = List[UInt8](capacity=len(name_span))
+            name_raw.extend(name_span)
         var name_len_bytes = qpack_encode_int(UInt64(len(name_raw)), 3)
         name_len_bytes[0] |= 0x20 | name_h_bit  # 001 N=0 H nnn
-        for i in range(len(name_len_bytes)):
-            result.append(name_len_bytes[i])
-        for i in range(len(name_raw)):
-            result.append(name_raw[i])
+        result.extend(Span(name_len_bytes))
+        result.extend(Span(name_raw))
         var val_bytes = _qpack_encode_string(value, self.use_huffman)
-        for i in range(len(val_bytes)):
-            result.append(val_bytes[i])
+        result.extend(Span(val_bytes))
         return result^
 
 
