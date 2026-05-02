@@ -152,3 +152,56 @@ This is the biggest remaining structural win. Worth a dedicated follow-up spec.
 - quiche reference: `quiche/src/h3/qpack/decoder.rs:204` (lookup_static)
 - Q-drain-subleg evidence: `bench/quic_perf/results/profile/Q-drain-subleg_post_evidence_2026-05-01.md`
 - Predecessor research: `research/2026-05-01-tquic-quiche-stream-read-paths.md`
+
+
+## Update: v6 — TQUIC-style state-machine Huffman decoder SHIPPED
+
+**Commit:** `89ca855` on `perf/qpack-decode-fast`.
+
+The 4-bit-at-a-time state-machine pattern works in Mojo via a per-instance cache built at `QpackDecoder.__init__`. Build algorithm: encode-table → binary tree → 256-state × 16-nibble decode table.
+
+### Results
+
+| Metric | Before (main) | After (v6) | Change |
+|---|---|---|---|
+| `huffman_decode("example.com")` microbench | 11,736 ns | 132 ns | **89× faster** |
+| `decode(4-header, 1 Huffman)` microbench | 16,402 ns | 323 ns | **50× faster** |
+| Long-conn RPS macro (n=10, same-window) | 14,847 | **36,007** | **+143% / 2.43× speedup** |
+| % of TQUIC reference (87k rps) | 16.2% | **41.4%** | +25 pp |
+| Short-conn RPS macro (n=5) | 1,229 | 1,139 | **-7%** |
+| Binary size | 805 KB | 809 KB | +4 KB |
+| `__init__` build cost | <1 μs | ~52 μs | +51 μs/decoder |
+| Conformance | 36/36 | 36/36 | ✓ |
+
+### The short-conn regression
+
+Per-connection `QpackDecoder.__init__` now costs ~52 μs (46 μs for HuffDecodeTable + 6 μs for static table). At ~1,200 conn/sec on short-conn, that's ~62 ms/sec = ~6% CPU spent on table-build. Matches observed -7%.
+
+Three paths to fix this:
+
+1. **Process-shared table via UnsafePointer singleton:** Mojo 0.26.2 doesn't allow module-level mutable vars, but UnsafePointer-backed lazy-init is possible via a struct-static pattern. Need a way for the FIRST QpackDecoder to populate, subsequent ones to skip. Synchronization would matter in a multi-threaded context but mojo-net bench is single-threaded.
+
+2. **Comptime-baked decode table:** Pre-compute the 4096 entries at compile time, embed as 3 parallel comptime InlineArrays. Test result earlier: 256-entry comptime InlineArray fold worked; 4096-entry untested. May fail compiler folding or regress runtime indexing speed (we saw this on 256-entry attempt for huff_codes).
+
+3. **Cheaper build:** Current build is ~46 μs; theoretical minimum is ~10 μs if we skip the binary-tree intermediate and walk the encode table directly. Would still leave ~12 ms/sec on short-conn, ~1% CPU.
+
+### Recommendation for next spec
+
+Path 1 (UnsafePointer singleton) is most promising and Mojo-native. Sketch:
+
+```mojo
+# Module-level: not allowed, so use struct-static via UnsafePointer indirection.
+struct _HuffTableSingleton:
+    @staticmethod
+    fn get() -> UnsafePointer[HuffDecodeTable]:
+        # Lazy-init on first call; cache via UnsafePointer.
+        # Mojo lacks module-level mutable vars; need to work around.
+```
+
+This is the next optimization. Long-conn win locks in the bulk of the gap; short-conn cleanup is a smaller follow-up.
+
+### Path to closing the rest of the TQUIC gap
+
+Current: 41% of TQUIC long-conn. Remaining 59% likely lives in other parts of `_drain_stream` that Q-drain-subleg attributed to `qpack_decode_us` but which are now down to ~3 μs/call (below noise floor) — we need a new sub-leg pass to find what's now dominant.
+
+Alternative: profile the actual `quic_post_recv_us` bracket (Q1's ~22M μs / 30s). After v6, what fraction is now in the FFI receive path vs in `_drain_stream`? If FFI is the new dominant, that's the next target.
