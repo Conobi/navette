@@ -32,6 +32,7 @@ from src.h3.error import (
     H3_STREAM_CREATION_ERROR,
 )
 from src.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField, HuffDecodeTable, QpackSharedTables
+from src.http.headers import Headers
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +356,37 @@ struct H3Connection(Movable):
         HeadersFrame.__init__ and H3RawFrame.__init__).
         """
         var encoded = self._enc.encode(fields)
+        var w = ByteWriter()
+        varint_encode(w, H3_FRAME_HEADERS)
+        varint_encode(w, UInt64(len(encoded)))
+        w.write_bytes(Span(encoded))
+        var wire = w.finish()
+        self._quic.send_stream_data(stream_id, Span(wire), fin)
+
+    def send_response_headers(
+        mut self,
+        stream_id: UInt64,
+        status_code: Int,
+        headers: Headers,
+        fin: Bool,
+    ) raises:
+        """Encode :status + headers directly into a HEADERS frame without
+        building a List[QpackHeaderField] intermediate. Per response this
+        saves ~2 String auto-copies per header (the var-binding copies
+        that QpackHeaderField construction triggers when fed name_at/value_at
+        refs). Borrowed-name encode path inside QpackEncoder._encode_field
+        already takes name + value by-borrow."""
+        var encoded = List[UInt8]()
+        encoded.append(0x00)  # Required Insert Count = 0
+        encoded.append(0x00)  # S = 0, Delta Base = 0
+        # :status pseudo-field first (RFC 9114 §4.3.1).
+        var status_str = String(status_code)
+        var status_bytes = self._enc._encode_field(":status", status_str)
+        encoded.extend(Span(status_bytes))
+        # User headers — name_at/value_at return refs, no per-field copy.
+        for j in range(len(headers)):
+            var field_bytes = self._enc._encode_field(headers.name_at(j), headers.value_at(j))
+            encoded.extend(Span(field_bytes))
         var w = ByteWriter()
         varint_encode(w, H3_FRAME_HEADERS)
         varint_encode(w, UInt64(len(encoded)))

@@ -340,13 +340,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     resp_headers = headers_opt.unsafe_take()
                 else:
                     resp_headers = Headers()
-                # Build QPACK fields: :status first, then headers
-                var fields = List[QpackHeaderField]()
-                fields.append(QpackHeaderField(":status", String(Int(status.code()))))
-                for j in range(len(resp_headers)):
-                    fields.append(QpackHeaderField(resp_headers.name_at(j), resp_headers.value_at(j)))
+                # send_response_headers bypasses the List[QpackHeaderField]
+                # intermediate; saves ~2 String auto-copies per header.
                 try:
-                    self._h3.send_headers(UInt64(sid), fields, False)
+                    self._h3.send_response_headers(UInt64(sid), Int(status.code()), resp_headers, False)
                 except:
                     pass
                 ctx.headers_sent = True
