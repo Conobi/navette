@@ -548,12 +548,10 @@ def handle_static(
             break
         k += 1
 
-    # Build filename string
-    var filename = String()
-    var fi = prefix_len
-    while fi < end:
-        filename += chr(Int(target_bytes[fi]))
-        fi += 1
+    # Build filename string from byte slice (single-pass; no per-char String concat)
+    var name_bytes = List[UInt8]()
+    name_bytes.extend(Span(target_bytes)[prefix_len:end])
+    var filename = String(unsafe_from_utf8=name_bytes^)
 
     # Look up in cache
     if filename not in state_ptr[].static_cache:
