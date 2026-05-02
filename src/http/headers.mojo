@@ -121,10 +121,14 @@ struct Headers(Copyable, Movable, Sized):
 
     # --- Indexed access ---
 
-    def name_at(self, index: Int) -> String:
-        """Return the name at the given index (insertion order)."""
+    def name_at(ref self, index: Int) -> ref [self._names] String:
+        """Return the name at the given index (insertion order). Returned
+        by reference so call sites that pass it to borrow params (e.g.,
+        QpackEncoder._encode_field) avoid the per-access String copy.
+        Callers that need an owned copy should use `.copy()` explicitly."""
         return self._names[index]
 
-    def value_at(self, index: Int) -> String:
-        """Return the value at the given index (insertion order)."""
+    def value_at(ref self, index: Int) -> ref [self._values] String:
+        """Return the value at the given index (insertion order). Returned
+        by reference; see `name_at` doc."""
         return self._values[index]
