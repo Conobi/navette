@@ -829,16 +829,30 @@ struct QpackEncoder(Copyable, Movable):
     var use_huffman: Bool
     var static_table: List[QpackStaticEntry]
     var huff_table: List[HuffmanEntry]
+    # Hash-indexed lookups built once in __init__; mirrors TQUIC's
+    # `static_find` precompute. Linear scan over 99 entries collapsed to
+    # one Dict probe per query.
+    var _name_to_first_idx: Dict[String, Int]
+    var _namevalue_to_idx: Dict[String, Int]
 
     def __init__(out self, use_huffman: Bool = True):
         self.use_huffman = use_huffman
         self.static_table = _qpack_static_table()
         self.huff_table = _huffman_encode_table()
+        self._name_to_first_idx = Dict[String, Int]()
+        self._namevalue_to_idx = Dict[String, Int]()
+        for i in range(len(self.static_table)):
+            ref entry = self.static_table[i]
+            if entry.name not in self._name_to_first_idx:
+                self._name_to_first_idx[entry.name] = i
+            self._namevalue_to_idx[entry.name + "\x00" + entry.value] = i
 
     def __init__(out self, *, copy_from: Self):
         self.use_huffman = copy_from.use_huffman
         self.static_table = copy_from.static_table.copy()
         self.huff_table = copy_from.huff_table.copy()
+        self._name_to_first_idx = copy_from._name_to_first_idx.copy()
+        self._namevalue_to_idx = copy_from._namevalue_to_idx.copy()
 
     def _huffman_encode(self, s: String) raises -> List[UInt8]:
         """Method form of `huffman_encode` using `self.huff_table` (cached)."""
@@ -864,18 +878,17 @@ struct QpackEncoder(Copyable, Movable):
             result.append(last_byte)
         return result^
 
-    def _static_find(self, name: String, value: String) -> Optional[Int]:
-        """Method form of `qpack_static_find` using cached `self.static_table`."""
-        for i in range(len(self.static_table)):
-            if self.static_table[i].name == name and self.static_table[i].value == value:
-                return Optional[Int](i)
+    def _static_find(self, name: String, value: String) raises -> Optional[Int]:
+        """Method form of `qpack_static_find` using the precomputed Dict."""
+        var key = name + "\x00" + value
+        if key in self._namevalue_to_idx:
+            return Optional[Int](self._namevalue_to_idx[key])
         return Optional[Int](None)
 
-    def _static_find_name(self, name: String) -> Optional[Int]:
-        """Method form of `qpack_static_find_name` using cached `self.static_table`."""
-        for i in range(len(self.static_table)):
-            if self.static_table[i].name == name:
-                return Optional[Int](i)
+    def _static_find_name(self, name: String) raises -> Optional[Int]:
+        """Method form of `qpack_static_find_name` using the precomputed Dict."""
+        if name in self._name_to_first_idx:
+            return Optional[Int](self._name_to_first_idx[name])
         return Optional[Int](None)
 
     def _encode_string(self, s: String, use_huffman: Bool) raises -> List[UInt8]:
