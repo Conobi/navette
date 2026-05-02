@@ -1134,7 +1134,7 @@ struct QuicConnection(Movable):
         # ACK
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
             if frame._ack:
-                var ack_frame = frame._ack.value().copy()
+                var ack_frame = frame^.consume_ack()
                 self._handle_ack(ack_frame, space_idx, now)
             return
 
@@ -1150,7 +1150,7 @@ struct QuicConnection(Movable):
         # CONNECTION_CLOSE
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
             if frame._conn_close:
-                var cc = frame._conn_close.value().copy()
+                var cc = frame^.consume_conn_close()
                 self.state = self.state | CONN_DRAINING
                 # Start drain timer: 3 * PTO.
                 var pto = self.recovery.pto_timeout(
@@ -1182,7 +1182,7 @@ struct QuicConnection(Movable):
         # NEW_CONNECTION_ID: hand off to CidManager.
         if tid == FRAME_NEW_CONNECTION_ID:
             if frame._new_cid:
-                var nc = frame._new_cid.value().copy()
+                var nc = frame^.consume_new_cid()
                 self.cid_mgr.on_new_connection_id(
                     nc.sequence,
                     nc.retire_prior_to,

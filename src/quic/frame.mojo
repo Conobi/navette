@@ -382,6 +382,15 @@ struct Frame(Copyable, Movable):
     def consume_crypto(deinit self) -> CryptoFrame:
         return self._crypto.unsafe_take()
 
+    def consume_ack(deinit self) -> AckFrame:
+        return self._ack.unsafe_take()
+
+    def consume_new_cid(deinit self) -> NewConnectionIdFrame:
+        return self._new_cid.unsafe_take()
+
+    def consume_conn_close(deinit self) -> ConnectionCloseFrame:
+        return self._conn_close.unsafe_take()
+
     # ── Factory methods ───────────────────────────────────────────────
 
     @staticmethod
