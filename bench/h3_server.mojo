@@ -985,10 +985,15 @@ struct H3UdpHandler(BatchCompletionHandler):
                 _ = external_call["exit", NoneType](Int32(0))
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
-        """Drain outgoing datagrams from a connection and queue sendmsg."""
+        """Drain outgoing datagrams from a connection and queue sendmsg.
+
+        Iterates LIFO via `datagrams.pop()` so each packet is moved into
+        the UdpTxSlot instead of copied. For UDP delivery order doesn't
+        matter (QUIC packet numbers live in the header, not in wire
+        order), so reversing the in-process iteration is safe."""
         var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
-        for i in range(len(datagrams)):
-            var pkt = List[UInt8](copy=datagrams[i])
+        while len(datagrams) > 0:
+            var pkt = datagrams.pop()
             if len(pkt) == 0:
                 continue
 
