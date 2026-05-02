@@ -376,8 +376,7 @@ struct H3Connection(Movable):
         encoded.append(0x00)
         encoded.append(0x00)
         for j in range(len(trailers)):
-            var field_bytes = self._enc._encode_field(trailers.name_at(j), trailers.value_at(j))
-            encoded.extend(Span(field_bytes))
+            self._enc._encode_field_into(trailers.name_at(j), trailers.value_at(j), encoded)
         var w = ByteWriter()
         varint_encode(w, H3_FRAME_HEADERS)
         varint_encode(w, UInt64(len(encoded)))
@@ -403,12 +402,10 @@ struct H3Connection(Movable):
         encoded.append(0x00)  # S = 0, Delta Base = 0
         # :status pseudo-field first (RFC 9114 §4.3.1).
         var status_str = String(status_code)
-        var status_bytes = self._enc._encode_field(":status", status_str)
-        encoded.extend(Span(status_bytes))
+        self._enc._encode_field_into(":status", status_str, encoded)
         # User headers — name_at/value_at return refs, no per-field copy.
         for j in range(len(headers)):
-            var field_bytes = self._enc._encode_field(headers.name_at(j), headers.value_at(j))
-            encoded.extend(Span(field_bytes))
+            self._enc._encode_field_into(headers.name_at(j), headers.value_at(j), encoded)
         var w = ByteWriter()
         varint_encode(w, H3_FRAME_HEADERS)
         varint_encode(w, UInt64(len(encoded)))

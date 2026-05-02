@@ -1002,13 +1002,23 @@ struct QpackEncoder(Copyable, Movable):
         return result^
 
     def _encode_field(self, name: String, value: String) raises -> List[UInt8]:
+        var result = List[UInt8]()
+        self._encode_field_into(name, value, result)
+        return result^
+
+    def _encode_field_into(self, name: String, value: String, mut out: List[UInt8]) raises:
+        """Append a single QPACK-encoded field to `out`. Avoids the per-field
+        List[UInt8] allocation + extend-copy that the older _encode_field
+        return-and-extend pattern triggered. Hot path for response encode
+        (~6 fields per response × 51k req/s long-conn)."""
         # 1. Try exact static match → Indexed Static Field Line (§4.5.2)
         var exact = self._static_find(name, value)
         if exact.__bool__():
             var idx = exact.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 6)
             idx_bytes[0] |= 0xC0  # bits 7-6 = 11
-            return idx_bytes^
+            out.extend(Span(idx_bytes))
+            return
 
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
         # Format: 0 1 N T xxxx where N=0 (may-index), T=1 (static)
@@ -1018,16 +1028,14 @@ struct QpackEncoder(Copyable, Movable):
             var idx = name_match.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 4)
             idx_bytes[0] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0 (may-index), bit 4 = T=1 (static)
-            var result = List[UInt8]()
-            result.extend(Span(idx_bytes))
+            out.extend(Span(idx_bytes))
             var val_bytes = self._encode_string(value, self.use_huffman)
-            result.extend(Span(val_bytes))
-            return result^
+            out.extend(Span(val_bytes))
+            return
 
         # 3. Literal Without Name Reference (§4.5.6)
         # Format: 0 0 1 N H nnn | name_bytes | H 7-bit-value-len | value_bytes
         # bit 4 = N=0 (may-index), bit 3 = H (Huffman for name), bits 2:0 = 3-bit name length prefix
-        var result = List[UInt8]()
         var name_raw = List[UInt8]()
         var name_h_bit: UInt8 = 0x00
         if self.use_huffman:
@@ -1039,11 +1047,10 @@ struct QpackEncoder(Copyable, Movable):
             name_raw.extend(name_span)
         var name_len_bytes = qpack_encode_int(UInt64(len(name_raw)), 3)
         name_len_bytes[0] |= 0x20 | name_h_bit  # 001 N=0 H nnn
-        result.extend(Span(name_len_bytes))
-        result.extend(Span(name_raw))
+        out.extend(Span(name_len_bytes))
+        out.extend(Span(name_raw))
         var val_bytes = _qpack_encode_string(value, self.use_huffman)
-        result.extend(Span(val_bytes))
-        return result^
+        out.extend(Span(val_bytes))
 
 
 # ---------------------------------------------------------------------------
