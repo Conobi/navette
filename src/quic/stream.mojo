@@ -258,8 +258,7 @@ struct RecvBuf(Copyable, Movable):
         if first_affected == -1:
             # No overlap: insert as a new segment at sorted position
             var new_seg = List[UInt8](capacity=len(clamped))
-            for i in range(len(clamped)):
-                new_seg.append(clamped[i])
+            new_seg.extend(Span(clamped))
             # Find insertion point
             var insert_pos = len(self.seg_offsets)
             for i in range(len(self.seg_offsets)):
@@ -447,8 +446,7 @@ struct SendBuf(Copyable, Movable):
         """Append data to the outgoing buffer and optionally set the FIN flag."""
         if self.fin and len(new_data) > 0:
             raise "STREAM_STATE_ERROR: write after FIN queued"
-        for i in range(len(new_data)):
-            self.data.append(new_data[i])
+        self.data.extend(new_data)
         if set_fin:
             self.fin = True
 
@@ -497,8 +495,7 @@ struct SendBuf(Copyable, Movable):
         # Build frame data
         var frame_data = List[UInt8](capacity=chunk_size)
         var buf_start = Int(frame_start - self.offset)
-        for i in range(chunk_size):
-            frame_data.append(self.data[buf_start + i])
+        frame_data.extend(Span(self.data)[buf_start:buf_start + chunk_size])
 
         # Record fin_offset when FIN is first included
         if include_fin and not self.fin_offset:
@@ -535,8 +532,7 @@ struct SendBuf(Copyable, Movable):
                 trim = len(self.data)
             if trim > 0:
                 var new_data = List[UInt8](capacity=len(self.data) - trim)
-                for i in range(trim, len(self.data)):
-                    new_data.append(self.data[i])
+                new_data.extend(Span(self.data)[trim:])
                 self.data = new_data^
                 self.offset = self.offset + UInt64(trim)
 
