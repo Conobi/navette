@@ -283,3 +283,46 @@ Branch `perf/qpack-decode-fast` ready for review/merge:
 - Plus 4 research doc commits
 
 **Headline:** mojo-net long-conn RPS **14,847 → 40,776 (2.75× / +175%)**, from **16.2% → 46.8% of TQUIC reference**. All conformance + tests green. Binary +4 KB.
+
+
+## Update: v8 + v9 — bulk extend(Span) + skip frame intermediates
+
+**Commits:** `6c2c6f9` (v8), `4c7eb29` (v9) on `perf/qpack-decode-fast`.
+
+After v7 the new dominant H3 phase was `drain_resp` (encoder side, 10M μs / 30s). v7's encoder caching had reduced it from 13.2M but the remaining time was in:
+- `send_stream_data` FFI calls (38% of drain_resp = 3.9M μs)
+- HeadersFrame/DataFrame construction + encode (62% = 6.3M μs)
+
+**v8 — bulk extend(Span):** `ByteWriter.write_bytes` and `H3RawFrame.encode` were doing byte-by-byte loops over their payload. Replaced with `List.extend(Span(...))` which the compiler lowers to memcpy/SIMD. Microbench was 2.24× per Topic 2; macro: **+9.4% RPS lift** (40,815 → 44,591).
+
+**v9 — skip HeadersFrame/DataFrame:** `send_headers` and `send_data` constructed an intermediate frame struct, copying the payload List, only to call `frame.encode()` which copied again into H3RawFrame. Built the wire bytes directly via ByteWriter, saving 2 List copies per frame. Macro: **+0.9% RPS lift** (44,591 → 44,994). Within noise but consistently positive; also cleaner code.
+
+### Final cumulative trajectory
+
+| Version | Long-conn RPS | % of TQUIC | Δ vs main |
+|---|---|---|---|
+| main (Q1 + Q3 shipped) | 14,847 | 16.2% | — |
+| v4 (decoder static cache) | 15,403 | 17.7% | +3.6% |
+| v6 (state-machine Huffman) | 36,007 | 41.4% | +143% |
+| v7 (encoder caching) | 40,776 | 46.8% | +175% |
+| v8 (extend(Span)) | 44,591 | 51.3% | +200% |
+| **v9 (skip frame intermediates)** | **44,994** | **51.7%** | **+203% / 3.03×** |
+
+**Closing 35.5 percentage points of the TQUIC gap in 5 perf commits.**
+
+Branch state: `perf/qpack-decode-fast` ready for review/merge. 9 commits total (5 perf + 4 research). All conformance + tests green throughout. Binary 805 KB → 809 KB (+4 KB).
+
+## Where the remaining gap likely lives
+
+After v9, fresh sidecar would show new dominant phase. Hypothesis based on v7 sidecar deltas:
+- `_quic.send_stream_data` FFI overhead — ~3-5M μs / 30s. Each call has FFI parameter marshalling cost. **Batched FFI writes** (gather multiple stream-data writes per syscall into TQUIC) is the next structural change.
+- `post_recv` was 5.4M μs, mostly already optimized in v6 (state-machine decoder is fast). The remainder is `_quic.timeout` + poll-loop dispatch.
+- Handler invocation + response building (`dispatch` 3.6M μs, the BenchHandler.serve() function).
+
+The next iteration should capture a v9 sidecar, identify where the remaining ~48% of the gap to TQUIC lives, and target that.
+
+## Unaddressed: short-conn regression
+
+v6's QpackDecoder __init__ added ~52 μs cost per H3Connection. At 1,200 short-conn req/s that's ~6% CPU spent on table-build per process. v8/v9 didn't improve this. Fix path: **UnsafePointer-backed singleton** for the HuffDecodeTable so all decoders share one table built at first-decoder construction. Mojo 0.26.2 doesn't support module-level mutable state, but UnsafePointer-based caching can work via struct-static pattern.
+
+Estimated impact: short-conn -7% → 0%. Should be a small follow-up.
