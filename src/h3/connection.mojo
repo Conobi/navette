@@ -549,8 +549,7 @@ struct H3Connection(Movable):
                     return
                 var type_byte = sbuf2.buf[0]
                 var new_buf = List[UInt8]()
-                for i in range(1, len(sbuf2.buf)):
-                    new_buf.append(sbuf2.buf[i])
+                new_buf.extend(Span(sbuf2.buf)[1:])
                 sbuf2.buf = new_buf^
                 sbuf2.type_byte = Optional[UInt8](type_byte)
                 self._stream_bufs[key] = sbuf2^
