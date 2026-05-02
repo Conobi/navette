@@ -558,7 +558,8 @@ struct H3CoroServer(Movable):
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
                 ctx_ptr.init_pointee_move(ctx^)
                 continue
-            # Send response headers
+            # Send response headers — bypass List[QpackHeaderField] via
+            # H3Connection.send_response_headers (saves ~2 String copies per header).
             if not ctx.headers_sent and ctx.resp_writer._has_status():
                 var status_opt = ctx.resp_writer._take_status()
                 var headers_opt = ctx.resp_writer._take_headers()
@@ -568,12 +569,8 @@ struct H3CoroServer(Movable):
                     resp_headers = headers_opt.unsafe_take()
                 else:
                     resp_headers = Headers()
-                var fields = List[QpackHeaderField]()
-                fields.append(QpackHeaderField(":status", String(Int(status.code()))))
-                for j in range(len(resp_headers)):
-                    fields.append(QpackHeaderField(resp_headers.name_at(j), resp_headers.value_at(j)))
                 try:
-                    self._h3.send_headers(UInt64(sid), fields, False)
+                    self._h3.send_response_headers(UInt64(sid), Int(status.code()), resp_headers, False)
                 except:
                     pass
                 ctx.headers_sent = True
