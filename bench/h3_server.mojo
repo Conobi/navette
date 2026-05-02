@@ -225,6 +225,11 @@ fn _is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
 
 def _addr_to_key(addr: List[UInt8]) -> String:
     """Convert raw 16-byte sockaddr to a string key for connection demux."""
+    return _addr_to_key_span(Span(addr))
+
+
+fn _addr_to_key_span(addr: Span[UInt8, _]) -> String:
+    """Span-based variant: avoids the caller having to materialize a List."""
     var key = String()
     for i in range(len(addr)):
         var b = Int(addr[i])
@@ -707,13 +712,15 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.consumed_bufs.append(buf_id)
             return
 
-        # Build address key for connection demux. Stored as String — re-looked-up
-        # in _flush_impl since timeout completions in the same poll batch may
-        # swap-and-pop conn_h3s, invalidating any cached index.
-        var addr_bytes = List[UInt8](capacity=addr_len)
-        for i in range(addr_len):
-            addr_bytes.append(buf_ptr[addr_offset + i])
-        var key = _addr_to_key(addr_bytes)
+        # addr_key is only consulted from PROFILE_ACCEPT-guarded blocks
+        # (record_conn_pkt / record_dcid_mismatch / record_conn_hs_complete).
+        # In the measurement build skip the per-packet byte-loop + hex-encode.
+        var key = String()
+        @parameter
+        if PROFILE_ACCEPT:
+            var addr_span = Span[UInt8, MutAnyOrigin](
+                ptr=buf_ptr + addr_offset, length=addr_len)
+            key = _addr_to_key_span(addr_span)
 
         var stamp_us: UInt64 = UInt64(0)
         @parameter
