@@ -483,16 +483,21 @@ struct QuicConnection(Movable):
         var tp_bytes = tp_writer.finish()
 
         # 3. Create QUIC client TLS connection.
+        # FFI is read-only on sni and tp buffers; pass storage directly.
         var sni_bytes = server_name.as_bytes()
         var sni_len = len(sni_bytes)
-        var sni_buf = _heap_alloc[UInt8](sni_len).as_any_origin()
-        for i in range(sni_len):
-            sni_buf[i] = sni_bytes[i]
+        var sni_ptr = (
+            sni_bytes.unsafe_ptr()
+            .unsafe_mut_cast[True]()
+            .as_any_origin()
+        )
 
         var tp_len = len(tp_bytes)
-        var tp_buf = _heap_alloc[UInt8](tp_len).as_any_origin()
-        for i in range(tp_len):
-            tp_buf[i] = tp_bytes[i]
+        var tp_ptr = (
+            tp_bytes.unsafe_ptr()
+            .unsafe_mut_cast[True]()
+            .as_any_origin()
+        )
 
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
@@ -501,15 +506,12 @@ struct QuicConnection(Movable):
         var rc = lib[].quic_client_conn_new(
             config_handle,
             Int32(1),  # QUIC version 1
-            sni_buf,
+            sni_ptr,
             Int32(sni_len),
-            tp_buf,
+            tp_ptr,
             Int32(tp_len),
             out_handle,
         )
-
-        sni_buf.free()
-        tp_buf.free()
 
         if rc < 0:
             var err = lib[].last_error()
@@ -573,17 +575,19 @@ struct QuicConnection(Movable):
         _apply_m3c_defaults(params_copy)
         # Server sets original_dcid to prove it received the client's Initial.
         var orig_dcid_list = List[UInt8](capacity=len(orig_dcid))
-        for i in range(len(orig_dcid)):
-            orig_dcid_list.append(orig_dcid[i])
+        orig_dcid_list.extend(orig_dcid)
         params_copy.original_dcid = orig_dcid_list^
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
 
         # 3. Create QUIC server TLS connection.
+        # FFI is read-only on tp buffer; pass List storage directly.
         var tp_len = len(tp_bytes)
-        var tp_buf = _heap_alloc[UInt8](tp_len).as_any_origin()
-        for i in range(tp_len):
-            tp_buf[i] = tp_bytes[i]
+        var tp_ptr = (
+            tp_bytes.unsafe_ptr()
+            .unsafe_mut_cast[True]()
+            .as_any_origin()
+        )
 
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
@@ -592,12 +596,10 @@ struct QuicConnection(Movable):
         var rc = lib[].quic_server_conn_new(
             config_handle,
             Int32(1),  # QUIC version 1
-            tp_buf,
+            tp_ptr,
             Int32(tp_len),
             out_handle,
         )
-
-        tp_buf.free()
 
         if rc < 0:
             var err = lib[].last_error()
@@ -612,13 +614,11 @@ struct QuicConnection(Movable):
 
         # 4. Build peer_cid from orig_dcid.
         var peer_cid = List[UInt8](capacity=len(orig_dcid))
-        for i in range(len(orig_dcid)):
-            peer_cid.append(orig_dcid[i])
+        peer_cid.extend(orig_dcid)
 
         # 5. Build initial_dcid from client_dcid.
         var initial_dcid = List[UInt8](capacity=len(client_dcid))
-        for i in range(len(client_dcid)):
-            initial_dcid.append(client_dcid[i])
+        initial_dcid.extend(client_dcid)
 
         # 6. Build connection object.
         var conn = QuicConnection(
