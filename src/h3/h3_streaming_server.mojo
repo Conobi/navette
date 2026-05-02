@@ -549,7 +549,7 @@ struct H3StreamingServer(Movable):
             var ev = ev_opt.unsafe_take()
             if ev.kind == H3Event.HEADERS_RECEIVED:
                 if Int(ev.stream_id) not in self._streams:
-                    self._on_request(ev)
+                    self._on_request(ev^)
                 else:
                     self._on_trailers(ev)
             elif ev.kind == H3Event.DATA_RECEIVED:
@@ -563,33 +563,39 @@ struct H3StreamingServer(Movable):
             # H3Event.HANDSHAKE_COMPLETE and H3Event.SETTINGS_RECEIVED are
             # informational only — no per-stream action needed.
 
-    def _on_request(mut self, ev: H3Event) raises:
+    def _on_request(mut self, var ev: H3Event) raises:
         """First HEADERS_RECEIVED: parse pseudo-fields into Request, allocate
         H3StreamingCtx + CoroHandle (via CoroutinePool) on heap, register in
         streams dict, and do the first resume.
-        If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end()."""
+        If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end().
+
+        Consumes the H3Event so each field's value is moved out via
+        consume_value instead of copied. See h3_handler_server._on_request."""
+        var stream_id_u64 = ev.stream_id
+        var ev_fin = ev.fin
+        var fields = ev^.consume_fields()
+
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
-            if name == ":method":
-                method_str = value
-            elif name == ":path":
-                path_str = value
-            elif name == ":authority":
-                authority_str = value
-            elif name == ":scheme":
+        while len(fields) > 0:
+            var field = fields.pop()
+            if field.name == ":method":
+                method_str = field^.consume_value()
+            elif field.name == ":path":
+                path_str = field^.consume_value()
+            elif field.name == ":authority":
+                authority_str = field^.consume_value()
+            elif field.name == ":scheme":
                 pass
             else:
-                user_headers.add(name, value)
+                user_headers.add(field.name.copy(), field^.consume_value())
 
         var req_headers = Headers()
         if authority_str != "":
-            req_headers.add("host", authority_str)
+            req_headers.add("host", authority_str^)
         for i in range(len(user_headers)):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
@@ -600,19 +606,19 @@ struct H3StreamingServer(Movable):
             headers=req_headers^,
         )
 
-        var stream_id = Int(ev.stream_id)
+        var stream_id = Int(stream_id_u64)
 
         # Allocate ctx from pool
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = H3StreamingCtx(
             request=req^,
             caps=Capabilities.for_h3(),
-            stream_id=ev.stream_id,
+            stream_id=stream_id_u64,
             extra_data=self._extra_data,
         )
 
         # FIN on HEADERS = bodyless request (e.g. GET) — mark ended immediately
-        if ev.fin:
+        if ev_fin:
             ctx.request_ended = True
             ctx.recv_body._set_end()
 
