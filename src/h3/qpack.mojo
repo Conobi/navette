@@ -820,13 +820,88 @@ def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeRes
 # ---------------------------------------------------------------------------
 
 struct QpackEncoder(Copyable, Movable):
+    """QPACK encoder — static table only (no dynamic table).
+
+    Caches the static table and Huffman encode table as instance fields
+    built once in `__init__`. Mirrors `QpackDecoder`'s caching strategy.
+    Per-instance cost: ~10 KB static + ~3 KB Huffman = ~13 KB.
+
+    Avoids per-call rebuild in `qpack_static_find`, `qpack_static_find_name`,
+    and `huffman_encode`. The free-function variants are retained for
+    callers without an encoder instance.
+    """
+
     var use_huffman: Bool
+    var static_table: List[QpackStaticEntry]
+    var huff_table: List[HuffmanEntry]
 
     def __init__(out self, use_huffman: Bool = True):
         self.use_huffman = use_huffman
+        self.static_table = _qpack_static_table()
+        self.huff_table = _huffman_encode_table()
 
     def __init__(out self, *, copy_from: Self):
         self.use_huffman = copy_from.use_huffman
+        self.static_table = copy_from.static_table.copy()
+        self.huff_table = copy_from.huff_table.copy()
+
+    def _huffman_encode(self, s: String) raises -> List[UInt8]:
+        """Method form of `huffman_encode` using `self.huff_table` (cached)."""
+        var result = List[UInt8]()
+        var acc: UInt64 = 0
+        var bits: Int = 0
+        var sbytes = s.as_bytes()
+        for i in range(len(sbytes)):
+            var sym = Int(sbytes[i])
+            if sym >= len(self.huff_table):
+                raise "Huffman: symbol out of range: " + String(sym)
+            var code = self.huff_table[sym].code
+            var nbits = Int(self.huff_table[sym].nbits)
+            acc = (acc << UInt64(nbits)) | UInt64(code)
+            bits += nbits
+            while bits >= 8:
+                bits -= 8
+                result.append(UInt8((acc >> UInt64(bits)) & 0xFF))
+        if bits > 0:
+            var pad_bits_count = 8 - bits
+            var pad = UInt8(((UInt32(1) << UInt32(pad_bits_count)) - 1) & 0xFF)
+            var last_byte = UInt8((acc << UInt64(pad_bits_count)) & 0xFF) | pad
+            result.append(last_byte)
+        return result^
+
+    def _static_find(self, name: String, value: String) -> Optional[Int]:
+        """Method form of `qpack_static_find` using cached `self.static_table`."""
+        for i in range(len(self.static_table)):
+            if self.static_table[i].name == name and self.static_table[i].value == value:
+                return Optional[Int](i)
+        return Optional[Int](None)
+
+    def _static_find_name(self, name: String) -> Optional[Int]:
+        """Method form of `qpack_static_find_name` using cached `self.static_table`."""
+        for i in range(len(self.static_table)):
+            if self.static_table[i].name == name:
+                return Optional[Int](i)
+        return Optional[Int](None)
+
+    def _encode_string(self, s: String, use_huffman: Bool) raises -> List[UInt8]:
+        """Method form of `_qpack_encode_string` using cached Huffman table."""
+        var result = List[UInt8]()
+        if use_huffman:
+            var huff = self._huffman_encode(s)
+            var len_bytes = qpack_encode_int(UInt64(len(huff)), 7)
+            len_bytes[0] |= 0x80
+            for i in range(len(len_bytes)):
+                result.append(len_bytes[i])
+            for i in range(len(huff)):
+                result.append(huff[i])
+        else:
+            var raw = s.as_bytes()
+            var len_bytes = qpack_encode_int(UInt64(len(raw)), 7)
+            for i in range(len(len_bytes)):
+                result.append(len_bytes[i])
+            for i in range(len(raw)):
+                result.append(raw[i])
+        return result^
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
         """Encode a header list as a QPACK field section block.
@@ -850,7 +925,7 @@ struct QpackEncoder(Copyable, Movable):
 
     def _encode_field(self, name: String, value: String) raises -> List[UInt8]:
         # 1. Try exact static match → Indexed Static Field Line (§4.5.2)
-        var exact = qpack_static_find(name, value)
+        var exact = self._static_find(name, value)
         if exact.__bool__():
             var idx = exact.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 6)
@@ -860,7 +935,7 @@ struct QpackEncoder(Copyable, Movable):
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
         # Format: 0 1 N T xxxx where N=0 (may-index), T=1 (static)
         # = 0101 xxxx = 0x50 with 4-bit index prefix
-        var name_match = qpack_static_find_name(name)
+        var name_match = self._static_find_name(name)
         if name_match.__bool__():
             var idx = name_match.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 4)
@@ -868,7 +943,7 @@ struct QpackEncoder(Copyable, Movable):
             var result = List[UInt8]()
             for i in range(len(idx_bytes)):
                 result.append(idx_bytes[i])
-            var val_bytes = _qpack_encode_string(value, self.use_huffman)
+            var val_bytes = self._encode_string(value, self.use_huffman)
             for i in range(len(val_bytes)):
                 result.append(val_bytes[i])
             return result^
