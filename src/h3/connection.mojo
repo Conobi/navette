@@ -621,9 +621,6 @@ struct H3Connection(Movable):
             if len(sbuf.buf) == 0:
                 self._stream_bufs[key] = sbuf^
                 break
-            # Make a separate copy for ByteReader (avoids lifetime conflict)
-            var buf_copy = List[UInt8](copy=sbuf.buf)
-            var r = ByteReader(Span(buf_copy))
             var ok = True
             var frame = H3RawFrame(UInt64(0), List[UInt8]())
             var consumed = 0
@@ -633,6 +630,11 @@ struct H3Connection(Movable):
                 if Int(self.profile_ptr) != 0:
                     t_start_parse = monotonic_us()
             try:
+                # ByteReader Span borrow ends with the try-block scope below;
+                # `parse_h3_frame.read_bytes` already extends into a fresh
+                # List, so the borrow on sbuf.buf is short-lived. Avoids
+                # the previous List[UInt8](copy=sbuf.buf) workaround.
+                var r = ByteReader(Span(sbuf.buf))
                 frame = parse_h3_frame(r)
                 consumed = r.pos
             except:
