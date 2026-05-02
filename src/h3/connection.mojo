@@ -325,24 +325,39 @@ struct H3Connection(Movable):
     def send_headers(
         mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool
     ) raises:
-        """QPACK-encode fields → HeadersFrame → send_stream_data."""
+        """QPACK-encode fields → H3 wire frame → send_stream_data.
+
+        Builds the wire bytes directly via ByteWriter, bypassing the
+        HeadersFrame intermediate (saves 2 List[UInt8] copies per call:
+        HeadersFrame.__init__ and H3RawFrame.__init__).
+        """
         var encoded = self._enc.encode(fields)
-        var hf = HeadersFrame(encoded)
-        var wire = hf.encode()
+        var w = ByteWriter()
+        varint_encode(w, H3_FRAME_HEADERS)
+        varint_encode(w, UInt64(len(encoded)))
+        w.write_bytes(Span(encoded))
+        var wire = w.finish()
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
     def send_data(
         mut self, stream_id: UInt64, data: List[UInt8], fin: Bool
     ) raises:
-        """Encode as DataFrame → send_stream_data. Empty data + fin=True sends FIN only."""
+        """Build H3 DATA wire frame → send_stream_data. Empty data + fin=True sends FIN only.
+
+        Builds the wire bytes directly via ByteWriter, bypassing the
+        DataFrame intermediate (saves 2 List[UInt8] copies per call).
+        """
         if len(data) == 0 and fin:
             var empty = List[UInt8]()
             self._quic.send_stream_data(stream_id, Span(empty), True)
             return
         if len(data) == 0:
             return
-        var df = DataFrame(data)
-        var wire = df.encode()
+        var w = ByteWriter()
+        varint_encode(w, H3_FRAME_DATA)
+        varint_encode(w, UInt64(len(data)))
+        w.write_bytes(Span(data))
+        var wire = w.finish()
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
