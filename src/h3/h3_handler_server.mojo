@@ -194,7 +194,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 break
             var ev = ev_opt.unsafe_take()
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                self._on_request(ev, now)
+                self._on_request(ev^, now)
             elif ev.kind == H3Event.DATA_RECEIVED:
                 self._on_data(ev^)
             elif ev.kind == H3Event.STREAM_ENDED:
@@ -202,30 +202,42 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             elif ev.kind == H3Event.STREAM_RESET:
                 self._on_stream_reset(ev)
 
-    def _on_request(mut self, ev: H3Event, now: UInt64) raises:
-        """Parse pseudo-headers from QPACK fields, build Request, invoke handler."""
+    def _on_request(mut self, var ev: H3Event, now: UInt64) raises:
+        """Parse pseudo-headers from QPACK fields, build Request, invoke handler.
+
+        Consumes the H3Event so each field's String name/value can be
+        moved out of the field list (via LIFO pop + struct-field transfer)
+        instead of copied. Eliminates ~2 String copies per request header
+        — meaningful at long-conn rates where typical requests carry
+        5-7 fields."""
+        var stream_id = ev.stream_id
+        var fields = ev^.consume_fields()
+
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
-            if name == ":method":
-                method_str = value
-            elif name == ":path":
-                path_str = value
-            elif name == ":authority":
-                authority_str = value
-            elif name == ":scheme":
+        # LIFO drain: pseudo-header order isn't position-bound (RFC 9114
+        # §4.2), so reversing iteration is conformant. consume_value
+        # moves the value String out of each popped field; the name is
+        # still read as a borrow before the consume.
+        while len(fields) > 0:
+            var field = fields.pop()
+            if field.name == ":method":
+                method_str = field^.consume_value()
+            elif field.name == ":path":
+                path_str = field^.consume_value()
+            elif field.name == ":authority":
+                authority_str = field^.consume_value()
+            elif field.name == ":scheme":
                 pass
             else:
-                user_headers.add(name, value)
+                user_headers.add(field.name.copy(), field^.consume_value())
 
         var req_headers = Headers()
         if authority_str != "":
-            req_headers.add("host", authority_str)
+            req_headers.add("host", authority_str^)
         for i in range(len(user_headers)):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
@@ -252,7 +264,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx.resp_writer = resp^
         ctx.detached = detached
         ctx_ptr.init_pointee_move(ctx^)
-        self._streams[Int(ev.stream_id)] = _H3StreamPtr(UInt64(Int(ctx_ptr)))
+        self._streams[Int(stream_id)] = _H3StreamPtr(UInt64(Int(ctx_ptr)))
 
     def _on_data(mut self, var ev: H3Event) raises:
         var sid = Int(ev.stream_id)

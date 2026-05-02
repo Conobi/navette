@@ -28,6 +28,11 @@ struct QpackHeaderField(Copyable, Movable):
         self.name = copy_from.name
         self.value = copy_from.value
 
+    def consume_value(deinit self) -> String:
+        """Consume self and return the value String. Used by H3HandlerServer's
+        _on_request to move the value out of a popped field instead of copying."""
+        return self.value^
+
 
 # QPACK static table — RFC 9204 Appendix A (99 entries, indices 0–98)
 comptime QPACK_STATIC_TABLE_SIZE: Int = 99

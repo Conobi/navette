@@ -93,6 +93,9 @@ struct H3Event(Copyable, Movable):
     def consume_data(deinit self) -> List[UInt8]:
         return self.data^
 
+    def consume_fields(deinit self) -> List[QpackHeaderField]:
+        return self.fields^
+
 
 # ---------------------------------------------------------------------------
 # _H3StreamBuf — per-stream byte accumulator (Copyable for Dict storage)
