@@ -1175,11 +1175,14 @@ struct QpackDecoder(Copyable, Movable):
                     # Static table reference — O(1) read from cached table.
                     if idx < 0 or idx >= QPACK_STATIC_TABLE_SIZE:
                         raise "QPACK: static table index out of range: " + String(idx)
+                    # ref binding skips the per-call entry.copy() (2 String
+                    # clones); the constructor still copies into the new
+                    # QpackHeaderField fields.
                     if Int(self.shared_tables_ptr) != 0:
-                        var entry = self.shared_tables_ptr[].static_table[idx].copy()
+                        ref entry = self.shared_tables_ptr[].static_table[idx]
                         result.append(QpackHeaderField(entry.name, entry.value))
                     else:
-                        var entry = self.static_table[idx].copy()
+                        ref entry = self.static_table[idx]
                         result.append(QpackHeaderField(entry.name, entry.value))
                 else:
                     raise "QPACK: dynamic table not supported (indexed)"
@@ -1198,10 +1201,10 @@ struct QpackDecoder(Copyable, Movable):
                     if idx < 0 or idx >= QPACK_STATIC_TABLE_SIZE:
                         raise "QPACK: static table index out of range: " + String(idx)
                     if Int(self.shared_tables_ptr) != 0:
-                        var entry = self.shared_tables_ptr[].static_table[idx].copy()
+                        ref entry = self.shared_tables_ptr[].static_table[idx]
                         result.append(QpackHeaderField(entry.name, value))
                     else:
-                        var entry = self.static_table[idx].copy()
+                        ref entry = self.static_table[idx]
                         result.append(QpackHeaderField(entry.name, value))
                 else:
                     raise "QPACK: dynamic table not supported (literal name ref)"
@@ -1215,9 +1218,8 @@ struct QpackDecoder(Copyable, Movable):
                 var name_len = Int(name_len_r.value)
                 if pos + name_len > len(data):
                     raise "QPACK: §4.5.6 name data truncated"
-                var name_raw = List[UInt8]()
-                for j in range(name_len):
-                    name_raw.append(data[pos + j])
+                var name_raw = List[UInt8](capacity=name_len)
+                name_raw.extend(Span(data)[pos:pos + name_len])
                 pos += name_len
                 var field_name: String
                 if name_huffman:
