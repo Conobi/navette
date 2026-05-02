@@ -575,6 +575,19 @@ struct HuffDecodeTable(Copyable, Movable):
         self.output_byte = copy_from.output_byte.copy()
         self.flags = copy_from.flags.copy()
 
+    @staticmethod
+    fn empty() -> Self:
+        """Construct an unbuilt placeholder. Used when a shared-pointer
+        owner provides the real table externally; the local fields stay
+        as empty Lists (no heap allocation)."""
+        return Self(_skip_build=True)
+
+    def __init__(out self, *, _skip_build: Bool):
+        # Bypass the 4096-entry build; for shared-pointer mode.
+        self.next_state = List[UInt16]()
+        self.output_byte = List[UInt8]()
+        self.flags = List[UInt8]()
+
 
 def huffman_decode_sm(data: List[UInt8], read tbl: HuffDecodeTable) raises -> String:
     """4-bit state-machine Huffman decoder. ~89× faster than `huffman_decode`.
@@ -987,14 +1000,32 @@ struct QpackDecoder(Copyable, Movable):
 
     var static_table: List[QpackStaticEntry]
     var huff_decode: HuffDecodeTable
+    # When non-null, points at a process-shared HuffDecodeTable (allocated
+    # once at server startup). The local `huff_decode` field is unbuilt
+    # in that case (HuffDecodeTable.empty()) — saves the ~25-30k op build
+    # per QpackDecoder __init__, which dominates short-conn per-connection
+    # cost. Mojo 0.26.2 lacks module-level mutable state, so the pointer
+    # is threaded explicitly through the construction chain.
+    var huff_decode_ptr: UnsafePointer[HuffDecodeTable, MutAnyOrigin]
 
     def __init__(out self):
+        # Default path: build the table locally. Used by tests + clients +
+        # any caller that hasn't been migrated to the shared-pointer path.
         self.static_table = _qpack_static_table()
         self.huff_decode = HuffDecodeTable()
+        self.huff_decode_ptr = UnsafePointer[HuffDecodeTable, MutAnyOrigin]()
+
+    def __init__(out self, *, shared_huff_decode: UnsafePointer[HuffDecodeTable, MutAnyOrigin]):
+        # Shared path: skip the 4096-entry HuffDecodeTable build; defer to
+        # the externally-allocated table via `shared_huff_decode`.
+        self.static_table = _qpack_static_table()
+        self.huff_decode = HuffDecodeTable.empty()
+        self.huff_decode_ptr = shared_huff_decode
 
     def __init__(out self, *, copy_from: Self):
         self.static_table = copy_from.static_table.copy()
         self.huff_decode = HuffDecodeTable(copy_from=copy_from.huff_decode)
+        self.huff_decode_ptr = copy_from.huff_decode_ptr
 
     def _decode_string(self, data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
         """Method form of `_qpack_decode_string` using the cached state-machine
@@ -1011,6 +1042,8 @@ struct QpackDecoder(Copyable, Movable):
         raw.extend(Span(data)[pos:pos + length])
         pos += length
         if h_bit:
+            if Int(self.huff_decode_ptr) != 0:
+                return _StrDecodeResult(huffman_decode_sm(raw, self.huff_decode_ptr[]), pos)
             return _StrDecodeResult(huffman_decode_sm(raw, self.huff_decode), pos)
         return _StrDecodeResult(String(unsafe_from_utf8=raw), pos)
 

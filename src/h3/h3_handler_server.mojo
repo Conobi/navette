@@ -11,7 +11,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from src.quic.connection import QuicConnection
 from src.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from src.h3.connection import H3Connection, H3Event
-from src.h3.qpack import QpackHeaderField
+from src.h3.qpack import QpackHeaderField, HuffDecodeTable
 from src.http.handler import (
     StreamHandler,
     Capabilities,
@@ -98,8 +98,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var handler: Self.H,
         profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
             = UnsafePointer[AcceptProfile, MutAnyOrigin](),
+        shared_huff_decode: UnsafePointer[HuffDecodeTable, MutAnyOrigin]
+            = UnsafePointer[HuffDecodeTable, MutAnyOrigin](),
     ) raises:
-        self._h3 = H3Connection.server(quic^)
+        # When `shared_huff_decode` is non-null, the QPACK decoder skips
+        # its 4096-entry HuffDecodeTable build and uses the externally
+        # allocated table — saves ~25-30k operations per new H3 connection,
+        # the dominant short-conn cost.
+        self._h3 = H3Connection.server(quic^, shared_huff_decode=shared_huff_decode)
         self.handler = handler^
         self._streams = Dict[Int, _H3StreamPtr]()
         self.profile_ptr = profile_ptr

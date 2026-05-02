@@ -30,7 +30,7 @@ from src.h3.error import (
     H3_FRAME_UNEXPECTED,
     H3_STREAM_CREATION_ERROR,
 )
-from src.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField
+from src.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField, HuffDecodeTable
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,12 @@ struct H3Connection(Movable):
     var _dec:                        QpackDecoder
     var profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
 
-    def __init__(out self, var quic: QuicConnection, is_server: Bool):
+    def __init__(
+        out self,
+        var quic: QuicConnection,
+        is_server: Bool,
+        shared_huff_decode: UnsafePointer[HuffDecodeTable, MutAnyOrigin] = UnsafePointer[HuffDecodeTable, MutAnyOrigin](),
+    ):
         self._quic = quic^
         self._is_server = is_server
         self._stream_bufs = Dict[Int, _H3StreamBuf]()
@@ -161,7 +166,10 @@ struct H3Connection(Movable):
         self._goaway_sent = Optional[UInt64]()
         self._peer_goaway_sid = Optional[UInt64]()
         self._enc = QpackEncoder(False)
-        self._dec = QpackDecoder()
+        if Int(shared_huff_decode) != 0:
+            self._dec = QpackDecoder(shared_huff_decode=shared_huff_decode)
+        else:
+            self._dec = QpackDecoder()
         self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin]()
 
     def __init__(out self, *, deinit take: Self):
@@ -185,14 +193,24 @@ struct H3Connection(Movable):
         self.profile_ptr = take.profile_ptr
 
     @staticmethod
-    def server(var quic: QuicConnection) raises -> H3Connection:
-        """Wrap a server-side QuicConnection."""
-        return H3Connection(quic^, True)
+    def server(
+        var quic: QuicConnection,
+        shared_huff_decode: UnsafePointer[HuffDecodeTable, MutAnyOrigin] = UnsafePointer[HuffDecodeTable, MutAnyOrigin](),
+    ) raises -> H3Connection:
+        """Wrap a server-side QuicConnection. If `shared_huff_decode` is
+        non-null, the QPACK decoder skips its 4096-entry table build
+        and uses the externally-allocated table — meaningful at
+        connection-creation rates (short-conn) where the per-conn build
+        dominates."""
+        return H3Connection(quic^, True, shared_huff_decode)
 
     @staticmethod
-    def client(var quic: QuicConnection) raises -> H3Connection:
-        """Wrap a client-side QuicConnection."""
-        return H3Connection(quic^, False)
+    def client(
+        var quic: QuicConnection,
+        shared_huff_decode: UnsafePointer[HuffDecodeTable, MutAnyOrigin] = UnsafePointer[HuffDecodeTable, MutAnyOrigin](),
+    ) raises -> H3Connection:
+        """Wrap a client-side QuicConnection. See `server` for shared_huff_decode."""
+        return H3Connection(quic^, False, shared_huff_decode)
 
     def is_established(self) -> Bool:
         return self._quic.is_established()
