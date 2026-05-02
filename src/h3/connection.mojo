@@ -527,19 +527,20 @@ struct H3Connection(Movable):
 
         var fin = recv_result[1]
 
-        # Append new bytes to accumulator (bulk extend; skips redundant
-        # `recv_result[0].copy()` and byte-by-byte append loop — saves
-        # one List allocation + replaces O(n) loop with memcpy).
+        # Single load + single store of the stream buf — was previously
+        # three separate Dict-copy/store pairs (sbuf, sbuf2, sbuf3) on
+        # the bench's bidi path, which copied the entire _H3StreamBuf
+        # (including its List[UInt8] buf) twice for no benefit. Now: one
+        # load, mutate locally through both branches, store once at the
+        # end (or before each early-return).
         var sbuf = self._stream_bufs[key].copy()
         sbuf.buf.extend(Span(recv_result[0]))
-        self._stream_bufs[key] = sbuf^
 
         # Handle unidirectional stream type byte (first byte = stream type)
-        var sbuf2 = self._stream_bufs[key].copy()
-        if sbuf2.is_uni:
-            if not sbuf2.type_byte:
-                if len(sbuf2.buf) == 0:
-                    self._stream_bufs[key] = sbuf2^
+        if sbuf.is_uni:
+            if not sbuf.type_byte:
+                if len(sbuf.buf) == 0:
+                    self._stream_bufs[key] = sbuf^
                     # B3a + B1 exit (return path 1 — UNI empty buf).
                     @parameter
                     if PROFILE_ACCEPT:
@@ -547,12 +548,11 @@ struct H3Connection(Movable):
                             self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
-                var type_byte = sbuf2.buf[0]
+                var type_byte = sbuf.buf[0]
                 var new_buf = List[UInt8]()
-                new_buf.extend(Span(sbuf2.buf)[1:])
-                sbuf2.buf = new_buf^
-                sbuf2.type_byte = Optional[UInt8](type_byte)
-                self._stream_bufs[key] = sbuf2^
+                new_buf.extend(Span(sbuf.buf)[1:])
+                sbuf.buf = new_buf^
+                sbuf.type_byte = Optional[UInt8](type_byte)
                 if type_byte == UInt8(0x00):
                     self._peer_ctrl_sid = Optional[UInt64](stream_id)
                 elif type_byte == UInt8(0x02):
@@ -560,6 +560,7 @@ struct H3Connection(Movable):
                 elif type_byte == UInt8(0x03):
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                 else:
+                    self._stream_bufs[key] = sbuf^
                     # B3a + B1 exit (return path 2 — unknown UNI type).
                     @parameter
                     if PROFILE_ACCEPT:
@@ -567,13 +568,10 @@ struct H3Connection(Movable):
                             self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
-            else:
-                self._stream_bufs[key] = sbuf2^
 
         # Reject server-initiated bidi from peer (RFC 9114 §6.1)
-        var sbuf3 = self._stream_bufs[key].copy()
-        if not sbuf3.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
-            self._stream_bufs[key] = sbuf3^
+        if not sbuf.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
+            self._stream_bufs[key] = sbuf^
             self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
             # B3a + B1 exit (return path 3 — bidi rejection).
             @parameter
@@ -582,7 +580,7 @@ struct H3Connection(Movable):
                     self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                     self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
             return
-        self._stream_bufs[key] = sbuf3^
+        self._stream_bufs[key] = sbuf^
 
         # Determine if this is the peer control stream
         var is_ctrl = False
