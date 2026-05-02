@@ -587,9 +587,15 @@ struct SendBuf(Copyable, Movable):
             if trim > len(self.data):
                 trim = len(self.data)
             if trim > 0:
-                var new_data = List[UInt8](capacity=len(self.data) - trim)
-                new_data.extend(Span(self.data)[trim:])
-                self.data = new_data^
+                # Fast path: full-buffer ack (typical when an entire response
+                # is acked at once). .clear() truncates len without freeing
+                # capacity, so subsequent writes may reuse the allocation.
+                if trim == len(self.data):
+                    self.data.clear()
+                else:
+                    var new_data = List[UInt8](capacity=len(self.data) - trim)
+                    new_data.extend(Span(self.data)[trim:])
+                    self.data = new_data^
                 self.offset = self.offset + UInt64(trim)
 
         # Check fin_acked
