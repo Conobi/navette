@@ -2395,8 +2395,9 @@ struct QuicConnection(Movable):
         """Apply ACK side-effects for stream-layer frames in the acked packet."""
         if pn not in self.app_frames_sent:
             return
-        var records = self.app_frames_sent[pn].copy()
-        _ = self.app_frames_sent.pop(pn)
+        # pop returns the entry by-move; previously did .copy() then pop
+        # which clones the records list then frees the original.
+        var records = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
             var rec = SentStreamFrame(other=records[i])
             if rec.kind == SSF_STREAM:
@@ -2405,10 +2406,11 @@ struct QuicConnection(Movable):
                     continue
                 var stream = self.stream_map.get_stream(key)
                 if stream.send_buf:
-                    var sb = stream.send_buf.value().copy()
+                    # unsafe_take + put-back avoids the SendBuf full copy.
+                    var sb = stream.send_buf.unsafe_take()
                     sb.on_ack(rec.offset, rec.length)
                     var fully = sb.is_fully_acked()
-                    stream.send_buf = sb^
+                    stream.send_buf = Optional[SendBuf](sb^)
                     if fully and stream.send_state:
                         var ss = stream.send_state.value()
                         if ss == SEND_DATA_SENT:
