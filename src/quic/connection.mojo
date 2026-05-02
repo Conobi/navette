@@ -1230,13 +1230,14 @@ struct QuicConnection(Movable):
                 if key in self.stream_map.streams:
                     var stream = self.stream_map.get_stream(key)
                     if stream.fc_send:
-                        var fc = stream.fc_send.value().copy()
+                        # unsafe_take + put-back avoids the FlowControl clone.
+                        var fc = stream.fc_send.unsafe_take()
                         var old_limit = fc.limit
                         fc.ensure_limit(msd.maximum)
                         var grew = fc.limit > old_limit
                         if grew:
                             fc.blocked_at = UInt64(0)   # allow re-emission at new limit
-                        stream.fc_send = fc^
+                        stream.fc_send = Optional[FlowControl](fc^)
                         self.stream_map.set_stream(key, stream^)
                         if grew:
                             self.events.append(QuicEvent.stream_writable(msd.stream_id))
