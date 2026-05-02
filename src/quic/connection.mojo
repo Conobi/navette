@@ -2425,7 +2425,14 @@ struct QuicConnection(Movable):
     # ── Application-space frame ACK/loss handling (M3c) ─────────────
 
     def _on_app_pkt_acked(mut self, pn: Int) raises:
-        """Apply ACK side-effects for stream-layer frames in the acked packet."""
+        """Apply ACK side-effects for stream-layer frames in the acked packet.
+
+        Sourced by per_pkt_us.frame_parse 18.5% wall-clock — wraps the
+        QUIC frame parse + dispatch loop in recv_from_buffer; this
+        function fires per acked record per ACK = per inbound packet.
+        Mutate the Stream slot in place via Dict ref binding instead of
+        get_stream/set_stream round-trip.
+        """
         if pn not in self.app_frames_sent:
             return
         # pop returns the entry by-move; previously did .copy() then pop
@@ -2437,7 +2444,8 @@ struct QuicConnection(Movable):
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
                     continue
-                var stream = self.stream_map.get_stream(key)
+                var should_cleanup = False
+                ref stream = self.stream_map.streams[key]
                 if stream.send_buf:
                     # unsafe_take + put-back avoids the SendBuf full copy.
                     var sb = stream.send_buf.unsafe_take()
@@ -2448,20 +2456,22 @@ struct QuicConnection(Movable):
                         var ss = stream.send_state.value()
                         if ss == SEND_DATA_SENT:
                             stream.send_state = Optional[UInt8](SEND_DATA_RECVD)
-                    self.stream_map.set_stream(key, stream^)
+                    should_cleanup = True
+                # ref's last use is the line above; ASAP-destruction
+                # releases the borrow before maybe_cleanup may pop the slot.
+                if should_cleanup:
                     _ = self.stream_map.maybe_cleanup(key)
-                else:
-                    self.stream_map.set_stream(key, stream^)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
                     continue
-                var stream = self.stream_map.get_stream(key)
+                ref stream = self.stream_map.streams[key]
                 if stream.send_state:
                     var ss = stream.send_state.value()
                     if ss == SEND_RESET_SENT:
                         stream.send_state = Optional[UInt8](SEND_RESET_RECVD)
-                self.stream_map.set_stream(key, stream^)
+                # ref's last use is the line above; ASAP-destruction
+                # releases the borrow before maybe_cleanup.
                 _ = self.stream_map.maybe_cleanup(key)
             elif rec.kind == SSF_STOP_SENDING:
                 # STOP_SENDING ACK does not change recv state; peer must send
@@ -2481,48 +2491,52 @@ struct QuicConnection(Movable):
                 pass
 
     def _on_app_pkt_lost(mut self, pn: Int) raises:
-        """Re-queue stream-layer frames for retransmission on packet loss."""
+        """Re-queue stream-layer frames for retransmission on packet loss.
+
+        Same ref-bind / pop-by-move pattern as _on_app_pkt_acked. Lost
+        path is rare on healthy networks but the shape was a good copy
+        target for future reasoners.
+        """
         if pn not in self.app_frames_sent:
             return
-        var records = self.app_frames_sent[pn].copy()
-        _ = self.app_frames_sent.pop(pn)
+        # pop returns the entry by-move; the prior copy() + pop pattern
+        # cloned the records list then freed the original.
+        var records = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
             var rec = SentStreamFrame(other=records[i])
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
                     continue
-                var stream = self.stream_map.get_stream(key)
+                var has_pending = False
+                ref stream = self.stream_map.streams[key]
                 if stream.send_buf:
-                    var sb = stream.send_buf.value().copy()
+                    # unsafe_take + put-back avoids the SendBuf full copy.
+                    var sb = stream.send_buf.unsafe_take()
                     sb.on_loss(rec.offset, rec.length)
-                    var has_pending = sb.has_pending()
-                    stream.send_buf = sb^
-                    self.stream_map.set_stream(key, stream^)
-                    if has_pending:
-                        self.stream_map.add_sendable(key)
-                else:
-                    self.stream_map.set_stream(key, stream^)
+                    has_pending = sb.has_pending()
+                    stream.send_buf = Optional[SendBuf](sb^)
+                # ref released by ASAP-destruction; add_sendable mutates
+                # stream_map.sendable_ids only.
+                if has_pending:
+                    self.stream_map.add_sendable(key)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
+                    ref stream = self.stream_map.streams[key]
                     stream.needs_reset_stream = True
-                    self.stream_map.set_stream(key, stream^)
             elif rec.kind == SSF_STOP_SENDING:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
+                    ref stream = self.stream_map.streams[key]
                     stream.needs_stop_sending = True
-                    self.stream_map.set_stream(key, stream^)
             elif rec.kind == SSF_MAX_DATA:
                 self.stream_map.needs_max_data = True
             elif rec.kind == SSF_MAX_STREAM_DATA:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
+                    ref stream = self.stream_map.streams[key]
                     stream.needs_max_stream_data = True
-                    self.stream_map.set_stream(key, stream^)
             elif rec.kind == SSF_MAX_STREAMS_BIDI:
                 self.stream_map.needs_max_streams_bidi = True
             elif rec.kind == SSF_MAX_STREAMS_UNI:
