@@ -362,8 +362,7 @@ struct RecvBuf(Copyable, Movable):
         var n = Int(deliver_end - self.read_offset)
 
         result = List[UInt8](capacity=n)
-        for i in range(skip, skip + n):
-            result.append(self.seg_data[0][i])
+        result.extend(Span(self.seg_data[0])[skip:skip + n])
 
         self.read_offset = deliver_end
 

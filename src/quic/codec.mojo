@@ -52,8 +52,7 @@ struct ByteReader[origin: Origin]:
         if self.pos + n > len(self._buf):
             raise "ByteReader: underflow reading " + String(n) + " bytes"
         var result = List[UInt8](capacity=n)
-        for i in range(n):
-            result.append(self._buf[self.pos + i])
+        result.extend(self._buf[self.pos:self.pos + n])
         self.pos += n
         return result^
 

@@ -719,8 +719,7 @@ struct QuicConnection(Movable):
             # 1. Copy remaining bytes for parse_packet_header (needs Span
             # from List — known remaining copy, to be removed later).
             var remaining_list = List[UInt8](capacity=remaining_len)
-            for i in range(remaining_len):
-                remaining_list.append(remaining_ptr[i])
+            remaining_list.extend(Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len))
 
             # 2. Parse packet header.
             @parameter
@@ -824,8 +823,7 @@ struct QuicConnection(Movable):
                 # Copy plaintext into list for ByteReader (known remaining
                 # copy — ByteReader needs Span from List).
                 var pt_list = List[UInt8](capacity=plaintext_len)
-                for i in range(plaintext_len):
-                    pt_list.append(pkt_ptr[header_len + i])
+                pt_list.extend(Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len))
                 @parameter
                 if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
