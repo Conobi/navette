@@ -2754,10 +2754,13 @@ struct QuicConnection(Movable):
         if (ss == SEND_DATA_SENT or ss == SEND_DATA_RECVD
                 or ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD):
             raise "STREAM_STATE_ERROR: send side terminal or FIN already queued"
-        var sb = stream.send_buf.value().copy()
+        # unsafe_take + put-back avoids the per-call SendBuf copy that
+        # `Optional.value().copy()` forces. Per-conn the Optional stays
+        # populated end-to-end, and the take/put pair is balanced.
+        var sb = stream.send_buf.unsafe_take()
         sb.write(data, fin)
         var has_pending = sb.has_pending()
-        stream.send_buf = sb^
+        stream.send_buf = Optional[SendBuf](sb^)
         self.stream_map.set_stream(key, stream^)
         if has_pending:
             self.stream_map.add_sendable(key)
@@ -2776,14 +2779,16 @@ struct QuicConnection(Movable):
         var stream = self.stream_map.get_stream(key)
         if not stream.recv_buf or not stream.fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
-        var rb = stream.recv_buf.value().copy()
+        # unsafe_take + put-back avoids per-call RecvBuf + FlowControl
+        # copies that Optional.value().copy() would force.
+        var rb = stream.recv_buf.unsafe_take()
         # Drain into a caller-owned List instead of getting a Tuple back —
         # Mojo 0.26.2 can't move out of tuple elements so the tuple form
         # would force a per-call List[UInt8] copy of the drained bytes.
         var data = List[UInt8]()
         var fin_reached = rb.read_into(stream.fin_offset, data)
         var drained = UInt64(len(data))
-        var fc = stream.fc_recv.value().copy()
+        var fc = stream.fc_recv.unsafe_take()
         if drained > 0:
             fc.add_consumed(drained)
             self.stream_map.conn_fc_recv.add_consumed(drained)
@@ -2791,8 +2796,8 @@ struct QuicConnection(Movable):
             stream.needs_max_stream_data = True
         if self.stream_map.conn_fc_recv.should_update():
             self.stream_map.needs_max_data = True
-        stream.recv_buf = rb^
-        stream.fc_recv = fc^
+        stream.recv_buf = Optional[RecvBuf](rb^)
+        stream.fc_recv = Optional[FlowControl](fc^)
         if stream.recv_state:
             var rs = stream.recv_state.value()
             if rs == RECV_DATA_RECVD and fin_reached:
