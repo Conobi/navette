@@ -5,6 +5,7 @@
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
+from std.collections.deque import Deque
 from std.memory import Span, UnsafePointer
 
 from src.quic.connection import QuicConnection, QuicEvent
@@ -128,7 +129,7 @@ struct H3Connection(Movable):
     var _quic:                       QuicConnection
     var _is_server:                  Bool
     var _stream_bufs:                Dict[Int, _H3StreamBuf]
-    var _h3_events:                  List[H3Event]
+    var _h3_events:                  Deque[H3Event]
     var _local_ctrl_sid:             Optional[UInt64]
     var _local_qenc_sid:             Optional[UInt64]
     var _local_qdec_sid:             Optional[UInt64]
@@ -153,7 +154,7 @@ struct H3Connection(Movable):
         self._quic = quic^
         self._is_server = is_server
         self._stream_bufs = Dict[Int, _H3StreamBuf]()
-        self._h3_events = List[H3Event]()
+        self._h3_events = Deque[H3Event]()
         self._local_ctrl_sid = Optional[UInt64]()
         self._local_qenc_sid = Optional[UInt64]()
         self._local_qdec_sid = Optional[UInt64]()
@@ -228,15 +229,12 @@ struct H3Connection(Movable):
     def _is_request_stream(self, stream_id: UInt64) -> Bool:
         return (stream_id & UInt64(0x02)) == 0
 
-    def poll_event(mut self) -> Optional[H3Event]:
-        """Return the next pending H3Event, or None if the queue is empty."""
+    def poll_event(mut self) raises -> Optional[H3Event]:
+        """Return the next pending H3Event in FIFO order. O(1) via Deque
+        popleft — was O(N) per call (N² to drain) when backed by List."""
         if len(self._h3_events) == 0:
             return Optional[H3Event]()
-        var ev = H3Event(other=self._h3_events[0])
-        var rest = List[H3Event]()
-        for i in range(1, len(self._h3_events)):
-            rest.append(H3Event(other=self._h3_events[i]))
-        self._h3_events = rest^
+        var ev = self._h3_events.popleft()
         return Optional[H3Event](ev^)
 
     # --- Transport API -------------------------------------------------------
