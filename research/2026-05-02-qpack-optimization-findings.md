@@ -205,3 +205,37 @@ This is the next optimization. Long-conn win locks in the bulk of the gap; short
 Current: 41% of TQUIC long-conn. Remaining 59% likely lives in other parts of `_drain_stream` that Q-drain-subleg attributed to `qpack_decode_us` but which are now down to ~3 μs/call (below noise floor) — we need a new sub-leg pass to find what's now dominant.
 
 Alternative: profile the actual `quic_post_recv_us` bracket (Q1's ~22M μs / 30s). After v6, what fraction is now in the FFI receive path vs in `_drain_stream`? If FFI is the new dominant, that's the next target.
+
+
+## Update: v7 — encoder-side caching SHIPPED
+
+**Commit:** `4edb39a` on `perf/qpack-decode-fast`.
+
+After v6 shipped state-machine Huffman DECODER, the SIGINT sidecar profile shifted dramatically: `drain_stream_us_total` dropped from 22M → 3.7M μs (-83%), `qpack_decode_us` from 21M → 1.3M μs (-94%), and the new dominant H3 phase became **`drain_resp` (encoder side) at 13.2M μs** (38% of busy). The encoder still:
+- Rebuilt the static table on every `qpack_static_find` / `qpack_static_find_name` call
+- Rebuilt the 256-entry Huffman encode table on every `huffman_encode` call
+
+v7 caches both tables on `QpackEncoder` (mirroring `QpackDecoder`'s pattern), with private methods `_huffman_encode` / `_static_find` / `_static_find_name` / `_encode_string`.
+
+### Cumulative results
+
+| Version | Long-conn RPS | % of TQUIC | Δ vs main |
+|---|---|---|---|
+| main (Q1 + Q3 shipped) | 14,847 | 16.2% | — |
+| v4 (decoder static-table cache) | 15,403 | 17.7% | +3.6% |
+| v6 (state-machine Huffman decoder) | 36,007 | 41.4% | **+143%** |
+| **v7 (encoder caching)** | **40,776** | **46.8%** | **+175%** |
+
+Closing 30.6 percentage points of the TQUIC gap in 3 commits.
+
+Binary size: 805 KB → 809 KB (+4 KB total). Conformance: 36/36 pass throughout. Src tests: 72/72 pass throughout.
+
+## Next bottleneck (post-v7)
+
+After v7, the long-conn `drain_resp` should drop substantially. Need a fresh SIGINT sidecar to identify:
+- `drain_resp` new size vs `post_recv` vs `dispatch`
+- Whether QUIC FFI calls (recv_stream_data, send_stream_data) are now dominant
+- Whether IO-loop work (read_pkt, send_pkts) is the bottleneck
+- Whether per-flush bookkeeping (Dict ops, per-conn state) dominates
+
+The trajectory `+143% → +175%` suggests there's still room. Realistic projection: another ~50% lift from fixing `drain_resp` internals, getting to ~60-70% of TQUIC. Beyond that, FFI batching (send_stream_data at the wire layer) is likely the next structural change.
