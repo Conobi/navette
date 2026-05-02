@@ -548,7 +548,8 @@ struct SendBuf(Copyable, Movable):
         if chunk_size == 0 and not include_fin:
             return None
 
-        # Build frame data
+        # Build frame data — copy out of self.data (which is retained for
+        # retransmission until on_ack trims it).
         var frame_data = List[UInt8](capacity=chunk_size)
         var buf_start = Int(frame_start - self.offset)
         frame_data.extend(Span(self.data)[buf_start:buf_start + chunk_size])
