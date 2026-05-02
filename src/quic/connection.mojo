@@ -951,8 +951,13 @@ struct QuicConnection(Movable):
             for i in range(len(new_ids)):
                 self.events.append(QuicEvent.stream_opened(new_ids[i]))
 
-        # 2. Get stream (returns a copy).
-        var stream = self.stream_map.get_stream(key)
+        # 2. Mutate the live Stream slot in place via Dict ref binding —
+        # avoids the per-frame Stream deep clone that get_stream/set_stream
+        # round-trip would force. ~1 STREAM frame per inbound packet at
+        # ~17k pkt/s long-conn.
+        var had_readable = False
+        var new_bytes = UInt64(0)
+        ref stream = self.stream_map.streams[key]
 
         # 3. Validate direction: no incoming STREAM on a local uni stream.
         if not stream.is_bidi and stream.is_local:
@@ -980,7 +985,7 @@ struct QuicConnection(Movable):
         if not stream.recv_buf:
             raise "internal: missing recv_buf"
         var rb = stream.recv_buf.unsafe_take()
-        var new_bytes = rb.write_owned(
+        new_bytes = rb.write_owned(
             offset, stream_frame^.consume_data(), fin, stream.fin_offset
         )
 
@@ -998,12 +1003,9 @@ struct QuicConnection(Movable):
         self.stream_map.conn_fc_recv.add_received(new_bytes)
 
         # 10. Emit readable event if data is now deliverable.
-        var had_readable = rb.has_readable()
+        had_readable = rb.has_readable()
         stream.recv_buf = Optional[RecvBuf](rb^)
         stream.fc_recv = Optional[FlowControl](fc_r^)
-
-        if had_readable:
-            self.events.append(QuicEvent.stream_readable(stream_id))
 
         # 11. Recv-state transitions on FIN.
         if fin:
@@ -1016,7 +1018,11 @@ struct QuicConnection(Movable):
                 if stream.recv_buf.value().is_complete(stream.fin_offset):
                     stream.recv_state = Optional[UInt8](RECV_DATA_RECVD)
 
-        self.stream_map.set_stream(key, stream^)
+        # ref's last use is the line above; ASAP-destruction frees the
+        # borrow before events.append below (which mutates self.events,
+        # not self.stream_map.streams, so it would be safe regardless).
+        if had_readable:
+            self.events.append(QuicEvent.stream_readable(stream_id))
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
         """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
@@ -2757,11 +2763,18 @@ struct QuicConnection(Movable):
     def send_stream_data(
         mut self, stream_id: UInt64, data: Span[UInt8, _], fin: Bool
     ) raises:
-        """Queue data for sending on a stream (and optionally mark FIN)."""
+        """Queue data for sending on a stream (and optionally mark FIN).
+
+        Symmetric write-side counterpart to recv_stream_data — fires
+        ≥2× per response (HEADERS + DATA). Mutate the live Stream slot
+        in place via Dict ref binding instead of get_stream/set_stream
+        round-trip; eliminates one deep Stream clone per call.
+        """
         var key = Int(stream_id)
         if key not in self.stream_map.streams:
             raise "unknown stream"
-        var stream = self.stream_map.get_stream(key)
+        var has_pending: Bool
+        ref stream = self.stream_map.streams[key]
         if not stream.send_state or not stream.send_buf:
             raise "STREAM_STATE_ERROR: no send side"
         var ss = stream.send_state.value()
@@ -2773,9 +2786,11 @@ struct QuicConnection(Movable):
         # populated end-to-end, and the take/put pair is balanced.
         var sb = stream.send_buf.unsafe_take()
         sb.write(data, fin)
-        var has_pending = sb.has_pending()
+        has_pending = sb.has_pending()
         stream.send_buf = Optional[SendBuf](sb^)
-        self.stream_map.set_stream(key, stream^)
+        # ref's last use was the line above; ASAP-destruction releases
+        # the borrow before add_sendable mutates the sendable_ids list
+        # (which lives on stream_map alongside but separate from streams).
         if has_pending:
             self.stream_map.add_sendable(key)
 
