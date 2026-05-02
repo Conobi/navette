@@ -78,12 +78,13 @@ struct Headers(Copyable, Movable, Sized):
         self._names.append(name^)
         self._values.append(value^)
 
-    def set(mut self, name: String, value: String):
-        """Set a header, replacing all existing values for this name."""
+    def set(mut self, name: String, var value: String):
+        """Set a header, replacing all existing values for this name.
+        Value is taken by-transfer (see `add` doc)."""
         var lower_name = _to_lower(name)
         self.remove(lower_name)
-        self._names.append(lower_name)
-        self._values.append(value)
+        self._names.append(lower_name^)
+        self._values.append(value^)
 
     def remove(mut self, name: String):
         """Remove all headers with the given name (case-insensitive)."""
