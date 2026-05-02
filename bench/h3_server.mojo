@@ -741,7 +741,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         var now = monotonic_us()
 
         for i in range(len(self.pending_rx)):
-            var pd = self.pending_rx[i].copy()
+            ref pd = self.pending_rx[i]
             var t_pop_dispatch_start: UInt64 = 0
             @parameter
             if PROFILE_ACCEPT:
