@@ -2166,10 +2166,16 @@ struct QuicConnection(Movable):
             var ss = stream.send_state.value()
             if ss != SEND_READY and ss != SEND_SEND:
                 continue
-            var sb = stream.send_buf.value().copy()
-            var fc = stream.fc_send.value().copy()
+            # unsafe_take + put-back avoids per-stream SendBuf + FlowControl
+            # full clones in the outgoing-frame loop (fires per sendable
+            # stream per send() call).
+            var sb = stream.send_buf.unsafe_take()
+            var fc = stream.fc_send.unsafe_take()
             var stream_avail = fc.available()
             if stream_avail == 0 and not (sb.fin and not sb.fin_offset):
+                stream.send_buf = Optional[SendBuf](sb^)
+                stream.fc_send = Optional[FlowControl](fc^)
+                self.stream_map.set_stream(sid, stream^)
                 continue
             var limit = Int(conn_avail)
             if Int(stream_avail) < limit:
@@ -2181,12 +2187,13 @@ struct QuicConnection(Movable):
             var maybe_frame = sb.make_frame(stream.id, limit)
             if not maybe_frame:
                 # Nothing to send from this stream; drop from sendable list.
-                stream.send_buf = sb^
-                stream.fc_send = fc^
+                stream.send_buf = Optional[SendBuf](sb^)
+                stream.fc_send = Optional[FlowControl](fc^)
                 self.stream_map.set_stream(sid, stream^)
                 self.stream_map.remove_sendable(sid)
                 continue
-            var sf = maybe_frame.value().copy()
+            # unsafe_take consumes the Optional; saves the StreamFrame copy.
+            var sf = maybe_frame.unsafe_take()
             var frame_len = UInt64(len(sf.data))
             var frame_offset = sf.offset
             var frame_fin = sf.fin
@@ -2202,8 +2209,9 @@ struct QuicConnection(Movable):
                 stream.send_state = Optional[UInt8](SEND_SEND)
             if frame_fin and sb.fin_offset:
                 stream.send_state = Optional[UInt8](SEND_DATA_SENT)
-            stream.send_buf = sb^
-            stream.fc_send = fc^
+            var still_pending = sb.has_pending()
+            stream.send_buf = Optional[SendBuf](sb^)
+            stream.fc_send = Optional[FlowControl](fc^)
             var rec = SentStreamFrame()
             rec.kind = SSF_STREAM
             rec.stream_id = stream.id
@@ -2211,7 +2219,6 @@ struct QuicConnection(Movable):
             rec.length = frame_len
             rec.fin = frame_fin
             sent_records.append(rec^)
-            var still_pending = stream.send_buf.value().has_pending()
             self.stream_map.set_stream(sid, stream^)
             if not still_pending:
                 self.stream_map.remove_sendable(sid)
