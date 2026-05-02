@@ -118,6 +118,79 @@ struct RecvBuf(Copyable, Movable):
                 gaps += 1
         return gaps
 
+    def write_owned(
+        mut self,
+        offset: UInt64,
+        var data: List[UInt8],
+        fin: Bool,
+        mut fin_offset: Optional[UInt64],
+    ) raises -> UInt64:
+        """Variant of write() that takes ownership of `data`. When the
+        common no-overlap + no-skip + first-segment case fires (typical
+        STREAM frame at long-conn), the input list is moved directly
+        into seg_data instead of copied. Otherwise falls through to the
+        same Span-based write path.
+        """
+        var data_len = UInt64(len(data))
+        var end_offset = offset + data_len
+
+        if fin:
+            var this_fin = end_offset
+            if fin_offset:
+                if fin_offset.value() != this_fin:
+                    raise "FINAL_SIZE_ERROR: FIN offset mismatch"
+            else:
+                fin_offset = this_fin
+
+        if fin_offset:
+            if end_offset > fin_offset.value():
+                raise "FINAL_SIZE_ERROR: data extends past final size"
+
+        var new_bytes = self._count_new_bytes(offset, end_offset)
+
+        if data_len > 0:
+            if self._would_create_gap(offset, end_offset):
+                var current_gaps = self._num_gaps()
+                if UInt64(current_gaps + 1) > self.max_gaps:
+                    raise "PROTOCOL_VIOLATION: too many gaps in recv stream"
+
+        if data_len > 0:
+            # Below read_offset?
+            if end_offset <= self.read_offset:
+                self.total_received += new_bytes
+                return new_bytes
+            # Skip already-consumed prefix
+            var new_start = offset
+            var data_skip = Int(0)
+            if self.read_offset > new_start:
+                data_skip = Int(self.read_offset - new_start)
+                new_start = self.read_offset
+            var new_end = end_offset
+
+            # Find overlapping segments
+            var first_affected = -1
+            for i in range(len(self.seg_offsets)):
+                var rs = self.seg_offsets[i]
+                var re = self._seg_end(i)
+                if rs <= new_end and re >= new_start:
+                    first_affected = i
+                    break
+
+            # Hot path: no overlap, no skip, append-tail or empty.
+            if first_affected == -1 and data_skip == 0:
+                if len(self.seg_offsets) == 0 or new_start >= self._seg_end(len(self.seg_offsets) - 1):
+                    self.seg_offsets.append(new_start)
+                    self.seg_data.append(data^)  # MOVE — no copy
+                    self.total_received += new_bytes
+                    return new_bytes
+
+            # Fall through to the Span-based path for everything else
+            # (overlap, skip, mid-list insertion).
+            self._insert(offset, Span(data))
+
+        self.total_received += new_bytes
+        return new_bytes
+
     def write(
         mut self,
         offset: UInt64,

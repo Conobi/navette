@@ -932,8 +932,10 @@ struct QuicConnection(Movable):
 
     # ── Stream frame handlers ────────────────────────────────────────
 
-    def _handle_stream_frame(mut self, stream_frame: StreamFrame) raises:
-        """Process an incoming STREAM frame (RFC 9000 §19.8)."""
+    def _handle_stream_frame(mut self, var stream_frame: StreamFrame) raises:
+        """Process an incoming STREAM frame (RFC 9000 §19.8). Consumes the
+        StreamFrame so its data List can be moved (not copied) into the
+        recv buffer's no-overlap segment via RecvBuf.write_owned."""
         var stream_id = stream_frame.stream_id
         var offset = stream_frame.offset
         var data_len = UInt64(len(stream_frame.data))
@@ -977,8 +979,8 @@ struct QuicConnection(Movable):
         if not stream.recv_buf:
             raise "internal: missing recv_buf"
         var rb = stream.recv_buf.unsafe_take()
-        var new_bytes = rb.write(
-            offset, Span(stream_frame.data), fin, stream.fin_offset
+        var new_bytes = rb.write_owned(
+            offset, stream_frame^.consume_data(), fin, stream.fin_offset
         )
 
         # 7. Track highest offset observed on this stream.
@@ -1201,7 +1203,7 @@ struct QuicConnection(Movable):
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
             if frame._stream:
                 var sf = frame^.consume_stream()
-                self._handle_stream_frame(sf)
+                self._handle_stream_frame(sf^)
             return
 
         if tid == FRAME_RESET_STREAM:

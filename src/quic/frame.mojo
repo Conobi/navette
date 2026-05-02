@@ -145,6 +145,11 @@ struct StreamFrame(Copyable, Movable):
         self.data = take.data^
         self.fin = take.fin
 
+    def consume_data(deinit self) -> List[UInt8]:
+        """Consume self and return the data bytes — used by _handle_stream_frame
+        to move STREAM payload directly into RecvBuf instead of copying."""
+        return self.data^
+
 
 struct ResetStreamFrame(Copyable, Movable):
     var stream_id: UInt64

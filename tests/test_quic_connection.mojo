@@ -1308,7 +1308,7 @@ def test_flow_control_error_on_overflow() raises:
     var sf = StreamFrame(sid, UInt64(0), data, False)
     var raised_fc = False
     try:
-        server._handle_stream_frame(sf)
+        server._handle_stream_frame(sf^)
     except e:
         var emsg = String(e)
         if emsg.find("FLOW_CONTROL") >= 0:
@@ -1365,7 +1365,7 @@ def test_conn_flow_control_error_on_overflow() raises:
     var sf = StreamFrame(sid, UInt64(0), data, False)
     var raised_fc = False
     try:
-        server._handle_stream_frame(sf)
+        server._handle_stream_frame(sf^)
     except e:
         var emsg = String(e)
         if emsg.find("FLOW_CONTROL") >= 0:
