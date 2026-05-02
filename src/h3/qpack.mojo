@@ -20,9 +20,9 @@ struct QpackHeaderField(Copyable, Movable):
     var name: String
     var value: String
 
-    def __init__(out self, name: String, value: String):
-        self.name = name
-        self.value = value
+    def __init__(out self, var name: String, var value: String):
+        self.name = name^
+        self.value = value^
 
     def __init__(out self, *, copy_from: Self):
         self.name = copy_from.name
