@@ -361,14 +361,21 @@ struct RecvBuf(Copyable, Movable):
 
         self.read_offset = deliver_end
 
-        # Remove the consumed segment
-        var new_offsets = List[UInt64]()
-        var new_segs = List[List[UInt8]]()
-        for i in range(1, len(self.seg_offsets)):
-            new_offsets.append(self.seg_offsets[i])
-            new_segs.append(List[UInt8](copy=self.seg_data[i]))
-        self.seg_offsets = new_offsets^
-        self.seg_data = new_segs^
+        # Remove the consumed segment.
+        # Fast path: single-segment case (typical for 1-packet requests at
+        # long-conn). Avoids the new-list build + move + per-segment .copy()
+        # loop that the multi-segment path requires.
+        if len(self.seg_offsets) == 1:
+            self.seg_offsets.clear()
+            self.seg_data.clear()
+        else:
+            var new_offsets = List[UInt64]()
+            var new_segs = List[List[UInt8]]()
+            for i in range(1, len(self.seg_offsets)):
+                new_offsets.append(self.seg_offsets[i])
+                new_segs.append(List[UInt8](copy=self.seg_data[i]))
+            self.seg_offsets = new_offsets^
+            self.seg_data = new_segs^
 
         if fin_offset:
             if self.read_offset >= fin_offset.value():
