@@ -297,6 +297,7 @@ def _create_server_config(
         cert_buf, Int32(cert_len),
         key_buf, Int32(key_len),
         alpn_buf, Int32(alpn_wire_len),
+        Int32(0),  # max_early_data: 0-RTT disabled (P3 will flip)
         out_handle,
     )
 

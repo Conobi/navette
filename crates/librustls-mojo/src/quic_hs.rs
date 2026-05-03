@@ -83,10 +83,11 @@ fn to_quic_version(v: i32) -> Result<QuicVersion, String> {
 /// On success: *out_handle is a positive config handle.
 #[no_mangle]
 pub extern "C" fn rlsm_quic_server_config_new(
-    cert_pem:  *const u8, cert_len:  i32,
-    key_pem:   *const u8, key_len:   i32,
-    alpn_ptr:  *const u8, alpn_len:  i32,
-    out_handle: *mut i32,
+    cert_pem:       *const u8, cert_len:  i32,
+    key_pem:        *const u8, key_len:   i32,
+    alpn_ptr:       *const u8, alpn_len:  i32,
+    max_early_data: i32,
+    out_handle:     *mut i32,
 ) -> i32 {
     clear_last_error();
 
@@ -97,6 +98,7 @@ pub extern "C" fn rlsm_quic_server_config_new(
     if cert_len < 0 { rlsm_err!("rlsm_quic_server_config_new: negative cert_len"; return -1); }
     if key_len  < 0 { rlsm_err!("rlsm_quic_server_config_new: negative key_len";  return -1); }
     if alpn_len < 0 { rlsm_err!("rlsm_quic_server_config_new: negative alpn_len"; return -1); }
+    if max_early_data < 0 { rlsm_err!("rlsm_quic_server_config_new: negative max_early_data"; return -1); }
 
     let cert_bytes = unsafe { std::slice::from_raw_parts(cert_pem, cert_len as usize) };
     let key_bytes  = unsafe { std::slice::from_raw_parts(key_pem,  key_len  as usize) };
@@ -138,6 +140,20 @@ pub extern "C" fn rlsm_quic_server_config_new(
 
     config.key_log = Arc::new(KeyLogFile::new());
     config.alpn_protocols = vec![alpn_bytes.to_vec()];
+
+    // Always-on TLS 1.3 session resumption: enable rotating-AES ticketer.
+    // Plan: 2026-05-03-short-conn-resumption.
+    config.ticketer = match rustls::crypto::aws_lc_rs::Ticketer::new() {
+        Ok(t) => t,
+        Err(e) => {
+            set_last_error(format!("rlsm_quic_server_config_new: ticketer build error: {e}"));
+            return -1;
+        }
+    };
+
+    // max_early_data_size: 0 = 0-RTT disabled (default until P3). Cast i32→u32
+    // is safe for non-negative input (validated above).
+    config.max_early_data_size = max_early_data as u32;
 
     match quic_server_cfg_table().insert(Arc::new(config)) {
         Some(h) => { unsafe { *out_handle = h; } 0 }
@@ -910,6 +926,7 @@ mod tests {
             cert_pem.as_ptr(), cert_pem.len() as i32,
             key_pem.as_ptr(),  key_pem.len()  as i32,
             alpn.as_ptr(),     alpn.len()      as i32,
+            0, // max_early_data: 0 = disabled
             &mut h,
         );
         assert_eq!(rc, 0);
@@ -1300,6 +1317,7 @@ mod tests {
             cert_pem.as_ptr(), cert_pem.len() as i32,
             key_pem.as_ptr(),  key_pem.len()  as i32,
             alpn.as_ptr(),     alpn.len()      as i32,
+            0, // max_early_data: 0 = disabled
             &mut handle_out,
         );
         assert_eq!(rc, 0, "server config creation failed");

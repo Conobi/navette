@@ -72,6 +72,58 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
     conn_handle.free()
 
 
+def _read_file_bytes(path: String) raises -> List[UInt8]:
+    """Local helper: read a small text file (PEM) into List[UInt8].
+    Mirrors patterns in existing tests under tests/ — keep self-contained."""
+    var f = open(path, "r")
+    var s = f.read()
+    f.close()
+    var bytes = s.as_bytes()
+    var out = List[UInt8](capacity=len(bytes))
+    for i in range(len(bytes)):
+        out.append(bytes[i])
+    return out^
+
+
+def test_quic_server_config_new_accepts_max_early_data_param() raises:
+    """Smoke test: rlsm_quic_server_config_new accepts the new max_early_data
+    8th param (passed as 0). Direct read of ticketer is not exposed via FFI;
+    success is signaled by rc == 0 and a non-negative handle."""
+    var lib = RustlsLibrary()
+
+    # Use the bench's self-signed test fixtures.
+    var cert_pem = _read_file_bytes("certs/server.crt")
+    var key_pem  = _read_file_bytes("certs/server.key")
+
+    var alpn_bytes = String("h3").as_bytes()
+    var alpn_len = len(alpn_bytes)
+
+    var cert_buf = _heap_alloc[UInt8](len(cert_pem)).as_any_origin()
+    for i in range(len(cert_pem)):
+        cert_buf[i] = cert_pem[i]
+    var key_buf = _heap_alloc[UInt8](len(key_pem)).as_any_origin()
+    for i in range(len(key_pem)):
+        key_buf[i] = key_pem[i]
+    var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+    for i in range(alpn_len):
+        alpn_buf[i] = alpn_bytes[i]
+    var out_handle = _heap_alloc[Int32](1).as_any_origin()
+    out_handle[0] = Int32(-1)
+
+    var rc = lib.quic_server_config_new(
+        cert_buf, Int32(len(cert_pem)),
+        key_buf,  Int32(len(key_pem)),
+        alpn_buf, Int32(alpn_len),
+        Int32(0),                # max_early_data: 0 = 0-RTT disabled
+        out_handle,
+    )
+    assert_equal_int(Int(rc), 0, "rc==0")
+    assert_true(out_handle[0] >= Int32(0), "handle must be non-negative")
+
+    cert_buf.free(); key_buf.free(); alpn_buf.free(); out_handle.free()
+
+
 def main() raises:
     test_quic_handshake_kind_invalid_handle_returns_minus_one()
     test_quic_handshake_kind_client_returns_minus_two()
+    test_quic_server_config_new_accepts_max_early_data_param()

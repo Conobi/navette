@@ -425,11 +425,16 @@ struct RustlsLibrary(Movable):
         cert_pem: UnsafePointer[UInt8, MutAnyOrigin], cert_len: Int32,
         key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
         alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        max_early_data: Int32,
         out_handle: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
-        """Create QUIC server TLS config. Returns 0 on success."""
+        """Create QUIC server TLS config. Always-on TLS 1.3 session resumption
+        (rustls aws_lc_rs Ticketer). max_early_data: 0 disables 0-RTT (default);
+        non-zero plumbs to ServerConfig::max_early_data_size for P3.
+        Returns 0 on success, -1 on error."""
         return self._handle.call["rlsm_quic_server_config_new", Int32](
-            cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len, out_handle,
+            cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len,
+            max_early_data, out_handle,
         )
 
     @always_inline
