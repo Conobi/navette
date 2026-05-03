@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-03T20:29:01Z",
+  "host": {
+    "kernel": "Linux 6.19.14-lqx2-1-lqx",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cores_total": 8,
+    "server_core": 0,
+    "client_cores": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "server": "mojo-net",
+  "payload": "1k",
+  "scenario": "long-conn",
+  "client": "tquic_client",
+  "iter": 1,
+  "config": {
+    "duration_s": 30,
+    "warmup_s": 5,
+    "threads": 4,
+    "max_concurrent_conns": 100,
+    "max_requests_per_conn": 0,
+    "max_concurrent_requests": 10,
+    "send_udp_payload_size": 1350
+  },
+  "results": {
+    "rps": 14122.5,
+    "bytes_per_sec": null,
+    "requests_total": 438900,
+    "requests_succeeded": 437840,
+    "requests_failed": 1060,
+    "p50_latency_ms": 14.116,
+    "p99_latency_ms": 21.543,
+    "server_cpu_percent": 97.480625,
+    "raw_client_stdout": "[2026-05-03T20:28:29.887Z INFO  tquic::connection] CLIENT-f35d291ecffb7da5 recv error and close FrameEncodingError\n[2026-05-03T20:28:29.887Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T20:28:29.887Z INFO  tquic::connection] CLIENT-b946b7b138b112e6 recv error and close FrameEncodingError\n[2026-05-03T20:28:29.887Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T20:28:30.531Z INFO  tquic::connection] CLIENT-c8767736e58b3034 recv error and close FrameEncodingError\n[2026-05-03T20:28:30.531Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T20:28:31.289Z INFO  tquic::connection] CLIENT-5c4a498a885498c9 recv error and close FrameEncodingError\n[2026-05-03T20:28:31.289Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T20:28:33.403Z INFO  tquic::connection] CLIENT-beac8f6bdfb5eab7 recv error and close FrameEncodingError\n[2026-05-03T20:28:33.403Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T20:28:34.849Z INFO  tquic::connection] CLIENT-83c28571889218a1 recv error and close FrameEncodingError\n[2026-05-03T20:28:34.849Z ERROR tquic_client] recv failed: FrameEncodingError\n\nfinished in 31.003948272s, 14122.50 req/s\nconns: total 106, finish 106, success 100, failure 6\nrequests: sent 438900, finish 437840, success 437840\ntime for request(\u00b5s):\n\tmin: 684.00, max: 76054.00, mean: 14223.23, sd: 3463.88\n\tmedian: 14116.00, p80: 16747.00, p90: 18245.00, p99: 21543.00\nrecv pkts: 88715, sent pkts: 120141, lost pkts: 0\nrecv bytes: 479777270, sent bytes: 23678788, lost bytes: 0\n\n"
+  }
+}

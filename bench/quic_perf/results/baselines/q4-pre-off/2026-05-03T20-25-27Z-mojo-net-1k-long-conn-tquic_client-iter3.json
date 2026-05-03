@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-03T20:25:27Z",
+  "host": {
+    "kernel": "Linux 6.19.14-lqx2-1-lqx",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cores_total": 8,
+    "server_core": 0,
+    "client_cores": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "server": "mojo-net",
+  "payload": "1k",
+  "scenario": "long-conn",
+  "client": "tquic_client",
+  "iter": 3,
+  "config": {
+    "duration_s": 30,
+    "warmup_s": 5,
+    "threads": 4,
+    "max_concurrent_conns": 100,
+    "max_requests_per_conn": 0,
+    "max_concurrent_requests": 10,
+    "send_udp_payload_size": 1350
+  },
+  "results": {
+    "rps": 13982.78,
+    "bytes_per_sec": null,
+    "requests_total": 434640,
+    "requests_succeeded": 433620,
+    "requests_failed": 1020,
+    "p50_latency_ms": 14.67,
+    "p99_latency_ms": 24.40166,
+    "server_cpu_percent": 96.68,
+    "raw_client_stdout": "[2026-05-03T20:24:55.799Z INFO  tquic::connection] CLIENT-4fb829f51134efef recv error and close FrameEncodingError\n[2026-05-03T20:24:55.799Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T20:24:55.799Z INFO  tquic::connection] CLIENT-14b8176e59fb2d5c recv error and close FrameEncodingError\n[2026-05-03T20:24:55.799Z ERROR tquic_client] recv failed: FrameEncodingError\n\nfinished in 31.011762573s, 13982.78 req/s\nconns: total 102, finish 102, success 100, failure 2\nrequests: sent 434640, finish 433620, success 433620\ntime for request(\u00b5s):\n\tmin: 815.00, max: 79550.00, mean: 14904.10, sd: 3886.50\n\tmedian: 14670.00, p80: 17518.00, p90: 19327.00, p99: 24401.66\nrecv pkts: 87831, sent pkts: 118611, lost pkts: 0\nrecv bytes: 475190924, sent bytes: 23378409, lost bytes: 0\n\n"
+  }
+}
