@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 39032759,
+  "on_flush_events": 88786,
+  "idle_us_total": 18525827,
+  "busy_us_total": 19297136,
+  "pkts_per_flush_histogram": {
+    "1": 49506,
+    "2-3": 13978,
+    "4-7": 10751,
+    "8-15": 6734,
+    "16-31": 4117,
+    "32-63": 2637,
+    "64-127": 869,
+    "128+": 194
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 6, "p90": 99, "p99": 175, "max": 2048, "n": 477970, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 67582},
+    "hp":            {"avg": 0, "total": 179500},
+    "aead":          {"avg": 0, "total": 274203},
+    "frame_parse":   {"avg": 2, "total": 1205941},
+    "sm":            {"avg": 20, "total": 9591529},
+    "residual":      {"avg": 1, "total": 493303},
+    "shim_ffi":      {"avg": 18, "total": 8908654},
+    "drain":         {"avg": 5, "total": 2527081}
+  },
+  "arrival_lat_us_total": 17358219,
+  "arrival_lat_us_overflow": 0,
+  "arrival_lat_us_buckets": [46896, 42866, 57117, 68180, 73224, 75871, 68310, 44233, 15150, 1383, 2795, 1632, 25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "per_conn_pkts_buckets": [0, 0, 1, 0, 0, 0, 0, 8],
+  "conns_total": 9,
+  "conns_with_pkts_no_hs_complete": 0,
+  "addr_key_dcid_mismatch": {
+    "dcid_mismatch_pkts": 0,
+    "addr_keys_total": 0,
+    "addr_keys_with_mismatch": 0,
+    "per_addr_key": {
+    }
+  },
+  "handshakes": {
+    "full": 242,
+    "resumed": 48346
+  },
+  "fresh_conn_ffi_us": {
+    "buckets": [0, 0, 0, 0, 0, 0, 0, 0, 47200, 1341, 45, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "overflow": 0
+  },
+  "recv_batch_size_buckets": {
+    "1": 497682,
+    "2-3": 0,
+    "4-7": 0,
+    "8-15": 0,
+    "16-31": 0,
+    "32-63": 0,
+    "64-127": 0,
+    "128+": 0
+  },
+  "read_hs_per_handshake_count_buckets": {
+    "1": 0,
+    "2-3": 48588,
+    "4-7": 0,
+    "8-15": 0,
+    "16-31": 0,
+    "32-63": 0,
+    "64-127": 0,
+    "128+": 0
+  },
+  "read_hs_us_per_call": {
+    "buckets": [0, 0, 0, 0, 0, 0, 0, 94572, 2379, 218, 7, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "overflow": 0
+  },
+  "ffi_subleg_us": {
+    "read_hs":   {"avg": 17, "total": 8268461},
+    "write_hs":  {"avg": 1, "total": 613533},
+    "take_keys": {"avg": 0, "total": 26660}
+  },
+  "loop_phases_us": {
+    "pop_dispatch": {"avg": 1, "total": 938760},
+    "post_pkt":     {"avg": 0, "total": 86366},
+    "teardown":     {"avg": 0, "total": 16454},
+    "loop_iter_count": 497682,
+    "unaccounted_us_total": 452274,
+    "unaccounted_pct": 2
+  },
+  "h3_phases_us": {
+    "drain_resp": {"total": 569966},
+    "post_recv":  {"total": 2702363},
+    "dispatch":   {"total": 191814}
+  },
+  "drain_stream_subleg": {
+    "drain_stream_us_total": 2398838,
+    "recv_ffi_us": 183511,
+    "buf_accumulate_us": 64935,
+    "frame_parse_us": 20512,
+    "qpack_decode_us": 2087045,
+    "event_dispatch_us": 42835,
+    "sum_legs_us": 2398838,
+    "unaccounted_pct": 0
+  },
+  "worst_conns": [
+  ],
+  "handshake": {
+    "arrivals": 48589, "successful": 48588, "timed_out": 1,
+    "latency_us": {"p50": 2427, "p90": 7726, "p99": 12374, "max": 24446, "count": 48588}
+  }
+}
