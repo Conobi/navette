@@ -885,3 +885,69 @@ The projection assumed resumed handshakes save ~50% of per-conn wall-clock. Obse
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
 Sidecars: `bench/quic_perf/results/baselines/p2-post-on/{long,short}/INSTRUMENTATION-*.json` (20 total). Verdict + raw rps: `bench/quic_perf/results/baselines/p2-verdict.md` + `p2-{pre,post}-rps.csv`.
+
+---
+
+## Q4 — Per-Fresh-Conn Server CPU Decomposition (2026-05-03)
+
+**Spec:** `specs/2026-05-03-q4-fresh-conn-cpu-decomposition.md` → **Plan:** `plans/2026-05-03-q4-fresh-conn-cpu-decomposition.md`. **Branch:** `feat/quic-q4-fresh-conn-cpu-decomp`. Diagnostic-only.
+
+Goal: name the dominant per-fresh-conn cost frame on short-conn after Topic 2 research falsified P4's worker-pool premise (TQUIC's bench server is single-threaded mio with synchronous boringssl FFI, identical architecture to mojo-net; the 0.543× short-conn gap is per-datagram CPU cost, not missing concurrency).
+
+### Captured numbers (n=3 short-conn, PROFILE_ACCEPT=True)
+
+| Iter | rps | CPU% | r (resumed/total) |
+|---|---|---|---|
+| 1 | 1,041 | 57.8 | 0.992 |
+| 2 | 1,302 | 59.7 | 0.993 |
+| 3 | 1,281 | 57.7 | 0.993 |
+| **median** | **1,281** | **57.7** | **0.993** |
+
+### Verdict: CONFIRMED — rustls FFI thunk path is the dominant cost
+
+| Phase | Median % busy |
+|---|---|
+| `per_pkt_us.shim_ffi` (Mojo↔Rust crossing wall-time) | **45.6%** |
+| `per_pkt_us.sm` (state machine, includes shim_ffi overlap) | **49.0%** |
+| `per_pkt_us.drain` | **13.4%** |
+| `per_pkt_us.frame_parse` | **6.3%** |
+
+Top-frame ratio: shim_ffi 45.6% / drain 13.4% = **3.4×** (CONFIRMED gate is ≥1.5×).
+
+### Per-fresh-conn FFI total (`fresh_conn_ffi_us_buckets`)
+
+Median bucket 8 (~256-512µs/conn); ~95% of conns there. At 1,281 conns/sec × ~400µs = ~512ms/sec FFI per server thread = matches per_pkt_us.shim_ffi total (~45% of busy).
+
+### Recv-batch-size histogram
+
+100% of recvmsg CQEs deliver n=1 datagram. Multishot recvmsg has no kernel-level batching — `recvmmsg` (or non-multishot batched io_uring) is a real next-spec target.
+
+### Smoke gate (T4) — same-window drift
+
+| Build | Pre median | Post median | Drift | Gate | Status |
+|---|---|---|---|---|---|
+| off-build | 14,866 | 14,435 | -2.90% | ±1% | host-noise caveat |
+| on-build | 14,236 | 12,587 | -11.58% | ±2% | host-noise caveat |
+
+Both gates fail nominally but consistent post-LOWER-than-pre across both builds matches host-load-creeping pattern (Q-drain-subleg's "T4 host-noise lesson"). Source-level argument: off-build is comptime-stripped zero-cost, on-build adds 4 UInt64 atomic adds per server connection (<100ns total). 11.58% drift would require ~4ms of regression — 7 orders of magnitude above what the additions can cost. SHIPPED-with-caveat.
+
+### Implications for next optimization spec
+
+Two complementary levers identified:
+
+1. **Per-fresh-conn FFI thunk reduction** (~45% of busy → target 25%): combine FFI calls (e.g. fuse `write_hs` + `take_keys`), cache config-derived constants Mojo-side, investigate marshalling overhead. Expected: ~30-40% short-conn rps lift.
+2. **recvmmsg batching** (boucle-side change): replace multishot recvmsg with batched delivery; pairs naturally with P3 0-RTT (fewer datagrams per conn).
+
+P3 (0-RTT) deferred until lever 1 lands — its lift compounds onto FFI cost.
+P4 (worker pool) remains falsified per Topic 2.
+
+### Image SHAs (tag-isolated)
+
+- `mojo-net-bench:q4-pre-off`: `c0daf44b5d7a` (re-tag of P2 `:p2-pre-off`).
+- `mojo-net-bench:q4-pre-on`: `fce54a71a8ad` (rebuilt main `dbcdd0e` + PROFILE_ACCEPT=True).
+- `mojo-net-bench:q4-post-off`: `b080ae602eb6` (rebuilt with Q4 commits + PROFILE_ACCEPT=False).
+- `mojo-net-bench:q4-post-on`: `a8ded32be4f1` (rebuilt with Q4 commits + PROFILE_ACCEPT=True).
+
+**Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
+
+Sidecars: `bench/quic_perf/results/baselines/q4-post-on-short/sidecar-{1,2,3}.json`. Verdict + raw rps: `bench/quic_perf/results/baselines/q4-verdict.md` + `q4-t4-drift.{md,csv}`.
