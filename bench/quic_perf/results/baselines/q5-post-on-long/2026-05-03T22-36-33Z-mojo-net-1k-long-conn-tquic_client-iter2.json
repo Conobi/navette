@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-03T22:36:33Z",
+  "host": {
+    "kernel": "Linux 6.19.14-lqx2-1-lqx",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cores_total": 8,
+    "server_core": 0,
+    "client_cores": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "server": "mojo-net",
+  "payload": "1k",
+  "scenario": "long-conn",
+  "client": "tquic_client",
+  "iter": 2,
+  "config": {
+    "duration_s": 30,
+    "warmup_s": 5,
+    "threads": 4,
+    "max_concurrent_conns": 100,
+    "max_requests_per_conn": 0,
+    "max_concurrent_requests": 10,
+    "send_udp_payload_size": 1350
+  },
+  "results": {
+    "rps": 14671.33,
+    "bytes_per_sec": null,
+    "requests_total": 456050,
+    "requests_succeeded": 454870,
+    "requests_failed": 1180,
+    "p50_latency_ms": 14.246,
+    "p99_latency_ms": 21.59,
+    "server_cpu_percent": 97.86125,
+    "raw_client_stdout": "[2026-05-03T22:36:02.657Z INFO  tquic::connection] CLIENT-7575435482b5d569 recv error and close FrameEncodingError\n[2026-05-03T22:36:02.657Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.657Z INFO  tquic::connection] CLIENT-77ca783b1a90f818 recv error and close FrameEncodingError\n[2026-05-03T22:36:02.657Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.657Z INFO  tquic::connection] CLIENT-2bb319b472e7362e recv error and close FrameEncodingError\n[2026-05-03T22:36:02.657Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.657Z INFO  tquic::connection] CLIENT-e9e99bf73f92698f recv error and close FrameEncodingError\n[2026-05-03T22:36:02.657Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.657Z INFO  tquic::connection] CLIENT-b0e0d6293b6c09f7 recv error and close FrameEncodingError\n[2026-05-03T22:36:02.657Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.657Z INFO  tquic::connection] CLIENT-f6d99ca7c43bf0a7 recv error and close FrameEncodingError\n[2026-05-03T22:36:02.657Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.866Z INFO  tquic::connection] CLIENT-d0daa1b1cbbca176 recv error and close FrameEncodingError\n[2026-05-03T22:36:02.866Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:02.866Z INFO  tquic::connection] CLIENT-945cf8dce45ed869 recv error and close FrameEncodingError\n[2026-05-03T22:36:02.866Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.143Z INFO  tquic::connection] CLIENT-cfa1fb8366d905fa recv error and close FrameEncodingError\n[2026-05-03T22:36:03.143Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.143Z INFO  tquic::connection] CLIENT-06f66e750cc538e4 recv error and close FrameEncodingError\n[2026-05-03T22:36:03.143Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.202Z INFO  tquic::connection] CLIENT-5f5f91101e702b40 recv error and close FrameEncodingError\n[2026-05-03T22:36:03.202Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.202Z INFO  tquic::connection] CLIENT-d87b87b983eb8f8e recv error and close FrameEncodingError\n[2026-05-03T22:36:03.202Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.425Z INFO  tquic::connection] CLIENT-0b8127c8df7375b7 recv error and close FrameEncodingError\n[2026-05-03T22:36:03.425Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.440Z INFO  tquic::connection] CLIENT-07d557ec848e7b30 recv error and close FrameEncodingError\n[2026-05-03T22:36:03.440Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:03.622Z INFO  tquic::connection] CLIENT-1b6562c3fd8e3f2d recv error and close FrameEncodingError\n[2026-05-03T22:36:03.622Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:04.625Z INFO  tquic::connection] CLIENT-4e8df563eea0dfec recv error and close FrameEncodingError\n[2026-05-03T22:36:04.625Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:05.299Z INFO  tquic::connection] CLIENT-dd7c8689f75865ad recv error and close FrameEncodingError\n[2026-05-03T22:36:05.299Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:05.752Z INFO  tquic::connection] CLIENT-8a3b8b0c1691f359 recv error and close FrameEncodingError\n[2026-05-03T22:36:05.752Z ERROR tquic_client] recv failed: FrameEncodingError\n\nfinished in 31.004348044s, 14671.33 req/s\nconns: total 118, finish 118, success 100, failure 18\nrequests: sent 456050, finish 454870, success 454870\ntime for request(\u00b5s):\n\tmin: 687.00, max: 79962.00, mean: 14309.84, sd: 3709.35\n\tmedian: 14246.00, p80: 16854.00, p90: 18481.00, p99: 21590.00\nrecv pkts: 92264, sent pkts: 123837, lost pkts: 0\nrecv bytes: 498487729, sent bytes: 24666894, lost bytes: 0\n\n"
+  }
+}

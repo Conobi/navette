@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-03T22:37:13Z",
+  "host": {
+    "kernel": "Linux 6.19.14-lqx2-1-lqx",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cores_total": 8,
+    "server_core": 0,
+    "client_cores": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "server": "mojo-net",
+  "payload": "1k",
+  "scenario": "long-conn",
+  "client": "tquic_client",
+  "iter": 3,
+  "config": {
+    "duration_s": 30,
+    "warmup_s": 5,
+    "threads": 4,
+    "max_concurrent_conns": 100,
+    "max_requests_per_conn": 0,
+    "max_concurrent_requests": 10,
+    "send_udp_payload_size": 1350
+  },
+  "results": {
+    "rps": 14646.3,
+    "bytes_per_sec": null,
+    "requests_total": 455210,
+    "requests_succeeded": 454050,
+    "requests_failed": 1160,
+    "p50_latency_ms": 16.429,
+    "p99_latency_ms": 24.79966,
+    "server_cpu_percent": 98.36,
+    "raw_client_stdout": "[2026-05-03T22:36:42.076Z INFO  tquic::connection] CLIENT-883d1d7c45c79fcb recv error and close FrameEncodingError\n[2026-05-03T22:36:42.076Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.076Z INFO  tquic::connection] CLIENT-7da9195ebded3d44 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.076Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.263Z INFO  tquic::connection] CLIENT-0a0f8981bb047bbd recv error and close FrameEncodingError\n[2026-05-03T22:36:42.263Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.263Z INFO  tquic::connection] CLIENT-ac711f2bd022e84a recv error and close FrameEncodingError\n[2026-05-03T22:36:42.263Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.263Z INFO  tquic::connection] CLIENT-9c6c8fc5bfc4f6a0 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.263Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.264Z INFO  tquic::connection] CLIENT-225f57347f77ff16 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.264Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.264Z INFO  tquic::connection] CLIENT-fb90b42359304068 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.264Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.510Z INFO  tquic::connection] CLIENT-e0aff3c2160c5ab7 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.510Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.510Z INFO  tquic::connection] CLIENT-2dded25401b5fbf9 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.510Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.677Z INFO  tquic::connection] CLIENT-0e15a4f7ec377a2a recv error and close FrameEncodingError\n[2026-05-03T22:36:42.677Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.677Z INFO  tquic::connection] CLIENT-90138dd9f6144959 recv error and close FrameEncodingError\n[2026-05-03T22:36:42.677Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:42.903Z INFO  tquic::connection] CLIENT-f72a527eec7355ad recv error and close FrameEncodingError\n[2026-05-03T22:36:42.903Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:43.027Z INFO  tquic::connection] CLIENT-3fc5016e3723e7c8 recv error and close FrameEncodingError\n[2026-05-03T22:36:43.027Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:43.134Z INFO  tquic::connection] CLIENT-aaa9d3b822889cff recv error and close FrameEncodingError\n[2026-05-03T22:36:43.135Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:43.370Z INFO  tquic::connection] CLIENT-c7584968742aed09 recv error and close FrameEncodingError\n[2026-05-03T22:36:43.370Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:36:43.614Z INFO  tquic::connection] CLIENT-5c52fd79f7c5c2e4 recv error and close FrameEncodingError\n[2026-05-03T22:36:43.614Z ERROR tquic_client] recv failed: FrameEncodingError\n\nfinished in 31.001471245s, 14646.30 req/s\nconns: total 116, finish 116, success 100, failure 16\nrequests: sent 455210, finish 454050, success 454050\ntime for request(\u00b5s):\n\tmin: 716.00, max: 76554.00, mean: 16510.10, sd: 4235.43\n\tmedian: 16429.00, p80: 19299.00, p90: 21093.00, p99: 24799.66\nrecv pkts: 92116, sent pkts: 124237, lost pkts: 0\nrecv bytes: 497552801, sent bytes: 24412819, lost bytes: 0\n\n"
+  }
+}
