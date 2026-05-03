@@ -87,6 +87,16 @@ Three remaining levers (per Q4 retro), revised:
 
 P3 (0-RTT) and Lever A (boringssl) remain pending; pursued only after Lever D's measurement evidence indicates it's the bigger lever.
 
+## Addendum: FFI thunk microbench (post-verdict)
+
+The verdict above relies on the claim "the ~64-128µs/call is rustls TLS state-machine compute, not FFI thunk overhead." That claim was originally inferred from architectural reasoning (FFI thunks are typically sub-µs). It has now been measured directly:
+
+- Microbench: 1M no-op `rlsm_noop()` calls, 3-run median = **47 ns/call**.
+- `rlsm_quic_conn_read_hs/call` = 64,000-128,000 ns (Q5 bucket 7).
+- **Thunk fraction: 0.04-0.07%** of read_hs.
+
+The "rustls compute dominates" claim is now microbench-confirmed with a 1,360-2,720× margin. Details: `bench/quic_perf/results/baselines/q5-thunk-microbench.md`.
+
 ## Off-build flag
 
 `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.

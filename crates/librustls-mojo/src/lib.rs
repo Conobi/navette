@@ -66,3 +66,11 @@ pub use quic_hs::{
 
 #[cfg(feature = "insecure")]
 pub use tcp::rlsm_client_config_new_insecure;
+
+/// No-op FFI function for thunk-overhead microbench.
+/// Returns 0 immediately. Used to isolate Mojo↔Rust FFI crossing cost
+/// from the work done inside any specific FFI call body.
+#[no_mangle]
+pub extern "C" fn rlsm_noop() -> i32 {
+    0
+}

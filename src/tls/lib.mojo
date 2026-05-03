@@ -580,6 +580,16 @@ struct RustlsLibrary(Movable):
             ciphertext, ct_len, out_buf, out_len,
         )
 
+    # -- Microbench: thunk overhead --------------------------------------------
+
+    @always_inline
+    def noop(self) -> Int32:
+        """No-op FFI call — for thunk-overhead microbench (Q5 follow-up).
+        Returns 0. Body in Rust is `pub extern \"C\" fn rlsm_noop() -> i32 { 0 }`."""
+        return self._handle.call["rlsm_noop", Int32]()
+
+    # -- Raw HMAC-SHA256 -------------------------------------------------------
+
     @always_inline
     def hmac_sha256(
         self,
