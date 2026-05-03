@@ -951,3 +951,52 @@ P4 (worker pool) remains falsified per Topic 2.
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
 Sidecars: `bench/quic_perf/results/baselines/q4-post-on-short/sidecar-{1,2,3}.json`. Verdict + raw rps: `bench/quic_perf/results/baselines/q4-verdict.md` + `q4-t4-drift.{md,csv}`.
+
+---
+
+## Q5 — `read_hs` Per-Call Decomposition (2026-05-04)
+
+**Spec:** `specs/2026-05-03-q5-read-hs-per-call-decomposition.md` → **Plan:** `plans/2026-05-03-q5-read-hs-per-call-decomposition.md`. **Branch:** `feat/quic-q5-read-hs-decomp`. Diagnostic-only; research-gate validating Lever B before any optimization spec.
+
+Goal: validate whether `read_hs` is called multiple times per handshake at high per-call cost (Lever B premise) — justifying batching across recv_from_buffer iter boundaries — or already at architectural minimum.
+
+### Captured numbers (n=3 short-conn, PROFILE_ACCEPT=True)
+
+| Iter | rps | CPU% |
+|---|---|---|
+| 1 | 1,321.7 | 57.7 |
+| 2 | 1,321.5 | 58.0 |
+| 3 | 1,339.5 | 58.8 |
+| **median** | **1,321.7** | **58.0** |
+
+Consistent with P2/Q4 short-conn baseline (1,224-1,281 rps); no instrumentation regression.
+
+### Verdict: FALSIFIED (Lever B)
+
+**Per-handshake `read_hs` call count: 100% in bucket "2-3"** (resumed = 2 calls / 2 levels; full = 3 calls / 3 levels). **Per-call duration: ~97% in bucket 7 (~64-128µs)** — high per-call cost.
+
+Naively matches "count ≥ 3 + per-call ≥ 32µs → VIABLE" per spec §3.1, but the architectural reality overrides: rustls's `read_hs(level, bytes)` is per-encryption-level. The 2-3 calls/handshake are the architectural minimum (one per level), not redundant calls amenable to batching across iter boundaries. Cross-validation: `handshakes_total == count_records` exactly per iter.
+
+### Next-spec direction: Lever D (Q6 non-FFI cost decomposition)
+
+Q4 measured `per_pkt_us.drain` 13.4% + `per_pkt_us.frame_parse` 6.3% + uncharacterized conn allocation + QPACK/H3 setup. Combined estimate: ~15-25% rps potential. Diagnostic-first per `feedback_perf_impact_floor_filter.md` — decompose before authoring optimization specs. Lever A (boringssl swap) and P3 (0-RTT) remain pending; pursued only if Lever D's evidence indicates one of them is the bigger lever.
+
+### Smoke gate (T3) — same-window drift, ±5% per host calibration
+
+| Build | Pre median | Post median | Drift | Status |
+|---|---|---|---|---|
+| off-build | 14,474 | 14,713 | +1.65% | ✅ PASS |
+| on-build | 14,917 | 14,646 | -1.81% | ✅ PASS |
+
+Both within ±5% calibrated gate (per `feedback_bench_gate_width_calibration.md` — n=10 quiesced baseline IQR=1.25%, max(2×IQR, 5%)=5%). First diagnostic spec on this host to PASS its drift gates without "host-noise SHIPPED-with-caveat" framing.
+
+### Image SHAs (tag-isolated)
+
+- `mojo-net-bench:q5-pre-off`: `dc7717c49121` (re-tag of `gate-cal-off`)
+- `mojo-net-bench:q5-pre-on`: `fb9d2dfc8b78`
+- `mojo-net-bench:q5-post-off`: built T3
+- `mojo-net-bench:q5-post-on`: built T3
+
+**Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
+
+Sidecars: `bench/quic_perf/results/baselines/q5-post-on-short/sidecar-{1,2,3}.json`. Verdict: `bench/quic_perf/results/baselines/q5-verdict.md`. Smoke drift: `q5-t3-drift.md`.
