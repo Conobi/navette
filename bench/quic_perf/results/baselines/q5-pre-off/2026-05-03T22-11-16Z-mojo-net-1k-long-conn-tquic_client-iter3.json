@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-03T22:11:16Z",
+  "host": {
+    "kernel": "Linux 6.19.14-lqx2-1-lqx",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cores_total": 8,
+    "server_core": 0,
+    "client_cores": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "server": "mojo-net",
+  "payload": "1k",
+  "scenario": "long-conn",
+  "client": "tquic_client",
+  "iter": 3,
+  "config": {
+    "duration_s": 30,
+    "warmup_s": 5,
+    "threads": 4,
+    "max_concurrent_conns": 100,
+    "max_requests_per_conn": 0,
+    "max_concurrent_requests": 10,
+    "send_udp_payload_size": 1350
+  },
+  "results": {
+    "rps": 14833.24,
+    "bytes_per_sec": null,
+    "requests_total": 461210,
+    "requests_succeeded": 459860,
+    "requests_failed": 1350,
+    "p50_latency_ms": 16.163,
+    "p99_latency_ms": 24.851,
+    "server_cpu_percent": 96.91375000000001,
+    "raw_client_stdout": "[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-e23d013aa66580cf recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-96d00d427728f927 recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-0bf7c6ce003e5bb7 recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-e6c32398839bffba recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-7ccc99e62619ba2c recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-2bb72cb3f640f214 recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:44.992Z INFO  tquic::connection] CLIENT-350b67985d6215f4 recv error and close FrameEncodingError\n[2026-05-03T22:10:44.992Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-90e496928cb2a9e4 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-3d5113e16fac28d9 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-e767544ff09b66d7 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-3c60e856f94c6660 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-a6746583fb05bc82 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-c190577fb9618e30 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.417Z INFO  tquic::connection] CLIENT-6ba41fa7ee193c8c recv error and close FrameEncodingError\n[2026-05-03T22:10:45.417Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.475Z INFO  tquic::connection] CLIENT-03c7e11ee4a8c6ee recv error and close FrameEncodingError\n[2026-05-03T22:10:45.475Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.475Z INFO  tquic::connection] CLIENT-021fdec6bcf399b6 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.475Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.596Z INFO  tquic::connection] CLIENT-e5f4cb948faa4a8b recv error and close FrameEncodingError\n[2026-05-03T22:10:45.596Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.601Z INFO  tquic::connection] CLIENT-1fb42c0e2503200c recv error and close FrameEncodingError\n[2026-05-03T22:10:45.601Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.601Z INFO  tquic::connection] CLIENT-4a67d681b87b3974 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.601Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:45.725Z INFO  tquic::connection] CLIENT-6462fe9361b63f20 recv error and close FrameEncodingError\n[2026-05-03T22:10:45.725Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.156Z INFO  tquic::connection] CLIENT-b8ebb618bd2fb1a3 recv error and close FrameEncodingError\n[2026-05-03T22:10:46.156Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.284Z INFO  tquic::connection] CLIENT-781e392c2cbf986f recv error and close FrameEncodingError\n[2026-05-03T22:10:46.284Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.284Z INFO  tquic::connection] CLIENT-2031b4ca1191d139 recv error and close FrameEncodingError\n[2026-05-03T22:10:46.284Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.346Z INFO  tquic::connection] CLIENT-eedb6bca34f14a76 recv error and close FrameEncodingError\n[2026-05-03T22:10:46.346Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.346Z INFO  tquic::connection] CLIENT-bc0d4b6349bd0bd7 recv error and close FrameEncodingError\n[2026-05-03T22:10:46.346Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.469Z INFO  tquic::connection] CLIENT-5792bf64d089634e recv error and close FrameEncodingError\n[2026-05-03T22:10:46.469Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.950Z INFO  tquic::connection] CLIENT-c49565a418bccf22 recv error and close FrameEncodingError\n[2026-05-03T22:10:46.950Z INFO  tquic::connection] CLIENT-15d4a812bbe8d7ee recv error and close FrameEncodingError\n[2026-05-03T22:10:46.950Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:46.950Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:47.190Z INFO  tquic::connection] CLIENT-4c1179596c70c067 recv error and close FrameEncodingError\n[2026-05-03T22:10:47.190Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:47.748Z INFO  tquic::connection] CLIENT-282896ec541a8a95 recv error and close FrameEncodingError\n[2026-05-03T22:10:47.748Z INFO  tquic::connection] CLIENT-3e4a9605fb8f41ea recv error and close FrameEncodingError\n[2026-05-03T22:10:47.748Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:47.748Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:47.866Z INFO  tquic::connection] CLIENT-c3f5c5af5c8ed3f6 recv error and close FrameEncodingError\n[2026-05-03T22:10:47.866Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:48.564Z INFO  tquic::connection] CLIENT-01727e50a5a4abf9 recv error and close FrameEncodingError\n[2026-05-03T22:10:48.564Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:49.373Z INFO  tquic::connection] CLIENT-2b27a2d8da0d1022 recv error and close FrameEncodingError\n[2026-05-03T22:10:49.373Z ERROR tquic_client] recv failed: FrameEncodingError\n[2026-05-03T22:10:49.780Z INFO  tquic::connection] CLIENT-5d65d9baefdd169a recv error and close FrameEncodingError\n[2026-05-03T22:10:49.780Z ERROR tquic_client] recv failed: FrameEncodingError\n\nfinished in 31.002499204s, 14833.24 req/s\nconns: total 135, finish 135, success 100, failure 35\nrequests: sent 461210, finish 459860, success 459860\ntime for request(\u00b5s):\n\tmin: 687.00, max: 77402.00, mean: 16368.10, sd: 4302.74\n\tmedian: 16163.00, p80: 19235.00, p90: 21146.00, p99: 24851.00\nrecv pkts: 93334, sent pkts: 125797, lost pkts: 0\nrecv bytes: 503911464, sent bytes: 24967934, lost bytes: 0\n\n"
+  }
+}
