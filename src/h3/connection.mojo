@@ -246,7 +246,6 @@ struct H3Connection(Movable):
     def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram; translate QuicEvents to H3Events."""
         self._quic.recv(data, now)
-        _ = self._quic.timeout(now)
         while True:
             var ev_opt = self._quic.poll()
             if not ev_opt:
@@ -301,7 +300,6 @@ struct H3Connection(Movable):
             if Int(self.profile_ptr) != 0:
                 t_start = monotonic_us()
 
-        _ = self._quic.timeout(now)
         while True:
             var ev_opt = self._quic.poll()
             if not ev_opt:
