@@ -342,6 +342,13 @@ struct QuicConnection(Movable):
     # handshake-complete.
     var fresh_conn_ffi_us_total: UInt64
 
+    # Q5 (Plan: 2026-05-03-q5-read-hs-per-call-decomposition):
+    # Per-conn read_hs FFI call count. Non-resetting; recorded once at
+    # _on_handshake_complete server-side. Distinct from Q4's
+    # fresh_conn_ffi_us_total (sums all FFI sub-legs); this counts
+    # ONLY read_hs invocations.
+    var read_hs_call_count: UInt64
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit take: Self):
@@ -381,6 +388,7 @@ struct QuicConnection(Movable):
         self.profile_rustls_us_accum = take.profile_rustls_us_accum
         self.profile_first_iter_done = take.profile_first_iter_done
         self.fresh_conn_ffi_us_total = take.fresh_conn_ffi_us_total
+        self.read_hs_call_count = take.read_hs_call_count
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -434,6 +442,7 @@ struct QuicConnection(Movable):
         self.profile_rustls_us_accum = UInt64(0)
         self.profile_first_iter_done = False
         self.fresh_conn_ffi_us_total = UInt64(0)
+        self.read_hs_call_count = UInt64(0)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -1614,6 +1623,10 @@ struct QuicConnection(Movable):
                             self.profile_rustls_us_accum += t_end
                             self.profile_ptr[].record_ffi_read_hs(t_end - t_start)
                             self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
+                            # Q5: per-conn read_hs call count + per-call duration.
+                            # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
+                            self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
+                            self.profile_ptr[].record_read_hs_us_per_call(t_end - t_start)
                     data_buf.free()
 
                     if rc < 0:
@@ -1775,6 +1788,9 @@ struct QuicConnection(Movable):
             # record still fires — bucket[0] gets 1 sample (value=0 maps
             # to bucket index 0 in _per_pkt_bucket).
             self.profile_ptr[].record_fresh_conn_ffi_us(self.fresh_conn_ffi_us_total)
+            # Q5: record per-handshake read_hs call count.
+            # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
+            self.profile_ptr[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
 
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
