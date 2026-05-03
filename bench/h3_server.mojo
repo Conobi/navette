@@ -667,10 +667,11 @@ struct H3UdpHandler(BatchCompletionHandler):
         # each CQE carries exactly 1 datagram, so n=1 every call. The verdict
         # signal is whether this histogram shape differs from a hypothetical
         # `recvmmsg`-batched baseline. Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition.
+        # H3UdpHandler embeds AcceptProfile directly (line 511) — no pointer
+        # indirection; call record_recv_batch on self.profile under the comptime gate.
         @parameter
         if PROFILE_ACCEPT:
-            if Int(self.profile_ptr) != 0:
-                self.profile_ptr[].record_recv_batch(1)
+            self.profile.record_recv_batch(1)
         var namelen = Int(_read_u32_le(buf_ptr))
         var controllen = Int(_read_u32_le(buf_ptr + 4))
         var payloadlen = Int(_read_u32_le(buf_ptr + 8))
