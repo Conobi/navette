@@ -335,6 +335,12 @@ struct QuicConnection(Movable):
     var profile_first_initial_us: UInt64
     var profile_rustls_us_accum: UInt64
     var profile_first_iter_done: Bool
+    # Q4 (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition):
+    # Non-resetting per-conn FFI accumulator. Increments at the same 3 FFI
+    # bracket sites as profile_rustls_us_accum but is NEVER reset at iter
+    # boundaries — captures the SUM of all FFI work across the conn up to
+    # handshake-complete.
+    var fresh_conn_ffi_us_total: UInt64
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -374,6 +380,7 @@ struct QuicConnection(Movable):
         self.profile_first_initial_us = take.profile_first_initial_us
         self.profile_rustls_us_accum = take.profile_rustls_us_accum
         self.profile_first_iter_done = take.profile_first_iter_done
+        self.fresh_conn_ffi_us_total = take.fresh_conn_ffi_us_total
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -426,6 +433,7 @@ struct QuicConnection(Movable):
         self.profile_first_initial_us = UInt64(0)
         self.profile_rustls_us_accum = UInt64(0)
         self.profile_first_iter_done = False
+        self.fresh_conn_ffi_us_total = UInt64(0)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -1605,6 +1613,7 @@ struct QuicConnection(Movable):
                             var t_end = monotonic_us()
                             self.profile_rustls_us_accum += t_end
                             self.profile_ptr[].record_ffi_read_hs(t_end - t_start)
+                            self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
                     data_buf.free()
 
                     if rc < 0:
@@ -1640,6 +1649,7 @@ struct QuicConnection(Movable):
                     var t_end = monotonic_us()
                     self.profile_rustls_us_accum += t_end
                     self.profile_ptr[].record_ffi_write_hs(t_end - t_start)
+                    self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
 
             if rc < 0:
                 var err = lib[].last_error()
@@ -1685,6 +1695,7 @@ struct QuicConnection(Movable):
                         var t_end = monotonic_us()
                         self.profile_rustls_us_accum += t_end
                         self.profile_ptr[].record_ffi_take_keys(t_end - t_start)
+                        self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
 
                 if take_rc < 0:
                     var err = lib[].last_error()
@@ -1754,6 +1765,16 @@ struct QuicConnection(Movable):
             # hs_kind == -2 (client path) or -1 (invalid handle): no-op.
             # is_server gate above already excludes client; -1 means the conn
             # handle was freed mid-call (should never happen in practice).
+
+            # Q4: Record per-fresh-conn FFI total at handshake-complete.
+            # Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition.
+            # Fires once per server connection regardless of resumption
+            # status, gated by is_server (runtime) + profile_ptr != 0 (runtime).
+            # Under PROFILE_ACCEPT=False, fresh_conn_ffi_us_total stays 0
+            # (no increments in the comptime-gated bracket sites) but the
+            # record still fires — bucket[0] gets 1 sample (value=0 maps
+            # to bucket index 0 in _per_pkt_bucket).
+            self.profile_ptr[].record_fresh_conn_ffi_us(self.fresh_conn_ffi_us_total)
 
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
