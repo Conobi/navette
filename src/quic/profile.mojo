@@ -132,6 +132,13 @@ struct AcceptProfile(Copyable, Movable):
     var handshakes_full_total: UInt64
     var handshakes_resumed_total: UInt64
 
+    # 4 per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+    # fresh_conn_ffi_us_buckets[24] dispatches via _per_pkt_bucket (pow2, [0, 2^23) us).
+    # recv_batch_size_buckets[8] mirrors pkts_per_flush_buckets shape.
+    var fresh_conn_ffi_us_buckets: List[UInt64]
+    var fresh_conn_ffi_us_overflow: UInt64
+    var recv_batch_size_buckets: List[UInt64]
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -185,6 +192,13 @@ struct AcceptProfile(Copyable, Movable):
         self.drain_qpack_decode_us_total = UInt64(0)
         self.handshakes_full_total = UInt64(0)
         self.handshakes_resumed_total = UInt64(0)
+        self.fresh_conn_ffi_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.fresh_conn_ffi_us_buckets.append(UInt64(0))
+        self.fresh_conn_ffi_us_overflow = UInt64(0)
+        self.recv_batch_size_buckets = List[UInt64]()
+        for _ in range(8):
+            self.recv_batch_size_buckets.append(UInt64(0))
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -337,6 +351,21 @@ struct AcceptProfile(Copyable, Movable):
         connection whose handshake completed via TLS 1.3 PSK/ticket resumption."""
         self.handshakes_resumed_total = self.handshakes_resumed_total + UInt64(1)
 
+    def record_fresh_conn_ffi_us(mut self, us: UInt64):
+        """Increment the histogram bucket for a per-fresh-conn FFI total.
+        Called once per server-side connection at handshake-completion edge."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.fresh_conn_ffi_us_overflow = self.fresh_conn_ffi_us_overflow + UInt64(1)
+        else:
+            self.fresh_conn_ffi_us_buckets[b] = self.fresh_conn_ffi_us_buckets[b] + UInt64(1)
+
+    def record_recv_batch(mut self, n: Int):
+        """Increment the histogram bucket for a recvmsg-completion event size.
+        Called once per recvmsg CQE; with multishot recvmsg, n=1 every call."""
+        var b = _pkts_per_flush_bucket(n)
+        self.recv_batch_size_buckets[b] = self.recv_batch_size_buckets[b] + UInt64(1)
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -455,6 +484,28 @@ struct AcceptProfile(Copyable, Movable):
         s += "Handshake kinds:\n"
         s += "  full:    " + _fmt_count(self.handshakes_full_total) + "\n"
         s += "  resumed: " + _fmt_count(self.handshakes_resumed_total) + "\n\n"
+
+        # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+        s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
+        var fci_total: UInt64 = UInt64(0)
+        for i in range(24):
+            fci_total = fci_total + self.fresh_conn_ffi_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(fci_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.fresh_conn_ffi_us_overflow) + "\n"
+
+        s += "Recv-batch size (8-bucket):\n"
+        var rb_labels = List[String]()
+        rb_labels.append(String("1     "))
+        rb_labels.append(String("2-3   "))
+        rb_labels.append(String("4-7   "))
+        rb_labels.append(String("8-15  "))
+        rb_labels.append(String("16-31 "))
+        rb_labels.append(String("32-63 "))
+        rb_labels.append(String("64-127"))
+        rb_labels.append(String("128+  "))
+        for i in range(8):
+            s += "  size=" + rb_labels[i] + " " + _fmt_count(self.recv_batch_size_buckets[i]) + "\n"
+        s += "\n"
 
         # FFI sub-legs (Plan: 2026-04-28).
         s += "FFI sub-legs:\n"
@@ -656,6 +707,35 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "handshakes": {\n'
         s += '    "full": ' + String(self.handshakes_full_total) + ',\n'
         s += '    "resumed": ' + String(self.handshakes_resumed_total) + '\n'
+        s += "  },\n"
+
+        # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+        s += '  "fresh_conn_ffi_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.fresh_conn_ffi_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.fresh_conn_ffi_us_overflow) + "\n"
+        s += "  },\n"
+
+        # Recv-batch-size histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+        var rb_keys = List[String]()
+        rb_keys.append(String("1"))
+        rb_keys.append(String("2-3"))
+        rb_keys.append(String("4-7"))
+        rb_keys.append(String("8-15"))
+        rb_keys.append(String("16-31"))
+        rb_keys.append(String("32-63"))
+        rb_keys.append(String("64-127"))
+        rb_keys.append(String("128+"))
+        s += '  "recv_batch_size_buckets": {\n'
+        for i in range(8):
+            s += '    "' + rb_keys[i] + '": ' + String(self.recv_batch_size_buckets[i])
+            if i < 7:
+                s += ","
+            s += "\n"
         s += "  },\n"
 
         # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
