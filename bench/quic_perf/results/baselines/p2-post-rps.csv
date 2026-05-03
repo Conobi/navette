@@ -1,0 +1,24 @@
+---
+long-conn: median=13920.7  iqr=[13470.7, 14151.8]  stdev=591.2  n=10
+short-conn: median=1224.3  iqr=[1191.2, 1262.5]  stdev=93.7  n=10
+cell,iter,rps,server_cpu_pct
+long-conn,1,13049.48,95.354375
+long-conn,2,13611.06,97.550625
+long-conn,3,13678.91,97.51
+long-conn,4,14037.74,98.54
+long-conn,5,14384.19,98.502
+long-conn,6,14355.06,98.87125
+long-conn,7,12482.5,94.815625
+long-conn,8,14084.11,98.810625
+long-conn,9,13880.97,98.5175
+long-conn,10,13960.46,98.914375
+short-conn,1,984.11,49.2175
+short-conn,2,1160.9,55.8575
+short-conn,3,1201.24,57.679375
+short-conn,4,1219.58,58.374375
+short-conn,5,1228.97,56.4925
+short-conn,6,1333.77,58.43125
+short-conn,7,1295.64,57.18875
+short-conn,8,1215.38,57.80125
+short-conn,9,1251.44,57.4825
+short-conn,10,1238.31,57.27875

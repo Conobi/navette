@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "run_wall_clock_us": 39096127,
+  "on_flush_events": 77672,
+  "idle_us_total": 18058673,
+  "busy_us_total": 19865243,
+  "pkts_per_flush_histogram": {
+    "1": 44266,
+    "2-3": 11951,
+    "4-7": 8861,
+    "8-15": 5410,
+    "16-31": 3725,
+    "32-63": 2488,
+    "64-127": 800,
+    "128+": 171
+  },
+  "per_pkt_us": {
+    "total":         {"p50": 6, "p90": 102, "p99": 222, "max": 8192, "n": 426392, "overflow": 0},
+    "header_parse":  {"avg": 0, "total": 70422},
+    "hp":            {"avg": 0, "total": 201549},
+    "aead":          {"avg": 0, "total": 300612},
+    "frame_parse":   {"avg": 3, "total": 1342618},
+    "sm":            {"avg": 22, "total": 9539980},
+    "residual":      {"avg": 1, "total": 513634},
+    "shim_ffi":      {"avg": 20, "total": 8786869},
+    "drain":         {"avg": 6, "total": 2709812}
+  },
+  "arrival_lat_us_total": 20399949,
+  "arrival_lat_us_overflow": 0,
+  "arrival_lat_us_buckets": [39877, 34788, 45842, 55341, 62473, 68375, 67355, 45046, 17340, 1709, 3121, 2341, 435, 92, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "per_conn_pkts_buckets": [0, 0, 1, 0, 0, 0, 0, 8],
+  "conns_total": 9,
+  "conns_with_pkts_no_hs_complete": 0,
+  "addr_key_dcid_mismatch": {
+    "dcid_mismatch_pkts": 0,
+    "addr_keys_total": 0,
+    "addr_keys_with_mismatch": 0,
+    "per_addr_key": {
+    }
+  },
+  "handshakes": {
+    "full": 379,
+    "resumed": 42949
+  },
+  "ffi_subleg_us": {
+    "read_hs":   {"avg": 18, "total": 8098957},
+    "write_hs":  {"avg": 1, "total": 658101},
+    "take_keys": {"avg": 0, "total": 29811}
+  },
+  "loop_phases_us": {
+    "pop_dispatch": {"avg": 2, "total": 1043872},
+    "post_pkt":     {"avg": 0, "total": 95318},
+    "teardown":     {"avg": 0, "total": 22841},
+    "loop_iter_count": 444135,
+    "unaccounted_us_total": 483483,
+    "unaccounted_pct": 2
+  },
+  "h3_phases_us": {
+    "drain_resp": {"total": 589468},
+    "post_recv":  {"total": 2729326},
+    "dispatch":   {"total": 222308}
+  },
+  "drain_stream_subleg": {
+    "drain_stream_us_total": 2386281,
+    "recv_ffi_us": 187651,
+    "buf_accumulate_us": 68444,
+    "frame_parse_us": 25021,
+    "qpack_decode_us": 2062454,
+    "event_dispatch_us": 42711,
+    "sum_legs_us": 2386281,
+    "unaccounted_pct": 0
+  },
+  "worst_conns": [
+  ],
+  "handshake": {
+    "arrivals": 43335, "successful": 43328, "timed_out": 7,
+    "latency_us": {"p50": 2932, "p90": 9399, "p99": 18048, "max": 121838, "count": 43328}
+  }
+}
