@@ -2365,6 +2365,12 @@ struct QuicConnection(Movable):
             # Record pn_offset (where PN bytes start).
             var pn_offset = len(header_bytes)
 
+            # Pre-reserve capacity for [header | PN | payload | tag] —
+            # otherwise the extend(payload) below typically triggers a
+            # realloc-copy of the whole buffer. Sourced by per_pkt_us.drain
+            # 16.45% wall-clock; ~17k pkt/s × ~1KB realloc-copy avoided.
+            header_bytes.reserve(pn_offset + pn_len + len(payload) + _AEAD_TAG_LEN)
+
             # Append PN bytes.
             var truncated = pn_truncate(pn, pn_len)
             for i in range(pn_len):
@@ -2406,6 +2412,15 @@ struct QuicConnection(Movable):
             # Record pn_offset.
             var pn_offset = len(header_bytes)
 
+            # Pre-reserve [header | PN | payload (≥_MAX_PN_LEN padded) | tag]
+            # to avoid the realloc-copy on the extend(payload) below.
+            # Same sourcing as the long-header branch above.
+            var min_payload_len = _MAX_PN_LEN
+            var planned_payload = len(payload)
+            if planned_payload < min_payload_len:
+                planned_payload = min_payload_len
+            header_bytes.reserve(pn_offset + pn_len + planned_payload + _AEAD_TAG_LEN)
+
             # Append PN bytes.
             var truncated = pn_truncate(pn, pn_len)
             for i in range(pn_len):
@@ -2416,8 +2431,6 @@ struct QuicConnection(Movable):
             # _MAX_PN_LEN + _HP_SAMPLE_LEN = 20 bytes after pn_offset.
             # ciphertext = payload + AEAD_TAG(16), so payload must be >= 4
             # for a 1-byte PN.  Pad with QUIC PADDING (0x00) if needed.
-            # Pad payload to minimum size for HP sample.
-            var min_payload_len = _MAX_PN_LEN
             header_bytes.extend(Span(payload))
             var current_payload_len = len(payload)
             if current_payload_len < min_payload_len:
