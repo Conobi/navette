@@ -839,3 +839,49 @@ Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream);
 **Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
 
 Sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-*-q-drain-subleg-{pre,post}-{long,short}-conn-iter[1-3].json` (12 total). Detailed evidence: `bench/quic_perf/results/profile/Q-drain-subleg_pre_baselines_2026-05-01.md` + `bench/quic_perf/results/profile/Q-drain-subleg_post_evidence_2026-05-01.md`.
+
+---
+
+## P2 — Server-side TLS 1.3 Session Resumption (2026-05-03)
+
+**Spec:** `specs/2026-05-03-short-conn-resumption.md` → **Plan:** `plans/2026-05-03-short-conn-resumption.md`. **Branch:** `perf/short-conn-resumption`.
+
+Goal: lift short-conn rps by enabling TLS 1.3 session resumption (rustls aws_lc_rs `Ticketer::new()` always-on at `rlsm_quic_server_config_new` + `max_early_data: i32` 8th param plumbed for P3 + new `rlsm_quic_conn_handshake_kind` FFI + sidecar `handshakes.{full,resumed}` counters incremented at `_on_handshake_complete` server-side edge).
+
+### Captured numbers (n=10 each cell, 30s × 4 threads × 25 conns)
+
+| Cell | Pre median rps (n=10) | Post median rps (n=10) | Lift | Long-conn drift |
+|---|---|---|---|---|
+| long-conn (1k payload) | 14,176 | 13,921 | -1.80% | within ±2% ✅ |
+| short-conn (1k payload) | 1,167 | 1,224 | **+4.88%** | n/a |
+
+**Resumption fraction `r` (short-conn, sidecar-derived):**
+- Aggregated: `r = 445,805 resumed / 449,457 total = 0.9919` (99.2%)
+- Per-iter range: 0.989 to 0.993
+
+### Hard gate verdict
+
+| AC | Threshold | Observed | Status |
+|---|---|---|---|
+| AC8 r ≥ 0.40 short-conn | warmup-excluded | r = 0.992 | ✅ PASS |
+| AC9 lift ≥ +30% (r ≥ 0.75 tier) | n=10 median | +4.88% | ❌ FAIL |
+| AC10 long-conn drift ±2% | n=10 median | -1.80% | ✅ PASS |
+
+### Verdict: SHIP-WITH-CAVEAT
+
+The server-side change works as designed: 99% of short-conn handshakes resume, sidecar counters fire correctly, FFI maps rustls `HandshakeKind` enum to the documented integer table, all unit tests PASS. But the wall-clock lift on short-conn is **6× smaller** than the §5.1 projection (`r × 0.50 × (1.68/1.83) ≈ +35%`).
+
+### What this overturns
+
+The projection assumed resumed handshakes save ~50% of per-conn wall-clock. Observed: per-conn cost outside the cryptographic handshake (UDP recv, datagram parse, conn allocation, frame dispatch, single-fiber HoL wait) dwarfs the resumption saving. Server CPU stays at **57.3% on short-conn (43% idle)** — same as pre-P2, confirming the structural ceiling identified in `project_long_conn_parity_short_conn_ceiling.md` is unchanged.
+
+**This does NOT falsify the value of P2** (resumption works correctly and is a prerequisite for P3 0-RTT). It **confirms** P4 (cross-conn handshake pipelining, async `read_hs` + worker pool) is the real lever for short-conn parity with TQUIC. P4 is the next priority.
+
+### Image SHAs (tag-isolated)
+
+- `mojo-net-bench:p2-pre-off`: `c0daf44b5d7a` (rebuilt from main `f22647b` source state, PROFILE_ACCEPT=False).
+- `mojo-net-bench:p2-post-on`: `733b02dd0d63` (rebuilt from `5b08a22`, PROFILE_ACCEPT=True).
+
+**Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
+
+Sidecars: `bench/quic_perf/results/baselines/p2-post-on/{long,short}/INSTRUMENTATION-*.json` (20 total). Verdict + raw rps: `bench/quic_perf/results/baselines/p2-verdict.md` + `p2-{pre,post}-rps.csv`.
