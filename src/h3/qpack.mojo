@@ -33,6 +33,14 @@ struct QpackHeaderField(Copyable, Movable):
         _on_request to move the value out of a popped field instead of copying."""
         return self.value^
 
+    def consume_into(deinit self, mut name_out: String, mut value_out: String):
+        """Consume self and move both name and value into the caller's slots.
+        Used by _on_request's user-header branch where we need ownership of
+        both fields simultaneously (Mojo 0.26.2's broken tuple-element-move
+        prevents returning Tuple[String, String])."""
+        name_out = self.name^
+        value_out = self.value^
+
 
 # QPACK static table — RFC 9204 Appendix A (99 entries, indices 0–98)
 comptime QPACK_STATIC_TABLE_SIZE: Int = 99

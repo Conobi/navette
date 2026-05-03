@@ -224,6 +224,12 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # entry is appended after the drain. Saves the user_headers
         # intermediate Headers struct + a second iteration that would
         # have copied each (name, value) into req_headers.
+        #
+        # User-header branch uses add_lowercase + consume_into: HTTP/3
+        # mandates lowercase names (RFC 9114 §4.2), so the _to_lower()
+        # allocation in Headers.add is unnecessary; consume_into moves
+        # both name and value out of the field with no String clone.
+        # Combined that's two String allocations saved per user header.
         while len(fields) > 0:
             var field = fields.pop()
             if field.name == ":method":
@@ -235,7 +241,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             elif field.name == ":scheme":
                 pass
             else:
-                req_headers.add(field.name.copy(), field^.consume_value())
+                var name = String()
+                var value = String()
+                field^.consume_into(name, value)
+                req_headers.add_lowercase(name^, value^)
 
         if authority_str != "":
             req_headers.add("host", authority_str^)
