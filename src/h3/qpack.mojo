@@ -610,20 +610,64 @@ struct QpackSharedTables(Movable):
     Mirrors TQUIC's `const STATIC_ENCODE_TABLE` + `const DECODE_TABLE`
     rodata pattern; Mojo 0.26.2 lacks module-level mutable state so the
     pointer must be threaded explicitly.
+
+    Two name-keyed indices built once at init mirror TQUIC's
+    Lazy<HashMap<&str, usize>> dispatch — mojo-net previously did
+    O(99) linear scans per header per response in _static_find /
+    _static_find_name. The static table has non-contiguous name
+    groups (`:status` at 24-28 + 63-71, `access-control-allow-headers`
+    at 33-34 + 75), so a forward-walk-while-name-matches won't catch
+    the second group. Hence two Dicts:
+
+      name_first_idx: name → first index whose name matches (any value).
+        Used by _static_find_name. Encoder uses the result to encode
+        "Literal With Name Reference"; any matching name-index is fine.
+
+      name_value_idx: "name\\x00value" → exact static-table index.
+        Used by _static_find for exact (name, value) match.
     """
     var huff_decode: HuffDecodeTable
     var huff_encode: List[HuffmanEntry]
     var static_table: List[QpackStaticEntry]
+    var name_first_idx: Dict[String, Int]
+    var name_value_idx: Dict[String, Int]
 
     def __init__(out self):
         self.huff_decode = HuffDecodeTable()
         self.huff_encode = _huffman_encode_table()
         self.static_table = _qpack_static_table()
+        self.name_first_idx = _build_static_name_index(self.static_table)
+        self.name_value_idx = _build_static_name_value_index(self.static_table)
 
     def __init__(out self, *, deinit take: Self):
         self.huff_decode = take.huff_decode^
         self.huff_encode = take.huff_encode^
         self.static_table = take.static_table^
+        self.name_first_idx = take.name_first_idx^
+        self.name_value_idx = take.name_value_idx^
+
+
+def _build_static_name_index(read static_table: List[QpackStaticEntry]) -> Dict[String, Int]:
+    """Build name→first-static-table-index map. Walks the static table
+    once and records the first index at which each unique name appears.
+    """
+    var m = Dict[String, Int]()
+    for i in range(len(static_table)):
+        var name = static_table[i].name
+        if name not in m:
+            m[name] = i
+    return m^
+
+
+def _build_static_name_value_index(read static_table: List[QpackStaticEntry]) -> Dict[String, Int]:
+    """Build "name\\x00value" → static-table-index map for O(1) exact
+    (name, value) lookup. The NUL separator avoids collisions like
+    "ab" + "" colliding with "a" + "b"."""
+    var m = Dict[String, Int]()
+    for i in range(len(static_table)):
+        var key = static_table[i].name + "\x00" + static_table[i].value
+        m[key] = i
+    return m^
 
 
 def huffman_decode_sm(data: List[UInt8], read tbl: HuffDecodeTable) raises -> String:
@@ -960,29 +1004,33 @@ struct QpackEncoder(Copyable, Movable):
             result.append(last_byte)
         return result^
 
-    def _static_find(self, name: String, value: String) -> Optional[Int]:
-        """Linear scan over the static table (local or shared). mojo-net's
-        table is non-contiguous by name so TQUIC's range-keyed dispatch
-        doesn't fit cleanly without re-ordering — left as future work."""
+    def _static_find(self, name: String, value: String) raises -> Optional[Int]:
+        """Find an exact (name, value) match in the static table.
+
+        O(1) Dict lookup via prebuilt name_value_idx when shared tables
+        are bound; linear fallback otherwise (test/legacy callers).
+        Mirrors TQUIC's `Lazy<HashMap<&str, usize>>` dispatch.
+        """
         if Int(self.shared_tables_ptr) != 0:
-            ref tbl = self.shared_tables_ptr[].static_table
-            for i in range(len(tbl)):
-                if tbl[i].name == name and tbl[i].value == value:
-                    return Optional[Int](i)
-            return Optional[Int](None)
+            ref idx_map = self.shared_tables_ptr[].name_value_idx
+            var key = name + "\x00" + value
+            if key not in idx_map:
+                return Optional[Int](None)
+            return Optional[Int](idx_map[key])
         for i in range(len(self.static_table)):
             if self.static_table[i].name == name and self.static_table[i].value == value:
                 return Optional[Int](i)
         return Optional[Int](None)
 
-    def _static_find_name(self, name: String) -> Optional[Int]:
-        """Linear scan over the static table (local or shared) — first matching name."""
+    def _static_find_name(self, name: String) raises -> Optional[Int]:
+        """Find first index whose name matches. O(1) via name_first_idx
+        when shared tables are bound; linear fallback otherwise.
+        """
         if Int(self.shared_tables_ptr) != 0:
-            ref tbl = self.shared_tables_ptr[].static_table
-            for i in range(len(tbl)):
-                if tbl[i].name == name:
-                    return Optional[Int](i)
-            return Optional[Int](None)
+            ref idx_map = self.shared_tables_ptr[].name_first_idx
+            if name not in idx_map:
+                return Optional[Int](None)
+            return Optional[Int](idx_map[name])
         for i in range(len(self.static_table)):
             if self.static_table[i].name == name:
                 return Optional[Int](i)
