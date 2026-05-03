@@ -663,6 +663,14 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.consumed_bufs.append(buf_id)
             return
 
+        # Q4: count datagrams per recvmsg CQE. With io_uring multishot recvmsg,
+        # each CQE carries exactly 1 datagram, so n=1 every call. The verdict
+        # signal is whether this histogram shape differs from a hypothetical
+        # `recvmmsg`-batched baseline. Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition.
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                self.profile_ptr[].record_recv_batch(1)
         var namelen = Int(_read_u32_le(buf_ptr))
         var controllen = Int(_read_u32_le(buf_ptr + 4))
         var payloadlen = Int(_read_u32_le(buf_ptr + 8))
