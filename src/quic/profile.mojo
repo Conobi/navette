@@ -139,6 +139,13 @@ struct AcceptProfile(Copyable, Movable):
     var fresh_conn_ffi_us_overflow: UInt64
     var recv_batch_size_buckets: List[UInt64]
 
+    # 3 read_hs decomposition fields (Plan: 2026-05-03-q5-read-hs-per-call-decomposition).
+    # Per-handshake call count: 8-bucket via _pkts_per_flush_bucket.
+    # Per-call duration: 24-bucket pow2 via _per_pkt_bucket.
+    var read_hs_per_handshake_count_buckets: List[UInt64]
+    var read_hs_us_per_call_buckets: List[UInt64]
+    var read_hs_us_per_call_overflow: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -199,6 +206,13 @@ struct AcceptProfile(Copyable, Movable):
         self.recv_batch_size_buckets = List[UInt64]()
         for _ in range(8):
             self.recv_batch_size_buckets.append(UInt64(0))
+        self.read_hs_per_handshake_count_buckets = List[UInt64]()
+        for _ in range(8):
+            self.read_hs_per_handshake_count_buckets.append(UInt64(0))
+        self.read_hs_us_per_call_buckets = List[UInt64]()
+        for _ in range(24):
+            self.read_hs_us_per_call_buckets.append(UInt64(0))
+        self.read_hs_us_per_call_overflow = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -366,6 +380,21 @@ struct AcceptProfile(Copyable, Movable):
         var b = _pkts_per_flush_bucket(n)
         self.recv_batch_size_buckets[b] = self.recv_batch_size_buckets[b] + UInt64(1)
 
+    def record_read_hs_per_handshake_count(mut self, n: Int):
+        """Increment 8-bucket histogram for per-server-conn read_hs call count.
+        Called once at _on_handshake_complete server-side."""
+        var b = _pkts_per_flush_bucket(n)
+        self.read_hs_per_handshake_count_buckets[b] = self.read_hs_per_handshake_count_buckets[b] + UInt64(1)
+
+    def record_read_hs_us_per_call(mut self, us: UInt64):
+        """Increment 24-bucket pow2 histogram for per-call read_hs duration.
+        Called per read_hs FFI bracket completion."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.read_hs_us_per_call_overflow = self.read_hs_us_per_call_overflow + UInt64(1)
+        else:
+            self.read_hs_us_per_call_buckets[b] = self.read_hs_us_per_call_buckets[b] + UInt64(1)
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -506,6 +535,27 @@ struct AcceptProfile(Copyable, Movable):
         for i in range(8):
             s += "  size=" + rb_labels[i] + " " + _fmt_count(self.recv_batch_size_buckets[i]) + "\n"
         s += "\n"
+
+        # Q5 read_hs decomposition (Plan: 2026-05-03-q5-read-hs-per-call-decomposition).
+        s += "read_hs per-handshake count (8-bucket):\n"
+        var rh_labels = List[String]()
+        rh_labels.append(String("1     "))
+        rh_labels.append(String("2-3   "))
+        rh_labels.append(String("4-7   "))
+        rh_labels.append(String("8-15  "))
+        rh_labels.append(String("16-31 "))
+        rh_labels.append(String("32-63 "))
+        rh_labels.append(String("64-127"))
+        rh_labels.append(String("128+  "))
+        for i in range(8):
+            s += "  count=" + rh_labels[i] + " " + _fmt_count(self.read_hs_per_handshake_count_buckets[i]) + "\n"
+
+        s += "read_hs per-call duration (24-bucket pow2 us):\n"
+        var rd_total: UInt64 = UInt64(0)
+        for i in range(24):
+            rd_total = rd_total + self.read_hs_us_per_call_buckets[i]
+        s += "  total samples:    " + _fmt_count(rd_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_us_per_call_overflow) + "\n\n"
 
         # FFI sub-legs (Plan: 2026-04-28).
         s += "FFI sub-legs:\n"
@@ -736,6 +786,34 @@ struct AcceptProfile(Copyable, Movable):
             if i < 7:
                 s += ","
             s += "\n"
+        s += "  },\n"
+
+        # Q5 read_hs decomposition (Plan: 2026-05-03-q5-read-hs-per-call-decomposition).
+        var rh_keys = List[String]()
+        rh_keys.append(String("1"))
+        rh_keys.append(String("2-3"))
+        rh_keys.append(String("4-7"))
+        rh_keys.append(String("8-15"))
+        rh_keys.append(String("16-31"))
+        rh_keys.append(String("32-63"))
+        rh_keys.append(String("64-127"))
+        rh_keys.append(String("128+"))
+        s += '  "read_hs_per_handshake_count_buckets": {\n'
+        for i in range(8):
+            s += '    "' + rh_keys[i] + '": ' + String(self.read_hs_per_handshake_count_buckets[i])
+            if i < 7:
+                s += ","
+            s += "\n"
+        s += "  },\n"
+
+        s += '  "read_hs_us_per_call": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.read_hs_us_per_call_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.read_hs_us_per_call_overflow) + "\n"
         s += "  },\n"
 
         # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).

@@ -1202,6 +1202,68 @@ def test_report_json_emits_fresh_conn_blocks() raises:
     print("PASS: test_report_json_emits_fresh_conn_blocks")
 
 
+def test_record_read_hs_per_handshake_count_dispatches_into_8_buckets() raises:
+    """read_hs_per_handshake_count_buckets[8] uses _pkts_per_flush_bucket dispatch."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    for i in range(8):
+        assert_true(p.read_hs_per_handshake_count_buckets[i] == UInt64(0), "bucket " + String(i) + " starts at 0")
+
+    p.record_read_hs_per_handshake_count(1)
+    p.record_read_hs_per_handshake_count(1)
+    p.record_read_hs_per_handshake_count(3)
+    p.record_read_hs_per_handshake_count(9)
+    p.record_read_hs_per_handshake_count(200)
+
+    assert_true(p.read_hs_per_handshake_count_buckets[0] == UInt64(2), "size=1 -> bucket 0 count=2")
+    assert_true(p.read_hs_per_handshake_count_buckets[1] == UInt64(1), "size=2-3 -> bucket 1 count=1")
+    assert_true(p.read_hs_per_handshake_count_buckets[3] == UInt64(1), "size=8-15 -> bucket 3 count=1")
+    assert_true(p.read_hs_per_handshake_count_buckets[7] == UInt64(1), "size=128+ -> bucket 7 count=1")
+    print("PASS: test_record_read_hs_per_handshake_count_dispatches_into_8_buckets")
+
+
+def test_record_read_hs_us_per_call_dispatches_into_24_buckets() raises:
+    """read_hs_us_per_call_buckets[24] uses _per_pkt_bucket; overflow at >= 2^23."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    for i in range(24):
+        assert_true(p.read_hs_us_per_call_buckets[i] == UInt64(0), "bucket " + String(i) + " starts at 0")
+    assert_true(p.read_hs_us_per_call_overflow == UInt64(0), "overflow starts at 0")
+
+    p.record_read_hs_us_per_call(UInt64(0))
+    assert_true(p.read_hs_us_per_call_buckets[0] == UInt64(1), "0us -> bucket 0")
+
+    p.record_read_hs_us_per_call(UInt64(1024))
+    assert_true(p.read_hs_us_per_call_buckets[11] == UInt64(1), "1024us -> bucket 11 (_per_pkt_bucket: floor(log2(1024))+1 = 11)")
+
+    p.record_read_hs_us_per_call(UInt64(1 << 23))
+    assert_true(p.read_hs_us_per_call_overflow == UInt64(1), "2^23 us -> overflow")
+    print("PASS: test_record_read_hs_us_per_call_dispatches_into_24_buckets")
+
+
+def test_report_json_emits_read_hs_blocks() raises:
+    """JSON sidecar must include read_hs_per_handshake_count_buckets + read_hs_us_per_call blocks."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_read_hs_per_handshake_count(1)
+    p.record_read_hs_per_handshake_count(1)
+    p.record_read_hs_us_per_call(UInt64(150))
+
+    var s = p.report_json()
+    var i_count = s.find('"read_hs_per_handshake_count_buckets"')
+    assert_true(i_count >= 0, '"read_hs_per_handshake_count_buckets" key present in JSON')
+    var i_size1 = s.find('"1": 2', i_count)
+    assert_true(i_size1 >= 0, '"1": 2 present after read_hs_per_handshake_count_buckets')
+
+    var i_dur = s.find('"read_hs_us_per_call"')
+    assert_true(i_dur >= 0, '"read_hs_us_per_call" key present in JSON')
+    var i_buckets_inner = s.find('"buckets"', i_dur)
+    assert_true(i_buckets_inner >= 0, '"buckets" key present after read_hs_us_per_call')
+    var i_overflow = s.find('"overflow"', i_dur)
+    assert_true(i_overflow >= 0, '"overflow" key present after read_hs_us_per_call')
+    print("PASS: test_report_json_emits_read_hs_blocks")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1263,4 +1325,7 @@ def main() raises:
     test_record_fresh_conn_ffi_us_dispatches_into_buckets()
     test_record_recv_batch_dispatches_into_8_buckets()
     test_report_json_emits_fresh_conn_blocks()
+    test_record_read_hs_per_handshake_count_dispatches_into_8_buckets()
+    test_record_read_hs_us_per_call_dispatches_into_24_buckets()
+    test_report_json_emits_read_hs_blocks()
     print("All Plan A tests passed.")
