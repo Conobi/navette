@@ -1733,6 +1733,28 @@ struct QuicConnection(Movable):
                     var latency_us = now - self.profile_first_initial_us
                     self.profile_ptr[].record_handshake_complete(latency_us)
 
+        # Increment full/resumed counter exactly once per server connection.
+        # Runtime gate only (not @parameter if PROFILE_ACCEPT:) so the test
+        # build (PROFILE_ACCEPT=False) can verify the increment by attaching a
+        # profile_ptr directly — approach (c) per Plan 2026-05-03.
+        # profile_ptr is null when PROFILE_ACCEPT=False (no bench attachment),
+        # so the runtime branch is paid at most once per server handshake.
+        if self.is_server and Int(self.profile_ptr) != 0:
+            var hs_kind = self._lib()[].quic_conn_handshake_kind(self.conn_handle)
+            if hs_kind == Int32(1) or hs_kind == Int32(3):
+                self.profile_ptr[].record_handshake_full()
+            elif hs_kind == Int32(2):
+                self.profile_ptr[].record_handshake_resumed()
+            elif hs_kind == Int32(0):
+                raise (
+                    "_on_handshake_complete: handshake_kind=0 with "
+                    + "is_handshaking==false (rustls state-machine "
+                    + "invariant broken)"
+                )
+            # hs_kind == -2 (client path) or -1 (invalid handle): no-op.
+            # is_server gate above already excludes client; -1 means the conn
+            # handle was freed mid-call (should never happen in practice).
+
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
 

@@ -91,7 +91,8 @@ def _create_configs(
 
     var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
     var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len, srv_cfg_ptr,
+        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
+        Int32(0), srv_cfg_ptr,
     )
     assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
     var server_config = srv_cfg_ptr[0]

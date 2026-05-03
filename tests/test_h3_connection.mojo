@@ -148,7 +148,7 @@ def test_h3_control_stream_setup() raises:
     alpn_ptr[1] = UInt8(ord("3"))
     var alpn_len = Int32(2)
     var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    _ = lib_ptr[].quic_server_config_new(cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len, srv_cfg_ptr)
+    _ = lib_ptr[].quic_server_config_new(cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len, Int32(0), srv_cfg_ptr)
     var server_config = srv_cfg_ptr[0]
     srv_cfg_ptr.free()
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()

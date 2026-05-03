@@ -5,11 +5,20 @@
 # T2 tests:
 #   - handshake_kind FFI: invalid handle -> -1 with last_error set
 #   - handshake_kind FFI: client connection -> -2 (not applicable)
+# T3 tests:
+#   - quic_server_config_new accepts max_early_data param
+# T4 tests:
+#   - E2E resumption: second conn against same ServerConfig yields kind==2
+#   - Double-count guard: _on_handshake_complete is idempotent
 
-from std.memory import UnsafePointer
+from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
+from src.quic.connection import QuicConnection, QuicEvent
+from src.quic.profile import AcceptProfile
+from src.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_int
 
 
@@ -123,7 +132,372 @@ def test_quic_server_config_new_accepts_max_early_data_param() raises:
     cert_buf.free(); key_buf.free(); alpn_buf.free(); out_handle.free()
 
 
+# ── T4 helpers ───────────────────────────────────────────────────────────
+
+
+def _py_bytes_to_mojo(raw: PythonObject) raises -> List[UInt8]:
+    """Convert Python bytes to Mojo List[UInt8]."""
+    var builtins = Python.import_module("builtins")
+    var result = List[UInt8]()
+    for i in range(Int(py=builtins.len(raw))):
+        result.append(UInt8(Int(py=raw[i])))
+    return result^
+
+
+def _generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+    """Generate a self-signed EC cert+key via Python cryptography.
+    Mirrors the helper in test_quic_connection.mojo (copy-and-adapt).
+    Returns (cert_pem_bytes, key_pem_bytes).
+    """
+    var ec_mod  = Python.import_module("cryptography.hazmat.primitives.asymmetric.ec")
+    var x509_mod = Python.import_module("cryptography.x509")
+    var oid_mod  = Python.import_module("cryptography.x509.oid")
+    var ser_mod  = Python.import_module("cryptography.hazmat.primitives.serialization")
+    var hash_mod = Python.import_module("cryptography.hazmat.primitives.hashes")
+    var dt_mod   = Python.import_module("datetime")
+    var builtins = Python.import_module("builtins")
+
+    var py_key = ec_mod.generate_private_key(ec_mod.SECP256R1())
+    var name_attrs = builtins.list()
+    name_attrs.append(x509_mod.NameAttribute(oid_mod.NameOID.COMMON_NAME, "localhost"))
+    var subject = x509_mod.Name(name_attrs)
+    var san_list = builtins.list()
+    san_list.append(x509_mod.DNSName("localhost"))
+    var py_cert = (
+        x509_mod.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(py_key.public_key())
+        .serial_number(x509_mod.random_serial_number())
+        .not_valid_before(dt_mod.datetime(2024, 1, 1))
+        .not_valid_after(dt_mod.datetime(2034, 1, 1))
+        .add_extension(
+            x509_mod.SubjectAlternativeName(san_list),
+            critical=False,
+        )
+        .sign(py_key, hash_mod.SHA256())
+    )
+    var cert_pem_py = py_cert.public_bytes(ser_mod.Encoding.PEM)
+    var key_pem_py  = py_key.private_bytes(
+        ser_mod.Encoding.PEM,
+        ser_mod.PrivateFormat.PKCS8,
+        ser_mod.NoEncryption(),
+    )
+    return (_py_bytes_to_mojo(cert_pem_py)^, _py_bytes_to_mojo(key_pem_py)^)
+
+
+def _resumption_params() -> TransportParams:
+    """Transport params suitable for resumption integration tests."""
+    var params = default_transport_params()
+    params.max_idle_timeout = UInt64(30_000)
+    params.initial_max_data = UInt64(1_048_576)
+    params.initial_max_stream_data_bidi_local  = UInt64(65_536)
+    params.initial_max_stream_data_bidi_remote = UInt64(65_536)
+    params.initial_max_streams_bidi = UInt64(100)
+    return params^
+
+
+# ── T4 tests ─────────────────────────────────────────────────────────────
+#
+# Design note: the handshake loop is INLINED rather than delegated to a helper
+# with `mut QuicConnection` parameters.  Mojo `def` functions use copy-in /
+# copy-out semantics for `mut` params: the local copy is destructed after the
+# write-back, which calls QuicConnection.__del__ and frees the Rust conn_handle.
+# Subsequent direct FFI calls with the (now-freed) handle return -1.  Keeping
+# the connections in the same scope as the FFI assertions avoids this.
+
+
+def test_resumption_kind_after_two_handshakes_against_same_config() raises:
+    """Drive two consecutive client/server connection pairs against the same
+    QUIC ServerConfig handle. The second server connection's profile counter
+    must show handshakes_resumed_total == 1. Validates FR-Ticketer (§4.1),
+    FR-Counters (§4.4), and FR-Increment-Once (§4.5)."""
+    # Heap-allocate the library to avoid stack-pointer invalidation.
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    # Build an ephemeral cert shared across both conn pairs.
+    var cert_key  = _generate_ephemeral_cert()
+    var cert_bytes = cert_key[0].copy()
+    var key_bytes  = cert_key[1].copy()
+
+    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
+    var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
+    var cert_len = Int32(len(cert_bytes))
+    var key_len  = Int32(len(key_bytes))
+
+    # ALPN = "h3".
+    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
+    alpn_ptr[0] = UInt8(ord("h"))
+    alpn_ptr[1] = UInt8(ord("3"))
+    var alpn_len = Int32(2)
+
+    # Create server config (SAME handle for both conn pairs — tickets are bound
+    # to the config's ticketer, so resumption only works with the same config).
+    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
+    srv_cfg_ptr[0] = Int32(-1)
+    var rc = lib_ptr[].quic_server_config_new(
+        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
+        Int32(0),   # max_early_data: 0 (0-RTT disabled, P3)
+        srv_cfg_ptr,
+    )
+    assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
+    var server_config = srv_cfg_ptr[0]
+    srv_cfg_ptr.free()
+
+    # Create client config trusting the ephemeral cert.
+    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
+    cli_cfg_ptr[0] = Int32(-1)
+    rc = lib_ptr[].quic_client_config_with_ca(
+        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+    )
+    assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
+    var client_config = cli_cfg_ptr[0]
+    cli_cfg_ptr.free()
+
+    alpn_ptr.free()
+
+    # Heap-allocate a shared AcceptProfile so both server connections accumulate
+    # into the same counters.
+    var profile_heap = _heap_alloc[AcceptProfile](1)
+    profile_heap.init_pointee_move(AcceptProfile())
+    var p_ptr = profile_heap.as_any_origin()
+
+    var params = _resumption_params()
+    var now = UInt64(1_000_000)
+
+    # ── First connection pair ─────────────────────────────────────────
+    # Inlined handshake loop — must NOT delegate to a helper with `mut
+    # QuicConnection` params (copy-in/copy-out would free the Rust handle).
+    var client1 = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var dcid1_a = List[UInt8](copy=client1.initial_dcid)
+    var dcid1_b = List[UInt8](copy=client1.initial_dcid)
+    var server1 = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(dcid1_a), Span(dcid1_b), now,
+        p_ptr,
+    )
+
+    var established1 = False
+    for _ in range(30):
+        now += UInt64(10_000)
+        var c_dg = client1.send(now)
+        for i in range(len(c_dg)):
+            try:
+                server1.recv(Span(c_dg[i]), now)
+            except:
+                pass
+        var s_dg = server1.send(now)
+        for i in range(len(s_dg)):
+            try:
+                client1.recv(Span(s_dg[i]), now)
+            except:
+                pass
+        if client1.is_established() and server1.is_established():
+            established1 = True
+            break
+    assert_true(established1, "first handshake did not complete")
+
+    # Flush post-handshake CRYPTO frames (NewSessionTicket) from server1 to
+    # client1.  rustls issues 2 tickets by default; 8 rounds is enough.
+    for _ in range(8):
+        now += UInt64(10_000)
+        var s_dg = server1.send(now)
+        for i in range(len(s_dg)):
+            try:
+                client1.recv(Span(s_dg[i]), now)
+            except:
+                pass
+        var c_dg = client1.send(now)
+        for i in range(len(c_dg)):
+            try:
+                server1.recv(Span(c_dg[i]), now)
+            except:
+                pass
+
+    # Check counters: after first handshake (Full), full_total == 1, resumed == 0.
+    var full1   = p_ptr[].handshakes_full_total
+    var resumed1 = p_ptr[].handshakes_resumed_total
+    assert_true(
+        full1 == UInt64(1) and resumed1 == UInt64(0),
+        "first conn: expected full=1 resumed=0, got full="
+            + String(full1) + " resumed=" + String(resumed1),
+    )
+
+    # ── Second connection pair (same server_config, same client_config) ──
+    var client2 = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var dcid2_a = List[UInt8](copy=client2.initial_dcid)
+    var dcid2_b = List[UInt8](copy=client2.initial_dcid)
+    var server2 = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(dcid2_a), Span(dcid2_b), now,
+        p_ptr,
+    )
+
+    var established2 = False
+    for _ in range(30):
+        now += UInt64(10_000)
+        var c2_dg = client2.send(now)
+        for i in range(len(c2_dg)):
+            try:
+                server2.recv(Span(c2_dg[i]), now)
+            except:
+                pass
+        var s2_dg = server2.send(now)
+        for i in range(len(s2_dg)):
+            try:
+                client2.recv(Span(s2_dg[i]), now)
+            except:
+                pass
+        if client2.is_established() and server2.is_established():
+            established2 = True
+            break
+    assert_true(established2, "second handshake did not complete")
+
+    # Check counters: after second handshake (Resumed), resumed_total == 1.
+    var full2    = p_ptr[].handshakes_full_total
+    var resumed2 = p_ptr[].handshakes_resumed_total
+    assert_true(
+        full2 == UInt64(1) and resumed2 == UInt64(1),
+        "second conn: expected full=1 resumed=1, got full="
+            + String(full2) + " resumed=" + String(resumed2),
+    )
+
+    profile_heap.destroy_pointee()
+    profile_heap.free()
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_resumption_kind_after_two_handshakes_against_same_config: PASS")
+
+
+def test_double_count_guard_on_handshake_complete_idempotent() raises:
+    """Calling _on_handshake_complete multiple times must not double-increment.
+
+    Drives a real loopback handshake to completion with a profile attached,
+    verifies counter == 1, then calls _on_handshake_complete two more times
+    manually and asserts the counter still == 1.  The existing CONN_ESTABLISHED
+    early-return at the top of the function is the double-count guard.
+
+    Uses a runtime profile_ptr (not @parameter if PROFILE_ACCEPT:) so the
+    increment fires regardless of the PROFILE_ACCEPT compile-time flag — this
+    is approach (c) from the T4 task description."""
+    var lib_ptr = _heap_alloc[RustlsLibrary](1)
+    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var lib_addr = UInt64(Int(lib_ptr))
+
+    var cert_key  = _generate_ephemeral_cert()
+    var cert_bytes = cert_key[0].copy()
+    var key_bytes  = cert_key[1].copy()
+
+    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
+    var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
+    var cert_len = Int32(len(cert_bytes))
+    var key_len  = Int32(len(key_bytes))
+
+    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
+    alpn_ptr[0] = UInt8(ord("h"))
+    alpn_ptr[1] = UInt8(ord("3"))
+    var alpn_len = Int32(2)
+
+    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
+    srv_cfg_ptr[0] = Int32(-1)
+    var rc = lib_ptr[].quic_server_config_new(
+        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
+        Int32(0), srv_cfg_ptr,
+    )
+    assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
+    var server_config = srv_cfg_ptr[0]
+    srv_cfg_ptr.free()
+
+    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
+    cli_cfg_ptr[0] = Int32(-1)
+    rc = lib_ptr[].quic_client_config_with_ca(
+        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+    )
+    assert_true(rc == Int32(0), "quic_client_config_with_ca failed")
+    var client_config = cli_cfg_ptr[0]
+    cli_cfg_ptr.free()
+    alpn_ptr.free()
+
+    var params = _resumption_params()
+    var now = UInt64(2_000_000)
+
+    # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
+    var profile_heap = _heap_alloc[AcceptProfile](1)
+    profile_heap.init_pointee_move(AcceptProfile())
+    var p_ptr = profile_heap.as_any_origin()
+
+    var client = QuicConnection.client(
+        lib_addr, client_config, "localhost", params, now,
+    )
+    var dcid_a = List[UInt8](copy=client.initial_dcid)
+    var dcid_b = List[UInt8](copy=client.initial_dcid)
+    # Attach profile before driving the handshake so the server connection
+    # has a live profile_ptr when _on_handshake_complete fires.
+    var server = QuicConnection.server(
+        lib_addr, server_config, params,
+        Span(dcid_a), Span(dcid_b), now,
+        p_ptr,
+    )
+
+    # Inline handshake loop — no helper with mut QuicConnection.
+    var established = False
+    for _ in range(30):
+        now += UInt64(10_000)
+        var c_dg = client.send(now)
+        for i in range(len(c_dg)):
+            try:
+                server.recv(Span(c_dg[i]), now)
+            except:
+                pass
+        var s_dg = server.send(now)
+        for i in range(len(s_dg)):
+            try:
+                client.recv(Span(s_dg[i]), now)
+            except:
+                pass
+        if client.is_established() and server.is_established():
+            established = True
+            break
+    assert_true(established, "handshake did not complete in double-count test")
+
+    # After the handshake, exactly one counter should have been incremented.
+    var full_after_hs    = p_ptr[].handshakes_full_total
+    var resumed_after_hs = p_ptr[].handshakes_resumed_total
+    assert_true(
+        full_after_hs + resumed_after_hs == UInt64(1),
+        "expected exactly 1 increment after handshake, got full="
+            + String(full_after_hs) + " resumed=" + String(resumed_after_hs),
+    )
+
+    # Call _on_handshake_complete two more times manually.  The CONN_ESTABLISHED
+    # early-return must prevent any re-increment.
+    server._on_handshake_complete(now + UInt64(1_000))
+    server._on_handshake_complete(now + UInt64(2_000))
+
+    var full_final    = p_ptr[].handshakes_full_total
+    var resumed_final = p_ptr[].handshakes_resumed_total
+    assert_true(
+        full_final + resumed_final == UInt64(1),
+        "double-count guard failed: counter went from 1 to "
+            + String(full_final + resumed_final),
+    )
+
+    profile_heap.destroy_pointee()
+    profile_heap.free()
+    lib_ptr.destroy_pointee()
+    lib_ptr.free()
+    print("  test_double_count_guard_on_handshake_complete_idempotent: PASS")
+
+
 def main() raises:
     test_quic_handshake_kind_invalid_handle_returns_minus_one()
     test_quic_handshake_kind_client_returns_minus_two()
     test_quic_server_config_new_accepts_max_early_data_param()
+    test_resumption_kind_after_two_handshakes_against_same_config()
+    test_double_count_guard_on_handshake_complete_idempotent()
