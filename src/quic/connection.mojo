@@ -1935,7 +1935,15 @@ struct QuicConnection(Movable):
             var pkt = self._build_packet(space_idx, pn, pn_len, payload)
             var pkt_size = len(pkt)
 
-            datagram.extend(pkt^)
+            # Most outbound datagrams (long-conn 1-RTT) contain a single
+            # packet, so the first move-into-empty path is the common
+            # case — saves ~1KB memcpy per packet (~17 MB/s at long-conn
+            # rate). Coalesced multi-space datagrams (Initial+Handshake
+            # at handshake) fall through to extend.
+            if len(datagram) == 0:
+                datagram = pkt^
+            else:
+                datagram.extend(Span(pkt))
 
             if space_idx == 0:
                 has_initial = True
