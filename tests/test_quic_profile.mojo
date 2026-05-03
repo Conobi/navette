@@ -1106,6 +1106,41 @@ def test_drain_subleg_residual_clamp_overshoot() raises:
     print("PASS: test_drain_subleg_residual_clamp_overshoot")
 
 
+def test_record_handshakes_full_resumed_increment() raises:
+    """Verify handshakes_full and handshakes_resumed are independent counters."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    assert_true(p.handshakes_full_total == UInt64(0), "handshakes_full_total starts at 0")
+    assert_true(p.handshakes_resumed_total == UInt64(0), "handshakes_resumed_total starts at 0")
+
+    p.record_handshake_full()
+    p.record_handshake_full()
+    p.record_handshake_resumed()
+    p.record_handshake_full()
+
+    assert_true(p.handshakes_full_total == UInt64(3), "handshakes_full_total = 3")
+    assert_true(p.handshakes_resumed_total == UInt64(1), "handshakes_resumed_total = 1")
+    print("PASS: test_record_handshakes_full_resumed_increment")
+
+
+def test_report_json_emits_handshakes_block() raises:
+    """The JSON sidecar must include a `handshakes` key with full + resumed."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_handshake_full()
+    p.record_handshake_resumed()
+    p.record_handshake_resumed()
+
+    var s = p.report_json()
+    var i_handshakes = s.find('"handshakes"')
+    assert_true(i_handshakes >= 0, '"handshakes" key present in JSON')
+    var i_full = s.find('"full": 1', i_handshakes)
+    assert_true(i_full >= 0, '"full": 1 present after "handshakes"')
+    var i_resumed = s.find('"resumed": 2', i_handshakes)
+    assert_true(i_resumed >= 0, '"resumed": 2 present after "handshakes"')
+    print("PASS: test_report_json_emits_handshakes_block")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1162,4 +1197,6 @@ def main() raises:
     test_report_json_emits_drain_stream_subleg_block()
     test_drain_subleg_sum_invariant_residual()
     test_drain_subleg_residual_clamp_overshoot()
+    test_record_handshakes_full_resumed_increment()
+    test_report_json_emits_handshakes_block()
     print("All Plan A tests passed.")

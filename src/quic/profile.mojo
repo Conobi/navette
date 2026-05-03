@@ -125,6 +125,13 @@ struct AcceptProfile(Copyable, Movable):
     var drain_frame_parse_us_total: UInt64
     var drain_qpack_decode_us_total: UInt64
 
+    # 2 handshake-kind totals (Plan: 2026-05-03-short-conn-resumption).
+    # Server-side increments exactly once per QuicConnection at handshake completion.
+    # Sum invariant: handshakes_full_total + handshakes_resumed_total ==
+    # number of server connections that completed the handshake.
+    var handshakes_full_total: UInt64
+    var handshakes_resumed_total: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -176,6 +183,8 @@ struct AcceptProfile(Copyable, Movable):
         self.drain_buf_accumulate_us_total = UInt64(0)
         self.drain_frame_parse_us_total = UInt64(0)
         self.drain_qpack_decode_us_total = UInt64(0)
+        self.handshakes_full_total = UInt64(0)
+        self.handshakes_resumed_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -318,6 +327,16 @@ struct AcceptProfile(Copyable, Movable):
     def record_drain_qpack_decode(mut self, us: UInt64):
         self.drain_qpack_decode_us_total = self.drain_qpack_decode_us_total + us
 
+    def record_handshake_full(mut self):
+        """Increment full-handshake counter. Called once per server-side
+        connection whose handshake completed without resumption."""
+        self.handshakes_full_total = self.handshakes_full_total + UInt64(1)
+
+    def record_handshake_resumed(mut self):
+        """Increment resumed-handshake counter. Called once per server-side
+        connection whose handshake completed via TLS 1.3 PSK/ticket resumption."""
+        self.handshakes_resumed_total = self.handshakes_resumed_total + UInt64(1)
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -431,6 +450,11 @@ struct AcceptProfile(Copyable, Movable):
         for entry in self.addr_key_mismatch_counts.items():
             s += "    " + entry.key + ": " + String(entry.value) + "\n"
         s += "\n"
+
+        # Handshake kinds (Plan: 2026-05-03-short-conn-resumption).
+        s += "Handshake kinds:\n"
+        s += "  full:    " + _fmt_count(self.handshakes_full_total) + "\n"
+        s += "  resumed: " + _fmt_count(self.handshakes_resumed_total) + "\n\n"
 
         # FFI sub-legs (Plan: 2026-04-28).
         s += "FFI sub-legs:\n"
@@ -627,6 +651,12 @@ struct AcceptProfile(Copyable, Movable):
             first_mm = False
             s += '\n      "' + entry.key + '": ' + String(entry.value)
         s += "\n    }\n  },\n"
+
+        # Handshake kind block (Plan: 2026-05-03-short-conn-resumption).
+        s += '  "handshakes": {\n'
+        s += '    "full": ' + String(self.handshakes_full_total) + ',\n'
+        s += '    "resumed": ' + String(self.handshakes_resumed_total) + '\n'
+        s += "  },\n"
 
         # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
         var read_hs_avg: UInt64 = UInt64(0)
