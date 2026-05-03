@@ -654,6 +654,34 @@ pub extern "C" fn rlsm_quic_conn_is_handshaking(conn_handle: i32) -> i32 {
         })
 }
 
+/// Read the handshake kind for a server connection.
+///
+/// Returns:
+///   -2 = client connection (not applicable; clients don't issue tickets server-side)
+///   -1 = invalid handle (last_error set)
+///    0 = handshake_kind not yet known (None — connection still handshaking, or pre-CH)
+///    1 = HandshakeKind::Full
+///    2 = HandshakeKind::Resumed
+///    3 = HandshakeKind::FullWithHelloRetryRequest
+#[no_mangle]
+pub extern "C" fn rlsm_quic_conn_handshake_kind(conn_handle: i32) -> i32 {
+    use rustls::HandshakeKind;
+    clear_last_error();
+    quic_conn_table()
+        .with(conn_handle, |entry| match &entry.conn {
+            QuicConn::Client(_) => -2,
+            QuicConn::Server(c) => match c.handshake_kind() {
+                None => 0,
+                Some(HandshakeKind::Full) => 1,
+                Some(HandshakeKind::Resumed) => 2,
+                Some(HandshakeKind::FullWithHelloRetryRequest) => 3,
+            },
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_conn_handshake_kind: invalid conn handle"; return -1)
+        })
+}
+
 /// Copy peer's transport parameters into out_buf.
 /// Returns 0=available, 1=not yet available, -1=error.
 #[no_mangle]

@@ -519,6 +519,11 @@ struct RustlsLibrary(Movable):
         return self._handle.call["rlsm_quic_conn_is_handshaking", Int32](conn_handle)
 
     @always_inline
+    def quic_conn_handshake_kind(self, conn_handle: Int32) -> Int32:
+        """Returns -2 client, -1 invalid, 0 unknown, 1 Full, 2 Resumed, 3 FullWithHRR."""
+        return self._handle.call["rlsm_quic_conn_handshake_kind", Int32](conn_handle)
+
+    @always_inline
     def quic_conn_transport_params(
         self,
         conn_handle: Int32,

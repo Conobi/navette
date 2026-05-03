@@ -96,6 +96,7 @@ TESTS=(
     test_quic_stream_map
     test_quic_connection
     test_quic_pacer_bypass
+    test_quic_resumption
     test_quic_profile
     test_quic_profile_wiring
     test_ecn

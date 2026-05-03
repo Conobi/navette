@@ -57,6 +57,7 @@ pub use quic_hs::{
     rlsm_quic_conn_take_keys,
     rlsm_quic_conn_take_next_keys,
     rlsm_quic_conn_is_handshaking,
+    rlsm_quic_conn_handshake_kind,
     rlsm_quic_conn_transport_params,
     rlsm_quic_conn_alpn,
     rlsm_quic_conn_zero_rtt_keys,
