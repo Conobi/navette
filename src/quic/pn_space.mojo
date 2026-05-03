@@ -107,15 +107,22 @@ struct SentPacket(Copyable, Movable):
         ack_eliciting: Bool,
         in_flight: Bool,
         size: Int,
-        frames: List[Frame],
+        var frames: List[Frame],
         ecn_mark: UInt8 = UInt8(0),
     ):
+        """Take ownership of `frames` to avoid the per-outbound-packet
+        deep-clone of every Frame. STREAM-frame retransmission tracking
+        lives in app_frames_sent (sent_records) — for App-space packets
+        the caller passes an empty List here. Initial/Handshake-space
+        packets pass a List containing only their CRYPTO frames (used by
+        _detect_losses to re-queue CRYPTO data on packet loss).
+        """
         self.pn = pn
         self.time_sent = time_sent
         self.ack_eliciting = ack_eliciting
         self.in_flight = in_flight
         self.size = size
-        self.frames = List[Frame](copy=frames)
+        self.frames = frames^
         self.ecn_mark = ecn_mark
 
     def __init__(out self, *, other: Self):

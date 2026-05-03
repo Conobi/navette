@@ -1944,16 +1944,28 @@ struct QuicConnection(Movable):
             # client can coalesce Initial ACK + Handshake in the same datagram
             # (required by some server stacks for proper routing).
 
-            # Record sent packet with ECN mark.
+            # Record sent packet with ECN mark. SentPacket.frames is
+            # only consulted for CRYPTO retransmission in _detect_losses;
+            # STREAM retransmission tracking lives in app_frames_sent
+            # (sent_records). Build a minimal retained_frames list:
+            # empty for Application space (no CRYPTO), only the CRYPTO
+            # frames for Initial/Handshake spaces. Avoids a per-packet
+            # full deep-clone of List[Frame] (each STREAM frame carries
+            # ~1KB of body data) on the long-conn hot path.
             var is_ack_eliciting = _has_ack_eliciting(frames)
             var ect = self.ecn_mark()
+            var retained_frames = List[Frame]()
+            if space_idx != 2:
+                for fi in range(len(frames)):
+                    if frames[fi].is_crypto():
+                        retained_frames.append(Frame(other=frames[fi]))
             var sent = SentPacket(
                 pn=pn,
                 time_sent=now,
                 ack_eliciting=is_ack_eliciting,
                 in_flight=True,
                 size=pkt_size,
-                frames=frames,
+                frames=retained_frames^,
                 ecn_mark=ect,
             )
             self.spaces[space_idx].on_packet_sent(sent)
