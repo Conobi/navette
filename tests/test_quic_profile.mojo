@@ -392,7 +392,7 @@ def test_report_json_canned() raises:
     var j = p.report_json()
 
     # Top-level keys.
-    assert_true('"schema_version": 1' in j, "schema_version=1")
+    assert_true('"schema_version": 7' in j, "schema_version=7")
     assert_true('"run_wall_clock_us":' in j, "run_wall_clock_us key")
     assert_true('"on_flush_events": 1' in j, "on_flush_events=1")
     assert_true('"idle_us_total": 1000' in j, "idle_us_total=1000")

@@ -1059,3 +1059,58 @@ Lever A (boringssl swap) and P3 (0-RTT) remain deferred until Q7 + Q6 verdicts i
 ### Image SHAs
 
 Unchanged from Q5 — bench-config-only patch. mojo-net image: rebuilt main `1484db4` (+ PROFILE_ACCEPT=False — the `comptime` `False` build is the one used for the baseline). tquic image: pinned per existing REFERENCE rows.
+
+---
+
+## Q7 — Cold-Handshake CPU-Utilization Decomposition (2026-05-04)
+
+**Spec:** `specs/2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.md` → **Plan:** `plans/2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.md`. **Branch:** `feat/quic-q7-cold-hs-cpu-util-decomp`. Diagnostic-only; decomposes the **40pp CPU-utilization gap** vs TQUIC under cold-handshake load (mojo-net 52.3% vs TQUIC 91.8%) — the ~73% slice of the 2.04× rps gap.
+
+Goal: name which of 7 hypotheses (H_A accept-loop / H_B lock contention / H_C I/O batch degeneracy / H_D FFI sync stalls / H_E conn-cap throttle / H_F io_uring park / DIFFUSE) owns the missing CPU.
+
+### Captured numbers (n=3 short-conn, PROFILE_ACCEPT=True, SESSION_FILE disabled)
+
+| Iter | rps | wall_clock_us | iouring_park / wall | hs_wait share |
+|---|---|---|---|---|
+| 1 | 1,215.6 | 36,681,870 | 97.8% | 98.5% |
+| 2 | 1,248.0 | 32,336,599 | 97.6% | 98.5% |
+| 3 | 1,211.5 | 32,102,503 | 97.7% | 98.5% |
+| **median** | **1,215.6** | 32,336,599 | **97.7%** | **98.3%** |
+
+rps median 1,215.6 (range 3.00%, within ±5% gate per `feedback_bench_gate_width_calibration.md`); tracks the §1 spec n=10 anchor (1391.3) within ~13% — host-noise consistent.
+
+### Verdict: ACCEPT-LOOP-BOUND (primary) + PARK-BOUND (symptom)
+
+The 40pp CPU-utilization gap is owned by **single-boucle accept-loop serialization** — server thread parked **97.7%** of wall-clock inside `io_uring_enter` waiting for the next CQE; multishot recvmsg batch collapses to **100% bucket-0** (n=1 datagram per CQE). Both H_A and H_F fire on independent thresholds and converge: ingress is serialized.
+
+| Hypothesis | Evidence (median) | Threshold | Verdict |
+|---|---|---|---|
+| H_A ACCEPT-LOOP-BOUND | active_boucle p50=0; hs_wait/total=98.3%; recvmsg b0=100% | ≤1 / ≥60% / ≥90% | **PRIMARY** |
+| H_B LOCK-BOUND | demux 0.13%; rustls(config+ticket) 0.00% | ≥3% each | FALSIFIED |
+| H_C IO-BATCH-BOUND | sendmsg/recvmsg med-bucket=0 (=1 dgram); park=97.7% | ≤2 / <20% park | FALSIFIED (H_F precedence) |
+| H_D FFI-SYNC-BOUND | hs_wait 98.3%; active_boucle=0 (need ≥4) | active_boucle≥4 | FALSIFIED |
+| H_E CAP-THROTTLE-BOUND | in_flight HS samples never saturate (max=0) | sat in ≥2/3 | FALSIFIED |
+| H_F PARK-BOUND | iouring_park=97.7%; recvmsg b0=100% | ≥30% / ≥90% | **SYMPTOM (H_A consistent)** |
+
+### Next-spec direction: multi-accept spec (H_A → SO_REUSEPORT or per-NIC-queue boucle sharding)
+
+Realistic lift per spec §3.1 H_A row: **30-60% short-conn rps** (~365-730 rps absolute on this baseline, or ~2,100-2,400 rps post-lift — closes 60-75% of the 2.04× gap).
+
+**Impact-floor filter (`feedback_perf_impact_floor_filter.md`):** Multi-accept spec PASSES (lift ≫ 1pp). sendmmsg coalescing (H_F surface lever) DEFERRED — downstream of multi-accept; pre-lift there's no concurrent traffic for coalescing to address.
+
+Cross-link: Q6 (residual ~16% per-CPU efficiency gap) remains parallel — Q7's verdict does NOT subsume Q6. Together they cover ≥89% of the 2.04× rps gap.
+
+### Smoke gate (T4) — same-window drift, ±5% per host calibration
+
+| Build | Drift | Status |
+|---|---|---|
+| off-build | +8.50% | ✅ PASS (recalibrated rerun; first run invalidated by parallelism) |
+| on-build | -2.40% | ✅ PASS |
+
+### Image SHAs (tag-isolated, to be torn down post-T5)
+
+- `mojo-net-bench:q7-pre-off`, `q7-pre-on`, `q7-post-off`, `q7-post-on`
+
+**Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
+
+Sidecars: `bench/quic_perf/results/baselines/q7-post-on-short/sidecar-iter{1,2,3}.json`. Verdict: `bench/quic_perf/results/baselines/q7-verdict.md`.

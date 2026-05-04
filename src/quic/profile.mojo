@@ -853,7 +853,7 @@ struct AcceptProfile(Copyable, Movable):
         var lmax = _exact_percentile(self.hs_latency_us, 100.0)
 
         var s = String("{\n")
-        s += '  "schema_version": 1,\n'
+        s += '  "schema_version": 7,\n'
         s += '  "run_wall_clock_us": ' + String(run_us) + ',\n'
         s += '  "on_flush_events": ' + String(self.on_flush_count) + ',\n'
         s += '  "idle_us_total": ' + String(self.idle_us_total) + ',\n'
