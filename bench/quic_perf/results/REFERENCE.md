@@ -1114,3 +1114,16 @@ Cross-link: Q6 (residual ~16% per-CPU efficiency gap) remains parallel — Q7's 
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
 Sidecars: `bench/quic_perf/results/baselines/q7-post-on-short/sidecar-iter{1,2,3}.json`. Verdict: `bench/quic_perf/results/baselines/q7-verdict.md`.
+
+### Q7 ADDENDUM — TQUIC source triangulation (2026-05-04 post-verdict)
+
+**Multi-accept recommendation RETRACTED** after `Tencent/tquic` source review showed `tquic_server` is also single-thread / single-socket / no SO_REUSEPORT (search across repo: 0 hits). TQUIC's bench harness launches one process. TQUIC reaches 92% CPU with the same single-loop shape mojo-net has — so the 40pp utilization gap is **per-wake work density**, not lane count. Multi-accept would mirror an architecture TQUIC doesn't have.
+
+**Redirected next-spec priority:**
+1. Promote **Q6** (per-call read_hs decomposition) — directly measures per-call work density (the load-bearing axis).
+2. Audit mojo-net's io_uring multishot recvmsg vs TQUIC's `recv_from`-until-`WouldBlock` semantics. mojo-net is structurally more I/O-efficient; gap must be elsewhere.
+3. Compare per-datagram CPU cost: send-batch (TQUIC default 16), allocator (TQUIC uses jemalloc globally), encode/decode hot path, TLS parse.
+
+H_A + H_F verdict labels still describe mojo-net's behavior accurately; the spec's `H_A → multi-accept` mapping was authored from scaling intuition, not from TQUIC evidence. Diagnosis stands; recommended fix flips.
+
+**Triangulation source:** TQUIC `tools/src/bin/tquic_server.rs:790-815`, `tools/src/common.rs:121-138`, `.github/workflows/tquic-benchmark.yml:60`. `SO_REUSEPORT` count in repo: 0.

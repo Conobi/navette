@@ -5,7 +5,24 @@
 **Image:** `mojo-net-bench:q7-post-on` (PROFILE_ACCEPT=True; source HEAD post-T4 `24f77d9`)
 **Method:** n=3 short-conn cold-handshake captures, 30s × 4 client threads × 25 concurrent conns × 1 request per conn (`SESSION_FILE` disabled in `bench/quic_perf/configs/short-conn.env`). Apples-to-apples cold handshake (no TLS resumption).
 
-## VERDICT: ACCEPT-LOOP-BOUND (primary) + PARK-BOUND (symptom)
+## ⚠️ TRIANGULATION ADDENDUM (2026-05-04 post-verdict)
+
+**The "multi-accept spec" recommendation below is RETRACTED.** A direct read of `Tencent/tquic` source post-verdict shows TQUIC's `tquic_server` is also single-thread / single-socket / no SO_REUSEPORT (`tools/src/bin/tquic_server.rs:790-815`, `common.rs:121-138`; `SO_REUSEPORT` has zero hits in the entire repo). TQUIC's bench harness (`tquic-benchmark.yml:60`) launches **one** server process. TQUIC reaches 92% CPU with the *same* architectural shape mojo-net has — single thread, single UDP socket, single connection table, drain-until-WouldBlock. So the 52% vs 92% gap is **NOT a "more lanes" problem** — it's a **per-wake work density** problem: TQUIC's loop has more CPU work to do per syscall (heavier crypto path, send-batch=16 default, jemalloc), so it parks less. Multi-accept would mirror an architecture TQUIC doesn't have, and won't close this gap.
+
+**Original H_A + H_F verdict labels still hold technically** — mojo-net IS single-threaded and IS parked 97.7% — but the spec's verdict-table mapping `H_A → multi-accept` was authored from generalized scaling intuition, not from TQUIC source. The triangulation falsifies the *recommendation*, not the diagnosis.
+
+**Redirected next-spec priority** (in order):
+1. **Promote Q6** (read_hs internal decomposition, `specs/2026-05-04-q6-read-hs-internal-decomposition.md`). Q6 directly measures per-call work density — what we now know is the load-bearing axis.
+2. Audit mojo-net's io_uring multishot recvmsg semantics — confirm whether wakes are spuriously empty (1 datagram per CQE could be CQE-coalescing, or it could be per-syscall delivery).
+3. Compare per-handshake CPU absolute: TQUIC's send-batch=16 vs mojo-net's, allocator (jemalloc vs Mojo runtime), encode/decode hot paths.
+
+**The SO_REUSEPORT scaffolding already in `bench/h3_server.mojo:1239-1249` stays** — it's a future horizontal-scale lever, not the explanation for the current gap.
+
+Cited investigation: `plans/research/2026-05-04-tquic-server-arch-triangulation.md` (to be written).
+
+---
+
+## VERDICT (original, partially superseded by addendum above): ACCEPT-LOOP-BOUND (primary) + PARK-BOUND (symptom)
 
 The 40pp CPU-utilization gap to TQUIC (mojo-net 52.3% vs TQUIC 91.8%) is owned by **single-boucle accept-loop serialization** — the server thread spends **97.7% of wall-clock parked inside `io_uring_enter`** waiting for the next CQE because a single boucle can only ingest one datagram at a time, and the multishot recvmsg batch size collapses to **100% bucket-0 (n=1 datagram per CQE)** under cold-handshake pressure. H_A and H_F both fire on independent thresholds and converge on the same root cause: ingress is serialized.
 
