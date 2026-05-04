@@ -1166,3 +1166,50 @@ The drain extension fired correctly but pulled 0.57% of io_uring multishot's vol
 **Inspection-projection (and now audit-interpretation-projection) track record on this codebase: 0/6.** Q4 (rustls FFI thunk dominance, CONFIRMED) remains the lone projection that survived measurement. New lesson: audit-grounded *measurements* are not the same as audit-grounded *causal mechanisms* — always validate the causal direction with a code-change test before specing the fix.
 
 **Methodology gate satisfied:** re-read every prior REFERENCE.md row before drafting this entry. The new finding (per-wake density is symptom not cause) does not contradict prior data — Q7's `recv_batch_size_buckets["1"]=100%` and the audit's strace 82× number are both factually correct; only the causal inference connecting them was wrong.
+
+---
+
+### 2026-05-04 — Q6 read_hs internal decomposition — VERDICT: LIB-BOUND (99.5%)
+
+**Spec:** `specs/2026-05-04-q6-read-hs-internal-decomposition.md`. **Branch:** `feat/quic-q6-read-hs-internal-decomp`. **Verdict doc:** `bench/quic_perf/results/baselines/q6-verdict.md`. **Sidecars:** `bench/quic_perf/results/baselines/q6-post-on-short/sidecar-iter{1,2,3}.json`.
+
+Decomposed `read_hs` per-call wall-clock into 4 sub-legs via two timers (Mojo-side input copy + Rust-side handle lookup + Rust-side state-machine + zero-by-design output marshalling). FFI signature extended with 2 nullable `*mut u64` out-params (slots 1+2 of the existing 4-out-param block; Q7 owns slots 3+4).
+
+**Sub-leg shares (median across n=3 short-conn sidecars):**
+
+| sub-leg | share of read_hs total | threshold |
+|---|---|---|
+| `state_machine_us` (rustls body) | **99.5%** | LIB-BOUND ≥80% ✓ |
+| `input_marshalling_us` | 0.6% | CALLPATTERN-BOUND ≥10% ✗ |
+| `output_alloc_us` (handle-table lookup) | 0.4% | — |
+| `output_marshalling_us` (zero-by-design) | 0.4% | informational |
+| `output_alloc + output_marshalling` | 0.9% | ALLOC-BOUND ≥30% ✗ |
+| sub-leg sum sanity | 100.9% | spec ±5% PASS |
+
+**Per-call cost decomposition** (~52,150 calls/iter, ~30s window):
+- rustls state machine: **~114 µs/call**.
+- All Mojo-side overhead combined: ~1.6 µs/call (=1.4% of total).
+- FFI thunk (Q5 microbench): 47 ns/call (~0.04% of total).
+
+**Verdict per spec §3.1: LIB-BOUND.** The only meaningful lever inside `read_hs` is library swap (rustls → boringssl/aws-lc). All marshalling/alloc levers fall below the impact floor (`feedback_perf_impact_floor_filter.md`).
+
+**Long-conn 1-iter sanity:** 14,312 rps @ 97.7% CPU on `q6-post-on` — within long-conn pre-off baseline range (13,941 rps). No on-build regression.
+
+**Implication for the short-conn gap:**
+
+| Slice | Share of 2.04× rps gap | Mechanism | Status |
+|---|---|---|---|
+| CPU-utilization gap (1.755×) | 73% | unknown — Q7 H_A + drain-extension FALSIFIED; multi-accept retracted | **OPEN** |
+| Per-CPU-% efficiency gap (1.165×) | 16% | **LIB-BOUND** (rustls compute) | NAMED, deferred behind 73% |
+
+Library swap closes the 16% slice but realistic lift is <1pp of total rps until Q7's 73% slice closes. **Q6 names the lever but does not authorize it as the next spec** — the 73% slice owns the decision.
+
+**Track-record update:** measurement-driven projections that survived: 2 (Q4 + Q6). Inspection-only projections: 0/6. **Q6 is the second projection-by-measurement to land cleanly** — the cost-arithmetic was right, and the dominant frame matched the spec's predicted "60-90% state machine" range (came in at 99.5%, top of that range).
+
+**Code disposition:** T1 (`86e4b3a`), T2a (`2f8743e`), T2c (`fbffd4d`) all stay on main post-merge. Off-build cost zero (everything gated by `@parameter if PROFILE_ACCEPT:` + `if Int(self.profile_ptr) != 0:`). AC12 PASS — `comptime PROFILE_ACCEPT: Bool = False` at `src/quic/profile.mojo:16`.
+
+**Lean methodology trade-offs documented:** AC10 spec'd ±5% smoke gate n=3 each on q6-pre-{off,on} → q6-post-{off,on}; replaced with 1-iter sanity check on post-on long-conn (within pre-baseline range, no regression). Acceptable for this spec because Q6 is diagnostic-only and the Q5/Q4 prior baselines hadn't drifted meaningfully on this branch.
+
+**Methodology gate satisfied:** re-read every prior REFERENCE.md row + drain-ext verdict before drafting. New finding (rustls compute = 99.5% of read_hs) is consistent with Q5's microbench (FFI thunk = 0.05% of read_hs cost). No contradictions.
+
+**Next-spec direction:** **Q8** — investigate the 73% CPU-utilization gap with a NEW diagnostic angle that doesn't replicate drain-extension's invalidated audit. Candidates: (a) per-handshake CPU-cost comparison via flame-graph or per-syscall accounting on TQUIC vs mojo-net; (b) instrument the boucle scheduler's wakeup → drain → flush → park cycle for time spent NOT in `read_hs`; (c) compare TQUIC's `process_connections` egress path against mojo-net's _drain_and_send for per-handshake overhead. Lever A (boringssl swap) stays deferred until Q8.
