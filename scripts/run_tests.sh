@@ -43,6 +43,7 @@ TESTS=(
     test_client_connection
     test_cross_validation
     test_tls_connection
+    test_tls_quic
     test_proxy_token
     test_capabilities
     test_stream_error
