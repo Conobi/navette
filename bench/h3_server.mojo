@@ -865,6 +865,19 @@ struct H3UdpHandler(BatchCompletionHandler):
             print("h3-bench: on_flush error:", e)
 
     def _flush_impl(mut self) raises:
+        # Drain-extension hook (specs/2026-05-05-quic-bench-drain-extension.md §3).
+        # When `DRAIN_TO_EAGAIN=True`, pull additional datagrams off the UDP
+        # socket via recvfrom(MSG_DONTWAIT) before processing pending_rx so a
+        # single flush cycle can absorb burst arrivals the multishot recvmsg
+        # ring would otherwise hand out one-per-poll. Off-build is a no-op:
+        # the comptime gate elides the call entirely.
+        @parameter
+        if DRAIN_TO_EAGAIN:
+            var drain_result = self._drain_extension()
+            @parameter
+            if PROFILE_ACCEPT:
+                self.profile.record_drain_extension(drain_result[0], drain_result[1])
+
         var t_busy_start = UInt64(0)
         var n_pkts_at_start = 0
         @parameter
@@ -917,7 +930,11 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var first_byte_span = Span[UInt8, MutAnyOrigin](
                     ptr=pd.payload_ptr, length=pd.payload_len)
                 if not _is_long_header_initial(first_byte_span):
-                    self.consumed_bufs.append(pd.buf_id)
+                    # Drain-extension PendingDatagrams use sentinel buf_id; their
+                    # bufs come from drain_scratch_pool, not the io_uring buf-ring,
+                    # so they must not be reprovisioned to the kernel.
+                    if pd.buf_id != DRAIN_BUF_ID_SENTINEL:
+                        self.consumed_bufs.append(pd.buf_id)
                     @parameter
                     if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
@@ -965,7 +982,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                     if not self.quic_server_err_first:
                         self.quic_server_err_first = True
                         print("h3-bench DIAG: first QuicConnection.server error:", e)
-                    self.consumed_bufs.append(pd.buf_id)
+                    if pd.buf_id != DRAIN_BUF_ID_SENTINEL:
+                        self.consumed_bufs.append(pd.buf_id)
                     @parameter
                     if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
@@ -1003,7 +1021,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.h3_handler_err_count += UInt64(1)
                     if self.h3_handler_err_count == UInt64(1):
                         print("h3-bench DIAG: first H3HandlerServer error:", e)
-                    self.consumed_bufs.append(pd.buf_id)
+                    if pd.buf_id != DRAIN_BUF_ID_SENTINEL:
+                        self.consumed_bufs.append(pd.buf_id)
                     @parameter
                     if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
@@ -1075,8 +1094,10 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var drain_us = profile_monotonic_us() - t_drain_start
                 self.profile.record_drain(drain_us)
 
-            # Save buf_id for reprovision in main loop.
-            self.consumed_bufs.append(pd.buf_id)
+            # Save buf_id for reprovision in main loop. Skip sentinel: drain-
+            # extension bufs are owned by drain_scratch_pool, not the buf-ring.
+            if pd.buf_id != DRAIN_BUF_ID_SENTINEL:
+                self.consumed_bufs.append(pd.buf_id)
 
         var t_teardown_start: UInt64 = 0
         @parameter
