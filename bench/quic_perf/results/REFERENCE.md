@@ -1297,3 +1297,32 @@ mojo-net short-conn 1,211 rps / TQUIC 2,846 rps = 0.426×. ~1,635 rps to close t
 **Methodology gate satisfied:** re-read every prior REFERENCE.md row before drafting. The +22.8% short-conn lift attributable to alloc churn elimination coexists with: Q4 (rustls FFI thunk = 45.6% per-fresh-conn busy), Q6 (rustls compute = 99.5% of `read_hs`), drain-ext FALSIFIED (per-wake density was symptom not cause), Q8 Phase 1 PARTIAL-WITH-BUG (same mechanism, broken impl). All consistent — different per-event scopes, additive contributions.
 
 **Next-spec direction:** **Q9** — per-fresh-conn alloc decomposition. Per-wake-flow audit (`plans/research/2026-05-05-tquic-vs-mojo-net-per-wake-flow.md`) named `H3HandlerServer.__init__` + `QuicConnection.server` (h3_server.mojo:891-955) as the next likely source of residual gap. Spec must cite TQUIC's `src/connection/connection.rs` equivalents per `feedback_read_tquic_source_first.md`. Lever A (boringssl swap) stays deferred — Q6 capped its expected lift at <1pp until utilization closes.
+
+### 2026-05-04 — Q9 per-fresh-conn alloc decomposition — VERDICT: DIFFUSE-CONFIRMS-LIB-BOUND
+
+**Spec:** `specs/2026-05-05-q9-fresh-conn-alloc-decomposition.md`. **Verdict doc:** `bench/quic_perf/results/baselines/q9-verdict.md`. **Sidecar:** `bench/quic_perf/results/profile/INSTRUMENTATION-20260504-190736.json`. **Commits:** T1 `5afb4b2` (profile.mojo histograms) + T2 `6884e88` (bracket sites).
+
+Diagnostic-only spec to decompose per-fresh-conn alloc cost into 4 sub-legs: `alloc_quic_state_us` (QuicConnection.server outer), `alloc_tls_handle_us` (inner quic_server_conn_new FFI), `alloc_h3_state_us` (H3HandlerServer ctor), `bench_dict_insert_us` (dual-DCID Dict + 3 list appends). Mirrors Q4→Q5→Q6 decompose-and-decide pattern.
+
+**Sub-leg shares of busy CPU (short-conn n=1 sidecar, q9-post-on, 38,549 fresh conns over 39s wall, 47% busy):**
+
+| Sub-leg | Sum (µs) | % busy | % of fresh_conn_ffi_us | §3.1 threshold |
+|---|---:|---:|---:|---|
+| fresh_conn_ffi_us (denom) | 9,703,104 | 47.00% | — | — |
+| alloc_quic_state OUTER | 800,904 | 3.88% | 8.25% | ≥30%? **NO** |
+| alloc_tls_handle INNER | 123,708 | 0.60% | 1.27% | ≥60%? **NO** |
+| alloc_h3_state | 60,078 | 0.29% | 0.62% | ≥20%? **NO** |
+| bench_dict_insert | 61,671 | 0.30% | 0.64% | ≥15%? **NO** |
+| **Sum (no double-count)** | **922,653** | **4.47%** | **9.51%** | — |
+
+**No §3.1 threshold fires. Verdict: DIFFUSE.** Per-fresh-conn alloc cost ~27 µs median (alloc_quic_state OUTER bucket 4 = 16-32 µs); per-fresh-conn handshake-compute cost ~250 µs median (fresh_conn_ffi_us bucket 8 = 256-512 µs). Alloc/compute ratio 10.8% — **alloc is impact-floor-filtered out**.
+
+The 47% of busy CPU in `fresh_conn_ffi_us` is handshake compute (read_hs + write_hs + take_keys cumulative per `connection.mojo:1721,1778,1824`), already named **LIB-BOUND** by Q6. Q9's measurements independently corroborate: alloc-PHASE small, compute-PHASE large.
+
+**AC7 sum-sanity FAILS for instructive reason:** the spec assumed Q9 sub-legs decompose `fresh_conn_ffi_us`, but they measure DIFFERENT cost categories — alloc-phase vs compute-phase. Sum 9.5% of fresh_conn_ffi, NOT 90-110%. **Methodology lesson:** verify EXISTING instrumentation semantics before defining sum-sanity ACs against them. Sub-rule of `feedback_read_tquic_source_first.md`: read existing source before specing decomposition.
+
+**AC6 (long-conn ±5%):** MARGINAL — paused-iter median -8.19% (n=3: 14072, 12950, 13180 vs Q8p2 baseline 14355). Beyond strict ±5%, within ±10% hard gate. Q9 brackets fire only on cold-create (~33 conns/s on long-conn, ~0.02% CPU) — likely host-noise dominant.
+
+**Track record (revised):** measurement-driven projections landed cleanly: 3/3 (Q4 + Q6 + Q8 Phase 2). DIFFUSE-FALSIFICATION via measurement: 1 (Q9). Inspection-only projections: still 0/6.
+
+**Next-spec direction:** **Q10** — TLS handle / config sharing. Per Q9 T0 TQUIC source read (`tls/tls.rs:243-249`): TQUIC `Arc::clone`'s a shared TlsConfig per fresh conn (cheap pointer-clone). Q10 spec uses Q7's existing `out_config_clone_us` + `out_ticket_store_lock_us` slots — NO new instrumentation — to test whether mojo-net's `quic_server_conn_new` rebuilds vs Arc-clones. If `out_config_clone_us` median > 50 µs → Arc-clone caching lever. If < 5 µs → residual is pure rustls compute, accept LIB-BOUND ceiling, evaluate Lever A (boringssl swap).
