@@ -24,7 +24,7 @@ from bench.handler import (
 )
 from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
-from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us as profile_monotonic_us
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle
@@ -58,6 +58,18 @@ comptime PBUF_COUNT: Int = 1024
 comptime PBUF_SIZE: Int = 1600
 comptime PBUF_GROUP_ID: UInt16 = 0
 comptime RECVMSG_OUT_HDR_SIZE: Int = 16
+
+# Drain-extension scratch pool (Plan: 2026-05-05-quic-bench-drain-extension §3).
+# `_drain_extension` issues recvfrom(MSG_DONTWAIT) in a loop on the shared UDP
+# fd; each successful pull builds a PendingDatagram with sentinel buf_id=0xFFFF
+# pointing into one of these scratch buffers. Pool capacity caps how many
+# datagrams a single drain call can pull before signalling overflow.
+comptime DRAIN_SCRATCH_BUFS: Int = 64
+comptime MAX_DATAGRAM_SIZE: Int = 1500
+comptime DRAIN_BUF_ID_SENTINEL: UInt16 = 0xFFFF
+comptime DRAIN_ADDR_SCRATCH_SIZE: Int = 128  # sockaddr_storage upper bound
+comptime MSG_DONTWAIT: Int32 = 0x40
+comptime EAGAIN_ERRNO: Int32 = 11
 
 # ── Plan B SIGINT plumbing ────────────────────────────────────────────
 #
@@ -518,6 +530,12 @@ struct H3UdpHandler(BatchCompletionHandler):
     var h3_handler_err_count: UInt64
     var feed_datagram_err_count: UInt64
     var quic_server_err_first: Bool   # print first error message only
+    # Drain-extension scratch pool (Plan: 2026-05-05-quic-bench-drain-extension).
+    # Pre-allocated 64×1500 buffers + one sockaddr scratch reused across drain
+    # iterations. Always present so the struct shape is stable regardless of
+    # `DRAIN_TO_EAGAIN`. Off-build cost: ~96 KiB resident, never touched.
+    var drain_scratch_pool: List[List[UInt8]]
+    var drain_scratch_addr: List[UInt8]
 
     def __init__(
         out self,
@@ -575,6 +593,20 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.feed_datagram_err_count = UInt64(0)
         self.quic_server_err_first = False
 
+        # Drain-extension scratch pool — 64 × 1500B datagram buffers + one
+        # shared sockaddr scratch. Pre-fill each List[UInt8] with zero bytes
+        # so unsafe_ptr() points to writable, owned storage; List capacity
+        # alone does not produce indexable storage in Mojo 0.26.2.
+        self.drain_scratch_pool = List[List[UInt8]](capacity=DRAIN_SCRATCH_BUFS)
+        for _ in range(DRAIN_SCRATCH_BUFS):
+            var buf = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
+            for _ in range(MAX_DATAGRAM_SIZE):
+                buf.append(UInt8(0))
+            self.drain_scratch_pool.append(buf^)
+        self.drain_scratch_addr = List[UInt8](capacity=DRAIN_ADDR_SCRATCH_SIZE)
+        for _ in range(DRAIN_ADDR_SCRATCH_SIZE):
+            self.drain_scratch_addr.append(UInt8(0))
+
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
         self.conn_dcid_map = take.conn_dcid_map^
@@ -603,6 +635,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.h3_handler_err_count = take.h3_handler_err_count
         self.feed_datagram_err_count = take.feed_datagram_err_count
         self.quic_server_err_first = take.quic_server_err_first
+        self.drain_scratch_pool = take.drain_scratch_pool^
+        self.drain_scratch_addr = take.drain_scratch_addr^
 
     # --- Conn lookup ---
 
@@ -734,6 +768,93 @@ struct H3UdpHandler(BatchCompletionHandler):
                 arrival_us=stamp_us,
             )
         )
+
+    # --- drain-extension (userspace recvfrom-until-EAGAIN) ---
+
+    def _drain_extension(mut self) raises -> Tuple[UInt64, Bool]:
+        """Userspace recvfrom-until-EAGAIN drain on `self.udp_fd`.
+
+        Diagnostic-pass implementation per
+        `specs/2026-05-05-quic-bench-drain-extension.md` §3. Each successful
+        recvfrom() appends a `PendingDatagram` to `self.pending_rx` with
+        sentinel `buf_id == DRAIN_BUF_ID_SENTINEL` so the existing flush loop
+        skips returning the buf to the kernel buf-ring (these bufs are owned
+        by `drain_scratch_pool`, not the io_uring provided-buffer-ring).
+
+        Returns `(datagrams_pulled, overflowed_pool)`. `overflowed_pool=True`
+        means the scratch pool was exhausted before the kernel returned
+        EAGAIN; remaining datagrams stay queued for the next poll cycle.
+
+        Wiring into `_flush_impl` is T3's job; this method is dead code under
+        `DRAIN_TO_EAGAIN=False`.
+        """
+        var pulled: UInt64 = 0
+        var overflowed: Bool = False
+        var pool_idx: Int = 0
+        while pool_idx < len(self.drain_scratch_pool):
+            var buf_ptr = self.drain_scratch_pool[pool_idx].unsafe_ptr()
+            var addr_ptr = self.drain_scratch_addr.unsafe_ptr()
+            var addrlen: Int32 = Int32(len(self.drain_scratch_addr))
+            var n = external_call["recvfrom", Int64](
+                self.udp_fd,
+                buf_ptr,
+                UInt64(MAX_DATAGRAM_SIZE),
+                MSG_DONTWAIT,
+                addr_ptr,
+                UnsafePointer(to=addrlen),
+            )
+            if n < 0:
+                # Expect EAGAIN(11) — socket drained, exit normally. Anything
+                # else is a real error: log once and exit (no errno bookkeeping
+                # field on AcceptProfile yet; T1 only added the success-path
+                # counters).
+                var errno = external_call[
+                    "__errno_location", UnsafePointer[Int32, MutAnyOrigin]
+                ]()[]
+                if errno != EAGAIN_ERRNO:
+                    print("h3-bench: drain-ext recvfrom errno=", errno)
+                break
+            if n == 0:
+                # Zero-length datagram — drop and exit (next cycle re-tries).
+                break
+            # Extract DCID up front; malformed packets are skipped without
+            # advancing pool_idx so the same buf is reused on the next iter.
+            var dcid: List[UInt8]
+            try:
+                dcid = _extract_dcid(
+                    Span[UInt8, MutAnyOrigin](ptr=buf_ptr, length=Int(n))
+                )
+            except:
+                continue
+            # Copy the addr scratch into a per-datagram List so subsequent
+            # drain iterations (which reuse `drain_scratch_addr`) cannot
+            # overwrite the bytes the demux path will key off.
+            var addr_bytes = List[UInt8](capacity=Int(addrlen))
+            for i in range(Int(addrlen)):
+                addr_bytes.append(addr_ptr[i])
+            var key = _addr_to_key(addr_bytes)
+            var stamp_us: UInt64 = UInt64(0)
+            @parameter
+            if PROFILE_ACCEPT:
+                stamp_us = profile_monotonic_us()
+            self.pending_rx.append(
+                PendingDatagram(
+                    buf_id=DRAIN_BUF_ID_SENTINEL,
+                    buf_ptr=buf_ptr,
+                    payload_ptr=buf_ptr,
+                    payload_len=Int(n),
+                    addr_offset=0,
+                    addr_len=Int(addrlen),
+                    addr_key=key^,
+                    dcid=dcid^,
+                    arrival_us=stamp_us,
+                )
+            )
+            pulled += UInt64(1)
+            pool_idx += 1
+        if pool_idx >= len(self.drain_scratch_pool):
+            overflowed = True
+        return Tuple(pulled, overflowed)
 
     # --- on_flush: batch process all pending datagrams ---
 
