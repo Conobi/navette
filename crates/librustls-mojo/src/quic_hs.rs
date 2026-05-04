@@ -1389,6 +1389,114 @@ mod tests {
         let _ = rlsm_quic_conn_free(client_h);
         let _ = rlsm_quic_conn_free(server_h);
     }
+
+    // -----------------------------------------------------------------------
+    // Q6 T2a — NULL-safety contract for the two Q6 sub-leg out-params on
+    // `rlsm_quic_conn_read_hs` (`out_state_machine_us`, `out_handle_lookup_us`).
+    //
+    // These tests use REAL handles (driven through a partial handshake) so the
+    // state-machine path executes and produces non-zero µs. The Q7 out-params
+    // (`out_config_clone_us`, `out_ticket_store_lock_us`) are zero-by-design
+    // on the read_hs path; they are not asserted here beyond the no-crash
+    // guarantee already covered by `q7_t3a_tests`.
+    //
+    // Spec: 2026-05-04-q6-read-hs-internal-decomposition.md §4.3, §7.2, AC3.
+    // -----------------------------------------------------------------------
+
+    /// Drive a single read_hs call: client emits ClientHello, server consumes it.
+    /// Returns (client_h, server_h, client_hello_bytes) so each test can drive
+    /// `read_hs` with a different out-param shape against a fresh server.
+    fn q6_prepare_server_with_client_hello() -> (i32, i32, Vec<u8>) {
+        let (client_h, server_h) = make_conn_pair(b"h3");
+        let mut buf = vec![0u8; 4096];
+        let mut written: i32 = 0;
+        let mut kc: u8 = 0;
+        let rc = rlsm_quic_conn_write_hs(
+            client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc,
+        );
+        assert_eq!(rc, 0, "client write_hs failed");
+        let client_hello = buf[..written as usize].to_vec();
+        (client_h, server_h, client_hello)
+    }
+
+    /// Q6 T2a — both Q6 out-params NULL on a real handle: call succeeds, no crash.
+    #[test]
+    fn test_q6_read_hs_both_null_no_crash() {
+        let (client_h, server_h, client_hello) = q6_prepare_server_with_client_hello();
+
+        let rc = rlsm_quic_conn_read_hs(
+            server_h, client_hello.as_ptr(), client_hello.len() as i32,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
+        assert_eq!(rc, 0, "read_hs with all-NULL out-params should succeed");
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    /// Q6 T2a — mixed NULL: only the non-NULL slot is written; the NULL slot
+    /// is untouched (sentinel preserved). Two sub-cases — sm-only + lookup-only.
+    #[test]
+    fn test_q6_read_hs_partial_null_writes_only_non_null() {
+        // Case A: out_state_machine_us non-NULL, out_handle_lookup_us NULL.
+        let (client_h, server_h, client_hello) = q6_prepare_server_with_client_hello();
+        let mut sm_us: u64 = u64::MAX;
+        let rc = rlsm_quic_conn_read_hs(
+            server_h, client_hello.as_ptr(), client_hello.len() as i32,
+            &mut sm_us as *mut u64,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
+        assert_eq!(rc, 0, "read_hs (sm-only) should succeed");
+        assert_ne!(sm_us, u64::MAX, "sm slot must be written when non-NULL");
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+
+        // Case B: out_state_machine_us NULL, out_handle_lookup_us non-NULL.
+        let (client_h, server_h, client_hello) = q6_prepare_server_with_client_hello();
+        let mut lk_us: u64 = u64::MAX;
+        let rc = rlsm_quic_conn_read_hs(
+            server_h, client_hello.as_ptr(), client_hello.len() as i32,
+            std::ptr::null_mut(),
+            &mut lk_us as *mut u64,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
+        assert_eq!(rc, 0, "read_hs (lookup-only) should succeed");
+        assert_ne!(lk_us, u64::MAX, "lookup slot must be written when non-NULL");
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    /// Q6 T2a — both Q6 out-params non-NULL: both slots written; SM µs > 0
+    /// (real crypto work), lookup µs ≥ 0 (may round to 0 at µs resolution).
+    #[test]
+    fn test_q6_read_hs_both_non_null_values_reasonable() {
+        let (client_h, server_h, client_hello) = q6_prepare_server_with_client_hello();
+
+        let mut sm_us: u64 = u64::MAX;
+        let mut lk_us: u64 = u64::MAX;
+        let rc = rlsm_quic_conn_read_hs(
+            server_h, client_hello.as_ptr(), client_hello.len() as i32,
+            &mut sm_us as *mut u64,
+            &mut lk_us as *mut u64,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
+        assert_eq!(rc, 0, "read_hs (both non-NULL) should succeed");
+        assert_ne!(sm_us, u64::MAX, "sm slot must be written");
+        assert_ne!(lk_us, u64::MAX, "lookup slot must be written");
+        // The state-machine path runs rustls TLS 1.3 on a real ClientHello —
+        // expected at tens-to-hundreds of µs; assert > 0 at µs resolution.
+        assert!(
+            sm_us > 0,
+            "state-machine µs should be > 0 on a real ClientHello, got {sm_us}",
+        );
+        // Lookup is OnceLock deref + Mutex acquire — typically sub-µs and may
+        // round to 0; the sentinel-overwrite check above covers the contract.
+
+        let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
 }
 
 #[cfg(test)]
@@ -1409,3 +1517,4 @@ mod q7_t3a_tests {
             "return must be -1 or 0, never a panic; got {rc}");
     }
 }
+
