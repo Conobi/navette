@@ -1213,3 +1213,35 @@ Library swap closes the 16% slice but realistic lift is <1pp of total rps until 
 **Methodology gate satisfied:** re-read every prior REFERENCE.md row + drain-ext verdict before drafting. New finding (rustls compute = 99.5% of read_hs) is consistent with Q5's microbench (FFI thunk = 0.05% of read_hs cost). No contradictions.
 
 **Next-spec direction:** **Q8** — investigate the 73% CPU-utilization gap with a NEW diagnostic angle that doesn't replicate drain-extension's invalidated audit. Candidates: (a) per-handshake CPU-cost comparison via flame-graph or per-syscall accounting on TQUIC vs mojo-net; (b) instrument the boucle scheduler's wakeup → drain → flush → park cycle for time spent NOT in `read_hs`; (c) compare TQUIC's `process_connections` egress path against mojo-net's _drain_and_send for per-handshake overhead. Lever A (boringssl swap) stays deferred until Q8.
+
+---
+
+### 2026-05-04 — Q8 egress hot-path batching (Phase 1) — VERDICT: PARTIAL-WITH-BUG (mechanism CONFIRMED, T2 reverted)
+
+**Spec:** `specs/2026-05-05-q8-egress-hot-path-batching.md`. **Audit:** `plans/research/2026-05-05-tquic-vs-mojo-net-per-wake-flow.md`. **Verdict doc:** `bench/quic_perf/results/baselines/q8-verdict.md`. **Sidecar:** `bench/quic_perf/results/baselines/q8-post-on-short/sidecar-iter1.json`.
+
+**Mechanism CONFIRMED:** per-packet `UdpTxSlot` heap-alloc + `List[UInt8](copy=)` churn in `_drain_and_send` is load-bearing on the egress hot path.
+
+| | pre-on (drain-ext baseline reused) | post-on (Q8 freelist + repopulate) | delta |
+|---|---|---|---|
+| short-conn rps median | 986 | **1132** | **+14.8%** (just 0.2pp short of CONFIRMED gate) |
+| short-conn cpu% | 58.7 | 57.8 | −0.9pp |
+| pool reuse rate | n/a | **100.00%** (177,278 hits / 0 misses) | AC7 PASS |
+| sendmsg_batch_size_buckets["1"] | 100% bucket-0 | 100% bucket-0 | unchanged (mechanism is alloc churn, not syscall batching) |
+
+**Implementation BROKEN on long-conn:** 3-iter sanity at 0 / 4819 / 112 rps with 1000+ client failures each, vs ~14k baseline (-65% to -100%). Intermittent failure pattern → memory-state issue or slot-reuse race in T2's `repopulate` + freelist + swap-and-pop. Inspection of all sites looked correct in isolation; bug is subtle (most-plausible: swap-and-pop corruption when a pool slot is in flight).
+
+**Code disposition (Option 2 chosen):** T2 commit `033ffa8` REVERTED via `806454d`. T1 commit `be23375` (counter fields + `EGRESS_POOL` flag declaration) STAYS — harmless, comptime-False default, dead-stripped. Spec + verdict doc + audit STAY as documented exploration. Branch `feat/quic-bench-drain-extension`'s code patterns (in-place msghdr/iovec rewiring) flagged as fragile; Phase 2 spec will use a cleaner separate-allocation pool design.
+
+**AC checkpoint:**
+- AC4 PARTIAL (+14.8% rps lift, in [+5%, +15%) band)
+- AC5 FALSIFIED (-0.9pp cpu, below +2pp gate)
+- AC6 CATASTROPHIC FAIL (long-conn regressed)
+- AC7 PASS (100% pool reuse on short-conn)
+- AC11 PASS (flags reverted False)
+
+**Track record (revised):** measurement-driven projections that landed: 2 (Q4 + Q6). Audit-driven projections: 1 mechanism CONFIRMED via diagnostic + 1 implementation FALSIFIED via lean-execution bug. The audit (per `feedback_read_tquic_source_first.md`) correctly named the mechanism; the lean implementation didn't survive the high-throughput data path. New rule emerging: "in-place msghdr/iovec scaffolding reuse is fragile; prefer separate-allocation pool with full UdpTxSlot reuse."
+
+**Methodology gate satisfied:** re-read every prior REFERENCE.md row before drafting. The +14.8% short-conn lift attributable to alloc churn coexists with: Q4 (rustls FFI thunk = 45.6% per-fresh-conn busy), Q6 (rustls compute = 99.5% of read_hs). All consistent — different per-event scopes, additive contributions.
+
+**Next-spec direction:** **Q8 Phase 2** — clean rewrite of egress hot path mirroring TQUIC's `Endpoint::send_packets_out` design more closely (per-flush staging buffer + freelist for full UdpTxSlot pointers + simpler `_drain_and_send` rewrite without in-place msghdr rewiring). Avoids T2's risky pattern. Mechanism CONFIRMED gives this spec greenlight regardless of cost-arithmetic floor concern.
