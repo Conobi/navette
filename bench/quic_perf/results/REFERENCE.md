@@ -1000,3 +1000,62 @@ Both within ±5% calibrated gate (per `feedback_bench_gate_width_calibration.md`
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
 Sidecars: `bench/quic_perf/results/baselines/q5-post-on-short/sidecar-{1,2,3}.json`. Verdict: `bench/quic_perf/results/baselines/q5-verdict.md`. Smoke drift: `q5-t3-drift.md`.
+
+---
+
+## Apples-to-Apples Cold-Handshake Baseline (2026-05-04)
+
+**Patch:** `bench/quic_perf/configs/short-conn.env` (commented out `SESSION_FILE` at L12). Bench-config-only — no source code changes; image SHAs unchanged from Q5. Server-side ticketer remains on for both servers (TQUIC's tquic_server issues tickets unconditionally — symmetric). Goal: reframe the short-conn gap with cold handshakes (no client-side ticket cache) and a properly-sized n=10 capture per server, side-by-side on the same host.
+
+Baseline doc: `bench/quic_perf/results/baselines/2026-05-04-apples-to-apples-cold-handshake.md`.
+
+### Captured numbers (n=10 each, short-conn 1k, tquic_client, 30s + 5s warmup, threads=4, max-concurrent-conns=25, max-requests-per-conn=1)
+
+| Metric | mojo-net | tquic | ratio mojo/tquic |
+|---|---|---|---|
+| rps median | 1,391.3 | 2,846.3 | **0.489** |
+| rps min | 1,174.1 | 2,559.5 | — |
+| rps max | 1,499.7 | 2,919.3 | — |
+| rps IQR | 173.1 | 286.8 | — |
+| rps IQR % of median | 12.44% | 10.07% | — |
+| rps stdev | 113.4 | 143.5 | — |
+| Server CPU % median | 52.3 | 91.8 | 0.570 |
+| p50 latency ms median | 2.238 | 3.700 | mojo lower |
+| p99 latency ms median | 11.316 | 57.160 | mojo lower |
+| Failures total | 220 | 454 | — |
+| Successes total | 426,578 | 860,343 | — |
+| Failure rate % | 0.052 | 0.053 | parity |
+| Per-CPU-% efficiency (rps/%) | 26.6 | 31.0 | **0.860** |
+
+### Reframe — the 73/16 decomposition
+
+The 2.04× short-conn rps gap is primarily a **CPU-utilization gap** (52% vs 92% server CPU), NOT a compute-cost gap. Multiplicative decomposition:
+
+```
+2.045 rps_ratio = 1.755 (CPU_util_ratio) × 1.165 (per-CPU-% efficiency_ratio)
+              = ~73% of the gap     × ~16% of the gap (interaction term balance)
+```
+
+Per-CPU-% efficiency gap is only **1.16× in TQUIC's favor** (26.6 vs 31.0 rps/%CPU) — the bound on what any rustls/FFI/Q6-style optimization can buy. The remaining ~73% slice is structural: mojo-net leaves 48% of the core idle while client load is offered. Better p50/p99 for mojo-net is diagnostic of under-saturation, not a feature.
+
+**Disabling resumption did NOT widen the gap** vs the resumed-era ratio (~0.48), confirming TLS 1.3 resumption was not load-bearing for either side's published numbers. Resumption gives the client a wall-clock latency win (saves 1 RTT), not a server-CPU win.
+
+### Variance note
+
+The rps IQR% values (12.44% / 10.07%) sit above the ±5% drift gate calibrated in `feedback_bench_gate_width_calibration.md`. **These are inter-iter variance, NOT inter-window drift.** The drift gate measures same-window pre/post smoke deltas; the IQR here measures n=10 iter-to-iter spread within a contiguous capture. Both servers' inter-iter variance is comparable in absolute % terms — no asymmetric noise floor.
+
+### Next-spec sequencing
+
+**Q7 first (utilization-gap decomposition; ~73% slice).** 5 hypotheses enumerated in baseline doc: H_A recvmsg/CQE delivery rate ceiling; H_B conn-table contention; H_C boucle/scheduler under-fill; H_D per-fresh-conn H3/QPACK setup cliff; H_E single-thread architectural ceiling. Q7 spec to pick 1 (or a small ranked subset) to instrument.
+
+**Q6 second (per-call decomposition for the 16% efficiency gap).** Not cancelled — re-sequenced after Q7 because the right Q6 brackets depend on which busy phase Q7 identifies. The 16% slice is above the 5% impact floor per `feedback_perf_impact_floor_filter.md`, so a per-call decomposition spec remains justified.
+
+Lever A (boringssl swap) and P3 (0-RTT) remain deferred until Q7 + Q6 verdicts identify the real bigger lever.
+
+### Source JSON files
+
+20 files in `bench/quic_perf/results/` matching glob `2026-05-04T08-*-{mojo-net,tquic}-1k-short-conn-tquic_client-iter*.json` (10 per server; mojo-net 08:27:10Z–08:33:25Z, tquic 08:34:33Z–08:42:42Z). Full enumeration in baseline doc.
+
+### Image SHAs
+
+Unchanged from Q5 — bench-config-only patch. mojo-net image: rebuilt main `1484db4` (+ PROFILE_ACCEPT=False — the `comptime` `False` build is the one used for the baseline). tquic image: pinned per existing REFERENCE rows.
