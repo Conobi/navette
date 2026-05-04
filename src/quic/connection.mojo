@@ -349,6 +349,11 @@ struct QuicConnection(Movable):
     # ONLY read_hs invocations.
     var read_hs_call_count: UInt64
 
+    # Q7 (Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition):
+    var accept_us: UInt64         # server-side conn creation timestamp; 0 for client
+    var hs_cpu_us_total: UInt64   # sum of _drive_handshake body µs across conn lifetime
+    var hs_wait_us_total: UInt64  # computed once at _on_handshake_complete
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit take: Self):
@@ -389,6 +394,9 @@ struct QuicConnection(Movable):
         self.profile_first_iter_done = take.profile_first_iter_done
         self.fresh_conn_ffi_us_total = take.fresh_conn_ffi_us_total
         self.read_hs_call_count = take.read_hs_call_count
+        self.accept_us = take.accept_us
+        self.hs_cpu_us_total = take.hs_cpu_us_total
+        self.hs_wait_us_total = take.hs_wait_us_total
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -443,6 +451,9 @@ struct QuicConnection(Movable):
         self.profile_first_iter_done = False
         self.fresh_conn_ffi_us_total = UInt64(0)
         self.read_hs_call_count = UInt64(0)
+        self.accept_us = UInt64(0)
+        self.hs_cpu_us_total = UInt64(0)
+        self.hs_wait_us_total = UInt64(0)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -652,6 +663,7 @@ struct QuicConnection(Movable):
         # newly-constructed connection.
         conn.profile_ptr = profile_ptr
         conn.profile_first_initial_us = profile_arrival_us
+        conn.accept_us = profile_arrival_us  # Q7: reuse already-stamped arrival time; is_server=True
 
         @parameter
         if PROFILE_ACCEPT:
@@ -1591,6 +1603,16 @@ struct QuicConnection(Movable):
         if self.conn_handle < 0:
             return
 
+        # Q7 entry bracket: capture _drive_handshake body start + bump
+        # active_drive_count. Closing bracket fires at fall-through end.
+        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
+        var t_drive_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0:
+                t_drive_start = monotonic_us()
+                self.profile_ptr[].active_drive_count = self.profile_ptr[].active_drive_count + UInt32(1)
+
         var lib = self._lib()
 
         # 1. Drain contiguous CRYPTO bytes from each space's crypto_stream
@@ -1611,11 +1633,35 @@ struct QuicConnection(Movable):
                         if Int(self.profile_ptr) != 0:
                             t_start = monotonic_us()
                             self.profile_rustls_us_accum -= t_start
-                    var rc = lib[].quic_conn_read_hs(
-                        self.conn_handle,
-                        data_buf,
-                        Int32(len(crypto_data)),
-                    )
+                    # Q7: out-param locals always declared (zero-cost; comptime
+                    # branch chooses 7-arg wired call vs legacy 3-arg below).
+                    var rc: Int32 = Int32(0)
+                    var out_cfg_clone: UInt64 = UInt64(0)
+                    var out_ticket_lock: UInt64 = UInt64(0)
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            rc = lib[].quic_conn_read_hs(
+                                self.conn_handle,
+                                data_buf,
+                                Int32(len(crypto_data)),
+                                UnsafePointer[UInt64, MutAnyOrigin](),  # Q6 slot 1 — NULL until Q6
+                                UnsafePointer[UInt64, MutAnyOrigin](),  # Q6 slot 2 — NULL until Q6
+                                UnsafePointer(to=out_cfg_clone),
+                                UnsafePointer(to=out_ticket_lock),
+                            )
+                        else:
+                            rc = lib[].quic_conn_read_hs(
+                                self.conn_handle,
+                                data_buf,
+                                Int32(len(crypto_data)),
+                            )
+                    else:
+                        rc = lib[].quic_conn_read_hs(
+                            self.conn_handle,
+                            data_buf,
+                            Int32(len(crypto_data)),
+                        )
                     @parameter
                     if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
@@ -1627,6 +1673,10 @@ struct QuicConnection(Movable):
                             # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
                             self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
                             self.profile_ptr[].record_read_hs_us_per_call(t_end - t_start)
+                            # Q7: per-call config_clone + ticket-store lock waits.
+                            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
+                            self.profile_ptr[].record_rustls_config_clone_lock_wait_us(out_cfg_clone)
+                            self.profile_ptr[].record_ticket_store_lock_wait_us(out_ticket_lock)
                     data_buf.free()
 
                     if rc < 0:
@@ -1743,6 +1793,19 @@ struct QuicConnection(Movable):
             # Handshake complete.
             self._on_handshake_complete(now)
 
+        # Q7 exit bracket: accumulate _drive_handshake body µs into
+        # hs_cpu_us_total and decrement active_drive_count. Mirrors the
+        # entry bracket above. raise paths leave the bracket unbalanced
+        # but those terminate the connection so the imbalance is moot.
+        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
+        @parameter
+        if PROFILE_ACCEPT:
+            if Int(self.profile_ptr) != 0 and t_drive_start > UInt64(0):
+                var delta = monotonic_us() - t_drive_start
+                self.hs_cpu_us_total = self.hs_cpu_us_total + delta
+                if self.profile_ptr[].active_drive_count > UInt32(0):
+                    self.profile_ptr[].active_drive_count = self.profile_ptr[].active_drive_count - UInt32(1)
+
     def _on_handshake_complete(mut self, now: UInt64) raises:
         """Called when TLS reports handshake is complete."""
         if (self.state & CONN_ESTABLISHED) != 0:
@@ -1791,6 +1854,17 @@ struct QuicConnection(Movable):
             # Q5: record per-handshake read_hs call count.
             # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
             self.profile_ptr[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
+            # Q7: per-FD wait vs CPU breakdown.
+            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
+            if self.accept_us > UInt64(0):
+                var now_hs = monotonic_us()
+                var wall_us = now_hs - self.accept_us
+                if wall_us >= self.hs_cpu_us_total:
+                    self.hs_wait_us_total = wall_us - self.hs_cpu_us_total
+                else:
+                    self.hs_wait_us_total = UInt64(0)
+                self.profile_ptr[].record_hs_cpu_us_per_handshake(self.hs_cpu_us_total)
+                self.profile_ptr[].record_hs_wait_us_per_handshake(self.hs_wait_us_total)
 
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
