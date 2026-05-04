@@ -146,6 +146,39 @@ struct AcceptProfile(Copyable, Movable):
     var read_hs_us_per_call_buckets: List[UInt64]
     var read_hs_us_per_call_overflow: UInt64
 
+    # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+    # Cadence gate for tick_profile_gauges (100ms cadence).
+    var last_gauge_sample_us: UInt64
+
+    # Group A — gauge sampling (capped at 600 entries each = 60s @ 10/s).
+    var active_drive_count: UInt32                       # live counter (inc on _drive_handshake entry, dec on exit)
+    var active_boucle_count_samples: List[UInt32]
+    var in_flight_handshake_count_samples: List[UInt32]
+
+    # Group B — batch-size histograms (8-bucket via _pkts_per_flush_bucket).
+    var sendmsg_batch_size_buckets: List[UInt64]
+    var recvmsg_batch_size_buckets: List[UInt64]
+
+    # Group C — 3 lock-wait surfaces (24-bucket pow2 via _per_pkt_bucket).
+    var demux_map_lock_wait_us_total: UInt64
+    var demux_map_lock_wait_us_buckets: List[UInt64]
+    var demux_map_lock_wait_us_overflow: UInt64
+    var rustls_config_clone_lock_wait_us_total: UInt64
+    var rustls_config_clone_lock_wait_us_buckets: List[UInt64]
+    var rustls_config_clone_lock_wait_us_overflow: UInt64
+    var ticket_store_lock_wait_us_total: UInt64
+    var ticket_store_lock_wait_us_buckets: List[UInt64]
+    var ticket_store_lock_wait_us_overflow: UInt64
+
+    # Group D — per-FD per-handshake CPU vs wait histograms (24-bucket pow2 via _per_pkt_bucket).
+    var hs_cpu_us_per_handshake_buckets: List[UInt64]
+    var hs_cpu_us_per_handshake_overflow: UInt64
+    var hs_wait_us_per_handshake_buckets: List[UInt64]
+    var hs_wait_us_per_handshake_overflow: UInt64
+
+    # Group F — H_F instrumentation (PARK-BOUND verdict). Total-only per spec §4.6.1.
+    var iouring_park_us_total: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -213,6 +246,36 @@ struct AcceptProfile(Copyable, Movable):
         for _ in range(24):
             self.read_hs_us_per_call_buckets.append(UInt64(0))
         self.read_hs_us_per_call_overflow = UInt64(0)
+        # Q7 init (Plan: 2026-05-04-q7).
+        self.last_gauge_sample_us = UInt64(0)
+        self.active_drive_count = UInt32(0)
+        self.active_boucle_count_samples = List[UInt32]()
+        self.in_flight_handshake_count_samples = List[UInt32]()
+        self.sendmsg_batch_size_buckets = List[UInt64]()
+        self.recvmsg_batch_size_buckets = List[UInt64]()
+        for _ in range(8):
+            self.sendmsg_batch_size_buckets.append(UInt64(0))
+            self.recvmsg_batch_size_buckets.append(UInt64(0))
+        self.demux_map_lock_wait_us_total = UInt64(0)
+        self.demux_map_lock_wait_us_overflow = UInt64(0)
+        self.demux_map_lock_wait_us_buckets = List[UInt64]()
+        self.rustls_config_clone_lock_wait_us_total = UInt64(0)
+        self.rustls_config_clone_lock_wait_us_overflow = UInt64(0)
+        self.rustls_config_clone_lock_wait_us_buckets = List[UInt64]()
+        self.ticket_store_lock_wait_us_total = UInt64(0)
+        self.ticket_store_lock_wait_us_overflow = UInt64(0)
+        self.ticket_store_lock_wait_us_buckets = List[UInt64]()
+        self.hs_cpu_us_per_handshake_buckets = List[UInt64]()
+        self.hs_cpu_us_per_handshake_overflow = UInt64(0)
+        self.hs_wait_us_per_handshake_buckets = List[UInt64]()
+        self.hs_wait_us_per_handshake_overflow = UInt64(0)
+        for _ in range(24):
+            self.demux_map_lock_wait_us_buckets.append(UInt64(0))
+            self.rustls_config_clone_lock_wait_us_buckets.append(UInt64(0))
+            self.ticket_store_lock_wait_us_buckets.append(UInt64(0))
+            self.hs_cpu_us_per_handshake_buckets.append(UInt64(0))
+            self.hs_wait_us_per_handshake_buckets.append(UInt64(0))
+        self.iouring_park_us_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
 
     def record_idle(mut self, idle_us: UInt64):
@@ -394,6 +457,92 @@ struct AcceptProfile(Copyable, Movable):
             self.read_hs_us_per_call_overflow = self.read_hs_us_per_call_overflow + UInt64(1)
         else:
             self.read_hs_us_per_call_buckets[b] = self.read_hs_us_per_call_buckets[b] + UInt64(1)
+
+    # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+    fn tick_profile_gauges(mut self, now_us: UInt64):
+        """100ms-cadence sampler. No-ops if last sample < 100_000us ago.
+        Cadence gate stored as field (not caller-owned) per spec §3.2 / AC2.
+        Caller writes to active_drive_count via inc/dec at _drive_handshake;
+        in-flight HS = handshakes_started - (full + resumed) running totals.
+
+        First call (when last_gauge_sample_us == 0) always captures, so the
+        cadence gate doesn't swallow the bench window's leading sample.
+        """
+        if self.last_gauge_sample_us != UInt64(0) and now_us - self.last_gauge_sample_us < UInt64(100_000):
+            return
+        # last_gauge_sample_us == 0 sentinel for "never sampled". After the
+        # first sample, store max(1, now_us) so the sentinel can never re-fire
+        # if the caller passes now_us == 0 (e.g. test fixtures or clock skew).
+        if now_us == UInt64(0):
+            self.last_gauge_sample_us = UInt64(1)
+        else:
+            self.last_gauge_sample_us = now_us
+        if len(self.active_boucle_count_samples) < 600:
+            self.active_boucle_count_samples.append(self.active_drive_count)
+        # In-flight = handshakes_started_total - completed_total. If P2 has no
+        # handshakes_started_total counter, T2 adds it (additive scope per §7.4 risk).
+        # For now, use active_drive_count as proxy gauge until handshakes_started lands.
+        var inflight: UInt32 = self.active_drive_count
+        if len(self.in_flight_handshake_count_samples) < 600:
+            self.in_flight_handshake_count_samples.append(inflight)
+
+    def record_sendmsg_batch_size(mut self, n: Int):
+        """Q7 Group B — sendmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
+        var b = _pkts_per_flush_bucket(n)
+        self.sendmsg_batch_size_buckets[b] = self.sendmsg_batch_size_buckets[b] + UInt64(1)
+
+    def record_recvmsg_batch_size(mut self, n: Int):
+        """Q7 Group B — recvmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
+        var b = _pkts_per_flush_bucket(n)
+        self.recvmsg_batch_size_buckets[b] = self.recvmsg_batch_size_buckets[b] + UInt64(1)
+
+    def record_demux_map_lock_wait_us(mut self, us: UInt64):
+        """Q7 Group C — Mojo-side addr_key→conn Dict lookup duration."""
+        self.demux_map_lock_wait_us_total = self.demux_map_lock_wait_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.demux_map_lock_wait_us_overflow = self.demux_map_lock_wait_us_overflow + UInt64(1)
+        else:
+            self.demux_map_lock_wait_us_buckets[b] = self.demux_map_lock_wait_us_buckets[b] + UInt64(1)
+
+    def record_rustls_config_clone_lock_wait_us(mut self, us: UInt64):
+        """Q7 Group C — Rust-side Arc<rustls::ServerConfig> clone path duration."""
+        self.rustls_config_clone_lock_wait_us_total = self.rustls_config_clone_lock_wait_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.rustls_config_clone_lock_wait_us_overflow = self.rustls_config_clone_lock_wait_us_overflow + UInt64(1)
+        else:
+            self.rustls_config_clone_lock_wait_us_buckets[b] = self.rustls_config_clone_lock_wait_us_buckets[b] + UInt64(1)
+
+    def record_ticket_store_lock_wait_us(mut self, us: UInt64):
+        """Q7 Group C — Rust-side TLS 1.3 session-ticket store mutex duration."""
+        self.ticket_store_lock_wait_us_total = self.ticket_store_lock_wait_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.ticket_store_lock_wait_us_overflow = self.ticket_store_lock_wait_us_overflow + UInt64(1)
+        else:
+            self.ticket_store_lock_wait_us_buckets[b] = self.ticket_store_lock_wait_us_buckets[b] + UInt64(1)
+
+    def record_hs_cpu_us_per_handshake(mut self, us: UInt64):
+        """Q7 Group D — per-FD per-handshake CPU duration (24-bucket pow2)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.hs_cpu_us_per_handshake_overflow = self.hs_cpu_us_per_handshake_overflow + UInt64(1)
+        else:
+            self.hs_cpu_us_per_handshake_buckets[b] = self.hs_cpu_us_per_handshake_buckets[b] + UInt64(1)
+
+    def record_hs_wait_us_per_handshake(mut self, us: UInt64):
+        """Q7 Group D — per-FD per-handshake wait duration (24-bucket pow2)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.hs_wait_us_per_handshake_overflow = self.hs_wait_us_per_handshake_overflow + UInt64(1)
+        else:
+            self.hs_wait_us_per_handshake_buckets[b] = self.hs_wait_us_per_handshake_buckets[b] + UInt64(1)
+
+    fn record_iouring_park_us(mut self, us: UInt64):
+        """Q7 Group F — H_F PARK-BOUND instrumentation. Total-only — bracket
+        every io_uring_enter call site (or equivalent submit-and-wait entry)."""
+        self.iouring_park_us_total = self.iouring_park_us_total + us
 
     def report_text(self) raises -> String:
         var now = monotonic_us()
@@ -583,6 +732,44 @@ struct AcceptProfile(Copyable, Movable):
         s += "  frame_parse.total:      " + _fmt_count(self.drain_frame_parse_us_total) + "\n"
         s += "  qpack_decode.total:     " + _fmt_count(self.drain_qpack_decode_us_total) + "\n"
         s += "  event_dispatch.derived: " + _fmt_count(de_t_us) + "\n\n"
+        # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+        s += "Q7 gauge sampling (100ms cadence, capped 600 entries):\n"
+        s += "  active_drive_count.live:                " + _fmt_count(UInt64(self.active_drive_count)) + "\n"
+        s += "  active_boucle_count_samples.len:        " + _fmt_count(UInt64(len(self.active_boucle_count_samples))) + "\n"
+        s += "  in_flight_handshake_count_samples.len:  " + _fmt_count(UInt64(len(self.in_flight_handshake_count_samples))) + "\n\n"
+        s += "Q7 batch-size histograms (8-bucket _pkts_per_flush_bucket dispatch):\n"
+        var q7_bs_labels = List[String]()
+        q7_bs_labels.append(String("1     "))
+        q7_bs_labels.append(String("2-3   "))
+        q7_bs_labels.append(String("4-7   "))
+        q7_bs_labels.append(String("8-15  "))
+        q7_bs_labels.append(String("16-31 "))
+        q7_bs_labels.append(String("32-63 "))
+        q7_bs_labels.append(String("64-127"))
+        q7_bs_labels.append(String("128+  "))
+        s += "  sendmsg:\n"
+        for i in range(8):
+            s += "    size=" + q7_bs_labels[i] + " " + _fmt_count(self.sendmsg_batch_size_buckets[i]) + "\n"
+        s += "  recvmsg:\n"
+        for i in range(8):
+            s += "    size=" + q7_bs_labels[i] + " " + _fmt_count(self.recvmsg_batch_size_buckets[i]) + "\n"
+        s += "Q7 lock-wait surfaces (24-bucket pow2 us):\n"
+        s += "  demux_map_lock_wait.total:           " + _fmt_count(self.demux_map_lock_wait_us_total) + "\n"
+        s += "  demux_map_lock_wait.overflow:        " + _fmt_count(self.demux_map_lock_wait_us_overflow) + "\n"
+        s += "  rustls_config_clone_lock_wait.total: " + _fmt_count(self.rustls_config_clone_lock_wait_us_total) + "\n"
+        s += "  rustls_config_clone_lock_wait.overflow: " + _fmt_count(self.rustls_config_clone_lock_wait_us_overflow) + "\n"
+        s += "  ticket_store_lock_wait.total:        " + _fmt_count(self.ticket_store_lock_wait_us_total) + "\n"
+        s += "  ticket_store_lock_wait.overflow:     " + _fmt_count(self.ticket_store_lock_wait_us_overflow) + "\n\n"
+        s += "Q7 per-FD per-handshake (24-bucket pow2 us):\n"
+        var q7_cpu_total: UInt64 = UInt64(0)
+        var q7_wait_total: UInt64 = UInt64(0)
+        for i in range(24):
+            q7_cpu_total = q7_cpu_total + self.hs_cpu_us_per_handshake_buckets[i]
+            q7_wait_total = q7_wait_total + self.hs_wait_us_per_handshake_buckets[i]
+        s += "  hs_cpu.samples:    " + _fmt_count(q7_cpu_total) + "  overflow=" + _fmt_count(self.hs_cpu_us_per_handshake_overflow) + "\n"
+        s += "  hs_wait.samples:   " + _fmt_count(q7_wait_total) + "  overflow=" + _fmt_count(self.hs_wait_us_per_handshake_overflow) + "\n\n"
+        s += "Q7 io_uring park (H_F PARK-BOUND, total-only):\n"
+        s += "  iouring_park_us.total: " + _fmt_count(self.iouring_park_us_total) + "\n\n"
         # Budget closure (mirrors report_json computation).
         var pp_legs = (self.header_parse_us_total + self.hp_us_total + self.aead_us_total
             + self.frame_parse_us_total + self.sm_us_total + self.residual_us_total)
@@ -893,6 +1080,102 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "event_dispatch_us": ' + String(de_us) + ',\n'
         s += '    "sum_legs_us": ' + String(sum_legs_us) + ',\n'
         s += '    "unaccounted_pct": ' + String(unacct_drain_pct) + '\n'
+        s += "  },\n"
+
+        # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+        # 10 new top-level keys per spec §4.7.
+        s += '  "active_boucle_count_samples": ['
+        for i in range(len(self.active_boucle_count_samples)):
+            s += String(self.active_boucle_count_samples[i])
+            if i < len(self.active_boucle_count_samples) - 1:
+                s += ", "
+        s += "],\n"
+        s += '  "in_flight_handshake_count_samples": ['
+        for i in range(len(self.in_flight_handshake_count_samples)):
+            s += String(self.in_flight_handshake_count_samples[i])
+            if i < len(self.in_flight_handshake_count_samples) - 1:
+                s += ", "
+        s += "],\n"
+
+        var bs_keys = List[String]()
+        bs_keys.append(String("1"))
+        bs_keys.append(String("2-3"))
+        bs_keys.append(String("4-7"))
+        bs_keys.append(String("8-15"))
+        bs_keys.append(String("16-31"))
+        bs_keys.append(String("32-63"))
+        bs_keys.append(String("64-127"))
+        bs_keys.append(String("128+"))
+        s += '  "sendmsg_batch_size_buckets": {\n'
+        for i in range(8):
+            s += '    "' + bs_keys[i] + '": ' + String(self.sendmsg_batch_size_buckets[i])
+            if i < 7:
+                s += ","
+            s += "\n"
+        s += "  },\n"
+        s += '  "recvmsg_batch_size_buckets": {\n'
+        for i in range(8):
+            s += '    "' + bs_keys[i] + '": ' + String(self.recvmsg_batch_size_buckets[i])
+            if i < 7:
+                s += ","
+            s += "\n"
+        s += "  },\n"
+
+        s += '  "demux_map_lock_wait_us": {\n'
+        s += '    "total": ' + String(self.demux_map_lock_wait_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.demux_map_lock_wait_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.demux_map_lock_wait_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "rustls_config_clone_lock_wait_us": {\n'
+        s += '    "total": ' + String(self.rustls_config_clone_lock_wait_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.rustls_config_clone_lock_wait_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.rustls_config_clone_lock_wait_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "ticket_store_lock_wait_us": {\n'
+        s += '    "total": ' + String(self.ticket_store_lock_wait_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.ticket_store_lock_wait_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.ticket_store_lock_wait_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "hs_cpu_us_per_handshake": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.hs_cpu_us_per_handshake_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.hs_cpu_us_per_handshake_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "hs_wait_us_per_handshake": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.hs_wait_us_per_handshake_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.hs_wait_us_per_handshake_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "iouring_park_us": {\n'
+        s += '    "total": ' + String(self.iouring_park_us_total) + "\n"
         s += "  },\n"
 
         # Top-50 worst offenders: addr_keys with most packets but no hs_complete.

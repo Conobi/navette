@@ -1264,6 +1264,129 @@ def test_report_json_emits_read_hs_blocks() raises:
     print("PASS: test_report_json_emits_read_hs_blocks")
 
 
+def test_q7_gauge_sampling() raises:
+    """Q7 Group A — tick_profile_gauges respects 100ms cadence gate.
+
+    3 calls at t=0, t=50_000, t=150_000 should yield exactly 2 samples in
+    active_boucle_count_samples (first + third; second skipped per cadence).
+    The in_flight_handshake_count_samples list mirrors the same cadence.
+    """
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    assert_true(len(p.active_boucle_count_samples) == 0, "samples start empty")
+    assert_true(len(p.in_flight_handshake_count_samples) == 0, "in_flight samples start empty")
+
+    p.active_drive_count = UInt32(2)
+    p.tick_profile_gauges(UInt64(0))
+    p.tick_profile_gauges(UInt64(50_000))
+    p.tick_profile_gauges(UInt64(150_000))
+
+    assert_true(
+        len(p.active_boucle_count_samples) == 2,
+        "100ms cadence gate: 3 calls @ {0, 50k, 150k}us yields 2 samples")
+    assert_true(
+        len(p.in_flight_handshake_count_samples) == 2,
+        "in_flight samples mirror the same cadence (2 entries)")
+    assert_true(
+        p.active_boucle_count_samples[0] == UInt32(2),
+        "first sample captures active_drive_count=2")
+    assert_true(
+        p.active_boucle_count_samples[1] == UInt32(2),
+        "third sample captures active_drive_count=2")
+    print("PASS: test_q7_gauge_sampling")
+
+
+def test_q7_batch_histogram_dispatch() raises:
+    """Q7 Group B — sendmsg/recvmsg batch-size histograms dispatch via
+    _pkts_per_flush_bucket. Confirms 8-bucket layout: {1, 2-3, 4-7, 8-15,
+    16-31, 32-63, 64-127, 128+}. n=1 -> bucket 0; n=5 -> bucket 2; n=200 ->
+    bucket 7. Cross-surface independence: sendmsg increments don't bleed
+    into recvmsg buckets and vice versa.
+    """
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    for i in range(8):
+        assert_true(p.sendmsg_batch_size_buckets[i] == UInt64(0), "send bucket " + String(i) + " starts at 0")
+        assert_true(p.recvmsg_batch_size_buckets[i] == UInt64(0), "recv bucket " + String(i) + " starts at 0")
+
+    p.record_sendmsg_batch_size(1)
+    p.record_sendmsg_batch_size(5)
+    p.record_sendmsg_batch_size(1024)
+    p.record_recvmsg_batch_size(1)
+    p.record_recvmsg_batch_size(1)
+
+    assert_true(p.sendmsg_batch_size_buckets[0] == UInt64(1), "sendmsg n=1 -> bucket 0")
+    assert_true(p.sendmsg_batch_size_buckets[2] == UInt64(1), "sendmsg n=5 -> bucket 2 (4-7)")
+    assert_true(p.sendmsg_batch_size_buckets[7] == UInt64(1), "sendmsg n=1024 -> bucket 7 (128+)")
+    assert_true(p.recvmsg_batch_size_buckets[0] == UInt64(2), "recvmsg n=1 twice -> bucket 0 count=2")
+    # Independence: recvmsg increments did NOT touch sendmsg buckets.
+    assert_true(p.sendmsg_batch_size_buckets[0] == UInt64(1), "sendmsg bucket 0 unaffected by recvmsg calls")
+    print("PASS: test_q7_batch_histogram_dispatch")
+
+
+def test_q7_lock_wait_record() raises:
+    """Q7 Group C — 3 lock-wait surfaces dispatch independently. Also
+    covers H_F via record_iouring_park_us accumulator (no histogram).
+
+    Verifies _per_pkt_bucket(5) = 3, _per_pkt_bucket(1024) = 11,
+    _per_pkt_bucket(0) = 0 — and that increments on one surface do not
+    affect the other two surfaces.
+    """
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 24-bucket layout sanity: all start at 0 across the 3 surfaces.
+    for i in range(24):
+        assert_true(p.demux_map_lock_wait_us_buckets[i] == UInt64(0), "demux bucket " + String(i) + " == 0")
+        assert_true(p.rustls_config_clone_lock_wait_us_buckets[i] == UInt64(0), "rustls bucket " + String(i) + " == 0")
+        assert_true(p.ticket_store_lock_wait_us_buckets[i] == UInt64(0), "ticket bucket " + String(i) + " == 0")
+
+    p.record_demux_map_lock_wait_us(UInt64(5))         # bucket 3
+    p.record_rustls_config_clone_lock_wait_us(UInt64(1024))  # bucket 11
+    p.record_ticket_store_lock_wait_us(UInt64(0))      # bucket 0
+
+    assert_true(
+        p.demux_map_lock_wait_us_buckets[3] == UInt64(1),
+        "demux us=5 -> bucket 3 (_per_pkt_bucket(5)=3)")
+    assert_true(
+        p.demux_map_lock_wait_us_total == UInt64(5),
+        "demux total accumulates raw us")
+    assert_true(
+        p.rustls_config_clone_lock_wait_us_buckets[11] == UInt64(1),
+        "rustls us=1024 -> bucket 11 (_per_pkt_bucket(1024)=11)")
+    assert_true(
+        p.rustls_config_clone_lock_wait_us_total == UInt64(1024),
+        "rustls total accumulates raw us")
+    assert_true(
+        p.ticket_store_lock_wait_us_buckets[0] == UInt64(1),
+        "ticket us=0 -> bucket 0 (_per_pkt_bucket(0)=0)")
+    assert_true(
+        p.ticket_store_lock_wait_us_total == UInt64(0),
+        "ticket total accumulates raw us (0)")
+
+    # Cross-surface independence: each call hit only the named surface.
+    assert_true(
+        p.demux_map_lock_wait_us_buckets[11] == UInt64(0),
+        "demux bucket 11 untouched by rustls call")
+    assert_true(
+        p.rustls_config_clone_lock_wait_us_buckets[3] == UInt64(0),
+        "rustls bucket 3 untouched by demux call")
+    assert_true(
+        p.ticket_store_lock_wait_us_buckets[3] == UInt64(0),
+        "ticket bucket 3 untouched by demux call")
+
+    # H_F PARK-BOUND accumulator (covered here per spec §5 gate row 3).
+    assert_true(p.iouring_park_us_total == UInt64(0), "iouring_park_us starts at 0")
+    p.record_iouring_park_us(UInt64(2_000_000))
+    assert_true(
+        p.iouring_park_us_total == UInt64(2_000_000),
+        "record_iouring_park_us(2_000_000) -> total=2_000_000 (no histogram)")
+    p.record_iouring_park_us(UInt64(500_000))
+    assert_true(
+        p.iouring_park_us_total == UInt64(2_500_000),
+        "record_iouring_park_us accumulates further calls")
+    print("PASS: test_q7_lock_wait_record")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1328,4 +1451,7 @@ def main() raises:
     test_record_read_hs_per_handshake_count_dispatches_into_8_buckets()
     test_record_read_hs_us_per_call_dispatches_into_24_buckets()
     test_report_json_emits_read_hs_blocks()
+    test_q7_gauge_sampling()
+    test_q7_batch_histogram_dispatch()
+    test_q7_lock_wait_record()
     print("All Plan A tests passed.")
