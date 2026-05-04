@@ -979,6 +979,13 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var tp = default_transport_params()
                 var dcid_copy = List[UInt8](copy=pd.dcid)
                 var quic: QuicConnection
+                # Q9 alloc_quic_state_us bracket — outer wall-clock of
+                # QuicConnection.server (INCLUDES inner alloc_tls_handle_us
+                # FFI bracket recorded inside connection.mojo:server).
+                var t_qstate_start: UInt64 = 0
+                @parameter
+                if PROFILE_ACCEPT:
+                    t_qstate_start = profile_monotonic_us()
                 try:
                     @parameter
                     if PROFILE_ACCEPT:
@@ -1011,6 +1018,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                     if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
+                @parameter
+                if PROFILE_ACCEPT:
+                    self.profile.record_alloc_quic_state_us(profile_monotonic_us() - t_qstate_start)
 
                 # B-permissive dual-DCID extract (BEFORE quic^ is moved into
                 # H3HandlerServer): both initial_dcid (client's random ICID)
@@ -1027,6 +1037,12 @@ struct H3UdpHandler(BatchCompletionHandler):
 
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
+                # Q9 alloc_h3_state_us bracket — H3HandlerServer ctor wall-clock
+                # (QPACK encoder/decoder init, stream maps, etc.).
+                var t_h3state_start: UInt64 = 0
+                @parameter
+                if PROFILE_ACCEPT:
+                    t_h3state_start = profile_monotonic_us()
                 try:
                     @parameter
                     if PROFILE_ACCEPT:
@@ -1050,6 +1066,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                     if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
+                @parameter
+                if PROFILE_ACCEPT:
+                    self.profile.record_alloc_h3_state_us(profile_monotonic_us() - t_h3state_start)
 
                 var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
                 h3_ptr.init_pointee_move(h3^)
@@ -1059,6 +1078,12 @@ struct H3UdpHandler(BatchCompletionHandler):
                 for j in range(pd.addr_len):
                     addr.append(pd.buf_ptr[pd.addr_offset + j])
 
+                # Q9 bench_dict_insert_us bracket — conn_dcid_map dual-DCID
+                # insert + 3 parallel-list appends + dcids List build.
+                var t_dict_start: UInt64 = 0
+                @parameter
+                if PROFILE_ACCEPT:
+                    t_dict_start = profile_monotonic_us()
                 conn_idx = len(self.conn_h3s)
                 self.conn_dcid_map[icid_u64] = conn_idx
                 self.conn_dcid_map[lcid_u64] = conn_idx
@@ -1069,6 +1094,9 @@ struct H3UdpHandler(BatchCompletionHandler):
                 dcids.append(icid_u64)
                 dcids.append(lcid_u64)
                 self.conn_dcids.append(dcids^)
+                @parameter
+                if PROFILE_ACCEPT:
+                    self.profile.record_bench_dict_insert_us(profile_monotonic_us() - t_dict_start)
 
             @parameter
             if PROFILE_ACCEPT:
