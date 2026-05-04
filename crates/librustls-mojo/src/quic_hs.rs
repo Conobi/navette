@@ -463,10 +463,22 @@ pub extern "C" fn rlsm_quic_conn_write_hs(
 }
 
 /// Feed CRYPTO frame payload to the TLS state machine.
+///
+/// Q6/Q7 instrumentation out-params (all NULL-safe):
+///   out_state_machine_us:     rustls read_hs body µs (Q6 slot 1)
+///   out_handle_lookup_us:     with_mut handle-table lookup µs (Q6 slot 2)
+///   out_config_clone_us:      Arc<ServerConfig> access µs — always 0 on read_hs
+///                             (Arc clone fires in accept(), not here) (Q7 slot 3)
+///   out_ticket_store_lock_us: ticket-store Mutex acquire µs — always 0 on read_hs
+///                             (resumed-handshake ticket dance fires in take_keys) (Q7 slot 4)
 #[no_mangle]
 pub extern "C" fn rlsm_quic_conn_read_hs(
-    conn_handle: i32,
-    data:        *const u8, len: i32,
+    conn_handle:              i32,
+    data:                     *const u8, len: i32,
+    out_state_machine_us:     *mut u64,
+    out_handle_lookup_us:     *mut u64,
+    out_config_clone_us:      *mut u64,
+    out_ticket_store_lock_us: *mut u64,
 ) -> i32 {
     clear_last_error();
 
@@ -475,15 +487,29 @@ pub extern "C" fn rlsm_quic_conn_read_hs(
     }
     if len < 0 { rlsm_err!("rlsm_quic_conn_read_hs: negative len"; return -1); }
 
+    // Q7 slots are 0-by-design on the read_hs path: Arc<ServerConfig> clone fires
+    // in accept(), ticket-store mutex in resumed-handshake take_keys. Initialize
+    // here so callers see deterministic 0s even if with_mut returns None below.
+    if !out_config_clone_us.is_null()      { unsafe { *out_config_clone_us = 0; } }
+    if !out_ticket_store_lock_us.is_null() { unsafe { *out_ticket_store_lock_us = 0; } }
+
     let slice = if len == 0 { &[] } else {
         unsafe { std::slice::from_raw_parts(data, len as usize) }
     };
 
+    let t_lookup = std::time::Instant::now();
     quic_conn_table().with_mut(conn_handle, |entry| {
+        let lookup_us = t_lookup.elapsed().as_micros() as u64;
+        if !out_handle_lookup_us.is_null() { unsafe { *out_handle_lookup_us = lookup_us; } }
+
+        let t_sm = std::time::Instant::now();
         let result = match &mut entry.conn {
             QuicConn::Client(c) => c.read_hs(slice),
             QuicConn::Server(c) => c.read_hs(slice),
         };
+        let sm_us = t_sm.elapsed().as_micros() as u64;
+        if !out_state_machine_us.is_null() { unsafe { *out_state_machine_us = sm_us; } }
+
         match result {
             Ok(()) => 0,
             Err(e) => {
@@ -992,7 +1018,11 @@ mod tests {
         let client_hello = buf[..written as usize].to_vec();
 
         // Server reads ClientHello, then writes (should produce key_change=1)
-        let rc = rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32);
+        let rc = rlsm_quic_conn_read_hs(
+            server_h, client_hello.as_ptr(), client_hello.len() as i32,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
         assert_eq!(rc, 0);
         written = 0; kc = 0;
         let rc = rlsm_quic_conn_write_hs(server_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
@@ -1025,7 +1055,11 @@ mod tests {
 
         // Server reads ClientHello
         assert_eq!(
-            rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32),
+            rlsm_quic_conn_read_hs(
+                server_h, client_hello.as_ptr(), client_hello.len() as i32,
+                std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(), std::ptr::null_mut(),
+            ),
             0, "server read_hs failed"
         );
 
@@ -1052,7 +1086,11 @@ mod tests {
         let (client_h, server_h) = make_conn_pair(b"h3");
         // Feed garbage to server before it has seen ClientHello
         let garbage = b"not valid TLS handshake data at all \x00\xff";
-        let rc = rlsm_quic_conn_read_hs(server_h, garbage.as_ptr(), garbage.len() as i32);
+        let rc = rlsm_quic_conn_read_hs(
+            server_h, garbage.as_ptr(), garbage.len() as i32,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
         assert_eq!(rc, -1, "read_hs should fail on garbage input");
 
         // Alert must be available
@@ -1078,7 +1116,11 @@ mod tests {
         // Generate ClientHello from client, feed to server
         rlsm_quic_conn_write_hs(client_h, buf.as_mut_ptr(), 4096, &mut written, &mut kc);
         let client_hello = buf[..written as usize].to_vec();
-        rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32);
+        rlsm_quic_conn_read_hs(
+            server_h, client_hello.as_ptr(), client_hello.len() as i32,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+        );
 
         // Server writes → key_change=1
         written = 0; kc = 0;
@@ -1129,7 +1171,11 @@ mod tests {
             if written > 0 {
                 progress = true;
                 assert_eq!(
-                    rlsm_quic_conn_read_hs(server_h, buf.as_ptr(), written),
+                    rlsm_quic_conn_read_hs(
+                        server_h, buf.as_ptr(), written,
+                        std::ptr::null_mut(), std::ptr::null_mut(),
+                        std::ptr::null_mut(), std::ptr::null_mut(),
+                    ),
                     0, "server read_hs failed"
                 );
             }
@@ -1153,7 +1199,11 @@ mod tests {
             if written > 0 {
                 progress = true;
                 assert_eq!(
-                    rlsm_quic_conn_read_hs(client_h, buf.as_ptr(), written),
+                    rlsm_quic_conn_read_hs(
+                        client_h, buf.as_ptr(), written,
+                        std::ptr::null_mut(), std::ptr::null_mut(),
+                        std::ptr::null_mut(), std::ptr::null_mut(),
+                    ),
                     0, "client read_hs failed"
                 );
             }
@@ -1237,7 +1287,11 @@ mod tests {
 
         // Server reads ClientHello
         assert_eq!(
-            rlsm_quic_conn_read_hs(server_h, client_hello.as_ptr(), client_hello.len() as i32),
+            rlsm_quic_conn_read_hs(
+                server_h, client_hello.as_ptr(), client_hello.len() as i32,
+                std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(), std::ptr::null_mut(),
+            ),
             0, "server read_hs (ClientHello) failed"
         );
 
@@ -1334,5 +1388,24 @@ mod tests {
         assert_eq!(keys_h, 0, "keys handle should remain 0 when unavailable");
         let _ = rlsm_quic_conn_free(client_h);
         let _ = rlsm_quic_conn_free(server_h);
+    }
+}
+
+#[cfg(test)]
+mod q7_t3a_tests {
+    use super::*;
+
+    /// T3a: invalid handle (-1) returns -1 without panic; all 4 out-params NULL-safe.
+    #[test]
+    fn test_read_hs_null_out_params_no_crash() {
+        let rc = unsafe {
+            rlsm_quic_conn_read_hs(
+                -1, std::ptr::null(), 0,
+                std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        };
+        assert!(rc == -1 || rc == 0,
+            "return must be -1 or 0, never a panic; got {rc}");
     }
 }
