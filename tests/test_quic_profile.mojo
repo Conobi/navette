@@ -1387,6 +1387,45 @@ def test_q7_lock_wait_record() raises:
     print("PASS: test_q7_lock_wait_record")
 
 
+def test_drain_extension_record() raises:
+    """record_drain_extension accumulates pkts_total and ticks overflow_count
+    only when overflowed=True. n=0 with overflowed=True still ticks the overflow
+    counter (caller hit the pool ceiling but pulled nothing further)."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    assert_true(p.drain_extension_pkts_total == UInt64(0),
+        "drain_extension_pkts_total starts at 0")
+    assert_true(p.drain_extension_overflow_count == UInt64(0),
+        "drain_extension_overflow_count starts at 0")
+
+    p.record_drain_extension(UInt64(5), False)
+    p.record_drain_extension(UInt64(3), True)
+    p.record_drain_extension(UInt64(0), True)
+
+    assert_true(p.drain_extension_pkts_total == UInt64(8),
+        "drain_extension_pkts_total = 5 + 3 + 0 = 8")
+    assert_true(p.drain_extension_overflow_count == UInt64(2),
+        "drain_extension_overflow_count = 2 (two overflowed calls)")
+    print("PASS: test_drain_extension_record")
+
+
+def test_drain_extension_json_shape() raises:
+    """report_json must emit a `drain_extension` block with pkts_total +
+    overflow_count, mirroring the handshakes block shape."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_drain_extension(UInt64(7), False)
+
+    var s = p.report_json()
+    var i_block = s.find('"drain_extension"')
+    assert_true(i_block >= 0, '"drain_extension" key present in JSON')
+    var i_pkts = s.find('"pkts_total": 7', i_block)
+    assert_true(i_pkts >= 0, '"pkts_total": 7 present after "drain_extension"')
+    var i_overflow = s.find('"overflow_count": 0', i_block)
+    assert_true(i_overflow >= 0, '"overflow_count": 0 present after "drain_extension"')
+    print("PASS: test_drain_extension_json_shape")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1454,4 +1493,6 @@ def main() raises:
     test_q7_gauge_sampling()
     test_q7_batch_histogram_dispatch()
     test_q7_lock_wait_record()
+    test_drain_extension_record()
+    test_drain_extension_json_shape()
     print("All Plan A tests passed.")

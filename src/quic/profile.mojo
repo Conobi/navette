@@ -14,6 +14,7 @@ from std.memory import UnsafePointer
 
 
 comptime PROFILE_ACCEPT: Bool = False
+comptime DRAIN_TO_EAGAIN: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
@@ -182,6 +183,15 @@ struct AcceptProfile(Copyable, Movable):
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
+    # Drain-extension counters (Plan: 2026-05-05-quic-bench-drain-extension).
+    # `drain_extension_pkts_total` accumulates datagrams pulled by the userspace
+    # recvfrom-until-EAGAIN loop wired in bench/h3_server.mojo (T2/T3).
+    # `drain_extension_overflow_count` ticks once per `_flush_impl` invocation
+    # that exhausted the scratch_pool before EAGAIN — a sizing-pressure signal
+    # for the scratch_pool ceiling.
+    var drain_extension_pkts_total: UInt64
+    var drain_extension_overflow_count: UInt64
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -277,6 +287,8 @@ struct AcceptProfile(Copyable, Movable):
             self.hs_wait_us_per_handshake_buckets.append(UInt64(0))
         self.iouring_park_us_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
+        self.drain_extension_pkts_total = UInt64(0)
+        self.drain_extension_overflow_count = UInt64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -544,6 +556,19 @@ struct AcceptProfile(Copyable, Movable):
         every io_uring_enter call site (or equivalent submit-and-wait entry)."""
         self.iouring_park_us_total = self.iouring_park_us_total + us
 
+    def record_drain_extension(mut self, n: UInt64, overflowed: Bool):
+        """Drain-extension instrumentation (Plan: 2026-05-05-quic-bench-drain-extension).
+
+        Records a single `_drain_extension` invocation pulling `n` datagrams.
+        `overflowed=True` indicates the scratch_pool was exhausted before
+        EAGAIN — caller still pulled `n` datagrams (`n` may be the pool cap).
+        Only the overflow event count ticks; `n` is added to the running total
+        regardless.
+        """
+        self.drain_extension_pkts_total += n
+        if overflowed:
+            self.drain_extension_overflow_count += UInt64(1)
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -662,6 +687,11 @@ struct AcceptProfile(Copyable, Movable):
         s += "Handshake kinds:\n"
         s += "  full:    " + _fmt_count(self.handshakes_full_total) + "\n"
         s += "  resumed: " + _fmt_count(self.handshakes_resumed_total) + "\n\n"
+
+        # Drain-extension (Plan: 2026-05-05-quic-bench-drain-extension).
+        s += "drain_extension:\n"
+        s += "  pkts_total:     " + _fmt_count(self.drain_extension_pkts_total) + "\n"
+        s += "  overflow_count: " + _fmt_count(self.drain_extension_overflow_count) + "\n\n"
 
         # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
@@ -944,6 +974,12 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "handshakes": {\n'
         s += '    "full": ' + String(self.handshakes_full_total) + ',\n'
         s += '    "resumed": ' + String(self.handshakes_resumed_total) + '\n'
+        s += "  },\n"
+
+        # Drain-extension block (Plan: 2026-05-05-quic-bench-drain-extension).
+        s += '  "drain_extension": {\n'
+        s += '    "pkts_total": ' + String(self.drain_extension_pkts_total) + ',\n'
+        s += '    "overflow_count": ' + String(self.drain_extension_overflow_count) + '\n'
         s += "  },\n"
 
         # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
