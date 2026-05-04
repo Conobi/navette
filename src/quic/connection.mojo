@@ -349,6 +349,17 @@ struct QuicConnection(Movable):
     # ONLY read_hs invocations.
     var read_hs_call_count: UInt64
 
+    # Q6 (Plan: 2026-05-04-q6-read-hs-internal-decomposition):
+    # Per-conn read_hs sub-leg µs accumulators. Non-resetting; gated by
+    # PROFILE_ACCEPT + profile_ptr != 0 at the bracket site. Sums across
+    # all read_hs calls in the conn lifetime. output_marshalling is
+    # zero-by-design for read_hs (returns status only); slot reserved for
+    # future symmetric write_hs/take_keys reuse — see spec §4.4.
+    var read_hs_input_marshalling_us_total: UInt64
+    var read_hs_state_machine_us_total: UInt64
+    var read_hs_output_alloc_us_total: UInt64
+    var read_hs_output_marshalling_us_total: UInt64
+
     # Q7 (Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition):
     var accept_us: UInt64         # server-side conn creation timestamp; 0 for client
     var hs_cpu_us_total: UInt64   # sum of _drive_handshake body µs across conn lifetime
@@ -394,6 +405,10 @@ struct QuicConnection(Movable):
         self.profile_first_iter_done = take.profile_first_iter_done
         self.fresh_conn_ffi_us_total = take.fresh_conn_ffi_us_total
         self.read_hs_call_count = take.read_hs_call_count
+        self.read_hs_input_marshalling_us_total = take.read_hs_input_marshalling_us_total
+        self.read_hs_state_machine_us_total = take.read_hs_state_machine_us_total
+        self.read_hs_output_alloc_us_total = take.read_hs_output_alloc_us_total
+        self.read_hs_output_marshalling_us_total = take.read_hs_output_marshalling_us_total
         self.accept_us = take.accept_us
         self.hs_cpu_us_total = take.hs_cpu_us_total
         self.hs_wait_us_total = take.hs_wait_us_total
@@ -451,6 +466,10 @@ struct QuicConnection(Movable):
         self.profile_first_iter_done = False
         self.fresh_conn_ffi_us_total = UInt64(0)
         self.read_hs_call_count = UInt64(0)
+        self.read_hs_input_marshalling_us_total = UInt64(0)
+        self.read_hs_state_machine_us_total = UInt64(0)
+        self.read_hs_output_alloc_us_total = UInt64(0)
+        self.read_hs_output_marshalling_us_total = UInt64(0)
         self.accept_us = UInt64(0)
         self.hs_cpu_us_total = UInt64(0)
         self.hs_wait_us_total = UInt64(0)
@@ -1621,11 +1640,24 @@ struct QuicConnection(Movable):
             if self.crypto_streams[level].has_pending():
                 var crypto_data = self.crypto_streams[level].drain()
                 if len(crypto_data) > 0:
+                    # Q6: Mojo-side input-marshalling timer wraps the heap alloc
+                    # + per-byte copy loop (the FFI input ABI marshalling).
+                    # Plan: 2026-05-04-q6-read-hs-internal-decomposition §4.4 step 1.
+                    var t_input_start: UInt64 = 0
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            t_input_start = monotonic_us()
                     var data_buf = _heap_alloc[UInt8](
                         len(crypto_data)
                     ).as_any_origin()
                     for i in range(len(crypto_data)):
                         data_buf[i] = crypto_data[i]
+                    var input_marshalling_us: UInt64 = 0
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        if Int(self.profile_ptr) != 0:
+                            input_marshalling_us = monotonic_us() - t_input_start
 
                     var t_start: UInt64 = 0
                     @parameter
@@ -1633,9 +1665,16 @@ struct QuicConnection(Movable):
                         if Int(self.profile_ptr) != 0:
                             t_start = monotonic_us()
                             self.profile_rustls_us_accum -= t_start
-                    # Q7: out-param locals always declared (zero-cost; comptime
+                    # Q6/Q7: out-param locals always declared (zero-cost; comptime
                     # branch chooses 7-arg wired call vs legacy 3-arg below).
+                    # Slot order matches src/tls/lib.mojo:499 quic_conn_read_hs:
+                    #   slot 1: out_state_machine_us     (Q6 — rustls read_hs body µs)
+                    #   slot 2: out_handle_lookup_us     (Q6 — with_mut handle-table lookup µs)
+                    #   slot 3: out_config_clone_us      (Q7 — Arc<ServerConfig> access µs)
+                    #   slot 4: out_ticket_store_lock_us (Q7 — ticket-store Mutex acquire µs)
                     var rc: Int32 = Int32(0)
+                    var out_sm_us: UInt64 = UInt64(0)
+                    var out_lookup_us: UInt64 = UInt64(0)
                     var out_cfg_clone: UInt64 = UInt64(0)
                     var out_ticket_lock: UInt64 = UInt64(0)
                     @parameter
@@ -1645,8 +1684,8 @@ struct QuicConnection(Movable):
                                 self.conn_handle,
                                 data_buf,
                                 Int32(len(crypto_data)),
-                                UnsafePointer[UInt64, MutAnyOrigin](),  # Q6 slot 1 — NULL until Q6
-                                UnsafePointer[UInt64, MutAnyOrigin](),  # Q6 slot 2 — NULL until Q6
+                                UnsafePointer(to=out_sm_us),
+                                UnsafePointer(to=out_lookup_us),
                                 UnsafePointer(to=out_cfg_clone),
                                 UnsafePointer(to=out_ticket_lock),
                             )
@@ -1677,6 +1716,19 @@ struct QuicConnection(Movable):
                             # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
                             self.profile_ptr[].record_rustls_config_clone_lock_wait_us(out_cfg_clone)
                             self.profile_ptr[].record_ticket_store_lock_wait_us(out_ticket_lock)
+                            # Q6: per-call read_hs sub-leg accumulation + histograms.
+                            # output_marshalling is zero-by-design for read_hs
+                            # (returns status only); slot reserved for future
+                            # symmetric write_hs/take_keys reuse — spec §4.4 + §7.3.
+                            # Plan: 2026-05-04-q6-read-hs-internal-decomposition.
+                            self.read_hs_input_marshalling_us_total = self.read_hs_input_marshalling_us_total + input_marshalling_us
+                            self.read_hs_state_machine_us_total = self.read_hs_state_machine_us_total + out_sm_us
+                            self.read_hs_output_alloc_us_total = self.read_hs_output_alloc_us_total + out_lookup_us
+                            self.read_hs_output_marshalling_us_total = self.read_hs_output_marshalling_us_total + UInt64(0)
+                            self.profile_ptr[].record_read_hs_input_marshalling_us(input_marshalling_us)
+                            self.profile_ptr[].record_read_hs_state_machine_us(out_sm_us)
+                            self.profile_ptr[].record_read_hs_output_alloc_us(out_lookup_us)
+                            self.profile_ptr[].record_read_hs_output_marshalling_us(UInt64(0))
                     data_buf.free()
 
                     if rc < 0:
