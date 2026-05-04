@@ -1314,6 +1314,56 @@ def test_q6_read_hs_sublegs_dispatch() raises:
     print("PASS: test_q6_read_hs_sublegs_dispatch")
 
 
+def test_q9_alloc_sublegs_dispatch() raises:
+    """Q9: 4 per-fresh-conn alloc sub-leg histograms dispatch via _per_pkt_bucket;
+    JSON shape exposes all 4 new top-level keys with buckets+overflow."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 5us  -> bucket 3   (floor(log2(5))+1 = 2+1 = 3; range [4,8))
+    # 50us -> bucket 6   (floor(log2(50))+1 = 5+1 = 6; range [32,64))
+    # 256us -> bucket 8  (floor(log2(256))+1 = 8+1 = 9? no; 256 = 2^8 → bucket 8)
+    p.record_alloc_quic_state_us(UInt64(5))
+    p.record_alloc_tls_handle_us(UInt64(50))
+    p.record_alloc_h3_state_us(UInt64(0))
+    p.record_bench_dict_insert_us(UInt64(0))
+
+    var aqs_sum: UInt64 = UInt64(0)
+    for x in p.alloc_quic_state_us_buckets:
+        aqs_sum = aqs_sum + x
+    assert_true(aqs_sum == UInt64(1), "alloc_quic_state has exactly 1 sample")
+    assert_true(p.alloc_quic_state_us_buckets[3] == UInt64(1), "5us -> bucket 3")
+
+    var ath_sum: UInt64 = UInt64(0)
+    for x in p.alloc_tls_handle_us_buckets:
+        ath_sum = ath_sum + x
+    assert_true(ath_sum == UInt64(1), "alloc_tls_handle has exactly 1 sample")
+    assert_true(p.alloc_tls_handle_us_buckets[6] == UInt64(1), "50us -> bucket 6")
+
+    var ahs_sum: UInt64 = UInt64(0)
+    for x in p.alloc_h3_state_us_buckets:
+        ahs_sum = ahs_sum + x
+    assert_true(ahs_sum == UInt64(1), "alloc_h3_state has exactly 1 sample (0us -> bucket 0)")
+    assert_true(p.alloc_h3_state_us_buckets[0] == UInt64(1), "0us -> bucket 0")
+
+    var bdi_sum: UInt64 = UInt64(0)
+    for x in p.bench_dict_insert_us_buckets:
+        bdi_sum = bdi_sum + x
+    assert_true(bdi_sum == UInt64(1), "bench_dict_insert has exactly 1 sample (0us -> bucket 0)")
+    assert_true(p.bench_dict_insert_us_buckets[0] == UInt64(1), "0us -> bucket 0")
+
+    # Overflow: 2^23 us must land in overflow, not buckets.
+    p.record_alloc_quic_state_us(UInt64(1 << 23))
+    assert_true(p.alloc_quic_state_us_overflow == UInt64(1), "2^23 us -> overflow")
+
+    # JSON shape: 4 top-level keys present.
+    var j = p.report_json()
+    assert_true(j.find('"alloc_quic_state_us"') >= 0, "alloc_quic_state key in JSON")
+    assert_true(j.find('"alloc_tls_handle_us"') >= 0, "alloc_tls_handle key in JSON")
+    assert_true(j.find('"alloc_h3_state_us"') >= 0, "alloc_h3_state key in JSON")
+    assert_true(j.find('"bench_dict_insert_us"') >= 0, "bench_dict_insert key in JSON")
+    print("PASS: test_q9_alloc_sublegs_dispatch")
+
+
 def test_q7_gauge_sampling() raises:
     """Q7 Group A — tick_profile_gauges respects 100ms cadence gate.
 
@@ -1561,6 +1611,7 @@ def main() raises:
     test_record_read_hs_us_per_call_dispatches_into_24_buckets()
     test_report_json_emits_read_hs_blocks()
     test_q6_read_hs_sublegs_dispatch()
+    test_q9_alloc_sublegs_dispatch()
     test_q7_gauge_sampling()
     test_q7_batch_histogram_dispatch()
     test_q7_lock_wait_record()

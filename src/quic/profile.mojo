@@ -166,6 +166,23 @@ struct AcceptProfile(Copyable, Movable):
     var read_hs_output_marshalling_us_buckets: List[UInt64]
     var read_hs_output_marshalling_us_overflow: UInt64
 
+    # Q9 per-fresh-conn alloc decomposition (Plan: 2026-05-05-q9).
+    # Sub-legs of fresh_conn_ffi_us_total. Each sample = one fresh-conn create.
+    #   alloc_quic_state_us  (QuicConnection.server outer wall-clock; INCLUDES inner FFI)
+    #   alloc_tls_handle_us  (inner quic_server_conn_new FFI call)
+    #   alloc_h3_state_us    (H3HandlerServer ctor wall-clock)
+    #   bench_dict_insert_us (dual-DCID Dict insert + 3 parallel-list appends)
+    # Inner-outer overlap: alloc_quic_state >= alloc_tls_handle by construction.
+    # Verdict §3.1 handles via threshold-priority (TLS-BOUND checked first).
+    var alloc_quic_state_us_buckets: List[UInt64]
+    var alloc_quic_state_us_overflow: UInt64
+    var alloc_tls_handle_us_buckets: List[UInt64]
+    var alloc_tls_handle_us_overflow: UInt64
+    var alloc_h3_state_us_buckets: List[UInt64]
+    var alloc_h3_state_us_overflow: UInt64
+    var bench_dict_insert_us_buckets: List[UInt64]
+    var bench_dict_insert_us_overflow: UInt64
+
     # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
     # Cadence gate for tick_profile_gauges (100ms cadence).
     var last_gauge_sample_us: UInt64
@@ -297,6 +314,20 @@ struct AcceptProfile(Copyable, Movable):
         self.read_hs_state_machine_us_overflow = UInt64(0)
         self.read_hs_output_alloc_us_overflow = UInt64(0)
         self.read_hs_output_marshalling_us_overflow = UInt64(0)
+        # Q9 init (Plan: 2026-05-05-q9).
+        self.alloc_quic_state_us_buckets = List[UInt64]()
+        self.alloc_tls_handle_us_buckets = List[UInt64]()
+        self.alloc_h3_state_us_buckets = List[UInt64]()
+        self.bench_dict_insert_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.alloc_quic_state_us_buckets.append(UInt64(0))
+            self.alloc_tls_handle_us_buckets.append(UInt64(0))
+            self.alloc_h3_state_us_buckets.append(UInt64(0))
+            self.bench_dict_insert_us_buckets.append(UInt64(0))
+        self.alloc_quic_state_us_overflow = UInt64(0)
+        self.alloc_tls_handle_us_overflow = UInt64(0)
+        self.alloc_h3_state_us_overflow = UInt64(0)
+        self.bench_dict_insert_us_overflow = UInt64(0)
         # Q7 init (Plan: 2026-05-04-q7).
         self.last_gauge_sample_us = UInt64(0)
         self.active_drive_count = UInt32(0)
@@ -549,6 +580,42 @@ struct AcceptProfile(Copyable, Movable):
             self.read_hs_output_marshalling_us_overflow = self.read_hs_output_marshalling_us_overflow + UInt64(1)
         else:
             self.read_hs_output_marshalling_us_buckets[b] = self.read_hs_output_marshalling_us_buckets[b] + UInt64(1)
+
+    # Q9 per-fresh-conn alloc decomposition record methods (Plan: 2026-05-05-q9).
+    # Each fired ONCE per fresh-conn-create event in bench/h3_server.mojo's
+    # cold-create branch (alloc_tls_handle fires inside QuicConnection.server).
+
+    def record_alloc_quic_state_us(mut self, us: UInt64):
+        """Q9 — QuicConnection.server outer wall-clock (INCLUDES inner FFI)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.alloc_quic_state_us_overflow = self.alloc_quic_state_us_overflow + UInt64(1)
+        else:
+            self.alloc_quic_state_us_buckets[b] = self.alloc_quic_state_us_buckets[b] + UInt64(1)
+
+    def record_alloc_tls_handle_us(mut self, us: UInt64):
+        """Q9 — inner quic_server_conn_new FFI call (rustls TLS session alloc)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.alloc_tls_handle_us_overflow = self.alloc_tls_handle_us_overflow + UInt64(1)
+        else:
+            self.alloc_tls_handle_us_buckets[b] = self.alloc_tls_handle_us_buckets[b] + UInt64(1)
+
+    def record_alloc_h3_state_us(mut self, us: UInt64):
+        """Q9 — H3HandlerServer ctor wall-clock (QPACK init, stream maps)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.alloc_h3_state_us_overflow = self.alloc_h3_state_us_overflow + UInt64(1)
+        else:
+            self.alloc_h3_state_us_buckets[b] = self.alloc_h3_state_us_buckets[b] + UInt64(1)
+
+    def record_bench_dict_insert_us(mut self, us: UInt64):
+        """Q9 — conn_dcid_map dual insert + 3 parallel-list appends (bench-side)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.bench_dict_insert_us_overflow = self.bench_dict_insert_us_overflow + UInt64(1)
+        else:
+            self.bench_dict_insert_us_buckets[b] = self.bench_dict_insert_us_buckets[b] + UInt64(1)
 
     # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
     fn tick_profile_gauges(mut self, now_us: UInt64):
@@ -866,6 +933,35 @@ struct AcceptProfile(Copyable, Movable):
             rh_om_total = rh_om_total + self.read_hs_output_marshalling_us_buckets[i]
         s += "  total samples:    " + _fmt_count(rh_om_total) + "\n"
         s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_output_marshalling_us_overflow) + "\n\n"
+
+        # Q9 per-fresh-conn alloc sub-leg histograms (Plan: 2026-05-05-q9).
+        s += "alloc_quic_state_us:\n"
+        var aqs_total: UInt64 = UInt64(0)
+        for i in range(24):
+            aqs_total = aqs_total + self.alloc_quic_state_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(aqs_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.alloc_quic_state_us_overflow) + "\n\n"
+
+        s += "alloc_tls_handle_us:\n"
+        var ath_total: UInt64 = UInt64(0)
+        for i in range(24):
+            ath_total = ath_total + self.alloc_tls_handle_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(ath_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.alloc_tls_handle_us_overflow) + "\n\n"
+
+        s += "alloc_h3_state_us:\n"
+        var ahs_total: UInt64 = UInt64(0)
+        for i in range(24):
+            ahs_total = ahs_total + self.alloc_h3_state_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(ahs_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.alloc_h3_state_us_overflow) + "\n\n"
+
+        s += "bench_dict_insert_us:\n"
+        var bdi_total: UInt64 = UInt64(0)
+        for i in range(24):
+            bdi_total = bdi_total + self.bench_dict_insert_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(bdi_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.bench_dict_insert_us_overflow) + "\n\n"
 
         # FFI sub-legs (Plan: 2026-04-28).
         s += "FFI sub-legs:\n"
@@ -1215,6 +1311,47 @@ struct AcceptProfile(Copyable, Movable):
                 s += ", "
         s += "],\n"
         s += '    "overflow": ' + String(self.read_hs_output_marshalling_us_overflow) + "\n"
+        s += "  },\n"
+
+        # Q9 per-fresh-conn alloc sub-leg histograms (Plan: 2026-05-05-q9).
+        s += '  "alloc_quic_state_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.alloc_quic_state_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.alloc_quic_state_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "alloc_tls_handle_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.alloc_tls_handle_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.alloc_tls_handle_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "alloc_h3_state_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.alloc_h3_state_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.alloc_h3_state_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "bench_dict_insert_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.bench_dict_insert_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.bench_dict_insert_us_overflow) + "\n"
         s += "  },\n"
 
         # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
