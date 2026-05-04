@@ -1127,3 +1127,42 @@ Sidecars: `bench/quic_perf/results/baselines/q7-post-on-short/sidecar-iter{1,2,3
 H_A + H_F verdict labels still describe mojo-net's behavior accurately; the spec's `H_A → multi-accept` mapping was authored from scaling intuition, not from TQUIC evidence. Diagnosis stands; recommended fix flips.
 
 **Triangulation source:** TQUIC `tools/src/bin/tquic_server.rs:790-815`, `tools/src/common.rs:121-138`, `.github/workflows/tquic-benchmark.yml:60`. `SO_REUSEPORT` count in repo: 0.
+
+---
+
+### 2026-05-04 — drain-extension diagnostic-then-decide — FALSIFIED + AUDIT-INTERPRETATION INVALIDATED
+
+**Spec:** `specs/2026-05-05-quic-bench-drain-extension.md`. **Branch:** `feat/quic-bench-drain-extension` (commits `cdc6614`/`5f9d6af`/`b7517a8`). **Verdict doc:** `bench/quic_perf/results/baselines/drain-ext-verdict.md`.
+
+**Hypothesis:** TQUIC's strace-measured 82.3 datagrams/`epoll_wait` wake vs mojo-net's 1.0/io_uring wake (audit `plans/research/2026-05-05-recvmsg-drain-semantics-audit.md`) suggested adding a userspace `recvfrom`-until-EAGAIN drain to mojo-net's `_flush_impl` would close a meaningful slice of the 73% CPU-utilization gap.
+
+**Verdict gate (n=10 short-conn pre-on vs post-on, both PROFILE_ACCEPT=True):**
+
+| | pre-on | post-on | delta |
+|---|---|---|---|
+| rps median | 986 | **658** | **−33.3%** (FALSIFIED, regressed) |
+| cpu% median | 58.7 | **39.2** | **−19.5pp** (FALSIFIED, regressed) |
+
+Long-conn 1-iter sanity also regressed −25% (13,941 → 10,396 rps). Drain extension hurts both regimes.
+
+**Why (sidecar evidence, 15s post-on capture):**
+
+| Counter | Value |
+|---|---|
+| `drain_extension.pkts_total` | 483 |
+| `recv_batch_size_buckets["1"]` | 85,226 |
+| `drain_extension.overflow_count` | 0 |
+
+The drain extension fired correctly but pulled 0.57% of io_uring multishot's volume. **The kernel UDP socket is already nearly empty** by the time `_flush_impl` runs, because io_uring multishot consumes each datagram as it arrives. recv_batch_size remained 100% bucket-0.
+
+**The audit's interpretation was wrong:** TQUIC's 82-per-`epoll_wait` is a *symptom* of mio's poll cadence being slower than io_uring's CQE rate, not a kernel-level structural advantage. mojo-net consumes per-arrival; TQUIC consumes per-batch. Per-wake datagram density is downstream of poll cadence × arrival rate — not a direct cause of CPU utilization.
+
+**Why the regression:** added recvfrom-then-EAGAIN syscall path on every `_flush_impl` invocation = thousands of pointless syscalls/sec + scheduler hops. Server idle goes UP (39% busy vs 59% pre-on), confirming the added syscall-per-flush forces more fiber yields rather than more work.
+
+**Implication for the 73% CPU-utilization gap:** it is NOT a per-wake drain-depth problem. The actual mechanism is per-handshake compute density (Q6's domain) or another kernel-side artefact this audit didn't reach. **Promote Q6.** Multi-accept stays retracted (Q7 addendum).
+
+**Code disposition:** T1/T2/T3 commits stay; comptime-gated by `DRAIN_TO_EAGAIN: Bool = False` (default). Off-build cost zero. AC9 PASS — flag at `src/quic/profile.mojo:17` is False.
+
+**Inspection-projection (and now audit-interpretation-projection) track record on this codebase: 0/6.** Q4 (rustls FFI thunk dominance, CONFIRMED) remains the lone projection that survived measurement. New lesson: audit-grounded *measurements* are not the same as audit-grounded *causal mechanisms* — always validate the causal direction with a code-change test before specing the fix.
+
+**Methodology gate satisfied:** re-read every prior REFERENCE.md row before drafting this entry. The new finding (per-wake density is symptom not cause) does not contradict prior data — Q7's `recv_batch_size_buckets["1"]=100%` and the audit's strace 82× number are both factually correct; only the causal inference connecting them was wrong.
