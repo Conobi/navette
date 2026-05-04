@@ -15,6 +15,8 @@ from std.memory import UnsafePointer
 
 comptime PROFILE_ACCEPT: Bool = False
 comptime DRAIN_TO_EAGAIN: Bool = False
+comptime EGRESS_POOL: Bool = False
+comptime EGRESS_POOL_SIZE: Int = 256
 comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
@@ -208,6 +210,14 @@ struct AcceptProfile(Copyable, Movable):
     var drain_extension_pkts_total: UInt64
     var drain_extension_overflow_count: UInt64
 
+    # Egress-pool counters (Plan: 2026-05-05-q8-egress-hot-path-batching).
+    # `egress_pool_hits_total` ticks each time `_drain_and_send` reuses a slot
+    # popped from the `H3UdpHandler.egress_pool_freelist`; `egress_pool_misses_total`
+    # ticks when the freelist was empty and the slot fell back to `_heap_alloc`.
+    # Hit/(hit+miss) ratio reports pool reuse rate (target ≥0.95 per AC7).
+    var egress_pool_hits_total: UInt64
+    var egress_pool_misses_total: UInt64
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -319,6 +329,8 @@ struct AcceptProfile(Copyable, Movable):
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
         self.drain_extension_pkts_total = UInt64(0)
         self.drain_extension_overflow_count = UInt64(0)
+        self.egress_pool_hits_total = UInt64(0)
+        self.egress_pool_misses_total = UInt64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -636,6 +648,23 @@ struct AcceptProfile(Copyable, Movable):
         if overflowed:
             self.drain_extension_overflow_count += UInt64(1)
 
+    def record_egress_pool_hit(mut self):
+        """Egress-pool hit (Plan: 2026-05-05-q8-egress-hot-path-batching).
+
+        Records a single `_drain_and_send` slot acquisition that reused an
+        `UdpTxSlot` popped from `H3UdpHandler.egress_pool_freelist`.
+        """
+        self.egress_pool_hits_total += UInt64(1)
+
+    def record_egress_pool_miss(mut self):
+        """Egress-pool miss (Plan: 2026-05-05-q8-egress-hot-path-batching).
+
+        Records a single `_drain_and_send` slot acquisition that fell back to
+        `_heap_alloc` because `H3UdpHandler.egress_pool_freelist` was empty
+        (peak burst exceeded `EGRESS_POOL_SIZE`).
+        """
+        self.egress_pool_misses_total += UInt64(1)
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -759,6 +788,11 @@ struct AcceptProfile(Copyable, Movable):
         s += "drain_extension:\n"
         s += "  pkts_total:     " + _fmt_count(self.drain_extension_pkts_total) + "\n"
         s += "  overflow_count: " + _fmt_count(self.drain_extension_overflow_count) + "\n\n"
+
+        # Egress-pool (Plan: 2026-05-05-q8-egress-hot-path-batching).
+        s += "egress_pool:\n"
+        s += "  hits_total:   " + _fmt_count(self.egress_pool_hits_total) + "\n"
+        s += "  misses_total: " + _fmt_count(self.egress_pool_misses_total) + "\n\n"
 
         # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
@@ -1076,6 +1110,12 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "drain_extension": {\n'
         s += '    "pkts_total": ' + String(self.drain_extension_pkts_total) + ',\n'
         s += '    "overflow_count": ' + String(self.drain_extension_overflow_count) + '\n'
+        s += "  },\n"
+
+        # Egress-pool block (Plan: 2026-05-05-q8-egress-hot-path-batching).
+        s += '  "egress_pool": {\n'
+        s += '    "hits_total": ' + String(self.egress_pool_hits_total) + ',\n'
+        s += '    "misses_total": ' + String(self.egress_pool_misses_total) + '\n'
         s += "  },\n"
 
         # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).

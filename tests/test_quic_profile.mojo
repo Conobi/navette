@@ -1476,6 +1476,26 @@ def test_drain_extension_json_shape() raises:
     print("PASS: test_drain_extension_json_shape")
 
 
+def test_q8_egress_pool_counters() raises:
+    """Q8: egress_pool hit/miss counters increment cleanly; JSON shape exposes
+    egress_pool block with hits_total + misses_total."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    p.record_egress_pool_hit()
+    p.record_egress_pool_hit()
+    p.record_egress_pool_hit()
+    p.record_egress_pool_miss()
+    assert_true(p.egress_pool_hits_total == UInt64(3),
+        "egress_pool_hits_total = 3 after 3 hits")
+    assert_true(p.egress_pool_misses_total == UInt64(1),
+        "egress_pool_misses_total = 1 after 1 miss")
+    var j = p.report_json()
+    assert_true("egress_pool" in j, '"egress_pool" key present in JSON')
+    assert_true("hits_total" in j, '"hits_total" key present in JSON')
+    assert_true("misses_total" in j, '"misses_total" key present in JSON')
+    print("PASS: test_q8_egress_pool_counters")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1546,4 +1566,5 @@ def main() raises:
     test_q7_lock_wait_record()
     test_drain_extension_record()
     test_drain_extension_json_shape()
+    test_q8_egress_pool_counters()
     print("All Plan A tests passed.")
