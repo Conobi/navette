@@ -672,6 +672,11 @@ struct H3UdpHandler(BatchCompletionHandler):
         @parameter
         if PROFILE_ACCEPT:
             self.profile.record_recv_batch(1)
+            # Q7 H_C: 8-bucket recvmsg batch histogram (raw shape, distinct
+            # from Q4's per-flush total). With io_uring multishot recvmsg,
+            # n=1 every CQE — bucket-0-dominant is itself H_C-positive evidence.
+            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
+            self.profile.record_recvmsg_batch_size(1)
         var namelen = Int(_read_u32_le(buf_ptr))
         var controllen = Int(_read_u32_le(buf_ptr + 4))
         var payloadlen = Int(_read_u32_le(buf_ptr + 8))
@@ -771,7 +776,18 @@ struct H3UdpHandler(BatchCompletionHandler):
             # DCID-keyed lookup (migrated from addr_key). pd.dcid was extracted
             # at _handle_recvmsg (long+short header).
             var dcid_u64 = _dcid_to_u64(Span(pd.dcid))
+            # Q7 H_B (Mojo-side): bracket demux Dict lookup. Single-boucle Mojo
+            # Dict is uncontended; bucket-0-dominant histogram is itself the
+            # falsification path for DEMUX-MAP-BOUND (sub-verdict of LOCK-BOUND).
+            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
+            var t_dlu_start: UInt64 = 0
+            @parameter
+            if PROFILE_ACCEPT:
+                t_dlu_start = profile_monotonic_us()
             var conn_idx = self._find_conn_by_dcid(dcid_u64)
+            @parameter
+            if PROFILE_ACCEPT:
+                self.profile.record_demux_map_lock_wait_us(profile_monotonic_us() - t_dlu_start)
 
             # Strict new-conn gate per RFC 9000 §12.4: only long-header Initial
             # packets create new conns. All other DCID-misses are dropped
@@ -1028,6 +1044,14 @@ struct H3UdpHandler(BatchCompletionHandler):
         _ = self.tx_slots.pop()
         _ = self.tx_slot_tokens.pop()
         _ = self.tx_slot_idx_by_token.pop(token)
+
+        # Q7 H_C: 8-bucket sendmsg batch histogram. Mojo-net's sendmsg path is
+        # per-packet (one CQE per datagram) — bucket-0-dominant histogram is
+        # itself H_C-positive evidence vs a hypothetical sendmmsg-batched path.
+        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
+        @parameter
+        if PROFILE_ACCEPT:
+            self.profile.record_sendmsg_batch_size(1)
 
     # --- timeout path ---
 
@@ -1346,7 +1370,18 @@ def main() raises:
 
     # Event loop.
     while True:
+        # Q7 H_F: bracket the canonical io_uring park site (loop.poll calls
+        # BatchCompletionLoop._ring.submit_and_wait internally). Total-only
+        # accumulator per spec §4.6.1.
+        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
+        var t_park_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_park_start = profile_monotonic_us()
         loop.poll(wait_nr=1)
+        @parameter
+        if PROFILE_ACCEPT:
+            loop._handler.profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
 
         # Re-provide consumed buffers.
         var consumed = loop._handler.consumed_bufs^
@@ -1370,3 +1405,9 @@ def main() raises:
 
         # Drain pending sendmsg/timeout submits.
         _drain_pending_submits(loop)
+
+        # Q7 H_A: 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
+        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
+        @parameter
+        if PROFILE_ACCEPT:
+            loop._handler.profile.tick_profile_gauges(profile_monotonic_us())
