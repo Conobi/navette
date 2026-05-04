@@ -24,7 +24,7 @@ from bench.handler import (
 )
 from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
-from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, EGRESS_POOL, EGRESS_POOL_SIZE, monotonic_us as profile_monotonic_us
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle
@@ -383,25 +383,12 @@ struct PendingDatagram(Copyable, Movable):
 
 
 struct UdpTxSlot(Movable):
-    """Dynamically allocated send buffer set for a single sendmsg operation.
-
-    Q8 T2: when `from_pool=True`, the slot was minted by H3UdpHandler's
-    `egress_pool_freelist` — `data_buf` is sized at `MAX_DATAGRAM_SIZE`
-    (1500B) and the slot is returned to the freelist on sendmsg CQE
-    instead of `free()`-d. When `from_pool=False` (legacy / pool-miss
-    path), `data_buf` is sized at exactly `data_len` and the slot is
-    `free()`-d on CQE — bit-identical to the pre-Q8 behaviour.
-    """
+    """Dynamically allocated send buffer set for a single sendmsg operation."""
 
     var msghdr_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var iov_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var addr_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var data_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    # Q8 T2: routes the sendmsg-CQE return path. Pool-minted slots
-    # (from_pool=True) go back to the freelist; off-pool slots
-    # (from_pool=False) take the legacy free() path. Default False
-    # so the unconditional miss-path / off-build path stays correct.
-    var from_pool: Bool
 
     def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
         var data_len = len(data)
@@ -410,7 +397,6 @@ struct UdpTxSlot(Movable):
         self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_any_origin()
         self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
         self.data_buf = _heap_alloc[UInt8](data_len).as_any_origin()
-        self.from_pool = False
 
         # Copy data
         for i in range(data_len):
@@ -469,104 +455,11 @@ struct UdpTxSlot(Movable):
         for i in range(8):
             iov[8 + i] = iov_len_bytes[i]
 
-    def __init__(out self):
-        """Pool-init ctor — Q8 T2.
-
-        Pre-allocates fixed-capacity buffers (1500B data, 28B addr,
-        56B msghdr, 16B iovec) and pre-wires msghdr+iovec to point at
-        them. Subsequent `repopulate(data, addr)` calls only rewrite
-        the data-bytes / addr-bytes / iov[8..16]=data_len; the msghdr
-        pointers stay stable for the slot's lifetime.
-
-        Caller is responsible for setting `from_pool = True` after
-        appending to the freelist.
-        """
-        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
-        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_any_origin()
-        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-        self.data_buf = _heap_alloc[UInt8](MAX_DATAGRAM_SIZE).as_any_origin()
-        self.from_pool = False  # caller flips to True after register
-
-        # Zero all buffers.
-        for i in range(MSGHDR_SIZE):
-            self.msghdr_buf[i] = 0
-        for i in range(IOVEC_SIZE):
-            self.iov_buf[i] = 0
-        for i in range(ADDR_SIZE):
-            self.addr_buf[i] = 0
-        for i in range(MAX_DATAGRAM_SIZE):
-            self.data_buf[i] = 0
-
-        var msghdr = self.msghdr_buf
-
-        # Wire msghdr offsets — pointers are stable for slot lifetime.
-        # offset 0: msg_name = addr_buf pointer
-        var addr_ptr_val = UInt64(Int(self.addr_buf))
-        var addr_ptr_bytes = UnsafePointer(to=addr_ptr_val).bitcast[UInt8]()
-        for i in range(8):
-            msghdr[i] = addr_ptr_bytes[i]
-
-        # offset 8: msg_namelen = 28
-        var namelen = UInt32(ADDR_SIZE)
-        var namelen_bytes = UnsafePointer(to=namelen).bitcast[UInt8]()
-        for i in range(4):
-            msghdr[8 + i] = namelen_bytes[i]
-
-        # offset 16: msg_iov = iov_buf pointer
-        var iov_ptr_val = UInt64(Int(self.iov_buf))
-        var iov_ptr_bytes = UnsafePointer(to=iov_ptr_val).bitcast[UInt8]()
-        for i in range(8):
-            msghdr[16 + i] = iov_ptr_bytes[i]
-
-        # offset 24: msg_iovlen = 1
-        var iovlen = UInt64(1)
-        var iovlen_bytes = UnsafePointer(to=iovlen).bitcast[UInt8]()
-        for i in range(8):
-            msghdr[24 + i] = iovlen_bytes[i]
-
-        # Wire iovec[0..8] = data_buf pointer (stable). iov[8..16] is
-        # the data_len; left as 0 here, set per-repopulate.
-        var iov = self.iov_buf
-        var data_ptr_val = UInt64(Int(self.data_buf))
-        var data_ptr_bytes = UnsafePointer(to=data_ptr_val).bitcast[UInt8]()
-        for i in range(8):
-            iov[i] = data_ptr_bytes[i]
-
     def __init__(out self, *, deinit take: Self):
         self.msghdr_buf = take.msghdr_buf
         self.iov_buf = take.iov_buf
         self.addr_buf = take.addr_buf
         self.data_buf = take.data_buf
-        self.from_pool = take.from_pool
-
-    fn repopulate(mut self, data: List[UInt8], addr: List[UInt8]):
-        """Q8 T2: rewrite a pool-minted slot's payload in place.
-
-        Caller must ensure `len(data) <= MAX_DATAGRAM_SIZE` (1500B);
-        QUIC datagrams cap there per `MAX_DATAGRAM_SIZE`. Pointers in
-        msghdr/iovec are NOT touched — only the data bytes, addr
-        bytes, and iov[8..16] data_len field. msghdr.msg_namelen
-        stays at ADDR_SIZE, iovlen stays at 1.
-        """
-        var data_len = len(data)
-
-        # Copy data bytes into the pre-allocated 1500B buffer.
-        for i in range(data_len):
-            self.data_buf[i] = data[i]
-
-        # Copy addr bytes (zero-pad tail to ADDR_SIZE).
-        var addr_len = len(addr)
-        for i in range(ADDR_SIZE):
-            if i < addr_len:
-                self.addr_buf[i] = addr[i]
-            else:
-                self.addr_buf[i] = 0
-
-        # Update iov[8..16] = new data_len (LE u64).
-        var iov_len = UInt64(data_len)
-        var iov_len_bytes = UnsafePointer(to=iov_len).bitcast[UInt8]()
-        for i in range(8):
-            self.iov_buf[8 + i] = iov_len_bytes[i]
 
     def free(mut self):
         """Free all 4 heap buffers."""
@@ -643,16 +536,6 @@ struct H3UdpHandler(BatchCompletionHandler):
     # `DRAIN_TO_EAGAIN`. Off-build cost: ~96 KiB resident, never touched.
     var drain_scratch_pool: List[List[UInt8]]
     var drain_scratch_addr: List[UInt8]
-    # Q8 T2: egress UdpTxSlot freelist. When `EGRESS_POOL=True`, pre-allocates
-    # `EGRESS_POOL_SIZE` (256) slots — each with a 1500B `data_buf`,
-    # 28B `addr_buf`, 56B `msghdr_buf`, 16B `iov_buf`, msghdr/iovec pre-wired
-    # to those buffers. `_drain_and_send` pops from end (LIFO) on hit and
-    # `_handle_sendmsg` returns the slot here on CQE — preserving the heap
-    # allocations across thousands of egress packets per connection. Pool-
-    # exhaustion miss falls back to legacy `_heap_alloc[UdpTxSlot]`. When
-    # `EGRESS_POOL=False`, this stays an empty List (~24B) and is never
-    # touched, so the off-build path is bit-identical to pre-Q8 behaviour.
-    var egress_pool_freelist: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
 
     def __init__(
         out self,
@@ -724,22 +607,6 @@ struct H3UdpHandler(BatchCompletionHandler):
         for _ in range(DRAIN_ADDR_SCRATCH_SIZE):
             self.drain_scratch_addr.append(UInt8(0))
 
-        # Q8 T2: egress slot freelist. Off-build (EGRESS_POOL=False) leaves
-        # this an empty List (~24B); on-build pre-allocates 256 slots with
-        # fixed-capacity buffers, msghdr/iovec pre-wired. Slots stay alive
-        # across the handler's lifetime — `_handle_sendmsg` returns each
-        # slot here on CQE rather than `free()`-ing.
-        @parameter
-        if EGRESS_POOL:
-            self.egress_pool_freelist = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]](capacity=EGRESS_POOL_SIZE)
-            for _ in range(EGRESS_POOL_SIZE):
-                var slot_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
-                slot_ptr.init_pointee_move(UdpTxSlot())
-                slot_ptr[].from_pool = True
-                self.egress_pool_freelist.append(slot_ptr)
-        else:
-            self.egress_pool_freelist = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
-
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
         self.conn_dcid_map = take.conn_dcid_map^
@@ -770,7 +637,6 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.quic_server_err_first = take.quic_server_err_first
         self.drain_scratch_pool = take.drain_scratch_pool^
         self.drain_scratch_addr = take.drain_scratch_addr^
-        self.egress_pool_freelist = take.egress_pool_freelist^
 
     # --- Conn lookup ---
 
@@ -1272,16 +1138,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 _ = external_call["exit", NoneType](Int32(0))
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
-        """Drain outgoing datagrams from a connection and queue sendmsg.
-
-        Q8 T2: when `EGRESS_POOL=True`, attempts to reuse a UdpTxSlot
-        from `egress_pool_freelist` (LIFO pop from end) — preserving
-        the slot's pre-allocated 1500B data_buf + 28B addr_buf +
-        msghdr/iovec scaffolding across thousands of egress packets.
-        On pool-exhaustion miss, falls back to `_heap_alloc[UdpTxSlot]`
-        (legacy path). When `EGRESS_POOL=False`, this is bit-identical
-        to the pre-Q8 unconditional alloc path.
-        """
+        """Drain outgoing datagrams from a connection and queue sendmsg."""
         var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
         for i in range(len(datagrams)):
             var pkt = List[UInt8](copy=datagrams[i])
@@ -1293,32 +1150,8 @@ struct H3UdpHandler(BatchCompletionHandler):
             var token = _encode_token(tx_id, OP_SENDMSG)
 
             var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
-            var tx_ptr: UnsafePointer[UdpTxSlot, MutAnyOrigin]
-
-            @parameter
-            if EGRESS_POOL:
-                if len(self.egress_pool_freelist) > 0:
-                    # Hit: pop slot from freelist (LIFO) and rewrite payload
-                    # in place — preserving heap buffers + msghdr scaffolding.
-                    tx_ptr = self.egress_pool_freelist.pop()
-                    tx_ptr[].repopulate(pkt, addr_copy)
-                    @parameter
-                    if PROFILE_ACCEPT:
-                        self.profile.record_egress_pool_hit()
-                else:
-                    # Miss: pool exhausted — fall back to legacy alloc.
-                    # `from_pool=False` so `_handle_sendmsg` takes the
-                    # legacy free() return path.
-                    tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
-                    tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
-                    @parameter
-                    if PROFILE_ACCEPT:
-                        self.profile.record_egress_pool_miss()
-            else:
-                # Off-build path — bit-identical to pre-Q8 main.
-                tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
-                tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
-
+            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+            tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
             var slot_idx = len(self.tx_slots)
             self.tx_slots.append(tx_ptr)
             self.tx_slot_tokens.append(token)
@@ -1337,22 +1170,10 @@ struct H3UdpHandler(BatchCompletionHandler):
             return
         var idx = self.tx_slot_idx_by_token[token]
 
-        # Q8 T2: free or return-to-pool based on the slot's origin.
-        # Pool-minted slots (from_pool=True) go back to the freelist —
-        # heap buffers stay alive for the next drain. Off-pool slots
-        # (from_pool=False) take the legacy free path.
+        # Free the TX slot buffers and pointer.
         var ptr = self.tx_slots[idx]
-        @parameter
-        if EGRESS_POOL:
-            if ptr[].from_pool:
-                self.egress_pool_freelist.append(ptr)
-                # NOTE: no ptr[].free() / ptr.free() — slot lives on.
-            else:
-                ptr[].free()
-                ptr.free()
-        else:
-            ptr[].free()
-            ptr.free()
+        ptr[].free()
+        ptr.free()
 
         # Swap-and-pop. Update the dict for the slot that moves into
         # position `idx`, and remove the entry for the freed token.
