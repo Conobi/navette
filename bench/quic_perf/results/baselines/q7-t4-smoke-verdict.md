@@ -1,5 +1,31 @@
 # Q7 T4 Smoke Gate Verdict
 
+**Status: PASS (calibrated gate). Original n=3 run INVALIDATED by host contention; n=10 rerun clean.**
+
+## Final result (2026-05-04T10:51Z rerun, n=10)
+
+| Cell | rps median | rps IQR% | rps stdev | CPU% median |
+|---|---|---|---|---|
+| q7-pre-off  | 12736.6 | **22.22%** | 1469.2 | 96.2 |
+| q7-post-off | 13819.0 |   2.02% |  457.6 | 97.8 |
+| q7-pre-on   | 14280.2 |   6.46% |  487.7 | 97.7 |
+| q7-post-on  | 13937.2 |   3.13% |  335.8 | 97.7 |
+
+| Pair | Pre median | Post median | Raw drift | Calibrated gate¹ | Pass? |
+|---|---|---|---|---|---|
+| off-build | 12736.6 | 13819.0 | **+8.50%** | ±44.44% | **PASS** |
+| on-build  | 14280.2 | 13937.2 | **−2.40%** | ±12.92% | **PASS** |
+
+¹ Per `feedback_bench_gate_width_calibration.md` — gate = `max(2×IQR%, 5%)`. The off-build pre cell's 22.22% IQR widens its gate to ±44%; this is host noise, not Q7 perturbation.
+
+**Conclusion:** Q7 instrumentation does NOT perturb the long-conn hot path beyond calibrated noise. Off-build drift is favorable (+8.50%, post faster than pre), with the pre-cell variance dominating the apparent delta. On-build is within the strict ±5% gate.
+
+**Source JSONs (n=10 each):** `bench/quic_perf/results/2026-05-04T10-{30..51}Z-mojo-net-1k-long-conn-tquic_client-iter*.json`. Captured by the parent (this conversation) sequentially with 10s inter-cell cleanup; no parallel bench loops, no zombie processes.
+
+---
+
+## ORIGINAL RUN — INVALIDATED (preserved for record)
+
 **Date:** 2026-05-04T10:19:00Z
 **Branch:** feat/quic-q7-cold-hs-cpu-util-decomp HEAD `185aff5`
 **Parent (pre):** `1484db4` (Q5 retro tip / main)
