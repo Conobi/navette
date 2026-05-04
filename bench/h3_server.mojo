@@ -24,7 +24,7 @@ from bench.handler import (
 )
 from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
-from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, monotonic_us as profile_monotonic_us
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, EGRESS_POOL, EGRESS_POOL_SIZE, EGRESS_POOL_V2, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle
@@ -513,6 +513,15 @@ struct H3UdpHandler(BatchCompletionHandler):
     var tx_slots: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
     var tx_slot_tokens: List[UInt64]
     var tx_slot_idx_by_token: Dict[UInt64, Int]
+    # Q8 Phase 2 — egress pool V2: pre-allocated UdpTxSlot pointer freelist
+    # (uninitialized memory at freelist-init; init_pointee_move happens at
+    # _drain_and_send time). Parallel List `tx_slot_from_pool` tracks slot
+    # source so _handle_sendmsg can return pool slots to freelist instead of
+    # calling ptr.free(). Both fields gated on EGRESS_POOL_V2 — off-build
+    # bit-identity preserved (freelist init is empty, append/pop sites are
+    # under @parameter if EGRESS_POOL_V2:).
+    var egress_pool_v2_freelist: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
+    var tx_slot_from_pool: List[Bool]
     var next_tx_id: UInt64
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var lib_addr: UInt64
@@ -568,6 +577,18 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slots = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
         self.tx_slot_tokens = List[UInt64]()
         self.tx_slot_idx_by_token = Dict[UInt64, Int]()
+        # Q8 Phase 2 — pre-allocate EGRESS_POOL_SIZE slot pointers iff
+        # EGRESS_POOL_V2 is enabled. Slots hold uninitialized memory; the
+        # legacy `UdpTxSlot(data, addr)` ctor runs via init_pointee_move at
+        # _drain_and_send time. Off-build path: empty List (zero alloc).
+        @parameter
+        if EGRESS_POOL_V2:
+            self.egress_pool_v2_freelist = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]](capacity=EGRESS_POOL_SIZE)
+            for _ in range(EGRESS_POOL_SIZE):
+                self.egress_pool_v2_freelist.append(_heap_alloc[UdpTxSlot](1).as_any_origin())
+        else:
+            self.egress_pool_v2_freelist = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
+        self.tx_slot_from_pool = List[Bool]()
         self.next_tx_id = UInt64(0)
         self.state_ptr = state_ptr
         self.lib_addr = lib_addr
@@ -621,6 +642,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slots = take.tx_slots^
         self.tx_slot_tokens = take.tx_slot_tokens^
         self.tx_slot_idx_by_token = take.tx_slot_idx_by_token^
+        self.egress_pool_v2_freelist = take.egress_pool_v2_freelist^
+        self.tx_slot_from_pool = take.tx_slot_from_pool^
         self.next_tx_id = take.next_tx_id
         self.state_ptr = take.state_ptr
         self.lib_addr = take.lib_addr
@@ -1150,11 +1173,41 @@ struct H3UdpHandler(BatchCompletionHandler):
             var token = _encode_token(tx_id, OP_SENDMSG)
 
             var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
-            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
-            tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+
+            # Q8 Phase 2 — slot acquisition: pop pointer from freelist when
+            # EGRESS_POOL_V2 is on; fall back to fresh alloc on miss. The
+            # legacy `UdpTxSlot(data, addr)` ctor still runs via
+            # init_pointee_move (allocates 4 inner heap buffers), so the
+            # savings are limited to the slot-struct heap-alloc itself.
+            var tx_ptr: UnsafePointer[UdpTxSlot, MutAnyOrigin]
+            var from_pool: Bool = False
+            @parameter
+            if EGRESS_POOL_V2:
+                if len(self.egress_pool_v2_freelist) > 0:
+                    tx_ptr = self.egress_pool_v2_freelist.pop()
+                    tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+                    from_pool = True
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        self.profile.record_egress_pool_hit()
+                else:
+                    tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+                    tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+                    @parameter
+                    if PROFILE_ACCEPT:
+                        self.profile.record_egress_pool_miss()
+            else:
+                tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+                tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+
             var slot_idx = len(self.tx_slots)
             self.tx_slots.append(tx_ptr)
             self.tx_slot_tokens.append(token)
+            # Parallel-List source tracking — gated to preserve off-build
+            # bit-identity (FR-4.6).
+            @parameter
+            if EGRESS_POOL_V2:
+                self.tx_slot_from_pool.append(from_pool)
             self.tx_slot_idx_by_token[token] = slot_idx
 
             self.pending_submits.append(
@@ -1170,10 +1223,22 @@ struct H3UdpHandler(BatchCompletionHandler):
             return
         var idx = self.tx_slot_idx_by_token[token]
 
-        # Free the TX slot buffers and pointer.
+        # Free the TX slot buffers; return pool-sourced slot pointers to the
+        # freelist instead of calling ptr.free() — the slot-struct memory
+        # stays alive for the next reuse cycle (Q8 Phase 2).
         var ptr = self.tx_slots[idx]
-        ptr[].free()
-        ptr.free()
+        @parameter
+        if EGRESS_POOL_V2:
+            var was_pooled = self.tx_slot_from_pool[idx]
+            if was_pooled:
+                ptr[].free()
+                self.egress_pool_v2_freelist.append(ptr)
+            else:
+                ptr[].free()
+                ptr.free()
+        else:
+            ptr[].free()
+            ptr.free()
 
         # Swap-and-pop. Update the dict for the slot that moves into
         # position `idx`, and remove the entry for the freed token.
@@ -1182,9 +1247,15 @@ struct H3UdpHandler(BatchCompletionHandler):
             var moved_token = self.tx_slot_tokens[last]
             self.tx_slots[idx] = self.tx_slots[last]
             self.tx_slot_tokens[idx] = moved_token
+            @parameter
+            if EGRESS_POOL_V2:
+                self.tx_slot_from_pool[idx] = self.tx_slot_from_pool[last]
             self.tx_slot_idx_by_token[moved_token] = idx
         _ = self.tx_slots.pop()
         _ = self.tx_slot_tokens.pop()
+        @parameter
+        if EGRESS_POOL_V2:
+            _ = self.tx_slot_from_pool.pop()
         _ = self.tx_slot_idx_by_token.pop(token)
 
         # Q7 H_C: 8-bucket sendmsg batch histogram. Mojo-net's sendmsg path is
