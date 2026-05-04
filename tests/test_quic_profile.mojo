@@ -1264,6 +1264,56 @@ def test_report_json_emits_read_hs_blocks() raises:
     print("PASS: test_report_json_emits_read_hs_blocks")
 
 
+def test_q6_read_hs_sublegs_dispatch() raises:
+    """Q6: 4 sub-leg histograms dispatch via _per_pkt_bucket; JSON shape exposes
+    all 4 new top-level keys with buckets+overflow."""
+    from src.quic.profile import AcceptProfile
+    var p = AcceptProfile()
+    # 5us  -> bucket 3   (floor(log2(5))+1 = 2+1 = 3; range [4,8))
+    # 50us -> bucket 6   (floor(log2(50))+1 = 5+1 = 6; range [32,64))
+    # 0us  -> bucket 0   (_per_pkt_bucket(0) returns 0 by Q5 semantics)
+    p.record_read_hs_input_marshalling_us(UInt64(5))
+    p.record_read_hs_state_machine_us(UInt64(50))
+    p.record_read_hs_output_alloc_us(UInt64(0))
+    p.record_read_hs_output_marshalling_us(UInt64(0))
+
+    var input_sum: UInt64 = UInt64(0)
+    for x in p.read_hs_input_marshalling_us_buckets:
+        input_sum = input_sum + x
+    assert_true(input_sum == UInt64(1), "input_marshalling has exactly 1 sample")
+    assert_true(p.read_hs_input_marshalling_us_buckets[3] == UInt64(1), "5us -> bucket 3")
+
+    var sm_sum: UInt64 = UInt64(0)
+    for x in p.read_hs_state_machine_us_buckets:
+        sm_sum = sm_sum + x
+    assert_true(sm_sum == UInt64(1), "state_machine has exactly 1 sample")
+    assert_true(p.read_hs_state_machine_us_buckets[6] == UInt64(1), "50us -> bucket 6")
+
+    var oa_sum: UInt64 = UInt64(0)
+    for x in p.read_hs_output_alloc_us_buckets:
+        oa_sum = oa_sum + x
+    assert_true(oa_sum == UInt64(1), "output_alloc has exactly 1 sample (0us -> bucket 0)")
+    assert_true(p.read_hs_output_alloc_us_buckets[0] == UInt64(1), "0us -> bucket 0")
+
+    var om_sum: UInt64 = UInt64(0)
+    for x in p.read_hs_output_marshalling_us_buckets:
+        om_sum = om_sum + x
+    assert_true(om_sum == UInt64(1), "output_marshalling has exactly 1 sample (0us -> bucket 0)")
+    assert_true(p.read_hs_output_marshalling_us_buckets[0] == UInt64(1), "0us -> bucket 0")
+
+    # Overflow: 2^23 us must land in overflow, not buckets.
+    p.record_read_hs_input_marshalling_us(UInt64(1 << 23))
+    assert_true(p.read_hs_input_marshalling_us_overflow == UInt64(1), "2^23 us -> overflow")
+
+    # JSON shape: 4 top-level keys present.
+    var j = p.report_json()
+    assert_true(j.find('"read_hs_input_marshalling_us"') >= 0, "input_marshalling key in JSON")
+    assert_true(j.find('"read_hs_state_machine_us"') >= 0, "state_machine key in JSON")
+    assert_true(j.find('"read_hs_output_alloc_us"') >= 0, "output_alloc key in JSON")
+    assert_true(j.find('"read_hs_output_marshalling_us"') >= 0, "output_marshalling key in JSON")
+    print("PASS: test_q6_read_hs_sublegs_dispatch")
+
+
 def test_q7_gauge_sampling() raises:
     """Q7 Group A — tick_profile_gauges respects 100ms cadence gate.
 
@@ -1490,6 +1540,7 @@ def main() raises:
     test_record_read_hs_per_handshake_count_dispatches_into_8_buckets()
     test_record_read_hs_us_per_call_dispatches_into_24_buckets()
     test_report_json_emits_read_hs_blocks()
+    test_q6_read_hs_sublegs_dispatch()
     test_q7_gauge_sampling()
     test_q7_batch_histogram_dispatch()
     test_q7_lock_wait_record()

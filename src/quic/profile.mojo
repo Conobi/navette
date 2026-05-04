@@ -147,6 +147,22 @@ struct AcceptProfile(Copyable, Movable):
     var read_hs_us_per_call_buckets: List[UInt64]
     var read_hs_us_per_call_overflow: UInt64
 
+    # Q6 read_hs internal sub-leg histograms (Plan: 2026-05-04-q6-read-hs-internal-decomposition).
+    # Four 24-bucket pow2-µs histograms decomposing per-call read_hs wall-clock into:
+    #   input_marshalling  (Mojo→Rust CRYPTO copy)
+    #   state_machine      (rustls conn.read_hs body)
+    #   output_alloc       (Rust handle-table lookup overhead)
+    #   output_marshalling (zero-by-design for read_hs; reserved for symmetric reuse)
+    # All dispatch via _per_pkt_bucket (overflow on >= 2^23 us).
+    var read_hs_input_marshalling_us_buckets: List[UInt64]
+    var read_hs_input_marshalling_us_overflow: UInt64
+    var read_hs_state_machine_us_buckets: List[UInt64]
+    var read_hs_state_machine_us_overflow: UInt64
+    var read_hs_output_alloc_us_buckets: List[UInt64]
+    var read_hs_output_alloc_us_overflow: UInt64
+    var read_hs_output_marshalling_us_buckets: List[UInt64]
+    var read_hs_output_marshalling_us_overflow: UInt64
+
     # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
     # Cadence gate for tick_profile_gauges (100ms cadence).
     var last_gauge_sample_us: UInt64
@@ -256,6 +272,20 @@ struct AcceptProfile(Copyable, Movable):
         for _ in range(24):
             self.read_hs_us_per_call_buckets.append(UInt64(0))
         self.read_hs_us_per_call_overflow = UInt64(0)
+        # Q6 init (Plan: 2026-05-04-q6-read-hs-internal-decomposition).
+        self.read_hs_input_marshalling_us_buckets = List[UInt64]()
+        self.read_hs_state_machine_us_buckets = List[UInt64]()
+        self.read_hs_output_alloc_us_buckets = List[UInt64]()
+        self.read_hs_output_marshalling_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.read_hs_input_marshalling_us_buckets.append(UInt64(0))
+            self.read_hs_state_machine_us_buckets.append(UInt64(0))
+            self.read_hs_output_alloc_us_buckets.append(UInt64(0))
+            self.read_hs_output_marshalling_us_buckets.append(UInt64(0))
+        self.read_hs_input_marshalling_us_overflow = UInt64(0)
+        self.read_hs_state_machine_us_overflow = UInt64(0)
+        self.read_hs_output_alloc_us_overflow = UInt64(0)
+        self.read_hs_output_marshalling_us_overflow = UInt64(0)
         # Q7 init (Plan: 2026-05-04-q7).
         self.last_gauge_sample_us = UInt64(0)
         self.active_drive_count = UInt32(0)
@@ -469,6 +499,43 @@ struct AcceptProfile(Copyable, Movable):
             self.read_hs_us_per_call_overflow = self.read_hs_us_per_call_overflow + UInt64(1)
         else:
             self.read_hs_us_per_call_buckets[b] = self.read_hs_us_per_call_buckets[b] + UInt64(1)
+
+    # Q6 read_hs internal sub-leg record methods (Plan: 2026-05-04-q6).
+    # Each dispatches via _per_pkt_bucket; overflow on >= 2^23 us.
+
+    def record_read_hs_input_marshalling_us(mut self, us: UInt64):
+        """Q6 — Mojo-side input marshalling (CRYPTO bytes alloc + per-byte copy)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.read_hs_input_marshalling_us_overflow = self.read_hs_input_marshalling_us_overflow + UInt64(1)
+        else:
+            self.read_hs_input_marshalling_us_buckets[b] = self.read_hs_input_marshalling_us_buckets[b] + UInt64(1)
+
+    def record_read_hs_state_machine_us(mut self, us: UInt64):
+        """Q6 — Rust-side rustls conn.read_hs body (TLS state machine + crypto)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.read_hs_state_machine_us_overflow = self.read_hs_state_machine_us_overflow + UInt64(1)
+        else:
+            self.read_hs_state_machine_us_buckets[b] = self.read_hs_state_machine_us_buckets[b] + UInt64(1)
+
+    def record_read_hs_output_alloc_us(mut self, us: UInt64):
+        """Q6 — Rust-side handle-table lookup overhead (with_mut path)."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.read_hs_output_alloc_us_overflow = self.read_hs_output_alloc_us_overflow + UInt64(1)
+        else:
+            self.read_hs_output_alloc_us_buckets[b] = self.read_hs_output_alloc_us_buckets[b] + UInt64(1)
+
+    def record_read_hs_output_marshalling_us(mut self, us: UInt64):
+        """Q6 — Rust→Mojo output copy on read_hs return.
+        Zero-by-design for read_hs (returns status only); slot reserved for
+        future symmetric write_hs/take_keys decomposition reuse."""
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.read_hs_output_marshalling_us_overflow = self.read_hs_output_marshalling_us_overflow + UInt64(1)
+        else:
+            self.read_hs_output_marshalling_us_buckets[b] = self.read_hs_output_marshalling_us_buckets[b] + UInt64(1)
 
     # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
     fn tick_profile_gauges(mut self, now_us: UInt64):
@@ -735,6 +802,35 @@ struct AcceptProfile(Copyable, Movable):
             rd_total = rd_total + self.read_hs_us_per_call_buckets[i]
         s += "  total samples:    " + _fmt_count(rd_total) + "\n"
         s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_us_per_call_overflow) + "\n\n"
+
+        # Q6 read_hs sub-leg histograms (Plan: 2026-05-04-q6).
+        s += "read_hs_input_marshalling_us:\n"
+        var rh_im_total: UInt64 = UInt64(0)
+        for i in range(24):
+            rh_im_total = rh_im_total + self.read_hs_input_marshalling_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(rh_im_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_input_marshalling_us_overflow) + "\n\n"
+
+        s += "read_hs_state_machine_us:\n"
+        var rh_sm_total: UInt64 = UInt64(0)
+        for i in range(24):
+            rh_sm_total = rh_sm_total + self.read_hs_state_machine_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(rh_sm_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_state_machine_us_overflow) + "\n\n"
+
+        s += "read_hs_output_alloc_us:\n"
+        var rh_oa_total: UInt64 = UInt64(0)
+        for i in range(24):
+            rh_oa_total = rh_oa_total + self.read_hs_output_alloc_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(rh_oa_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_output_alloc_us_overflow) + "\n\n"
+
+        s += "read_hs_output_marshalling_us:\n"
+        var rh_om_total: UInt64 = UInt64(0)
+        for i in range(24):
+            rh_om_total = rh_om_total + self.read_hs_output_marshalling_us_buckets[i]
+        s += "  total samples:    " + _fmt_count(rh_om_total) + "\n"
+        s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_output_marshalling_us_overflow) + "\n\n"
 
         # FFI sub-legs (Plan: 2026-04-28).
         s += "FFI sub-legs:\n"
@@ -1037,6 +1133,47 @@ struct AcceptProfile(Copyable, Movable):
                 s += ", "
         s += "],\n"
         s += '    "overflow": ' + String(self.read_hs_us_per_call_overflow) + "\n"
+        s += "  },\n"
+
+        # Q6 read_hs sub-leg histograms (Plan: 2026-05-04-q6-read-hs-internal-decomposition).
+        s += '  "read_hs_input_marshalling_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.read_hs_input_marshalling_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.read_hs_input_marshalling_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "read_hs_state_machine_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.read_hs_state_machine_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.read_hs_state_machine_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "read_hs_output_alloc_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.read_hs_output_alloc_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.read_hs_output_alloc_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "read_hs_output_marshalling_us": {\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.read_hs_output_marshalling_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.read_hs_output_marshalling_us_overflow) + "\n"
         s += "  },\n"
 
         # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
