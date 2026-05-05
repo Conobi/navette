@@ -1,0 +1,6 @@
+=== bench: mojo-net / 1k / short-conn / tquic_client / iter 1/1 ===
+[measure-cpu] container=bench-h3 mean=56.0475 max=60.63 samples=16
+[run-tquic-client] 1k/short-conn/30s: stdout in /tmp/client-stdout.log
+<stdin>:13: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+[bench] wrote <repo>/bench/quic_perf/results/2026-05-05T09-05-19Z-mojo-net-1k-short-conn-tquic_client-iter1.json
+[bench] done: 1 iteration(s)
