@@ -137,6 +137,48 @@ def test_huffman_decode_excess_padding_raises() raises:
     print("  test_huffman_decode_excess_padding_raises: PASS")
 
 
+def test_huffman_decode_eos_in_stream_raises() raises:
+    # RFC 7541 §5.2 + Appendix B: EOS = 30 bits, code 0x3FFFFFFF.
+    # Construct an explicit EOS at the start: 30 bits of 1s + 2 padding 1s = 4
+    # bytes of 0xFF — this is the "all-ones across 4 bytes" case the TQUIC
+    # `huffman_decode_invalid_without_eos` test (huffman.rs:5330) flags as an
+    # invalid input the decoder must reject.
+    var data = List[UInt8]()
+    data.append(0x3F)
+    data.append(0xFF)
+    data.append(0xFF)
+    data.append(0xFE)
+    var raised = False
+    try:
+        _ = huffman_decode(data)
+    except:
+        raised = True
+    assert_true(raised, "should raise on EOS-in-stream (TQUIC-style)")
+    print("  test_huffman_decode_eos_in_stream_raises: PASS")
+
+
+def test_huffman_decode_long_code() raises:
+    # Round-trip a string containing chars whose Huffman codes are ≥9 bits,
+    # exercising the Tier-2 trie fallback.
+    # Per RFC 7541 Appendix B: '!' (33) = 10 bits, '#' (35) = 12 bits,
+    # '$' (36) = 13 bits. All are valid UTF-8 (printable ASCII).
+    var s = String("a!#$a")
+    var encoded = huffman_encode(s)
+    var decoded = huffman_decode(encoded)
+    assert_true(decoded == s, "long-code roundtrip should match")
+    print("  test_huffman_decode_long_code: PASS")
+
+
+def test_huffman_decode_all_ascii_fast_path() raises:
+    # All chars in this string have Huffman code length ≤8 bits, so every byte
+    # resolves via the Tier-1 256-entry root fast-path.
+    var s = String("abcdefghijklmnopqrstuvwxyz0123456789")
+    var encoded = huffman_encode(s)
+    var decoded = huffman_decode(encoded)
+    assert_true(decoded == s, "all-ASCII fast-path roundtrip should match")
+    print("  test_huffman_decode_all_ascii_fast_path: PASS")
+
+
 def test_encode_prefix_two_zero_bytes() raises:
     # Any encoded block must start with [0x00, 0x00]
     var enc = QpackEncoder(False)
@@ -399,6 +441,9 @@ def main() raises:
     test_huffman_decode_padding_ones()
     test_huffman_decode_bad_padding_raises()
     test_huffman_decode_excess_padding_raises()
+    test_huffman_decode_eos_in_stream_raises()
+    test_huffman_decode_long_code()
+    test_huffman_decode_all_ascii_fast_path()
     test_encode_prefix_two_zero_bytes()
     test_encode_indexed_static_method_get()
     test_encode_literal_name_ref()

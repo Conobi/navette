@@ -447,6 +447,149 @@ comptime HUFFMAN_EOS_CODE: UInt32 = 0x3fffffff
 comptime HUFFMAN_EOS_BITS: UInt8 = 30
 
 
+# ---------------------------------------------------------------------------
+# Huffman decode: flat trie + 8-bit root fast-path
+#
+# Spec: specs/2026-05-04-qpack-huffman-table-driven.md
+# Reference: TQUIC `.research/tquic/src/h3/qpack/huffman.rs:90-141` (4-bit nibble
+# state machine). We use a derivative: per-call-built flat trie with a 256-entry
+# 8-bit root fast-path table. Same asymptotic cost (O(N)) as TQUIC's table; the
+# table is derived from the 257-entry encode table at call-time, eliminating
+# the typo risk of a hand-coded 4096-entry table.
+# ---------------------------------------------------------------------------
+
+
+struct _HuffTrieNode(Copyable, Movable):
+    """Flat-trie node. `symbol >= 0` marks a leaf (0-255 = byte, 256 = EOS).
+
+    Internal nodes have `symbol == -1` and at least one child index != -1.
+    Leaf nodes have both children == -1.
+    """
+    var left: Int    # child index for bit 0 (-1 = none / leaf)
+    var right: Int   # child index for bit 1 (-1 = none / leaf)
+    var symbol: Int  # -1 = internal, 0-255 = byte, 256 = EOS
+
+    def __init__(out self):
+        self.left = -1
+        self.right = -1
+        self.symbol = -1
+
+    def __init__(out self, *, copy_from: Self):
+        self.left = copy_from.left
+        self.right = copy_from.right
+        self.symbol = copy_from.symbol
+
+
+struct _HuffFast(Copyable, Movable):
+    """8-bit root fast-path entry.
+
+    `consumed` ∈ [1,8] = bits resolved by this entry (the symbol decoded with
+    that many bits of input from the top of the byte). `consumed == 0` means
+    "no symbol resolves within 8 bits from the root" → fall through to the
+    bit-by-bit trie walk.
+    """
+    var consumed: Int  # bits consumed (0 = miss, 1-8 = hit)
+    var symbol: Int    # decoded symbol (0-255), valid iff consumed > 0
+
+    def __init__(out self):
+        self.consumed = 0
+        self.symbol = 0
+
+    def __init__(out self, *, copy_from: Self):
+        self.consumed = copy_from.consumed
+        self.symbol = copy_from.symbol
+
+
+def _build_huffman_trie() raises -> List[_HuffTrieNode]:
+    """Build a flat decode trie from the RFC 7541 Appendix B encode table.
+
+    Includes EOS (symbol 256) as a leaf so that an explicit EOS in the input
+    stream is detected by the trie walk (per RFC 7541 §5.2).
+    """
+    var encode = _huffman_encode_table()
+    var trie = List[_HuffTrieNode]()
+    trie.append(_HuffTrieNode())  # root = index 0
+
+    # Leaves for symbols 0..255 (from the encode table).
+    for sym in range(256):
+        var entry = encode[sym].copy()
+        var code = entry.code
+        var nbits = Int(entry.nbits)
+        var node_idx = 0
+        for bit_pos in range(nbits - 1, -1, -1):
+            var bit = Int((code >> UInt32(bit_pos)) & UInt32(1))
+            if bit == 0:
+                if trie[node_idx].left == -1:
+                    trie[node_idx].left = len(trie)
+                    trie.append(_HuffTrieNode())
+                node_idx = trie[node_idx].left
+            else:
+                if trie[node_idx].right == -1:
+                    trie[node_idx].right = len(trie)
+                    trie.append(_HuffTrieNode())
+                node_idx = trie[node_idx].right
+        trie[node_idx].symbol = sym
+
+    # Add EOS leaf (symbol 256) at HUFFMAN_EOS_CODE / HUFFMAN_EOS_BITS.
+    var eos_code = HUFFMAN_EOS_CODE
+    var eos_nbits = Int(HUFFMAN_EOS_BITS)
+    var node_idx = 0
+    for bit_pos in range(eos_nbits - 1, -1, -1):
+        var bit = Int((eos_code >> UInt32(bit_pos)) & UInt32(1))
+        if bit == 0:
+            if trie[node_idx].left == -1:
+                trie[node_idx].left = len(trie)
+                trie.append(_HuffTrieNode())
+            node_idx = trie[node_idx].left
+        else:
+            if trie[node_idx].right == -1:
+                trie[node_idx].right = len(trie)
+                trie.append(_HuffTrieNode())
+            node_idx = trie[node_idx].right
+    trie[node_idx].symbol = 256
+
+    return trie^
+
+
+def _build_huffman_fast(trie: List[_HuffTrieNode]) -> List[_HuffFast]:
+    """Build a 256-entry root fast-path table.
+
+    For each possible top-byte b ∈ [0,256), walk the trie up to 8 bits from
+    the root (MSB-first). If a symbol leaf is reached at depth k ≤ 8, record
+    (consumed=k, symbol=sym). Otherwise record (consumed=0, symbol=0) — the
+    decoder falls back to bit-by-bit trie walking for that prefix.
+
+    Note: only ASCII bytes (and a few Latin-1) have codes ≤8 bits, but those
+    bytes dominate header content (paths, methods, mime types). This table
+    resolves them in O(1) per output byte.
+
+    EOS leaves (symbol 256) are NOT cached as fast-path hits — the decoder
+    must surface EOS-in-stream via the trie path so it can raise. (Per
+    RFC 7541 Appendix B, EOS is 30 bits, well beyond the 8-bit fast path.)
+    """
+    var fast = List[_HuffFast]()
+    for b in range(256):
+        var node_idx = 0
+        var entry = _HuffFast()
+        for bit_pos in range(7, -1, -1):
+            var bit = Int((b >> bit_pos) & 1)
+            if bit == 0:
+                node_idx = trie[node_idx].left
+            else:
+                node_idx = trie[node_idx].right
+            if node_idx < 0:
+                break
+            var sym = trie[node_idx].symbol
+            if sym >= 0:
+                if sym <= 255:
+                    entry.consumed = 8 - bit_pos
+                    entry.symbol = sym
+                # else (EOS): leave consumed=0, fall through to trie path
+                break
+        fast.append(entry.copy())
+    return fast^
+
+
 def huffman_encode(s: String) raises -> List[UInt8]:
     """Huffman-encode a string per RFC 7541 §5.2."""
     var table = _huffman_encode_table()
@@ -478,77 +621,111 @@ def huffman_encode(s: String) raises -> List[UInt8]:
     return result^
 
 
-def huffman_decode(data: List[UInt8]) raises -> String:
-    """Huffman-decode bytes per RFC 7541 §5.2.
-    Uses a sliding window accumulator to avoid 64-bit overflow on long inputs.
-    Raises on invalid padding or EOS in non-terminal position.
+def _huffman_decode_with_tables(
+    data: List[UInt8],
+    trie: List[_HuffTrieNode],
+    fast: List[_HuffFast],
+) raises -> String:
+    """Inner decode loop. Caller passes precomputed tables so they can be
+    amortized across multiple decode calls (e.g. all string literals in one
+    QPACK field section). See `huffman_decode` for the canonical entry point.
     """
     if len(data) == 0:
         return String("")
-
-    var table = _huffman_encode_table()
     var result = String("")
 
-    # Sliding-window accumulator: keep up to 64 bits, refill as consumed
+    # 64-bit sliding accumulator; valid bits live in the LOW `acc_bits`
+    # positions of `acc`. We extract from the top via shift.
     var acc: UInt64 = 0
     var acc_bits: Int = 0
-    var byte_idx: Int = 0
-    var total_bits: Int = len(data) * 8
-    var consumed_bits: Int = 0
+    var pos: Int = 0
+    var data_len = len(data)
+    var node: Int = 0
 
-    # Initial fill
-    while byte_idx < len(data) and acc_bits <= 56:
-        acc = (acc << 8) | UInt64(data[byte_idx])
-        acc_bits += 8
-        byte_idx += 1
+    # Padding-validity tracker: bits walked through the trie since we last
+    # left the root, and whether all of them were 1s. RFC 7541 §5.2: a valid
+    # trailing partial code has ≤7 bits, all 1s.
+    var bits_since_root: Int = 0
+    var all_ones_since_root: Bool = True
 
     while True:
-        var matched = False
-        for nbits in range(1, 31):
-            if acc_bits < nbits:
-                break
-            # Extract top `nbits` bits from acc
-            var code_val = UInt32(acc >> UInt64(acc_bits - nbits)) & UInt32((UInt64(1) << UInt64(nbits)) - 1)
-
-            # Check EOS
-            if nbits == Int(HUFFMAN_EOS_BITS) and code_val == HUFFMAN_EOS_CODE:
-                consumed_bits += nbits
-                var remaining = total_bits - consumed_bits
-                if remaining > 7:
-                    raise "Huffman: excess padding (EOS not at end)"
-                return result
-
-            # Check all symbols
-            for sym in range(len(table)):
-                if Int(table[sym].nbits) == nbits and table[sym].code == code_val:
-                    result += chr(sym)
-                    acc_bits -= nbits
-                    consumed_bits += nbits
-                    matched = True
-                    break
-            if matched:
-                break
-
-        if not matched:
-            var remaining = acc_bits
-            if remaining > 7:
-                raise "Huffman: no symbol matched and too many bits remaining"
-            if remaining == 0:
-                break
-            # Verify all remaining bits are 1 (valid padding)
-            var pad_val = UInt32(acc & ((UInt64(1) << UInt64(remaining)) - 1))
-            var expected_pad = UInt32((1 << remaining) - 1)
-            if pad_val != expected_pad:
-                raise "Huffman: invalid padding (not all-ones)"
-            break
-
-        # Refill accumulator
-        while byte_idx < len(data) and acc_bits <= 56:
-            acc = (acc << 8) | UInt64(data[byte_idx])
+        # Refill while there's room and input.
+        while acc_bits <= 56 and pos < data_len:
+            acc = (acc << 8) | UInt64(data[pos])
             acc_bits += 8
-            byte_idx += 1
+            pos += 1
 
-    return result
+        # Tier 1: 8-bit root fast-path. Only valid at root with ≥8 bits.
+        if node == 0 and acc_bits >= 8:
+            var top8 = Int((acc >> UInt64(acc_bits - 8)) & UInt64(0xFF))
+            var e = fast[top8].copy()
+            if e.consumed > 0:
+                result += chr(e.symbol)
+                acc_bits -= e.consumed
+                bits_since_root = 0
+                all_ones_since_root = True
+                continue
+
+        # No bits left → we're done; validate end state.
+        if acc_bits == 0:
+            if node == 0:
+                return result
+            # Mid-symbol: only acceptable if walked ≤7 all-1 bits since root.
+            if bits_since_root > 7:
+                raise "Huffman: truncated input (mid-symbol at EOF)"
+            if not all_ones_since_root:
+                raise "Huffman: invalid padding (not all-ones)"
+            return result
+
+        # Tier 2: single bit-by-bit trie walk.
+        var bit = Int((acc >> UInt64(acc_bits - 1)) & UInt64(1))
+        acc_bits -= 1
+        bits_since_root += 1
+        if bit == 0:
+            all_ones_since_root = False
+            node = trie[node].left
+        else:
+            node = trie[node].right
+        if node < 0:
+            raise "Huffman: invalid code (no trie edge)"
+
+        var sym = trie[node].symbol
+        if sym >= 0:
+            if sym == 256:
+                # RFC 7541 §5.2: EOS in stream → decompression error.
+                raise "Huffman: explicit EOS in stream"
+            result += chr(sym)
+            node = 0
+            bits_since_root = 0
+            all_ones_since_root = True
+
+
+def huffman_decode(data: List[UInt8]) raises -> String:
+    """Huffman-decode bytes per RFC 7541 §5.2.
+
+    Algorithm (spec: specs/2026-05-04-qpack-huffman-table-driven.md):
+      Tier 1 — 256-entry root fast-path table; resolves any symbol whose
+               code length is ≤8 bits in a single lookup (covers most ASCII).
+      Tier 2 — bit-by-bit walk through a flat trie for codes ≥9 bits.
+
+    Inner-loop perf: O(N) per input byte, vs O(N × 30 × 257) for the prior
+    per-bit linear scan (flamegraph rank #9, 6.96% self-time).
+
+    Per-call construction (~13 µs for trie + fast table) dominates this
+    public entry point on small inputs. Hot QPACK paths should call
+    `_huffman_decode_with_tables` and amortize the build across multiple
+    decodes; see `QpackDecoder.decode` for the production caller.
+
+    Raises on:
+      - explicit EOS (symbol 256) appearing before end of stream,
+      - non-all-ones padding in the trailing partial byte,
+      - >7 bits of trailing padding.
+    """
+    if len(data) == 0:
+        return String("")
+    var trie = _build_huffman_trie()
+    var fast = _build_huffman_fast(trie)
+    return _huffman_decode_with_tables(data, trie, fast)
 
 
 # ---------------------------------------------------------------------------
@@ -640,7 +817,12 @@ def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[UInt8]:
 
 
 def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
-    """Decode a QPACK/HPACK string literal from data at offset."""
+    """Decode a QPACK/HPACK string literal from data at offset.
+
+    Convenience wrapper that builds Huffman decode tables on every call.
+    Hot QPACK paths should use `_qpack_decode_string_with_tables` and amortize
+    the table build over a whole field section.
+    """
     if offset >= len(data):
         raise "QPACK: truncated string at offset " + String(offset)
     var h_bit = (data[offset] & 0x80) != 0
@@ -655,6 +837,37 @@ def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeRes
     pos += length
     if h_bit:
         return _StrDecodeResult(huffman_decode(raw), pos)
+    else:
+        var s = String(unsafe_from_utf8=raw)
+        return _StrDecodeResult(s, pos)
+
+
+def _qpack_decode_string_with_tables(
+    data: List[UInt8],
+    offset: Int,
+    trie: List[_HuffTrieNode],
+    fast: List[_HuffFast],
+) raises -> _StrDecodeResult:
+    """Decode a QPACK string literal, reusing pre-built Huffman tables.
+
+    Used by `QpackDecoder.decode` to amortize the ~13 µs trie + fast-table
+    build across all string literals in one field section (typically 3-5
+    Huffman strings per request header block).
+    """
+    if offset >= len(data):
+        raise "QPACK: truncated string at offset " + String(offset)
+    var h_bit = (data[offset] & 0x80) != 0
+    var ir = qpack_decode_int(data, offset, 7)
+    var length = Int(ir.value)
+    var pos = ir.new_offset
+    if pos + length > len(data):
+        raise "QPACK: string data truncated"
+    var raw = List[UInt8]()
+    for i in range(length):
+        raw.append(data[pos + i])
+    pos += length
+    if h_bit:
+        return _StrDecodeResult(_huffman_decode_with_tables(raw, trie, fast), pos)
     else:
         var s = String(unsafe_from_utf8=raw)
         return _StrDecodeResult(s, pos)
@@ -748,19 +961,46 @@ struct QpackEncoder(Copyable, Movable):
 # ---------------------------------------------------------------------------
 
 struct QpackDecoder(Copyable, Movable):
-    """QPACK decoder — static table only (RFC 9204 §3.2.4)."""
+    """QPACK decoder — static table only (RFC 9204 §3.2.4).
 
-    def __init__(out self):
-        pass
+    Caches the Huffman decode trie (~513 nodes) and 256-entry fast-path
+    table at construction time. Production callers (`H3Connection`) hold
+    one `QpackDecoder` per connection, so the ~13 µs build cost amortizes
+    across every QPACK field section the connection ever sees.
 
-    def __init__(out self, *, copy_from: Self):
-        pass
+    See specs/2026-05-04-qpack-huffman-table-driven.md.
+    """
+
+    var _huff_trie: List[_HuffTrieNode]
+    var _huff_fast: List[_HuffFast]
+
+    fn __init__(out self):
+        # The trie/fast-table builders only raise on a malformed encode table,
+        # which is a static RFC 7541 Appendix B constant — never raises in
+        # practice. We wrap in `try` so this `__init__` is non-raising and
+        # can be called from non-raising callers (e.g. `H3Connection.__init__`).
+        try:
+            self._huff_trie = _build_huffman_trie()
+            self._huff_fast = _build_huffman_fast(self._huff_trie)
+        except:
+            # Unreachable: would mean the RFC 7541 Appendix B encode table is
+            # malformed at compile time. Fall back to empty tables; any actual
+            # decode will raise via the normal error path.
+            self._huff_trie = List[_HuffTrieNode]()
+            self._huff_fast = List[_HuffFast]()
+
+    fn __init__(out self, *, copy_from: Self):
+        self._huff_trie = copy_from._huff_trie.copy()
+        self._huff_fast = copy_from._huff_fast.copy()
 
     def decode(self, data: List[UInt8]) raises -> List[QpackHeaderField]:
         """Decode a QPACK field section block.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
         then decodes each field instruction until data is exhausted.
+
+        Reuses the cached Huffman decode tables stored on the decoder.
+        See specs/2026-05-04-qpack-huffman-table-driven.md.
         """
         if len(data) < 2:
             raise "QPACK: field section too short"
@@ -779,6 +1019,10 @@ struct QpackDecoder(Copyable, Movable):
         if base_result.value != 0:
             raise "QPACK: non-zero Delta Base not supported; dynamic table required"
         var pos = base_result.new_offset
+
+        # Reuse the cached Huffman decode tables (built once in __init__).
+        ref trie = self._huff_trie
+        ref fast = self._huff_fast
 
         while pos < len(data):
             var b = data[pos]
@@ -804,7 +1048,7 @@ struct QpackDecoder(Copyable, Movable):
                 var ir = qpack_decode_int(data, pos, 4)
                 var idx = Int(ir.value)
                 pos = ir.new_offset
-                var sr = _qpack_decode_string(data, pos)
+                var sr = _qpack_decode_string_with_tables(data, pos, trie, fast)
                 var value = sr.value
                 pos = sr.new_offset
                 if t_bit:
@@ -828,10 +1072,10 @@ struct QpackDecoder(Copyable, Movable):
                 pos += name_len
                 var field_name: String
                 if name_huffman:
-                    field_name = huffman_decode(name_raw)
+                    field_name = _huffman_decode_with_tables(name_raw, trie, fast)
                 else:
                     field_name = String(unsafe_from_utf8=name_raw)
-                var vr = _qpack_decode_string(data, pos)
+                var vr = _qpack_decode_string_with_tables(data, pos, trie, fast)
                 var value = vr.value
                 pos = vr.new_offset
                 result.append(QpackHeaderField(field_name, value))
