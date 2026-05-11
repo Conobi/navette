@@ -268,6 +268,30 @@ struct AcceptProfile(Copyable, Movable):
     var drain_extension_pkts_total: UInt64
     var drain_extension_overflow_count: UInt64
 
+    # Q10 `_flush_impl` sub-leg decomposition (Plan: 2026-05-04-flush-impl-subleg-decomposition).
+    # 4 sub-legs of `_flush_impl` (parent = `flush_impl_us_total`).
+    #   flush_drain_extension_us  (DRAIN_TO_EAGAIN block at bench/h3_server.mojo:938-943)
+    #   flush_feed_datagram_us    (feed_datagram_from_buffer call at bench/h3_server.mojo:1146-1152)
+    #   drain_egress_build_us     (drain_datagrams call at bench/h3_server.mojo:1234)
+    #   drain_enqueue_sendmsg_us  (per-datagram sendmsg-enqueue loop at bench/h3_server.mojo:1236+)
+    # All histograms dispatch via _per_pkt_bucket (pow2 µs, [0, 2^23) us);
+    # overflow >=2^23 us. `_total` fields support AC4 sum-sanity:
+    # S = loop_pop_dispatch + flush_feed_datagram + drain (parent of 3.5a+3.5b)
+    #   + loop_post_pkt + loop_teardown + flush_drain_extension
+    # P = flush_impl_us_total → |S - P| / P ≤ 5% median across n=10 iters.
+    var flush_drain_extension_us_buckets: List[UInt64]
+    var flush_drain_extension_us_overflow: UInt64
+    var flush_drain_extension_us_total: UInt64
+    var flush_feed_datagram_us_buckets: List[UInt64]
+    var flush_feed_datagram_us_overflow: UInt64
+    var flush_feed_datagram_us_total: UInt64
+    var drain_egress_build_us_buckets: List[UInt64]
+    var drain_egress_build_us_overflow: UInt64
+    var drain_egress_build_us_total: UInt64
+    var drain_enqueue_sendmsg_us_buckets: List[UInt64]
+    var drain_enqueue_sendmsg_us_overflow: UInt64
+    var drain_enqueue_sendmsg_us_total: UInt64
+
     # Egress-pool counters (Plan: 2026-05-05-q8-egress-hot-path-batching).
     # `egress_pool_hits_total` ticks each time `_drain_and_send` reuses a slot
     # popped from the `H3UdpHandler.egress_pool_freelist`; `egress_pool_misses_total`
@@ -417,6 +441,24 @@ struct AcceptProfile(Copyable, Movable):
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
         self.drain_extension_pkts_total = UInt64(0)
         self.drain_extension_overflow_count = UInt64(0)
+        # Q10 init (Plan: 2026-05-04-flush-impl-subleg-decomposition).
+        self.flush_drain_extension_us_buckets = List[UInt64]()
+        self.flush_feed_datagram_us_buckets = List[UInt64]()
+        self.drain_egress_build_us_buckets = List[UInt64]()
+        self.drain_enqueue_sendmsg_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.flush_drain_extension_us_buckets.append(UInt64(0))
+            self.flush_feed_datagram_us_buckets.append(UInt64(0))
+            self.drain_egress_build_us_buckets.append(UInt64(0))
+            self.drain_enqueue_sendmsg_us_buckets.append(UInt64(0))
+        self.flush_drain_extension_us_overflow = UInt64(0)
+        self.flush_drain_extension_us_total = UInt64(0)
+        self.flush_feed_datagram_us_overflow = UInt64(0)
+        self.flush_feed_datagram_us_total = UInt64(0)
+        self.drain_egress_build_us_overflow = UInt64(0)
+        self.drain_egress_build_us_total = UInt64(0)
+        self.drain_enqueue_sendmsg_us_overflow = UInt64(0)
+        self.drain_enqueue_sendmsg_us_total = UInt64(0)
         self.egress_pool_hits_total = UInt64(0)
         self.egress_pool_misses_total = UInt64(0)
 
@@ -807,6 +849,101 @@ struct AcceptProfile(Copyable, Movable):
             self.flush_impl_us_overflow = self.flush_impl_us_overflow + UInt64(1)
         else:
             self.flush_impl_us_buckets[b] = self.flush_impl_us_buckets[b] + UInt64(1)
+
+    # Q10 `_flush_impl` sub-leg recorders (Plan: 2026-05-04-flush-impl-subleg-decomposition).
+    # All 4 dispatch via `_per_pkt_bucket` (pow2 µs, [0, 2^23) us). Each
+    # records BOTH a bucket and a running `_us_total` for AC4 sum-sanity.
+
+    fn record_flush_drain_extension_us(mut self, us: UInt64):
+        """Q10 §3.1 — wall-clock of the DRAIN_TO_EAGAIN block.
+
+        Brackets: bench/h3_server.mojo:938-943 (the `@parameter if DRAIN_TO_EAGAIN:
+        ... self._drain_extension() ... record_drain_extension(...)` block).
+        The bracket pair sits INSIDE the DRAIN_TO_EAGAIN gate, so the whole
+        leg is elided when DRAIN_TO_EAGAIN=False (bucket-0 only, count=0).
+
+        Measures: full drain-extension cost including the userspace
+        recvfrom-until-EAGAIN syscall loop in `_drain_extension`.
+        Does NOT measure: anything when DRAIN_TO_EAGAIN=False (compile-time
+        elided). NOT a child of `busy_us_total` — fires BEFORE `t_busy_start`.
+        """
+        self.flush_drain_extension_us_total = self.flush_drain_extension_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.flush_drain_extension_us_overflow = self.flush_drain_extension_us_overflow + UInt64(1)
+        else:
+            self.flush_drain_extension_us_buckets[b] = self.flush_drain_extension_us_buckets[b] + UInt64(1)
+
+    fn record_flush_feed_datagram_us(mut self, us: UInt64):
+        """Q10 §3.4 — wall-clock of `feed_datagram_from_buffer` call (ingress).
+
+        Brackets: bench/h3_server.mojo:1146-1152 (the `try: ... except e: ...`
+        block wrapping `self.conn_h3s[conn_idx][].feed_datagram_from_buffer(...)`).
+        Placed AFTER `record_loop_pop_dispatch` (line 1144) and BEFORE
+        `t_post_pkt_start` (line 1155).
+
+        Measures: full QUIC ingress path = header-parse + AEAD + state-machine
+        + frame-parse + h3 push.
+        Does NOT measure: `_drain_and_send` (separate `drain_us_total` bracket).
+        SUPERSET wall-clock — encompasses the existing `quic_post_recv_us` +
+        `h3_drain_resp_us` + `h3_dispatch_us` sub-legs (those bracket the
+        post-recv tail deeper in the call stack).
+        """
+        self.flush_feed_datagram_us_total = self.flush_feed_datagram_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.flush_feed_datagram_us_overflow = self.flush_feed_datagram_us_overflow + UInt64(1)
+        else:
+            self.flush_feed_datagram_us_buckets[b] = self.flush_feed_datagram_us_buckets[b] + UInt64(1)
+
+    fn record_drain_egress_build_us(mut self, us: UInt64):
+        """Q10 §3.5a — wall-clock of `drain_datagrams` (egress build).
+
+        Brackets: bench/h3_server.mojo:1234 (single line — wraps
+        `var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)`
+        inside `_drain_and_send`).
+
+        Measures: H3+QUIC egress build = QPACK encode + frame build + QUIC
+        packet encrypt+packetize. Output: a `List[List[UInt8]]` of finished
+        datagrams.
+        Does NOT measure: per-datagram slot allocation / sendmsg enqueue
+        (see `record_drain_enqueue_sendmsg_us`) or the io_uring submit
+        (deferred to `_drain_pending_submits`, OUTSIDE `_flush_impl`).
+
+        Dual-caller caveat: `_drain_and_send` is invoked from `_flush_impl`
+        (per-iter) AND from the bench teardown sweep (bench/h3_server.mojo:1348,
+        once per bench window). The teardown contribution is negligible.
+        """
+        self.drain_egress_build_us_total = self.drain_egress_build_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.drain_egress_build_us_overflow = self.drain_egress_build_us_overflow + UInt64(1)
+        else:
+            self.drain_egress_build_us_buckets[b] = self.drain_egress_build_us_buckets[b] + UInt64(1)
+
+    fn record_drain_enqueue_sendmsg_us(mut self, us: UInt64):
+        """Q10 §3.5b — wall-clock of per-datagram sendmsg-enqueue loop.
+
+        Brackets: bench/h3_server.mojo:1236-end of `_drain_and_send` (the
+        `for i in range(len(datagrams))` loop body).
+
+        Measures: per-datagram slot acquisition (egress-pool freelist pop
+        OR `_heap_alloc[UdpTxSlot]`), `UdpTxSlot` ctor (allocs 4 inner heap
+        buffers per datagram per Q8 §1208), parallel-list appends
+        (`tx_slots`, `tx_slot_tokens`, `tx_slot_from_pool`,
+        `tx_slot_idx_by_token`), and `pending_submits.append`.
+        Does NOT measure: the actual `sendmsg` syscall (deferred to
+        `_drain_pending_submits` which lives OUTSIDE `_flush_impl`).
+
+        Dual-caller caveat: same as `record_drain_egress_build_us` — both
+        sub-leg recorders fire under `_flush_impl` AND the teardown sweep.
+        """
+        self.drain_enqueue_sendmsg_us_total = self.drain_enqueue_sendmsg_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.drain_enqueue_sendmsg_us_overflow = self.drain_enqueue_sendmsg_us_overflow + UInt64(1)
+        else:
+            self.drain_enqueue_sendmsg_us_buckets[b] = self.drain_enqueue_sendmsg_us_buckets[b] + UInt64(1)
 
     fn record_drain_submits_us(mut self, us: UInt64):
         """Q-IO-1 — record per-iter `_drain_pending_submits` wall-clock.
@@ -1697,6 +1834,54 @@ struct AcceptProfile(Copyable, Movable):
                 s += ", "
         s += "],\n"
         s += '    "overflow": ' + String(self.flush_impl_us_overflow) + "\n"
+        s += "  },\n"
+
+        # Q10 _flush_impl sub-leg decomposition (Plan: 2026-05-04-flush-impl-subleg-decomposition).
+        # AC4 sum-sanity: S = loop_pop_dispatch + flush_feed_datagram + drain
+        # + loop_post_pkt + loop_teardown + flush_drain_extension;
+        # P = flush_impl_us_total; |S - P| / P ≤ 5% (median across n=10 iters).
+        s += '  "flush_drain_extension_us": {\n'
+        s += '    "total": ' + String(self.flush_drain_extension_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.flush_drain_extension_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.flush_drain_extension_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "flush_feed_datagram_us": {\n'
+        s += '    "total": ' + String(self.flush_feed_datagram_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.flush_feed_datagram_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.flush_feed_datagram_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "drain_egress_build_us": {\n'
+        s += '    "total": ' + String(self.drain_egress_build_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.drain_egress_build_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.drain_egress_build_us_overflow) + "\n"
+        s += "  },\n"
+
+        s += '  "drain_enqueue_sendmsg_us": {\n'
+        s += '    "total": ' + String(self.drain_enqueue_sendmsg_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.drain_enqueue_sendmsg_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.drain_enqueue_sendmsg_us_overflow) + "\n"
         s += "  },\n"
 
         # Q-IO-1 — _drain_pending_submits wall-clock total (AC3 budget closure).
