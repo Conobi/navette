@@ -937,10 +937,17 @@ struct H3UdpHandler(BatchCompletionHandler):
         # the comptime gate elides the call entirely.
         @parameter
         if DRAIN_TO_EAGAIN:
+            # Q10 §3.1 — flush_drain_extension_us bracket. Inside the
+            # DRAIN_TO_EAGAIN gate so the entire leg is elided when False.
+            var t_drain_ext_start: UInt64 = 0
+            @parameter
+            if PROFILE_ACCEPT:
+                t_drain_ext_start = profile_monotonic_us()
             var drain_result = self._drain_extension()
             @parameter
             if PROFILE_ACCEPT:
                 self.profile.record_drain_extension(drain_result[0], drain_result[1])
+                self.profile.record_flush_drain_extension_us(profile_monotonic_us() - t_drain_ext_start)
 
         var t_busy_start = UInt64(0)
         var n_pkts_at_start = 0
@@ -1143,12 +1150,21 @@ struct H3UdpHandler(BatchCompletionHandler):
             if PROFILE_ACCEPT:
                 self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
             # Feed datagram to the connection.
+            # Q10 §3.4 — flush_feed_datagram_us bracket. Fires AFTER
+            # record_loop_pop_dispatch and BEFORE t_post_pkt_start.
+            var t_feed_start: UInt64 = 0
+            @parameter
+            if PROFILE_ACCEPT:
+                t_feed_start = profile_monotonic_us()
             try:
                 self.conn_h3s[conn_idx][].feed_datagram_from_buffer(pd.payload_ptr, pd.payload_len, now)
             except e:
                 self.feed_datagram_err_count += UInt64(1)
                 if self.feed_datagram_err_count == UInt64(1):
                     print("h3-bench DIAG: first feed_datagram_from_buffer error:", e)
+            @parameter
+            if PROFILE_ACCEPT:
+                self.profile.record_flush_feed_datagram_us(profile_monotonic_us() - t_feed_start)
 
             var t_post_pkt_start: UInt64 = 0
             @parameter
@@ -1230,8 +1246,33 @@ struct H3UdpHandler(BatchCompletionHandler):
                 _ = external_call["exit", NoneType](Int32(0))
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
-        """Drain outgoing datagrams from a connection and queue sendmsg."""
+        """Drain outgoing datagrams from a connection and queue sendmsg.
+
+        Q10 dual-caller note: invoked from `_flush_impl` per-iter AND from
+        `_handle_timeout` (teardown sweep at line 1348). The Q10 §3.5a/b
+        recorders accumulate from BOTH call sites; per-bench teardown
+        contribution is once vs thousands per second from `_flush_impl`,
+        so the inflation is negligible. Documented for future analysts.
+        """
+        # Q10 §3.5a — drain_egress_build_us bracket: wall-clock of the
+        # QPACK encode + frame build + QUIC packetize (the drain_datagrams
+        # call).
+        var t_egress_build_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_egress_build_start = profile_monotonic_us()
         var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
+        @parameter
+        if PROFILE_ACCEPT:
+            self.profile.record_drain_egress_build_us(profile_monotonic_us() - t_egress_build_start)
+        # Q10 §3.5b — drain_enqueue_sendmsg_us bracket: wall-clock of the
+        # per-datagram slot acquisition + UdpTxSlot ctor + parallel-list
+        # appends + pending_submits.append. Does NOT measure the sendmsg
+        # syscall itself (deferred to _drain_pending_submits).
+        var t_enqueue_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_enqueue_start = profile_monotonic_us()
         for i in range(len(datagrams)):
             var pkt = List[UInt8](copy=datagrams[i])
             if len(pkt) == 0:
@@ -1282,6 +1323,11 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.pending_submits.append(
                 PendingSubmit(kind=_SUBMIT_SENDMSG, slot_idx=tx_id)
             )
+        # Q10 §3.5b — close drain_enqueue_sendmsg_us bracket. Records the
+        # full per-datagram loop wall-clock (0 µs for empty `datagrams`).
+        @parameter
+        if PROFILE_ACCEPT:
+            self.profile.record_drain_enqueue_sendmsg_us(profile_monotonic_us() - t_enqueue_start)
 
     # --- sendmsg path ---
 
