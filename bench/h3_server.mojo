@@ -545,6 +545,12 @@ struct H3UdpHandler(BatchCompletionHandler):
     # `DRAIN_TO_EAGAIN`. Off-build cost: ~96 KiB resident, never touched.
     var drain_scratch_pool: List[List[UInt8]]
     var drain_scratch_addr: List[UInt8]
+    # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) — counts
+    # `on_complete` invocations between two adjacent `loop.poll` returns.
+    # Snapshot+reset by the event loop after each `loop.poll` cycle and fed
+    # to `record_cqes_per_wake`. Field always present; only mutated under
+    # PROFILE_ACCEPT (off-build path leaves it at zero).
+    var cqes_this_wake_count: UInt64
 
     def __init__(
         out self,
@@ -627,6 +633,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.drain_scratch_addr = List[UInt8](capacity=DRAIN_ADDR_SCRATCH_SIZE)
         for _ in range(DRAIN_ADDR_SCRATCH_SIZE):
             self.drain_scratch_addr.append(UInt8(0))
+        # Q-IO-1 — per-wake CQE count (snapshot+reset by event loop).
+        self.cqes_this_wake_count = UInt64(0)
 
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
@@ -660,6 +668,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.quic_server_err_first = take.quic_server_err_first
         self.drain_scratch_pool = take.drain_scratch_pool^
         self.drain_scratch_addr = take.drain_scratch_addr^
+        self.cqes_this_wake_count = take.cqes_this_wake_count
 
     # --- Conn lookup ---
 
@@ -674,10 +683,28 @@ struct H3UdpHandler(BatchCompletionHandler):
     # --- on_complete dispatch ---
 
     fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
+        # count CQEs drained per `loop.poll` cycle. Snapshot+reset happens
+        # in the event loop after `loop.poll` returns. Off-build path elides
+        # this branch entirely.
+        @parameter
+        if PROFILE_ACCEPT:
+            self.cqes_this_wake_count = self.cqes_this_wake_count + UInt64(1)
         try:
             self._dispatch(token, result, flags)
         except e:
             print("h3-bench: on_complete error:", e)
+
+    # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) — read
+    # `cqes_this_wake_count` and reset it to zero, returning the snapshot.
+    # Method form (rather than direct field write through `loop._handler.<f>`)
+    # works around a Mojo 0.26.2 mojox ICE on `loop._handler.cqes_this_wake_count = 0`
+    # at the bench loop site (compiler crash via libstdc++ unwind, not a
+    # source-level error). Functionally equivalent.
+    fn snapshot_and_reset_cqes_per_wake(mut self) -> UInt64:
+        var n = self.cqes_this_wake_count
+        self.cqes_this_wake_count = UInt64(0)
+        return n
 
     def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
         var op_kind = UInt8(token & 0xFF)
@@ -882,10 +909,24 @@ struct H3UdpHandler(BatchCompletionHandler):
     # --- on_flush: batch process all pending datagrams ---
 
     fn on_flush(mut self):
+        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
+        # bracket `_flush_impl` to histogram per-wake wall-clock duration.
+        # Measures end-to-end `_flush_impl` time only (per-pkt loop + drain
+        # hook). Excludes CQE processing in `on_complete` (already finished
+        # before we arrive here) and SQE submissions in
+        # `_drain_pending_submits` (run in the event loop after this
+        # returns). Off-build path elides the brackets entirely.
+        var t_flush_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_flush_start = profile_monotonic_us()
         try:
             self._flush_impl()
         except e:
             print("h3-bench: on_flush error:", e)
+        @parameter
+        if PROFILE_ACCEPT:
+            self.profile.record_flush_impl_us(profile_monotonic_us() - t_flush_start)
 
     def _flush_impl(mut self) raises:
         # Drain-extension hook (specs/2026-05-05-quic-bench-drain-extension.md §3).
@@ -1573,6 +1614,29 @@ def main() raises:
         prefix = ""
     print(prefix + "h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
 
+    # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1, §5
+    # Lever A): runtime-configurable `wait_nr` for the io_uring
+    # `submit_and_wait` floor. Default 1 preserves existing behavior so
+    # off-knob baselines are bit-identical to pre-spec runs. Range
+    # [1, 256] — 1 matches the pre-T1 hardcoded site at line 1622; 256
+    # is a safe upper clamp (the SQ ring is 4096; setting wait_nr above
+    # the ring depth would deadlock the loop). T2 sweeps this knob to
+    # decide the optimum; T1 (instrumentation only) lands the knob.
+    var wait_nr_opt = getenv_opt("BENCH_WAIT_NR")
+    var wait_nr_runtime: UInt32 = UInt32(1)
+    if wait_nr_opt.__bool__():
+        try:
+            var parsed = Int(wait_nr_opt.value())
+            if parsed < 1:
+                parsed = 1
+            elif parsed > 256:
+                parsed = 256
+            wait_nr_runtime = UInt32(parsed)
+        except:
+            print(prefix + "h3-bench: BENCH_WAIT_NR parse failed, using default 1")
+            wait_nr_runtime = UInt32(1)
+    print(prefix + "h3-bench: BENCH_WAIT_NR=" + String(wait_nr_runtime))
+
     # Plan B: install SIGINT/SIGTERM handler so that Ctrl-C / kill
     # triggers a profile dump + clean exit at the next flush boundary.
     # Off-build: zero overhead (no comptime branch elided at compile time).
@@ -1612,17 +1676,25 @@ def main() raises:
     # Event loop.
     while True:
         # Q7 H_F: bracket the canonical io_uring park site (loop.poll calls
-        # BatchCompletionLoop._ring.submit_and_wait internally). Total-only
-        # accumulator per spec §4.6.1.
+        # BatchCompletionLoop._ring.submit_and_wait internally). Q-IO-1
+        # (spec 2026-05-05-shortconn-io-path-investigation §4.1) promoted
+        # the bracket from total-only to total + 24-bucket pow2 histogram
+        # (work happens inside `record_iouring_park_us`).
         # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
         var t_park_start: UInt64 = 0
         @parameter
         if PROFILE_ACCEPT:
             t_park_start = profile_monotonic_us()
-        loop.poll(wait_nr=1)
+        # Q-IO-1: BENCH_WAIT_NR env-var runtime knob (parsed in main()).
+        # Default 1 = pre-spec hardcoded value. Range [1, 256].
+        loop.poll(wait_nr=wait_nr_runtime)
         @parameter
         if PROFILE_ACCEPT:
             loop._handler.profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
+            # Q-IO-1: snapshot+reset via method (Mojo 0.26.2 mojox ICEs on the
+            # equivalent direct field write `loop._handler.<field> = 0`).
+            var cqes_this_wake = loop._handler.snapshot_and_reset_cqes_per_wake()
+            loop._handler.profile.record_cqes_per_wake(cqes_this_wake)
 
         # Re-provide consumed buffers.
         var consumed = loop._handler.consumed_bufs^
@@ -1645,7 +1717,18 @@ def main() raises:
             loop._handler.multishot_active = True
 
         # Drain pending sendmsg/timeout submits.
+        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
+        # bracket _drain_pending_submits to close the AC3 wall-clock budget
+        # (`park + flush_impl + drain_submits ≈ wall_clock`). Total-only;
+        # bucket emit deferred to T2 if AC3 fails.
+        var t_dsubmit_start: UInt64 = 0
+        @parameter
+        if PROFILE_ACCEPT:
+            t_dsubmit_start = profile_monotonic_us()
         _drain_pending_submits(loop)
+        @parameter
+        if PROFILE_ACCEPT:
+            loop._handler.profile.record_drain_submits_us(profile_monotonic_us() - t_dsubmit_start)
 
         # Q7 H_A: 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
         # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.

@@ -31,11 +31,20 @@ case "$SERVER" in
         # SIGTERM/SIGINT under PROFILE_ACCEPT=True; the bind mount makes
         # those files visible on the host filesystem.
         mkdir -p "$REPO_ROOT/bench/quic_perf/results/profile"
+        # T2 (Q-IO-1, spec 2026-05-05-shortconn-io-path-investigation §6):
+        # forward BENCH_WAIT_NR env var into the bench-h3 container so
+        # callers can sweep the io_uring submit_and_wait wait_nr knob
+        # without rebuilding the image. Default unset = 1 (pre-spec).
+        WAIT_NR_ARG=()
+        if [[ -n "${BENCH_WAIT_NR:-}" ]]; then
+            WAIT_NR_ARG=(-e "BENCH_WAIT_NR=$BENCH_WAIT_NR")
+        fi
         docker run -d --name bench-h3 \
             --network host \
             --security-opt seccomp=unconfined \
             --ulimit nofile=65536:65536 \
             --cpuset-cpus=0 \
+            "${WAIT_NR_ARG[@]}" \
             -v "$HERE/payloads:/data/static:ro" \
             -v "$REPO_ROOT/certs:/certs:ro" \
             -v "$REPO_ROOT/bench/quic_perf/results/profile:/app/bench/quic_perf/results/profile" \
