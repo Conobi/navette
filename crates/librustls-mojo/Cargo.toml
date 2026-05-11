@@ -25,6 +25,13 @@ insecure = []
 
 [profile.release]
 panic = "abort"
+# DWARF unwind info for perf-record flamegraphs (spec
+# 2026-05-04-shortconn-perf-flamegraph-spec.md §5). `line-tables-only`
+# adds DWARF line-number + frame info without full type info — enough
+# for perf --call-graph=dwarf to resolve rustls/aws-lc-rs frames; binary
+# grows ~30-50% but `strip = false` (default) keeps `.dynsym` intact.
+debug = "line-tables-only"
+strip = false
 
 [profile.dev]
 panic = "abort"
