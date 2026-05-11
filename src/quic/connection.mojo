@@ -775,19 +775,19 @@ struct QuicConnection(Movable):
             var remaining_len = buf_len - offset
             var remaining_ptr = buf + offset
 
-            # 1. Copy remaining bytes for parse_packet_header (needs Span
-            # from List — known remaining copy, to be removed later).
-            var remaining_list = List[UInt8](capacity=remaining_len)
-            for i in range(remaining_len):
-                remaining_list.append(remaining_ptr[i])
-
-            # 2. Parse packet header.
+            # 2. Parse packet header from a Span backed by the caller's
+            # buffer directly. The prior implementation copied
+            # `remaining_ptr[0..remaining_len]` into a `List[UInt8]` to
+            # construct a Span — once per coalesced QUIC packet. Eliminated
+            # via `Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len)`
+            # since `parse_packet_header` only reads the buffer.
             @parameter
             if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     ph_header_parse_us = monotonic_us()
             var header_result = parse_packet_header(
-                Span(remaining_list), len(self.local_cid)
+                Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len),
+                len(self.local_cid),
             )
             var header = header_result[0].copy()
             var header_end = header_result[1]
@@ -879,17 +879,19 @@ struct QuicConnection(Movable):
                 if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
                     self.state = self.state | CONN_ADDR_VALIDATED
 
-                # 10. Parse and dispatch frames.
-                # Copy plaintext into list for ByteReader (known remaining
-                # copy — ByteReader needs Span from List).
-                var pt_list = List[UInt8](capacity=plaintext_len)
-                for i in range(plaintext_len):
-                    pt_list.append(pkt_ptr[header_len + i])
+                # 10. Parse and dispatch frames from a Span backed by the
+                # caller's buffer directly. The prior implementation copied
+                # `pkt_ptr[header_len .. header_len+plaintext_len]` into a
+                # `List[UInt8]` — once per coalesced QUIC packet. Eliminated
+                # via `Span[UInt8, MutAnyOrigin](ptr=pkt_ptr+header_len, length=plaintext_len)`
+                # since ByteReader / parse_frames are generic over origin.
                 @parameter
                 if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_frame_parse_us = monotonic_us()
-                var reader = ByteReader(Span(pt_list))
+                var reader = ByteReader(
+                    Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len)
+                )
                 var frames = parse_frames(reader)
                 var ack_eliciting = False
                 for i in range(len(frames)):
