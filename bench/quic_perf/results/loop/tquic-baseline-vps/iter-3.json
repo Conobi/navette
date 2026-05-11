@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-11T14:40:58Z",
+  "host": {
+    "kernel": "Linux 6.12.85",
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+    "cores_total": 8,
+    "server_core": 0,
+    "client_cores": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "server": "tquic",
+  "payload": "1k",
+  "scenario": "short-conn",
+  "client": "tquic_client",
+  "iter": 1,
+  "config": {
+    "duration_s": 30,
+    "warmup_s": 5,
+    "threads": 4,
+    "max_concurrent_conns": 100,
+    "max_requests_per_conn": 1,
+    "max_concurrent_requests": 1,
+    "send_udp_payload_size": 1350
+  },
+  "results": {
+    "rps": 2096.35,
+    "bytes_per_sec": null,
+    "requests_total": 65046,
+    "requests_succeeded": 64991,
+    "requests_failed": 55,
+    "p50_latency_ms": 6.216,
+    "p99_latency_ms": 73.04243,
+    "server_cpu_percent": 85.046,
+    "raw_client_stdout": "[2026-05-11T14:40:57.731Z INFO  tquic::connection] CLIENT-b2a4d68b91ebae1c idle timeout\n[2026-05-11T14:40:57.732Z INFO  tquic::connection] CLIENT-4971c21ada4da4f3 idle timeout\n\nfinished in 31.002821037s, 2096.35 req/s\nconns: total 65085, finish 65046, success 65046, failure 0\nrequests: sent 65046, finish 64991, success 64991\ntime for request(\u00b5s):\n\tmin: 247.00, max: 182592.00, mean: 9937.25, sd: 14307.58\n\tmedian: 6216.00, p80: 9986.40, p90: 13346.00, p99: 73042.43\nrecv pkts: 325869, sent pkts: 551067, lost pkts: 11890\nrecv bytes: 281198153, sent bytes: 208308197, lost bytes: 4585561\n\n"
+  }
+}
