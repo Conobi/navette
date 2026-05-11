@@ -1,0 +1,6 @@
+{
+  "server": "tquic",
+  "cpuset": "0",
+  "rps": 2408.12,
+  "server_cpu_percent": 86.86625
+}
