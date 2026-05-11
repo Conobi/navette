@@ -216,6 +216,46 @@ struct AcceptProfile(Copyable, Movable):
     # Group F — H_F instrumentation (PARK-BOUND verdict). Total-only per spec §4.6.1.
     var iouring_park_us_total: UInt64
 
+    # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
+    # IO-path per-wake instrumentation. All comptime-gated under PROFILE_ACCEPT.
+    #
+    # `iouring_park_us_buckets` promotes the existing `iouring_park_us_total`
+    # to a 24-bucket pow2 histogram. Same shape as `hs_cpu_us_per_handshake`
+    # (dispatch via `_per_pkt_bucket`). Measures wall-clock duration spent
+    # inside `loop.poll` (= `submit_and_wait` + immediate CQ drain). Does NOT
+    # measure `_flush_impl` time or `_drain_pending_submits` time.
+    var iouring_park_us_buckets: List[UInt64]
+    var iouring_park_us_overflow: UInt64
+
+    # `cqes_per_wake_buckets` — 8-bucket histogram of CQEs drained between
+    # two adjacent `submit_and_wait` returns. Same shape as
+    # `recvmsg_batch_size_buckets` (dispatch via `_pkts_per_flush_bucket`).
+    # Measures count of `on_complete` invocations per `loop.poll` cycle.
+    # Does NOT measure kernel queue depth, SQE submission count, or
+    # datagrams in pending_rx (those are downstream of CQE handling).
+    # `cqes_total` accumulates the per-wake counts for AC2 sum-sanity:
+    # Σ(buckets × midpoint) ≈ cqes_total ≈ Σ(on_complete calls).
+    var cqes_per_wake_buckets: List[UInt64]
+    var cqes_per_wake_count: UInt64   # number of wakes with ≥1 CQE recorded
+    var cqes_total: UInt64            # Σ CQEs across all wakes (sum-sanity)
+
+    # `flush_impl_us_buckets` — 24-bucket pow2 histogram of `_flush_impl`
+    # wall-clock duration per wake. Same shape/dispatch as
+    # `iouring_park_us_buckets`. Measures end-to-end `_flush_impl` time
+    # (per-pkt loop + drain hooks). Does NOT measure CQE processing in
+    # `on_complete` (runs before `on_flush`) or SQE submissions in
+    # `_drain_pending_submits` (runs after `on_flush`).
+    var flush_impl_us_total: UInt64
+    var flush_impl_us_buckets: List[UInt64]
+    var flush_impl_us_overflow: UInt64
+
+    # `drain_submits_us_total` — total wall-clock spent inside
+    # `_drain_pending_submits` between adjacent `loop.poll` calls. Total-only;
+    # this counter exists for AC3 sum-sanity (park + flush_impl + drain_submits
+    # ≈ wall_clock_total). Does NOT measure SQE count or kernel-side submit
+    # cost.
+    var drain_submits_us_total: UInt64
+
     # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
     var addr_key_mismatch_counts: Dict[String, UInt64]
 
@@ -358,6 +398,22 @@ struct AcceptProfile(Copyable, Movable):
             self.hs_cpu_us_per_handshake_buckets.append(UInt64(0))
             self.hs_wait_us_per_handshake_buckets.append(UInt64(0))
         self.iouring_park_us_total = UInt64(0)
+        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1).
+        self.iouring_park_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.iouring_park_us_buckets.append(UInt64(0))
+        self.iouring_park_us_overflow = UInt64(0)
+        self.cqes_per_wake_buckets = List[UInt64]()
+        for _ in range(8):
+            self.cqes_per_wake_buckets.append(UInt64(0))
+        self.cqes_per_wake_count = UInt64(0)
+        self.cqes_total = UInt64(0)
+        self.flush_impl_us_total = UInt64(0)
+        self.flush_impl_us_buckets = List[UInt64]()
+        for _ in range(24):
+            self.flush_impl_us_buckets.append(UInt64(0))
+        self.flush_impl_us_overflow = UInt64(0)
+        self.drain_submits_us_total = UInt64(0)
         self.addr_key_mismatch_counts = Dict[String, UInt64]()
         self.drain_extension_pkts_total = UInt64(0)
         self.drain_extension_overflow_count = UInt64(0)
@@ -699,9 +755,70 @@ struct AcceptProfile(Copyable, Movable):
             self.hs_wait_us_per_handshake_buckets[b] = self.hs_wait_us_per_handshake_buckets[b] + UInt64(1)
 
     fn record_iouring_park_us(mut self, us: UInt64):
-        """Q7 Group F — H_F PARK-BOUND instrumentation. Total-only — bracket
-        every io_uring_enter call site (or equivalent submit-and-wait entry)."""
+        """Q7 Group F — H_F PARK-BOUND instrumentation. Total + 24-bucket
+        pow2 histogram; bracket every io_uring_enter call site (or equivalent
+        submit-and-wait entry).
+
+        Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1)
+        promoted this from total-only to histogrammed. Counts wall-clock us
+        spent inside `loop.poll`. Does NOT count `_flush_impl` or
+        `_drain_pending_submits` time."""
         self.iouring_park_us_total = self.iouring_park_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.iouring_park_us_overflow = self.iouring_park_us_overflow + UInt64(1)
+        else:
+            self.iouring_park_us_buckets[b] = self.iouring_park_us_buckets[b] + UInt64(1)
+
+    fn record_cqes_per_wake(mut self, n: UInt64):
+        """Q-IO-1 — record CQE count for one `loop.poll` cycle.
+
+        Spec: 2026-05-05-shortconn-io-path-investigation §4.1. Counts CQEs
+        drained between two adjacent `submit_and_wait` returns. Does NOT
+        count kernel queue depth, SQE submission count, or pending_rx
+        arrivals.
+
+        AC2 sum-sanity: Σ(`on_complete` calls) ≡ Σ(per-wake counts) within
+        ±5%; `cqes_total` mirrors the sum to make the cross-check trivial.
+        Caller MUST snapshot+reset its handler-side counter before the next
+        wake to prevent double-counting.
+        """
+        var b = _pkts_per_flush_bucket(Int(n))
+        # _pkts_per_flush_bucket caps at 7 (128+); n=0 also lands in bucket 0
+        # (the "1 or fewer" bucket). For diagnostic clarity, n=0 is treated
+        # the same as n=1 in the bucket because the spec's bucket layout is
+        # `[0, 1, 2-3, ...]` per §4.1 — _pkts_per_flush_bucket returns 0 for
+        # both n=0 and n=1, which matches the spec's bucket definition.
+        self.cqes_per_wake_buckets[b] = self.cqes_per_wake_buckets[b] + UInt64(1)
+        self.cqes_per_wake_count = self.cqes_per_wake_count + UInt64(1)
+        self.cqes_total = self.cqes_total + n
+
+    fn record_flush_impl_us(mut self, us: UInt64):
+        """Q-IO-1 — record per-wake `_flush_impl` wall-clock duration.
+
+        Spec: 2026-05-05-shortconn-io-path-investigation §4.1. 24-bucket
+        pow2 histogram. Measures end-to-end `_flush_impl` (per-pkt loop +
+        drain hooks). Does NOT measure CQE processing in `on_complete` or
+        SQE submissions in `_drain_pending_submits`.
+        """
+        self.flush_impl_us_total = self.flush_impl_us_total + us
+        var b = _per_pkt_bucket(us)
+        if b >= 24:
+            self.flush_impl_us_overflow = self.flush_impl_us_overflow + UInt64(1)
+        else:
+            self.flush_impl_us_buckets[b] = self.flush_impl_us_buckets[b] + UInt64(1)
+
+    fn record_drain_submits_us(mut self, us: UInt64):
+        """Q-IO-1 — record per-iter `_drain_pending_submits` wall-clock.
+
+        Spec: 2026-05-05-shortconn-io-path-investigation §4.1. Total-only.
+        Bracketed around the `_drain_pending_submits(loop)` call site in
+        the event loop. Closes the AC3 budget:
+        `iouring_park_us_total + flush_impl_us_total + drain_submits_us_total
+        ≈ wall_clock_total` within ±5%.
+        Does NOT measure kernel-side submit cost or per-SQE breakdown.
+        """
+        self.drain_submits_us_total = self.drain_submits_us_total + us
 
     def record_drain_extension(mut self, n: UInt64, overflowed: Bool):
         """Drain-extension instrumentation (Plan: 2026-05-05-quic-bench-drain-extension).
@@ -1025,8 +1142,21 @@ struct AcceptProfile(Copyable, Movable):
             q7_wait_total = q7_wait_total + self.hs_wait_us_per_handshake_buckets[i]
         s += "  hs_cpu.samples:    " + _fmt_count(q7_cpu_total) + "  overflow=" + _fmt_count(self.hs_cpu_us_per_handshake_overflow) + "\n"
         s += "  hs_wait.samples:   " + _fmt_count(q7_wait_total) + "  overflow=" + _fmt_count(self.hs_wait_us_per_handshake_overflow) + "\n\n"
-        s += "Q7 io_uring park (H_F PARK-BOUND, total-only):\n"
-        s += "  iouring_park_us.total: " + _fmt_count(self.iouring_park_us_total) + "\n\n"
+        s += "Q7 io_uring park (H_F PARK-BOUND, total + 24-bucket pow2):\n"
+        s += "  iouring_park_us.total:    " + _fmt_count(self.iouring_park_us_total) + "\n"
+        s += "  iouring_park_us.overflow: " + _fmt_count(self.iouring_park_us_overflow) + "\n"
+        # Q-IO-1 — IO-path per-wake instrumentation (spec
+        # 2026-05-05-shortconn-io-path-investigation §4.1).
+        s += "Q-IO-1 cqes_per_wake (8-bucket via _pkts_per_flush_bucket):\n"
+        s += "  cqes_per_wake.wakes:    " + _fmt_count(self.cqes_per_wake_count) + "\n"
+        s += "  cqes_per_wake.cqes_sum: " + _fmt_count(self.cqes_total) + "\n"
+        for i in range(8):
+            s += "    size=" + q7_bs_labels[i] + " " + _fmt_count(self.cqes_per_wake_buckets[i]) + "\n"
+        s += "Q-IO-1 flush_impl_us (24-bucket pow2):\n"
+        s += "  flush_impl_us.total:    " + _fmt_count(self.flush_impl_us_total) + "\n"
+        s += "  flush_impl_us.overflow: " + _fmt_count(self.flush_impl_us_overflow) + "\n"
+        s += "Q-IO-1 drain_submits_us (total-only, AC3 budget closure):\n"
+        s += "  drain_submits_us.total: " + _fmt_count(self.drain_submits_us_total) + "\n\n"
         # Budget closure (mirrors report_json computation).
         var pp_legs = (self.header_parse_us_total + self.hp_us_total + self.aead_us_total
             + self.frame_parse_us_total + self.sm_us_total + self.residual_us_total)
@@ -1525,8 +1655,53 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.hs_wait_us_per_handshake_overflow) + "\n"
         s += "  },\n"
 
+        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1):
+        # iouring_park_us promoted from total-only to total + 24-bucket
+        # pow2 histogram. Backward-compatible: existing readers keying on
+        # "total" continue to work; new readers can consume "buckets".
         s += '  "iouring_park_us": {\n'
-        s += '    "total": ' + String(self.iouring_park_us_total) + "\n"
+        s += '    "total": ' + String(self.iouring_park_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.iouring_park_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.iouring_park_us_overflow) + "\n"
+        s += "  },\n"
+
+        # Q-IO-1 — CQEs-per-wake histogram. 8-bucket via
+        # _pkts_per_flush_bucket; key shape mirrors recvmsg_batch_size_buckets.
+        # `wakes` = number of `loop.poll` calls observed under PROFILE_ACCEPT.
+        # `cqes_total` = Σ CQEs across those wakes (AC2 sum-sanity vs
+        # `Σ on_complete` observed kernel-side).
+        s += '  "cqes_per_wake": {\n'
+        s += '    "wakes": ' + String(self.cqes_per_wake_count) + ',\n'
+        s += '    "cqes_total": ' + String(self.cqes_total) + ',\n'
+        s += '    "buckets": {\n'
+        for i in range(8):
+            s += '      "' + bs_keys[i] + '": ' + String(self.cqes_per_wake_buckets[i])
+            if i < 7:
+                s += ","
+            s += "\n"
+        s += "    }\n"
+        s += "  },\n"
+
+        # Q-IO-1 — _flush_impl wall-clock per-wake histogram (24-bucket pow2).
+        s += '  "flush_impl_us": {\n'
+        s += '    "total": ' + String(self.flush_impl_us_total) + ',\n'
+        s += '    "buckets": ['
+        for i in range(24):
+            s += String(self.flush_impl_us_buckets[i])
+            if i < 23:
+                s += ", "
+        s += "],\n"
+        s += '    "overflow": ' + String(self.flush_impl_us_overflow) + "\n"
+        s += "  },\n"
+
+        # Q-IO-1 — _drain_pending_submits wall-clock total (AC3 budget closure).
+        s += '  "drain_submits_us": {\n'
+        s += '    "total": ' + String(self.drain_submits_us_total) + "\n"
         s += "  },\n"
 
         # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
