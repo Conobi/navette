@@ -34,3 +34,11 @@ bench/.httparena
 
 # Git worktrees
 .worktrees/
+
+# Claude Code session state (multi-GB local)
+.claude/
+
+# Bench evidence artifacts (regenerable from PROFILE_ACCEPT=True + perf-record)
+bench/quic_perf/results/profile/INSTRUMENTATION-*.json
+bench/quic_perf/results/profile/shortconn-*/
+bench/quic_perf/logs/
