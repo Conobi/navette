@@ -64,6 +64,15 @@ struct IoUring[H: CompletionHandler](Io):
     ) raises:
         self.loop.submit_recv_multishot(fd, buf_group, token)
 
+    fn submit_recv(
+        mut self,
+        fd: RawHandle,
+        buf: UnsafePointer[Int8, StaticConstantOrigin],
+        len: UInt,
+        token: UInt64,
+    ) raises:
+        self.loop.submit_recv(fd, buf, len, token)
+
     fn submit_send(
         mut self,
         fd: RawHandle,

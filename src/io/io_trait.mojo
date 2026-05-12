@@ -73,6 +73,20 @@ trait Io:
         `IORING_CQE_F_BUFFER` is set. Re-arm on multishot end."""
         ...
 
+    fn submit_recv(
+        mut self,
+        fd: RawHandle,
+        buf: UnsafePointer[Int8, StaticConstantOrigin],
+        len: UInt,
+        token: UInt64,
+    ) raises:
+        """Submit a one-shot recv. Caller owns `buf` until the CQE
+        arrives with a byte count in `result`. Equivalent to a single
+        read(2). Use this for simple per-conn buffers; for
+        high-throughput workloads, prefer `submit_recv_multishot`
+        with a buf-ring."""
+        ...
+
     fn submit_send(
         mut self,
         fd: RawHandle,
