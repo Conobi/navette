@@ -1,12 +1,13 @@
 # src/quic/profile.mojo
 #
-# QUIC accept-loop profile module (Plan A).
+# QUIC accept-loop profile module.
 #
 # Provides AcceptProfile (counter struct + report formatters), monotonic_us
 # (sans-I/O CLOCK_MONOTONIC wrapper), and PROFILE_ACCEPT (comptime opt-in).
 #
-# Hand-edit PROFILE_ACCEPT to True to produce a profile build (see Plan B
-# for how this gates instrumentation in connection.mojo + bench/h3_server.mojo).
+# Hand-edit PROFILE_ACCEPT to True to enable instrumentation in
+# src/quic/connection.mojo + bench/h3_server.mojo. Off-build is the
+# default for v1; on-build is for one-shot diagnostic runs.
 
 from collections import Dict
 from std.ffi import external_call
@@ -23,9 +24,10 @@ fn monotonic_us() -> UInt64:
     """clock_gettime(CLOCK_MONOTONIC) → microseconds. Sans-I/O.
 
     Uses a stack-allocated InlineArray[Int64, 2] for the timespec to avoid
-    the heap-alloc + free that previously fired on every call. Plan B fires
-    monotonic_us() many times per packet on the QUIC handshake hot path, so
-    the per-call fixed cost matters for the ≤10% on-build overhead budget.
+    the heap-alloc + free that previously fired on every call. On-build
+    instrumentation fires monotonic_us() many times per packet on the QUIC
+    handshake hot path, so per-call fixed cost matters for the ≤10%
+    on-build overhead budget.
     """
     var ts = InlineArray[Int64, 2](fill=0)
     var ts_ptr = UnsafePointer(to=ts).bitcast[UInt8]()
@@ -42,7 +44,7 @@ struct AcceptProfile(Copyable, Movable):
     but it holds 3 `List[UInt64]` fields (pkts_per_flush_buckets,
     per_pkt_total_buckets, hs_latency_us). Each `=` or pass-by-value
     triggers a deep copy of those lists — silently expensive on hot
-    paths. Plan B threads `AcceptProfile` exclusively via
+    paths. Production code threads `AcceptProfile` exclusively via
     `UnsafePointer[AcceptProfile, MutAnyOrigin]` (see QuicConnection
     .profile_ptr and H3UdpHandler.profile). Do NOT copy.
     """

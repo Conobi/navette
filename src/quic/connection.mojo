@@ -335,32 +335,28 @@ struct QuicConnection(Movable):
     var profile_first_initial_us: UInt64
     var profile_rustls_us_accum: UInt64
     var profile_first_iter_done: Bool
-    # Q4 (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition):
     # Non-resetting per-conn FFI accumulator. Increments at the same 3 FFI
     # bracket sites as profile_rustls_us_accum but is NEVER reset at iter
     # boundaries — captures the SUM of all FFI work across the conn up to
     # handshake-complete.
     var fresh_conn_ffi_us_total: UInt64
 
-    # Q5 (Plan: 2026-05-03-q5-read-hs-per-call-decomposition):
     # Per-conn read_hs FFI call count. Non-resetting; recorded once at
-    # _on_handshake_complete server-side. Distinct from Q4's
-    # fresh_conn_ffi_us_total (sums all FFI sub-legs); this counts
-    # ONLY read_hs invocations.
+    # _on_handshake_complete server-side. Distinct from fresh_conn_ffi_us_total
+    # (which sums all FFI sub-legs); this counts ONLY read_hs invocations.
     var read_hs_call_count: UInt64
 
-    # Q6 (Plan: 2026-05-04-q6-read-hs-internal-decomposition):
     # Per-conn read_hs sub-leg µs accumulators. Non-resetting; gated by
     # PROFILE_ACCEPT + profile_ptr != 0 at the bracket site. Sums across
     # all read_hs calls in the conn lifetime. output_marshalling is
     # zero-by-design for read_hs (returns status only); slot reserved for
-    # future symmetric write_hs/take_keys reuse — see spec §4.4.
+    # future symmetric write_hs/take_keys reuse.
     var read_hs_input_marshalling_us_total: UInt64
     var read_hs_state_machine_us_total: UInt64
     var read_hs_output_alloc_us_total: UInt64
     var read_hs_output_marshalling_us_total: UInt64
 
-    # Q7 (Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition):
+    # Per-FD cold-handshake CPU vs wait breakdown.
     var accept_us: UInt64         # server-side conn creation timestamp; 0 for client
     var hs_cpu_us_total: UInt64   # sum of _drive_handshake body µs across conn lifetime
     var hs_wait_us_total: UInt64  # computed once at _on_handshake_complete
@@ -691,7 +687,7 @@ struct QuicConnection(Movable):
         # newly-constructed connection.
         conn.profile_ptr = profile_ptr
         conn.profile_first_initial_us = profile_arrival_us
-        conn.accept_us = profile_arrival_us  # Q7: reuse already-stamped arrival time; is_server=True
+        conn.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
 
         @parameter
         if PROFILE_ACCEPT:
@@ -1633,9 +1629,8 @@ struct QuicConnection(Movable):
         if self.conn_handle < 0:
             return
 
-        # Q7 entry bracket: capture _drive_handshake body start + bump
+        # _drive_handshake body-time bracket: capture start + bump
         # active_drive_count. Closing bracket fires at fall-through end.
-        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
         var t_drive_start: UInt64 = 0
         @parameter
         if PROFILE_ACCEPT:
@@ -1653,7 +1648,6 @@ struct QuicConnection(Movable):
                 if len(crypto_data) > 0:
                     # Q6: Mojo-side input-marshalling timer wraps the heap alloc
                     # + per-byte copy loop (the FFI input ABI marshalling).
-                    # Plan: 2026-05-04-q6-read-hs-internal-decomposition §4.4 step 1.
                     var t_input_start: UInt64 = 0
                     @parameter
                     if PROFILE_ACCEPT:
@@ -1713,15 +1707,13 @@ struct QuicConnection(Movable):
                             self.profile_rustls_us_accum += t_end
                             self.profile_ptr[].record_ffi_read_hs(t_end - t_start)
                             self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
-                            # Q5: per-conn read_hs call count + per-call duration.
-                            # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
+                            # Per-conn read_hs call count + per-call duration.
                             self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
                             self.profile_ptr[].record_read_hs_us_per_call(t_end - t_start)
-                            # Q6: per-call read_hs sub-leg accumulation + histograms.
+                            # Per-call read_hs sub-leg accumulation + histograms.
                             # output_marshalling is zero-by-design for read_hs
                             # (returns status only); slot reserved for future
-                            # symmetric write_hs/take_keys reuse — spec §4.4 + §7.3.
-                            # Plan: 2026-05-04-q6-read-hs-internal-decomposition.
+                            # symmetric write_hs/take_keys reuse.
                             self.read_hs_input_marshalling_us_total = self.read_hs_input_marshalling_us_total + input_marshalling_us
                             self.read_hs_state_machine_us_total = self.read_hs_state_machine_us_total + out_sm_us
                             self.read_hs_output_alloc_us_total = self.read_hs_output_alloc_us_total + out_lookup_us
@@ -1850,7 +1842,6 @@ struct QuicConnection(Movable):
         # hs_cpu_us_total and decrement active_drive_count. Mirrors the
         # entry bracket above. raise paths leave the bracket unbalanced
         # but those terminate the connection so the imbalance is moot.
-        # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
         @parameter
         if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0 and t_drive_start > UInt64(0):
@@ -1895,8 +1886,7 @@ struct QuicConnection(Movable):
             # is_server gate above already excludes client; -1 means the conn
             # handle was freed mid-call (should never happen in practice).
 
-            # Q4: Record per-fresh-conn FFI total at handshake-complete.
-            # Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition.
+            # Record per-fresh-conn FFI total at handshake-complete.
             # Fires once per server connection regardless of resumption
             # status, gated by is_server (runtime) + profile_ptr != 0 (runtime).
             # Under PROFILE_ACCEPT=False, fresh_conn_ffi_us_total stays 0
@@ -1904,12 +1894,10 @@ struct QuicConnection(Movable):
             # record still fires — bucket[0] gets 1 sample (value=0 maps
             # to bucket index 0 in _per_pkt_bucket).
             self.profile_ptr[].record_fresh_conn_ffi_us(self.fresh_conn_ffi_us_total)
-            # Q5: record per-handshake read_hs call count.
-            # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
+            # Record per-handshake read_hs call count.
             self.profile_ptr[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
-            # Q7: per-FD wait vs CPU breakdown.
-            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
-            if self.accept_us > UInt64(0):
+            # Per-FD wait vs CPU breakdown.
+                if self.accept_us > UInt64(0):
                 var now_hs = monotonic_us()
                 var wall_us = now_hs - self.accept_us
                 if wall_us >= self.hs_cpu_us_total:
