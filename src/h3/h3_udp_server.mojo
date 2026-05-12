@@ -50,7 +50,8 @@ from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.handle import RawHandle
-from boucle.completion import BatchCompletionHandler
+from boucle.completion import BatchCompletionHandler, BatchCompletionLoop
+from boucle._sys.linux.raw.ctypes import c_void
 from boucle._sys.linux.raw.x86_64.io_uring import (
     IORING_CQE_F_BUFFER,
     IORING_CQE_F_MORE,
@@ -161,12 +162,77 @@ struct PendingDatagram(Copyable, Movable):
 struct UdpTxSlot(Movable):
     """Heap-allocated msghdr + iovec + addr + payload tuple for one
     sendmsg. Owned by the H3UdpServer's tx_slots list and freed in
-    `_handle_sendmsg` after the CQE arrives (Stage B1c).
+    `_handle_sendmsg` after the CQE arrives.
     """
     var msghdr_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var iov_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var addr_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var data_buf: UnsafePointer[UInt8, MutAnyOrigin]
+
+    def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
+        var data_len = len(data)
+
+        self.msghdr_buf = _heap_alloc[UInt8](_MSGHDR_SIZE).as_any_origin()
+        self.iov_buf = _heap_alloc[UInt8](_IOVEC_SIZE).as_any_origin()
+        self.addr_buf = _heap_alloc[UInt8](_ADDR_SIZE).as_any_origin()
+        self.data_buf = _heap_alloc[UInt8](data_len).as_any_origin()
+
+        # Copy payload.
+        for i in range(data_len):
+            self.data_buf[i] = data[i]
+
+        # Copy peer addr; pad with zeroes to sockaddr_in6 size.
+        var addr_len = len(addr)
+        for i in range(_ADDR_SIZE):
+            if i < addr_len:
+                self.addr_buf[i] = addr[i]
+            else:
+                self.addr_buf[i] = 0
+
+        # Zero msghdr + iov.
+        for i in range(_MSGHDR_SIZE):
+            self.msghdr_buf[i] = 0
+        for i in range(_IOVEC_SIZE):
+            self.iov_buf[i] = 0
+
+        var msghdr = self.msghdr_buf
+
+        # offset 0 — msg_name = &addr_buf
+        var addr_ptr_val = UInt64(Int(self.addr_buf))
+        var addr_ptr_bytes = UnsafePointer(to=addr_ptr_val).bitcast[UInt8]()
+        for i in range(8):
+            msghdr[i] = addr_ptr_bytes[i]
+
+        # offset 8 — msg_namelen = sizeof(sockaddr_in6)
+        var namelen = UInt32(_ADDR_SIZE)
+        var namelen_bytes = UnsafePointer(to=namelen).bitcast[UInt8]()
+        for i in range(4):
+            msghdr[8 + i] = namelen_bytes[i]
+
+        # offset 16 — msg_iov = &iov_buf
+        var iov_ptr_val = UInt64(Int(self.iov_buf))
+        var iov_ptr_bytes = UnsafePointer(to=iov_ptr_val).bitcast[UInt8]()
+        for i in range(8):
+            msghdr[16 + i] = iov_ptr_bytes[i]
+
+        # offset 24 — msg_iovlen = 1
+        var iovlen = UInt64(1)
+        var iovlen_bytes = UnsafePointer(to=iovlen).bitcast[UInt8]()
+        for i in range(8):
+            msghdr[24 + i] = iovlen_bytes[i]
+
+        # iov[0].iov_base = &data_buf
+        var iov = self.iov_buf
+        var data_ptr_val = UInt64(Int(self.data_buf))
+        var data_ptr_bytes = UnsafePointer(to=data_ptr_val).bitcast[UInt8]()
+        for i in range(8):
+            iov[i] = data_ptr_bytes[i]
+
+        # iov[0].iov_len = data_len
+        var iov_len = UInt64(data_len)
+        var iov_len_bytes = UnsafePointer(to=iov_len).bitcast[UInt8]()
+        for i in range(8):
+            iov[8 + i] = iov_len_bytes[i]
 
     def __init__(out self, *, deinit take: Self):
         self.msghdr_buf = take.msghdr_buf
@@ -350,8 +416,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         if op_kind == OP_RECVMSG:
             self._handle_recvmsg(result, flags)
         elif op_kind == OP_SENDMSG:
-            # Stage B1c: _handle_sendmsg(token >> 8, result)
-            pass
+            self._handle_sendmsg(token >> 8, result)
         elif op_kind == OP_TIMEOUT:
             # Stage B1d: _handle_timeout(result)
             pass
@@ -540,10 +605,120 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 addr_update.append(pd.buf_ptr[pd.addr_offset + j])
             self.conn_addrs[conn_idx] = addr_update^
 
-            # TODO(B1c): self._drain_and_send(conn_idx, now)
-            # Egress (drain_datagrams → UdpTxSlot → sendmsg PendingSubmit)
-            # lands in the next commit.
+            # Egress — drain QUIC + H3 packets and queue sendmsg submits.
+            try:
+                self._drain_and_send(conn_idx, now)
+            except e:
+                print("H3UdpServer: drain_and_send error:", e)
 
             self.consumed_bufs.append(pd.buf_id)
 
         self.pending_rx.clear()
+
+    # ── Egress ───────────────────────────────────────────────────
+
+    def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
+        """Drain outgoing datagrams from a connection and queue sendmsg
+        submissions for the outer driver to issue post-tick.
+        """
+        var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
+        for i in range(len(datagrams)):
+            var pkt = List[UInt8](copy=datagrams[i])
+            if len(pkt) == 0:
+                continue
+
+            var tx_id = self.next_tx_id
+            self.next_tx_id += 1
+            var token = _encode_token(tx_id, OP_SENDMSG)
+
+            var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
+
+            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+            tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
+
+            var slot_idx = len(self.tx_slots)
+            self.tx_slots.append(tx_ptr)
+            self.tx_slot_tokens.append(token)
+            self.tx_slot_idx_by_token[token] = slot_idx
+
+            self.pending_submits.append(
+                PendingSubmit(kind=OP_SENDMSG, slot_idx=tx_id)
+            )
+
+    def _handle_sendmsg(mut self, tx_id: UInt64, result: Int32) raises:
+        """Sendmsg CQE — free the UdpTxSlot whose buffers the kernel
+        consumed. `result` is the bytes-sent count or negative errno;
+        partial sends are not retried (UDP semantics)."""
+        var token = _encode_token(tx_id, OP_SENDMSG)
+        if token not in self.tx_slot_idx_by_token:
+            return
+        var idx = self.tx_slot_idx_by_token[token]
+
+        # Free the 4 heap buffers behind the slot.
+        var ptr = self.tx_slots[idx]
+        ptr[].free()
+        ptr.free()
+
+        # Swap-and-pop: move last slot into freed index, fix up the
+        # token→idx map so the swapped slot's lookup still resolves.
+        var last_idx = len(self.tx_slots) - 1
+        if idx != last_idx:
+            var last_ptr = self.tx_slots[last_idx]
+            var last_token = self.tx_slot_tokens[last_idx]
+            self.tx_slots[idx] = last_ptr
+            self.tx_slot_tokens[idx] = last_token
+            self.tx_slot_idx_by_token[last_token] = idx
+        _ = self.tx_slots.pop()
+        _ = self.tx_slot_tokens.pop()
+        _ = self.tx_slot_idx_by_token.pop(token)
+
+
+# ── Outer driver helpers ─────────────────────────────────────────────────────
+
+
+fn drain_pending_submits[H: StreamHandler](
+    mut io: BatchCompletionLoop[H3UdpServer[H]]
+) raises:
+    """Consume the server's `pending_submits` queue and issue the
+    underlying io_uring submissions (sendmsg / timeout).
+
+    Must be called after each `io.poll()` returns — the on_complete
+    callback appends to `pending_submits` rather than re-entering the
+    loop directly (boucle holds a mutable borrow on itself during
+    poll, so handler bodies can't call `submit_*` inline).
+
+    Pending submits exceeding the current SQ capacity stay in the
+    queue and get retried on the next tick — caller is responsible
+    for ensuring the SQ has room (typically by leaving headroom in
+    `sq_entries` at construction).
+    """
+    var submits = io._handler.pending_submits^
+    io._handler.pending_submits = List[PendingSubmit]()
+
+    for i in range(len(submits)):
+        var s = submits[i].copy()
+        if s.kind == OP_SENDMSG:
+            var tx_id = s.slot_idx
+            var token = _encode_token(tx_id, OP_SENDMSG)
+            if token not in io._handler.tx_slot_idx_by_token:
+                continue
+            var tx_idx = io._handler.tx_slot_idx_by_token[token]
+            var msghdr_addr = Int(io._handler.tx_slots[tx_idx][].msghdr_buf)
+            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=msghdr_addr
+            )
+            try:
+                io.submit_sendmsg(io._handler.udp_fd, msghdr_ptr, token)
+            except:
+                # SQ full — re-queue for next tick.
+                io._handler.pending_submits.append(s.copy())
+        elif s.kind == OP_TIMEOUT:
+            var ts_addr = Int(io._handler.timeout_ts)
+            var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=ts_addr
+            )
+            var token = _encode_token(s.slot_idx, OP_TIMEOUT)
+            try:
+                io.submit_timeout(ts_ptr, token)
+            except:
+                io._handler.pending_submits.append(s.copy())
