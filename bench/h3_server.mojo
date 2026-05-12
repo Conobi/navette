@@ -24,7 +24,7 @@ from bench.handler import (
 )
 from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
-from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, EGRESS_POOL, EGRESS_POOL_SIZE, EGRESS_POOL_V2, monotonic_us as profile_monotonic_us
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, DRAIN_TO_EAGAIN, EGRESS_POOL_SIZE, EGRESS_POOL_V2, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle

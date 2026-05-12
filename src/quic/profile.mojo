@@ -15,7 +15,6 @@ from std.memory import UnsafePointer
 
 comptime PROFILE_ACCEPT: Bool = False
 comptime DRAIN_TO_EAGAIN: Bool = False
-comptime EGRESS_POOL: Bool = False
 comptime EGRESS_POOL_SIZE: Int = 256
 comptime EGRESS_POOL_V2: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
