@@ -1678,18 +1678,14 @@ struct QuicConnection(Movable):
                         if Int(self.profile_ptr) != 0:
                             t_start = monotonic_us()
                             self.profile_rustls_us_accum -= t_start
-                    # Q6/Q7: out-param locals always declared (zero-cost; comptime
-                    # branch chooses 7-arg wired call vs legacy 3-arg below).
+                    # Q6: out-param locals always declared (zero-cost; comptime
+                    # branch chooses 5-arg wired call vs legacy 3-arg below).
                     # Slot order matches src/tls/lib.mojo:499 quic_conn_read_hs:
-                    #   slot 1: out_state_machine_us     (Q6 — rustls read_hs body µs)
-                    #   slot 2: out_handle_lookup_us     (Q6 — with_mut handle-table lookup µs)
-                    #   slot 3: out_config_clone_us      (Q7 — Arc<ServerConfig> access µs)
-                    #   slot 4: out_ticket_store_lock_us (Q7 — ticket-store Mutex acquire µs)
+                    #   slot 1: out_state_machine_us (Q6 — rustls read_hs body µs)
+                    #   slot 2: out_handle_lookup_us (Q6 — with_mut handle-table lookup µs)
                     var rc: Int32 = Int32(0)
                     var out_sm_us: UInt64 = UInt64(0)
                     var out_lookup_us: UInt64 = UInt64(0)
-                    var out_cfg_clone: UInt64 = UInt64(0)
-                    var out_ticket_lock: UInt64 = UInt64(0)
                     @parameter
                     if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
@@ -1699,8 +1695,6 @@ struct QuicConnection(Movable):
                                 Int32(len(crypto_data)),
                                 UnsafePointer(to=out_sm_us),
                                 UnsafePointer(to=out_lookup_us),
-                                UnsafePointer(to=out_cfg_clone),
-                                UnsafePointer(to=out_ticket_lock),
                             )
                         else:
                             rc = lib[].quic_conn_read_hs(

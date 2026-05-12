@@ -501,23 +501,18 @@ struct RustlsLibrary(Movable):
         conn_handle: Int32,
         data: UnsafePointer[UInt8, MutAnyOrigin],
         data_len: Int32,
-        out_state_machine_us:     UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
-        out_handle_lookup_us:     UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
-        out_config_clone_us:      UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
-        out_ticket_store_lock_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
+        out_state_machine_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
+        out_handle_lookup_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
     ) -> Int32:
         """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success.
 
-        Q6/Q7 instrumentation out-params (all default-NULL, NULL-safe in Rust):
-          out_state_machine_us:     rustls read_hs body µs (Q6 slot 1).
-          out_handle_lookup_us:     with_mut handle-table lookup µs (Q6 slot 2).
-          out_config_clone_us:      Arc<ServerConfig> access µs (Q7 slot 3, always 0 here).
-          out_ticket_store_lock_us: ticket-store Mutex acquire µs (Q7 slot 4, always 0 here).
+        Q6 instrumentation out-params (both default-NULL, NULL-safe in Rust):
+          out_state_machine_us: rustls read_hs body µs (Q6 slot 1).
+          out_handle_lookup_us: with_mut handle-table lookup µs (Q6 slot 2).
         """
         return self._handle.call["rlsm_quic_conn_read_hs", Int32](
             conn_handle, data, data_len,
             out_state_machine_us, out_handle_lookup_us,
-            out_config_clone_us, out_ticket_store_lock_us,
         )
 
     @always_inline

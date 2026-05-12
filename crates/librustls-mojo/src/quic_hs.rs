@@ -464,21 +464,15 @@ pub extern "C" fn rlsm_quic_conn_write_hs(
 
 /// Feed CRYPTO frame payload to the TLS state machine.
 ///
-/// Q6/Q7 instrumentation out-params (all NULL-safe):
-///   out_state_machine_us:     rustls read_hs body µs (Q6 slot 1)
-///   out_handle_lookup_us:     with_mut handle-table lookup µs (Q6 slot 2)
-///   out_config_clone_us:      Arc<ServerConfig> access µs — always 0 on read_hs
-///                             (Arc clone fires in accept(), not here) (Q7 slot 3)
-///   out_ticket_store_lock_us: ticket-store Mutex acquire µs — always 0 on read_hs
-///                             (resumed-handshake ticket dance fires in take_keys) (Q7 slot 4)
+/// Q6 instrumentation out-params (both NULL-safe):
+///   out_state_machine_us: rustls read_hs body µs (Q6 slot 1)
+///   out_handle_lookup_us: with_mut handle-table lookup µs (Q6 slot 2)
 #[no_mangle]
 pub extern "C" fn rlsm_quic_conn_read_hs(
-    conn_handle:              i32,
-    data:                     *const u8, len: i32,
-    out_state_machine_us:     *mut u64,
-    out_handle_lookup_us:     *mut u64,
-    out_config_clone_us:      *mut u64,
-    out_ticket_store_lock_us: *mut u64,
+    conn_handle:          i32,
+    data:                 *const u8, len: i32,
+    out_state_machine_us: *mut u64,
+    out_handle_lookup_us: *mut u64,
 ) -> i32 {
     clear_last_error();
 
@@ -486,12 +480,6 @@ pub extern "C" fn rlsm_quic_conn_read_hs(
         rlsm_err!("rlsm_quic_conn_read_hs: null data with len > 0"; return -1);
     }
     if len < 0 { rlsm_err!("rlsm_quic_conn_read_hs: negative len"; return -1); }
-
-    // Q7 slots are 0-by-design on the read_hs path: Arc<ServerConfig> clone fires
-    // in accept(), ticket-store mutex in resumed-handshake take_keys. Initialize
-    // here so callers see deterministic 0s even if with_mut returns None below.
-    if !out_config_clone_us.is_null()      { unsafe { *out_config_clone_us = 0; } }
-    if !out_ticket_store_lock_us.is_null() { unsafe { *out_ticket_store_lock_us = 0; } }
 
     let slice = if len == 0 { &[] } else {
         unsafe { std::slice::from_raw_parts(data, len as usize) }
@@ -1021,7 +1009,6 @@ mod tests {
         let rc = rlsm_quic_conn_read_hs(
             server_h, client_hello.as_ptr(), client_hello.len() as i32,
             std::ptr::null_mut(), std::ptr::null_mut(),
-            std::ptr::null_mut(), std::ptr::null_mut(),
         );
         assert_eq!(rc, 0);
         written = 0; kc = 0;
@@ -1058,7 +1045,6 @@ mod tests {
             rlsm_quic_conn_read_hs(
                 server_h, client_hello.as_ptr(), client_hello.len() as i32,
                 std::ptr::null_mut(), std::ptr::null_mut(),
-                std::ptr::null_mut(), std::ptr::null_mut(),
             ),
             0, "server read_hs failed"
         );
@@ -1089,7 +1075,6 @@ mod tests {
         let rc = rlsm_quic_conn_read_hs(
             server_h, garbage.as_ptr(), garbage.len() as i32,
             std::ptr::null_mut(), std::ptr::null_mut(),
-            std::ptr::null_mut(), std::ptr::null_mut(),
         );
         assert_eq!(rc, -1, "read_hs should fail on garbage input");
 
@@ -1118,7 +1103,6 @@ mod tests {
         let client_hello = buf[..written as usize].to_vec();
         rlsm_quic_conn_read_hs(
             server_h, client_hello.as_ptr(), client_hello.len() as i32,
-            std::ptr::null_mut(), std::ptr::null_mut(),
             std::ptr::null_mut(), std::ptr::null_mut(),
         );
 
@@ -1174,7 +1158,6 @@ mod tests {
                     rlsm_quic_conn_read_hs(
                         server_h, buf.as_ptr(), written,
                         std::ptr::null_mut(), std::ptr::null_mut(),
-                        std::ptr::null_mut(), std::ptr::null_mut(),
                     ),
                     0, "server read_hs failed"
                 );
@@ -1201,7 +1184,6 @@ mod tests {
                 assert_eq!(
                     rlsm_quic_conn_read_hs(
                         client_h, buf.as_ptr(), written,
-                        std::ptr::null_mut(), std::ptr::null_mut(),
                         std::ptr::null_mut(), std::ptr::null_mut(),
                     ),
                     0, "client read_hs failed"
@@ -1289,7 +1271,6 @@ mod tests {
         assert_eq!(
             rlsm_quic_conn_read_hs(
                 server_h, client_hello.as_ptr(), client_hello.len() as i32,
-                std::ptr::null_mut(), std::ptr::null_mut(),
                 std::ptr::null_mut(), std::ptr::null_mut(),
             ),
             0, "server read_hs (ClientHello) failed"
@@ -1427,7 +1408,6 @@ mod tests {
         let rc = rlsm_quic_conn_read_hs(
             server_h, client_hello.as_ptr(), client_hello.len() as i32,
             std::ptr::null_mut(), std::ptr::null_mut(),
-            std::ptr::null_mut(), std::ptr::null_mut(),
         );
         assert_eq!(rc, 0, "read_hs with all-NULL out-params should succeed");
 
@@ -1446,7 +1426,6 @@ mod tests {
             server_h, client_hello.as_ptr(), client_hello.len() as i32,
             &mut sm_us as *mut u64,
             std::ptr::null_mut(),
-            std::ptr::null_mut(), std::ptr::null_mut(),
         );
         assert_eq!(rc, 0, "read_hs (sm-only) should succeed");
         assert_ne!(sm_us, u64::MAX, "sm slot must be written when non-NULL");
@@ -1460,7 +1439,6 @@ mod tests {
             server_h, client_hello.as_ptr(), client_hello.len() as i32,
             std::ptr::null_mut(),
             &mut lk_us as *mut u64,
-            std::ptr::null_mut(), std::ptr::null_mut(),
         );
         assert_eq!(rc, 0, "read_hs (lookup-only) should succeed");
         assert_ne!(lk_us, u64::MAX, "lookup slot must be written when non-NULL");
@@ -1480,7 +1458,6 @@ mod tests {
             server_h, client_hello.as_ptr(), client_hello.len() as i32,
             &mut sm_us as *mut u64,
             &mut lk_us as *mut u64,
-            std::ptr::null_mut(), std::ptr::null_mut(),
         );
         assert_eq!(rc, 0, "read_hs (both non-NULL) should succeed");
         assert_ne!(sm_us, u64::MAX, "sm slot must be written");
@@ -1509,7 +1486,6 @@ mod q7_t3a_tests {
         let rc = unsafe {
             rlsm_quic_conn_read_hs(
                 -1, std::ptr::null(), 0,
-                std::ptr::null_mut(), std::ptr::null_mut(),
                 std::ptr::null_mut(), std::ptr::null_mut(),
             )
         };
