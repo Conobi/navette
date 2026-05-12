@@ -83,17 +83,10 @@ struct AcceptProfile(Copyable, Movable):
     var arrival_lat_us_overflow: UInt64
     var arrival_lat_us_total: UInt64
 
-    # Per-connection packet counts and handshake-complete tracking.
-    # `conn_pkt_counts` maps addr_key (src_ip:src_port String) → packet count.
-    # `conn_hs_complete` is used as a Set: presence == hs_complete observed.
-    # Aggregated histogram + scalar derived at report time.
-    var conn_pkt_counts: Dict[String, UInt64]
-    var conn_hs_complete: Dict[String, Bool]
-
-    # Plan: 2026-04-27-quic-addr-key-dcid-collision-counter
-    # Total packets where _find_conn(pd.addr_key) returned a hit but
-    # pd.dcid was not in the conn's expected-DCID set.  Direct measure
-    # of demux failure under PROFILE_ACCEPT.
+    # Total packets where _find_conn returned a hit but pd.dcid was not
+    # in the conn's expected-DCID set. Direct measure of demux failure
+    # under PROFILE_ACCEPT. Scalar; per-addr_key breakdown was retired
+    # alongside the addr_key→DCID demux migration.
     var dcid_mismatch_pkts: UInt64
 
     # 3 FFI sub-leg totals — decompose ffi_shim_us_total per rustls call-site.
@@ -244,9 +237,6 @@ struct AcceptProfile(Copyable, Movable):
     # cost.
     var drain_submits_us_total: UInt64
 
-    # Per-addr_key mismatch counts.  Same Dict shape as conn_pkt_counts.
-    var addr_key_mismatch_counts: Dict[String, UInt64]
-
     # Drain-extension counters (Plan: 2026-05-05-quic-bench-drain-extension).
     # `drain_extension_pkts_total` accumulates datagrams pulled by the userspace
     # recvfrom-until-EAGAIN loop wired in bench/h3_server.mojo (T2/T3).
@@ -318,8 +308,6 @@ struct AcceptProfile(Copyable, Movable):
             self.arrival_lat_us_buckets.append(UInt64(0))
         self.arrival_lat_us_overflow = UInt64(0)
         self.arrival_lat_us_total = UInt64(0)
-        self.conn_pkt_counts = Dict[String, UInt64]()
-        self.conn_hs_complete = Dict[String, Bool]()
         self.dcid_mismatch_pkts = UInt64(0)
         self.ffi_read_hs_us_total = UInt64(0)
         self.ffi_write_hs_us_total = UInt64(0)
@@ -414,7 +402,6 @@ struct AcceptProfile(Copyable, Movable):
             self.flush_impl_us_buckets.append(UInt64(0))
         self.flush_impl_us_overflow = UInt64(0)
         self.drain_submits_us_total = UInt64(0)
-        self.addr_key_mismatch_counts = Dict[String, UInt64]()
         self.drain_extension_pkts_total = UInt64(0)
         self.drain_extension_overflow_count = UInt64(0)
         # Q10 init (Plan: 2026-05-04-flush-impl-subleg-decomposition).
@@ -505,33 +492,13 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.arrival_lat_us_buckets[b] += UInt64(1)
 
-    def record_conn_pkt(mut self, addr_key: String) raises:
-        """Increment per-connection packet counter for `addr_key`."""
-        if addr_key in self.conn_pkt_counts:
-            self.conn_pkt_counts[addr_key] = self.conn_pkt_counts[addr_key] + UInt64(1)
-        else:
-            self.conn_pkt_counts[addr_key] = UInt64(1)
-
-    def record_conn_hs_complete(mut self, addr_key: String):
-        """Mark addr_key as having completed the QUIC handshake.
-
-        Idempotent: redundant calls (per-packet polling of is_established())
-        result in only one entry in conn_hs_complete.
-        """
-        self.conn_hs_complete[addr_key] = True
-
-    def record_dcid_mismatch(mut self, addr_key: String) raises:
+    def record_dcid_mismatch(mut self):
         """Record a packet whose dcid did not match the conn for its addr_key.
 
         Caller has already done the membership test against
         QuicConnection.is_expected_dcid; this method only counts.
         """
         self.dcid_mismatch_pkts = self.dcid_mismatch_pkts + UInt64(1)
-        if addr_key in self.addr_key_mismatch_counts:
-            self.addr_key_mismatch_counts[addr_key] = (
-                self.addr_key_mismatch_counts[addr_key] + UInt64(1))
-        else:
-            self.addr_key_mismatch_counts[addr_key] = UInt64(1)
 
     def record_ffi_read_hs(mut self, us: UInt64):
         self.ffi_read_hs_us_total = self.ffi_read_hs_us_total + us
@@ -1010,45 +977,8 @@ struct AcceptProfile(Copyable, Movable):
         s += "  (n=" + String(arr_total_obs) + ", overflow=" + String(self.arrival_lat_us_overflow) + ")\n"
         s += "  total_us:        " + String(self.arrival_lat_us_total) + "\n\n"
 
-        # Per-connection packet counts (aggregated histogram).
-        s += "Per-connection packet counts (aggregated 8-bucket histogram):\n"
-        var pc_buckets = List[UInt64]()
-        for _ in range(8):
-            pc_buckets.append(UInt64(0))
-        var pc_total: UInt64 = UInt64(0)
-        var pc_no_hs: UInt64 = UInt64(0)
-        for entry in self.conn_pkt_counts.items():
-            pc_total += UInt64(1)
-            var b = _pkts_per_flush_bucket(Int(entry.value))
-            pc_buckets[b] += UInt64(1)
-            if entry.key not in self.conn_hs_complete:
-                pc_no_hs += UInt64(1)
-        var pc_labels = List[String]()
-        pc_labels.append(String("size=1     "))
-        pc_labels.append(String("size=2-3   "))
-        pc_labels.append(String("size=4-7   "))
-        pc_labels.append(String("size=8-15  "))
-        pc_labels.append(String("size=16-31 "))
-        pc_labels.append(String("size=32-63 "))
-        pc_labels.append(String("size=64-127"))
-        pc_labels.append(String("size=128+  "))
-        for i in range(8):
-            s += "  " + pc_labels[i] + " " + _fmt_count(pc_buckets[i]) + "\n"
-        s += "  conns_total:                  " + _fmt_count(pc_total) + "\n"
-        s += "  conns_with_pkts_no_hs_complete:" + _fmt_count(pc_no_hs) + "\n\n"
-
-        # addr_key DCID-mismatch section (Plan: 2026-04-27 collision counter).
-        s += "-- addr_key DCID mismatch --\n"
-        s += "  total mismatch pkts:    " + String(self.dcid_mismatch_pkts) + "\n"
-        s += "  addr_keys total:        " + String(len(self.addr_key_mismatch_counts)) + "\n"
-        var addr_keys_with_mismatch_t: UInt64 = UInt64(0)
-        for entry in self.addr_key_mismatch_counts.items():
-            if entry.value > UInt64(0):
-                addr_keys_with_mismatch_t = addr_keys_with_mismatch_t + UInt64(1)
-        s += "  addr_keys w/ mismatch:  " + String(addr_keys_with_mismatch_t) + "\n"
-        for entry in self.addr_key_mismatch_counts.items():
-            s += "    " + entry.key + ": " + String(entry.value) + "\n"
-        s += "\n"
+        # DCID-mismatch scalar (Plan: 2026-04-27 collision counter).
+        s += "dcid_mismatch_pkts: " + String(self.dcid_mismatch_pkts) + "\n\n"
 
         # Handshake kinds (Plan: 2026-05-03-short-conn-resumption).
         s += "Handshake kinds:\n"
@@ -1252,34 +1182,6 @@ struct AcceptProfile(Copyable, Movable):
             unacct_pct = (unacct * UInt64(100)) / self.busy_us_total
         s += "  unaccounted_us_total:             " + _fmt_count(unacct) + "  (" + String(unacct_pct) + "% of busy)\n\n"
 
-        # Top-50 worst offenders (parallel insertion sort).
-        s += "Worst offenders (top 50 addr_keys by pkt_count, no hs_complete):\n"
-        var wo_keys = List[String]()
-        var wo_vals = List[UInt64]()
-        for entry in self.conn_pkt_counts.items():
-            if entry.key in self.conn_hs_complete:
-                continue
-            wo_keys.append(entry.key)
-            wo_vals.append(entry.value)
-        var wo_n = len(wo_vals)
-        for i in range(1, wo_n):
-            var v = wo_vals[i]
-            var k = wo_keys[i]
-            var j = i - 1
-            while j >= 0 and wo_vals[j] < v:
-                wo_vals[j + 1] = wo_vals[j]
-                wo_keys[j + 1] = wo_keys[j]
-                j -= 1
-            wo_vals[j + 1] = v
-            wo_keys[j + 1] = k
-        var wo_cap = wo_n
-        if wo_cap > 50:
-            wo_cap = 50
-        for i in range(wo_cap):
-            s += "  " + wo_keys[i] + "  pkt_count=" + String(wo_vals[i]) + "\n"
-        if wo_n == 0:
-            s += "  (none)\n"
-        s += "\n"
         s += "=== end ===\n"
         return s^
 
@@ -1365,46 +1267,8 @@ struct AcceptProfile(Copyable, Movable):
                 s += ", "
         s += "],\n"
 
-        # Per-conn aggregated histogram + scalar.
-        # Walk conn_pkt_counts.items(); dispatch each conn's packet count via _pkts_per_flush_bucket.
-        var per_conn_buckets = List[UInt64]()
-        for _ in range(8):
-            per_conn_buckets.append(UInt64(0))
-        var conns_total: UInt64 = UInt64(0)
-        var conns_no_hs: UInt64 = UInt64(0)
-        for entry in self.conn_pkt_counts.items():
-            conns_total += UInt64(1)
-            var bkt = _pkts_per_flush_bucket(Int(entry.value))
-            per_conn_buckets[bkt] += UInt64(1)
-            if entry.key not in self.conn_hs_complete:
-                conns_no_hs += UInt64(1)
-
-        s += '  "per_conn_pkts_buckets": ['
-        for i in range(8):
-            s += String(per_conn_buckets[i])
-            if i < 7:
-                s += ", "
-        s += "],\n"
-        s += '  "conns_total": ' + String(conns_total) + ',\n'
-        s += '  "conns_with_pkts_no_hs_complete": ' + String(conns_no_hs) + ',\n'
-
-        # addr_key DCID-mismatch block (Plan: 2026-04-27 collision counter).
-        var addr_keys_with_mismatch: UInt64 = UInt64(0)
-        for entry in self.addr_key_mismatch_counts.items():
-            if entry.value > UInt64(0):
-                addr_keys_with_mismatch = addr_keys_with_mismatch + UInt64(1)
-        s += '  "addr_key_dcid_mismatch": {\n'
-        s += '    "dcid_mismatch_pkts": ' + String(self.dcid_mismatch_pkts) + ',\n'
-        s += '    "addr_keys_total": ' + String(len(self.addr_key_mismatch_counts)) + ',\n'
-        s += '    "addr_keys_with_mismatch": ' + String(addr_keys_with_mismatch) + ',\n'
-        s += '    "per_addr_key": {'
-        var first_mm = True
-        for entry in self.addr_key_mismatch_counts.items():
-            if not first_mm:
-                s += ","
-            first_mm = False
-            s += '\n      "' + entry.key + '": ' + String(entry.value)
-        s += "\n    }\n  },\n"
+        # DCID-mismatch scalar (Plan: 2026-04-27 collision counter).
+        s += '  "dcid_mismatch_pkts": ' + String(self.dcid_mismatch_pkts) + ',\n'
 
         # Handshake kind block (Plan: 2026-05-03-short-conn-resumption).
         s += '  "handshakes": {\n'
@@ -1797,40 +1661,6 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "drain_submits_us": {\n'
         s += '    "total": ' + String(self.drain_submits_us_total) + "\n"
         s += "  },\n"
-
-        # Top-50 worst offenders: addr_keys with most packets but no hs_complete.
-        # Materialize parallel List[String] + List[UInt64], insertion-sort descending.
-        # Report time is non-hot; clarity > heap-select.
-        var off_keys = List[String]()
-        var off_vals = List[UInt64]()
-        for entry in self.conn_pkt_counts.items():
-            if entry.key in self.conn_hs_complete:
-                continue
-            off_keys.append(entry.key)
-            off_vals.append(entry.value)
-        # Insertion sort by val descending.
-        var n_off = len(off_vals)
-        for i in range(1, n_off):
-            var v = off_vals[i]
-            var k = off_keys[i]
-            var j = i - 1
-            while j >= 0 and off_vals[j] < v:
-                off_vals[j + 1] = off_vals[j]
-                off_keys[j + 1] = off_keys[j]
-                j -= 1
-            off_vals[j + 1] = v
-            off_keys[j + 1] = k
-
-        var cap = n_off
-        if cap > 50:
-            cap = 50
-        s += '  "worst_conns": [\n'
-        for i in range(cap):
-            s += '    {"addr_key": "' + off_keys[i] + '", "pkt_count": ' + String(off_vals[i]) + ', "hs_complete": false}'
-            if i < cap - 1:
-                s += ","
-            s += "\n"
-        s += "  ],\n"
 
         s += '  "handshake": {\n'
         s += '    "arrivals": ' + String(self.hs_arrivals) + ', '

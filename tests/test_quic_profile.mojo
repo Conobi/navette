@@ -457,46 +457,6 @@ def test_record_arrival_lat_overflow() raises:
     print("PASS: test_record_arrival_lat_overflow")
 
 
-def test_record_conn_pkt_increment() raises:
-    """Verify record_conn_pkt increments addr_key counter."""
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_conn_pkt(String("1.2.3.4:5000"))
-    p.record_conn_pkt(String("1.2.3.4:5000"))
-    p.record_conn_pkt(String("1.2.3.4:5000"))
-    p.record_conn_pkt(String("9.9.9.9:6000"))
-    assert_true(p.conn_pkt_counts[String("1.2.3.4:5000")] == UInt64(3), "addr1 = 3")
-    assert_true(p.conn_pkt_counts[String("9.9.9.9:6000")] == UInt64(1), "addr2 = 1")
-    assert_true(len(p.conn_pkt_counts) == 2, "two distinct keys")
-    print("PASS: test_record_conn_pkt_increment")
-
-
-def test_record_conn_hs_complete_idempotent() raises:
-    """Verify record_conn_hs_complete dedupes and the no-complete scalar excludes it."""
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    # Conn A: 5 packets, completes handshake.
-    for _ in range(5):
-        p.record_conn_pkt(String("A:1"))
-    p.record_conn_hs_complete(String("A:1"))
-    p.record_conn_hs_complete(String("A:1"))   # idempotent
-    p.record_conn_hs_complete(String("A:1"))
-    # Conn B: 3 packets, never completes.
-    for _ in range(3):
-        p.record_conn_pkt(String("B:2"))
-    # Conn C: 1 packet, never completes.
-    p.record_conn_pkt(String("C:3"))
-    assert_true(len(p.conn_hs_complete) == 1, "only A:1 in hs_complete")
-    assert_true(p.conn_hs_complete[String("A:1")] == True, "A:1 marked True")
-    # Compute scalar manually for now — formal API in Task 4.
-    var no_hs: UInt64 = UInt64(0)
-    for entry in p.conn_pkt_counts.items():
-        if entry.key not in p.conn_hs_complete:
-            no_hs += UInt64(1)
-    assert_true(no_hs == UInt64(2), "B and C are no-hs-complete")
-    print("PASS: test_record_conn_hs_complete_idempotent")
-
-
 def test_report_json_arrival_latency_block() raises:
     """Verify report_json emits the arrival-latency block with correct keys + values."""
     from src.quic.profile import AcceptProfile
@@ -515,160 +475,24 @@ def test_report_json_arrival_latency_block() raises:
     print("PASS: test_report_json_arrival_latency_block")
 
 
-def test_report_json_per_conn_aggregated_block() raises:
-    """Populate dict with conns of varying counts; verify 8-bucket histogram totals match."""
+def test_record_dcid_mismatch_scalar() raises:
+    """record_dcid_mismatch() increments the dcid_mismatch_pkts scalar.
+
+    Per-addr_key breakdown (addr_key_mismatch_counts Dict) was retired
+    alongside the addr_key→DCID demux migration.
+    """
     from src.quic.profile import AcceptProfile
     var p = AcceptProfile()
-    # Bucket 0 (size=1): 5 conns
-    for i in range(5):
-        p.record_conn_pkt(String("b0_") + String(i))
-    # Bucket 1 (size=2-3): 4 conns x 2 packets each
-    for i in range(4):
-        var k = String("b1_") + String(i)
-        p.record_conn_pkt(k)
-        p.record_conn_pkt(k)
-    # Bucket 2 (size=4-7): 3 conns x 5 packets each
-    for i in range(3):
-        var k = String("b2_") + String(i)
-        for _ in range(5):
-            p.record_conn_pkt(k)
-    # Bucket 3 (size=8-15): 2 conns x 10 packets each
-    for i in range(2):
-        var k = String("b3_") + String(i)
-        for _ in range(10):
-            p.record_conn_pkt(k)
-    # Mark some hs_complete: 2 from bucket 0, 1 from bucket 2
-    p.record_conn_hs_complete(String("b0_0"))
-    p.record_conn_hs_complete(String("b0_1"))
-    p.record_conn_hs_complete(String("b2_0"))
-
+    assert_true(p.dcid_mismatch_pkts == UInt64(0), "dcid_mismatch_pkts starts at 0")
+    p.record_dcid_mismatch()
+    p.record_dcid_mismatch()
+    p.record_dcid_mismatch()
+    assert_true(p.dcid_mismatch_pkts == UInt64(3), "3 calls -> total=3")
     var j = p.report_json()
-    assert_true('"per_conn_pkts_buckets":' in j, "per_conn_pkts_buckets key present")
-    assert_true('"conns_total": 14' in j, "conns_total = 5+4+3+2 = 14")
-    # 14 total, 3 hs_complete -> 11 without hs_complete
-    assert_true('"conns_with_pkts_no_hs_complete": 11' in j, "no-hs scalar = 11")
-    # Histogram totals: bucket[0]=5, bucket[1]=4, bucket[2]=3, bucket[3]=2, others=0
-    assert_true('"per_conn_pkts_buckets": [5, 4, 3, 2, 0, 0, 0, 0]' in j, "8-bucket histogram matches")
-    print("PASS: test_report_json_per_conn_aggregated_block")
-
-
-def test_report_json_worst_conns() raises:
-    """Populate 100 non-complete conns + 20 complete; verify top-50 sorted descending and capped."""
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    # 100 non-complete conns: pkt_count = i+1 (1..100)
-    for i in range(100):
-        var k = String("nc_") + String(i)
-        for _ in range(i + 1):
-            p.record_conn_pkt(k)
-    # 20 complete conns with very high counts (200+) — must be excluded from top-50
-    for i in range(20):
-        var k = String("c_") + String(i)
-        for _ in range(200 + i):
-            p.record_conn_pkt(k)
-        p.record_conn_hs_complete(k)
-    var j = p.report_json()
-    assert_true('"worst_conns":' in j, "worst_conns key present")
-    # Top entry must be nc_99 (100 packets, not complete)
-    assert_true('"addr_key": "nc_99"' in j, "top offender is nc_99")
-    assert_true('"pkt_count": 100' in j, "top pkt_count = 100")
-    # No complete conn should appear
-    assert_true('"addr_key": "c_19"' not in j, "complete conn excluded")
-    # Verify cap at 50: count occurrences of '"addr_key":' — exactly 50
-    var n_entries = 0
-    var idx = 0
-    var search = String('"addr_key":')
-    var search_b = search.as_bytes()
-    var j_b = j.as_bytes()
-    while idx < len(j_b) - len(search_b):
-        var matched = True
-        for k in range(len(search_b)):
-            if j_b[idx + k] != search_b[k]:
-                matched = False
-                break
-        if matched:
-            n_entries += 1
-            idx += len(search_b)
-        else:
-            idx += 1
-    assert_true(n_entries == 50, "exactly 50 worst_conns entries (cap)")
-    print("PASS: test_report_json_worst_conns")
-
-
-def test_report_text_new_sections() raises:
-    """Verify report_text emits human-readable sections for the three new blocks."""
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_arrival_lat(UInt64(150))
-    p.record_arrival_lat(UInt64(2_000_000))
-    p.record_conn_pkt(String("X:1"))
-    p.record_conn_pkt(String("Y:2"))
-    p.record_conn_pkt(String("Y:2"))
-    p.record_conn_pkt(String("Y:2"))
-    p.record_conn_hs_complete(String("X:1"))
+    assert_true('"dcid_mismatch_pkts": 3' in j, "JSON emits scalar")
     var t = p.report_text()
-    assert_true("Arrival-to-processing latency" in t, "arrival-lat section header")
-    assert_true("Per-connection packet counts" in t, "per-conn section header")
-    assert_true("Worst offenders" in t, "worst-offenders section header")
-    # Sanity: Y:2 is not complete and has 3 packets — must surface in worst offenders
-    assert_true("Y:2" in t, "non-complete addr_key surfaces in worst offenders")
-    print("PASS: test_report_text_new_sections")
-
-
-def test_record_dcid_mismatch_increments() raises:
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_dcid_mismatch(String("ip:port:34130"))
-    if p.dcid_mismatch_pkts != UInt64(1):
-        raise "expected dcid_mismatch_pkts=1, got " + String(p.dcid_mismatch_pkts)
-    if p.addr_key_mismatch_counts[String("ip:port:34130")] != UInt64(1):
-        raise "expected per-addr_key count=1"
-    print("PASS: test_record_dcid_mismatch_increments")
-
-
-def test_record_dcid_mismatch_accumulates() raises:
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_dcid_mismatch(String("ip:port:34130"))
-    p.record_dcid_mismatch(String("ip:port:34130"))
-    p.record_dcid_mismatch(String("ip:port:34131"))
-    if p.dcid_mismatch_pkts != UInt64(3):
-        raise "expected total=3, got " + String(p.dcid_mismatch_pkts)
-    if p.addr_key_mismatch_counts[String("ip:port:34130")] != UInt64(2):
-        raise "expected key1=2"
-    if p.addr_key_mismatch_counts[String("ip:port:34131")] != UInt64(1):
-        raise "expected key2=1"
-    print("PASS: test_record_dcid_mismatch_accumulates")
-
-
-def test_report_json_dcid_mismatch_block() raises:
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_dcid_mismatch(String("ip:port:34130"))
-    p.record_dcid_mismatch(String("ip:port:34130"))
-    p.record_dcid_mismatch(String("ip:port:34131"))
-    var s = p.report_json()
-    if "addr_key_dcid_mismatch" not in s:
-        raise "missing addr_key_dcid_mismatch block"
-    if "\"dcid_mismatch_pkts\": 3" not in s:
-        raise "missing total counter"
-    if "\"addr_keys_with_mismatch\": 2" not in s:
-        raise "missing addr_keys_with_mismatch"
-    if "ip:port:34130" not in s:
-        raise "missing per_addr_key entry"
-    print("PASS: test_report_json_dcid_mismatch_block")
-
-
-def test_report_text_dcid_mismatch_block() raises:
-    from src.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_dcid_mismatch(String("ip:port:34130"))
-    var s = p.report_text()
-    if "addr_key DCID mismatch" not in s:
-        raise "missing text section heading"
-    if "1" not in s:
-        raise "expected count=1 to appear"
-    print("PASS: test_report_text_dcid_mismatch_block")
+    assert_true("dcid_mismatch_pkts: 3" in t, "text emits scalar")
+    print("PASS: test_record_dcid_mismatch_scalar")
 
 
 def test_record_ffi_read_hs_increments_total() raises:
@@ -1520,16 +1344,8 @@ def main() raises:
     test_report_json_canned()
     test_record_arrival_lat_buckets()
     test_record_arrival_lat_overflow()
-    test_record_conn_pkt_increment()
-    test_record_conn_hs_complete_idempotent()
     test_report_json_arrival_latency_block()
-    test_report_json_per_conn_aggregated_block()
-    test_report_json_worst_conns()
-    test_report_text_new_sections()
-    test_record_dcid_mismatch_increments()
-    test_record_dcid_mismatch_accumulates()
-    test_report_json_dcid_mismatch_block()
-    test_report_text_dcid_mismatch_block()
+    test_record_dcid_mismatch_scalar()
     test_record_ffi_read_hs_increments_total()
     test_record_ffi_write_hs_increments_total()
     test_record_ffi_take_keys_increments_total()

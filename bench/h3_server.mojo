@@ -180,11 +180,10 @@ alias _HEX_DIGITS = "0123456789abcdef"
 fn _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
     """Hex-encode bytes for use as a Dict[String, Int] key.
 
-    Mirrors `_addr_to_key`'s encoding to keep Dict-key shape consistent
-    across the codebase. Pinned to 8-byte DCIDs (server SCID length is
-    pinned at 8 bytes; client Initial DCIDs are RFC 9000 §7.2 minimum 8).
-    Span parameter so call sites pass `Span(quic.initial_dcid)` or
-    `Span(pd.dcid)` without consuming the source list.
+    Pinned to 8-byte DCIDs (server SCID length is pinned at 8 bytes;
+    client Initial DCIDs are RFC 9000 §7.2 minimum 8). Span parameter
+    so call sites pass `Span(quic.initial_dcid)` or `Span(pd.dcid)`
+    without consuming the source list.
     """
     var key = String()
     var hex_bytes = _HEX_DIGITS.as_bytes()
@@ -232,18 +231,6 @@ fn _is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
     if (first & 0x80) == 0:
         return False  # short header
     return (first & 0x30) == 0x00
-
-
-def _addr_to_key(addr: List[UInt8]) -> String:
-    """Convert raw 16-byte sockaddr to a string key for connection demux."""
-    var key = String()
-    for i in range(len(addr)):
-        var b = Int(addr[i])
-        comptime HEX: String = "0123456789abcdef"
-        var hex_bytes = HEX.as_bytes()
-        key += chr(Int(hex_bytes[b >> 4]))
-        key += chr(Int(hex_bytes[b & 0x0F]))
-    return key^
 
 
 def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
@@ -335,7 +322,6 @@ struct PendingDatagram(Copyable, Movable):
     var payload_len: Int
     var addr_offset: Int
     var addr_len: Int
-    var addr_key: String
     var dcid: List[UInt8]
     # Arrival-to-processing queueing-tail instrumentation.
     # Read only when PROFILE_ACCEPT is True; off-build the value is always 0
@@ -344,7 +330,7 @@ struct PendingDatagram(Copyable, Movable):
 
     def __init__(out self, buf_id: UInt16, buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
                  payload_ptr: UnsafePointer[UInt8, MutAnyOrigin], payload_len: Int,
-                 addr_offset: Int, addr_len: Int, var addr_key: String, var dcid: List[UInt8],
+                 addr_offset: Int, addr_len: Int, var dcid: List[UInt8],
                  arrival_us: UInt64 = UInt64(0)):
         self.buf_id = buf_id
         self.buf_ptr = buf_ptr
@@ -352,7 +338,6 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = payload_len
         self.addr_offset = addr_offset
         self.addr_len = addr_len
-        self.addr_key = addr_key^
         self.dcid = dcid^
         self.arrival_us = arrival_us
 
@@ -363,7 +348,6 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = other.payload_len
         self.addr_offset = other.addr_offset
         self.addr_len = other.addr_len
-        self.addr_key = String(other.addr_key)
         self.dcid = List[UInt8](copy=other.dcid)
         self.arrival_us = other.arrival_us
 
@@ -374,7 +358,6 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = take.payload_len
         self.addr_offset = take.addr_offset
         self.addr_len = take.addr_len
-        self.addr_key = take.addr_key^
         self.dcid = take.dcid^
         self.arrival_us = take.arrival_us
 
@@ -795,11 +778,6 @@ struct H3UdpHandler(BatchCompletionHandler):
         # Build address key for connection demux. Stored as String — re-looked-up
         # in _flush_impl since timeout completions in the same poll batch may
         # swap-and-pop conn_h3s, invalidating any cached index.
-        var addr_bytes = List[UInt8](capacity=addr_len)
-        for i in range(addr_len):
-            addr_bytes.append(buf_ptr[addr_offset + i])
-        var key = _addr_to_key(addr_bytes)
-
         var stamp_us: UInt64 = UInt64(0)
         @parameter
         if PROFILE_ACCEPT:
@@ -813,7 +791,6 @@ struct H3UdpHandler(BatchCompletionHandler):
                 payload_len=payloadlen,
                 addr_offset=addr_offset,
                 addr_len=addr_len,
-                addr_key=key^,
                 dcid=dcid^,
                 arrival_us=stamp_us,
             )
@@ -876,13 +853,6 @@ struct H3UdpHandler(BatchCompletionHandler):
                 )
             except:
                 continue
-            # Copy the addr scratch into a per-datagram List so subsequent
-            # drain iterations (which reuse `drain_scratch_addr`) cannot
-            # overwrite the bytes the demux path will key off.
-            var addr_bytes = List[UInt8](capacity=Int(addrlen))
-            for i in range(Int(addrlen)):
-                addr_bytes.append(addr_ptr[i])
-            var key = _addr_to_key(addr_bytes)
             var stamp_us: UInt64 = UInt64(0)
             @parameter
             if PROFILE_ACCEPT:
@@ -895,7 +865,6 @@ struct H3UdpHandler(BatchCompletionHandler):
                     payload_len=Int(n),
                     addr_offset=0,
                     addr_len=Int(addrlen),
-                    addr_key=key^,
                     dcid=dcid^,
                     arrival_us=stamp_us,
                 )
@@ -975,11 +944,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.profile.record_arrival_lat(now - pd.arrival_us)
                 else:
                     self.profile.record_arrival_lat(UInt64(0))
-            @parameter
-            if PROFILE_ACCEPT:
-                self.profile.record_conn_pkt(pd.addr_key)
-            # DCID-keyed lookup (migrated from addr_key). pd.dcid was extracted
-            # at _handle_recvmsg (long+short header).
+            # DCID-keyed lookup. pd.dcid was extracted at _handle_recvmsg
+            # (long+short header).
             var dcid_u64 = _dcid_to_u64(Span(pd.dcid))
             var conn_idx = self._find_conn_by_dcid(dcid_u64)
 
@@ -1006,7 +972,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 if conn_idx >= 0:
                     if not self.conn_h3s[conn_idx][]._h3._quic.is_expected_dcid(Span(pd.dcid)):
                         try:
-                            self.profile.record_dcid_mismatch(pd.addr_key)
+                            self.profile.record_dcid_mismatch()
                         except:
                             pass
 
@@ -1159,15 +1125,6 @@ struct H3UdpHandler(BatchCompletionHandler):
             @parameter
             if PROFILE_ACCEPT:
                 t_post_pkt_start = profile_monotonic_us()
-            @parameter
-            if PROFILE_ACCEPT:
-                # Poll handshake-complete state; idempotent record.
-                # is_established() flips True only after CONN_ESTABLISHED bit is
-                # set atomically with QuicEvent.handshake_complete() event
-                # (verified at src/quic/connection.mojo:1779-1786).
-                if self.conn_h3s[conn_idx][]._h3.is_established():
-                    self.profile.record_conn_hs_complete(pd.addr_key)
-
             # Update peer address.
             var addr_update = List[UInt8](capacity=pd.addr_len)
             for j in range(pd.addr_len):
