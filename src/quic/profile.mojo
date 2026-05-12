@@ -195,17 +195,6 @@ struct AcceptProfile(Copyable, Movable):
     var sendmsg_batch_size_buckets: List[UInt64]
     var recvmsg_batch_size_buckets: List[UInt64]
 
-    # Group C — 3 lock-wait surfaces (24-bucket pow2 via _per_pkt_bucket).
-    var demux_map_lock_wait_us_total: UInt64
-    var demux_map_lock_wait_us_buckets: List[UInt64]
-    var demux_map_lock_wait_us_overflow: UInt64
-    var rustls_config_clone_lock_wait_us_total: UInt64
-    var rustls_config_clone_lock_wait_us_buckets: List[UInt64]
-    var rustls_config_clone_lock_wait_us_overflow: UInt64
-    var ticket_store_lock_wait_us_total: UInt64
-    var ticket_store_lock_wait_us_buckets: List[UInt64]
-    var ticket_store_lock_wait_us_overflow: UInt64
-
     # Group D — per-FD per-handshake CPU vs wait histograms (24-bucket pow2 via _per_pkt_bucket).
     var hs_cpu_us_per_handshake_buckets: List[UInt64]
     var hs_cpu_us_per_handshake_overflow: UInt64
@@ -401,23 +390,11 @@ struct AcceptProfile(Copyable, Movable):
         for _ in range(8):
             self.sendmsg_batch_size_buckets.append(UInt64(0))
             self.recvmsg_batch_size_buckets.append(UInt64(0))
-        self.demux_map_lock_wait_us_total = UInt64(0)
-        self.demux_map_lock_wait_us_overflow = UInt64(0)
-        self.demux_map_lock_wait_us_buckets = List[UInt64]()
-        self.rustls_config_clone_lock_wait_us_total = UInt64(0)
-        self.rustls_config_clone_lock_wait_us_overflow = UInt64(0)
-        self.rustls_config_clone_lock_wait_us_buckets = List[UInt64]()
-        self.ticket_store_lock_wait_us_total = UInt64(0)
-        self.ticket_store_lock_wait_us_overflow = UInt64(0)
-        self.ticket_store_lock_wait_us_buckets = List[UInt64]()
         self.hs_cpu_us_per_handshake_buckets = List[UInt64]()
         self.hs_cpu_us_per_handshake_overflow = UInt64(0)
         self.hs_wait_us_per_handshake_buckets = List[UInt64]()
         self.hs_wait_us_per_handshake_overflow = UInt64(0)
         for _ in range(24):
-            self.demux_map_lock_wait_us_buckets.append(UInt64(0))
-            self.rustls_config_clone_lock_wait_us_buckets.append(UInt64(0))
-            self.ticket_store_lock_wait_us_buckets.append(UInt64(0))
             self.hs_cpu_us_per_handshake_buckets.append(UInt64(0))
             self.hs_wait_us_per_handshake_buckets.append(UInt64(0))
         self.iouring_park_us_total = UInt64(0)
@@ -751,33 +728,6 @@ struct AcceptProfile(Copyable, Movable):
         """Q7 Group B — recvmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
         var b = _pkts_per_flush_bucket(n)
         self.recvmsg_batch_size_buckets[b] = self.recvmsg_batch_size_buckets[b] + UInt64(1)
-
-    def record_demux_map_lock_wait_us(mut self, us: UInt64):
-        """Q7 Group C — Mojo-side addr_key→conn Dict lookup duration."""
-        self.demux_map_lock_wait_us_total = self.demux_map_lock_wait_us_total + us
-        var b = _per_pkt_bucket(us)
-        if b >= 24:
-            self.demux_map_lock_wait_us_overflow = self.demux_map_lock_wait_us_overflow + UInt64(1)
-        else:
-            self.demux_map_lock_wait_us_buckets[b] = self.demux_map_lock_wait_us_buckets[b] + UInt64(1)
-
-    def record_rustls_config_clone_lock_wait_us(mut self, us: UInt64):
-        """Q7 Group C — Rust-side Arc<rustls::ServerConfig> clone path duration."""
-        self.rustls_config_clone_lock_wait_us_total = self.rustls_config_clone_lock_wait_us_total + us
-        var b = _per_pkt_bucket(us)
-        if b >= 24:
-            self.rustls_config_clone_lock_wait_us_overflow = self.rustls_config_clone_lock_wait_us_overflow + UInt64(1)
-        else:
-            self.rustls_config_clone_lock_wait_us_buckets[b] = self.rustls_config_clone_lock_wait_us_buckets[b] + UInt64(1)
-
-    def record_ticket_store_lock_wait_us(mut self, us: UInt64):
-        """Q7 Group C — Rust-side TLS 1.3 session-ticket store mutex duration."""
-        self.ticket_store_lock_wait_us_total = self.ticket_store_lock_wait_us_total + us
-        var b = _per_pkt_bucket(us)
-        if b >= 24:
-            self.ticket_store_lock_wait_us_overflow = self.ticket_store_lock_wait_us_overflow + UInt64(1)
-        else:
-            self.ticket_store_lock_wait_us_buckets[b] = self.ticket_store_lock_wait_us_buckets[b] + UInt64(1)
 
     def record_hs_cpu_us_per_handshake(mut self, us: UInt64):
         """Q7 Group D — per-FD per-handshake CPU duration (24-bucket pow2)."""
@@ -1263,13 +1213,6 @@ struct AcceptProfile(Copyable, Movable):
         s += "  recvmsg:\n"
         for i in range(8):
             s += "    size=" + q7_bs_labels[i] + " " + _fmt_count(self.recvmsg_batch_size_buckets[i]) + "\n"
-        s += "Q7 lock-wait surfaces (24-bucket pow2 us):\n"
-        s += "  demux_map_lock_wait.total:           " + _fmt_count(self.demux_map_lock_wait_us_total) + "\n"
-        s += "  demux_map_lock_wait.overflow:        " + _fmt_count(self.demux_map_lock_wait_us_overflow) + "\n"
-        s += "  rustls_config_clone_lock_wait.total: " + _fmt_count(self.rustls_config_clone_lock_wait_us_total) + "\n"
-        s += "  rustls_config_clone_lock_wait.overflow: " + _fmt_count(self.rustls_config_clone_lock_wait_us_overflow) + "\n"
-        s += "  ticket_store_lock_wait.total:        " + _fmt_count(self.ticket_store_lock_wait_us_total) + "\n"
-        s += "  ticket_store_lock_wait.overflow:     " + _fmt_count(self.ticket_store_lock_wait_us_overflow) + "\n\n"
         s += "Q7 per-FD per-handshake (24-bucket pow2 us):\n"
         var q7_cpu_total: UInt64 = UInt64(0)
         var q7_wait_total: UInt64 = UInt64(0)
@@ -1736,39 +1679,6 @@ struct AcceptProfile(Copyable, Movable):
             if i < 7:
                 s += ","
             s += "\n"
-        s += "  },\n"
-
-        s += '  "demux_map_lock_wait_us": {\n'
-        s += '    "total": ' + String(self.demux_map_lock_wait_us_total) + ',\n'
-        s += '    "buckets": ['
-        for i in range(24):
-            s += String(self.demux_map_lock_wait_us_buckets[i])
-            if i < 23:
-                s += ", "
-        s += "],\n"
-        s += '    "overflow": ' + String(self.demux_map_lock_wait_us_overflow) + "\n"
-        s += "  },\n"
-
-        s += '  "rustls_config_clone_lock_wait_us": {\n'
-        s += '    "total": ' + String(self.rustls_config_clone_lock_wait_us_total) + ',\n'
-        s += '    "buckets": ['
-        for i in range(24):
-            s += String(self.rustls_config_clone_lock_wait_us_buckets[i])
-            if i < 23:
-                s += ", "
-        s += "],\n"
-        s += '    "overflow": ' + String(self.rustls_config_clone_lock_wait_us_overflow) + "\n"
-        s += "  },\n"
-
-        s += '  "ticket_store_lock_wait_us": {\n'
-        s += '    "total": ' + String(self.ticket_store_lock_wait_us_total) + ',\n'
-        s += '    "buckets": ['
-        for i in range(24):
-            s += String(self.ticket_store_lock_wait_us_buckets[i])
-            if i < 23:
-                s += ", "
-        s += "],\n"
-        s += '    "overflow": ' + String(self.ticket_store_lock_wait_us_overflow) + "\n"
         s += "  },\n"
 
         s += '  "hs_cpu_us_per_handshake": {\n'

@@ -981,18 +981,7 @@ struct H3UdpHandler(BatchCompletionHandler):
             # DCID-keyed lookup (migrated from addr_key). pd.dcid was extracted
             # at _handle_recvmsg (long+short header).
             var dcid_u64 = _dcid_to_u64(Span(pd.dcid))
-            # Q7 H_B (Mojo-side): bracket demux Dict lookup. Single-boucle Mojo
-            # Dict is uncontended; bucket-0-dominant histogram is itself the
-            # falsification path for DEMUX-MAP-BOUND (sub-verdict of LOCK-BOUND).
-            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
-            var t_dlu_start: UInt64 = 0
-            @parameter
-            if PROFILE_ACCEPT:
-                t_dlu_start = profile_monotonic_us()
             var conn_idx = self._find_conn_by_dcid(dcid_u64)
-            @parameter
-            if PROFILE_ACCEPT:
-                self.profile.record_demux_map_lock_wait_us(profile_monotonic_us() - t_dlu_start)
 
             # Strict new-conn gate per RFC 9000 §12.4: only long-header Initial
             # packets create new conns. All other DCID-misses are dropped

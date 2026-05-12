@@ -1725,10 +1725,6 @@ struct QuicConnection(Movable):
                             # Plan: 2026-05-03-q5-read-hs-per-call-decomposition.
                             self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
                             self.profile_ptr[].record_read_hs_us_per_call(t_end - t_start)
-                            # Q7: per-call config_clone + ticket-store lock waits.
-                            # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.
-                            self.profile_ptr[].record_rustls_config_clone_lock_wait_us(out_cfg_clone)
-                            self.profile_ptr[].record_ticket_store_lock_wait_us(out_ticket_lock)
                             # Q6: per-call read_hs sub-leg accumulation + histograms.
                             # output_marshalling is zero-by-design for read_hs
                             # (returns status only); slot reserved for future

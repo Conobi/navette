@@ -1424,57 +1424,10 @@ def test_q7_batch_histogram_dispatch() raises:
     print("PASS: test_q7_batch_histogram_dispatch")
 
 
-def test_q7_lock_wait_record() raises:
-    """Q7 Group C — 3 lock-wait surfaces dispatch independently. Also
-    covers H_F via record_iouring_park_us accumulator (no histogram).
-
-    Verifies _per_pkt_bucket(5) = 3, _per_pkt_bucket(1024) = 11,
-    _per_pkt_bucket(0) = 0 — and that increments on one surface do not
-    affect the other two surfaces.
-    """
+def test_iouring_park_us_record() raises:
+    """H_F PARK-BOUND accumulator (no histogram) — record_iouring_park_us."""
     from src.quic.profile import AcceptProfile
     var p = AcceptProfile()
-    # 24-bucket layout sanity: all start at 0 across the 3 surfaces.
-    for i in range(24):
-        assert_true(p.demux_map_lock_wait_us_buckets[i] == UInt64(0), "demux bucket " + String(i) + " == 0")
-        assert_true(p.rustls_config_clone_lock_wait_us_buckets[i] == UInt64(0), "rustls bucket " + String(i) + " == 0")
-        assert_true(p.ticket_store_lock_wait_us_buckets[i] == UInt64(0), "ticket bucket " + String(i) + " == 0")
-
-    p.record_demux_map_lock_wait_us(UInt64(5))         # bucket 3
-    p.record_rustls_config_clone_lock_wait_us(UInt64(1024))  # bucket 11
-    p.record_ticket_store_lock_wait_us(UInt64(0))      # bucket 0
-
-    assert_true(
-        p.demux_map_lock_wait_us_buckets[3] == UInt64(1),
-        "demux us=5 -> bucket 3 (_per_pkt_bucket(5)=3)")
-    assert_true(
-        p.demux_map_lock_wait_us_total == UInt64(5),
-        "demux total accumulates raw us")
-    assert_true(
-        p.rustls_config_clone_lock_wait_us_buckets[11] == UInt64(1),
-        "rustls us=1024 -> bucket 11 (_per_pkt_bucket(1024)=11)")
-    assert_true(
-        p.rustls_config_clone_lock_wait_us_total == UInt64(1024),
-        "rustls total accumulates raw us")
-    assert_true(
-        p.ticket_store_lock_wait_us_buckets[0] == UInt64(1),
-        "ticket us=0 -> bucket 0 (_per_pkt_bucket(0)=0)")
-    assert_true(
-        p.ticket_store_lock_wait_us_total == UInt64(0),
-        "ticket total accumulates raw us (0)")
-
-    # Cross-surface independence: each call hit only the named surface.
-    assert_true(
-        p.demux_map_lock_wait_us_buckets[11] == UInt64(0),
-        "demux bucket 11 untouched by rustls call")
-    assert_true(
-        p.rustls_config_clone_lock_wait_us_buckets[3] == UInt64(0),
-        "rustls bucket 3 untouched by demux call")
-    assert_true(
-        p.ticket_store_lock_wait_us_buckets[3] == UInt64(0),
-        "ticket bucket 3 untouched by demux call")
-
-    # H_F PARK-BOUND accumulator (covered here per spec §5 gate row 3).
     assert_true(p.iouring_park_us_total == UInt64(0), "iouring_park_us starts at 0")
     p.record_iouring_park_us(UInt64(2_000_000))
     assert_true(
@@ -1484,7 +1437,7 @@ def test_q7_lock_wait_record() raises:
     assert_true(
         p.iouring_park_us_total == UInt64(2_500_000),
         "record_iouring_park_us accumulates further calls")
-    print("PASS: test_q7_lock_wait_record")
+    print("PASS: test_iouring_park_us_record")
 
 
 def test_drain_extension_record() raises:
@@ -1614,7 +1567,7 @@ def main() raises:
     test_q9_alloc_sublegs_dispatch()
     test_q7_gauge_sampling()
     test_q7_batch_histogram_dispatch()
-    test_q7_lock_wait_record()
+    test_iouring_park_us_record()
     test_drain_extension_record()
     test_drain_extension_json_shape()
     test_q8_egress_pool_counters()
