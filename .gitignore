@@ -22,7 +22,11 @@ __pycache__/
 # Downloaded test vectors
 conformance/vectors/hpack-stories/
 
-# Plans and specs (kept in mojo-tquic for now)
+# Internal docs — kept local, not committed
+specs/
+plans/
+research/
+docs/project-context.md
 docs/superpowers/
 docs/plans/
 
@@ -44,7 +48,16 @@ bench/.httparena
 # Claude Code session state (multi-GB local)
 .claude/
 
-# Bench evidence artifacts (regenerable from PROFILE_ACCEPT=True + perf-record)
-bench/quic_perf/results/profile/INSTRUMENTATION-*.json
-bench/quic_perf/results/profile/shortconn-*/
+# Bench evidence artifacts (regenerable from PROFILE_ACCEPT=True + perf-record).
+# Keep only the cumulative reference table; raw sidecars, verdict docs, and
+# baselines live locally.
+bench/quic_perf/results/*
+!bench/quic_perf/results/.gitkeep
+!bench/quic_perf/results/REFERENCE.md
 bench/quic_perf/logs/
+
+# Older H2 perf phase artifacts (flamegraphs, hotspot tables, audits)
+bench/profile/
+
+# Env files (LD_LIBRARY_PATH etc — set via direnv/shell, not committed)
+.env
