@@ -14,7 +14,6 @@ from std.memory import UnsafePointer
 
 
 comptime PROFILE_ACCEPT: Bool = False
-comptime DRAIN_TO_EAGAIN: Bool = False
 comptime EGRESS_POOL_SIZE: Int = 256
 comptime EGRESS_POOL_V2: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
@@ -227,15 +226,6 @@ struct AcceptProfile(Copyable, Movable):
     # cost.
     var drain_submits_us_total: UInt64
 
-    # Drain-extension counters (Plan: 2026-05-05-quic-bench-drain-extension).
-    # `drain_extension_pkts_total` accumulates datagrams pulled by the userspace
-    # recvfrom-until-EAGAIN loop wired in bench/h3_server.mojo (T2/T3).
-    # `drain_extension_overflow_count` ticks once per `_flush_impl` invocation
-    # that exhausted the scratch_pool before EAGAIN — a sizing-pressure signal
-    # for the scratch_pool ceiling.
-    var drain_extension_pkts_total: UInt64
-    var drain_extension_overflow_count: UInt64
-
     # `flush_feed_datagram_us` — wraps the per-pkt feed_datagram_from_buffer
     # call in bench/h3_server.mojo's _flush_impl. Q10 verdict named this leg
     # as 67.57% of flush_impl on short-conn (ingress dominates flush).
@@ -368,8 +358,6 @@ struct AcceptProfile(Copyable, Movable):
             self.flush_impl_us_buckets.append(UInt64(0))
         self.flush_impl_us_overflow = UInt64(0)
         self.drain_submits_us_total = UInt64(0)
-        self.drain_extension_pkts_total = UInt64(0)
-        self.drain_extension_overflow_count = UInt64(0)
         self.flush_feed_datagram_us_buckets = List[UInt64]()
         for _ in range(24):
             self.flush_feed_datagram_us_buckets.append(UInt64(0))
@@ -727,19 +715,6 @@ struct AcceptProfile(Copyable, Movable):
         """
         self.drain_submits_us_total = self.drain_submits_us_total + us
 
-    def record_drain_extension(mut self, n: UInt64, overflowed: Bool):
-        """Drain-extension instrumentation (Plan: 2026-05-05-quic-bench-drain-extension).
-
-        Records a single `_drain_extension` invocation pulling `n` datagrams.
-        `overflowed=True` indicates the scratch_pool was exhausted before
-        EAGAIN — caller still pulled `n` datagrams (`n` may be the pool cap).
-        Only the overflow event count ticks; `n` is added to the running total
-        regardless.
-        """
-        self.drain_extension_pkts_total += n
-        if overflowed:
-            self.drain_extension_overflow_count += UInt64(1)
-
     def record_egress_pool_hit(mut self):
         """Egress-pool hit (Plan: 2026-05-05-q8-egress-hot-path-batching).
 
@@ -838,11 +813,6 @@ struct AcceptProfile(Copyable, Movable):
         s += "Handshake kinds:\n"
         s += "  full:    " + _fmt_count(self.handshakes_full_total) + "\n"
         s += "  resumed: " + _fmt_count(self.handshakes_resumed_total) + "\n\n"
-
-        # Drain-extension (Plan: 2026-05-05-quic-bench-drain-extension).
-        s += "drain_extension:\n"
-        s += "  pkts_total:     " + _fmt_count(self.drain_extension_pkts_total) + "\n"
-        s += "  overflow_count: " + _fmt_count(self.drain_extension_overflow_count) + "\n\n"
 
         # Egress-pool (Plan: 2026-05-05-q8-egress-hot-path-batching).
         s += "egress_pool:\n"
@@ -1107,12 +1077,6 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "handshakes": {\n'
         s += '    "full": ' + String(self.handshakes_full_total) + ',\n'
         s += '    "resumed": ' + String(self.handshakes_resumed_total) + '\n'
-        s += "  },\n"
-
-        # Drain-extension block (Plan: 2026-05-05-quic-bench-drain-extension).
-        s += '  "drain_extension": {\n'
-        s += '    "pkts_total": ' + String(self.drain_extension_pkts_total) + ',\n'
-        s += '    "overflow_count": ' + String(self.drain_extension_overflow_count) + '\n'
         s += "  },\n"
 
         # Egress-pool block (Plan: 2026-05-05-q8-egress-hot-path-batching).
