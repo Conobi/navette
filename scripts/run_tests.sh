@@ -100,6 +100,7 @@ TESTS=(
     test_quic_resumption
     test_quic_profile
     test_quic_profile_wiring
+    test_h3_udp_server
     test_ecn
     test_cc_cubic
     test_cc_pacing
@@ -148,6 +149,9 @@ for t in "${TESTS[@]}"; do
         EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
     fi
     if [ "$t" = "test_h2_streaming_server" ]; then
+        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+    fi
+    if [ "$t" = "test_h3_udp_server" ]; then
         EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
     fi
     if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
