@@ -77,16 +77,104 @@ def _monotonic_ms() -> UInt64:
     return UInt64(sec * 1000 + nsec // 1_000_000)
 
 
-def _resolve_ipv4(host: String) -> String:
-    """Map a hostname to a dotted-IPv4 string.
+@always_inline
+fn _is_dotted_ipv4(host: String) -> Bool:
+    """True if `host` looks like a dotted-IPv4 literal (digits + dots only)."""
+    var bytes = host.as_bytes()
+    if len(bytes) == 0:
+        return False
+    for i in range(len(bytes)):
+        var b = bytes[i]
+        if b != UInt8(46) and (b < UInt8(48) or b > UInt8(57)):
+            return False
+    return True
 
-    v1 PoC: handles `localhost` → `127.0.0.1` and passes through anything
-    that already looks like a dotted-IPv4. Real DNS lookup is a follow-up
-    (would call `getaddrinfo(3)` via libc).
+
+def _resolve_ipv4(host: String) raises -> String:
+    """Resolve a hostname to a dotted-IPv4 string via getaddrinfo(3).
+
+    Pass-through for inputs that already look like IPv4 literals.
+    Special-cases `localhost` to `127.0.0.1` so the resolver works on
+    minimal containers without an `/etc/hosts` entry.
+
+    IPv6 not yet supported (the rest of fetch is IPv4-only — _tcp_connect
+    builds a 16-byte sockaddr_in).
     """
     if host == String("localhost"):
         return String("127.0.0.1")
-    return host
+    if _is_dotted_ipv4(host):
+        return host
+
+    # struct addrinfo on Linux x86_64 is 48 bytes:
+    #   int ai_flags (4) + int ai_family (4) + int ai_socktype (4)
+    #   + int ai_protocol (4) + socklen_t ai_addrlen (4) + 4-byte pad
+    #   + struct sockaddr *ai_addr (8) + char *ai_canonname (8)
+    #   + struct addrinfo *ai_next (8)
+    # We zero hints and set ai_family = AF_INET (2) at offset 4.
+    var hints = _heap_alloc[UInt8](48).as_any_origin()
+    for i in range(48):
+        hints[i] = 0
+    hints[4] = 2  # ai_family = AF_INET (LE i32)
+
+    # Null-terminated host C-string.
+    var host_bytes = host.as_bytes()
+    var host_cstr = _heap_alloc[UInt8](len(host_bytes) + 1).as_any_origin()
+    for i in range(len(host_bytes)):
+        host_cstr[i] = host_bytes[i]
+    host_cstr[len(host_bytes)] = 0
+
+    var out_res = _heap_alloc[UInt64](1).as_any_origin()
+    out_res[0] = 0
+    var rc = external_call["getaddrinfo", Int32](
+        host_cstr,
+        UnsafePointer[UInt8, MutAnyOrigin](),  # service = NULL
+        hints,
+        out_res,
+    )
+    host_cstr.free()
+    hints.free()
+
+    if rc != 0:
+        out_res.free()
+        raise (
+            "getaddrinfo(" + host + ") failed: rc=" + String(Int(rc))
+            + " (use IP literal as workaround)"
+        )
+
+    var res_addr = out_res[0]
+    out_res.free()
+    if res_addr == 0:
+        raise "getaddrinfo(" + host + "): empty result"
+
+    # First addrinfo node: read ai_addr (sockaddr * at offset 24).
+    var res_ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(res_addr))
+    var ai_addr_lo = UInt64(res_ptr[24])
+    var ai_addr_b1 = UInt64(res_ptr[25]) << 8
+    var ai_addr_b2 = UInt64(res_ptr[26]) << 16
+    var ai_addr_b3 = UInt64(res_ptr[27]) << 24
+    var ai_addr_b4 = UInt64(res_ptr[28]) << 32
+    var ai_addr_b5 = UInt64(res_ptr[29]) << 40
+    var ai_addr_b6 = UInt64(res_ptr[30]) << 48
+    var ai_addr_b7 = UInt64(res_ptr[31]) << 56
+    var ai_addr_val = (
+        ai_addr_lo | ai_addr_b1 | ai_addr_b2 | ai_addr_b3
+        | ai_addr_b4 | ai_addr_b5 | ai_addr_b6 | ai_addr_b7
+    )
+
+    # sockaddr_in layout: family(2) port(2 BE) addr(4) zero-pad(8) = 16 bytes.
+    # We want bytes 4..8 = the 4 IPv4 octets.
+    var sa_ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(ai_addr_val))
+    var oct1 = Int(sa_ptr[4])
+    var oct2 = Int(sa_ptr[5])
+    var oct3 = Int(sa_ptr[6])
+    var oct4 = Int(sa_ptr[7])
+
+    _ = external_call["freeaddrinfo", Int32](res_addr)
+
+    return (
+        String(oct1) + "." + String(oct2) + "."
+        + String(oct3) + "." + String(oct4)
+    )
 
 
 def _fill_sockaddr_in(addr: UnsafePointer[UInt8, MutAnyOrigin], host_ip: String, port: Int):
@@ -594,6 +682,49 @@ def _request_via_h3(
     return FetchResult(handle^.take_response(), String("h3"), t_connect - t_start, t_tls - t_start, t_total - t_start)
 
 
+def _request_via_plain_tcp(
+    args: CliArgs, parsed: ParsedUrl, var req: Request,
+) raises -> FetchResult:
+    """Execute request over plaintext TCP (HTTP/1.1 — no TLS, no ALPN)."""
+    var t_start = _monotonic_ms()
+
+    if args.verbose:
+        print(
+            "* Connecting to " + parsed.host + ":" + String(Int(parsed.port))
+            + " (TCP, plaintext)..."
+        )
+
+    var fd = _tcp_connect(parsed.host, Int(parsed.port))
+    var t_connect = _monotonic_ms()
+
+    if args.verbose:
+        print("* Connected in " + String(Int(t_connect - t_start)) + "ms")
+        print("> " + args.method + " " + parsed.path + " http/1.1")
+
+    var session = H1Session()
+    var handle = session.submit(req^)
+    var out = session.drain()
+    _send_all(fd, out)
+    for _ in range(_MAX_ITERS):
+        session.run_one(handle)
+        if handle.is_complete():
+            break
+        var data = _recv_some(fd)
+        if len(data) > 0:
+            session.feed(Span(data))
+    if not handle.is_complete():
+        raise "response not received (timeout)"
+    var resp = handle^.take_response()
+
+    var t_total = _monotonic_ms()
+    _ = external_call["close", Int32](fd)
+    # t_tls === t_connect on plaintext — TLS handshake elapsed time is 0.
+    return FetchResult(
+        resp^, String("http/1.1"),
+        t_connect - t_start, t_connect - t_start, t_total - t_start,
+    )
+
+
 def _request_via_tcp(
     args: CliArgs, parsed: ParsedUrl, var req: Request,
 ) raises -> FetchResult:
@@ -697,9 +828,14 @@ def main() raises:
             print("> " + req.headers.name_at(i) + ": " + req.headers.value_at(i))
         print(">")
 
-    # Dispatch: H3 (default) or TCP (forced H1/H2)
+    # Dispatch:
+    #   http://   → plaintext TCP + HTTP/1.1 (no TLS, no QUIC).
+    #   https:// + --http1.1 / --http2 → TCP+TLS with ALPN-negotiated H1/H2.
+    #   https://  (default)            → UDP+QUIC + HTTP/3.
     var result: FetchResult
-    if args.force_h1 or args.force_h2:
+    if parsed.scheme == String("http"):
+        result = _request_via_plain_tcp(args, parsed, req^)
+    elif args.force_h1 or args.force_h2:
         result = _request_via_tcp(args, parsed, req^)
     else:
         result = _request_via_h3(args, parsed, req^)
