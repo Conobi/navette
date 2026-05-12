@@ -77,13 +77,20 @@ def _monotonic_ms() -> UInt64:
     return UInt64(sec * 1000 + nsec // 1_000_000)
 
 
-def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
-    """Open a blocking TCP socket and connect to host_ip:port (IPv4 only)."""
-    var fd = external_call["socket", Int32](Int32(2), Int32(1), Int32(0))
-    if fd < 0:
-        raise "socket() failed: " + String(Int(fd))
+def _resolve_ipv4(host: String) -> String:
+    """Map a hostname to a dotted-IPv4 string.
 
-    var addr = _heap_alloc[UInt8](16).as_any_origin()
+    v1 PoC: handles `localhost` → `127.0.0.1` and passes through anything
+    that already looks like a dotted-IPv4. Real DNS lookup is a follow-up
+    (would call `getaddrinfo(3)` via libc).
+    """
+    if host == String("localhost"):
+        return String("127.0.0.1")
+    return host
+
+
+def _fill_sockaddr_in(addr: UnsafePointer[UInt8, MutAnyOrigin], host_ip: String, port: Int):
+    """Populate a 16-byte sockaddr_in for AF_INET / dotted-IPv4 host."""
     for i in range(16):
         addr[i] = 0
     addr[0] = 2  # AF_INET
@@ -91,7 +98,6 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
     var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
     addr[2] = UInt8(port_be & 0xFF)
     addr[3] = UInt8((port_be >> 8) & 0xFF)
-
     var octet = 0
     var octet_idx = 4
     var host_bytes = host_ip.as_bytes()
@@ -104,6 +110,17 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
         else:
             octet = octet * 10 + (Int(b) - 48)
     addr[octet_idx] = UInt8(octet)
+
+
+def _tcp_connect(host: String, port: Int) raises -> Int32:
+    """Open a blocking TCP socket and connect to host:port (IPv4 only)."""
+    var fd = external_call["socket", Int32](Int32(2), Int32(1), Int32(0))
+    if fd < 0:
+        raise "socket() failed: " + String(Int(fd))
+
+    var host_ip = _resolve_ipv4(host)
+    var addr = _heap_alloc[UInt8](16).as_any_origin()
+    _fill_sockaddr_in(addr, host_ip, port)
 
     var rc = external_call["connect", Int32](fd, addr, Int32(16))
     addr.free()
@@ -113,31 +130,16 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
     return fd
 
 
-def _udp_connect(host_ip: String, port: Int) raises -> Int32:
-    """Open a connected UDP socket to host_ip:port (IPv4 only)."""
+def _udp_connect(host: String, port: Int) raises -> Int32:
+    """Open a connected UDP socket to host:port (IPv4 only)."""
     var fd = external_call["socket", Int32](Int32(2), Int32(2), Int32(0))  # SOCK_DGRAM=2
     if fd < 0:
         raise "socket(UDP) failed: " + String(Int(fd))
+
+    var host_ip = _resolve_ipv4(host)
     var addr = _heap_alloc[UInt8](16).as_any_origin()
-    for i in range(16):
-        addr[i] = 0
-    addr[0] = 2  # AF_INET
-    addr[1] = 0
-    var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
-    addr[2] = UInt8(port_be & 0xFF)
-    addr[3] = UInt8((port_be >> 8) & 0xFF)
-    var octet = 0
-    var octet_idx = 4
-    var host_bytes = host_ip.as_bytes()
-    for ci in range(len(host_bytes)):
-        var b = host_bytes[ci]
-        if b == 46:
-            addr[octet_idx] = UInt8(octet)
-            octet_idx += 1
-            octet = 0
-        else:
-            octet = octet * 10 + (Int(b) - 48)
-    addr[octet_idx] = UInt8(octet)
+    _fill_sockaddr_in(addr, host_ip, port)
+
     var rc = external_call["connect", Int32](fd, addr, Int32(16))
     addr.free()
     if rc < 0:
@@ -513,14 +515,17 @@ def _request_via_h3(
     lib_ptr.init_pointee_move(RustlsLibrary())
     var lib_addr = UInt64(Int(lib_ptr))
 
-    # Create QUIC client TLS config with h3 ALPN
+    # Create QUIC client TLS config with h3 ALPN. Insecure variant
+    # (accepts any server cert) — matches the TCP/TLS path's
+    # `TlsClientConfig(lib, insecure=True)` so fetch works against
+    # self-signed local servers.
     var alpn_buf = _heap_alloc[UInt8](2).as_any_origin()
     alpn_buf[0] = UInt8(0x68)  # 'h'
     alpn_buf[1] = UInt8(0x33)  # '3'
     var cfg_out = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_client_config_new(alpn_buf, Int32(2), cfg_out)
+    var rc = lib_ptr[].quic_client_config_new_insecure(alpn_buf, Int32(2), cfg_out)
     if rc != 0:
-        raise "quic_client_config_new failed"
+        raise "quic_client_config_new_insecure failed"
     var quic_cfg = cfg_out[0]
     cfg_out.free()
     alpn_buf.free()
