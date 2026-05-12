@@ -2911,14 +2911,14 @@ def test_dcid_to_u64_basic_cases() raises:
 
     Big-endian pack: result = (b[0]<<56) | (b[1]<<48) | ... | b[7].
     """
-    from bench.h3_server import _dcid_to_u64
+    from src.quic.cid import dcid_to_u64
 
     # Case 1: All-zero bytes → 0.
     var z = List[UInt8]()
     for _ in range(8):
         z.append(UInt8(0))
     assert_equal_int(
-        Int(_dcid_to_u64(Span(z))), 0, "all-zero -> 0"
+        Int(dcid_to_u64(Span(z))), 0, "all-zero -> 0"
     )
 
     # Case 2: All-0xff bytes → UInt64.MAX.
@@ -2926,7 +2926,7 @@ def test_dcid_to_u64_basic_cases() raises:
     for _ in range(8):
         f.append(UInt8(0xFF))
     assert_true(
-        _dcid_to_u64(Span(f)) == UInt64.MAX,
+        dcid_to_u64(Span(f)) == UInt64.MAX,
         "all-0xff -> UInt64.MAX",
     )
 
@@ -2935,7 +2935,7 @@ def test_dcid_to_u64_basic_cases() raises:
     for i in range(8):
         asc.append(UInt8(i + 1))
     assert_true(
-        _dcid_to_u64(Span(asc)) == UInt64(0x0102030405060708),
+        dcid_to_u64(Span(asc)) == UInt64(0x0102030405060708),
         "ascending -> 0x0102030405060708",
     )
 
@@ -2944,7 +2944,7 @@ def test_dcid_to_u64_basic_cases() raises:
     for i in range(8):
         desc.append(UInt8(8 - i))
     assert_true(
-        _dcid_to_u64(Span(desc)) == UInt64(0x0807060504030201),
+        dcid_to_u64(Span(desc)) == UInt64(0x0807060504030201),
         "descending -> 0x0807060504030201",
     )
 
@@ -2957,7 +2957,7 @@ def test_dcid_to_u64_basic_cases() raises:
     r.append(UInt8(0xCA)); r.append(UInt8(0xFE))
     r.append(UInt8(0xBA)); r.append(UInt8(0xBE))
     assert_true(
-        _dcid_to_u64(Span(r)) == UInt64(0xDEADBEEFCAFEBABE),
+        dcid_to_u64(Span(r)) == UInt64(0xDEADBEEFCAFEBABE),
         "DEADBEEFCAFEBABE roundtrip",
     )
 
@@ -2969,7 +2969,7 @@ def test_dcid_to_u64_injective_on_distinct_inputs() raises:
     `_dcid_to_u64` outputs. Trivially true for a bijection on 8-byte → UInt64;
     locked anyway as a regression guard.
     """
-    from bench.h3_server import _dcid_to_u64
+    from src.quic.cid import dcid_to_u64
 
     var outputs = List[UInt64]()
     for n in range(64):
@@ -2979,7 +2979,7 @@ def test_dcid_to_u64_injective_on_distinct_inputs() raises:
         for _ in range(8):
             seed = seed * UInt32(1103515245) + UInt32(12345)
             bytes.append(UInt8((seed >> 16) & UInt32(0xFF)))
-        outputs.append(_dcid_to_u64(Span(bytes)))
+        outputs.append(dcid_to_u64(Span(bytes)))
 
     # All-pairs distinctness.
     for i in range(len(outputs)):

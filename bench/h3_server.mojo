@@ -13,7 +13,8 @@ from std.collections import Dict, InlineArray
 from src.tls.lib import RustlsLibrary
 from src.quic.connection import QuicConnection
 from src.quic.trans_param import TransportParams, default_transport_params
-from src.quic.packet import parse_packet_header
+from src.quic.packet import parse_packet_header, is_long_header_initial, extract_dcid
+from src.quic.cid import dcid_to_u64
 from src.h3.h3_handler_server import H3HandlerServer
 from bench.handler import (
     BenchHandler,
@@ -183,76 +184,6 @@ fn _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
         key += chr(Int(hex_bytes[b >> 4]))
         key += chr(Int(hex_bytes[b & 0x0F]))
     return key^
-
-
-fn _dcid_to_u64(bytes: Span[UInt8, _]) -> UInt64:
-    """Pack 8 bytes (big-endian) into a UInt64 for use as a Dict[UInt64, Int]
-    key. Replaces `_bytes_to_hex` on the bench's hot DCID-demux path.
-
-    Precondition: `len(bytes) == 8` (locked by upstream
-    `test_quic_connection_dcid_lengths_are_8_bytes` and by debug_assert at
-    the conn-create site). When ASSERT mode is `none` (the bench's
-    measurement-build configuration), the assert below is compiled out and
-    the function is a pure 8-iter shift loop (~20 ns).
-    """
-    debug_assert(len(bytes) == 8, "DCID must be 8 bytes")
-    var result: UInt64 = 0
-    for i in range(8):
-        result = (result << 8) | UInt64(bytes[i])
-    return result
-
-
-fn _is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
-    """True iff the QUIC packet's first byte indicates a long-header Initial.
-
-    First byte (RFC 9000 v1):
-      bit 7 (0x80): header form. 1 = long, 0 = short.
-      bits 5-4 (0x30): packet type for long header.
-        0b00 = 0x00 = Initial
-        0b01 = 0x10 = 0-RTT
-        0b10 = 0x20 = Handshake
-        0b11 = 0x30 = Retry
-
-    Empty `payload` returns False (defensive).
-    QUIC v1 only (project non-goal: gQUIC, draft versions).
-    """
-    if len(payload) == 0:
-        return False
-    var first = payload[0]
-    if (first & 0x80) == 0:
-        return False  # short header
-    return (first & 0x30) == 0x00
-
-
-def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
-    """Extract the DCID from an incoming QUIC packet.
-
-    For long-header packets (Initial):
-      byte 0: header byte (high bit set)
-      bytes 1-4: version
-      byte 5: DCID length
-      bytes 6..6+dcid_len: DCID
-
-    For short-header packets, we use parse_packet_header with a
-    default CID length of 8.
-    """
-    if len(data) < 6:
-        raise "_extract_dcid: packet too short"
-
-    var first = Int(data[0])
-    if (first & 0x80) != 0:
-        # Long header — extract DCID directly.
-        var dcid_len = Int(data[5])
-        if len(data) < 6 + dcid_len:
-            raise "_extract_dcid: packet too short for DCID"
-        var dcid = List[UInt8](capacity=dcid_len)
-        for i in range(dcid_len):
-            dcid.append(data[6 + i])
-        return dcid^
-    else:
-        # Short header — use parser with assumed 8-byte CID.
-        var result = parse_packet_header(data, 8)
-        return List[UInt8](copy=result[0].dcid)
 
 
 def _create_server_config(
@@ -739,7 +670,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # Extract DCID directly from the provided buffer — no copy.
         var dcid: List[UInt8]
         try:
-            dcid = _extract_dcid(Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen))
+            dcid = extract_dcid(Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen))
         except:
             # Bad packet — return buffer.
             self.consumed_bufs.append(buf_id)
@@ -817,7 +748,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                     self.profile.record_arrival_lat(UInt64(0))
             # DCID-keyed lookup. pd.dcid was extracted at _handle_recvmsg
             # (long+short header).
-            var dcid_u64 = _dcid_to_u64(Span(pd.dcid))
+            var dcid_u64 = dcid_to_u64(Span(pd.dcid))
             var conn_idx = self._find_conn_by_dcid(dcid_u64)
 
             # Strict new-conn gate per RFC 9000 §12.4: only long-header Initial
@@ -826,7 +757,7 @@ struct H3UdpHandler(BatchCompletionHandler):
             if conn_idx < 0:
                 var first_byte_span = Span[UInt8, MutAnyOrigin](
                     ptr=pd.payload_ptr, length=pd.payload_len)
-                if not _is_long_header_initial(first_byte_span):
+                if not is_long_header_initial(first_byte_span):
                     self.consumed_bufs.append(pd.buf_id)
                     @parameter
                     if PROFILE_ACCEPT:
@@ -891,8 +822,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                 debug_assert(len(quic.initial_dcid) == 8, "initial_dcid != 8 bytes")
                 debug_assert(len(quic.local_cid) == 8, "local_cid != 8 bytes")
 
-                var icid_u64 = _dcid_to_u64(Span(quic.initial_dcid))
-                var lcid_u64 = _dcid_to_u64(Span(quic.local_cid))
+                var icid_u64 = dcid_to_u64(Span(quic.initial_dcid))
+                var lcid_u64 = dcid_to_u64(Span(quic.local_cid))
 
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]

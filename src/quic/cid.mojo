@@ -385,3 +385,23 @@ def _hmac_sha256_truncate16(
     msg_ptr.free()
     out_ptr.free()
     return token^
+
+
+# ── 8-byte DCID → UInt64 packing (server demux helper) ────────────────────────
+
+
+fn dcid_to_u64(bytes: Span[UInt8, _]) -> UInt64:
+    """Pack 8 bytes (big-endian) into a UInt64 for use as a Dict[UInt64, Int]
+    key. Server demux fast path — replaces String/hex-keyed lookup.
+
+    Precondition: `len(bytes) == 8`. Server SCIDs are pinned at 8 bytes
+    (RFC 9000 §7.2 minimum 8 for the client's Initial DCID; servers
+    choose their own length and we pin it). `debug_assert` is compiled
+    out in release builds where ASSERT mode is `none`, leaving a pure
+    8-iter shift loop.
+    """
+    debug_assert(len(bytes) == 8, "DCID must be 8 bytes")
+    var result: UInt64 = 0
+    for i in range(8):
+        result = (result << 8) | UInt64(bytes[i])
+    return result

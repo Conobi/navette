@@ -1,5 +1,5 @@
 from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
-from bench.h3_server import _is_long_header_initial
+from src.quic.packet import is_long_header_initial
 
 
 def test_varint_roundtrip() raises:
@@ -119,27 +119,27 @@ def test_is_long_header_initial_5_cases() raises:
 
     # Initial: 1100_0000 (long bit + type 00).
     var initial = one_byte(UInt8(0xC0))
-    if not _is_long_header_initial(Span(initial)):
+    if not is_long_header_initial(Span(initial)):
         raise "expected Initial to be long-header-Initial"
     # 0-RTT: 1101_0000.
     var zerort = one_byte(UInt8(0xD0))
-    if _is_long_header_initial(Span(zerort)):
+    if is_long_header_initial(Span(zerort)):
         raise "expected 0-RTT to be NOT long-header-Initial"
     # Handshake: 1110_0000.
     var hs = one_byte(UInt8(0xE0))
-    if _is_long_header_initial(Span(hs)):
+    if is_long_header_initial(Span(hs)):
         raise "expected Handshake to be NOT long-header-Initial"
     # Retry: 1111_0000.
     var retry = one_byte(UInt8(0xF0))
-    if _is_long_header_initial(Span(retry)):
+    if is_long_header_initial(Span(retry)):
         raise "expected Retry to be NOT long-header-Initial"
     # Short-header: 0100_0000 (high bit clear).
     var shrt = one_byte(UInt8(0x40))
-    if _is_long_header_initial(Span(shrt)):
+    if is_long_header_initial(Span(shrt)):
         raise "expected short-header to be NOT long-header-Initial"
     # Empty payload: defensive case.
     var empty = List[UInt8]()
-    if _is_long_header_initial(Span(empty)):
+    if is_long_header_initial(Span(empty)):
         raise "expected empty payload to be NOT long-header-Initial"
     print("PASS: test_is_long_header_initial_5_cases")
 

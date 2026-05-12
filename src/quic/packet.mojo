@@ -124,6 +124,62 @@ struct PacketHeader(Copyable, Movable):
         self.retry_integrity_tag = take.retry_integrity_tag^
 
 
+# --- Fast-path DCID inspection (server demux helpers) ---
+
+
+fn is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
+    """True iff the QUIC packet's first byte indicates a long-header Initial.
+
+    First byte (RFC 9000 v1):
+      bit 7 (0x80): header form. 1 = long, 0 = short.
+      bits 5-4 (0x30): packet type for long header.
+        0b00 = 0x00 = Initial
+        0b01 = 0x10 = 0-RTT
+        0b10 = 0x20 = Handshake
+        0b11 = 0x30 = Retry
+
+    Empty `payload` returns False (defensive).
+    QUIC v1 only.
+    """
+    if len(payload) == 0:
+        return False
+    var first = payload[0]
+    if (first & 0x80) == 0:
+        return False  # short header
+    return (first & 0x30) == 0x00
+
+
+def extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
+    """Extract the DCID from an incoming QUIC packet.
+
+    For long-header packets:
+      byte 0: header byte (high bit set)
+      bytes 1-4: version
+      byte 5: DCID length
+      bytes 6..6+dcid_len: DCID
+
+    For short-header packets, delegates to `parse_packet_header` with the
+    server convention of an 8-byte local CID length.
+    """
+    if len(data) < 6:
+        raise "extract_dcid: packet too short"
+
+    var first = Int(data[0])
+    if (first & 0x80) != 0:
+        # Long header — extract DCID directly.
+        var dcid_len = Int(data[5])
+        if len(data) < 6 + dcid_len:
+            raise "extract_dcid: packet too short for DCID"
+        var dcid = List[UInt8](capacity=dcid_len)
+        for i in range(dcid_len):
+            dcid.append(data[6 + i])
+        return dcid^
+    else:
+        # Short header — use the full parser with assumed 8-byte CID.
+        var result = parse_packet_header(data, 8)
+        return List[UInt8](copy=result[0].dcid)
+
+
 # --- parse_packet_header ---
 
 

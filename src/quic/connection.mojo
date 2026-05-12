@@ -1897,7 +1897,7 @@ struct QuicConnection(Movable):
             # Record per-handshake read_hs call count.
             self.profile_ptr[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
             # Per-FD wait vs CPU breakdown.
-                if self.accept_us > UInt64(0):
+            if self.accept_us > UInt64(0):
                 var now_hs = monotonic_us()
                 var wall_us = now_hs - self.accept_us
                 if wall_us >= self.hs_cpu_us_total:
