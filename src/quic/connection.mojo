@@ -634,9 +634,7 @@ struct QuicConnection(Movable):
         out_handle[0] = Int32(-1)
 
         var lib = _get_lib(lib_addr)
-        # Q9 alloc_tls_handle_us bracket — inner FFI call (rustls TLS session
-        # alloc; subset of the OUTER alloc_quic_state_us measured by
-        # bench/h3_server.mojo:_flush_impl). Plan: 2026-05-05-q9.
+        # alloc_tls_handle_us bracket — rustls TLS session alloc FFI call.
         var t_tls_start: UInt64 = 0
         @parameter
         if PROFILE_ACCEPT:
