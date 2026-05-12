@@ -53,3 +53,18 @@ from src.h3.connection import H3Event, H3Connection
 from src.h3.h3_handler_server import H3HandlerServer
 from src.h3.h3_session import H3Session
 from src.h3.h3_sync_server import H3CoroServer
+from src.h3.h3_udp_server import (
+    H3UdpServer,
+    PendingDatagram,
+    PendingSubmit,
+    UdpTxSlot,
+    serve_forever,
+    drain_pending_submits,
+    PBUF_COUNT,
+    PBUF_SIZE,
+    PBUF_GROUP_ID,
+    OP_RECVMSG,
+    OP_SENDMSG,
+    OP_TIMEOUT,
+    OP_PROVIDE_BUF,
+)
