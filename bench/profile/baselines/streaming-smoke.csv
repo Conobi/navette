@@ -1,3 +1,0 @@
-timestamp,git_sha,protocol,endpoint,n,c,m,reqs_per_s,p50_us,p95_us,p99_us,bytes_per_req
-2026-04-28T00:32:40Z,bf394fc,h2,/stream,1000,1,1,5611.20,94,145,213,1932
-2026-04-28T00:32:40Z,bf394fc,h3,/stream,1000,1,1,9.34,0,0,0,6

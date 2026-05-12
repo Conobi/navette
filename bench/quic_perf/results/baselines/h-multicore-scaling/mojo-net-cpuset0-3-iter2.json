@@ -1,6 +1,0 @@
-{
-  "server": "mojo-net",
-  "cpuset": "0-3",
-  "rps": 1115.56,
-  "server_cpu_percent": 53.490625
-}
