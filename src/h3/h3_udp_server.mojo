@@ -418,8 +418,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         elif op_kind == OP_SENDMSG:
             self._handle_sendmsg(token >> 8, result)
         elif op_kind == OP_TIMEOUT:
-            # Stage B1d: _handle_timeout(result)
-            pass
+            self._handle_timeout(result)
         elif op_kind == OP_PROVIDE_BUF:
             pass  # provide_buffers completion — nothing to do.
 
@@ -645,6 +644,58 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 PendingSubmit(kind=OP_SENDMSG, slot_idx=tx_id)
             )
 
+    def _handle_timeout(mut self, result: Int32) raises:
+        """Periodic timeout — advance each conn's QUIC clock, drain
+        any pending retransmissions, and remove conns that signal
+        `should_close()` (idle timeout or graceful close).
+
+        Re-arms the timeout via `pending_submits` so the outer driver
+        re-submits on the next tick.
+        """
+        var now = monotonic_us()
+
+        # Walk conns (index-based; we mutate conn_h3s mid-iter via
+        # swap-and-pop). `should_close()` collapses idle, closed,
+        # and drain-complete states into one signal.
+        var i = 0
+        while i < len(self.conn_h3s):
+            try:
+                self._drain_and_send(i, now)
+            except:
+                pass
+
+            if self.conn_h3s[i][].should_close():
+                var ptr = self.conn_h3s[i]
+                ptr.destroy_pointee()
+                ptr.free()
+
+                # B-permissive teardown: pop ALL of dying conn's DCID
+                # entries from the demux map (typically 2: initial_dcid
+                # + local_cid). NOT first-match-break — that was a
+                # pre-dual-DCID bug.
+                for dcid_u64 in self.conn_dcids[i]:
+                    _ = self.conn_dcid_map.pop(dcid_u64)
+
+                var last = len(self.conn_h3s) - 1
+                if i != last:
+                    # Swap-and-pop: pull last conn into index i across
+                    # all parallel lists (conn_h3s / conn_addrs /
+                    # conn_dcids), then remap the survivor's DCID entries.
+                    self.conn_h3s[i] = self.conn_h3s[last]
+                    self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
+                    self.conn_dcids[i] = List[UInt64](copy=self.conn_dcids[last])
+                    for dcid_u64 in self.conn_dcids[i]:
+                        self.conn_dcid_map[dcid_u64] = i
+
+                _ = self.conn_h3s.pop()
+                _ = self.conn_addrs.pop()
+                _ = self.conn_dcids.pop()
+                continue  # re-check the swapped-in element at index i
+            i += 1
+
+        # Re-arm the 50ms periodic timeout.
+        self.pending_submits.append(PendingSubmit(kind=OP_TIMEOUT, slot_idx=UInt64(0)))
+
     def _handle_sendmsg(mut self, tx_id: UInt64, result: Int32) raises:
         """Sendmsg CQE — free the UdpTxSlot whose buffers the kernel
         consumed. `result` is the bytes-sent count or negative errno;
@@ -674,6 +725,84 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
 
 # ── Outer driver helpers ─────────────────────────────────────────────────────
+
+
+fn serve_forever[H: StreamHandler](
+    var server: H3UdpServer[H],
+    sq_entries: UInt32 = 4096,
+) raises:
+    """Bootstrap the io_uring loop and run the server until the
+    process exits.
+
+    Steps:
+      1. Wrap the server in a `BatchCompletionLoop` with `sq_entries`
+         submission queue depth.
+      2. Register the provided-buffer pool with the kernel.
+      3. Submit the initial multishot recvmsg.
+      4. Submit the initial periodic timeout.
+      5. Loop: poll → reprovide consumed buffers → re-arm multishot
+         if it ended → drain pending submits.
+
+    Graceful shutdown is not yet wired — install your own SIGTERM /
+    SIGINT handler outside this function if you need to exit cleanly.
+    """
+    var io = BatchCompletionLoop[H3UdpServer[H]](server^, sq_entries=sq_entries)
+
+    # Register provided-buffer pool with io_uring.
+    var provide_token = _encode_token(UInt64(0), OP_PROVIDE_BUF)
+    io.provide_buffers(
+        io._handler.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID,
+        UInt16(0), provide_token,
+    )
+
+    # Submit initial multishot recvmsg.
+    var msghdr_addr = Int(io._handler.msghdr_template)
+    var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        unsafe_from_address=msghdr_addr
+    )
+    var recvmsg_token = _encode_token(UInt64(0), OP_RECVMSG)
+    io.submit_recvmsg_multishot(
+        io._handler.udp_fd, msghdr_ptr, PBUF_GROUP_ID, recvmsg_token,
+    )
+    io._handler.multishot_active = True
+
+    # Submit initial 50ms periodic timeout.
+    var ts_addr = Int(io._handler.timeout_ts)
+    var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        unsafe_from_address=ts_addr
+    )
+    io.submit_timeout(ts_ptr, _encode_token(UInt64(0), OP_TIMEOUT))
+
+    while True:
+        io.poll(wait_nr=1)
+
+        # Re-provide buffers consumed during this batch. Each
+        # PendingDatagram in pending_rx parks a buf_id; after
+        # _flush_impl drains it, the id lands in consumed_bufs.
+        var consumed = io._handler.consumed_bufs^
+        io._handler.consumed_bufs = List[UInt16]()
+        for i in range(len(consumed)):
+            var bid = consumed[i]
+            var buf_base = io._handler.pbuf_pool + Int(bid) * PBUF_SIZE
+            io.reprovide_buffer(
+                buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid,
+                _encode_token(UInt64(bid), OP_PROVIDE_BUF),
+            )
+
+        # Re-arm multishot recvmsg if F_MORE cleared in the last batch.
+        if not io._handler.multishot_active:
+            var ms_addr = Int(io._handler.msghdr_template)
+            var ms_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=ms_addr
+            )
+            io.submit_recvmsg_multishot(
+                io._handler.udp_fd, ms_ptr, PBUF_GROUP_ID,
+                _encode_token(UInt64(0), OP_RECVMSG),
+            )
+            io._handler.multishot_active = True
+
+        # Drain pending sendmsg / timeout submits queued by handlers.
+        drain_pending_submits(io)
 
 
 fn drain_pending_submits[H: StreamHandler](
