@@ -420,6 +420,22 @@ struct RustlsLibrary(Movable):
         )
 
     @always_inline
+    def quic_client_config_new_insecure(
+        self,
+        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Create a QUIC client TLS config that accepts ANY server cert.
+
+        **Insecure** — feature-gated (`insecure` Cargo feature). Use only
+        for local dev / CLI tools against self-signed certs.
+        Returns 0 on success, -1 on error. Handle written to out_handle.
+        """
+        return self._handle.call["rlsm_quic_client_config_new_insecure", Int32](
+            alpn_ptr, alpn_len, out_handle,
+        )
+
+    @always_inline
     def quic_server_config_new(
         self,
         cert_pem: UnsafePointer[UInt8, MutAnyOrigin], cert_len: Int32,

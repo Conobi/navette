@@ -192,6 +192,90 @@ pub extern "C" fn rlsm_quic_client_config_new(
     }
 }
 
+/// Create a QUIC client TLS config (TLS 1.3 only) that accepts ANY server cert.
+///
+/// **Insecure** — feature-gated behind `insecure`. Intended for local
+/// development against self-signed certs (CLI tools like `fetch`,
+/// end-to-end tests). Never use in production.
+///
+/// alpn_ptr/alpn_len: raw protocol bytes (e.g. b"h3").
+/// On success: *out_handle is a positive config handle.
+#[cfg(feature = "insecure")]
+#[no_mangle]
+pub extern "C" fn rlsm_quic_client_config_new_insecure(
+    alpn_ptr:   *const u8, alpn_len:   i32,
+    out_handle: *mut i32,
+) -> i32 {
+    use rustls::crypto::aws_lc_rs;
+
+    clear_last_error();
+
+    if alpn_ptr.is_null()  { rlsm_err!("rlsm_quic_client_config_new_insecure: null alpn_ptr";  return -1); }
+    if out_handle.is_null(){ rlsm_err!("rlsm_quic_client_config_new_insecure: null out_handle"; return -1); }
+    if alpn_len < 0        { rlsm_err!("rlsm_quic_client_config_new_insecure: negative alpn_len"; return -1); }
+
+    let alpn_bytes = unsafe { std::slice::from_raw_parts(alpn_ptr, alpn_len as usize) };
+
+    #[derive(Debug)]
+    struct NoCertVerifier;
+
+    impl rustls::client::danger::ServerCertVerifier for NoCertVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &rustls::pki_types::CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                message, cert, dss,
+                &aws_lc_rs::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &rustls::pki_types::CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                message, cert, dss,
+                &aws_lc_rs::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            aws_lc_rs::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
+        .with_no_client_auth();
+    config.key_log = Arc::new(KeyLogFile::new());
+    config.alpn_protocols = vec![alpn_bytes.to_vec()];
+
+    match quic_client_cfg_table().insert(Arc::new(config)) {
+        Some(h) => { unsafe { *out_handle = h; } 0 }
+        None => { rlsm_err!("rlsm_quic_client_config_new_insecure: handle counter exhausted"; return -1); }
+    }
+}
+
+
 /// Create a QUIC client TLS config (TLS 1.3 only) trusting a single CA cert PEM.
 /// Test helper — use in conformance tests to trust a self-signed server cert.
 /// Production code uses `rlsm_quic_client_config_new` (webpki-roots bundle).
