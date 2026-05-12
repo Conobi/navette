@@ -13,15 +13,15 @@ Drives multiple H3 connections off a single UDP socket using boucle's
     │                                        │
     │  on_complete(token, result, flags) ───┘   (CQE)
     │  ├─ recvmsg CQE → parse, queue PendingDatagram, reprovide buf
-    │  ├─ sendmsg CQE → free UdpTxSlot
-    │  └─ timeout CQE → walk conn_h3s, drain timeouts
+    │  ├─ sendmsg CQE → free UdpTxSlot           (Stage B1c)
+    │  └─ timeout CQE → walk conn_h3s, drain     (Stage B1d)
     │
     │  on_flush() ─────────── (after all CQEs in this batch)
     │  └─ _flush_impl: demux pending_rx by DCID, route to
     │                  H3HandlerServer[H] per conn, drain egress,
     │                  enqueue sendmsg PendingSubmits
     │
-    │  outer driver: tick() → drain_pending_submits() ───→ SQE
+    │  outer driver: tick() → drain_pending_submits() ───→ SQE  (Stage B1d)
     │
     └─ conn_h3s[i]: UnsafePointer[H3HandlerServer[H]]
          └─ owns a QuicConnection + an H instance
@@ -41,19 +41,8 @@ holds.
 
 `udp_fd` is a `RawHandle` (not owned). The caller owns the
 `OwnedHandle` from `udp_listener()` and must keep it alive across
-the server's lifetime. Typical pattern:
-
-```mojo
-var fd = udp_listener(443)              # OwnedHandle, owns the fd
-var server = H3UdpServer[MyHandler](fd.raw(), tls_config, ...)
-var io = IoUringUdp[H3UdpServer[MyHandler]](server^, sq_entries=4096)
-# ... serve_forever drains the loop ...
-# fd.__del__ closes the socket at end of scope
-```
-
-Stage B1 — initial skeleton. The on_complete / on_flush bodies stub
-in this commit; Stage B1b ports the bench's demux + flush_impl + egress
-machinery from bench/h3_server.mojo.
+the server's lifetime. Same for the `RustlsLibrary` instance —
+`lib_addr` stores its address but does not own it.
 """
 
 from collections import Dict
@@ -62,10 +51,19 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.handle import RawHandle
 from boucle.completion import BatchCompletionHandler
+from boucle._sys.linux.raw.x86_64.io_uring import (
+    IORING_CQE_F_BUFFER,
+    IORING_CQE_F_MORE,
+    IORING_CQE_BUFFER_SHIFT,
+)
 
 from src.http.handler import StreamHandler
 from src.h3.h3_handler_server import H3HandlerServer
-from src.quic.profile import AcceptProfile
+from src.quic.cid import dcid_to_u64
+from src.quic.connection import QuicConnection
+from src.quic.packet import is_long_header_initial, extract_dcid
+from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
+from src.quic.trans_param import TransportParams
 
 
 # ── Wire constants ────────────────────────────────────────────────────────────
@@ -75,26 +73,34 @@ comptime _MSGHDR_SIZE: Int = 56
 comptime _IOVEC_SIZE: Int = 16
 comptime _ADDR_SIZE: Int = 28        # sockaddr_in6
 comptime _TIMESPEC_SIZE: Int = 16    # __kernel_timespec
+comptime _RECVMSG_OUT_HDR_SIZE: Int = 16
 
 # Provided-buffer ring sizing for multishot recvmsg.
 comptime PBUF_COUNT: Int = 1024
 comptime PBUF_SIZE: Int = 1600
 comptime PBUF_GROUP_ID: UInt16 = 0
 
-# Token encoding — high byte = op kind, low 56 bits = counter / slot id.
-comptime _OP_SHIFT: UInt64 = 56
-comptime _OP_RECVMSG: UInt64 = 1
-comptime _OP_SENDMSG: UInt64 = 2
-comptime _OP_TIMEOUT: UInt64 = 3
-comptime _OP_PROVIDE: UInt64 = 4
+# Token encoding — low byte = op kind, high 56 bits = slot id / counter.
+# Matches the bench convention so the wire-format is preserved when bench
+# refactors onto this server in Stage B3.
+comptime OP_RECVMSG: UInt8 = 0
+comptime OP_SENDMSG: UInt8 = 1
+comptime OP_TIMEOUT: UInt8 = 2
+comptime OP_PROVIDE_BUF: UInt8 = 3
 
 
-fn _encode_token(counter: UInt64, op: UInt64) -> UInt64:
-    return (op << _OP_SHIFT) | (counter & ((UInt64(1) << _OP_SHIFT) - 1))
+fn _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
+    return (slot_idx << 8) | UInt64(op_kind)
 
 
-fn _decode_token_op(token: UInt64) -> UInt64:
-    return token >> _OP_SHIFT
+@always_inline
+fn _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
+    return (
+        UInt32(ptr[0])
+        | (UInt32(ptr[1]) << 8)
+        | (UInt32(ptr[2]) << 16)
+        | (UInt32(ptr[3]) << 24)
+    )
 
 
 # ── Pending datagram (ingress queue) ──────────────────────────────────────────
@@ -155,7 +161,7 @@ struct PendingDatagram(Copyable, Movable):
 struct UdpTxSlot(Movable):
     """Heap-allocated msghdr + iovec + addr + payload tuple for one
     sendmsg. Owned by the H3UdpServer's tx_slots list and freed in
-    `_handle_sendmsg` after the CQE arrives.
+    `_handle_sendmsg` after the CQE arrives (Stage B1c).
     """
     var msghdr_buf: UnsafePointer[UInt8, MutAnyOrigin]
     var iov_buf: UnsafePointer[UInt8, MutAnyOrigin]
@@ -179,7 +185,7 @@ struct UdpTxSlot(Movable):
 
 
 struct PendingSubmit(Copyable, Movable):
-    var kind: UInt8       # 1 = sendmsg, 2 = timeout
+    var kind: UInt8       # OP_SENDMSG or OP_TIMEOUT
     var slot_idx: UInt64
 
     def __init__(out self, kind: UInt8, slot_idx: UInt64):
@@ -204,19 +210,31 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     Parameterised on `H: StreamHandler`. Each accepted connection
     allocates a heap-owned `H3HandlerServer[H]` which owns its own
     `H` instance plus the underlying `QuicConnection` + `H3Connection`.
+
+    `make_handler` is a user-provided factory function called once per
+    new QUIC connection. The factory owns construction policy — share
+    state via captured pointers (Mojo doesn't have closures yet, so
+    factories typically read from a module-level singleton or take
+    state via the surrounding context the user threads through).
     """
 
     # Listening UDP fd. RawHandle (unowned); caller's OwnedHandle keeps
     # the fd alive across the server's lifetime.
     var udp_fd: RawHandle
 
+    # rustls library pointer (cast to UInt64 to thread through QuicConnection
+    # FFI). Caller owns the RustlsLibrary instance.
+    var lib_addr: UInt64
+
     # rustls server config handle (from src/tls/lib.mojo). Cloned per
-    # new conn.
+    # new conn via the QuicConnection.server() FFI path.
     var server_config: Int32
 
-    # TransportParams blob — serialized once at __init__ and reused
-    # for every new conn's `QuicConnection.server(...)` call.
-    var transport_params: List[UInt8]
+    # Transport params reused for every new QuicConnection.server() call.
+    var transport_params: TransportParams
+
+    # Per-conn handler factory.
+    var make_handler: fn () raises -> Self.H
 
     # Per-conn book-keeping. conn_h3s[i] is paired with conn_addrs[i]
     # (peer sockaddr) + conn_dcids[i] (every DCID this conn responds
@@ -257,12 +275,16 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     fn __init__(
         out self,
         udp_fd: RawHandle,
+        lib_addr: UInt64,
         server_config: Int32,
-        var transport_params: List[UInt8],
+        var transport_params: TransportParams,
+        make_handler: fn () raises -> Self.H,
     ):
         self.udp_fd = udp_fd
+        self.lib_addr = lib_addr
         self.server_config = server_config
         self.transport_params = transport_params^
+        self.make_handler = make_handler
 
         self.conn_h3s = List[UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]]()
         self.conn_dcid_map = Dict[UInt64, Int]()
@@ -279,7 +301,9 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         self.msghdr_template = _heap_alloc[UInt8](_MSGHDR_SIZE).as_any_origin()
         for i in range(_MSGHDR_SIZE):
             self.msghdr_template[i] = 0
-        # msg_namelen at offset 8 = sizeof(sockaddr_in6).
+        # msg_namelen at offset 8 = sizeof(sockaddr_in6). The kernel populates
+        # the peer address in the provided buffer (controlled via iov_len=0
+        # below — recvmsg-multishot ignores iov when buf-ring is in use).
         self.msghdr_template[8] = 28
         self.multishot_active = False
 
@@ -290,7 +314,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
         self.pending_submits = List[PendingSubmit]()
 
-        # 50ms periodic timeout — tv_sec=0, tv_nsec=50_000_000.
+        # 50ms periodic timeout — tv_sec=0, tv_nsec=50_000_000 LE.
         self.timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE).as_any_origin()
         for i in range(_TIMESPEC_SIZE):
             self.timeout_ts[i] = 0
@@ -301,24 +325,225 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
         self.profile = AcceptProfile()
 
+    # ── Connection lookup ────────────────────────────────────────
+
+    fn _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
+        if dcid_u64 in self.conn_dcid_map:
+            try:
+                return self.conn_dcid_map[dcid_u64]
+            except:
+                return -1
+        return -1
+
     # ── BatchCompletionHandler conformance ───────────────────────
 
     fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
-        """CQE dispatch. Decodes op kind from token's high byte and
-        routes to the matching handler. **Stage B1b** wires the
-        recvmsg / sendmsg / timeout bodies."""
-        var _op = _decode_token_op(token)
-        # TODO(B1b): port _handle_recvmsg / _handle_sendmsg / _handle_timeout
-        # from bench/h3_server.mojo. Bodies live there at lines:
-        #   recvmsg:  bench/h3_server.mojo:737-783
-        #   sendmsg:  bench/h3_server.mojo (search _handle_sendmsg)
-        #   timeout:  bench/h3_server.mojo (search _handle_timeout)
-        pass
+        """CQE dispatch. Decodes op kind from token's low byte and
+        routes to the matching handler."""
+        try:
+            self._dispatch(token, result, flags)
+        except e:
+            print("H3UdpServer: on_complete error:", e)
+
+    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
+        var op_kind = UInt8(token & 0xFF)
+        if op_kind == OP_RECVMSG:
+            self._handle_recvmsg(result, flags)
+        elif op_kind == OP_SENDMSG:
+            # Stage B1c: _handle_sendmsg(token >> 8, result)
+            pass
+        elif op_kind == OP_TIMEOUT:
+            # Stage B1d: _handle_timeout(result)
+            pass
+        elif op_kind == OP_PROVIDE_BUF:
+            pass  # provide_buffers completion — nothing to do.
+
+    # ── Ingress (recvmsg multishot) ──────────────────────────────
+
+    def _handle_recvmsg(mut self, result: Int32, flags: UInt32) raises:
+        # Track multishot lifecycle. F_MORE clears when the kernel stops
+        # the multishot — caller re-arms in the outer drain loop.
+        if (flags & UInt32(IORING_CQE_F_MORE)) == 0:
+            self.multishot_active = False
+
+        # Error or cancelled — nothing to process. We swallow rather than
+        # raise because per-CQE errors (mostly ENOBUFS under burst) are
+        # routine and the loop must stay alive.
+        if result <= 0:
+            return
+
+        # Must have a buffer attached.
+        if (flags & UInt32(IORING_CQE_F_BUFFER)) == 0:
+            return
+
+        # Extract buffer ID from CQE flags.
+        var buf_id = UInt16(flags >> UInt32(IORING_CQE_BUFFER_SHIFT))
+        var buf_ptr = self.pbuf_pool + Int(buf_id) * PBUF_SIZE
+
+        # Parse the io_uring_recvmsg_out 16-byte header:
+        #   [namelen: u32][controllen: u32][payloadlen: u32][flags: u32]
+        if result < Int32(_RECVMSG_OUT_HDR_SIZE):
+            self.consumed_bufs.append(buf_id)
+            return
+
+        var namelen = Int(_read_u32_le(buf_ptr))
+        var controllen = Int(_read_u32_le(buf_ptr + 4))
+        var payloadlen = Int(_read_u32_le(buf_ptr + 8))
+        var msg_flags = _read_u32_le(buf_ptr + 12)
+
+        # MSG_TRUNC (0x20) — drop truncated datagrams (PBUF_SIZE was too
+        # small for the datagram).
+        if (msg_flags & UInt32(0x20)) != 0:
+            self.consumed_bufs.append(buf_id)
+            return
+
+        # Address starts after the 16-byte header.
+        var addr_offset = _RECVMSG_OUT_HDR_SIZE
+        var addr_len = namelen
+
+        # Payload starts after header + name + control.
+        var payload_offset = _RECVMSG_OUT_HDR_SIZE + namelen + controllen
+        var payload_ptr = buf_ptr + payload_offset
+
+        if payloadlen <= 0:
+            self.consumed_bufs.append(buf_id)
+            return
+
+        # Extract DCID directly from the provided buffer — no copy.
+        var dcid: List[UInt8]
+        try:
+            dcid = extract_dcid(
+                Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen)
+            )
+        except:
+            self.consumed_bufs.append(buf_id)
+            return
+
+        self.pending_rx.append(
+            PendingDatagram(
+                buf_id=buf_id,
+                buf_ptr=buf_ptr,
+                payload_ptr=payload_ptr,
+                payload_len=payloadlen,
+                addr_offset=addr_offset,
+                addr_len=addr_len,
+                dcid=dcid^,
+            )
+        )
+
+    # ── Batch flush ──────────────────────────────────────────────
 
     fn on_flush(mut self):
         """Batch-end callback. Drains `pending_rx`, runs QUIC ingress
-        + H3 dispatch + egress for each conn, enqueues sendmsg
-        `PendingSubmit`s. **Stage B1b** ports the body from
-        bench/h3_server.mojo's `_flush_impl`."""
-        # TODO(B1b): port _flush_impl from bench/h3_server.mojo.
-        pass
+        + H3 dispatch + egress for each conn."""
+        try:
+            self._flush_impl()
+        except e:
+            print("H3UdpServer: on_flush error:", e)
+
+    def _flush_impl(mut self) raises:
+        var now = monotonic_us()
+
+        for i in range(len(self.pending_rx)):
+            var pd = self.pending_rx[i].copy()
+
+            # DCID-keyed demux. pd.dcid extracted during _handle_recvmsg.
+            var dcid_u64 = dcid_to_u64(Span(pd.dcid))
+            var conn_idx = self._find_conn_by_dcid(dcid_u64)
+
+            # RFC 9000 §12.4: only long-header Initial packets create new
+            # conns. All other DCID-misses are dropped silently.
+            if conn_idx < 0:
+                var first_byte_span = Span[UInt8, MutAnyOrigin](
+                    ptr=pd.payload_ptr, length=pd.payload_len)
+                if not is_long_header_initial(first_byte_span):
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+
+            if conn_idx < 0:
+                # New conn — drive QuicConnection.server() and wrap in
+                # H3HandlerServer.
+                var dcid_copy = List[UInt8](copy=pd.dcid)
+                var quic: QuicConnection
+                try:
+                    quic = QuicConnection.server(
+                        self.lib_addr,
+                        self.server_config,
+                        self.transport_params.copy(),
+                        Span(pd.dcid),
+                        Span(dcid_copy),
+                        now,
+                    )
+                except e:
+                    print("H3UdpServer: QuicConnection.server error:", e)
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+
+                # B-permissive dual-DCID: both the client's Initial DCID
+                # (random ICID) and the server's chosen SCID (local_cid)
+                # map to the same conn_idx so the ICID→SCID transition
+                # is transparent during the handshake.
+                debug_assert(len(quic.initial_dcid) == 8, "initial_dcid != 8 bytes")
+                debug_assert(len(quic.local_cid) == 8, "local_cid != 8 bytes")
+
+                var icid_u64 = dcid_to_u64(Span(quic.initial_dcid))
+                var lcid_u64 = dcid_to_u64(Span(quic.local_cid))
+
+                # Per-conn StreamHandler — produced by the user-supplied
+                # factory. The factory's free to share state via captured
+                # module globals or external pointers.
+                var handler = self.make_handler()
+                var h3: H3HandlerServer[Self.H]
+                try:
+                    h3 = H3HandlerServer[Self.H](
+                        quic=quic^,
+                        handler=handler^,
+                    )
+                except e:
+                    print("H3UdpServer: H3HandlerServer init error:", e)
+                    self.consumed_bufs.append(pd.buf_id)
+                    continue
+
+                var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_any_origin()
+                h3_ptr.init_pointee_move(h3^)
+
+                # Build peer address from the provided buffer for sendmsg
+                # routing.
+                var addr = List[UInt8](capacity=pd.addr_len)
+                for j in range(pd.addr_len):
+                    addr.append(pd.buf_ptr[pd.addr_offset + j])
+
+                conn_idx = len(self.conn_h3s)
+                self.conn_dcid_map[icid_u64] = conn_idx
+                self.conn_dcid_map[lcid_u64] = conn_idx
+                self.conn_h3s.append(h3_ptr)
+                self.conn_addrs.append(addr^)
+
+                var dcids = List[UInt64]()
+                dcids.append(icid_u64)
+                dcids.append(lcid_u64)
+                self.conn_dcids.append(dcids^)
+
+            # Feed datagram into the QuicConnection.
+            try:
+                self.conn_h3s[conn_idx][].feed_datagram_from_buffer(
+                    pd.payload_ptr, pd.payload_len, now
+                )
+            except e:
+                print("H3UdpServer: feed_datagram error:", e)
+
+            # Update peer address (datagrams may arrive from new ports
+            # post-handshake; RFC 9000 §9 allows path migration but bench
+            # tracks the latest seen address regardless).
+            var addr_update = List[UInt8](capacity=pd.addr_len)
+            for j in range(pd.addr_len):
+                addr_update.append(pd.buf_ptr[pd.addr_offset + j])
+            self.conn_addrs[conn_idx] = addr_update^
+
+            # TODO(B1c): self._drain_and_send(conn_idx, now)
+            # Egress (drain_datagrams → UdpTxSlot → sendmsg PendingSubmit)
+            # lands in the next commit.
+
+            self.consumed_bufs.append(pd.buf_id)
+
+        self.pending_rx.clear()
