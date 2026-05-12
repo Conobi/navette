@@ -15,6 +15,7 @@ from src.quic.connection import QuicConnection
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.quic.packet import parse_packet_header, is_long_header_initial, extract_dcid
 from src.quic.cid import dcid_to_u64
+from src.io.udp_socket import udp_listener
 from src.h3.h3_handler_server import H3HandlerServer
 from bench.handler import (
     BenchHandler,
@@ -1226,73 +1227,8 @@ def _drain_pending_submits(mut loop: BatchCompletionLoop[H3UdpHandler]) raises:
                 loop._handler.pending_submits.append(s.copy())
 
 
-# ── _setup_udp_socket ────────────────────────────────────────────────
-
-
-comptime AF_INET6: Int32 = 10
-comptime SOCK_DGRAM: Int32 = 2
-
-
-def _setup_udp_socket(port: Int) raises -> Int32:
-    """Create a dual-stack UDP socket bound to [::]:port via raw syscalls."""
-    var fd = external_call["socket", Int32](AF_INET6, SOCK_DGRAM, Int32(0))
-    if fd < 0:
-        raise "_setup_udp_socket: socket() failed"
-
-    var optval = _heap_alloc[UInt8](4).as_any_origin()
-
-    # SO_REUSEADDR = 1
-    optval[0] = 1
-    optval[1] = 0
-    optval[2] = 0
-    optval[3] = 0
-    var sso = external_call["setsockopt", Int32](
-        fd, SOL_SOCKET, SO_REUSEADDR, optval, Int32(4)
-    )
-    if sso < 0:
-        optval.free()
-        raise "setsockopt(SO_REUSEADDR) failed"
-
-    # SO_REUSEPORT for multi-worker support
-    optval[0] = 1
-    optval[1] = 0
-    optval[2] = 0
-    optval[3] = 0
-    var rp = external_call["setsockopt", Int32](
-        fd, SOL_SOCKET, SO_REUSEPORT, optval, Int32(4)
-    )
-    if rp < 0:
-        optval.free()
-        raise "setsockopt(SO_REUSEPORT) failed"
-
-    # IPV6_V6ONLY = 0 (dual-stack)
-    optval[0] = 0
-    var v6o = external_call["setsockopt", Int32](
-        fd, IPPROTO_IPV6, IPV6_V6ONLY, optval, Int32(4)
-    )
-    optval.free()
-    if v6o < 0:
-        raise "setsockopt(IPV6_V6ONLY) failed"
-
-    # sockaddr_in6: family(2) + port(2) + flowinfo(4) + addr(16) + scope_id(4) = 28
-    var addr = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-    for i in range(ADDR_SIZE):
-        addr[i] = 0
-    # sin6_family = AF_INET6 (10) — little-endian u16
-    addr[0] = 10
-    addr[1] = 0
-    # sin6_port — big-endian u16
-    var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
-    addr[2] = UInt8(port_be & 0xFF)
-    addr[3] = UInt8((port_be >> 8) & 0xFF)
-
-    var rc = external_call["bind", Int32](fd, addr, Int32(ADDR_SIZE))
-    addr.free()
-    if rc < 0:
-        _ = external_call["close", Int32](fd)
-        raise "_setup_udp_socket: bind() failed on port " + String(port)
-
-    return fd
+# UDP socket factory moved to src/io/udp_socket.mojo; bench uses it
+# via the `udp_listener(port)` import at the top of this file.
 
 
 # ── main ─────────────────────────────────────────────────────────────
@@ -1337,9 +1273,13 @@ def main() raises:
 
     var server_config = _create_server_config(lib_ptr, "h3", certs_dir)
 
-    # Create UDP socket.
+    # Create UDP socket via the library factory.
+    # `sock` owns the fd via OwnedHandle and MUST outlive the io_uring
+    # loop's outstanding SQEs — stays on this stack frame for the
+    # entire serve loop below.
     var port = 8443
-    var udp_fd = _setup_udp_socket(port)
+    var sock = udp_listener(port)
+    var udp_fd = sock.raw()
 
     var worker_id_opt = getenv_opt("BENCH_WORKER_ID")
     var prefix: String
