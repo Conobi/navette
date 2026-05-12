@@ -135,13 +135,12 @@ def test_h3_udp_server_init_and_tick() raises:
 
     # ── 2. UDP listener on ephemeral port ──────────────────────
     var sock = udp_listener(0)  # kernel picks a free port
-    var udp_fd = sock.raw()
-    print("test_h3_udp_server: bound fd =", Int(udp_fd))
+    print("test_h3_udp_server: bound fd =", Int(sock.raw()))
 
     # ── 3. Server + io_uring loop ──────────────────────────────
     var tp = default_transport_params()
     var server = H3UdpServer[StubHandler](
-        udp_fd,
+        sock^,
         UInt64(Int(UnsafePointer(to=lib))),
         server_config,
         tp^,
@@ -165,7 +164,7 @@ def test_h3_udp_server_init_and_tick() raises:
     )
     var recvmsg_token = _encode_token(UInt64(0), OP_RECVMSG)
     io.submit_recvmsg_multishot(
-        io._handler.udp_fd, msghdr_ptr, PBUF_GROUP_ID, recvmsg_token,
+        io._handler.udp_handle.raw(), msghdr_ptr, PBUF_GROUP_ID, recvmsg_token,
     )
     io._handler.multishot_active = True
 

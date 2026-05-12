@@ -168,15 +168,16 @@ fn main() raises:
     var server_config = out_handle[0]
     out_handle.free()
 
-    # 3. Bind the listening UDP socket. The OwnedHandle must outlive
-    #    the io_uring loop's submitted SQEs — we hold it on `main`'s
-    #    stack frame for the entire serve_forever() call.
+    # 3. Bind the listening UDP socket and hand ownership to the
+    #    server. H3UdpServer's OwnedHandle field RAII-closes the fd
+    #    when the server is destroyed.
     var sock = udp_listener(port)
+    print("hello_h3_server: listening (fd=" + String(Int(sock.raw())) + ")")
 
     # 4. Construct the server + run forever.
     var tp = default_transport_params()
     var server = H3UdpServer[HelloHandler](
-        sock.raw(),
+        sock^,
         UInt64(Int(UnsafePointer(to=lib))),
         server_config,
         tp^,

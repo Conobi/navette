@@ -49,7 +49,7 @@ from collections import Dict
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from boucle.handle import RawHandle
+from boucle.handle import RawHandle, OwnedHandle
 from boucle.completion import BatchCompletionHandler, BatchCompletionLoop
 from boucle._sys.linux.raw.ctypes import c_void
 from boucle._sys.linux.raw.x86_64.io_uring import (
@@ -284,9 +284,11 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     state via the surrounding context the user threads through).
     """
 
-    # Listening UDP fd. RawHandle (unowned); caller's OwnedHandle keeps
-    # the fd alive across the server's lifetime.
-    var udp_fd: RawHandle
+    # Listening UDP fd, owned via OwnedHandle. RAII keeps the fd alive
+    # across the entire io_uring loop's lifetime (closes on server
+    # destruction). Use `self.udp_handle.raw()` wherever a RawHandle is
+    # needed for io_uring submission.
+    var udp_handle: OwnedHandle
 
     # rustls library pointer (cast to UInt64 to thread through QuicConnection
     # FFI). Caller owns the RustlsLibrary instance.
@@ -340,13 +342,13 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
     fn __init__(
         out self,
-        udp_fd: RawHandle,
+        var udp_handle: OwnedHandle,
         lib_addr: UInt64,
         server_config: Int32,
         var transport_params: TransportParams,
         make_handler: fn () raises -> Self.H,
     ):
-        self.udp_fd = udp_fd
+        self.udp_handle = udp_handle^
         self.lib_addr = lib_addr
         self.server_config = server_config
         self.transport_params = transport_params^
@@ -762,7 +764,7 @@ fn serve_forever[H: StreamHandler](
     )
     var recvmsg_token = _encode_token(UInt64(0), OP_RECVMSG)
     io.submit_recvmsg_multishot(
-        io._handler.udp_fd, msghdr_ptr, PBUF_GROUP_ID, recvmsg_token,
+        io._handler.udp_handle.raw(), msghdr_ptr, PBUF_GROUP_ID, recvmsg_token,
     )
     io._handler.multishot_active = True
 
@@ -796,7 +798,7 @@ fn serve_forever[H: StreamHandler](
                 unsafe_from_address=ms_addr
             )
             io.submit_recvmsg_multishot(
-                io._handler.udp_fd, ms_ptr, PBUF_GROUP_ID,
+                io._handler.udp_handle.raw(), ms_ptr, PBUF_GROUP_ID,
                 _encode_token(UInt64(0), OP_RECVMSG),
             )
             io._handler.multishot_active = True
@@ -837,7 +839,7 @@ fn drain_pending_submits[H: StreamHandler](
                 unsafe_from_address=msghdr_addr
             )
             try:
-                io.submit_sendmsg(io._handler.udp_fd, msghdr_ptr, token)
+                io.submit_sendmsg(io._handler.udp_handle.raw(), msghdr_ptr, token)
             except:
                 # SQ full — re-queue for next tick.
                 io._handler.pending_submits.append(s.copy())
