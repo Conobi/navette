@@ -26,6 +26,7 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from mojo_net.http.session import RequestHandle
 from mojo_net.tls import (
     RustlsLibrary,
     TlsClientConfig,
@@ -70,11 +71,14 @@ from proxy_common import (
     _read_file,
     encode_token,
     queue_client_recv,
+    rewrite_request_headers,
     stage_backend_send,
     stage_client_send,
 )
 from proxy_h1 import (
     H1ProxyState,
+    H1_SUB_READING_REQUEST,
+    H1_SUB_SENDING_REQUEST,
     h1_handle_backend_connect,
     h1_handle_backend_recv,
     h1_handle_backend_send,
@@ -581,20 +585,16 @@ struct ProxyHandler(CompletionHandler):
             )
             ptr[].backend_tls = backend_tls^
 
-        # For the H2 path, surface any decrypted plaintext that arrived
-        # along with the handshake-final TLS record into the streaming
-        # server so it can emit settings ACKs.
-        # We also need the variant handlers to take it from here, so we
-        # simply re-arm a client_recv: the next batch of inbound bytes
-        # will route through the variant handler, which is the natural
-        # place to drain remaining handshake-trailing plaintext.
-        # Drain any plaintext now so the variant handler doesn't miss
-        # the bytes that arrived in the handshake-final record.
+        # Drain any plaintext that arrived in the handshake-final TLS
+        # record; curl typically piggybacks the application request here.
         var plaintext = ptr[].client_tls.drain_plaintext()
+
         if ptr[].variant.is_h2():
-            # Feed any handshake-trailing plaintext, then drain once. The H2
-            # streaming server emits the server preface at construction time,
-            # so drain() returns the preface even if plaintext is empty.
+            # H2: feed any piggybacked client preface, then drain the
+            # server preface. Connect to the backend eagerly — the H2
+            # path multiplexes streams over the same connection and the
+            # backend should be ready as soon as the first HEADERS frame
+            # is forwarded.
             if len(plaintext) > 0:
                 ptr[].variant.h2_state.value().client_h2.feed(
                     Span(plaintext)
@@ -610,30 +610,69 @@ struct ProxyHandler(CompletionHandler):
                     ptr[].conn_id,
                     ct^,
                 )
+            ptr[].phase = PHASE_BACKEND_CONNECTING
+            self.pending_submits.append(
+                PendingSubmit(
+                    kind=SUBMIT_CONNECT,
+                    fd=ptr[].backend_handle.raw(),
+                    conn_id=ptr[].conn_id,
+                    op_kind=OP_BACKEND_CONNECT,
+                )
+            )
+            queue_client_recv(
+                ptr[].send_state,
+                self.pending_submits,
+                ptr[].client_handle.raw(),
+                ptr[].conn_id,
+            )
         elif ptr[].variant.is_h1():
+            # H1: feed plaintext into client_http and try to extract a
+            # full request. Only queue the backend connect once we have
+            # something to forward (matches the original H1 proxy's
+            # request-then-connect flow).
             if len(plaintext) > 0:
                 ptr[].variant.h1_state.value().client_http.receive_data(
                     Span(plaintext)
                 )
-
-        # Transition to BACKEND_CONNECTING and queue the connect.
-        ptr[].phase = PHASE_BACKEND_CONNECTING
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=SUBMIT_CONNECT,
-                fd=ptr[].backend_handle.raw(),
-                conn_id=ptr[].conn_id,
-                op_kind=OP_BACKEND_CONNECT,
+            var req_opt = (
+                ptr[].variant.h1_state.value().client_http.next_request()
             )
-        )
-        # Also continue reading from the client so we don't miss any
-        # follow-up frames (especially relevant for H2 multiplexing).
-        queue_client_recv(
-            ptr[].send_state,
-            self.pending_submits,
-            ptr[].client_handle.raw(),
-            ptr[].conn_id,
-        )
+            if req_opt:
+                var request = req_opt.take()
+                rewrite_request_headers(
+                    request,
+                    String("127.0.0.1"),
+                    self.backend_host,
+                    String("1.1 mojo-proxy"),
+                )
+                var handle = ptr[].variant.h1_state.value().backend_session.submit(
+                    request^
+                )
+                ptr[].variant.h1_state.value().backend_request_handle = (
+                    Optional[RequestHandle](handle^)
+                )
+                ptr[].phase = PHASE_BACKEND_CONNECTING
+                self.pending_submits.append(
+                    PendingSubmit(
+                        kind=SUBMIT_CONNECT,
+                        fd=ptr[].backend_handle.raw(),
+                        conn_id=ptr[].conn_id,
+                        op_kind=OP_BACKEND_CONNECT,
+                    )
+                )
+            else:
+                # Request not complete in the handshake-final record;
+                # wait for more bytes from the client.
+                ptr[].phase = PHASE_PROXYING
+                ptr[].variant.h1_state.value().sub_phase = (
+                    H1_SUB_READING_REQUEST
+                )
+                queue_client_recv(
+                    ptr[].send_state,
+                    self.pending_submits,
+                    ptr[].client_handle.raw(),
+                    ptr[].conn_id,
+                )
 
     # --- Variant dispatch ----------------------------------------------
 

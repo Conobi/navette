@@ -258,7 +258,8 @@ fn proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
 
     # --- Step 3: forward backend response ---
     if stream_id not in proxy_ptr[].completed_responses:
-        # Driver woke us without a response — likely a backend error. Drop.
+        # Driver woke us without a response — likely a backend error or
+        # stream cleanup during teardown. Drop.
         return
 
     var resp_addr = proxy_ptr[].completed_responses[stream_id]
@@ -556,12 +557,11 @@ def h2_handle_client_recv(
             var ct3 = client_tls.drain_ciphertext()
             stage_client_send(send_state, out, client_fd, conn_id, ct3^)
 
-    # If stream coros queued backend work, drive the backend.
+    # If stream coros queued backend work, drive the backend. The backend
+    # connect was already queued by main.mojo's _maybe_finalize_handshake;
+    # only call _process_pending_backend once the backend channel is up.
     if len(state.shared_ptr[].pending_backend) > 0:
-        if phase != PHASE_PROXYING:
-            phase = PHASE_BACKEND_CONNECTING
-            queue_backend_connect(out, backend_fd, conn_id)
-        elif state.sub_phase == H2_SUB_PROXYING:
+        if state.sub_phase == H2_SUB_PROXYING:
             _process_pending_backend(
                 state, send_state, backend_tls, out, backend_fd, conn_id
             )

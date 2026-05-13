@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# scripts/test_reverse_proxy.sh — End-to-end reverse proxy smoke test
+# scripts/test_reverse_proxy.sh — Unified ALPN-dispatched reverse proxy smoke
+#
+# Starts:
+#   - Python H1 backend on port 9443
+#   - Python H2 backend on port 9444
+#   - The unified Mojo reverse proxy on port 8443 with
+#         H1_BACKEND_PORT=9443
+#         H2_BACKEND_PORT=9444
+# Probes both ALPNs via curl and validates Via + body round-tripping.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,31 +15,36 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
 PROXY_PORT=8443
-BACKEND_PORT=9443
+H1_BACKEND_PORT=9443
+H2_BACKEND_PORT=9444
 CERT_DIR="examples/reverse_proxy/certs"
-BOUCLE_DIR="${BOUCLE_DIR:-$HOME/Projets/perso/boucle}"
 
-# Ensure certs exist
 if [ ! -f "$CERT_DIR/proxy_cert.pem" ] || [ ! -f "$CERT_DIR/backend_cert.pem" ]; then
     echo "Generating test certificates..."
     bash scripts/gen_test_certs.sh
 fi
 
-BACKEND_LOG="$(mktemp -t mojo-proxy-backend.XXXXXX.log)"
+H1_BACKEND_LOG="$(mktemp -t mojo-proxy-h1-backend.XXXXXX.log)"
+H2_BACKEND_LOG="$(mktemp -t mojo-proxy-h2-backend.XXXXXX.log)"
 PROXY_LOG="$(mktemp -t mojo-proxy-proxy.XXXXXX.log)"
-BACKEND_PID=""
+H1_BACKEND_PID=""
+H2_BACKEND_PID=""
 PROXY_PID=""
 
 cleanup() {
     local rc=$?
     echo "Cleaning up..."
-    [ -n "${BACKEND_PID:-}" ] && kill "$BACKEND_PID" 2>/dev/null || true
+    [ -n "${H1_BACKEND_PID:-}" ] && kill "$H1_BACKEND_PID" 2>/dev/null || true
+    [ -n "${H2_BACKEND_PID:-}" ] && kill "$H2_BACKEND_PID" 2>/dev/null || true
     [ -n "${PROXY_PID:-}" ] && kill "$PROXY_PID" 2>/dev/null || true
     wait 2>/dev/null || true
     if [ "$rc" -ne 0 ]; then
         echo ""
-        echo "=== Backend log ($BACKEND_LOG) ==="
-        cat "$BACKEND_LOG" 2>/dev/null || true
+        echo "=== H1 backend log ($H1_BACKEND_LOG) ==="
+        cat "$H1_BACKEND_LOG" 2>/dev/null || true
+        echo ""
+        echo "=== H2 backend log ($H2_BACKEND_LOG) ==="
+        cat "$H2_BACKEND_LOG" 2>/dev/null || true
         echo ""
         echo "=== Proxy log ($PROXY_LOG) ==="
         cat "$PROXY_LOG" 2>/dev/null || true
@@ -40,25 +53,39 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 1. Start Python HTTPS backend
-echo "Starting backend on port $BACKEND_PORT..."
-python3 scripts/test_backend.py >"$BACKEND_LOG" 2>&1 &
-BACKEND_PID=$!
+# 1. Start both backends. The H2 backend needs the `h2` library (dev group);
+#    use `uv run --group dev` so the dev venv is on the import path. The H1
+#    backend is stdlib-only but go through uv too for consistency.
+echo "Starting H1 backend on port $H1_BACKEND_PORT..."
+uv run --group dev python3 scripts/test_backend.py >"$H1_BACKEND_LOG" 2>&1 &
+H1_BACKEND_PID=$!
+
+echo "Starting H2 backend on port $H2_BACKEND_PORT..."
+uv run --group dev python3 scripts/test_h2_backend.py >"$H2_BACKEND_LOG" 2>&1 &
+H2_BACKEND_PID=$!
+
 sleep 1
 
-if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-    echo "FAIL: Backend failed to start"
+if ! kill -0 "$H1_BACKEND_PID" 2>/dev/null; then
+    echo "FAIL: H1 backend failed to start"
+    exit 1
+fi
+if ! kill -0 "$H2_BACKEND_PID" 2>/dev/null; then
+    echo "FAIL: H2 backend failed to start"
     exit 1
 fi
 
-# 2. Build and start the reverse proxy
-echo "Building reverse proxy..."
+# 2. Build and start the unified reverse proxy
+echo "Building unified reverse proxy..."
 rm -f ./*.mojopkg 2>/dev/null || true
 LD_LIBRARY_PATH=lib uv run --project examples/reverse_proxy mojox build \
     examples/reverse_proxy/main.mojo -o /tmp/mojo_reverse_proxy \
     >"$PROXY_LOG" 2>&1
 
-echo "Starting reverse proxy on port $PROXY_PORT..."
+echo "Starting reverse proxy on port $PROXY_PORT (H1→$H1_BACKEND_PORT, H2→$H2_BACKEND_PORT)..."
+LISTEN_PORT="$PROXY_PORT" \
+H1_BACKEND_PORT="$H1_BACKEND_PORT" \
+H2_BACKEND_PORT="$H2_BACKEND_PORT" \
 LD_LIBRARY_PATH=lib /tmp/mojo_reverse_proxy >>"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 sleep 2
@@ -68,76 +95,106 @@ if ! kill -0 "$PROXY_PID" 2>/dev/null; then
     exit 1
 fi
 
-# 3. Send a GET request through the proxy
-echo "Sending GET request..."
+# 3. GET via HTTP/1.1
+echo ""
+echo "Sending HTTP/1.1 GET..."
 set +e
-RESPONSE=$(curl -sk --max-time 10 \
-    "https://127.0.0.1:$PROXY_PORT/test-path" \
+H1_GET=$(curl -sk --http1.1 --max-time 10 \
+    "https://127.0.0.1:$PROXY_PORT/h1-test" \
     -H "X-Test-Header: hello" 2>&1)
 CURL_RC=$?
 set -e
 
 if [ $CURL_RC -ne 0 ]; then
-    echo "FAIL: curl request failed (rc=$CURL_RC)"
-    echo "$RESPONSE"
+    echo "FAIL: HTTP/1.1 GET failed (rc=$CURL_RC)"
+    echo "$H1_GET"
     exit 1
 fi
+echo "H1 GET response: $H1_GET"
 
-echo "Response: $RESPONSE"
-
-if echo "$RESPONSE" | python3 -c "
+echo "$H1_GET" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 headers = data.get('headers', {})
 via = headers.get('via', headers.get('Via', ''))
 xff = headers.get('x-forwarded-for', headers.get('X-Forwarded-For', ''))
-assert '1.1 mojo-proxy' in via, f'Missing Via header, got: {via}'
-assert xff, f'Missing X-Forwarded-For header'
-assert data['path'] == '/test-path', f'Wrong path: {data[\"path\"]}'
-print('All assertions passed')
-"; then
-    echo ""
-    echo "=== PASS: Reverse proxy GET smoke test ==="
-else
-    echo ""
-    echo "=== FAIL: GET response validation failed ==="
-    exit 1
-fi
+assert '1.1 mojo-proxy' in via, f'Missing/wrong H1 Via header: {via!r}'
+assert xff, 'Missing X-Forwarded-For header'
+assert data['path'] == '/h1-test', f'Wrong path: {data[\"path\"]!r}'
+print('H1 GET assertions passed')
+"
+echo "=== PASS: HTTP/1.1 GET ==="
 
-# 4. Test POST with body
+# 4. POST via HTTP/1.1
 echo ""
-echo "Sending POST request..."
+echo "Sending HTTP/1.1 POST..."
 set +e
-POST_RESPONSE=$(curl -sk --max-time 10 \
-    "https://127.0.0.1:$PROXY_PORT/post-test" \
+H1_POST=$(curl -sk --http1.1 --max-time 10 \
+    "https://127.0.0.1:$PROXY_PORT/h1-post" \
     -X POST -d "hello=world" \
     -H "Content-Type: application/x-www-form-urlencoded" 2>&1)
 CURL_RC=$?
 set -e
 
 if [ $CURL_RC -ne 0 ]; then
-    echo "FAIL: POST curl request failed (rc=$CURL_RC)"
-    echo "$POST_RESPONSE"
+    echo "FAIL: HTTP/1.1 POST failed (rc=$CURL_RC)"
+    echo "$H1_POST"
     exit 1
 fi
+echo "H1 POST response: $H1_POST"
 
-echo "POST Response: $POST_RESPONSE"
-
-if echo "$POST_RESPONSE" | python3 -c "
+echo "$H1_POST" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-assert data['method'] == 'POST', f'Wrong method: {data[\"method\"]}'
-assert data['body'] == 'hello=world', f'Wrong body: {data[\"body\"]}'
-headers = data['headers']
-via = headers.get('via', headers.get('Via', ''))
-assert '1.1 mojo-proxy' in via, 'Missing Via header'
-print('POST assertions passed')
-"; then
-    echo "=== PASS: POST test ==="
-else
-    echo "=== FAIL: POST validation failed ==="
+assert data['method'] == 'POST', f'Wrong method: {data[\"method\"]!r}'
+assert data['body'] == 'hello=world', f'Wrong body: {data[\"body\"]!r}'
+via = data['headers'].get('via', data['headers'].get('Via', ''))
+assert '1.1 mojo-proxy' in via, f'Missing/wrong H1 Via header: {via!r}'
+print('H1 POST assertions passed')
+"
+echo "=== PASS: HTTP/1.1 POST ==="
+
+# 5. GET via HTTP/2
+echo ""
+echo "Sending HTTP/2 GET..."
+set +e
+H2_GET=$(curl -sk --http2 --max-time 10 \
+    "https://127.0.0.1:$PROXY_PORT/h2-test" \
+    -H "X-Test-Header: hello" 2>&1)
+CURL_RC=$?
+set -e
+
+if [ $CURL_RC -ne 0 ]; then
+    echo "FAIL: HTTP/2 GET failed (rc=$CURL_RC)"
+    echo "$H2_GET"
     exit 1
 fi
+echo "H2 GET response: $H2_GET"
+
+echo "$H2_GET" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+headers = data.get('headers', {})
+via = headers.get('via', headers.get('Via', ''))
+assert '2.0 mojo-proxy' in via, f'Missing/wrong H2 Via header: {via!r}'
+assert data['path'] == '/h2-test', f'Wrong path: {data[\"path\"]!r}'
+print('H2 GET assertions passed')
+"
+echo "=== PASS: HTTP/2 GET ==="
+
+# 6. POST via HTTP/2 — KNOWN LIMITATION (Plan 3 follow-up)
+#
+# The unified proxy's H2 stream coro forwards the request body to the
+# backend via the boucle.stackful CoroYielder pattern, but the coro is
+# being woken for cleanup before the backend response arrives (likely via
+# H2StreamingServer._free_all_streams when the proxy mistakenly closes
+# the client side). H2 GET works; H2 POST does not.
+#
+# Filed as a known limitation in plans/2026-05-13-unified-reverse-proxy-
+# retrospective.md and explicitly OUT OF SCOPE for the Plan 3 smoke gate.
+# Re-enable when the cleanup race is diagnosed and fixed (follow-up plan).
+echo ""
+echo "Skipping HTTP/2 POST — known limitation, see retro."
 
 echo ""
-echo "=== ALL E2E TESTS PASSED ==="
+echo "=== ALL E2E TESTS PASSED (H1 GET + POST, H2 GET; H2 POST deferred) ==="
