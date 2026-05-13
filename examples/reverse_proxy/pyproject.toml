@@ -1,0 +1,20 @@
+[project]
+name = "mojo-net-example-reverse-proxy"
+version = "0.0.0"
+description = "reverse_proxy — H1 reverse proxy using mojo-net (will be unified with h2_reverse_proxy in Plan 3)"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo-net",
+    "boucle",
+    "json-simd-mojo",
+    "mojox>=0.2",
+    "mojo-compiler==0.26.2.0",
+]
+
+[tool.uv.sources]
+mojo-net       = { path = "../.." }
+boucle         = { path = "../../../boucle" }
+json-simd-mojo = { path = "../../../json-simd-mojo" }
+
+[tool.uv]
+package = false

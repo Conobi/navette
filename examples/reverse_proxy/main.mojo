@@ -18,6 +18,15 @@
 #
 # NOTE: M2 scope is a single hardcoded backend. Connection pooling, routing,
 # CONNECT method, WebSocket upgrades, and timeouts are explicitly OUT of scope.
+#
+# Build + run
+#
+#   $ ./scripts/gen_test_certs.sh        # one-time: populate examples/reverse_proxy/certs/
+#   $ cd examples/reverse_proxy
+#   $ uv sync
+#   $ uv run mojox build main.mojo -o mojo_reverse_proxy
+#   $ python3 ../../scripts/test_backend.py &
+#   $ ./mojo_reverse_proxy
 
 from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
