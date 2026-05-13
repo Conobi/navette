@@ -13,21 +13,21 @@
 # duplicate __init__) that are out of scope for M2.5a. The purpose of this
 # test is to prove the trait surface supports the proxy pattern.
 
-from src.http.handler import (
+from mojo_net.http.handler import (
     StreamHandler,
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from src.http.session import Session, RequestHandle
-from src.http.request import Request, RequestBody
-from src.http.response import Response
-from src.http.method import Method
-from src.http.headers import Headers
-from src.http.status import StatusCode
-from src.http.body import BodyFrame
-from src.http.mock_session import MockServer, MockSession
+from mojo_net.http.session import Session, RequestHandle
+from mojo_net.http.request import Request, RequestBody
+from mojo_net.http.response import Response
+from mojo_net.http.method import Method
+from mojo_net.http.headers import Headers
+from mojo_net.http.status import StatusCode
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.mock_session import MockServer, MockSession
 from tests._test_util import assert_true, assert_equal_int
 
 

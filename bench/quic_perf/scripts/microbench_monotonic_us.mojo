@@ -4,7 +4,7 @@
 # Required: <= 30 ns/call (Plan A's stack-buffer target).
 # If this fails, do not proceed with Plan B insertion work.
 
-from src.quic.profile import monotonic_us
+from mojo_net.quic.profile import monotonic_us
 
 
 fn main() raises:

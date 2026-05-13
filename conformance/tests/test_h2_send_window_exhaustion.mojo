@@ -13,11 +13,11 @@ from lib.http2.connection import (
     H2Connection,
 )
 from lib.http1.types import Header
-from src.http.headers import Headers
-from src.http.request import Request
-from src.http.method import Method
-from src.http.version import Version
-from src.h2.h2_session import H2Session
+from mojo_net.http.headers import Headers
+from mojo_net.http.request import Request
+from mojo_net.http.method import Method
+from mojo_net.http.version import Version
+from mojo_net.h2.h2_session import H2Session
 
 
 # ---------------------------------------------------------------------------

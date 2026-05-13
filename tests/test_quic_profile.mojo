@@ -2,7 +2,7 @@
 #
 # Unit tests for src/quic/profile.mojo (Plan A).
 
-from src.quic.profile import PROFILE_ACCEPT, monotonic_us
+from mojo_net.quic.profile import PROFILE_ACCEPT, monotonic_us
 from std.testing import assert_true
 from tests._test_util import assert_equal_int
 
@@ -29,7 +29,7 @@ def test_profile_accept_is_bool() raises:
 
 
 def test_default_init() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     assert_true(p.idle_us_total == UInt64(0), "idle_us_total starts at 0")
     assert_true(p.busy_us_total == UInt64(0), "busy_us_total starts at 0")
@@ -55,7 +55,7 @@ def test_default_init() raises:
 
 
 def test_record_idle_accumulates() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_idle(UInt64(100))
     p.record_idle(UInt64(250))
@@ -65,7 +65,7 @@ def test_record_idle_accumulates() raises:
 
 
 def test_record_flush_buckets_and_sums() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Coverage of all 8 buckets.
     p.record_flush(1, UInt64(10))      # bucket 0
@@ -98,7 +98,7 @@ def test_record_flush_buckets_and_sums() raises:
 
 
 def test_per_pkt_bucket_assignment() raises:
-    from src.quic.profile import _per_pkt_bucket
+    from mojo_net.quic.profile import _per_pkt_bucket
     # us == 0 → bucket 0
     assert_true(_per_pkt_bucket(UInt64(0)) == 0, "0us → bucket 0")
     # us == 1 → bucket 1 ([1, 2))
@@ -125,7 +125,7 @@ def test_per_pkt_bucket_assignment() raises:
 
 
 def test_record_pkt_sums_and_residual() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # total=120, legs sum to 70 → residual = 50.
     # ffi_us=80 overlaps with sm_us=20; not subtracted from residual.
@@ -155,7 +155,7 @@ def test_record_pkt_sums_and_residual() raises:
 
 
 def test_record_pkt_overflow() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # total=10s = 10_000_000us → overflow.
     p.record_pkt(
@@ -173,7 +173,7 @@ def test_record_pkt_overflow() raises:
 
 
 def test_record_pkt_residual_underflow_safe() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Defensive: legs sum to MORE than total (clock noise / overlap).
     # residual must clamp to 0 instead of UInt64-underflowing.
@@ -191,7 +191,7 @@ def test_record_pkt_residual_underflow_safe() raises:
 
 
 def test_record_drain_accumulates() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain(UInt64(40))
     p.record_drain(UInt64(60))
@@ -201,7 +201,7 @@ def test_record_drain_accumulates() raises:
 
 
 def test_handshake_records() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_handshake_arrival()
     p.record_handshake_arrival()
@@ -220,7 +220,7 @@ def test_handshake_records() raises:
 
 
 def test_exact_percentile_basic() raises:
-    from src.quic.profile import _exact_percentile
+    from mojo_net.quic.profile import _exact_percentile
     var v = List[UInt64]()
     for i in range(1, 101):  # 1..100 inclusive
         v.append(UInt64(i))
@@ -236,14 +236,14 @@ def test_exact_percentile_basic() raises:
 
 
 def test_exact_percentile_empty_returns_zero() raises:
-    from src.quic.profile import _exact_percentile
+    from mojo_net.quic.profile import _exact_percentile
     var v = List[UInt64]()
     assert_true(_exact_percentile(v, 50.0) == UInt64(0), "empty → 0")
     print("PASS: test_exact_percentile_empty_returns_zero")
 
 
 def test_exact_percentile_unsorted_input() raises:
-    from src.quic.profile import _exact_percentile
+    from mojo_net.quic.profile import _exact_percentile
     var v = List[UInt64]()
     v.append(UInt64(50))
     v.append(UInt64(10))
@@ -257,7 +257,7 @@ def test_exact_percentile_unsorted_input() raises:
 
 def test_bucket_percentile_uniform() raises:
     """Uniform [1us, 1ms): p50 ≈ 500us, p90 ≈ 900us, p99 ≈ 990us, ±25%."""
-    from src.quic.profile import AcceptProfile, _bucket_percentile
+    from mojo_net.quic.profile import AcceptProfile, _bucket_percentile
     var p = AcceptProfile()
     # 10000 samples uniform [1us, 1_000_000ns = 1000us).
     # Use deterministic LCG for reproducibility.
@@ -282,7 +282,7 @@ def test_bucket_percentile_uniform() raises:
 
 def test_bucket_percentile_overflow() raises:
     """999 samples at 100us + 1 over the 2^23us cutoff. p99.99 → overflow lower bound."""
-    from src.quic.profile import AcceptProfile, _bucket_percentile
+    from mojo_net.quic.profile import AcceptProfile, _bucket_percentile
     var p = AcceptProfile()
     for _ in range(999):
         p.record_pkt(
@@ -311,7 +311,7 @@ def test_report_text_canned() raises:
     Exact-string golden match is brittle (timestamps / minor format drift).
     We assert on stable content markers + numeric values.
     """
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Idle / busy.
     p.record_idle(UInt64(31_830_000))
@@ -371,7 +371,7 @@ def test_report_text_canned() raises:
 
 def test_report_json_canned() raises:
     """Verify JSON contains all required keys with the right values."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_idle(UInt64(1000))
     p.record_flush(1, UInt64(500))
@@ -423,7 +423,7 @@ def test_report_json_canned() raises:
 
 def test_record_arrival_lat_buckets() raises:
     """Verify record_arrival_lat dispatches into 24-bucket histogram and accumulates total."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Cover several bucket boundaries (mirrors _per_pkt_bucket: bucket[0]={0}; bucket[i]=[2^(i-1), 2^i)).
     p.record_arrival_lat(UInt64(0))           # bucket 0
@@ -443,7 +443,7 @@ def test_record_arrival_lat_buckets() raises:
 
 def test_record_arrival_lat_overflow() raises:
     """Verify values >= 2^23 us land in arrival_lat_us_overflow."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_arrival_lat(UInt64(8_388_608))   # 2^23 — overflow boundary
     p.record_arrival_lat(UInt64(10_000_000))  # > 2^23 — overflow
@@ -458,7 +458,7 @@ def test_record_arrival_lat_overflow() raises:
 
 def test_report_json_arrival_latency_block() raises:
     """Verify report_json emits the arrival-latency block with correct keys + values."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_arrival_lat(UInt64(50))         # bucket 6 ([32, 64))
     p.record_arrival_lat(UInt64(50))         # bucket 6
@@ -480,7 +480,7 @@ def test_record_dcid_mismatch_scalar() raises:
     Per-addr_key breakdown (addr_key_mismatch_counts Dict) was retired
     alongside the addr_key→DCID demux migration.
     """
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     assert_true(p.dcid_mismatch_pkts == UInt64(0), "dcid_mismatch_pkts starts at 0")
     p.record_dcid_mismatch()
@@ -495,7 +495,7 @@ def test_record_dcid_mismatch_scalar() raises:
 
 
 def test_record_ffi_read_hs_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_ffi_read_hs(UInt64(100))
     p.record_ffi_read_hs(UInt64(150))
@@ -506,7 +506,7 @@ def test_record_ffi_read_hs_increments_total() raises:
 
 
 def test_record_ffi_write_hs_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_ffi_write_hs(UInt64(200))
     p.record_ffi_write_hs(UInt64(300))
@@ -516,7 +516,7 @@ def test_record_ffi_write_hs_increments_total() raises:
 
 
 def test_record_ffi_take_keys_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_ffi_take_keys(UInt64(40))
     p.record_ffi_take_keys(UInt64(60))
@@ -526,7 +526,7 @@ def test_record_ffi_take_keys_increments_total() raises:
 
 
 def test_record_loop_pop_dispatch_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_loop_pop_dispatch(UInt64(50))
     p.record_loop_pop_dispatch(UInt64(75))
@@ -536,7 +536,7 @@ def test_record_loop_pop_dispatch_increments_total() raises:
 
 
 def test_record_loop_post_pkt_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_loop_post_pkt(UInt64(20))
     p.record_loop_post_pkt(UInt64(30))
@@ -546,7 +546,7 @@ def test_record_loop_post_pkt_increments_total() raises:
 
 
 def test_record_loop_teardown_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_loop_teardown(UInt64(8))
     p.record_loop_teardown(UInt64(12))
@@ -556,7 +556,7 @@ def test_record_loop_teardown_increments_total() raises:
 
 
 def test_ffi_subleg_sum_matches_shim_ffi_within_tolerance() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Simulate 3 FFI calls within one pkt accumulating into shim_ffi via record_pkt.
     # Then directly populate sub-legs with the same per-call deltas.
@@ -587,7 +587,7 @@ def test_ffi_subleg_sum_matches_shim_ffi_within_tolerance() raises:
 
 
 def test_loop_budget_closure_zero_residual() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # busy = 1000us = 200 (per_pkt total) + 100 (drain) + 400 (pop_dispatch) + 200 (post_pkt) + 100 (teardown)
     p.busy_us_total = UInt64(1000)
@@ -613,7 +613,7 @@ def test_loop_budget_closure_zero_residual() raises:
 
 
 def test_loop_budget_closure_nonzero_residual() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # busy = 10000us; sum of legs = 9900us; residual = 100us = 1% (integer-truncated).
     p.busy_us_total = UInt64(10000)
@@ -639,7 +639,7 @@ def test_loop_budget_closure_nonzero_residual() raises:
 
 
 def test_report_json_emits_ffi_subleg_block() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_ffi_read_hs(UInt64(100))
     p.record_ffi_write_hs(UInt64(200))
@@ -661,7 +661,7 @@ def test_report_json_emits_ffi_subleg_block() raises:
 
 
 def test_report_json_emits_loop_phases_block() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_loop_pop_dispatch(UInt64(150))
     p.record_loop_post_pkt(UInt64(50))
@@ -687,7 +687,7 @@ def test_report_json_emits_loop_phases_block() raises:
 
 
 def test_loop_phase_avg_uses_loop_iter_count_divisor() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # 100 iters, 50 pkts (some continue'd). pop_dispatch total = 10000 us.
     # Expected avg = 10000 / 100 = 100 (NOT 10000 / 50 = 200).
@@ -704,7 +704,7 @@ def test_loop_phase_avg_uses_loop_iter_count_divisor() raises:
 
 
 def test_record_h3_drain_resp_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_h3_drain_resp(UInt64(123))
     p.record_h3_drain_resp(UInt64(456))
@@ -713,7 +713,7 @@ def test_record_h3_drain_resp_increments_total() raises:
 
 
 def test_record_quic_post_recv_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_quic_post_recv(UInt64(100))
     p.record_quic_post_recv(UInt64(200))
@@ -722,7 +722,7 @@ def test_record_quic_post_recv_increments_total() raises:
 
 
 def test_record_h3_dispatch_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_h3_dispatch(UInt64(50))
     p.record_h3_dispatch(UInt64(75))
@@ -731,7 +731,7 @@ def test_record_h3_dispatch_increments_total() raises:
 
 
 def test_report_json_emits_h3_phases_block() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_h3_drain_resp(UInt64(1000))
     p.record_quic_post_recv(UInt64(2000))
@@ -752,7 +752,7 @@ def test_h3_phase_legs_sum_within_unaccounted_bucket() raises:
     """Synthetic profile: 3 H3 legs cumulatively are bounded by the
     pre-existing unaccounted bucket. Catches bracket overlap (a future
     bug where two brackets time the same code path)."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Synthetic busy with known leg shapes:
     #   busy = 1000
@@ -787,7 +787,7 @@ def test_h3_phase_legs_sum_within_unaccounted_bucket() raises:
 def test_budget_closure_subtracts_h3_legs() raises:
     """Synthetic profile with all leg types populated. Budget-closure ε must
     subtract h3 legs in addition to per_pkt + drain + loop."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.busy_us_total = UInt64(1000)
     p.header_parse_us_total = UInt64(50)
@@ -813,7 +813,7 @@ def test_budget_closure_subtracts_h3_legs() raises:
 
 
 def test_record_drain_stream_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain_stream(UInt64(123))
     p.record_drain_stream(UInt64(456))
@@ -822,7 +822,7 @@ def test_record_drain_stream_increments_total() raises:
 
 
 def test_record_drain_recv_ffi_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain_recv_ffi(UInt64(100))
     p.record_drain_recv_ffi(UInt64(200))
@@ -831,7 +831,7 @@ def test_record_drain_recv_ffi_increments_total() raises:
 
 
 def test_record_drain_buf_accumulate_increments_total() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # Verify accumulation across multiple calls (B3a + B3b both call this method).
     p.record_drain_buf_accumulate(UInt64(11))
@@ -845,7 +845,7 @@ def test_record_drain_buf_accumulate_increments_total() raises:
 def test_record_drain_frame_parse_and_qpack_decode_independent() raises:
     """Both methods on a fresh AcceptProfile target separate fields.
     Catches a future bug where frame_parse and qpack_decode aliased the same field."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain_frame_parse(UInt64(50))
     p.record_drain_qpack_decode(UInt64(75))
@@ -859,7 +859,7 @@ def test_record_drain_frame_parse_and_qpack_decode_independent() raises:
 
 
 def test_report_json_emits_drain_stream_subleg_block() raises:
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain_stream(UInt64(10000))
     p.record_drain_recv_ffi(UInt64(1000))
@@ -889,7 +889,7 @@ def test_report_json_emits_drain_stream_subleg_block() raises:
 
 def test_drain_subleg_sum_invariant_residual() raises:
     """Synthetic profile: sum of measured legs <= parent; residual fills the gap."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain_stream(UInt64(1000))
     p.record_drain_recv_ffi(UInt64(100))
@@ -912,7 +912,7 @@ def test_drain_subleg_residual_clamp_overshoot() raises:
     """Synthetic profile: sum of measured legs > parent. Clamp residual to 0.
     Guards against UInt64 underflow-wrap regression (would surface as a huge
     spurious event_dispatch_us)."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_drain_stream(UInt64(1000))
     p.record_drain_recv_ffi(UInt64(400))
@@ -931,7 +931,7 @@ def test_drain_subleg_residual_clamp_overshoot() raises:
 
 def test_record_handshakes_full_resumed_increment() raises:
     """Verify handshakes_full and handshakes_resumed are independent counters."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     assert_true(p.handshakes_full_total == UInt64(0), "handshakes_full_total starts at 0")
     assert_true(p.handshakes_resumed_total == UInt64(0), "handshakes_resumed_total starts at 0")
@@ -948,7 +948,7 @@ def test_record_handshakes_full_resumed_increment() raises:
 
 def test_report_json_emits_handshakes_block() raises:
     """The JSON sidecar must include a `handshakes` key with full + resumed."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_handshake_full()
     p.record_handshake_resumed()
@@ -966,7 +966,7 @@ def test_report_json_emits_handshakes_block() raises:
 
 def test_record_fresh_conn_ffi_us_dispatches_into_buckets() raises:
     """fresh_conn_ffi_us_buckets[24] uses _per_pkt_bucket; overflow goes to overflow field."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     for i in range(24):
         assert_true(p.fresh_conn_ffi_us_buckets[i] == UInt64(0), "bucket " + String(i) + " starts at 0")
@@ -985,7 +985,7 @@ def test_record_fresh_conn_ffi_us_dispatches_into_buckets() raises:
 
 def test_record_recv_batch_dispatches_into_8_buckets() raises:
     """recv_batch_size_buckets[8] uses _pkts_per_flush_bucket dispatch."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     for i in range(8):
         assert_true(p.recv_batch_size_buckets[i] == UInt64(0), "bucket " + String(i) + " starts at 0")
@@ -1004,7 +1004,7 @@ def test_record_recv_batch_dispatches_into_8_buckets() raises:
 
 def test_report_json_emits_fresh_conn_blocks() raises:
     """JSON sidecar must include fresh_conn_ffi_us + recv_batch_size_buckets blocks."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_fresh_conn_ffi_us(UInt64(15000))
     p.record_recv_batch(1)
@@ -1027,7 +1027,7 @@ def test_report_json_emits_fresh_conn_blocks() raises:
 
 def test_record_read_hs_per_handshake_count_dispatches_into_8_buckets() raises:
     """read_hs_per_handshake_count_buckets[8] uses _pkts_per_flush_bucket dispatch."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     for i in range(8):
         assert_true(p.read_hs_per_handshake_count_buckets[i] == UInt64(0), "bucket " + String(i) + " starts at 0")
@@ -1047,7 +1047,7 @@ def test_record_read_hs_per_handshake_count_dispatches_into_8_buckets() raises:
 
 def test_record_read_hs_us_per_call_dispatches_into_24_buckets() raises:
     """read_hs_us_per_call_buckets[24] uses _per_pkt_bucket; overflow at >= 2^23."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     for i in range(24):
         assert_true(p.read_hs_us_per_call_buckets[i] == UInt64(0), "bucket " + String(i) + " starts at 0")
@@ -1066,7 +1066,7 @@ def test_record_read_hs_us_per_call_dispatches_into_24_buckets() raises:
 
 def test_report_json_emits_read_hs_blocks() raises:
     """JSON sidecar must include read_hs_per_handshake_count_buckets + read_hs_us_per_call blocks."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_read_hs_per_handshake_count(1)
     p.record_read_hs_per_handshake_count(1)
@@ -1090,7 +1090,7 @@ def test_report_json_emits_read_hs_blocks() raises:
 def test_q6_read_hs_sublegs_dispatch() raises:
     """Q6: 4 sub-leg histograms dispatch via _per_pkt_bucket; JSON shape exposes
     all 4 new top-level keys with buckets+overflow."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     # 5us  -> bucket 3   (floor(log2(5))+1 = 2+1 = 3; range [4,8))
     # 50us -> bucket 6   (floor(log2(50))+1 = 5+1 = 6; range [32,64))
@@ -1140,7 +1140,7 @@ def test_q6_read_hs_sublegs_dispatch() raises:
 def test_alloc_tls_handle_us_dispatch() raises:
     """Per-fresh-conn rustls handle alloc timer dispatches via _per_pkt_bucket;
     JSON+text shapes expose the alloc_tls_handle_us block."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_alloc_tls_handle_us(UInt64(50))  # bucket 6 ([32,64))
     var sum: UInt64 = UInt64(0)
@@ -1165,7 +1165,7 @@ def test_q7_gauge_sampling() raises:
     active_boucle_count_samples (first + third; second skipped per cadence).
     The in_flight_handshake_count_samples list mirrors the same cadence.
     """
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     assert_true(len(p.active_boucle_count_samples) == 0, "samples start empty")
     assert_true(len(p.in_flight_handshake_count_samples) == 0, "in_flight samples start empty")
@@ -1197,7 +1197,7 @@ def test_q7_batch_histogram_dispatch() raises:
     bucket 7. Cross-surface independence: sendmsg increments don't bleed
     into recvmsg buckets and vice versa.
     """
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     for i in range(8):
         assert_true(p.sendmsg_batch_size_buckets[i] == UInt64(0), "send bucket " + String(i) + " starts at 0")
@@ -1220,7 +1220,7 @@ def test_q7_batch_histogram_dispatch() raises:
 
 def test_iouring_park_us_record() raises:
     """H_F PARK-BOUND accumulator (no histogram) — record_iouring_park_us."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     assert_true(p.iouring_park_us_total == UInt64(0), "iouring_park_us starts at 0")
     p.record_iouring_park_us(UInt64(2_000_000))
@@ -1237,7 +1237,7 @@ def test_iouring_park_us_record() raises:
 def test_q8_egress_pool_counters() raises:
     """Q8: egress_pool hit/miss counters increment cleanly; JSON shape exposes
     egress_pool block with hits_total + misses_total."""
-    from src.quic.profile import AcceptProfile
+    from mojo_net.quic.profile import AcceptProfile
     var p = AcceptProfile()
     p.record_egress_pool_hit()
     p.record_egress_pool_hit()

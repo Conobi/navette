@@ -10,13 +10,13 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Dict, InlineArray
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection
-from src.quic.trans_param import TransportParams, default_transport_params
-from src.quic.packet import parse_packet_header, is_long_header_initial, extract_dcid
-from src.quic.cid import dcid_to_u64
-from src.io.udp_socket import udp_listener
-from src.h3.h3_handler_server import H3HandlerServer
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.quic.packet import parse_packet_header, is_long_header_initial, extract_dcid
+from mojo_net.quic.cid import dcid_to_u64
+from mojo_net.io.udp_socket import udp_listener
+from mojo_net.h3.h3_handler_server import H3HandlerServer
 from bench.handler import (
     BenchHandler,
     BenchState,
@@ -26,7 +26,7 @@ from bench.handler import (
 )
 from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
-from src.quic.profile import AcceptProfile, PROFILE_ACCEPT, EGRESS_POOL_SIZE, EGRESS_POOL_V2, monotonic_us as profile_monotonic_us
+from mojo_net.quic.profile import AcceptProfile, PROFILE_ACCEPT, EGRESS_POOL_SIZE, EGRESS_POOL_V2, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
 from boucle.handle import RawHandle

@@ -6,8 +6,8 @@
 
 from std.testing import assert_equal, assert_true, assert_false
 from std.memory import UnsafePointer
-from src.quic.connection import QuicConnection
-from src.quic.profile import AcceptProfile
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.profile import AcceptProfile
 
 
 def test_quic_connection_struct_fields_compile() raises:

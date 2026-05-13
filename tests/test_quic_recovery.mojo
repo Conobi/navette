@@ -1,4 +1,4 @@
-from src.quic.recovery import (
+from mojo_net.quic.recovery import (
     Recovery,
     K_PACKET_THRESHOLD,
     K_GRANULARITY,
@@ -7,8 +7,8 @@ from src.quic.recovery import (
     INITIAL_RTT,
     INITIAL_RTTVAR,
 )
-from src.quic.cc.controller import CcController
-from src.quic.cc.cc_trait import CC_KIND_CUBIC, CC_KIND_DUMMY, AckedPacket, LostPacket
+from mojo_net.quic.cc.controller import CcController
+from mojo_net.quic.cc.cc_trait import CC_KIND_CUBIC, CC_KIND_DUMMY, AckedPacket, LostPacket
 from std.testing import assert_true
 
 

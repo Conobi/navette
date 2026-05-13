@@ -1,7 +1,7 @@
 # tests/test_body.mojo
 #
 # Unit tests for BodyFrame type.
-from src.http import BodyFrame, Headers
+from mojo_net.http import BodyFrame, Headers
 from tests._test_util import assert_true, assert_equal_int
 
 

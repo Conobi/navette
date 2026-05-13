@@ -2,8 +2,8 @@
 
 Oracle vectors: conformance/vectors/rfc9114/frame.json
 """
-from src.h3.frame import parse_h3_frame, SettingsFrame
-from src.quic.codec import ByteReader
+from mojo_net.h3.frame import parse_h3_frame, SettingsFrame
+from mojo_net.quic.codec import ByteReader
 from tests._test_util import assert_true, assert_equal_int
 
 

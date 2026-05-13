@@ -2,9 +2,9 @@
 #
 # Unit tests for the HTTP/1.1 serializer (src/h1/serializer.mojo).
 
-from src.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
-from src.http.request import RequestBody
-from src.h1.serializer import (
+from mojo_net.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from mojo_net.http.request import RequestBody
+from mojo_net.h1.serializer import (
     serialize_request,
     serialize_response,
     serialize_informational,

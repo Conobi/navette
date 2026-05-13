@@ -16,12 +16,12 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections.optional import Optional
 
-from src.tls import RustlsLibrary, TlsClientConfig, TlsConnection
-from src.http import Method, Version, Headers, Request
-from src.http.request import RequestBody
-from src.h2.h2_session import H2Session
-from src.http.session import RequestHandle
-from src.http.body import BodyFrame
+from mojo_net.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from mojo_net.http import Method, Version, Headers, Request
+from mojo_net.http.request import RequestBody
+from mojo_net.h2.h2_session import H2Session
+from mojo_net.http.session import RequestHandle
+from mojo_net.http.body import BodyFrame
 
 comptime _HOST: String = "1.1.1.1"
 comptime _PATH: String = "/cdn-cgi/trace"

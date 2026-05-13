@@ -25,7 +25,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.io.file import FileHandle
 
-from src.http import (
+from mojo_net.http import (
     Method,
     StatusCode,
     Version,
@@ -34,11 +34,11 @@ from src.http import (
     Request,
     Response,
 )
-from src.http.request import RequestBody
-from src.http.session import RequestHandle
-from src.h2.h2_session import H2Session
-from src.h2.h2_coro_server import H2CoroServer, CoroStreamCtx
-from src.tls import (
+from mojo_net.http.request import RequestBody
+from mojo_net.http.session import RequestHandle
+from mojo_net.h2.h2_session import H2Session
+from mojo_net.h2.h2_coro_server import H2CoroServer, CoroStreamCtx
+from mojo_net.tls import (
     RustlsLibrary,
     TlsClientConfig,
     TlsServerConfig,

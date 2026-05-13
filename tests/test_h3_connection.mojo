@@ -1,10 +1,10 @@
 # tests/test_h3_connection.mojo
 from std.memory import Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection
-from src.quic.trans_param import TransportParams, default_transport_params
-from src.h3.connection import H3Connection, H3Event
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.h3.connection import H3Connection, H3Event
 from tests._test_util import assert_true, assert_equal_int, load_test_cert
 
 

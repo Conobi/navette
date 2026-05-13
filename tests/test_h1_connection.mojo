@@ -5,7 +5,7 @@
 from std.collections.optional import Optional
 from std.memory import Span
 
-from src.http import (
+from mojo_net.http import (
     Method,
     StatusCode,
     Version,
@@ -14,9 +14,9 @@ from src.http import (
     Request,
     Response,
 )
-from src.h1 import ParseConfig, ParserStrictness
-from src.h1.connection import H1Connection
-from src.http.request import RequestBody
+from mojo_net.h1 import ParseConfig, ParserStrictness
+from mojo_net.h1.connection import H1Connection
+from mojo_net.http.request import RequestBody
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

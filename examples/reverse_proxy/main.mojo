@@ -25,7 +25,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.io.file import FileHandle
 from std.ffi import external_call
 
-from src.http import (
+from mojo_net.http import (
     Method,
     StatusCode,
     Version,
@@ -34,9 +34,9 @@ from src.http import (
     Request,
     Response,
 )
-from src.h1 import ParseConfig, ServerConnection, H1Session
-from src.http.session import RequestHandle
-from src.tls import (
+from mojo_net.h1 import ParseConfig, ServerConnection, H1Session
+from mojo_net.http.session import RequestHandle
+from mojo_net.tls import (
     RustlsLibrary,
     TlsClientConfig,
     TlsServerConfig,

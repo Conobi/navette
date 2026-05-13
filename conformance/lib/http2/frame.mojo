@@ -1,5 +1,5 @@
-# conformance/lib/http2/frame.mojo — re-exports from src.h2.frame
-from src.h2.frame import (
+# conformance/lib/http2/frame.mojo — re-exports from mojo_net.h2.frame
+from mojo_net.h2.frame import (
     H2_NO_ERROR,
     H2_PROTOCOL_ERROR,
     H2_INTERNAL_ERROR,

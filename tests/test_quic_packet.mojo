@@ -10,8 +10,8 @@
 
 from std.python import Python, PythonObject
 
-from src.quic.codec import ByteReader, ByteWriter, varint_encode
-from src.quic.packet import (
+from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode
+from mojo_net.quic.packet import (
     PacketHeader,
     PacketType,
     initial_packet_needs_padding,

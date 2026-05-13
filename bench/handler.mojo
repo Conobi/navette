@@ -6,19 +6,19 @@
 from std.collections.optional import Optional
 from std.collections import Dict
 from std.memory import UnsafePointer
-from src.http.handler import (
+from mojo_net.http.handler import (
     ResponseWriter,
     RecvBody,
     StreamHandler,
     Capabilities,
     StreamError,
 )
-from src.http.body import BodyFrame
-from src.http.status import StatusCode
-from src.http.headers import Headers
-from src.http.request import Request
-from src.h2.h2_sync_server import CoroStreamCtx as H2CoroStreamCtx
-from src.h3.h3_sync_server import CoroStreamCtx as H3CoroStreamCtx
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.status import StatusCode
+from mojo_net.http.headers import Headers
+from mojo_net.http.request import Request
+from mojo_net.h2.h2_sync_server import CoroStreamCtx as H2CoroStreamCtx
+from mojo_net.h3.h3_sync_server import CoroStreamCtx as H3CoroStreamCtx
 from interop.file_io import read_file
 
 from simdjson.parser import Parser

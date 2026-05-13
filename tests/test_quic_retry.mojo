@@ -9,8 +9,8 @@
 
 from std.memory import UnsafePointer
 
-from src.tls.lib import RustlsLibrary
-from src.quic.retry import (
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.retry import (
     generate_retry_token,
     validate_retry_token,
     compute_retry_integrity_tag,

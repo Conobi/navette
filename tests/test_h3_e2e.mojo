@@ -8,22 +8,22 @@ from std.collections.deque import Deque
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection
-from src.quic.trans_param import TransportParams, default_transport_params
-from src.h3.connection import H3Connection, H3Event
-from src.h3.h3_handler_server import H3HandlerServer
-from src.h3.h3_session import H3Session
-from src.h3.qpack import QpackHeaderField, QpackEncoder
-from src.http.handler import StreamHandler, RecvBody, ResponseWriter, Capabilities, StreamError
-from src.http.request import Request, RequestBody
-from src.http.response import Response
-from src.http.headers import Headers
-from src.http.status import StatusCode
-from src.http.body import BodyFrame
-from src.http.method import Method
-from src.http.version import Version
-from src.http.session import RequestHandle
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.h3.connection import H3Connection, H3Event
+from mojo_net.h3.h3_handler_server import H3HandlerServer
+from mojo_net.h3.h3_session import H3Session
+from mojo_net.h3.qpack import QpackHeaderField, QpackEncoder
+from mojo_net.http.handler import StreamHandler, RecvBody, ResponseWriter, Capabilities, StreamError
+from mojo_net.http.request import Request, RequestBody
+from mojo_net.http.response import Response
+from mojo_net.http.headers import Headers
+from mojo_net.http.status import StatusCode
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.method import Method
+from mojo_net.http.version import Version
+from mojo_net.http.session import RequestHandle
 from tests._test_util import assert_true, assert_equal_int, load_test_cert
 
 

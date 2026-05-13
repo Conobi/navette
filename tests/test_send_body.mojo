@@ -1,8 +1,8 @@
 # tests/test_send_body.mojo
 #
 # Unit tests for SendBody (M2.5a §5.7).
-from src.http.handler import SendBody, WriteResult
-from src.http.body import BodyFrame
+from mojo_net.http.handler import SendBody, WriteResult
+from mojo_net.http.body import BodyFrame
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

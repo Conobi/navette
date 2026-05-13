@@ -2,7 +2,7 @@
 # QPACK static table tests — RFC 9204 Appendix A
 # Task 2: static table only (Huffman, encoder, decoder in T3-T5)
 
-from src.h3.qpack import (
+from mojo_net.h3.qpack import (
     QpackStaticEntry,
     QpackHeaderField,
     QPACK_STATIC_TABLE_SIZE,

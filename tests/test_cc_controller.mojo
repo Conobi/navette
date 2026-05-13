@@ -1,10 +1,10 @@
 # tests/test_cc_controller.mojo
 # CcController tag-discriminated dispatcher tests per spec §9.3.
 
-from src.quic.cc.controller import CcController
-from src.quic.cc.cubic import Cubic
-from src.quic.cc.dummy import DummyCc
-from src.quic.cc.cc_trait import (
+from mojo_net.quic.cc.controller import CcController
+from mojo_net.quic.cc.cubic import Cubic
+from mojo_net.quic.cc.dummy import DummyCc
+from mojo_net.quic.cc.cc_trait import (
     AckedPacket, LostPacket,
     CC_KIND_DUMMY, CC_KIND_CUBIC, UINT64_UNLIMITED,
 )

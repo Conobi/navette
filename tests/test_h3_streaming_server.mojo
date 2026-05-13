@@ -19,11 +19,11 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.stackful import CoroYielder
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection
-from src.quic.trans_param import TransportParams, default_transport_params
-from src.h3.connection import H3Connection, H3Event
-from src.h3.h3_streaming_server import (
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.h3.connection import H3Connection, H3Event
+from mojo_net.h3.h3_streaming_server import (
     H3StreamingServer,
     H3StreamingCtx,
     H3StreamingHandlerFn,
@@ -32,11 +32,11 @@ from src.h3.h3_streaming_server import (
     finish,
     cancelled,
 )
-from src.h3.qpack import QpackHeaderField
-from src.http.handler import RecvBody, ResponseWriter, StreamError, Capabilities
-from src.http.headers import Headers
-from src.http.body import BodyFrame
-from src.http.status import StatusCode
+from mojo_net.h3.qpack import QpackHeaderField
+from mojo_net.http.handler import RecvBody, ResponseWriter, StreamError, Capabilities
+from mojo_net.http.headers import Headers
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.status import StatusCode
 from tests._test_util import assert_true, assert_equal_int, load_test_cert
 
 

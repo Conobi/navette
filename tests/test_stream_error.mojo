@@ -1,7 +1,7 @@
 # tests/test_stream_error.mojo
 #
 # Unit tests for StreamError (M2.5a §5.3).
-from src.http.handler import (
+from mojo_net.http.handler import (
     StreamError,
     STREAM_ERR_PEER_CLOSED,
     STREAM_ERR_RST_STREAM,

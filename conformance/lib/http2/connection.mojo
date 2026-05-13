@@ -1,5 +1,5 @@
-# conformance/lib/http2/connection.mojo — re-exports from src.h2.connection
-from src.h2.connection import (
+# conformance/lib/http2/connection.mojo — re-exports from mojo_net.h2.connection
+from mojo_net.h2.connection import (
     H2Config,
     H2Settings,
     H2Event,

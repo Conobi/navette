@@ -2,7 +2,7 @@
 # Tests for FlowControl: dual-counter flow control tracker (RFC 9000 §4).
 
 from tests._test_util import assert_true
-from src.quic.flow_control import FlowControl
+from mojo_net.quic.flow_control import FlowControl
 
 
 def test_initial_state() raises:

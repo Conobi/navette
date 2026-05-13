@@ -11,13 +11,13 @@
 from std.collections import Dict, Optional
 from std.python import Python, PythonObject
 
-from src.quic.trans_param import (
+from mojo_net.quic.trans_param import (
     TransportParams,
     default_transport_params,
     parse_transport_params,
     serialize_transport_params,
 )
-from src.quic.codec import ByteReader, ByteWriter, varint_encode, varint_len
+from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode, varint_len
 
 from lib.test_util import hex_decode, hex_encode, load_vectors
 from tests._test_util import assert_true, assert_equal_int

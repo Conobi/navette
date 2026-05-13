@@ -1,8 +1,8 @@
 # tests/test_handler_detach.mojo
 #
 # Unit tests for DetachedBody + RecvBody.detach() (M2.5a §5.5).
-from src.http.handler import RecvBody, DetachedBody
-from src.http.body import BodyFrame
+from mojo_net.http.handler import RecvBody, DetachedBody
+from mojo_net.http.body import BodyFrame
 from tests._test_util import assert_true, assert_equal_int
 
 

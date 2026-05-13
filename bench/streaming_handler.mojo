@@ -18,14 +18,14 @@ from std.memory import UnsafePointer
 
 from boucle.stackful import CoroYielder
 
-from src.h3.h3_streaming_server import (
+from mojo_net.h3.h3_streaming_server import (
     H3StreamingCtx,
     next_chunk as h3_next_chunk,
     write_chunk as h3_write_chunk,
     finish as h3_finish,
 )
 
-from src.h2.h2_streaming_server import (
+from mojo_net.h2.h2_streaming_server import (
     H2StreamingCtx,
     next_chunk as h2_next_chunk,
     write_chunk as h2_write_chunk,
@@ -57,8 +57,8 @@ def llm_stream_h3_handler(mut yld: CoroYielder) raises:
         # ignore chunk contents
 
     # Send response headers: 200 OK + SSE content-type
-    from src.http.headers import Headers
-    from src.http.status import StatusCode
+    from mojo_net.http.headers import Headers
+    from mojo_net.http.status import StatusCode
     var hdrs = Headers()
     hdrs.add("content-type", "text/event-stream")
     hdrs.add("cache-control", "no-cache")
@@ -86,8 +86,8 @@ fn llm_stream_h2_handler(mut yld: CoroYielder) raises:
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
 
     # Send response headers: 200 OK + SSE content-type
-    from src.http.headers import Headers
-    from src.http.status import StatusCode
+    from mojo_net.http.headers import Headers
+    from mojo_net.http.status import StatusCode
     var hdrs = Headers()
     hdrs.add("content-type", "text/event-stream")
     hdrs.add("cache-control", "no-cache")

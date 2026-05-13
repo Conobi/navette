@@ -8,13 +8,13 @@
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection, QuicEvent
-from src.quic.ecn import (
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection, QuicEvent
+from mojo_net.quic.ecn import (
     ECN_NOT_ECT, ECN_ECT0, ECN_ECT1, ECN_CE,
     ECN_STATE_PROBING, ECN_STATE_CAPABLE, ECN_STATE_DISABLED,
 )
-from src.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert
 
 

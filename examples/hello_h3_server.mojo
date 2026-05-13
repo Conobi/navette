@@ -32,8 +32,8 @@ You should see 4× 200 responses with "Hello, H3!" payloads.
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from src.h3.h3_udp_server import H3UdpServer, serve_forever
-from src.http.handler import (
+from mojo_net.h3.h3_udp_server import H3UdpServer, serve_forever
+from mojo_net.http.handler import (
     StreamHandler,
     Request,
     RecvBody,
@@ -42,11 +42,11 @@ from src.http.handler import (
     StreamError,
     BodyFrame,
 )
-from src.http.headers import Headers
-from src.http.status import StatusCode
-from src.io.udp_socket import udp_listener
-from src.quic.trans_param import default_transport_params
-from src.tls.lib import RustlsLibrary
+from mojo_net.http.headers import Headers
+from mojo_net.http.status import StatusCode
+from mojo_net.io.udp_socket import udp_listener
+from mojo_net.quic.trans_param import default_transport_params
+from mojo_net.tls.lib import RustlsLibrary
 
 from interop.file_io import read_file, getenv_opt
 

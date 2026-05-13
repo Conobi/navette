@@ -1,7 +1,7 @@
 # tests/test_capabilities.mojo
 #
 # Unit tests for Capabilities (M2.5a §5.1).
-from src.http.handler import Capabilities, ALPN_H1, ALPN_H2, ALPN_H3
+from mojo_net.http.handler import Capabilities, ALPN_H1, ALPN_H2, ALPN_H3
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 

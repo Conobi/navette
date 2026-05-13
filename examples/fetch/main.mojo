@@ -55,23 +55,23 @@ from std.pathlib import Path
 
 from boucle.handle import OwnedHandle
 
-from src.tls import RustlsLibrary, TlsClientConfig, TlsConnection
-from src.http import Method, Version, Headers, Request
-from src.http.request import RequestBody
-from src.http.response import Response
-from src.http.session import RequestHandle
-from src.http.body import BodyFrame
-from src.http.url import parse_url, ParsedUrl
-from src.http.alt_svc import Origin, AltSvcEntry
-from src.http.coro_client import HttpCoroClient
-from src.http.session_slot import SessionSlot
-from src.h1.h1_session import H1Session
-from src.h2.h2_session import H2Session
-from src.h3.h3_session import H3Session
-from src.quic.connection import QuicConnection
-from src.quic.trans_param import TransportParams, default_transport_params
-from src.http.decode import ContentDecoder, ContentEncoding
-from src.io import resolve_host, tcp_connect, udp_connect
+from mojo_net.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from mojo_net.http import Method, Version, Headers, Request
+from mojo_net.http.request import RequestBody
+from mojo_net.http.response import Response
+from mojo_net.http.session import RequestHandle
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.url import parse_url, ParsedUrl
+from mojo_net.http.alt_svc import Origin, AltSvcEntry
+from mojo_net.http.coro_client import HttpCoroClient
+from mojo_net.http.session_slot import SessionSlot
+from mojo_net.h1.h1_session import H1Session
+from mojo_net.h2.h2_session import H2Session
+from mojo_net.h3.h3_session import H3Session
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.http.decode import ContentDecoder, ContentEncoding
+from mojo_net.io import resolve_host, tcp_connect, udp_connect
 
 comptime _RECV_BUF: Int = 16384
 comptime _MAX_ITERS: Int = 500

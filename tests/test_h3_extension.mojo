@@ -2,14 +2,14 @@
 #
 # Unit tests for H3Context and H3StreamExtension scaffolding (M2.5a §5.10).
 from std.memory import Span
-from src.http.h3_extension import H3Context, H3StreamExtension
-from src.http.handler import (
+from mojo_net.http.h3_extension import H3Context, H3StreamExtension
+from mojo_net.http.handler import (
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from src.http.request import Request
+from mojo_net.http.request import Request
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

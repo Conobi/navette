@@ -1,9 +1,9 @@
 # tests/test_request_body.mojo
 #
 # Unit tests for RequestBody (M2.5a §5.12).
-from src.http.request import RequestBody
-from src.http.handler import RecvBody, DetachedBody
-from src.http.body import BodyFrame
+from mojo_net.http.request import RequestBody
+from mojo_net.http.handler import RecvBody, DetachedBody
+from mojo_net.http.body import BodyFrame
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

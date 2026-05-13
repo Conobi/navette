@@ -1,5 +1,5 @@
 from tests._test_util import assert_true, assert_equal_int
-from src.quic.crypto_stream import CryptoStream
+from mojo_net.quic.crypto_stream import CryptoStream
 
 
 def _str_bytes(s: String) -> List[UInt8]:

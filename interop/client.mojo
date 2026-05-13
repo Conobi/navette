@@ -14,9 +14,9 @@ from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection, QuicEvent
-from src.quic.trans_param import default_transport_params
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection, QuicEvent
+from mojo_net.quic.trans_param import default_transport_params
 from interop.file_io import read_file, write_file, getenv, getenv_opt, basename, setenv
 from interop.http09 import http09_request, http09_collect
 from interop.udp import udp_connect, udp_poll, udp_close, monotonic_us

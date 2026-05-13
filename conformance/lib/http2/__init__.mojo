@@ -1,6 +1,6 @@
 # conformance/lib/http2/__init__.mojo
-# Re-exports from src.h2 + local oracles.
-from src.h2.frame import (
+# Re-exports from mojo_net.h2 + local oracles.
+from mojo_net.h2.frame import (
     H2_NO_ERROR,
     H2_PROTOCOL_ERROR,
     H2_INTERNAL_ERROR,
@@ -41,16 +41,16 @@ from src.h2.frame import (
     decode_frame,
     encode_frame,
 )
-from src.h2.hpack import HpackEncoder, HpackDecoder, HpackConfig
-from src.h2.hpack_huffman import HuffmanCodec
-from src.h2.hpack_integer import encode_integer, decode_integer
-from src.h2.hpack_table import StaticTable, DynamicTable
+from mojo_net.h2.hpack import HpackEncoder, HpackDecoder, HpackConfig
+from mojo_net.h2.hpack_huffman import HuffmanCodec
+from mojo_net.h2.hpack_integer import encode_integer, decode_integer
+from mojo_net.h2.hpack_table import StaticTable, DynamicTable
 from .oracles import h2_roundtrip
 # Note: the bulk of the live h2 / hpack / hyperframe oracle wrappers were
 # pruned as of deps-enhancement §3.3. Only `h2_roundtrip` remains, used by
 # tests/test_h2_stream.mojo. See conformance/scripts/oracle_h1_h2_states.py
 # for the pre-materialization pipeline that replaced the others.
-from src.h2.payloads import (
+from mojo_net.h2.payloads import (
     DataPayload,
     decode_data_payload,
     HeadersPayload,
@@ -73,7 +73,7 @@ from src.h2.payloads import (
     ContinuationPayload,
     decode_continuation_payload,
 )
-from src.h2.connection import (
+from mojo_net.h2.connection import (
     H2Config,
     H2Settings,
     H2Event,

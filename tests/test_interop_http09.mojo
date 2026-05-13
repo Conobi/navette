@@ -9,9 +9,9 @@ from std.collections import Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection, QuicEvent
-from src.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection, QuicEvent
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert
 from interop.http09 import http09_request, http09_collect, http09_parse_path, http09_serve
 from interop.file_io import read_file, write_file, mkdir_p

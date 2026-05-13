@@ -2,11 +2,11 @@
 #
 # Unit tests for Server-Sent Events (WHATWG event-stream, M2.5b §7.3).
 from std.collections.optional import Optional
-from src.http.sse import ServerSentEvent, EventStreamReader, try_write_event
-from src.http.handler import RecvBody, DetachedBody, ResponseWriter
-from src.http.body import BodyFrame
-from src.http.headers import Headers
-from src.http.status import StatusCode
+from mojo_net.http.sse import ServerSentEvent, EventStreamReader, try_write_event
+from mojo_net.http.handler import RecvBody, DetachedBody, ResponseWriter
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.headers import Headers
+from mojo_net.http.status import StatusCode
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 

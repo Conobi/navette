@@ -10,8 +10,8 @@ from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from tests._test_util import assert_true, assert_false, assert_equal_int
-from src.tls.lib import RustlsLibrary
-from src.quic.cid import (
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.cid import (
     CidEntry,
     CidManager,
     CID_ACTIVE,

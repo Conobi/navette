@@ -1,7 +1,7 @@
 # tests/test_alt_svc.mojo
 #
 # Unit tests for Alt-Svc (RFC 7838, M2.5b §7.2).
-from src.http.alt_svc import Origin, AltSvcEntry, parse_alt_svc, AltSvcCache
+from mojo_net.http.alt_svc import Origin, AltSvcEntry, parse_alt_svc, AltSvcCache
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 

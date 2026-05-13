@@ -21,8 +21,8 @@ Demonstrates:
   $ curl -v --http2 -k https://localhost:8443/
 """
 
-from src.h2.h2_tcp_server import H2TcpServer, serve_forever
-from src.http.handler import (
+from mojo_net.h2.h2_tcp_server import H2TcpServer, serve_forever
+from mojo_net.http.handler import (
     StreamHandler,
     Request,
     RecvBody,
@@ -31,10 +31,10 @@ from src.http.handler import (
     StreamError,
     BodyFrame,
 )
-from src.http.headers import Headers
-from src.http.status import StatusCode
-from src.io.tcp_socket import tcp_listener
-from src.tls import RustlsLibrary, TlsServerConfig
+from mojo_net.http.headers import Headers
+from mojo_net.http.status import StatusCode
+from mojo_net.io.tcp_socket import tcp_listener
+from mojo_net.tls import RustlsLibrary, TlsServerConfig
 
 from interop.file_io import read_file, getenv_opt
 

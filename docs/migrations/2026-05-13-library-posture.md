@@ -33,7 +33,7 @@ Each resolved dir is then compiled as a separate `.mojopkg` named after its leaf
 ## Current state of mojo-net
 
 - `src/` contains 7 top-level subdirs: `h1`, `h2`, `h3`, `http`, `io`, `quic`, `tls`.
-- 154 `.mojo` files import via the `from src.<module>...` prefix (`grep -rln 'from src\.' --include='*.mojo'`).
+- 154 `.mojo` files import via the `from mojo_net.<module>...` prefix (`grep -rln 'from src\.' --include='*.mojo'`).
 - No `mojo_net/` directory exists at the repo root.
 
 ## Stdlib-name-collision constraint
@@ -55,7 +55,7 @@ packages = ["mojo_net"]
 
 **Layout:** `src/` is deleted; everything moves to `mojo_net/{h1,h2,h3,http,io,quic,tls}/`.
 
-**Diff:** 154 `from src.X` imports become `from mojo_net.X`. A `git mv src mojo_net` plus a single `sed -i 's/from src\./from mojo_net./g'` (or Python script with proper Mojo awareness) across all `.mojo` files in `tests/`, `conformance/`, `bench/`, `examples/`.
+**Diff:** 154 `from mojo_net.X` imports become `from mojo_net.X`. A `git mv src mojo_net` plus a single `sed -i 's/from src\./from mojo_net./g'` (or Python script with proper Mojo awareness) across all `.mojo` files in `tests/`, `conformance/`, `bench/`, `examples/`.
 
 **Consumer experience:** `uv add mojo-net && from mojo_net.quic.connection import QuicConnection`. Clean.
 
@@ -72,7 +72,7 @@ packages = ["src/mojo_net"]
 
 **Layout:** `src/{h1,h2,...}` → `src/mojo_net/{h1,h2,...}`.
 
-**Diff:** Same 154 imports need rewriting — there's no way to keep `from src.X import Y` since the import resolution after install is `from mojo_net.X` (the `src` prefix never appears in the wheel-installed package).
+**Diff:** Same 154 imports need rewriting — there's no way to keep `from mojo_net.X import Y` since the import resolution after install is `from mojo_net.X` (the `src` prefix never appears in the wheel-installed package).
 
 **Comparison to A:** identical import diff; only difference is whether the `src/` directory survives at the repo root. Path A is cleaner because `src/` was just a Python convention that doesn't earn its keep here.
 

@@ -11,9 +11,9 @@ from std.collections import Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from src.tls.lib import RustlsLibrary
-from src.quic.connection import QuicConnection
-from src.quic.trans_param import TransportParams, default_transport_params
+from mojo_net.tls.lib import RustlsLibrary
+from mojo_net.quic.connection import QuicConnection
+from mojo_net.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert
 
 

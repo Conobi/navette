@@ -1,8 +1,8 @@
 # tests/test_body_frame_v2.mojo
 #
 # Unit tests for the End/Error variants of BodyFrame (M2.5a §5.2).
-from src.http.body import BodyFrame
-from src.http.handler import StreamError, STREAM_ERR_PARSER, STREAM_ERR_PEER_CLOSED
+from mojo_net.http.body import BodyFrame
+from mojo_net.http.handler import StreamError, STREAM_ERR_PARSER, STREAM_ERR_PEER_CLOSED
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
 
