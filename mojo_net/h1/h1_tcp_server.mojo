@@ -92,12 +92,6 @@ struct PendingSubmit(Copyable, Movable):
         self.conn_id = other.conn_id
         self.op_kind = other.op_kind
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.fd = take.fd
-        self.conn_id = take.conn_id
-        self.op_kind = take.op_kind
-
 
 # ── H1Conn — per-connection state ────────────────────────────────────────────
 
@@ -131,17 +125,6 @@ struct H1Conn[H: StreamHandler](Movable):
         self.send_in_flight = False
         self.recv_in_flight = False
         self.closed = False
-
-    def __init__(out self, *, deinit take: Self):
-        self.conn_id = take.conn_id
-        self.fd = take.fd^
-        self.http = take.http^
-        self.recv_buf = take.recv_buf^
-        self.send_buf = take.send_buf^
-        self.send_pending = take.send_pending^
-        self.send_in_flight = take.send_in_flight
-        self.recv_in_flight = take.recv_in_flight
-        self.closed = take.closed
 
 
 # ── H1TcpServer ──────────────────────────────────────────────────────────────

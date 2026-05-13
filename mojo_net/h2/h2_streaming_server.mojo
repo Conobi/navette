@@ -426,15 +426,6 @@ struct H2StreamingServer(Movable):
         self._coro_pool = CoroutinePool(capacity=4)
         self._flush_outbound()
 
-    def __init__(out self, *, deinit take: Self):
-        self._conn = take._conn^
-        self._handler_fn = take._handler_fn
-        self._extra_data = take._extra_data
-        self._outbuf = take._outbuf^
-        self._streams = take._streams^
-        self._ctx_pool = take._ctx_pool^
-        self._coro_pool = take._coro_pool^
-
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts and coroutines."""
         var keys = List[Int]()
