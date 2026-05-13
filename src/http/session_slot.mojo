@@ -120,6 +120,46 @@ struct SessionSlot(Movable):
             out.extend(datagrams[i].copy())
         return out^
 
+    def feed_datagram(
+        mut self, data: Span[UInt8, _], now: UInt64
+    ) raises:
+        """Feed inbound bytes preserving QUIC datagram boundaries.
+
+        For H1/H2 (byte streams) this is identical to `feed` and `now` is
+        ignored — the byte path doesn't care about timestamps. For H3 it
+        threads the wall-clock `now` into the QUIC stack so PTO / loss
+        detection get accurate samples.
+        """
+        if self.kind == SLOT_H1:
+            self.h1.value().feed(data)
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed(data)
+        else:
+            self.h3.value().feed_datagram(data, now)
+
+    def drain_datagrams(
+        mut self, now: UInt64
+    ) raises -> List[List[UInt8]]:
+        """Drain outbound bytes preserving QUIC datagram boundaries.
+
+        For H1/H2 returns a single-element list wrapping the whole flat
+        byte stream (empty list when there's nothing to send). For H3,
+        returns one element per QUIC packet so the caller can `send(2)`
+        each with the right boundary. `now` is the QUIC clock — pass
+        microsecond monotonic time at the call site for correct PTO.
+        """
+        var out = List[List[UInt8]]()
+        if self.kind == SLOT_H3:
+            return self.h3.value().drain_datagrams(now)
+        var stream: List[UInt8]
+        if self.kind == SLOT_H1:
+            stream = self.h1.value().drain()
+        else:
+            stream = self.h2.value().drain()
+        if len(stream) > 0:
+            out.append(stream^)
+        return out^
+
     def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
         if self.kind == SLOT_H1:
             self.h1.value().feed_body(handle_id, frame^)

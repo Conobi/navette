@@ -77,7 +77,49 @@ struct HttpCoroClient(Movable):
                 return slots[0].ptr()[].drain()
         return List[UInt8]()
 
+    def feed_datagram(
+        mut self, data: Span[UInt8, _], origin: Origin, now: UInt64,
+    ) raises:
+        """Feed an inbound network buffer with QUIC framing intact.
+
+        For H1/H2 origins this is byte-stream feed (and `now` is ignored).
+        For H3 origins the datagram and the wall-clock `now` flow into the
+        QUIC state machine so PTO + loss detection get accurate samples.
+        """
+        if origin in self._client._pool:
+            ref slots = self._client._pool[origin]
+            if len(slots) > 0:
+                slots[0].ptr()[].feed_datagram(data, now)
+
+    def drain_datagrams(
+        mut self, origin: Origin, now: UInt64,
+    ) raises -> List[List[UInt8]]:
+        """Drain outbound bytes preserving QUIC datagram boundaries.
+
+        For H1/H2 returns a single-element list wrapping the byte stream
+        (or empty when there's nothing to send). For H3 returns one
+        element per QUIC packet so the caller can `send(2)` each one
+        with the right framing.
+        """
+        if origin in self._client._pool:
+            ref slots = self._client._pool[origin]
+            if len(slots) > 0:
+                return slots[0].ptr()[].drain_datagrams(now)
+        return List[List[UInt8]]()
+
     # --- Request API ---
+
+    def submit(
+        mut self, var origin: Origin, var req: Request,
+    ) raises -> RequestHandle:
+        """Submit a pre-built Request to a pooled session.
+
+        Use this when you've constructed a `Request` yourself (custom
+        headers, body, method) rather than calling one of the
+        `get`/`post`/`put`/`delete`/`head` convenience methods which
+        only let you pass a URL.
+        """
+        return self._client.submit(origin^, req^)
 
     def get(mut self, url: String) raises -> RequestHandle:
         """Submit a GET request."""
