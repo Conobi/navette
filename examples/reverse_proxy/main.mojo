@@ -591,43 +591,29 @@ struct ProxyHandler(CompletionHandler):
         # Drain any plaintext now so the variant handler doesn't miss
         # the bytes that arrived in the handshake-final record.
         var plaintext = ptr[].client_tls.drain_plaintext()
-        if len(plaintext) > 0:
-            if ptr[].variant.is_h2():
-                # Feed into the H2 streaming server; its drain() will
-                # surface the server-preface frames + any frames it
-                # parsed from the first inbound record.
+        if ptr[].variant.is_h2():
+            # Feed any handshake-trailing plaintext, then drain once. The H2
+            # streaming server emits the server preface at construction time,
+            # so drain() returns the preface even if plaintext is empty.
+            if len(plaintext) > 0:
                 ptr[].variant.h2_state.value().client_h2.feed(
                     Span(plaintext)
                 )
-                var h2_out = ptr[].variant.h2_state.value().client_h2.drain()
-                if len(h2_out) > 0:
-                    ptr[].client_tls.send_data(Span(h2_out))
-                    var ct = ptr[].client_tls.drain_ciphertext()
-                    stage_client_send(
-                        ptr[].send_state,
-                        self.pending_submits,
-                        ptr[].client_handle.raw(),
-                        ptr[].conn_id,
-                        ct^,
-                    )
-            elif ptr[].variant.is_h1():
-                ptr[].variant.h1_state.value().client_http.receive_data(
-                    Span(plaintext)
-                )
-
-        # H2 still needs to flush its server preface even without
-        # client-side plaintext arriving with the handshake.
-        if ptr[].variant.is_h2():
-            var preface = ptr[].variant.h2_state.value().client_h2.drain()
-            if len(preface) > 0:
-                ptr[].client_tls.send_data(Span(preface))
-                var ct2 = ptr[].client_tls.drain_ciphertext()
+            var h2_out = ptr[].variant.h2_state.value().client_h2.drain()
+            if len(h2_out) > 0:
+                ptr[].client_tls.send_data(Span(h2_out))
+                var ct = ptr[].client_tls.drain_ciphertext()
                 stage_client_send(
                     ptr[].send_state,
                     self.pending_submits,
                     ptr[].client_handle.raw(),
                     ptr[].conn_id,
-                    ct2^,
+                    ct^,
+                )
+        elif ptr[].variant.is_h1():
+            if len(plaintext) > 0:
+                ptr[].variant.h1_state.value().client_http.receive_data(
+                    Span(plaintext)
                 )
 
         # Transition to BACKEND_CONNECTING and queue the connect.
