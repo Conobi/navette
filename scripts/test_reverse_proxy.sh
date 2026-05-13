@@ -54,8 +54,7 @@ fi
 # 2. Build and start the reverse proxy
 echo "Building reverse proxy..."
 rm -f ./*.mojopkg 2>/dev/null || true
-LD_LIBRARY_PATH=lib uv run mojox build \
-    -I examples/reverse_proxy \
+LD_LIBRARY_PATH=lib uv run --project examples/reverse_proxy mojox build \
     examples/reverse_proxy/main.mojo -o /tmp/mojo_reverse_proxy \
     >"$PROXY_LOG" 2>&1
 
