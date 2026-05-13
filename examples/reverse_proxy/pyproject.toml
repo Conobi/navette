@@ -1,7 +1,7 @@
 [project]
 name = "mojo-net-example-reverse-proxy"
 version = "0.0.0"
-description = "reverse_proxy — H1 reverse proxy using mojo-net (will be unified with h2_reverse_proxy in Plan 3)"
+description = "reverse_proxy — unified ALPN-dispatched H1+H2 reverse proxy using mojo-net"
 requires-python = ">=3.11"
 dependencies = [
     "mojo-net",
