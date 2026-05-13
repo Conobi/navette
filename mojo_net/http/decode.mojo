@@ -117,7 +117,7 @@ struct ContentDecoder(Movable):
                 out.append(data[i])
             return out^
 
-        var in_ptr = data.unsafe_ptr().bitcast[UInt8]().as_any_origin()
+        var in_ptr = data.unsafe_ptr().bitcast[UInt8]().unsafe_mut_cast[True]().as_any_origin()
         var out_buf = _heap_alloc[UInt8](_OUT_CAP).as_any_origin()
         var n: Int64
 
