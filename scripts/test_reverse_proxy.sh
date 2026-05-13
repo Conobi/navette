@@ -182,19 +182,34 @@ print('H2 GET assertions passed')
 "
 echo "=== PASS: HTTP/2 GET ==="
 
-# 6. POST via HTTP/2 — KNOWN LIMITATION (Plan 3 follow-up)
-#
-# The unified proxy's H2 stream coro forwards the request body to the
-# backend via the boucle.stackful CoroYielder pattern, but the coro is
-# being woken for cleanup before the backend response arrives (likely via
-# H2StreamingServer._free_all_streams when the proxy mistakenly closes
-# the client side). H2 GET works; H2 POST does not.
-#
-# Filed as a known limitation in plans/2026-05-13-unified-reverse-proxy-
-# retrospective.md and explicitly OUT OF SCOPE for the Plan 3 smoke gate.
-# Re-enable when the cleanup race is diagnosed and fixed (follow-up plan).
+# 6. POST via HTTP/2
 echo ""
-echo "Skipping HTTP/2 POST — known limitation, see retro."
+echo "Sending HTTP/2 POST..."
+set +e
+H2_POST=$(curl -sk --http2 --max-time 10 \
+    "https://127.0.0.1:$PROXY_PORT/h2-post" \
+    -X POST -d "h2=yes" \
+    -H "Content-Type: application/x-www-form-urlencoded" 2>&1)
+CURL_RC=$?
+set -e
+
+if [ $CURL_RC -ne 0 ]; then
+    echo "FAIL: HTTP/2 POST failed (rc=$CURL_RC)"
+    echo "$H2_POST"
+    exit 1
+fi
+echo "H2 POST response: $H2_POST"
+
+echo "$H2_POST" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert data['method'] == 'POST', f'Wrong method: {data[\"method\"]!r}'
+assert data['body'] == 'h2=yes', f'Wrong body: {data[\"body\"]!r}'
+via = data['headers'].get('via', data['headers'].get('Via', ''))
+assert '2.0 mojo-proxy' in via, f'Missing/wrong H2 Via header: {via!r}'
+print('H2 POST assertions passed')
+"
+echo "=== PASS: HTTP/2 POST ==="
 
 echo ""
-echo "=== ALL E2E TESTS PASSED (H1 GET + POST, H2 GET; H2 POST deferred) ==="
+echo "=== ALL E2E TESTS PASSED ==="

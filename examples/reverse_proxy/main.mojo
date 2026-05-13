@@ -46,6 +46,7 @@ from boucle.net.options import (
     Protocol,
 )
 from boucle._sys.linux.net.socket import socket as _sys_socket
+from boucle._sys.linux.fd import close as _sys_close
 
 from proxy_common import (
     ConnSendState,
@@ -831,10 +832,27 @@ struct ProxyHandler(CompletionHandler):
     # --- Close helper ---------------------------------------------------
 
     def _close_connection(mut self, idx: Int):
-        """Drop the connection: run its destructor (closes fds via the
-        OwnedHandle fields) and free the heap slot."""
+        """Drop the connection: shutdown + close both sockets, run the
+        ProxyConnection destructor, and free the heap slot.
+
+        We shutdown(SHUT_RDWR) + close BEFORE destroy_pointee because
+        close() alone is not enough to trigger TCP teardown when io_uring
+        still holds references to the fd (in-flight or recently-completed
+        submissions). Empirically, without the explicit shutdown the
+        backend TCP connection stays in ESTABLISHED state after the proxy
+        finishes a request, blocking the backend's accept loop in its
+        previous handle_connection's recv() call and starving every
+        subsequent connection. The shutdown(SHUT_RDWR) sends FIN
+        synchronously; close() reclaims the fd.
+        """
         var ptr = self.connections[idx]
         ptr[].closed = True
+        var client_fd = ptr[].client_handle.raw()
+        var backend_fd = ptr[].backend_handle.raw()
+        _ = external_call["shutdown", Int32](client_fd, Int32(2))
+        _ = external_call["shutdown", Int32](backend_fd, Int32(2))
+        _sys_close(unsafe_fd=client_fd)
+        _sys_close(unsafe_fd=backend_fd)
         var last = len(self.connections) - 1
         if idx != last:
             self.connections[idx] = self.connections[last]

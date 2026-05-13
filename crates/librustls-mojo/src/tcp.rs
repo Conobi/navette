@@ -193,10 +193,20 @@ pub extern "C" fn rlsm_client_config_new_insecure() -> i32 {
     }
 
     use std::sync::Arc;
-    let config = ClientConfig::builder()
+    let mut config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
         .with_no_client_auth();
+
+    // Disable TLS 1.3 session resumption (PSK). The reverse-proxy example
+    // shares one ClientConfig across all backend connections; after a full
+    // handshake to a server (typically self-signed test backends), rustls
+    // caches a NewSessionTicket. A subsequent connection would offer that
+    // PSK in the ClientHello — but several server implementations
+    // (Python's `ssl` module in particular) silently drop the PSK-bearing
+    // ClientHello, stalling the handshake. Disabling client-side
+    // resumption keeps every connection on the full-handshake path.
+    config.resumption = rustls::client::Resumption::disabled();
 
     crate::config::_insert_client_config(Arc::new(config))
 }
