@@ -1,0 +1,7 @@
+# Pinned to match bench/quic_perf/Dockerfile.tquic (rust:1.88-bookworm).
+# Bumping requires a coordinated update of any Dockerfile using `rust:1.XX-bookworm`.
+
+[toolchain]
+channel    = "1.88.0"
+components = ["rustfmt", "clippy"]
+profile    = "minimal"

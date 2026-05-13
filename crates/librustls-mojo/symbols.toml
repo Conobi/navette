@@ -1,0 +1,52 @@
+# librustls-mojo FFI symbol schema (§2.3 scaffolding — 2026-05-13)
+#
+# Goal: single source of truth for the rlsm_* symbols that cross the
+# Rust ↔ Mojo boundary. Today the Rust `#[no_mangle] extern "C" fn`
+# declarations live across crates/librustls-mojo/src/{tcp,decode,config,
+# handles,quic_hs,quic,error,lib}.rs and are mirrored by hand-written
+# `OwnedDLHandle.get_function_unsafe[...]` calls in
+# src/tls/lib.mojo + src/http/decode.mojo.
+#
+# This schema lets scripts/gen_rlsm_bindings.py emit the Mojo binding
+# module (and, in a follow-up, the Rust extern stubs too). Drift
+# between Rust source and this file is asserted by
+# scripts/check_integrations.sh.
+#
+# Status: scaffolding only. Full migration of ~50 symbols is a separable
+# spike — see plans/2026-05-13-deps-enhancement.md §2.3. The three
+# entries below are exemplars covering the type-surface boundaries:
+#   - simple primitive in/out  (rlsm_noop, rlsm_client_config_new)
+#   - handle + byte-buffer in  (rlsm_config_set_alpn_protocols)
+#
+# Type mapping conventions:
+#   Rust i32                  ↔ Mojo Int32
+#   Rust usize                ↔ Mojo Int
+#   Rust *const u8 / *mut u8  ↔ Mojo UnsafePointer[UInt8]
+#   Rust handle pointers      ↔ Mojo UnsafePointer[NoneType] (opaque)
+
+schema_version = 1
+
+[[symbol]]
+name = "rlsm_noop"
+description = "Test stub — returns 0."
+rust_args = []
+rust_ret  = "i32"
+mojo_args = []
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_client_config_new"
+description = "Allocate a default rustls client config and return its handle."
+rust_args = []
+rust_ret  = "i32"
+mojo_args = []
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_config_set_alpn_protocols"
+description = "Set ALPN wire-encoded protocols on the given config handle."
+rust_args = ["i32", "*const u8", "i32"]
+rust_args_names = ["config_handle", "protocols", "protocols_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
