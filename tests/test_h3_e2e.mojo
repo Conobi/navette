@@ -335,12 +335,15 @@ def test_h3_session_get() raises:
     # Pump handshake
     now = _pump_e2e(server, client, now, 50)
 
-    # Submit GET /
+    # Submit GET /. H3Session derives :authority from the host header
+    # (RFC 9114 §4.2), so any non-empty placeholder works for loopback.
+    var hdrs = Headers()
+    hdrs.add(String("host"), String("test.local"))
     var req = Request(
         method=Method.get(),
         target=String("/"),
         version=Version.http_3(),
-        headers=Headers(),
+        headers=hdrs^,
     )
     var handle = client.submit(req^)
 
@@ -386,9 +389,13 @@ def test_h3_multi_request() raises:
 
     # Submit three requests — RequestHandle is Movable but not Copyable,
     # so keep them as individual named variables.
-    var req0 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=Headers())
-    var req1 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=Headers())
-    var req2 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=Headers())
+    # H3Session needs a host header to derive :authority (RFC 9114 §4.2).
+    var hdrs0 = Headers(); hdrs0.add(String("host"), String("test.local"))
+    var hdrs1 = Headers(); hdrs1.add(String("host"), String("test.local"))
+    var hdrs2 = Headers(); hdrs2.add(String("host"), String("test.local"))
+    var req0 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=hdrs0^)
+    var req1 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=hdrs1^)
+    var req2 = Request(method=Method.get(), target=String("/"), version=Version.http_3(), headers=hdrs2^)
     var h0 = client.submit(req0^)
     var h1 = client.submit(req1^)
     var h2 = client.submit(req2^)

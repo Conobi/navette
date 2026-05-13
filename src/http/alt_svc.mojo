@@ -5,6 +5,7 @@
 # consult during connection establishment.
 
 from std.collections.dict import Dict, KeyElement
+from std.memory import Span
 
 
 struct Origin(KeyElement):
@@ -341,6 +342,109 @@ struct AltSvcCache(Movable):
         for j in range(len(to_drop)):
             _ = self._entries.pop(Origin(other=to_drop[j]))
             _ = self._received_at.pop(Origin(other=to_drop[j]))
+
+    def dump(self) raises -> String:
+        """Serialize the cache to a tab-delimited text representation.
+
+        One line per origin:
+            scheme<TAB>host<TAB>port<TAB>received_at<TAB>alt-svc-value
+        where alt-svc-value is exactly what `parse_alt_svc` accepts, so the
+        cache round-trips through the same parser used on the wire. Lines
+        starting with '#' are reserved for comments on load.
+        """
+        var out = String("# mojo-fetch alt-svc cache v1\n")
+        for kv in self._entries.items():
+            ref origin = kv.key
+            var received_at = self._received_at[kv.key]
+            ref entries = kv.value
+            if len(entries) == 0:
+                continue
+            var value = String()
+            for i in range(len(entries)):
+                ref e = entries[i]
+                if i > 0:
+                    value = value + ", "
+                value = value + e.protocol + "=\""
+                if len(e.host) > 0:
+                    value = value + e.host
+                value = value + ":" + String(Int(e.port)) + "\""
+                value = value + "; ma=" + String(Int(e.max_age_secs))
+                if e.persist:
+                    value = value + "; persist=1"
+            out = out + origin.scheme + "\t" + origin.host + "\t"
+            out = out + String(Int(origin.port)) + "\t"
+            out = out + String(Int(received_at)) + "\t" + value + "\n"
+        return out^
+
+    def load_text(mut self, content: String, now: UInt) raises:
+        """Populate the cache from `dump()` output. Skips comment lines,
+        empty lines, malformed records, and entries that have expired at
+        `now`. Best-effort: a single broken line does not abort the load."""
+        var b = content.as_bytes()
+        var n = len(b)
+        var line_start = 0
+        while line_start < n:
+            # Walk to the next newline (0x0a).
+            var line_end = line_start
+            while line_end < n and b[line_end] != UInt8(0x0a):
+                line_end += 1
+            self._load_one_line(b, line_start, line_end, now)
+            line_start = line_end + 1
+
+    def _load_one_line(
+        mut self,
+        b: Span[UInt8, _],
+        start: Int,
+        end: Int,
+        now: UInt,
+    ) raises:
+        """Parse a single tab-delimited line from `dump()` and insert it."""
+        if end <= start:
+            return
+        if b[start] == UInt8(0x23):   # '#'
+            return
+        # Walk through up to 4 TAB separators; the rest is the alt-svc value.
+        var fields = List[String]()
+        var fstart = start
+        var i = start
+        while i < end and len(fields) < 4:
+            if b[i] == UInt8(0x09):
+                var f = String()
+                var k = fstart
+                while k < i:
+                    f += chr(Int(b[k]))
+                    k += 1
+                fields.append(f^)
+                fstart = i + 1
+            i += 1
+        if len(fields) != 4:
+            return
+        var rest = String()
+        var rk = fstart
+        while rk < end:
+            rest += chr(Int(b[rk]))
+            rk += 1
+        try:
+            var port = UInt16(atol(fields[2]))
+            var received_at = UInt(atol(fields[3]))
+            var entries = parse_alt_svc(rest)
+            if len(entries) == 0:
+                return
+            var live = List[AltSvcEntry]()
+            for j in range(len(entries)):
+                if received_at + entries[j].max_age_secs > now:
+                    live.append(AltSvcEntry(other=entries[j]))
+            if len(live) == 0:
+                return
+            var origin = Origin(
+                scheme=fields[0].copy(),
+                host=fields[1].copy(),
+                port=port,
+            )
+            self.insert(Origin(other=origin), live^, received_at)
+        except:
+            # Malformed record; skip silently — best-effort load.
+            return
 
 
 def parse_alt_svc(value: String) raises -> List[AltSvcEntry]:

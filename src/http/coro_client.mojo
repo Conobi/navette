@@ -159,6 +159,22 @@ struct HttpCoroClient(Movable):
         """Check if an upgraded protocol is available for this origin."""
         return self._alt_svc.lookup(origin, now)
 
+    def clear_alt_svc(mut self, origin: Origin) raises:
+        """Drop any cached Alt-Svc entries for `origin`. Used by CLI
+        callers to invalidate a stale advertisement after a failed
+        upgrade attempt."""
+        self._alt_svc.clear(origin)
+
+    def dump_alt_svc(self) raises -> String:
+        """Serialize the in-memory Alt-Svc cache to a text representation
+        suitable for on-disk persistence. See `AltSvcCache.dump`."""
+        return self._alt_svc.dump()
+
+    def load_alt_svc(mut self, content: String, now: UInt) raises:
+        """Load previously-dumped Alt-Svc cache content. Expired entries
+        are dropped at the supplied `now`. See `AltSvcCache.load_text`."""
+        self._alt_svc.load_text(content, now)
+
     # --- Pool inspection (for testing) ---
 
     def has_connection(self, origin: Origin) raises -> Bool:

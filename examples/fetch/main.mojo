@@ -1,7 +1,22 @@
 # examples/fetch/main.mojo
 #
-# `fetch` — HTTP/3 native CLI built on mojo-net.
-# Default transport is QUIC/H3 (UDP). Falls back to TCP+TLS (H2/H1) with flags.
+# `fetch` — HTTP CLI built on mojo-net.
+#
+# Transport selection (default → safe TCP+TLS, upgrade to H3 only when the
+# origin has advertised it):
+#   http://                       → plaintext TCP + HTTP/1.1.
+#   https:// (default)            → TCP+TLS with ALPN-negotiated H2/H1.
+#                                   On startup, the on-disk Alt-Svc cache
+#                                   (~/.cache/mojo-fetch/alt_svc.txt) is
+#                                   consulted: if a live `h3` advertisement
+#                                   exists for the origin, fetch will try
+#                                   QUIC/H3 first and fall back with a
+#                                   helpful error if the handshake fails.
+#                                   After every response, any Alt-Svc
+#                                   header is parsed and persisted so the
+#                                   next invocation can upgrade.
+#   https:// + --http3            → force QUIC/H3 regardless of cache.
+#   https:// + --http2 / --http1.1 → force TCP+TLS at that ALPN.
 #
 # Build + run:
 #   LD_LIBRARY_PATH=lib uv run mojo run -I . examples/fetch/main.mojo [OPTIONS] <URL>
@@ -17,6 +32,7 @@
 #   --compressed     Request + decode gzip/brotli content-encoding
 #   --http1.1        Force HTTP/1.1 over TCP+TLS
 #   --http2          Force HTTP/2 over TCP+TLS
+#   --http3          Force HTTP/3 over QUIC (UDP)
 #   --json DATA      Shorthand: POST with Content-Type: application/json
 #   -w FORMAT        Write timing stats after response:
 #                      %{time_connect} %{time_tls} %{time_total}
@@ -24,7 +40,7 @@
 #
 # Examples:
 #   fetch https://1.1.1.1/cdn-cgi/trace
-#   fetch -v --http2 https://1.1.1.1/cdn-cgi/trace
+#   fetch -v --http3 https://www.cloudflare.com/
 #   fetch --json '{"q":"hello"}' https://httpbin.org/post
 #   fetch --compressed https://example.com
 #   fetch -w "\n%{http_code} %{size_download}B via %{alpn} in %{time_total}ms\n" https://1.1.1.1/
@@ -33,6 +49,11 @@ from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections.optional import Optional
+from std.os.env import getenv
+from std.os import makedirs
+from std.pathlib import Path
+
+from boucle.handle import OwnedHandle
 
 from src.tls import RustlsLibrary, TlsClientConfig, TlsConnection
 from src.http import Method, Version, Headers, Request
@@ -41,12 +62,16 @@ from src.http.response import Response
 from src.http.session import RequestHandle
 from src.http.body import BodyFrame
 from src.http.url import parse_url, ParsedUrl
+from src.http.alt_svc import Origin, AltSvcEntry
+from src.http.coro_client import HttpCoroClient
+from src.http.session_slot import SessionSlot
 from src.h1.h1_session import H1Session
 from src.h2.h2_session import H2Session
 from src.h3.h3_session import H3Session
 from src.quic.connection import QuicConnection
 from src.quic.trans_param import TransportParams, default_transport_params
 from src.http.decode import ContentDecoder, ContentEncoding
+from src.io import resolve_host, tcp_connect, udp_connect
 
 comptime _RECV_BUF: Int = 16384
 comptime _MAX_ITERS: Int = 500
@@ -77,163 +102,59 @@ def _monotonic_ms() -> UInt64:
     return UInt64(sec * 1000 + nsec // 1_000_000)
 
 
-@always_inline
-fn _is_dotted_ipv4(host: String) -> Bool:
-    """True if `host` looks like a dotted-IPv4 literal (digits + dots only)."""
-    var bytes = host.as_bytes()
-    if len(bytes) == 0:
-        return False
-    for i in range(len(bytes)):
-        var b = bytes[i]
-        if b != UInt8(46) and (b < UInt8(48) or b > UInt8(57)):
-            return False
-    return True
+def _realtime_secs() -> UInt:
+    """Wall-clock seconds since the Unix epoch (CLOCK_REALTIME).
 
-
-def _resolve_ipv4(host: String) raises -> String:
-    """Resolve a hostname to a dotted-IPv4 string via getaddrinfo(3).
-
-    Pass-through for inputs that already look like IPv4 literals.
-    Special-cases `localhost` to `127.0.0.1` so the resolver works on
-    minimal containers without an `/etc/hosts` entry.
-
-    IPv6 not yet supported (the rest of fetch is IPv4-only — _tcp_connect
-    builds a 16-byte sockaddr_in).
+    The Alt-Svc cache uses this as both the `received_at` timestamp on
+    insert and the `now` reference on lookup so entries remain valid
+    across process restarts (monotonic clocks reset on reboot and can't
+    be persisted).
     """
-    if host == String("localhost"):
-        return String("127.0.0.1")
-    if _is_dotted_ipv4(host):
-        return host
-
-    # struct addrinfo on Linux x86_64 is 48 bytes:
-    #   int ai_flags (4) + int ai_family (4) + int ai_socktype (4)
-    #   + int ai_protocol (4) + socklen_t ai_addrlen (4) + 4-byte pad
-    #   + struct sockaddr *ai_addr (8) + char *ai_canonname (8)
-    #   + struct addrinfo *ai_next (8)
-    # We zero hints and set ai_family = AF_INET (2) at offset 4.
-    var hints = _heap_alloc[UInt8](48).as_any_origin()
-    for i in range(48):
-        hints[i] = 0
-    hints[4] = 2  # ai_family = AF_INET (LE i32)
-
-    # Null-terminated host C-string.
-    var host_bytes = host.as_bytes()
-    var host_cstr = _heap_alloc[UInt8](len(host_bytes) + 1).as_any_origin()
-    for i in range(len(host_bytes)):
-        host_cstr[i] = host_bytes[i]
-    host_cstr[len(host_bytes)] = 0
-
-    var out_res = _heap_alloc[UInt64](1).as_any_origin()
-    out_res[0] = 0
-    var rc = external_call["getaddrinfo", Int32](
-        host_cstr,
-        UnsafePointer[UInt8, MutAnyOrigin](),  # service = NULL
-        hints,
-        out_res,
+    var ts = _heap_alloc[UInt8](16).as_any_origin()
+    _ = external_call["clock_gettime", Int32](
+        Int32(0),  # CLOCK_REALTIME
+        ts,
     )
-    host_cstr.free()
-    hints.free()
-
-    if rc != 0:
-        out_res.free()
-        raise (
-            "getaddrinfo(" + host + ") failed: rc=" + String(Int(rc))
-            + " (use IP literal as workaround)"
-        )
-
-    var res_addr = out_res[0]
-    out_res.free()
-    if res_addr == 0:
-        raise "getaddrinfo(" + host + "): empty result"
-
-    # First addrinfo node: read ai_addr (sockaddr * at offset 24).
-    var res_ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(res_addr))
-    var ai_addr_lo = UInt64(res_ptr[24])
-    var ai_addr_b1 = UInt64(res_ptr[25]) << 8
-    var ai_addr_b2 = UInt64(res_ptr[26]) << 16
-    var ai_addr_b3 = UInt64(res_ptr[27]) << 24
-    var ai_addr_b4 = UInt64(res_ptr[28]) << 32
-    var ai_addr_b5 = UInt64(res_ptr[29]) << 40
-    var ai_addr_b6 = UInt64(res_ptr[30]) << 48
-    var ai_addr_b7 = UInt64(res_ptr[31]) << 56
-    var ai_addr_val = (
-        ai_addr_lo | ai_addr_b1 | ai_addr_b2 | ai_addr_b3
-        | ai_addr_b4 | ai_addr_b5 | ai_addr_b6 | ai_addr_b7
-    )
-
-    # sockaddr_in layout: family(2) port(2 BE) addr(4) zero-pad(8) = 16 bytes.
-    # We want bytes 4..8 = the 4 IPv4 octets.
-    var sa_ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(ai_addr_val))
-    var oct1 = Int(sa_ptr[4])
-    var oct2 = Int(sa_ptr[5])
-    var oct3 = Int(sa_ptr[6])
-    var oct4 = Int(sa_ptr[7])
-
-    _ = external_call["freeaddrinfo", Int32](res_addr)
-
-    return (
-        String(oct1) + "." + String(oct2) + "."
-        + String(oct3) + "." + String(oct4)
-    )
+    var sec_ptr = ts.bitcast[Int64]()
+    var sec = Int(sec_ptr[])
+    ts.free()
+    return UInt(sec)
 
 
-def _fill_sockaddr_in(addr: UnsafePointer[UInt8, MutAnyOrigin], host_ip: String, port: Int):
-    """Populate a 16-byte sockaddr_in for AF_INET / dotted-IPv4 host."""
-    for i in range(16):
-        addr[i] = 0
-    addr[0] = 2  # AF_INET
-    addr[1] = 0
-    var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
-    addr[2] = UInt8(port_be & 0xFF)
-    addr[3] = UInt8((port_be >> 8) & 0xFF)
-    var octet = 0
-    var octet_idx = 4
-    var host_bytes = host_ip.as_bytes()
-    for ci in range(len(host_bytes)):
-        var b = host_bytes[ci]
-        if b == 46:
-            addr[octet_idx] = UInt8(octet)
-            octet_idx += 1
-            octet = 0
-        else:
-            octet = octet * 10 + (Int(b) - 48)
-    addr[octet_idx] = UInt8(octet)
+def _connect_tcp_resolved(host: String, port: Int) raises -> OwnedHandle:
+    """Resolve `host:port` via dual-stack getaddrinfo + connect the first
+    address that succeeds.
+
+    Tries each address from `resolve_host` in glibc's RFC 6724 order
+    (typically IPv6 first, then IPv4) and returns the first connected
+    `OwnedHandle`. On a host with broken IPv6 routing this means the
+    first attempt blocks until the kernel times out (~75s), but with
+    working dual-stack the v6 attempt succeeds immediately.
+    """
+    var addrs = resolve_host(host, port)
+    for i in range(len(addrs) - 1):
+        try:
+            return tcp_connect(addrs[i])
+        except e:
+            pass  # try next address
+    return tcp_connect(addrs[len(addrs) - 1])
 
 
-def _tcp_connect(host: String, port: Int) raises -> Int32:
-    """Open a blocking TCP socket and connect to host:port (IPv4 only)."""
-    var fd = external_call["socket", Int32](Int32(2), Int32(1), Int32(0))
-    if fd < 0:
-        raise "socket() failed: " + String(Int(fd))
+def _connect_udp_resolved(host: String, port: Int) raises -> OwnedHandle:
+    """Resolve `host:port` and pin a UDP socket to the first reachable addr.
 
-    var host_ip = _resolve_ipv4(host)
-    var addr = _heap_alloc[UInt8](16).as_any_origin()
-    _fill_sockaddr_in(addr, host_ip, port)
-
-    var rc = external_call["connect", Int32](fd, addr, Int32(16))
-    addr.free()
-    if rc < 0:
-        _ = external_call["close", Int32](fd)
-        raise "connect() failed: " + String(Int(rc))
-    return fd
-
-
-def _udp_connect(host: String, port: Int) raises -> Int32:
-    """Open a connected UDP socket to host:port (IPv4 only)."""
-    var fd = external_call["socket", Int32](Int32(2), Int32(2), Int32(0))  # SOCK_DGRAM=2
-    if fd < 0:
-        raise "socket(UDP) failed: " + String(Int(fd))
-
-    var host_ip = _resolve_ipv4(host)
-    var addr = _heap_alloc[UInt8](16).as_any_origin()
-    _fill_sockaddr_in(addr, host_ip, port)
-
-    var rc = external_call["connect", Int32](fd, addr, Int32(16))
-    addr.free()
-    if rc < 0:
-        _ = external_call["close", Int32](fd)
-        raise "connect(UDP) failed: " + String(Int(rc))
-    return fd
+    Same iteration strategy as `_connect_tcp_resolved`. UDP `connect(2)`
+    only stores the peer addr (no network handshake) so failures are
+    almost always synthetic (e.g. AF mismatch), but the fallback is
+    free and matches the TCP path's shape.
+    """
+    var addrs = resolve_host(host, port)
+    for i in range(len(addrs) - 1):
+        try:
+            return udp_connect(addrs[i])
+        except e:
+            pass
+    return udp_connect(addrs[len(addrs) - 1])
 
 
 def _udp_send(fd: Int32, data: List[UInt8]) raises:
@@ -262,7 +183,16 @@ def _udp_recv(fd: Int32) raises -> List[UInt8]:
 
 
 def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
-    """Receive a single UDP datagram (blocking)."""
+    """Receive a single UDP datagram.
+
+    Blocks for up to the socket's `SO_RCVTIMEO` (set per-call site via
+    `_set_recv_timeout_ms`). Returns an empty list on timeout, EAGAIN,
+    or any other `rc < 0` — fetch's outer handshake loop relies on a
+    wall-clock deadline rather than per-recv errno disambiguation, so
+    we don't raise here. Without errno access from Mojo's
+    `external_call`, we can't distinguish a real socket error from a
+    benign timeout; the deadline catches both.
+    """
     var buf = _heap_alloc[UInt8](65536).as_any_origin()
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0))
     var result = List[UInt8]()
@@ -270,9 +200,35 @@ def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
         for i in range(rc):
             result.append(buf[i])
     buf.free()
-    if rc < 0:
-        raise "recv(UDP) returned " + String(rc)
     return result^
+
+
+def _set_recv_timeout_ms(fd: Int32, ms: Int) raises:
+    """Set `SO_RCVTIMEO` on `fd` so blocking `recv(2)` returns periodically.
+
+    Without this, an unsolicited recv on a UDP socket whose peer never
+    answers (e.g. an H3 request to a host that only serves H1/H2 on the
+    URL port) blocks forever. With a positive timeout, the kernel
+    surfaces `EAGAIN` after `ms` milliseconds and our outer loop can
+    enforce a wall-clock deadline.
+    """
+    # struct timeval { time_t tv_sec; suseconds_t tv_usec; }  — 16 bytes on x86_64.
+    var tv = _heap_alloc[UInt8](16).as_any_origin()
+    for i in range(16):
+        tv[i] = UInt8(0)
+    var sec_ptr = tv.bitcast[Int64]()
+    sec_ptr[] = Int64(ms // 1000)
+    var usec_ptr = UnsafePointer[Int64, MutAnyOrigin](
+        unsafe_from_address=Int(tv) + 8
+    )
+    usec_ptr[] = Int64((ms % 1000) * 1000)
+    # SOL_SOCKET=1, SO_RCVTIMEO=20, optlen=16 bytes.
+    var rc = external_call["setsockopt", Int32](
+        fd, Int32(1), Int32(20), tv, Int32(16),
+    )
+    tv.free()
+    if rc < 0:
+        raise "setsockopt(SO_RCVTIMEO) failed: rc=" + String(Int(rc))
 
 
 def _send_all(fd: Int32, data: List[UInt8]) raises:
@@ -343,6 +299,7 @@ struct CliArgs(Movable):
     var compressed: Bool
     var force_h1: Bool
     var force_h2: Bool
+    var force_h3: Bool
     var write_format: String
     var silent: Bool
 
@@ -357,6 +314,7 @@ struct CliArgs(Movable):
         self.compressed = False
         self.force_h1 = False
         self.force_h2 = False
+        self.force_h3 = False
         self.write_format = String("")
         self.silent = False
 
@@ -371,12 +329,13 @@ struct CliArgs(Movable):
         self.compressed = take.compressed
         self.force_h1 = take.force_h1
         self.force_h2 = take.force_h2
+        self.force_h3 = take.force_h3
         self.write_format = take.write_format^
         self.silent = take.silent
 
 
 def _parse_args() raises -> CliArgs:
-    from sys import argv
+    from std.sys import argv
     var args = argv()
     var result = CliArgs()
     var i = 1
@@ -410,6 +369,8 @@ def _parse_args() raises -> CliArgs:
             result.force_h1 = True
         elif arg == "--http2":
             result.force_h2 = True
+        elif arg == "--http3":
+            result.force_h3 = True
         elif arg == "-w" and i + 1 < len(args):
             i += 1
             result.write_format = args[i]
@@ -549,6 +510,112 @@ def _build_request(args: CliArgs, parsed: ParsedUrl) raises -> Request:
     return Request(method=method^, target=parsed.path, headers=hdrs^, body=body^)
 
 
+struct _CachePaths(Movable):
+    """Cache file + its parent dir, resolved once per process."""
+    var dir: String
+    var file: String
+
+    def __init__(out self, *, dir: String, file: String):
+        self.dir = dir
+        self.file = file
+
+    def __init__(out self, *, deinit take: Self):
+        self.dir = take.dir^
+        self.file = take.file^
+
+
+def _alt_svc_cache_paths() -> _CachePaths:
+    """Resolve on-disk cache locations.
+
+    Prefers `$HOME/.cache/mojo-fetch/alt_svc.txt`. Falls back to
+    `/tmp/mojo-fetch-alt-svc.txt` (no parent to create) when `$HOME`
+    is unset.
+    """
+    var home = getenv("HOME", "")
+    if len(home) > 0:
+        var dir = home + "/.cache/mojo-fetch"
+        return _CachePaths(dir=dir, file=dir + "/alt_svc.txt")
+    return _CachePaths(dir=String("/tmp"), file=String("/tmp/mojo-fetch-alt-svc.txt"))
+
+
+def _load_alt_svc_from_disk(mut client: HttpCoroClient, verbose: Bool) raises:
+    """Best-effort load of the persisted Alt-Svc cache. Failures are
+    swallowed silently (in `-v` mode the reason is surfaced) so a
+    missing or unreadable cache never blocks the request."""
+    var paths = _alt_svc_cache_paths()
+    var path = Path(paths.file)
+    if not path.exists():
+        return
+    try:
+        var content = path.read_text()
+        client.load_alt_svc(content, _realtime_secs())
+        if verbose:
+            print("* Loaded Alt-Svc cache from " + paths.file)
+    except:
+        if verbose:
+            print("* Alt-Svc cache at " + paths.file + " unreadable; ignoring")
+
+
+def _save_alt_svc_to_disk(mut client: HttpCoroClient, verbose: Bool) raises:
+    """Best-effort save of the in-memory Alt-Svc cache. Creates the
+    parent directory if needed. Failures are swallowed (mentioned in
+    verbose mode) so a read-only home or full disk never blocks the
+    response from being printed."""
+    var paths = _alt_svc_cache_paths()
+    try:
+        makedirs(Path(paths.dir), exist_ok=True)
+        var content = client.dump_alt_svc()
+        Path(paths.file).write_text(content)
+        if verbose:
+            print("* Saved Alt-Svc cache to " + paths.file)
+    except:
+        if verbose:
+            print("* Could not persist Alt-Svc cache to " + paths.file)
+
+
+def _cache_has_live_h3(
+    mut client: HttpCoroClient, origin: Origin, now: UInt
+) raises -> Bool:
+    """True iff the Alt-Svc cache currently has an unexpired `h3`
+    advertisement for `origin`. Drives the default-https dispatch:
+    when set, fetch upgrades to QUIC; when unset, it stays on TCP+TLS."""
+    var entries = client.lookup_alt_svc(origin, now)
+    for i in range(len(entries)):
+        if entries[i].protocol == String("h3"):
+            return True
+    return False
+
+
+def _print_alt_svc_if_verbose(
+    mut client: HttpCoroClient, origin: Origin, now_uint: UInt, verbose: Bool,
+) raises:
+    """Surface any Alt-Svc advertisements the server returned (verbose only).
+
+    The parsed entries live in `client._alt_svc` (an in-process
+    `AltSvcCache`). In a one-shot CLI the cache dies with the process,
+    but printing the entries proves the integration is live and gives
+    the user the line they'd act on (e.g. `h3=":443"` ⇒ retry over QUIC).
+    """
+    if not verbose:
+        return
+    var entries = client.lookup_alt_svc(origin, now_uint)
+    if len(entries) == 0:
+        return
+    print("* Alt-Svc advertised by server:")
+    for i in range(len(entries)):
+        ref e = entries[i]
+        var hp: String
+        if len(e.host) == 0:
+            hp = ":" + String(Int(e.port))
+        else:
+            hp = e.host + ":" + String(Int(e.port))
+        print(
+            "*   " + e.protocol + "=" + hp
+            + " ma=" + String(Int(e.max_age_secs))
+            + (" persist=1" if e.persist else "")
+        )
+
+
 struct FetchResult(Movable):
     var resp: Response
     var alpn: String
@@ -584,6 +651,7 @@ def _h3_default_params() -> TransportParams:
 
 
 def _request_via_h3(
+    mut client: HttpCoroClient,
     args: CliArgs, parsed: ParsedUrl, var req: Request,
 ) raises -> FetchResult:
     """Execute request over QUIC/H3."""
@@ -592,7 +660,12 @@ def _request_via_h3(
     if args.verbose:
         print("* Connecting to " + parsed.host + ":" + String(Int(parsed.port)) + " (UDP/QUIC)...")
 
-    var fd = _udp_connect(parsed.host, Int(parsed.port))
+    var sock = _connect_udp_resolved(parsed.host, Int(parsed.port))
+    # Bound each recv to 500ms so a non-responsive UDP peer (e.g. a
+    # server that only listens on TCP/443 and silently drops the QUIC
+    # initial) doesn't hang fetch forever. The outer handshake loop
+    # below enforces a 3s wall-clock deadline on top of this.
+    _set_recv_timeout_ms(sock.raw(), 500)
     var t_connect = _monotonic_ms()
 
     if args.verbose:
@@ -622,70 +695,95 @@ def _request_via_h3(
     var params = _h3_default_params()
     var quic = QuicConnection.client(lib_addr, quic_cfg, parsed.host, params, now)
 
-    # QUIC handshake: exchange datagrams until established
-    for _ in range(100):
+    # QUIC handshake: send/recv loop with a 3s wall-clock deadline.
+    #
+    # SO_RCVTIMEO above gates each recv at 500ms; the deadline below
+    # bails out when the server is unreachable on UDP/<port> (silent
+    # drop = no QUIC reply forever, which used to hang the whole CLI).
+    # The QUIC stack handles its own PTO-driven retransmits as long as
+    # we keep calling send(now) with the current clock each iteration.
+    var hs_deadline = _monotonic_ms() + UInt64(3000)
+    while not quic.is_established():
+        if _monotonic_ms() > hs_deadline:
+            raise (
+                "QUIC handshake timed out after 3s — the server may not "
+                "support HTTP/3 on UDP/" + String(Int(parsed.port))
+                + ". Retry with --http2 or --http1.1."
+            )
         now = _monotonic_ms() * UInt64(1000)
         var out_dgs = quic.send(now)
         for i in range(len(out_dgs)):
-            _udp_send(fd, out_dgs[i])
+            _udp_send(sock.raw(), out_dgs[i])
         if quic.is_established():
             break
-        var dgram = _udp_recv_blocking(fd)
+        var dgram = _udp_recv_blocking(sock.raw())
         if len(dgram) > 0:
             now = _monotonic_ms() * UInt64(1000)
             quic.recv(Span(dgram), now)
-    if not quic.is_established():
-        raise "QUIC handshake failed"
 
     var t_tls = _monotonic_ms()
     if args.verbose:
         print("* QUIC handshake in " + String(Int(t_tls - t_connect)) + "ms")
 
-    # Wrap in H3Session
+    # Wrap in H3Session, then in SessionSlot, attach to coro_client.
+    # The QUIC handshake stayed direct above (sans-I/O contract:
+    # fetch owns the socket); from here on the byte pump goes
+    # through `client.drain_datagrams` / `client.feed_datagram` which
+    # preserves UDP framing one packet per element.
+    var origin = parsed.to_origin()
     var session = H3Session(quic=quic^)
+    client.attach_session(
+        Origin(other=origin), SessionSlot.from_h3(session^),
+    )
 
-    # Bootstrap H3 (SETTINGS exchange)
-    now = _monotonic_ms() * UInt64(1000)
-    var boot_dgs = session.drain_datagrams(now)
-    for i in range(len(boot_dgs)):
-        _udp_send(fd, boot_dgs[i])
-
-    # Submit request
     if args.verbose:
         print("> " + args.method + " " + parsed.path + " h3")
 
-    var handle = session.submit(req^)
-    now = _monotonic_ms() * UInt64(1000)
-    var req_dgs = session.drain_datagrams(now)
-    for i in range(len(req_dgs)):
-        _udp_send(fd, req_dgs[i])
+    var handle = client.submit(Origin(other=origin), req^)
 
-    # Pump until response
+    # Pump until response.
     for _ in range(_MAX_ITERS):
-        session.run_one(handle)
+        now = _monotonic_ms() * UInt64(1000)
+        var out_dgs = client.drain_datagrams(Origin(other=origin), now)
+        for i in range(len(out_dgs)):
+            _udp_send(sock.raw(), out_dgs[i])
+
+        client.run_one(Origin(other=origin), handle)
         if handle.is_complete():
             break
-        var dgram = _udp_recv_blocking(fd)
+
+        var dgram = _udp_recv_blocking(sock.raw())
         if len(dgram) > 0:
             now = _monotonic_ms() * UInt64(1000)
-            session.feed_datagram(Span(dgram), now)
-        now = _monotonic_ms() * UInt64(1000)
-        var out_dgs = session.drain_datagrams(now)
-        for i in range(len(out_dgs)):
-            _udp_send(fd, out_dgs[i])
+            client.feed_datagram(
+                Span(dgram), Origin(other=origin), now,
+            )
 
     if not handle.is_complete():
         raise "H3 response not received (timeout)"
+    var resp = handle^.take_response()
+
+    var now_uint = _realtime_secs()
+    client.update_alt_svc(Origin(other=origin), resp, now_uint)
+    _print_alt_svc_if_verbose(client, origin, now_uint, args.verbose)
 
     var t_total = _monotonic_ms()
-    _ = external_call["close", Int32](fd)
-    return FetchResult(handle^.take_response(), String("h3"), t_connect - t_start, t_tls - t_start, t_total - t_start)
+    # OwnedHandle's drop closes the fd at scope exit.
+    return FetchResult(resp^, String("h3"), t_connect - t_start, t_tls - t_start, t_total - t_start)
 
 
 def _request_via_plain_tcp(
+    mut client: HttpCoroClient,
     args: CliArgs, parsed: ParsedUrl, var req: Request,
 ) raises -> FetchResult:
-    """Execute request over plaintext TCP (HTTP/1.1 — no TLS, no ALPN)."""
+    """Execute request over plaintext TCP (HTTP/1.1 — no TLS, no ALPN).
+
+    Connection establishment stays in fetch (sans-I/O contract for the
+    coro_client). After the TCP socket is connected we wrap a fresh
+    H1Session in a SessionSlot and hand it to the client; the per-byte
+    pump runs through `client.drain_datagrams` / `client.feed_datagram`
+    which gives us the Alt-Svc + future-pool plumbing for free.
+    """
     var t_start = _monotonic_ms()
 
     if args.verbose:
@@ -694,30 +792,38 @@ def _request_via_plain_tcp(
             + " (TCP, plaintext)..."
         )
 
-    var fd = _tcp_connect(parsed.host, Int(parsed.port))
+    var sock = _connect_tcp_resolved(parsed.host, Int(parsed.port))
     var t_connect = _monotonic_ms()
 
     if args.verbose:
         print("* Connected in " + String(Int(t_connect - t_start)) + "ms")
         print("> " + args.method + " " + parsed.path + " http/1.1")
 
+    var origin = parsed.to_origin()
     var session = H1Session()
-    var handle = session.submit(req^)
-    var out = session.drain()
-    _send_all(fd, out)
+    client.attach_session(Origin(other=origin), SessionSlot.from_h1(session^))
+    var handle = client.submit(Origin(other=origin), req^)
+
     for _ in range(_MAX_ITERS):
-        session.run_one(handle)
+        var dgs = client.drain_datagrams(Origin(other=origin), UInt64(0))
+        for i in range(len(dgs)):
+            _send_all(sock.raw(), dgs[i])
+        client.run_one(Origin(other=origin), handle)
         if handle.is_complete():
             break
-        var data = _recv_some(fd)
+        var data = _recv_some(sock.raw())
         if len(data) > 0:
-            session.feed(Span(data))
+            client.feed_datagram(Span(data), Origin(other=origin), UInt64(0))
     if not handle.is_complete():
         raise "response not received (timeout)"
     var resp = handle^.take_response()
 
+    var now_uint = _realtime_secs()
+    client.update_alt_svc(Origin(other=origin), resp, now_uint)
+    _print_alt_svc_if_verbose(client, origin, now_uint, args.verbose)
+
     var t_total = _monotonic_ms()
-    _ = external_call["close", Int32](fd)
+    # OwnedHandle's drop closes the fd at scope exit.
     # t_tls === t_connect on plaintext — TLS handshake elapsed time is 0.
     return FetchResult(
         resp^, String("http/1.1"),
@@ -726,6 +832,7 @@ def _request_via_plain_tcp(
 
 
 def _request_via_tcp(
+    mut client: HttpCoroClient,
     args: CliArgs, parsed: ParsedUrl, var req: Request,
 ) raises -> FetchResult:
     """Execute request over TCP+TLS (H2 or H1)."""
@@ -734,7 +841,7 @@ def _request_via_tcp(
     if args.verbose:
         print("* Connecting to " + parsed.host + ":" + String(Int(parsed.port)) + " (TCP)...")
 
-    var fd = _tcp_connect(parsed.host, Int(parsed.port))
+    var sock = _connect_tcp_resolved(parsed.host, Int(parsed.port))
     var t_connect = _monotonic_ms()
 
     if args.verbose:
@@ -754,10 +861,10 @@ def _request_via_tcp(
     cli_cfg.set_alpn_protocols(lib, alpn_protos)
     var tls = TlsConnection.new_client(lib, cli_cfg, parsed.host)
 
-    _tls_send(fd, tls)
+    _tls_send(sock.raw(), tls)
     while tls.is_handshaking():
-        _ = _tls_recv(fd, tls)
-    _tls_send(fd, tls)
+        _ = _tls_recv(sock.raw(), tls)
+    _tls_send(sock.raw(), tls)
     var t_tls = _monotonic_ms()
 
     var alpn_str = String("http/1.1")
@@ -769,52 +876,56 @@ def _request_via_tcp(
         print("* TLS handshake in " + String(Int(t_tls - t_connect)) + "ms (ALPN: " + alpn_str + ")")
         print("> " + args.method + " " + parsed.path + " " + alpn_str)
 
-    # Execute via H2 or H1
-    var resp: Response
+    # Wrap the appropriate H1/H2 session in a slot, attach to the
+    # coro_client, then drive the byte pump through it. Application
+    # bytes round-trip through `tls.send_data` / `_tls_recv` for
+    # encryption; `client.drain_datagrams` returns at most one
+    # byte-blob per tick (datagrams aren't a meaningful concept for
+    # a TCP+TLS origin — the wrapper preserves the 1-blob shape).
+    var origin = parsed.to_origin()
     if alpn_str == "h2":
         var session = H2Session()
-        var preface = session.drain()
-        tls.send_data(Span(preface))
-        _tls_send(fd, tls)
-        var handle = session.submit(req^)
-        var out = session.drain()
-        tls.send_data(Span(out))
-        _tls_send(fd, tls)
-        for _ in range(_MAX_ITERS):
-            session.run_one(handle)
-            if handle.is_complete():
-                break
-            var plaintext = _tls_recv(fd, tls)
-            if len(plaintext) > 0:
-                session.feed(Span(plaintext))
-            var h2_out = session.drain()
-            if len(h2_out) > 0:
-                tls.send_data(Span(h2_out))
-                _tls_send(fd, tls)
-        if handle.is_errored():
-            raise "request failed: stream error"
-        if not handle.is_complete():
-            raise "response not received (timeout)"
-        resp = handle^.take_response()
+        client.attach_session(
+            Origin(other=origin), SessionSlot.from_h2(session^),
+        )
     else:
         var session = H1Session()
-        var handle = session.submit(req^)
-        var out = session.drain()
-        tls.send_data(Span(out))
-        _tls_send(fd, tls)
-        for _ in range(_MAX_ITERS):
-            session.run_one(handle)
-            if handle.is_complete():
-                break
-            var plaintext = _tls_recv(fd, tls)
-            if len(plaintext) > 0:
-                session.feed(Span(plaintext))
-        if not handle.is_complete():
-            raise "response not received (timeout)"
-        resp = handle^.take_response()
+        client.attach_session(
+            Origin(other=origin), SessionSlot.from_h1(session^),
+        )
+
+    var handle = client.submit(Origin(other=origin), req^)
+
+    for _ in range(_MAX_ITERS):
+        var dgs = client.drain_datagrams(Origin(other=origin), UInt64(0))
+        for i in range(len(dgs)):
+            tls.send_data(Span(dgs[i]))
+        _tls_send(sock.raw(), tls)
+
+        client.run_one(Origin(other=origin), handle)
+        if handle.is_complete():
+            break
+        if handle.is_errored():
+            raise "request failed: stream error"
+
+        var plaintext = _tls_recv(sock.raw(), tls)
+        if len(plaintext) > 0:
+            client.feed_datagram(
+                Span(plaintext), Origin(other=origin), UInt64(0),
+            )
+
+    if handle.is_errored():
+        raise "request failed: stream error"
+    if not handle.is_complete():
+        raise "response not received (timeout)"
+    var resp = handle^.take_response()
+
+    var now_uint = _realtime_secs()
+    client.update_alt_svc(Origin(other=origin), resp, now_uint)
+    _print_alt_svc_if_verbose(client, origin, now_uint, args.verbose)
 
     var t_total = _monotonic_ms()
-    _ = external_call["close", Int32](fd)
+    # OwnedHandle's drop closes the fd at scope exit.
     return FetchResult(resp^, alpn_str, t_connect - t_start, t_tls - t_start, t_total - t_start)
 
 
@@ -829,16 +940,59 @@ def main() raises:
         print(">")
 
     # Dispatch:
-    #   http://   → plaintext TCP + HTTP/1.1 (no TLS, no QUIC).
-    #   https:// + --http1.1 / --http2 → TCP+TLS with ALPN-negotiated H1/H2.
-    #   https://  (default)            → UDP+QUIC + HTTP/3.
+    #   http://                       → plaintext TCP + HTTP/1.1.
+    #   https:// + --http3            → forced QUIC + HTTP/3.
+    #   https:// + --http1.1/--http2  → TCP+TLS with that ALPN.
+    #   https:// (default)            → TCP+TLS unless the on-disk Alt-Svc
+    #                                   cache advertises a live `h3` entry
+    #                                   for this origin, in which case we
+    #                                   try QUIC and surface a clear-cache
+    #                                   error if the handshake fails (the
+    #                                   stale advert is dropped so the next
+    #                                   run uses TCP).
+    #
+    # The HttpCoroClient owns the connection pool + Alt-Svc cache. Cache
+    # is loaded from disk at startup and persisted after the response so
+    # subsequent invocations can perform the H3 upgrade on their own.
+    var client = HttpCoroClient()
+    var origin = parsed.to_origin()
+    _load_alt_svc_from_disk(client, args.verbose)
+
     var result: FetchResult
     if parsed.scheme == String("http"):
-        result = _request_via_plain_tcp(args, parsed, req^)
+        result = _request_via_plain_tcp(client, args, parsed, req^)
+    elif args.force_h3:
+        result = _request_via_h3(client, args, parsed, req^)
     elif args.force_h1 or args.force_h2:
-        result = _request_via_tcp(args, parsed, req^)
+        result = _request_via_tcp(client, args, parsed, req^)
     else:
-        result = _request_via_h3(args, parsed, req^)
+        # Default https: ask the Alt-Svc cache whether H3 is on the table.
+        var now_secs = _realtime_secs()
+        if _cache_has_live_h3(client, origin, now_secs):
+            if args.verbose:
+                print("* Alt-Svc cache has live h3 for " + origin.host
+                      + ":" + String(Int(origin.port)) + " — upgrading to QUIC.")
+            try:
+                result = _request_via_h3(client, args, parsed, req^)
+            except e:
+                # Advertised h3 is dead — purge the entry, persist, and
+                # surface a friendly message so the user can re-run.
+                client.clear_alt_svc(origin)
+                _save_alt_svc_to_disk(client, args.verbose)
+                raise (
+                    "QUIC handshake failed despite a cached Alt-Svc "
+                    "advertisement of h3 on " + origin.host + ":"
+                    + String(Int(origin.port))
+                    + ". The stale entry has been removed; rerun the "
+                    + "command and fetch will use TCP+TLS instead.\n"
+                    + "(underlying error: " + String(e) + ")"
+                )
+        else:
+            result = _request_via_tcp(client, args, parsed, req^)
+
+    # Persist any Alt-Svc advertisements the response carried so the
+    # next invocation can upgrade.
+    _save_alt_svc_to_disk(client, args.verbose)
 
     ref resp = result.resp
     var alpn_str = result.alpn

@@ -148,18 +148,36 @@ struct H3Session(Session):
         self._next_id += UInt64(1)
         var handle_id = self._next_id
 
-        # Build QPACK pseudo-headers
+        # Build QPACK pseudo-headers. RFC 9114 §4.2 makes :method, :scheme,
+        # :path, and :authority mandatory for HTTP/3 requests; :authority is
+        # derived from the `host` header (mirrors `request_to_h2_headers`).
+        # The `host` header is dropped from the regular field block so we
+        # don't double-up — RFC 9114 §4.2 forbids `host` alongside `:authority`.
+        var authority = req.headers.get("host")
+        if len(authority) == 0:
+            raise Error(
+                "H3Session.submit: request is missing the `host` header — "
+                "cannot derive :authority pseudo-header"
+            )
+        var scheme = req.headers.get("x-h3-scheme")
+        if len(scheme) == 0:
+            scheme = String("https")
+
         var fields = List[QpackHeaderField]()
         fields.append(QpackHeaderField(":method", String(req.method)))
         fields.append(QpackHeaderField(":path", req.target))
-        fields.append(QpackHeaderField(":scheme", "https"))
-        fields.append(QpackHeaderField(":authority", "localhost"))
-        # Forward any regular (non-pseudo) headers
+        fields.append(QpackHeaderField(":scheme", scheme^))
+        fields.append(QpackHeaderField(":authority", authority^))
+        # Forward regular headers, skipping pseudo-headers and the now-mapped
+        # `host` / `x-h3-scheme` hints.
         for i in range(len(req.headers)):
             var name = req.headers.name_at(i)
             var value = req.headers.value_at(i)
-            if not name.startswith(":"):
-                fields.append(QpackHeaderField(name, value))
+            if name.startswith(":"):
+                continue
+            if name == "host" or name == "x-h3-scheme":
+                continue
+            fields.append(QpackHeaderField(name, value))
 
         # Determine if there is a body
         var is_stream = req.body.is_stream()
