@@ -7,9 +7,12 @@
 # request). The TLS and H2 layers stay sans-I/O; we just shuttle bytes
 # synchronously.
 #
-# Build + run:
-#   LD_LIBRARY_PATH=lib uv run mojo run -I . -I conformance \
-#     examples/h2_client/main.mojo
+# Build + run
+#
+#   $ cd examples/h2_client
+#   $ uv sync
+#   $ uv run mojox build main.mojo -o h2_client
+#   $ ./h2_client https://example.com/
 
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
