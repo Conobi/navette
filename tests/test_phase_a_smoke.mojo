@@ -5,7 +5,7 @@
 # Cross-imports every Phase A type from both `src` (re-exports) and
 # `src.h1` (ParseConfig / ParserStrictness) and exercises them together
 # to verify the whole Phase A surface is wired up and usable.
-from src import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from mojo_net import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
 from mojo_net.http.request import RequestBody
 from mojo_net.h1 import ParseConfig, ParserStrictness
 from tests._test_util import assert_true

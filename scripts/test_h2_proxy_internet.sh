@@ -79,8 +79,8 @@ sed \
     examples/h2_reverse_proxy/main.mojo > "$PATCHED_SRC"
 
 rm -f ./*.mojopkg 2>/dev/null || true
-LD_LIBRARY_PATH=lib uv run mojo build \
-    -I . -I "$BOUCLE_DIR" -I conformance \
+LD_LIBRARY_PATH=lib uv run mojox build \
+    -I conformance \
     "$PATCHED_SRC" -o "$PROXY_BIN" >"$PROXY_LOG" 2>&1
 echo "    build OK"
 

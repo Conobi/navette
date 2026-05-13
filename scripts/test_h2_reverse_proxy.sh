@@ -54,8 +54,8 @@ fi
 # 2. Build and start the H2 reverse proxy
 echo "Building H2 reverse proxy..."
 rm -f ./*.mojopkg 2>/dev/null || true
-LD_LIBRARY_PATH=lib uv run mojo build \
-    -I . -I "$BOUCLE_DIR" -I conformance \
+LD_LIBRARY_PATH=lib uv run mojox build \
+    -I conformance \
     examples/h2_reverse_proxy/main.mojo -o /tmp/mojo_h2_reverse_proxy \
     >"$PROXY_LOG" 2>&1
 

@@ -141,21 +141,21 @@ for t in "${TESTS[@]}"; do
         EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h2_sync_server" ]; then
-        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+        EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h3_sync_server" ]; then
         EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h3_streaming_server" ]; then
-        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+        EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h2_streaming_server" ]; then
-        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+        EXTRA_I=(-I conformance)
     fi
     if [ "$t" = "test_h3_udp_server" ]; then
-        EXTRA_I=(-I conformance -I "$HOME/Projets/perso/boucle")
+        EXTRA_I=(-I conformance)
     fi
-    if uv run mojo run -I . "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
+    if uv run mojox run "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
     else
         echo "FAILED: $t"
