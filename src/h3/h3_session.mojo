@@ -275,7 +275,7 @@ struct H3Session(Session):
         var hid = Int(handle_id)
         if hid not in self._handle_to_stream:
             raise Error("H3Session.feed_body: unknown handle")
-        var stream_id = self._handle_to_stream[hid]
+        var stream_id = UInt64(self._handle_to_stream[hid])
         if frame.is_data():
             var bytes_copy = frame.data().copy()
             self._h3.send_data(stream_id, bytes_copy^, False)

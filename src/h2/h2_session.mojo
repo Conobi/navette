@@ -281,7 +281,7 @@ struct H2Session(Session):
         var hid = Int(handle_id)
         if hid not in self._handle_to_stream:
             raise Error("H2Session.feed_body: unknown handle")
-        var stream_id = self._handle_to_stream[hid]
+        var stream_id = UInt32(self._handle_to_stream[hid])
         if frame.is_data():
             var bytes_copy = frame.data().copy()
             self._conn.send_data(stream_id, bytes_copy^, end_stream=False)

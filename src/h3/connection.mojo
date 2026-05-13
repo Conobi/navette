@@ -272,8 +272,7 @@ struct H3Connection(Movable):
         # the disjoint H3-application-event-drain phase. Single-pair clock-read
         # with hoisted t_start (sub-leg pass T4 lesson — Mojo lexical scope).
         var t_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 t_start = monotonic_us()
 
@@ -311,8 +310,7 @@ struct H3Connection(Movable):
                 h3ev.reason = ev.reason
                 self._h3_events.append(h3ev^)
 
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 self.profile_ptr[].record_quic_post_recv(monotonic_us() - t_start)
 
@@ -410,29 +408,32 @@ struct H3Connection(Movable):
             return  # locally-initiated stream or unknown — ignore
 
         # Hoisted clock-read state for B1 (parent), B2 (recv_ffi), B3a (buf_accumulate).
-        # Single-pair pattern per Q1 lessons (sub-leg pass T4 — Mojo lexical scope).
+        # Single-pair pattern per Q1 lessons (sub-leg pass T4 — Mojo lexical scope):
+        # `comptime if` introduces its own scope, so we hoist these to function scope.
+        # The `comptime if not PROFILE_ACCEPT` discards below silence the "init never
+        # used" warning on default builds (the comptime profile branches vanish).
         var t_start_drain: UInt64 = 0
         var t_start_ffi: UInt64 = 0
         var t_start_buf: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if not PROFILE_ACCEPT:
+            _ = t_start_drain
+            _ = t_start_ffi
+            _ = t_start_buf
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 t_start_drain = monotonic_us()
 
         # B2 entry — wrap the FFI recv_stream_data call.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 t_start_ffi = monotonic_us()
         var recv_result = self._quic.recv_stream_data(stream_id)
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 self.profile_ptr[].record_drain_recv_ffi(monotonic_us() - t_start_ffi)
 
         # B3a entry — wrap from recv_result.copy() through the bidi-check exit.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 t_start_buf = monotonic_us()
 
@@ -452,8 +453,7 @@ struct H3Connection(Movable):
                 if len(sbuf2.buf) == 0:
                     self._stream_bufs[key] = sbuf2^
                     # B3a + B1 exit (return path 1 — UNI empty buf).
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
@@ -473,8 +473,7 @@ struct H3Connection(Movable):
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                 else:
                     # B3a + B1 exit (return path 2 — unknown UNI type).
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
@@ -488,8 +487,7 @@ struct H3Connection(Movable):
             self._stream_bufs[key] = sbuf3^
             self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
             # B3a + B1 exit (return path 3 — bidi rejection).
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                     self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
@@ -503,8 +501,7 @@ struct H3Connection(Movable):
                 is_ctrl = True
 
         # B3a exit — buf_accumulate phase ends BEFORE parse-loop entry.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
 
@@ -519,8 +516,7 @@ struct H3Connection(Movable):
         self._stream_bufs[key] = sbuf4^
 
         # B1 exit (fall-through path 4).
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 self.profile_ptr[].record_drain_stream(monotonic_us() - t_start_drain)
 
@@ -530,6 +526,9 @@ struct H3Connection(Movable):
         # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
         var t_start_parse: UInt64 = 0
         var t_start_buf: UInt64 = 0
+        comptime if not PROFILE_ACCEPT:
+            _ = t_start_parse
+            _ = t_start_buf
         while True:
             var sbuf = self._stream_bufs[key].copy()
             if len(sbuf.buf) == 0:
@@ -542,8 +541,7 @@ struct H3Connection(Movable):
             var frame = H3RawFrame(UInt64(0), List[UInt8]())
             var consumed = 0
             # B4 entry — wrap parse_h3_frame only.
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_start_parse = monotonic_us()
             try:
@@ -551,16 +549,14 @@ struct H3Connection(Movable):
                 consumed = r.pos
             except:
                 ok = False
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     self.profile_ptr[].record_drain_frame_parse(monotonic_us() - t_start_parse)
             if not ok:
                 self._stream_bufs[key] = sbuf^
                 break
             # B3b entry — wrap residual rebuild + Dict reassign.
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_start_buf = monotonic_us()
             # Remove consumed bytes from front of buf
@@ -569,8 +565,7 @@ struct H3Connection(Movable):
                 new_buf.append(sbuf.buf[i])
             sbuf.buf = new_buf^
             self._stream_bufs[key] = sbuf^
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     self.profile_ptr[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
             if is_ctrl:
@@ -613,15 +608,15 @@ struct H3Connection(Movable):
     def _handle_request_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on a request/response bidi stream."""
         var t_start_qpack: UInt64 = 0
+        comptime if not PROFILE_ACCEPT:
+            _ = t_start_qpack
         if frame.frame_type == H3_FRAME_HEADERS:
             # B5 — wrap QPACK decode only.
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_start_qpack = monotonic_us()
             var fields = self._dec.decode(frame.payload)
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     self.profile_ptr[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)
             var h3ev = H3Event(H3Event.HEADERS_RECEIVED)

@@ -1,5 +1,5 @@
 from src.quic.cc.pacing import Pacer
-from testing import assert_true
+from std.testing import assert_true
 
 def test_pacer_init_defaults() raises:
     var p = Pacer.new(max_datagram_size=UInt64(1200))

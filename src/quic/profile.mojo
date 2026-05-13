@@ -9,7 +9,7 @@
 # src/quic/connection.mojo + bench/h3_server.mojo. Off-build is the
 # default for v1; on-build is for one-shot diagnostic runs.
 
-from collections import Dict
+from std.collections.dict import Dict
 from std.ffi import external_call
 from std.memory import UnsafePointer
 

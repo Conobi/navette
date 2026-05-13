@@ -145,26 +145,22 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
         # Bracket _dispatch_h3_events
         var t_dispatch_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 t_dispatch_start = monotonic_us()
         self._dispatch_h3_events(now)
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 self.profile_ptr[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
 
         # Bracket _drain_responses (only when established)
         if self._h3.is_established():
             var t_drain_resp_start: UInt64 = 0
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_drain_resp_start = monotonic_us()
             self._drain_responses(now)
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     self.profile_ptr[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
 

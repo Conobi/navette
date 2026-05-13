@@ -45,7 +45,7 @@ the server's lifetime. Same for the `RustlsLibrary` instance —
 `lib_addr` stores its address but does not own it.
 """
 
-from collections import Dict
+from std.collections.dict import Dict
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 

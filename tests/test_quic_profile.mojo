@@ -3,7 +3,7 @@
 # Unit tests for src/quic/profile.mojo (Plan A).
 
 from src.quic.profile import PROFILE_ACCEPT, monotonic_us
-from testing import assert_true
+from std.testing import assert_true
 from tests._test_util import assert_equal_int
 
 
@@ -21,8 +21,7 @@ def test_monotonic_us_increases() raises:
 
 def test_profile_accept_is_bool() raises:
     # Compile-time check: PROFILE_ACCEPT exists and is a Bool.
-    @parameter
-    if PROFILE_ACCEPT:
+    comptime if PROFILE_ACCEPT:
         print("PROFILE_ACCEPT is True (on-build)")
     else:
         print("PROFILE_ACCEPT is False (off-build)")

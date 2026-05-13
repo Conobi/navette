@@ -632,8 +632,7 @@ struct QuicConnection(Movable):
         var lib = _get_lib(lib_addr)
         # alloc_tls_handle_us bracket — rustls TLS session alloc FFI call.
         var t_tls_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             t_tls_start = monotonic_us()
         var rc = lib[].quic_server_conn_new(
             config_handle,
@@ -642,8 +641,7 @@ struct QuicConnection(Movable):
             Int32(tp_len),
             out_handle,
         )
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(profile_ptr) != 0:
                 profile_ptr[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
 
@@ -689,8 +687,7 @@ struct QuicConnection(Movable):
         conn.profile_first_initial_us = profile_arrival_us
         conn.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
 
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(profile_ptr) != 0:
                 profile_ptr[].record_handshake_arrival()
 
@@ -751,8 +748,7 @@ struct QuicConnection(Movable):
 
         var offset = 0
         while offset < buf_len:
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_iter_start = monotonic_us()
                     if self.profile_first_iter_done:
@@ -775,8 +771,7 @@ struct QuicConnection(Movable):
             # construct a Span — once per coalesced QUIC packet. Eliminated
             # via `Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len)`
             # since `parse_packet_header` only reads the buffer.
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     ph_header_parse_us = monotonic_us()
             var header_result = parse_packet_header(
@@ -785,8 +780,7 @@ struct QuicConnection(Movable):
             )
             var header = header_result[0].copy()
             var header_end = header_result[1]
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     ph_header_parse_us = monotonic_us() - ph_header_parse_us
 
@@ -830,15 +824,13 @@ struct QuicConnection(Movable):
             var decrypt_ok = True
             try:
                 # 6. Unprotect header in-place (zero-copy).
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_hp_us = monotonic_us()
                 var hp_result = self.protect.unprotect_header_ptr(
                     space_idx, pkt_ptr, pkt_len, header.pn_offset
                 )
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_hp_us = monotonic_us() - ph_hp_us
                 var first_byte = hp_result[0]
@@ -857,15 +849,13 @@ struct QuicConnection(Movable):
 
                 # 8. Decrypt payload in-place (zero-copy).
                 var header_len = header.pn_offset + pn_length
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_aead_us = monotonic_us()
                 var plaintext_len = self.protect.decrypt_payload_in_place(
                     space_idx, full_pn, header_len, pkt_ptr, pkt_len
                 )
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_aead_us = monotonic_us() - ph_aead_us
 
@@ -879,8 +869,7 @@ struct QuicConnection(Movable):
                 # `List[UInt8]` — once per coalesced QUIC packet. Eliminated
                 # via `Span[UInt8, MutAnyOrigin](ptr=pkt_ptr+header_len, length=plaintext_len)`
                 # since ByteReader / parse_frames are generic over origin.
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_frame_parse_us = monotonic_us()
                 var reader = ByteReader(
@@ -892,8 +881,7 @@ struct QuicConnection(Movable):
                     if frames[i].is_ack_eliciting():
                         ack_eliciting = True
                     self._dispatch_frame(frames[i], space_idx, now)
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
 
@@ -922,13 +910,11 @@ struct QuicConnection(Movable):
             # 12. Drive handshake OUTSIDE try/except so TLS errors
             # propagate to the caller (they are fatal, not recoverable).
             if decrypt_ok:
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_sm_us = monotonic_us()
                 self._drive_handshake(now)
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         ph_sm_us = monotonic_us() - ph_sm_us
 
@@ -937,8 +923,7 @@ struct QuicConnection(Movable):
 
             # Plan B: emit per-packet record at iteration end. Bleed-in:
             # iter 1 inherits constructor's profile_rustls_us_accum.
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     var t_iter_end = monotonic_us()
                     var total_us = t_iter_end - t_iter_start
@@ -1632,8 +1617,7 @@ struct QuicConnection(Movable):
         # _drive_handshake body-time bracket: capture start + bump
         # active_drive_count. Closing bracket fires at fall-through end.
         var t_drive_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0:
                 t_drive_start = monotonic_us()
                 self.profile_ptr[].active_drive_count = self.profile_ptr[].active_drive_count + UInt32(1)
@@ -1649,8 +1633,7 @@ struct QuicConnection(Movable):
                     # Q6: Mojo-side input-marshalling timer wraps the heap alloc
                     # + per-byte copy loop (the FFI input ABI marshalling).
                     var t_input_start: UInt64 = 0
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             t_input_start = monotonic_us()
                     var data_buf = _heap_alloc[UInt8](
@@ -1659,14 +1642,12 @@ struct QuicConnection(Movable):
                     for i in range(len(crypto_data)):
                         data_buf[i] = crypto_data[i]
                     var input_marshalling_us: UInt64 = 0
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             input_marshalling_us = monotonic_us() - t_input_start
 
                     var t_start: UInt64 = 0
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             t_start = monotonic_us()
                             self.profile_rustls_us_accum -= t_start
@@ -1678,8 +1659,7 @@ struct QuicConnection(Movable):
                     var rc: Int32 = Int32(0)
                     var out_sm_us: UInt64 = UInt64(0)
                     var out_lookup_us: UInt64 = UInt64(0)
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             rc = lib[].quic_conn_read_hs(
                                 self.conn_handle,
@@ -1700,8 +1680,7 @@ struct QuicConnection(Movable):
                             data_buf,
                             Int32(len(crypto_data)),
                         )
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         if Int(self.profile_ptr) != 0:
                             var t_end = monotonic_us()
                             self.profile_rustls_us_accum += t_end
@@ -1739,8 +1718,7 @@ struct QuicConnection(Movable):
             out_kc[0] = UInt8(0)
 
             var t_start: UInt64 = 0
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     t_start = monotonic_us()
                     self.profile_rustls_us_accum -= t_start
@@ -1751,8 +1729,7 @@ struct QuicConnection(Movable):
                 out_written,
                 out_kc,
             )
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if Int(self.profile_ptr) != 0:
                     var t_end = monotonic_us()
                     self.profile_rustls_us_accum += t_end
@@ -1789,16 +1766,14 @@ struct QuicConnection(Movable):
                 keys_handle_buf[0] = Int32(-1)
 
                 var t_start: UInt64 = 0
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         t_start = monotonic_us()
                         self.profile_rustls_us_accum -= t_start
                 var take_rc = lib[].quic_conn_take_keys(
                     self.conn_handle, keys_handle_buf
                 )
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if Int(self.profile_ptr) != 0:
                         var t_end = monotonic_us()
                         self.profile_rustls_us_accum += t_end
@@ -1842,8 +1817,7 @@ struct QuicConnection(Movable):
         # hs_cpu_us_total and decrement active_drive_count. Mirrors the
         # entry bracket above. raise paths leave the bracket unbalanced
         # but those terminate the connection so the imbalance is moot.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if Int(self.profile_ptr) != 0 and t_drive_start > UInt64(0):
                 var delta = monotonic_us() - t_drive_start
                 self.hs_cpu_us_total = self.hs_cpu_us_total + delta
@@ -1857,8 +1831,7 @@ struct QuicConnection(Movable):
 
         # Plan B: record handshake latency on the SERVER side. Clients
         # have profile_first_initial_us = 0 (default) and are skipped.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if self.is_server and Int(self.profile_ptr) != 0:
                 if self.profile_first_initial_us > UInt64(0):
                     var latency_us = now - self.profile_first_initial_us
@@ -2083,9 +2056,6 @@ struct QuicConnection(Movable):
             var pkt_size = len(pkt)
 
             datagram.extend(pkt^)
-
-            if space_idx == 0:
-                has_initial = True
 
             # NOTE: Initial discard deferred to _on_handshake_complete so the
             # client can coalesce Initial ACK + Handshake in the same datagram
@@ -2478,7 +2448,7 @@ struct QuicConnection(Movable):
             for i in range(len(payload)):
                 header_bytes.append(payload[i])
             # Append zero space for AEAD tag.
-            for i in range(_AEAD_TAG_LEN):
+            for _ in range(_AEAD_TAG_LEN):
                 header_bytes.append(UInt8(0))
 
             # header_bytes is now: [header | PN | payload | tag_space]
@@ -2531,7 +2501,7 @@ struct QuicConnection(Movable):
                 current_payload_len += 1
 
             # Append zero space for AEAD tag.
-            for i in range(_AEAD_TAG_LEN):
+            for _ in range(_AEAD_TAG_LEN):
                 header_bytes.append(UInt8(0))
 
             var total_len = len(header_bytes)
