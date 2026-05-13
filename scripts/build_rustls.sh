@@ -25,7 +25,17 @@ LIB_DIR="$REPO_ROOT/lib"
 
 cd "$CRATE_DIR"
 echo "building librustls-mojo (profile=$profile, features=$features)"
-cargo test --features "$features"
+
+# When `skip-locks` is in the feature set, HandleTable swaps its Mutex for an
+# UnsafeCell + `unsafe impl Sync` — the safety contract delegates synchronisation
+# to the single-threaded Mojo runtime (io_uring event loop). Cargo's default
+# test runner spawns multiple threads → violates the contract → HashMap races
+# corrupt rustls's internal state and the test process SIGABRTs across the FFI
+# boundary. Force `--test-threads=1` whenever skip-locks is enabled.
+case ",$features," in
+    *,skip-locks,*) cargo test --features "$features" -- --test-threads=1 ;;
+    *)              cargo test --features "$features" ;;
+esac
 cargo build --release --features "$features"
 
 mkdir -p "$LIB_DIR"

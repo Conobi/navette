@@ -4,6 +4,16 @@
 //! (the whole map is wrapped in a `Mutex`). When the `skip-locks` feature
 //! is enabled the mutex is removed and the caller is responsible for
 //! ensuring single-threaded access.
+//!
+//! ## Testing under `skip-locks`
+//!
+//! Cargo's default test runner uses multiple threads, which violates the
+//! `skip-locks` single-threaded contract. Symptoms: cascading `SIGABRT`
+//! when one test's HashMap mutation races with another's, corrupting
+//! rustls's internal state into impossible variants (e.g. `KxState`
+//! assertion failures). `scripts/build_rustls.sh` adds
+//! `-- --test-threads=1` whenever `skip-locks` is in the feature set;
+//! invoke tests the same way if running cargo directly.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
