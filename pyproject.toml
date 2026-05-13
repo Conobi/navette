@@ -3,18 +3,19 @@ name = "mojo-net"
 version = "0.1.0"
 description = "Pure-Mojo networking stack: QUIC, HTTP/3, HTTP/2, HTTP/1.1"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "h2>=4.3.0",
-    "hpack>=4.1.0",
+    "mojox>=0.2",
+    "mojo-compiler==0.26.2.0",
 ]
 
 [dependency-groups]
 dev = [
-    "mojox",
-    "cryptography>=44.0",
     "aioquic>=1.3.0",
+    "cryptography>=44.0",
     "h11>=0.16.0",
+    "h2>=4.3.0",
+    "hpack>=4.1.0",
     "httptools>=0.7.1",
     "hyperframe>=6.0.0",
     "pyyaml>=6.0.3",
