@@ -1,50 +1,31 @@
 # examples/reverse_proxy/main.mojo
 #
-# HTTPS reverse proxy example composing the mojo-net sans-I/O library
-# (Phases A–C) with the boucle io_uring CompletionLoop.
-#
-# Single hardcoded backend, TLS on both sides, single-threaded.
-#
-# Layout of this file:
-#   - Token encoding helpers (OP_* constants from examples/reverse_proxy/token.mojo)
-#   - ProxyPhase                  : state machine enum
-#   - PendingSubmit               : queued I/O op for post-poll drain
-#   - ProxyConnection             : per-client state
-#   - header rewriting helpers
-#   - error-response helpers
-#   - ProxyHandler                : CompletionHandler implementation
-#   - _drain_pending_submits      : free function that re-issues ops to the loop
-#   - main                        : bind listener, build handler, run loop
-#
-# NOTE: M2 scope is a single hardcoded backend. Connection pooling, routing,
-# CONNECT method, WebSocket upgrades, and timeouts are explicitly OUT of scope.
+# Unified ALPN-dispatched HTTPS reverse proxy. The frontend TLS listener
+# advertises both `h2` and `http/1.1`; once the client TLS handshake
+# completes, the negotiated ALPN selects which proxy variant
+# (`proxy_h1` or `proxy_h2`) drives the rest of the connection. Both
+# variants share the same accept / TLS / send-state plumbing.
 #
 # Build + run
 #
-#   $ ./scripts/gen_test_certs.sh        # one-time: populate examples/reverse_proxy/certs/
+#   $ ./scripts/gen_test_certs.sh        # one-time
 #   $ cd examples/reverse_proxy
 #   $ uv sync
-#   $ uv run mojox build main.mojo -o mojo_reverse_proxy
+#   $ LD_LIBRARY_PATH=../../lib uv run mojox build main.mojo -o mojo_reverse_proxy
 #   $ python3 ../../scripts/test_backend.py &
-#   $ ./mojo_reverse_proxy
+#   $ LD_LIBRARY_PATH=../../lib ./mojo_reverse_proxy
+#
+# Env-var knobs (no CLI flags; the smoke harness drives via env):
+#   LISTEN_PORT          (default 8443)
+#   H1_BACKEND_PORT      (default 9443)
+#   H2_BACKEND_PORT      (default H1_BACKEND_PORT)
+#   BACKEND_HOST         (default "localhost")
 
 from std.collections.optional import Optional
+from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from std.io.file import FileHandle
-from std.ffi import external_call
 
-from mojo_net.http import (
-    Method,
-    StatusCode,
-    Version,
-    Headers,
-    BodyFrame,
-    Request,
-    Response,
-)
-from mojo_net.h1 import ParseConfig, ServerConnection, H1Session
-from mojo_net.http.session import RequestHandle
 from mojo_net.tls import (
     RustlsLibrary,
     TlsClientConfig,
@@ -53,90 +34,180 @@ from mojo_net.tls import (
 )
 
 from boucle import CompletionLoop, CompletionHandler
-from boucle.handle import RawHandle, OwnedHandle
+from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
-from boucle.net.options import Backlog, AddrFamily, SocketType, SocketFlags, Protocol
+from boucle.net.options import (
+    Backlog,
+    AddrFamily,
+    SocketType,
+    SocketFlags,
+    Protocol,
+)
 from boucle._sys.linux.net.socket import socket as _sys_socket
 
-# Token encoding — inlined from examples/reverse_proxy/token.mojo to avoid
-# the `examples.*` package import (the file is compiled as a top-level
-# Mojo script; a sibling module import is not available to `mojo build`).
-comptime OP_ACCEPT: UInt8 = 0
-comptime OP_CLIENT_RECV: UInt8 = 1
-comptime OP_CLIENT_SEND: UInt8 = 2
-comptime OP_BACKEND_CONNECT: UInt8 = 3
-comptime OP_BACKEND_RECV: UInt8 = 4
-comptime OP_BACKEND_SEND: UInt8 = 5
-comptime LISTENER_CONN_ID: UInt64 = 0
-
-
-def encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
-    return (conn_id << 8) | UInt64(op_kind)
+from proxy_common import (
+    ConnSendState,
+    LISTENER_CONN_ID,
+    OP_ACCEPT,
+    OP_BACKEND_CONNECT,
+    OP_BACKEND_RECV,
+    OP_BACKEND_SEND,
+    OP_CLIENT_RECV,
+    OP_CLIENT_SEND,
+    PHASE_BACKEND_CONNECTING,
+    PHASE_BACKEND_TLS_HANDSHAKE,
+    PHASE_CLIENT_TLS_HANDSHAKE,
+    PHASE_DONE,
+    PHASE_PROXYING,
+    PendingSubmit,
+    SUBMIT_ACCEPT,
+    SUBMIT_CONNECT,
+    SUBMIT_RECV,
+    SUBMIT_SEND,
+    _CERT_DIR,
+    _RECV_BUF_SIZE,
+    _read_file,
+    encode_token,
+    queue_client_recv,
+    stage_backend_send,
+    stage_client_send,
+)
+from proxy_h1 import (
+    H1ProxyState,
+    h1_handle_backend_connect,
+    h1_handle_backend_recv,
+    h1_handle_backend_send,
+    h1_handle_client_recv,
+    h1_handle_client_send,
+    h1_proxy_state_new,
+)
+from proxy_h2 import (
+    H2ProxyState,
+    h2_handle_backend_connect,
+    h2_handle_backend_recv,
+    h2_handle_backend_send,
+    h2_handle_client_recv,
+    h2_handle_client_send,
+    h2_proxy_state_new,
+)
 
 
 # ---------------------------------------------------------------------------
-# Buffer sizes
-# ---------------------------------------------------------------------------
-
-comptime _RECV_BUF_SIZE: Int = 8192
-comptime _CERT_DIR: String = "examples/reverse_proxy/certs"
-comptime _LISTEN_PORT: UInt16 = 8443
-comptime _BACKEND_PORT: UInt16 = 9443
-comptime _BACKEND_HOST: String = "localhost"
-
-
-# ---------------------------------------------------------------------------
-# ProxyPhase — per-connection state machine
+# Env-var helpers (matches examples/hello_h1_server pattern)
 # ---------------------------------------------------------------------------
 
 
-comptime _PHASE_CLIENT_TLS_HANDSHAKE: UInt8 = 0
-comptime _PHASE_CLIENT_READING_REQUEST: UInt8 = 1
-comptime _PHASE_BACKEND_CONNECTING: UInt8 = 2
-comptime _PHASE_BACKEND_TLS_HANDSHAKE: UInt8 = 3
-comptime _PHASE_BACKEND_SENDING_REQUEST: UInt8 = 4
-comptime _PHASE_BACKEND_READING_RESPONSE: UInt8 = 5
-comptime _PHASE_CLIENT_SENDING_RESPONSE: UInt8 = 6
-comptime _PHASE_DONE: UInt8 = 7
+fn _getenv_str(name: String, default: String) -> String:
+    """Read a string environment variable; fall back to default if unset."""
+    var nbuf = _heap_alloc[UInt8](len(name) + 1)
+    var name_bytes = name.as_bytes()
+    for i in range(len(name_bytes)):
+        nbuf[i] = name_bytes[i]
+    nbuf[len(name_bytes)] = 0
+    var ptr_int = external_call["getenv", Int](nbuf)
+    nbuf.free()
+    if ptr_int == 0:
+        return default
+    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var s = String()
+    var i = 0
+    while ptr[i] != 0:
+        s += chr(Int(ptr[i]))
+        i += 1
+    return s^
+
+
+fn _getenv_int(name: String, default: Int) -> Int:
+    """Read an integer environment variable; fall back to default if
+    unset / invalid."""
+    var s = _getenv_str(name, String(""))
+    if len(s) == 0:
+        return default
+    try:
+        return atol(s)
+    except:
+        return default
 
 
 # ---------------------------------------------------------------------------
-# PendingSubmit — I/O ops queued from on_complete, drained by main loop
+# ProxyVariant — tagged union over per-version state
 # ---------------------------------------------------------------------------
+#
+# Mojo 0.26 has no native enum-with-payload, so we use the project's
+# hand-rolled `Int tag + Optional[T] per variant` pattern (see
+# `SessionSlot`, `RequestBody`, `H2Event` in mojo_net for precedents).
 
 
-comptime _SUBMIT_ACCEPT: UInt8 = 0
-comptime _SUBMIT_RECV: UInt8 = 1
-comptime _SUBMIT_SEND: UInt8 = 2
-comptime _SUBMIT_CONNECT: UInt8 = 3
+comptime _VARIANT_HANDSHAKING: UInt8 = 0
+comptime _VARIANT_H1: UInt8 = 1
+comptime _VARIANT_H2: UInt8 = 2
 
 
-struct PendingSubmit(Copyable, Movable):
-    """A queued I/O submission to be executed after on_complete returns."""
+struct ProxyVariant(Movable):
+    """Tagged union of {handshaking, H1, H2} per-connection state.
 
-    var kind: UInt8
-    var fd: Int32
-    var conn_id: UInt64
-    var op_kind: UInt8
+    Before the client TLS handshake completes we don't know which variant
+    a connection will adopt — only after we read the negotiated ALPN do
+    we materialize either an `H1ProxyState` or an `H2ProxyState`. Until
+    then the variant sits in the `_VARIANT_HANDSHAKING` slot with both
+    inner Optionals empty.
+    """
 
-    def __init__(out self, kind: UInt8, fd: Int32, conn_id: UInt64, op_kind: UInt8):
-        self.kind = kind
-        self.fd = fd
-        self.conn_id = conn_id
-        self.op_kind = op_kind
+    var tag: UInt8
+    var h1_state: Optional[H1ProxyState]
+    var h2_state: Optional[H2ProxyState]
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.fd = other.fd
-        self.conn_id = other.conn_id
-        self.op_kind = other.op_kind
+    def __init__(
+        out self,
+        tag: UInt8,
+        var h1_state: Optional[H1ProxyState],
+        var h2_state: Optional[H2ProxyState],
+    ):
+        self.tag = tag
+        self.h1_state = h1_state^
+        self.h2_state = h2_state^
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.fd = take.fd
-        self.conn_id = take.conn_id
-        self.op_kind = take.op_kind
+    fn __init__(out self, *, deinit take: Self):
+        self.tag = take.tag
+        self.h1_state = take.h1_state^
+        self.h2_state = take.h2_state^
+
+    @staticmethod
+    fn handshaking() -> Self:
+        return Self(
+            tag=_VARIANT_HANDSHAKING,
+            h1_state=Optional[H1ProxyState](),
+            h2_state=Optional[H2ProxyState](),
+        )
+
+    @staticmethod
+    fn h1(var s: H1ProxyState) -> Self:
+        return Self(
+            tag=_VARIANT_H1,
+            h1_state=Optional[H1ProxyState](s^),
+            h2_state=Optional[H2ProxyState](),
+        )
+
+    @staticmethod
+    fn h2(var s: H2ProxyState) -> Self:
+        return Self(
+            tag=_VARIANT_H2,
+            h1_state=Optional[H1ProxyState](),
+            h2_state=Optional[H2ProxyState](s^),
+        )
+
+    @always_inline
+    fn is_handshaking(self) -> Bool:
+        return self.tag == _VARIANT_HANDSHAKING
+
+    @always_inline
+    fn is_h1(self) -> Bool:
+        return self.tag == _VARIANT_H1
+
+    @always_inline
+    fn is_h2(self) -> Bool:
+        return self.tag == _VARIANT_H2
 
 
 # ---------------------------------------------------------------------------
@@ -145,18 +216,17 @@ struct PendingSubmit(Copyable, Movable):
 
 
 struct ProxyConnection(Movable):
-    """Per-client proxy state. Owns both sides of the proxied connection.
+    """Per-client proxy state.
 
-    Invariants:
-      * `client_handle` is non-null after construction; owns the client fd.
-      * `backend_handle` owns the backend fd (created in advance, connected
-        async via io_uring). Always non-null while the connection is alive.
-      * `backend_addr_stor` is stored here so its address remains stable for
-        the io_uring Connect op (kernel reads from it asynchronously).
-      * `recv_buf` / `send_buf` addresses must stay stable across polls; the
-        connection is stored inside a stable slot in the handler's connection
-        list, and we only read/write their contents, never moving the list
-        while ops are in flight.
+    Owns both halves of the proxied connection: the client-side TLS
+    connection + (post-ALPN) variant state, and the backend-side TCP
+    handle + TLS connection. Stored heap-allocated and accessed via
+    `UnsafePointer` so that addresses inside (recv/send buffers, the
+    backend addr storage) remain stable while io_uring ops are in flight.
+
+    `variant` starts as `ProxyVariant.handshaking()`; the client TLS
+    handshake completion handler reads the negotiated ALPN and replaces
+    it with either an H1 or H2 state in-place.
     """
 
     var conn_id: UInt64
@@ -164,31 +234,10 @@ struct ProxyConnection(Movable):
     var backend_handle: OwnedHandle
     var backend_addr_stor: SocketAddrStorV4
     var client_tls: TlsConnection
-    var client_http: ServerConnection
     var backend_tls: TlsConnection
-    var backend_session: H1Session  # Session-trait wrapper around ClientConnection (M2.5a §8.2)
-    var backend_request_handle: Optional[RequestHandle]
     var phase: UInt8
-    var headers_committed: Bool
-    var client_recv_buf: List[UInt8]
-    var backend_recv_buf: List[UInt8]
-    # Per-direction send buffers. Each is the buffer currently "owned" by an
-    # in-flight io_uring SEND operation; the kernel reads from its address
-    # until the corresponding completion arrives, so we MUST NOT reassign or
-    # free it before then.
-    var client_send_buf: List[UInt8]
-    var backend_send_buf: List[UInt8]
-    # Ciphertext that wants to go out while a send is already in flight.
-    # When the in-flight send completes we promote pending → send_buf and
-    # queue another send.
-    var client_send_pending: List[UInt8]
-    var backend_send_pending: List[UInt8]
-    # In-flight flags. While true, do NOT queue another op of the same kind
-    # on the same fd, and do NOT reassign the corresponding buffer.
-    var client_send_in_flight: Bool
-    var backend_send_in_flight: Bool
-    var client_recv_in_flight: Bool
-    var backend_recv_in_flight: Bool
+    var send_state: ConnSendState
+    var variant: ProxyVariant
     var closed: Bool
 
     def __init__(
@@ -198,35 +247,17 @@ struct ProxyConnection(Movable):
         var backend_handle: OwnedHandle,
         backend_addr_stor: SocketAddrStorV4,
         var client_tls: TlsConnection,
-        var client_http: ServerConnection,
         var backend_tls: TlsConnection,
-        var backend_session: H1Session,
     ):
         self.conn_id = conn_id
         self.client_handle = client_handle^
         self.backend_handle = backend_handle^
         self.backend_addr_stor = backend_addr_stor
         self.client_tls = client_tls^
-        self.client_http = client_http^
         self.backend_tls = backend_tls^
-        self.backend_session = backend_session^
-        self.backend_request_handle = Optional[RequestHandle]()
-        self.phase = _PHASE_CLIENT_TLS_HANDSHAKE
-        self.headers_committed = False
-        self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
-        for _ in range(_RECV_BUF_SIZE):
-            self.client_recv_buf.append(0)
-        self.backend_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
-        for _ in range(_RECV_BUF_SIZE):
-            self.backend_recv_buf.append(0)
-        self.client_send_buf = List[UInt8]()
-        self.backend_send_buf = List[UInt8]()
-        self.client_send_pending = List[UInt8]()
-        self.backend_send_pending = List[UInt8]()
-        self.client_send_in_flight = False
-        self.backend_send_in_flight = False
-        self.client_recv_in_flight = False
-        self.backend_recv_in_flight = False
+        self.phase = PHASE_CLIENT_TLS_HANDSHAKE
+        self.send_state = ConnSendState()
+        self.variant = ProxyVariant.handshaking()
         self.closed = False
 
     def __init__(out self, *, deinit take: Self):
@@ -235,140 +266,42 @@ struct ProxyConnection(Movable):
         self.backend_handle = take.backend_handle^
         self.backend_addr_stor = take.backend_addr_stor
         self.client_tls = take.client_tls^
-        self.client_http = take.client_http^
         self.backend_tls = take.backend_tls^
-        self.backend_session = take.backend_session^
-        self.backend_request_handle = take.backend_request_handle^
         self.phase = take.phase
-        self.headers_committed = take.headers_committed
-        self.client_recv_buf = take.client_recv_buf^
-        self.backend_recv_buf = take.backend_recv_buf^
-        self.client_send_buf = take.client_send_buf^
-        self.backend_send_buf = take.backend_send_buf^
-        self.client_send_pending = take.client_send_pending^
-        self.backend_send_pending = take.backend_send_pending^
-        self.client_send_in_flight = take.client_send_in_flight
-        self.backend_send_in_flight = take.backend_send_in_flight
-        self.client_recv_in_flight = take.client_recv_in_flight
-        self.backend_recv_in_flight = take.backend_recv_in_flight
+        self.send_state = take.send_state^
+        self.variant = take.variant^
         self.closed = take.closed
 
 
 # ---------------------------------------------------------------------------
-# Header rewriting
-# ---------------------------------------------------------------------------
-
-
-def _is_hop_by_hop(name: String) -> Bool:
-    """Return True if `name` is a hop-by-hop header (lowercase)."""
-    return (
-        name == "connection"
-        or name == "transfer-encoding"
-        or name == "te"
-        or name == "keep-alive"
-        or name == "proxy-authorization"
-        or name == "proxy-authenticate"
-        or name == "proxy-connection"
-        or name == "trailer"
-        or name == "upgrade"
-        or name == "expect"
-    )
-
-
-def rewrite_request_headers(
-    mut request: Request, client_ip: String, backend_host: String
-):
-    """Strip hop-by-hop from `request.headers` in place, replace `Host`
-    with `backend_host`, then add `Via` and `X-Forwarded-For`. Mutates
-    the request's headers only; method/target/version/body are left untouched.
-    """
-    var new_headers = Headers()
-    for i in range(len(request.headers)):
-        var name = request.headers.name_at(i)
-        var value = request.headers.value_at(i)
-        if _is_hop_by_hop(name):
-            continue
-        if name == "host":
-            continue  # skip; we add the rewritten Host below
-        new_headers.add(name, value)
-    new_headers.add("host", backend_host)
-    new_headers.add("via", "1.1 mojo-proxy")
-    new_headers.add("x-forwarded-for", client_ip)
-    request.headers = new_headers^
-
-
-def rewrite_response_headers(mut response: Response):
-    """Strip hop-by-hop from the response in place, then add `Via`."""
-    var new_headers = Headers()
-    for i in range(len(response.headers)):
-        var name = response.headers.name_at(i)
-        var value = response.headers.value_at(i)
-        if not _is_hop_by_hop(name):
-            new_headers.add(name, value)
-    new_headers.add("via", "1.1 mojo-proxy")
-    response.headers = new_headers^
-
-
-# ---------------------------------------------------------------------------
-# Error response helpers
-# ---------------------------------------------------------------------------
-
-
-def make_error_response(code: Int, reason: String, body_text: String) -> Response:
-    """Build a simple text/plain error response."""
-    var headers = Headers()
-    var body_bytes = body_text.as_bytes()
-    headers.add("content-type", "text/plain; charset=utf-8")
-    headers.add("content-length", String(len(body_bytes)))
-    headers.add("connection", "close")
-    var body_bytes_list = List[UInt8]()
-    for i in range(len(body_bytes)):
-        body_bytes_list.append(body_bytes[i])
-    var body = List[BodyFrame]()
-    body.append(BodyFrame.data(body_bytes_list^))
-    return Response(
-        status=StatusCode(code),
-        reason=reason,
-        version=Version.http_1_1(),
-        headers=headers^,
-        body=body^,
-    )
-
-
-# ---------------------------------------------------------------------------
-# File I/O helper (native, matches test_tls_connection.mojo)
-# ---------------------------------------------------------------------------
-
-
-def _read_file(path: String) raises -> List[UInt8]:
-    var fh = FileHandle(path, "r")
-    var bytes = fh.read_bytes()
-    fh.close()
-    return bytes^
-
-
-# ---------------------------------------------------------------------------
-# ProxyHandler — CompletionHandler implementation
+# ProxyHandler — unified completion-handler dispatcher
 # ---------------------------------------------------------------------------
 
 
 struct ProxyHandler(CompletionHandler):
-    """Single-threaded reverse-proxy handler.
+    """Single-threaded unified reverse-proxy handler.
 
-    Owns the listener fd, rustls lib + configs, the list of in-flight
-    connections, and a queue of I/O ops to submit after poll().
+    Owns the listener fd, rustls lib + three configs (one server with
+    dual-ALPN, two clients each pinned to one ALPN), the list of in-flight
+    connections, and the queue of I/O ops to submit after `poll()`.
+
+    The actual per-variant work lives in `proxy_h1` / `proxy_h2`
+    free functions; this handler is just the dispatch + TLS-handshake
+    completion driver.
     """
 
     var listener_fd: Int32
-    # Heap-allocated ProxyConnection pointers. We use a pointer indirection
-    # because ProxyConnection is Movable-only (not Copyable) and `List[T]`
-    # requires `T: Copyable`. The pointers are Copyable (trivially).
+    # Heap-allocated ProxyConnection pointers (see proxy_h1's notes on
+    # stable addresses across `List` reallocations).
     var connections: List[UnsafePointer[ProxyConnection, MutAnyOrigin]]
     var next_conn_id: UInt64
     var tls_lib: RustlsLibrary
     var server_tls_config: TlsServerConfig
-    var client_tls_config: TlsClientConfig
-    var backend_addr: SocketAddrV4
+    var h1_client_tls_config: TlsClientConfig
+    var h2_client_tls_config: TlsClientConfig
+    var h1_backend_addr: SocketAddrV4
+    var h2_backend_addr: SocketAddrV4
+    var backend_host: String
     var pending_submits: List[PendingSubmit]
 
     def __init__(
@@ -376,16 +309,24 @@ struct ProxyHandler(CompletionHandler):
         listener_fd: Int32,
         var tls_lib: RustlsLibrary,
         var server_tls_config: TlsServerConfig,
-        var client_tls_config: TlsClientConfig,
-        backend_addr: SocketAddrV4,
+        var h1_client_tls_config: TlsClientConfig,
+        var h2_client_tls_config: TlsClientConfig,
+        h1_backend_addr: SocketAddrV4,
+        h2_backend_addr: SocketAddrV4,
+        backend_host: String,
     ):
         self.listener_fd = listener_fd
-        self.connections = List[UnsafePointer[ProxyConnection, MutAnyOrigin]]()
+        self.connections = List[
+            UnsafePointer[ProxyConnection, MutAnyOrigin]
+        ]()
         self.next_conn_id = 1
         self.tls_lib = tls_lib^
         self.server_tls_config = server_tls_config^
-        self.client_tls_config = client_tls_config^
-        self.backend_addr = backend_addr
+        self.h1_client_tls_config = h1_client_tls_config^
+        self.h2_client_tls_config = h2_client_tls_config^
+        self.h1_backend_addr = h1_backend_addr
+        self.h2_backend_addr = h2_backend_addr
+        self.backend_host = backend_host
         self.pending_submits = List[PendingSubmit]()
 
     fn __moveinit__(out self, deinit take: Self):
@@ -394,11 +335,14 @@ struct ProxyHandler(CompletionHandler):
         self.next_conn_id = take.next_conn_id
         self.tls_lib = take.tls_lib^
         self.server_tls_config = take.server_tls_config^
-        self.client_tls_config = take.client_tls_config^
-        self.backend_addr = take.backend_addr
+        self.h1_client_tls_config = take.h1_client_tls_config^
+        self.h2_client_tls_config = take.h2_client_tls_config^
+        self.h1_backend_addr = take.h1_backend_addr
+        self.h2_backend_addr = take.h2_backend_addr
+        self.backend_host = take.backend_host^
         self.pending_submits = take.pending_submits^
 
-    # --- Conn lookup (linear; M2 scope — low concurrency example) ----------
+    # --- Connection lookup ----------------------------------------------
 
     def _find_index(self, conn_id: UInt64) -> Int:
         """Return the index of the connection with `conn_id`, or -1."""
@@ -407,7 +351,7 @@ struct ProxyHandler(CompletionHandler):
                 return i
         return -1
 
-    # --- on_complete dispatch ----------------------------------------------
+    # --- on_complete dispatch -------------------------------------------
 
     fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
@@ -427,134 +371,31 @@ struct ProxyHandler(CompletionHandler):
         if idx < 0:
             return  # stale completion for closed connection
 
-        if op_kind == OP_CLIENT_RECV:
-            self._handle_client_recv(idx, result)
-        elif op_kind == OP_CLIENT_SEND:
-            self._handle_client_send(idx, result)
-        elif op_kind == OP_BACKEND_CONNECT:
-            self._handle_backend_connect(idx, result)
-        elif op_kind == OP_BACKEND_RECV:
-            self._handle_backend_recv(idx, result)
-        elif op_kind == OP_BACKEND_SEND:
-            self._handle_backend_send(idx, result)
-
-    # --- Submit queue helpers ----------------------------------------------
-
-    def _queue_accept(mut self):
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_ACCEPT,
-                fd=self.listener_fd,
-                conn_id=LISTENER_CONN_ID,
-                op_kind=OP_ACCEPT,
-            )
-        )
-
-    def _queue_client_recv(mut self, idx: Int):
-        if self.connections[idx][].client_recv_in_flight:
+        # While the variant is still "handshaking" we're driving the
+        # client-side TLS handshake; once the handshake settles we
+        # construct the matching variant and from then on everything
+        # routes through the proxy_h1 / proxy_h2 free functions.
+        if self.connections[idx][].variant.is_handshaking():
+            self._drive_client_tls_handshake(idx, op_kind, result)
+            if not self.connections[idx][].closed:
+                self._maybe_finalize_handshake(idx)
+            if self.connections[idx][].closed:
+                self._close_connection(idx)
             return
-        self.connections[idx][].client_recv_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_RECV,
-                fd=self.connections[idx][].client_handle.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_CLIENT_RECV,
-            )
-        )
 
-    def _queue_client_send(mut self, idx: Int):
-        # Caller is responsible for promoting client_send_pending into
-        # client_send_buf before calling this. We assert here that a send
-        # is not already in flight.
-        if self.connections[idx][].client_send_in_flight:
-            return
-        if len(self.connections[idx][].client_send_buf) == 0:
-            return
-        self.connections[idx][].client_send_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_SEND,
-                fd=self.connections[idx][].client_handle.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_CLIENT_SEND,
-            )
-        )
+        if self.connections[idx][].variant.is_h1():
+            self._dispatch_h1(idx, op_kind, result)
+        elif self.connections[idx][].variant.is_h2():
+            self._dispatch_h2(idx, op_kind, result)
 
-    def _queue_backend_connect(mut self, idx: Int):
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_CONNECT,
-                fd=self.connections[idx][].backend_handle.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_BACKEND_CONNECT,
-            )
-        )
+        if self.connections[idx][].closed:
+            self._close_connection(idx)
 
-    def _queue_backend_recv(mut self, idx: Int):
-        if self.connections[idx][].backend_recv_in_flight:
-            return
-        self.connections[idx][].backend_recv_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_RECV,
-                fd=self.connections[idx][].backend_handle.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_BACKEND_RECV,
-            )
-        )
-
-    def _queue_backend_send(mut self, idx: Int):
-        if self.connections[idx][].backend_send_in_flight:
-            return
-        if len(self.connections[idx][].backend_send_buf) == 0:
-            return
-        self.connections[idx][].backend_send_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_SEND,
-                fd=self.connections[idx][].backend_handle.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_BACKEND_SEND,
-            )
-        )
-
-    # --- Outbound staging helpers ------------------------------------------
-
-    def _stage_client_send(mut self, idx: Int, var ct: List[UInt8]):
-        """Stage `ct` to be sent to the client.
-
-        If no client send is currently in flight, swap it into
-        `client_send_buf` and queue a CLIENT_SEND. Otherwise append to
-        `client_send_pending`; the in-flight send's completion handler will
-        promote it later.
-        """
-        if len(ct) == 0:
-            return
-        if self.connections[idx][].client_send_in_flight:
-            for i in range(len(ct)):
-                self.connections[idx][].client_send_pending.append(ct[i])
-            return
-        self.connections[idx][].client_send_buf = ct^
-        self._queue_client_send(idx)
-
-    def _stage_backend_send(mut self, idx: Int, var ct: List[UInt8]):
-        """Stage `ct` to be sent to the backend (see _stage_client_send)."""
-        if len(ct) == 0:
-            return
-        if self.connections[idx][].backend_send_in_flight:
-            for i in range(len(ct)):
-                self.connections[idx][].backend_send_pending.append(ct[i])
-            return
-        self.connections[idx][].backend_send_buf = ct^
-        self._queue_backend_send(idx)
-
-    # --- Accept handling ----------------------------------------------------
+    # --- Accept handling ------------------------------------------------
 
     def _handle_accept(mut self, result: Int32) raises:
         if result < 0:
             print("proxy: accept failed:", result)
-            # Re-arm accept anyway so the listener keeps running.
             self._queue_accept()
             return
 
@@ -562,24 +403,15 @@ struct ProxyHandler(CompletionHandler):
         var conn_id = self.next_conn_id
         self.next_conn_id += 1
 
-        # Build the two TLS halves.
+        # Build the client-side TLS connection from the dual-ALPN
+        # server config; the backend TLS half is deferred until the
+        # ALPN is known.
         var client_tls = TlsConnection.new_server(
             self.tls_lib, self.server_tls_config
         )
-        var backend_tls = TlsConnection.new_client(
-            self.tls_lib, self.client_tls_config, _BACKEND_HOST
-        )
 
-        # Build the H1 state machines. Server side stays a sans-I/O
-        # ServerConnection because we need explicit control over the
-        # request/response handoff (the proxy waits for a backend response
-        # before composing one for the client). Backend side uses H1Session
-        # so the per-request method tracking and submit/run_one lifecycle
-        # come from the Session trait surface.
-        var client_http = ServerConnection(ParseConfig())
-        var backend_session = H1Session()
-
-        # Create the backend TCP socket up front so we have an fd to connect().
+        # Create the backend TCP socket up front so we have an fd to
+        # connect once we know which backend to dial.
         var backend_handle = _sys_socket(
             AddrFamily.INET,
             SocketType.STREAM,
@@ -587,11 +419,14 @@ struct ProxyHandler(CompletionHandler):
             Protocol.TCP,
         )
 
-        # Stable storage for the backend address: kernel reads from this
-        # asynchronously while the io_uring Connect op is in flight.
-        var backend_addr_stor = self.backend_addr.addr_stor()
+        # The actual backend addr is decided post-ALPN; seed with H1.
+        var backend_addr_stor = self.h1_backend_addr.addr_stor()
 
-        # Wrap the accepted client fd in an OwnedHandle (RAII close on drop).
+        # A placeholder backend TLS connection. Replaced post-ALPN.
+        var backend_tls = TlsConnection.new_client(
+            self.tls_lib, self.h1_client_tls_config, self.backend_host
+        )
+
         var client_handle = OwnedHandle(raw=client_fd)
 
         var conn = ProxyConnection(
@@ -600,279 +435,383 @@ struct ProxyHandler(CompletionHandler):
             backend_handle=backend_handle^,
             backend_addr_stor=backend_addr_stor,
             client_tls=client_tls^,
-            client_http=client_http^,
             backend_tls=backend_tls^,
-            backend_session=backend_session^,
         )
 
         # Heap-allocate so the address is stable across any `connections`
-        # List reallocations. io_uring ops read/write into buffers held
-        # inside the pointee, so the pointee must not move.
+        # List reallocations (io_uring ops read/write into buffers held
+        # inside the pointee, so the pointee must not move).
         var conn_ptr = _heap_alloc[ProxyConnection](1).as_any_origin()
         conn_ptr.init_pointee_move(conn^)
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1
 
-        # TLS server has nothing to send until it sees the ClientHello.
-        # Submit a CLIENT_RECV to start the handshake.
-        self._queue_client_recv(idx)
+        # Kick off the TLS handshake by reading the first client bytes.
+        queue_client_recv(
+            self.connections[idx][].send_state,
+            self.pending_submits,
+            self.connections[idx][].client_handle.raw(),
+            self.connections[idx][].conn_id,
+        )
 
-        # Re-arm the accept for the next client.
+        # Re-arm accept for the next client.
         self._queue_accept()
 
-    # --- Client RECV/SEND handlers -----------------------------------------
+    def _queue_accept(mut self):
+        self.pending_submits.append(
+            PendingSubmit(
+                kind=SUBMIT_ACCEPT,
+                fd=self.listener_fd,
+                conn_id=LISTENER_CONN_ID,
+                op_kind=OP_ACCEPT,
+            )
+        )
 
-    def _handle_client_recv(mut self, idx: Int, result: Int32) raises:
-        # Mark the in-flight RECV as completed regardless of result; the
-        # buffer is now ours again to refill.
-        self.connections[idx][].client_recv_in_flight = False
+    # --- Pre-ALPN TLS-handshake driver ----------------------------------
 
-        if result <= 0:
-            # 0 = EOF; <0 = error. Close the connection.
-            self._close_connection(idx)
-            return
-
-        # Feed received ciphertext into the TLS state machine.
-        var n = Int(result)
-        var chunk = List[UInt8](capacity=n)
-        for i in range(n):
-            chunk.append(self.connections[idx][].client_recv_buf[i])
-        self.connections[idx][].client_tls.receive_data(Span(chunk))
-
-        # If TLS has ciphertext to send (handshake reply / encrypted app data),
-        # stage it for SEND.
-        if self.connections[idx][].client_tls.wants_write():
-            var ct = self.connections[idx][].client_tls.drain_ciphertext()
-            self._stage_client_send(idx, ct^)
-
-        if self.connections[idx][].client_tls.is_handshaking():
-            # Need more handshake bytes from the client.
-            self._queue_client_recv(idx)
-            return
-
-        # Handshake done — feed any plaintext we just decrypted into the
-        # HTTP parser.
-        var plaintext = self.connections[idx][].client_tls.drain_plaintext()
-        if len(plaintext) > 0:
-            self.connections[idx][].client_http.receive_data(Span(plaintext))
-
-        var req_opt = self.connections[idx][].client_http.next_request()
-        if not req_opt:
-            # Need more bytes — go back to reading.
-            self.connections[idx][].phase = _PHASE_CLIENT_READING_REQUEST
-            self._queue_client_recv(idx)
-            return
-
-        # Got a full request — rewrite headers and submit to the backend
-        # session. H1Session.submit encodes the request, queues bytes in its
-        # outbuf, and returns a RequestHandle that we drive via run_one once
-        # the backend response arrives.
-        var request = req_opt.take()
-        rewrite_request_headers(request, "127.0.0.1", _BACKEND_HOST)
-        var handle = self.connections[idx][].backend_session.submit(request^)
-        self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
-
-        self.connections[idx][].phase = _PHASE_BACKEND_CONNECTING
-        self._queue_backend_connect(idx)
-
-    def _handle_client_send(mut self, idx: Int, result: Int32) raises:
-        # Mark in-flight send as done. The kernel is finished reading from
-        # client_send_buf so it is safe to drop or reassign now.
-        self.connections[idx][].client_send_in_flight = False
-
-        if result < 0:
-            self._close_connection(idx)
-            return
-        # Short-write case is intentionally unhandled in M2 (the plan scope
-        # is a minimum-viable proxy). The send_buf is discarded.
-        self.connections[idx][].client_send_buf = List[UInt8]()
-
-        # If more ciphertext was queued while we were in flight, promote it
-        # and immediately re-queue another send. This guarantees we never
-        # leave staged ciphertext stranded.
-        if len(self.connections[idx][].client_send_pending) > 0:
-            var n_pending = len(self.connections[idx][].client_send_pending)
-            var pending = List[UInt8](capacity=n_pending)
-            for i in range(n_pending):
-                pending.append(self.connections[idx][].client_send_pending[i])
-            self.connections[idx][].client_send_pending = List[UInt8]()
-            self.connections[idx][].client_send_buf = pending^
-            self._queue_client_send(idx)
-            # Don't transition phase yet — wait for this chained send to
-            # complete first.
-            return
-
-        if self.connections[idx][].phase == _PHASE_DONE:
-            self._close_connection(idx)
-            return
-
-        if self.connections[idx][].phase == _PHASE_CLIENT_SENDING_RESPONSE:
-            # Fully flushed the response. Either keep-alive and loop back
-            # or close.
-            if self.connections[idx][].client_http.is_keep_alive():
-                self.connections[idx][].phase = _PHASE_CLIENT_READING_REQUEST
-                self.connections[idx][].headers_committed = False
-                self._queue_client_recv(idx)
-            else:
-                self._close_connection(idx)
-            return
-
-        # Otherwise we are still in a handshake phase and need more recvs.
-        if self.connections[idx][].client_tls.is_handshaking():
-            self._queue_client_recv(idx)
-
-    # --- Backend CONNECT/RECV/SEND handlers ---------------------------------
-
-    def _handle_backend_connect(mut self, idx: Int, result: Int32) raises:
-        if result < 0:
-            print("proxy: backend connect failed:", result)
-            self._send_error_and_close(idx, 502, "Bad Gateway", "backend unreachable")
-            return
-
-        self.connections[idx][].phase = _PHASE_BACKEND_TLS_HANDSHAKE
-
-        # The client TLS (toward backend) already staged a ClientHello at
-        # construction time. Drain + send it.
-        if self.connections[idx][].backend_tls.wants_write():
-            var ct = self.connections[idx][].backend_tls.drain_ciphertext()
-            self._stage_backend_send(idx, ct^)
-        else:
-            # Unexpected — start reading anyway.
-            self._queue_backend_recv(idx)
-
-    def _handle_backend_recv(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].backend_recv_in_flight = False
-
-        if result <= 0:
-            self._send_error_and_close(idx, 502, "Bad Gateway", "backend closed")
-            return
-
-        var n = Int(result)
-        var chunk = List[UInt8](capacity=n)
-        for i in range(n):
-            chunk.append(self.connections[idx][].backend_recv_buf[i])
-        self.connections[idx][].backend_tls.receive_data(Span(chunk))
-
-        if self.connections[idx][].backend_tls.wants_write():
-            var ct = self.connections[idx][].backend_tls.drain_ciphertext()
-            self._stage_backend_send(idx, ct^)
-
-        if self.connections[idx][].backend_tls.is_handshaking():
-            self._queue_backend_recv(idx)
-            return
-
-        # Backend TLS handshake is done — drain decrypted data into the
-        # backend H1 session (for response parsing).
-        var plaintext = self.connections[idx][].backend_tls.drain_plaintext()
-        if len(plaintext) > 0:
-            self.connections[idx][].backend_session.feed(Span(plaintext))
-
-        # If we just finished the handshake and haven't flushed the request
-        # yet, do it now. The bytes were already queued in H1Session._outbuf
-        # by submit() — we just need to drain them through TLS.
-        if self.connections[idx][].phase == _PHASE_BACKEND_TLS_HANDSHAKE:
-            self.connections[idx][].phase = _PHASE_BACKEND_SENDING_REQUEST
-            var req_bytes = self.connections[idx][].backend_session.drain()
-            if len(req_bytes) > 0:
-                self.connections[idx][].backend_tls.send_data(Span(req_bytes))
-                var ct2 = self.connections[idx][].backend_tls.drain_ciphertext()
-                self._stage_backend_send(idx, ct2^)
-            else:
-                self._queue_backend_recv(idx)
-            return
-
-        # Try to extract a complete response by stepping the session against
-        # the in-flight handle. H1Session tracks the request method internally.
-        if not self.connections[idx][].backend_request_handle:
-            self._queue_backend_recv(idx)
-            return
-        # Move the handle out of the field so we can drive run_one against it.
-        # The Optional[RequestHandle] field is replaced with an empty one for
-        # the duration of the call; we put it back if the response isn't ready.
-        var handle_opt = Optional[RequestHandle]()
-        swap(handle_opt, self.connections[idx][].backend_request_handle)
-        var handle = handle_opt.take()
-        self.connections[idx][].backend_session.run_one(handle)
-        if not handle.is_complete():
-            # Response not ready yet; restore the handle and ask for more bytes.
-            self.connections[idx][].backend_request_handle = Optional[RequestHandle](handle^)
-            self._queue_backend_recv(idx)
-            return
-
-        # Got a full response — extract it from the handle, rewrite, hand to
-        # the client-side H1 engine.
-        var response = handle^.take_response()
-        rewrite_response_headers(response)
-        self.connections[idx][].client_http.send_response(response^)
-
-        # Drain client-side H1 serialization, feed to TLS, queue SEND.
-        var pt = self.connections[idx][].client_http.drain()
-        if len(pt) > 0:
-            self.connections[idx][].client_tls.send_data(Span(pt))
-        var ct3 = self.connections[idx][].client_tls.drain_ciphertext()
-        self.connections[idx][].phase = _PHASE_CLIENT_SENDING_RESPONSE
-        self.connections[idx][].headers_committed = True
-        self._stage_client_send(idx, ct3^)
-
-    def _handle_backend_send(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].backend_send_in_flight = False
-
-        if result < 0:
-            self._send_error_and_close(idx, 502, "Bad Gateway", "backend send failed")
-            return
-
-        self.connections[idx][].backend_send_buf = List[UInt8]()
-
-        if len(self.connections[idx][].backend_send_pending) > 0:
-            var n_pending = len(self.connections[idx][].backend_send_pending)
-            var pending = List[UInt8](capacity=n_pending)
-            for i in range(n_pending):
-                pending.append(self.connections[idx][].backend_send_pending[i])
-            self.connections[idx][].backend_send_pending = List[UInt8]()
-            self.connections[idx][].backend_send_buf = pending^
-            self._queue_backend_send(idx)
-            return
-
-        if self.connections[idx][].phase == _PHASE_BACKEND_TLS_HANDSHAKE:
-            self._queue_backend_recv(idx)
-            return
-
-        if self.connections[idx][].phase == _PHASE_BACKEND_SENDING_REQUEST:
-            # Request flushed — now wait for the response.
-            self.connections[idx][].phase = _PHASE_BACKEND_READING_RESPONSE
-            self._queue_backend_recv(idx)
-
-    # --- Error + close helpers ---------------------------------------------
-
-    def _send_error_and_close(
-        mut self,
-        idx: Int,
-        code: Int,
-        reason: String,
-        body_text: String,
+    def _drive_client_tls_handshake(
+        mut self, idx: Int, op_kind: UInt8, result: Int32,
     ) raises:
-        if not self.connections[idx][].headers_committed:
-            var resp = make_error_response(code, reason, body_text)
-            self.connections[idx][].client_http.send_response(resp^)
-            var pt = self.connections[idx][].client_http.drain()
-            if len(pt) > 0:
-                self.connections[idx][].client_tls.send_data(Span(pt))
-            var ct = self.connections[idx][].client_tls.drain_ciphertext()
-            self.connections[idx][].phase = _PHASE_DONE
-            self.connections[idx][].headers_committed = True
-            self._stage_client_send(idx, ct^)
+        """Drive the client-side TLS handshake to completion.
+
+        During the handshake phase, only CLIENT_RECV and CLIENT_SEND
+        ops are valid. Each RECV feeds bytes into rustls; each SEND
+        confirms a ciphertext flush so we can chain pending bytes.
+        """
+        var ptr = self.connections[idx]
+
+        if op_kind == OP_CLIENT_RECV:
+            ptr[].send_state.client_recv_in_flight = False
+            if result <= 0:
+                ptr[].closed = True
+                return
+            var n = Int(result)
+            var chunk = List[UInt8](capacity=n)
+            for i in range(n):
+                chunk.append(ptr[].send_state.client_recv_buf[i])
+            ptr[].client_tls.receive_data(Span(chunk))
+
+            if ptr[].client_tls.wants_write():
+                var ct = ptr[].client_tls.drain_ciphertext()
+                stage_client_send(
+                    ptr[].send_state,
+                    self.pending_submits,
+                    ptr[].client_handle.raw(),
+                    ptr[].conn_id,
+                    ct^,
+                )
+
+            if ptr[].client_tls.is_handshaking():
+                # Need more handshake bytes.
+                queue_client_recv(
+                    ptr[].send_state,
+                    self.pending_submits,
+                    ptr[].client_handle.raw(),
+                    ptr[].conn_id,
+                )
+        elif op_kind == OP_CLIENT_SEND:
+            ptr[].send_state.client_send_in_flight = False
+            if result < 0:
+                ptr[].closed = True
+                return
+            ptr[].send_state.client_send_buf = List[UInt8]()
+            if len(ptr[].send_state.client_send_pending) > 0:
+                var n_pending = len(ptr[].send_state.client_send_pending)
+                var pending = List[UInt8](capacity=n_pending)
+                for i in range(n_pending):
+                    pending.append(ptr[].send_state.client_send_pending[i])
+                ptr[].send_state.client_send_pending = List[UInt8]()
+                ptr[].send_state.client_send_buf = pending^
+                # Re-queue another client send.
+                if not ptr[].send_state.client_send_in_flight:
+                    ptr[].send_state.client_send_in_flight = True
+                    self.pending_submits.append(
+                        PendingSubmit(
+                            kind=SUBMIT_SEND,
+                            fd=ptr[].client_handle.raw(),
+                            conn_id=ptr[].conn_id,
+                            op_kind=OP_CLIENT_SEND,
+                        )
+                    )
+                return
+            # If still handshaking, keep reading.
+            if ptr[].client_tls.is_handshaking():
+                queue_client_recv(
+                    ptr[].send_state,
+                    self.pending_submits,
+                    ptr[].client_handle.raw(),
+                    ptr[].conn_id,
+                )
+
+    def _maybe_finalize_handshake(mut self, idx: Int) raises:
+        """If the client TLS handshake has completed, read the negotiated
+        ALPN, materialize the matching variant, rebuild the backend TLS
+        connection against the ALPN-pinned client config, and kick off
+        the backend connect.
+        """
+        var ptr = self.connections[idx]
+        if ptr[].client_tls.is_handshaking():
+            return
+
+        # Handshake done — pick a variant.
+        var alpn_opt = ptr[].client_tls.alpn()
+        var is_h2 = False
+        if alpn_opt:
+            if alpn_opt.value() == String("h2"):
+                is_h2 = True
+
+        if is_h2:
+            var h2 = h2_proxy_state_new()
+            ptr[].variant = ProxyVariant.h2(h2^)
+            ptr[].backend_addr_stor = self.h2_backend_addr.addr_stor()
+            var backend_tls = TlsConnection.new_client(
+                self.tls_lib,
+                self.h2_client_tls_config,
+                self.backend_host,
+            )
+            ptr[].backend_tls = backend_tls^
         else:
-            self._close_connection(idx)
+            var h1 = h1_proxy_state_new()
+            ptr[].variant = ProxyVariant.h1(h1^)
+            ptr[].backend_addr_stor = self.h1_backend_addr.addr_stor()
+            var backend_tls = TlsConnection.new_client(
+                self.tls_lib,
+                self.h1_client_tls_config,
+                self.backend_host,
+            )
+            ptr[].backend_tls = backend_tls^
+
+        # For the H2 path, surface any decrypted plaintext that arrived
+        # along with the handshake-final TLS record into the streaming
+        # server so it can emit settings ACKs.
+        # We also need the variant handlers to take it from here, so we
+        # simply re-arm a client_recv: the next batch of inbound bytes
+        # will route through the variant handler, which is the natural
+        # place to drain remaining handshake-trailing plaintext.
+        # Drain any plaintext now so the variant handler doesn't miss
+        # the bytes that arrived in the handshake-final record.
+        var plaintext = ptr[].client_tls.drain_plaintext()
+        if len(plaintext) > 0:
+            if ptr[].variant.is_h2():
+                # Feed into the H2 streaming server; its drain() will
+                # surface the server-preface frames + any frames it
+                # parsed from the first inbound record.
+                ptr[].variant.h2_state.value().client_h2.feed(
+                    Span(plaintext)
+                )
+                var h2_out = ptr[].variant.h2_state.value().client_h2.drain()
+                if len(h2_out) > 0:
+                    ptr[].client_tls.send_data(Span(h2_out))
+                    var ct = ptr[].client_tls.drain_ciphertext()
+                    stage_client_send(
+                        ptr[].send_state,
+                        self.pending_submits,
+                        ptr[].client_handle.raw(),
+                        ptr[].conn_id,
+                        ct^,
+                    )
+            elif ptr[].variant.is_h1():
+                ptr[].variant.h1_state.value().client_http.receive_data(
+                    Span(plaintext)
+                )
+
+        # H2 still needs to flush its server preface even without
+        # client-side plaintext arriving with the handshake.
+        if ptr[].variant.is_h2():
+            var preface = ptr[].variant.h2_state.value().client_h2.drain()
+            if len(preface) > 0:
+                ptr[].client_tls.send_data(Span(preface))
+                var ct2 = ptr[].client_tls.drain_ciphertext()
+                stage_client_send(
+                    ptr[].send_state,
+                    self.pending_submits,
+                    ptr[].client_handle.raw(),
+                    ptr[].conn_id,
+                    ct2^,
+                )
+
+        # Transition to BACKEND_CONNECTING and queue the connect.
+        ptr[].phase = PHASE_BACKEND_CONNECTING
+        self.pending_submits.append(
+            PendingSubmit(
+                kind=SUBMIT_CONNECT,
+                fd=ptr[].backend_handle.raw(),
+                conn_id=ptr[].conn_id,
+                op_kind=OP_BACKEND_CONNECT,
+            )
+        )
+        # Also continue reading from the client so we don't miss any
+        # follow-up frames (especially relevant for H2 multiplexing).
+        queue_client_recv(
+            ptr[].send_state,
+            self.pending_submits,
+            ptr[].client_handle.raw(),
+            ptr[].conn_id,
+        )
+
+    # --- Variant dispatch ----------------------------------------------
+
+    def _dispatch_h1(
+        mut self, idx: Int, op_kind: UInt8, result: Int32
+    ) raises:
+        var ptr = self.connections[idx]
+        var client_fd = ptr[].client_handle.raw()
+        var backend_fd = ptr[].backend_handle.raw()
+        var conn_id = ptr[].conn_id
+
+        if op_kind == OP_CLIENT_RECV:
+            var subs = h1_handle_client_recv(
+                ptr[].variant.h1_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].phase,
+                ptr[].closed,
+                self.backend_host,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_CLIENT_SEND:
+            var subs = h1_handle_client_send(
+                ptr[].variant.h1_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_CONNECT:
+            var subs = h1_handle_backend_connect(
+                ptr[].variant.h1_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].backend_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_RECV:
+            var subs = h1_handle_backend_recv(
+                ptr[].variant.h1_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].backend_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_SEND:
+            var subs = h1_handle_backend_send(
+                ptr[].variant.h1_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+
+    def _dispatch_h2(
+        mut self, idx: Int, op_kind: UInt8, result: Int32
+    ) raises:
+        var ptr = self.connections[idx]
+        var client_fd = ptr[].client_handle.raw()
+        var backend_fd = ptr[].backend_handle.raw()
+        var conn_id = ptr[].conn_id
+
+        if op_kind == OP_CLIENT_RECV:
+            var subs = h2_handle_client_recv(
+                ptr[].variant.h2_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].backend_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_CLIENT_SEND:
+            var subs = h2_handle_client_send(
+                ptr[].variant.h2_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_CONNECT:
+            var subs = h2_handle_backend_connect(
+                ptr[].variant.h2_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].backend_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_RECV:
+            var subs = h2_handle_backend_recv(
+                ptr[].variant.h2_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].backend_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_SEND:
+            var subs = h2_handle_backend_send(
+                ptr[].variant.h2_state.value(),
+                ptr[].send_state,
+                ptr[].client_tls,
+                ptr[].phase,
+                ptr[].closed,
+                client_fd,
+                backend_fd,
+                conn_id,
+                result,
+            )
+            self.pending_submits.extend(subs^)
+
+    # --- Close helper ---------------------------------------------------
 
     def _close_connection(mut self, idx: Int):
         """Drop the connection: run its destructor (closes fds via the
-        OwnedHandle fields) and free the heap slot.
-        """
+        OwnedHandle fields) and free the heap slot."""
         var ptr = self.connections[idx]
         ptr[].closed = True
         var last = len(self.connections) - 1
         if idx != last:
-            # Swap-remove: move the last entry into this slot.
             self.connections[idx] = self.connections[last]
         _ = self.connections.pop()
         ptr.destroy_pointee()
@@ -886,8 +825,6 @@ struct ProxyHandler(CompletionHandler):
 
 def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
     """Submit all queued ops from the handler, then clear the queue."""
-    # Snapshot and clear to avoid infinite loops if a submit failure causes
-    # a re-queue during error handling (not currently the case, but defensive).
     var submits = loop._handler.pending_submits^
     loop._handler.pending_submits = List[PendingSubmit]()
 
@@ -895,50 +832,54 @@ def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
         var s = submits[i].copy()
         var token = encode_token(s.conn_id, s.op_kind)
 
-        if s.kind == _SUBMIT_ACCEPT:
+        if s.kind == SUBMIT_ACCEPT:
             loop.submit_accept(s.fd, token)
-        elif s.kind == _SUBMIT_RECV:
+        elif s.kind == SUBMIT_RECV:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
             var raw_addr: Int
             if s.op_kind == OP_CLIENT_RECV:
                 raw_addr = Int(
-                    loop._handler.connections[idx][].client_recv_buf.unsafe_ptr()
+                    loop._handler.connections[idx][].send_state.client_recv_buf.unsafe_ptr()
                 )
             else:
                 raw_addr = Int(
-                    loop._handler.connections[idx][].backend_recv_buf.unsafe_ptr()
+                    loop._handler.connections[idx][].send_state.backend_recv_buf.unsafe_ptr()
                 )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
             loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
-        elif s.kind == _SUBMIT_SEND:
+        elif s.kind == SUBMIT_SEND:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
             var n: Int
             var raw_addr: Int
             if s.op_kind == OP_CLIENT_SEND:
-                n = len(loop._handler.connections[idx][].client_send_buf)
+                n = len(
+                    loop._handler.connections[idx][].send_state.client_send_buf
+                )
                 if n == 0:
                     continue
                 raw_addr = Int(
-                    loop._handler.connections[idx][].client_send_buf.unsafe_ptr()
+                    loop._handler.connections[idx][].send_state.client_send_buf.unsafe_ptr()
                 )
             else:
-                n = len(loop._handler.connections[idx][].backend_send_buf)
+                n = len(
+                    loop._handler.connections[idx][].send_state.backend_send_buf
+                )
                 if n == 0:
                     continue
                 raw_addr = Int(
-                    loop._handler.connections[idx][].backend_send_buf.unsafe_ptr()
+                    loop._handler.connections[idx][].send_state.backend_send_buf.unsafe_ptr()
                 )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
             loop.submit_send(s.fd, buf_ptr, UInt(n), token)
-        elif s.kind == _SUBMIT_CONNECT:
+        elif s.kind == SUBMIT_CONNECT:
             var idx = loop._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
@@ -955,52 +896,89 @@ def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
 
 
 def main() raises:
-    var backend_addr = SocketAddrV4(127, 0, 0, 1, port=_BACKEND_PORT)
+    var listen_port = UInt16(_getenv_int(String("LISTEN_PORT"), 8443))
+    var h1_backend_port = UInt16(
+        _getenv_int(String("H1_BACKEND_PORT"), 9443)
+    )
+    var h2_backend_port = UInt16(
+        _getenv_int(String("H2_BACKEND_PORT"), Int(h1_backend_port))
+    )
+    var backend_host = _getenv_str(
+        String("BACKEND_HOST"), String("localhost")
+    )
+
+    var h1_backend_addr = SocketAddrV4(127, 0, 0, 1, port=h1_backend_port)
+    var h2_backend_addr = SocketAddrV4(127, 0, 0, 1, port=h2_backend_port)
 
     # Load TLS material.
     var proxy_cert = _read_file(_CERT_DIR + "/proxy_cert.pem")
     var proxy_key = _read_file(_CERT_DIR + "/proxy_key.pem")
 
-    # Initialize TLS library + configs.
+    # Initialize TLS library + dual-ALPN server config.
     var tls_lib = RustlsLibrary()
     var server_config = TlsServerConfig(
         tls_lib, Span(proxy_cert), Span(proxy_key)
     )
-    # Self-signed backend cert — use insecure client config for the example.
-    # NOTE: requires librustls_mojo.so built with --features insecure.
-    var client_config = TlsClientConfig(tls_lib, insecure=True)
+    var server_alpn = List[String]()
+    server_alpn.append(String("h2"))
+    server_alpn.append(String("http/1.1"))
+    server_config.set_alpn_protocols(tls_lib, server_alpn)
+
+    # Two client configs, each pinned to one ALPN. Self-signed backend
+    # cert — use insecure client config (requires librustls_mojo.so
+    # built with --features insecure).
+    var h1_client_config = TlsClientConfig(tls_lib, insecure=True)
+    var h1_alpn = List[String]()
+    h1_alpn.append(String("http/1.1"))
+    h1_client_config.set_alpn_protocols(tls_lib, h1_alpn)
+
+    var h2_client_config = TlsClientConfig(tls_lib, insecure=True)
+    var h2_alpn = List[String]()
+    h2_alpn.append(String("h2"))
+    h2_client_config.set_alpn_protocols(tls_lib, h2_alpn)
 
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
-    var bind_addr = SocketAddrV4(0, 0, 0, 0, port=_LISTEN_PORT)
+    var bind_addr = SocketAddrV4(0, 0, 0, 0, port=listen_port)
     listener.bind(bind_addr)
     listener.listen(Backlog.DEFAULT)
     var listener_fd = listener.raw()
 
-    print("mojo-proxy: listening on https://127.0.0.1:" + String(_LISTEN_PORT))
-    print("mojo-proxy: backend at   https://" + _BACKEND_HOST + ":" + String(_BACKEND_PORT))
+    print(
+        "mojo-proxy: listening on https://127.0.0.1:" + String(listen_port)
+    )
+    print(
+        "mojo-proxy: H1 backend at https://"
+        + backend_host
+        + ":"
+        + String(h1_backend_port)
+    )
+    print(
+        "mojo-proxy: H2 backend at https://"
+        + backend_host
+        + ":"
+        + String(h2_backend_port)
+    )
 
-    # Build the handler + loop.
     var handler = ProxyHandler(
         listener_fd=listener_fd,
         tls_lib=tls_lib^,
         server_tls_config=server_config^,
-        client_tls_config=client_config^,
-        backend_addr=backend_addr,
+        h1_client_tls_config=h1_client_config^,
+        h2_client_tls_config=h2_client_config^,
+        h1_backend_addr=h1_backend_addr,
+        h2_backend_addr=h2_backend_addr,
+        backend_host=backend_host,
     )
     var loop = CompletionLoop[ProxyHandler](handler^, sq_entries=256)
 
-    # Submit the initial accept (token = OP_ACCEPT, conn_id = 0).
+    # Submit the initial accept.
     loop.submit_accept(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
-    # Event loop. We drain queued submissions from the handler after every
-    # poll() tick — handlers cannot submit from inside on_complete because
-    # the trait signature does not give them a loop reference.
-    # Keep the listener Socket alive for the entire event loop. The
-    # listener's raw fd was passed to io_uring (via `loop.submit_accept`),
-    # and Mojo's eager destruction would close the fd if we didn't hold
-    # the Socket past its last explicit use.
+    # Event loop. Drain queued submissions from the handler after every
+    # poll() tick — handlers cannot submit from inside on_complete
+    # because the trait signature does not give them a loop reference.
     while True:
         loop.poll(wait_nr=1)
         _drain_pending_submits(loop)
-        _ = listener  # anchor: reaffirm `listener` lifetime each tick
+        _ = listener  # anchor: keep listener fd alive for io_uring
