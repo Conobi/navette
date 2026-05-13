@@ -1,0 +1,28 @@
+[
+  {
+    "source": "rfc9001_appendix_a1",
+    "version": "v1",
+    "cid": "8394c8f03e515708",
+    "initial_secret": "7db5df06e7a69e432496adedb00851923595221596ae2ae9fb8115c1e9ed0a44",
+    "client_initial_secret": "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea",
+    "server_initial_secret": "3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b",
+    "name": "rfc9001_a1_client_initial_keys",
+    "role": "client",
+    "key": "1f369613dd76d5467730efcbe3b1a22d",
+    "iv": "fa044b2f42a3fd3b46fb255c",
+    "hp": "9f50449e04a0e810283a1e9933adedd2"
+  },
+  {
+    "source": "rfc9001_appendix_a1",
+    "version": "v1",
+    "cid": "8394c8f03e515708",
+    "initial_secret": "7db5df06e7a69e432496adedb00851923595221596ae2ae9fb8115c1e9ed0a44",
+    "client_initial_secret": "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea",
+    "server_initial_secret": "3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b",
+    "name": "rfc9001_a1_server_initial_keys",
+    "role": "server",
+    "key": "cf3a5331653c364c88f0f379b6067e37",
+    "iv": "0ac1493ca1905853b0bba03e",
+    "hp": "c206b8d9b9f0f37644430b490eeaa314"
+  }
+]

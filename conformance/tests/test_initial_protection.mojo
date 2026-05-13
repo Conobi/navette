@@ -1,332 +1,154 @@
 # conformance/tests/test_initial_protection.mojo
 #
 # RFC 9001 Appendix A.1–A.2 known-answer tests for QUIC initial packet
-# protection. Crypto is performed via Python's `cryptography` library.
-from lib.test_util import load_vectors, hex_encode, assert_bytes_equal, assert_true
+# protection.
+#
+# As of §3.2 of plans/2026-05-13-deps-enhancement.md, this test no longer
+# imports `cryptography.hazmat` at runtime. The expected outputs are
+# pre-materialized in conformance/vectors/rfc9001/ by the oracle scripts:
+#
+#   - conformance/scripts/oracle_hkdf.py    → hkdf.json
+#   - conformance/scripts/oracle_aead.py    → aead.json
+#   - conformance/scripts/oracle_hp.py      → header_protection.json
+#   - conformance/scripts/oracle_initial.py → initial_keys.json
+#
+# This test asserts the fixture files are well-formed and consistent
+# with the legacy initial_protection.json (RFC 9001 A.1/A.2 known
+# answers). The actual cross-validation against rustls' AEAD/HKDF/HP
+# implementations lives in test_rustls_initial.mojo and
+# test_cross_initial_crypto.mojo.
+from lib.test_util import load_vectors, assert_true
 from python import Python, PythonObject
 
 
-fn bytes_from_hex(py_hex: PythonObject) raises -> List[UInt8]:
-    """Convert a Python hex string to a Mojo List[UInt8]."""
-    var binascii = Python.import_module("binascii")
-    var raw = binascii.unhexlify(py_hex)
-    var result = List[UInt8]()
-    var builtins = Python.import_module("builtins")
-    for i in range(Int(py=builtins.len(raw))):
-        result.append(UInt8(Int(py=raw[i])))
-    return result^
+def _expect_string_field(v: PythonObject, key: String) raises -> String:
+    """Read v[key] as a Mojo String, raising if missing or empty."""
+    var got = String(v[key])
+    if len(got) == 0:
+        raise "vector field '" + key + "' is empty"
+    return got^
 
 
-fn py_bytes_to_hex(raw: PythonObject) raises -> String:
-    """Convert a Python bytes object to a lowercase hex string."""
-    var binascii = Python.import_module("binascii")
-    return String(binascii.hexlify(raw).decode("ascii"))
+def _vector_field(v: PythonObject, group: String, key: String) raises -> String:
+    var raw = String(v[group][key])
+    if len(raw) == 0:
+        raise "vector field '" + group + "." + key + "' is empty"
+    return raw^
 
 
-fn hkdf_expand_label(
-    secret: PythonObject,
-    label_str: String,
-    length: Int,
-    hkdf_expand: PythonObject,
-    sha256: PythonObject,
-    struct_mod: PythonObject,
-) raises -> PythonObject:
-    """HKDF-Expand-Label as defined in TLS 1.3 / RFC 9001."""
-    # Build the label in Python to avoid Mojo str->bytes conversion issues
-    var builtins = Python.import_module("builtins")
-    var py_label = builtins.str("tls13 " + label_str).encode("ascii")
-    var label_len = Int(py=builtins.len(py_label))
-    # Build HkdfLabel: uint16(length) || uint8(len(label)) || label || uint8(0)
-    var hkdf_label = (
-        struct_mod.pack(">H", length)
-        + struct_mod.pack("B", label_len)
-        + py_label
-        + struct_mod.pack("B", 0)
-    )
-    var kdf = hkdf_expand(algorithm=sha256(), length=length, info=hkdf_label)
-    return kdf.derive(secret)
+def test_hkdf_vectors() raises -> None:
+    """Validate the HKDF-Expand-Label vector file structure."""
+    var vectors = load_vectors("vectors/rfc9001/hkdf.json")
+    var n = Int(py=len(vectors))
+    assert_true(n >= 8, "expected at least 8 hkdf vectors, got " + String(n))
 
-
-def test_key_derivation(v: PythonObject) raises -> None:
-    """Test HKDF key derivation against RFC 9001 Appendix A.1."""
-    var hmac_mod = Python.import_module("hmac")
-    var hashlib = Python.import_module("hashlib")
-    var struct_mod = Python.import_module("struct")
-    var hkdf_mod = Python.import_module(
-        "cryptography.hazmat.primitives.kdf.hkdf"
-    )
-    var hashes_mod = Python.import_module("cryptography.hazmat.primitives.hashes")
-    var HKDFExpand = hkdf_mod.HKDFExpand
-    var SHA256 = hashes_mod.SHA256
-
-    # QUIC v1 salt (RFC 9001 Section 5.2)
-    var binascii = Python.import_module("binascii")
-    var salt = binascii.unhexlify("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
-    var dcid = binascii.unhexlify(v["input"]["dcid"])
-
-    # HKDF-Extract = HMAC-SHA256(key=salt, msg=ikm)
-    var initial_secret = hmac_mod.new(salt, dcid, hashlib.sha256).digest()
-
-    var exp = v["expected"]
-    assert_true(
-        py_bytes_to_hex(initial_secret) == String(exp["initial_secret"]),
-        "initial_secret mismatch",
-    )
-
-    # Client derivation
-    var client_secret = hkdf_expand_label(
-        initial_secret, "client in", 32, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(client_secret)
-            == String(exp["client_initial_secret"]),
-        "client_initial_secret mismatch",
-    )
-
-    var client_key = hkdf_expand_label(
-        client_secret, "quic key", 16, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(client_key) == String(exp["client_key"]),
-        "client_key mismatch",
-    )
-
-    var client_iv = hkdf_expand_label(
-        client_secret, "quic iv", 12, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(client_iv) == String(exp["client_iv"]),
-        "client_iv mismatch",
-    )
-
-    var client_hp = hkdf_expand_label(
-        client_secret, "quic hp", 16, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(client_hp) == String(exp["client_hp"]),
-        "client_hp mismatch",
-    )
-
-    # Server derivation
-    var server_secret = hkdf_expand_label(
-        initial_secret, "server in", 32, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(server_secret)
-            == String(exp["server_initial_secret"]),
-        "server_initial_secret mismatch",
-    )
-
-    var server_key = hkdf_expand_label(
-        server_secret, "quic key", 16, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(server_key) == String(exp["server_key"]),
-        "server_key mismatch",
-    )
-
-    var server_iv = hkdf_expand_label(
-        server_secret, "quic iv", 12, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(server_iv) == String(exp["server_iv"]),
-        "server_iv mismatch",
-    )
-
-    var server_hp = hkdf_expand_label(
-        server_secret, "quic hp", 16, HKDFExpand, SHA256, struct_mod
-    )
-    assert_true(
-        py_bytes_to_hex(server_hp) == String(exp["server_hp"]),
-        "server_hp mismatch",
-    )
-
-
-def test_header_protection(v: PythonObject) raises -> None:
-    """Test AES-128-ECB header protection mask against RFC 9001 Appendix A.2."""
-    var ciphers_mod = Python.import_module(
-        "cryptography.hazmat.primitives.ciphers"
-    )
-    var algorithms_mod = Python.import_module(
-        "cryptography.hazmat.primitives.ciphers.algorithms"
-    )
-    var modes_mod = Python.import_module(
-        "cryptography.hazmat.primitives.ciphers.modes"
-    )
-    var binascii = Python.import_module("binascii")
-
-    var hp_key = binascii.unhexlify(v["input"]["hp_key"])
-    var sample = binascii.unhexlify(v["input"]["sample"])
-
-    var cipher = ciphers_mod.Cipher(
-        algorithms_mod.AES(hp_key), modes_mod.ECB()
-    )
-    var encryptor = cipher.encryptor()
-    var mask_full = encryptor.update(sample) + encryptor.finalize()
-    # Take first 5 bytes as the header-protection mask
-    var mask = mask_full[0:5]
-
-    var exp = v["expected"]
-    assert_true(
-        py_bytes_to_hex(mask) == String(exp["mask"]),
-        "header_protection mask mismatch",
-    )
-
-
-def test_aead(v: PythonObject) raises -> None:
-    """Test AEAD encrypt/decrypt using Python cryptography.AESGCM."""
-    var aesgcm_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.aead")
-    var binascii = Python.import_module("binascii")
-    var AESGCM = aesgcm_mod.AESGCM
-
-    var key_hex  = String(v["input"]["key"])
-    var iv_hex   = String(v["input"]["iv"])
-    var aad_hex  = String(v["input"]["aad"])
-    var op       = String(v["operation"])
-    var name     = String(v["name"])
-
-    var key_bytes = binascii.unhexlify(key_hex)
-    var iv_bytes  = binascii.unhexlify(iv_hex)
-    var aad_bytes = binascii.unhexlify(aad_hex)
-
-    # nonce = iv (PN=0 → IV XOR 0 = IV; all test vectors use PN=0)
-    var nonce = iv_bytes
-    var aes = AESGCM(key_bytes)
-
-    if op == "aead_encrypt":
-        var pt_hex = String(v["input"]["plaintext"])
-        var expected_ct_hex = String(v["expected"]["ciphertext"])
-        var pt_bytes = binascii.unhexlify(pt_hex)
-        var ct_bytes = aes.encrypt(nonce, pt_bytes, aad_bytes)
-        var ct_hex_obj = binascii.hexlify(ct_bytes).decode("ascii")
-        var ct_hex = String(ct_hex_obj)
-        assert_true(
-            ct_hex == expected_ct_hex,
-            "FAIL [" + name + "]: aead_encrypt ciphertext mismatch\n"
-                + "  expected: " + expected_ct_hex + "\n"
-                + "  got:      " + ct_hex,
-        )
-    elif op == "aead_decrypt":
-        var ct_hex2 = String(v["input"]["ciphertext"])
-        var expected_pt_hex = String(v["expected"]["plaintext"])
-        var ct_bytes2 = binascii.unhexlify(ct_hex2)
-        var pt_bytes2 = aes.decrypt(nonce, ct_bytes2, aad_bytes)
-        var pt_hex_obj = binascii.hexlify(pt_bytes2).decode("ascii")
-        var pt_hex2 = String(pt_hex_obj)
-        assert_true(
-            pt_hex2 == expected_pt_hex,
-            "FAIL [" + name + "]: aead_decrypt plaintext mismatch",
-        )
-    else:
-        raise "test_aead: unexpected operation: " + op
-
-
-def test_full_packet(v: PythonObject) raises -> None:
-    """Test full QUIC Initial packet HP protect/unprotect via Python cryptography."""
-    var aesgcm_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.aead")
-    var ciphers_mod = Python.import_module("cryptography.hazmat.primitives.ciphers")
-    var alg_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.algorithms")
-    var modes_mod = Python.import_module("cryptography.hazmat.primitives.ciphers.modes")
-    var binascii = Python.import_module("binascii")
-    var AESGCM = aesgcm_mod.AESGCM
-    var builtins = Python.import_module("builtins")
-
-    var op      = String(v["operation"])
-    var name    = String(v["name"])
-    var key     = binascii.unhexlify(String(v["input"]["key"]))
-    var iv_py   = binascii.unhexlify(String(v["input"]["iv"]))
-    var hp_key  = binascii.unhexlify(String(v["input"]["hp_key"]))
-    var pn_off  = Int(py=v["input"]["pn_offset"])
-    var pn_len  = Int(py=v["input"]["pn_length"])
-
-    if op == "full_packet_protect":
-        var header  = binascii.unhexlify(String(v["input"]["header"]))
-        var payload = binascii.unhexlify(String(v["input"]["payload"]))
-        var expected_hex = String(v["expected"]["protected_packet"])
-
-        # nonce = IV XOR PN (PN=0 for all our test vectors)
-        var nonce = iv_py
-        # AEAD: AAD = full unprotected header (including PN byte)
-        var ct_and_tag = AESGCM(key).encrypt(nonce, payload, header)
-
-        # HP sample: starts at pn_offset + 4 within the full packet
-        # Full packet = header || ct_and_tag; header length = pn_off + pn_len
-        var header_len = Int(py=builtins.len(header))
-        var sample_start = pn_off + 4 - header_len
-        var sample = ct_and_tag[sample_start : sample_start + 16]
-
-        # AES-ECB mask
-        var cipher = ciphers_mod.Cipher(alg_mod.AES(hp_key), modes_mod.ECB())
-        var enc = cipher.encryptor()
-        var mask = enc.update(sample) + enc.finalize()
-
-        # Protect first byte (bits 0-3 for long header = 0x0f mask)
-        var ba0 = builtins.bytearray(1)
-        ba0[0] = builtins.ord(header[0:1]) ^ (builtins.ord(mask[0:1]) & 0x0f)
-        var pb0 = builtins.bytes(ba0)
-
-        # Protect PN bytes
-        var protected_pn_parts = builtins.bytearray(pn_len)
-        for i in range(pn_len):
-            protected_pn_parts[i] = (
-                builtins.ord(header[pn_off + i : pn_off + i + 1]) ^ builtins.ord(mask[1 + i : 2 + i])
+    # Spot-check: RFC 9001 A.1 client "quic key" must be the canonical value.
+    var saw_client_key = False
+    for i in range(n):
+        var v = vectors[i]
+        var name = _expect_string_field(v, "name")
+        var label = _expect_string_field(v, "label")
+        var okm = _expect_string_field(v, "okm")
+        if name == "rfc9001_a1_client_quic_key":
+            assert_true(
+                okm == "1f369613dd76d5467730efcbe3b1a22d",
+                "client quic_key mismatch: got " + okm,
             )
-        var protected_pn = builtins.bytes(protected_pn_parts)
+            assert_true(label == "quic key", "label mismatch")
+            saw_client_key = True
+    assert_true(saw_client_key, "hkdf vectors missing rfc9001_a1_client_quic_key")
 
-        var protected_packet = (
-            pb0
-            + header[1:pn_off]
-            + protected_pn
-            + ct_and_tag
-        )
-        var got_hex = String(binascii.hexlify(protected_packet).decode("ascii"))
+
+def test_aead_vectors() raises -> None:
+    """Validate the AEAD-AES-128-GCM vector file structure."""
+    var vectors = load_vectors("vectors/rfc9001/aead.json")
+    var n = Int(py=len(vectors))
+    assert_true(n >= 4, "expected at least 4 aead vectors, got " + String(n))
+
+    var saw_client_encrypt = False
+    for i in range(n):
+        var v = vectors[i]
+        var name = _expect_string_field(v, "name")
+        var op = _expect_string_field(v, "operation")
+        var ct = _expect_string_field(v, "ciphertext")
+        var tag = _expect_string_field(v, "tag")
+        var ct_and_tag = _expect_string_field(v, "ct_and_tag")
+        # Self-consistency: ct + tag == ct_and_tag
         assert_true(
-            got_hex == expected_hex,
-            "FAIL [" + name + "]: protect mismatch",
+            ct + tag == ct_and_tag,
+            "ct_and_tag != ct||tag in vector " + name,
         )
-
-    elif op == "full_packet_unprotect":
-        var pkt     = binascii.unhexlify(String(v["input"]["protected_packet"]))
-        var exp_hdr = String(v["expected"]["header"])
-        var exp_pt  = String(v["expected"]["plaintext"])
-
-        # HP sample: at pn_offset + 4 within the protected packet
-        var sample2 = pkt[pn_off + 4 : pn_off + 4 + 16]
-
-        # AES-ECB mask
-        var cipher2 = ciphers_mod.Cipher(alg_mod.AES(hp_key), modes_mod.ECB())
-        var enc2 = cipher2.encryptor()
-        var mask2 = enc2.update(sample2) + enc2.finalize()
-
-        # Recover first byte
-        var first_byte_val = builtins.ord(pkt[0:1]) ^ (builtins.ord(mask2[0:1]) & 0x0f)
-        var ba_first = builtins.bytearray(1)
-        ba_first[0] = first_byte_val
-        var rec_first = builtins.bytes(ba_first)
-
-        # Recover PN bytes
-        var rec_pn_parts = builtins.bytearray(pn_len)
-        for i in range(pn_len):
-            rec_pn_parts[i] = (
-                builtins.ord(pkt[pn_off + i : pn_off + i + 1]) ^ builtins.ord(mask2[1 + i : 2 + i])
+        assert_true(
+            op == "aead_encrypt" or op == "aead_decrypt",
+            "unexpected operation in vector " + name,
+        )
+        if name == "client_initial_v1_aead_encrypt":
+            # Cross-check against the canonical initial_protection.json
+            assert_true(
+                ct_and_tag == (
+                    "31d720f7fb19c243eec520fba0e705ae437e739b86247268"
+                    "c513013d43d8ab62686e1e725acf9f21c5"
+                ),
+                "client_initial_v1 ciphertext drift",
             )
-        var rec_pn = builtins.bytes(rec_pn_parts)
+            saw_client_encrypt = True
+    assert_true(saw_client_encrypt, "aead vectors missing client_initial_v1_aead_encrypt")
 
-        # Reconstruct unprotected header
-        var rec_header = rec_first + pkt[1:pn_off] + rec_pn
-        var nonce2 = iv_py  # PN=0, nonce = IV XOR 0 = IV
 
-        # AEAD decrypt: ciphertext_and_tag = everything after the header
-        var header_len2 = pn_off + pn_len
-        var ct_and_tag2 = pkt[header_len2:]
-        var pt2 = AESGCM(key).decrypt(nonce2, ct_and_tag2, rec_header)
+def test_hp_vectors() raises -> None:
+    """Validate the AES-128-ECB header-protection vector file structure."""
+    var vectors = load_vectors("vectors/rfc9001/header_protection.json")
+    var n = Int(py=len(vectors))
+    assert_true(n >= 2, "expected at least 2 hp vectors, got " + String(n))
 
-        var got_hdr_hex = String(binascii.hexlify(rec_header).decode("ascii"))
-        var got_pt_hex  = String(binascii.hexlify(pt2).decode("ascii"))
-        assert_true(got_hdr_hex == exp_hdr, "FAIL [" + name + "]: header mismatch")
-        assert_true(got_pt_hex  == exp_pt,  "FAIL [" + name + "]: plaintext mismatch")
-    else:
-        raise "test_full_packet: unexpected operation: " + op
+    var saw_a2 = False
+    for i in range(n):
+        var v = vectors[i]
+        var name = _expect_string_field(v, "name")
+        var hp_key = _expect_string_field(v, "hp_key")
+        var sample = _expect_string_field(v, "sample")
+        var mask = _expect_string_field(v, "mask")
+        # The HP mask is the first 5 bytes of AES-ECB(hp_key, sample).
+        assert_true(len(hp_key) == 32, "hp_key must be 16 bytes (32 hex chars)")
+        assert_true(len(sample) == 32, "sample must be 16 bytes (32 hex chars)")
+        assert_true(len(mask) == 10,   "mask must be 5 bytes (10 hex chars)")
+        if name == "client_initial_v1_header_protection":
+            # Cross-check against RFC 9001 A.2 canonical value.
+            assert_true(mask == "437b9aec36", "A.2 client mask drift")
+            saw_a2 = True
+    assert_true(saw_a2, "hp vectors missing rfc9001_a2 client mask")
+
+
+def test_initial_keys_vectors() raises -> None:
+    """Validate the QUIC v1 Initial-keys derivation vector file structure."""
+    var vectors = load_vectors("vectors/rfc9001/initial_keys.json")
+    var n = Int(py=len(vectors))
+    assert_true(n >= 2, "expected client+server initial-keys vectors, got " + String(n))
+
+    var saw_client = False
+    var saw_server = False
+    for i in range(n):
+        var v = vectors[i]
+        var role = _expect_string_field(v, "role")
+        var key = _expect_string_field(v, "key")
+        var iv = _expect_string_field(v, "iv")
+        var hp = _expect_string_field(v, "hp")
+        assert_true(len(key) == 32, "key must be 16 bytes (32 hex chars)")
+        assert_true(len(iv) == 24,  "iv must be 12 bytes (24 hex chars)")
+        assert_true(len(hp) == 32,  "hp must be 16 bytes (32 hex chars)")
+        if role == "client":
+            # RFC 9001 A.1 canonical values.
+            assert_true(key == "1f369613dd76d5467730efcbe3b1a22d", "client_key drift")
+            assert_true(iv  == "fa044b2f42a3fd3b46fb255c",         "client_iv drift")
+            assert_true(hp  == "9f50449e04a0e810283a1e9933adedd2", "client_hp drift")
+            saw_client = True
+        elif role == "server":
+            assert_true(key == "cf3a5331653c364c88f0f379b6067e37", "server_key drift")
+            assert_true(iv  == "0ac1493ca1905853b0bba03e",         "server_iv drift")
+            assert_true(hp  == "c206b8d9b9f0f37644430b490eeaa314", "server_hp drift")
+            saw_server = True
+    assert_true(saw_client, "initial_keys vectors missing client role")
+    assert_true(saw_server, "initial_keys vectors missing server role")
 
 
 def main() raises:
@@ -338,25 +160,9 @@ def main() raises:
         _sentinel_ok = True
     assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
 
-    var vectors = load_vectors("vectors/rfc9001/initial_protection.json")
-    assert_true(len(vectors) >= 2, "expected at least 2 initial_protection vectors, got " + String(Int(py=len(vectors))))
-    var count = 0
+    test_hkdf_vectors()
+    test_aead_vectors()
+    test_hp_vectors()
+    test_initial_keys_vectors()
 
-    for i in range(len(vectors)):
-        var v = vectors[i]
-        var operation = String(v["operation"])
-
-        if operation == "key_derivation":
-            test_key_derivation(v)
-            count += 1
-        elif operation == "header_protection":
-            test_header_protection(v)
-            count += 1
-        elif operation == "aead_encrypt" or operation == "aead_decrypt":
-            test_aead(v)
-            count += 1
-        elif operation == "full_packet_protect" or operation == "full_packet_unprotect":
-            test_full_packet(v)
-            count += 1
-
-    print("test_initial_protection: all " + String(count) + " vectors passed")
+    print("test_initial_protection: all 4 vector fixtures validated (cryptography-free)")

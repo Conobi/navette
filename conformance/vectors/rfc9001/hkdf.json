@@ -1,0 +1,66 @@
+[
+  {
+    "name": "rfc9001_a1_client_in",
+    "source": "rfc9001_appendix_a1",
+    "prk": "7db5df06e7a69e432496adedb00851923595221596ae2ae9fb8115c1e9ed0a44",
+    "label": "client in",
+    "length": 32,
+    "okm": "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea"
+  },
+  {
+    "name": "rfc9001_a1_server_in",
+    "source": "rfc9001_appendix_a1",
+    "prk": "7db5df06e7a69e432496adedb00851923595221596ae2ae9fb8115c1e9ed0a44",
+    "label": "server in",
+    "length": 32,
+    "okm": "3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b"
+  },
+  {
+    "name": "rfc9001_a1_client_quic_key",
+    "source": "rfc9001_appendix_a1",
+    "prk": "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea",
+    "label": "quic key",
+    "length": 16,
+    "okm": "1f369613dd76d5467730efcbe3b1a22d"
+  },
+  {
+    "name": "rfc9001_a1_client_quic_iv",
+    "source": "rfc9001_appendix_a1",
+    "prk": "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea",
+    "label": "quic iv",
+    "length": 12,
+    "okm": "fa044b2f42a3fd3b46fb255c"
+  },
+  {
+    "name": "rfc9001_a1_client_quic_hp",
+    "source": "rfc9001_appendix_a1",
+    "prk": "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea",
+    "label": "quic hp",
+    "length": 16,
+    "okm": "9f50449e04a0e810283a1e9933adedd2"
+  },
+  {
+    "name": "rfc9001_a1_server_quic_key",
+    "source": "rfc9001_appendix_a1",
+    "prk": "3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b",
+    "label": "quic key",
+    "length": 16,
+    "okm": "cf3a5331653c364c88f0f379b6067e37"
+  },
+  {
+    "name": "rfc9001_a1_server_quic_iv",
+    "source": "rfc9001_appendix_a1",
+    "prk": "3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b",
+    "label": "quic iv",
+    "length": 12,
+    "okm": "0ac1493ca1905853b0bba03e"
+  },
+  {
+    "name": "rfc9001_a1_server_quic_hp",
+    "source": "rfc9001_appendix_a1",
+    "prk": "3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b",
+    "label": "quic hp",
+    "length": 16,
+    "okm": "c206b8d9b9f0f37644430b490eeaa314"
+  }
+]

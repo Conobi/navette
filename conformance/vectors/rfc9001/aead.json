@@ -1,0 +1,50 @@
+[
+  {
+    "name": "client_initial_v1_aead_encrypt",
+    "source": "computed_from_rfc9001_keys",
+    "operation": "aead_encrypt",
+    "key": "1f369613dd76d5467730efcbe3b1a22d",
+    "nonce": "fa044b2f42a3fd3b46fb255c",
+    "aad": "c000000001088394c8f03e515708",
+    "plaintext": "7163312d616561642d636f6e666f726d616e63652d74657374",
+    "ciphertext": "31d720f7fb19c243eec520fba0e705ae437e739b86247268c5",
+    "tag": "13013d43d8ab62686e1e725acf9f21c5",
+    "ct_and_tag": "31d720f7fb19c243eec520fba0e705ae437e739b86247268c513013d43d8ab62686e1e725acf9f21c5"
+  },
+  {
+    "name": "client_initial_v1_aead_decrypt",
+    "source": "computed_from_rfc9001_keys",
+    "operation": "aead_decrypt",
+    "key": "1f369613dd76d5467730efcbe3b1a22d",
+    "nonce": "fa044b2f42a3fd3b46fb255c",
+    "aad": "c000000001088394c8f03e515708",
+    "plaintext": "7163312d616561642d636f6e666f726d616e63652d74657374",
+    "ciphertext": "31d720f7fb19c243eec520fba0e705ae437e739b86247268c5",
+    "tag": "13013d43d8ab62686e1e725acf9f21c5",
+    "ct_and_tag": "31d720f7fb19c243eec520fba0e705ae437e739b86247268c513013d43d8ab62686e1e725acf9f21c5"
+  },
+  {
+    "name": "server_initial_v1_aead_encrypt",
+    "source": "computed_from_rfc9001_keys",
+    "operation": "aead_encrypt",
+    "key": "cf3a5331653c364c88f0f379b6067e37",
+    "nonce": "0ac1493ca1905853b0bba03e",
+    "aad": "c000000001088394c8f03e515708",
+    "plaintext": "7163312d616561642d636f6e666f726d616e63652d74657374",
+    "ciphertext": "d953089c7a39c8f7df6830b2dc5849d54985b72c091c5fe950",
+    "tag": "0c876cf637108ee7217a7678d17381df",
+    "ct_and_tag": "d953089c7a39c8f7df6830b2dc5849d54985b72c091c5fe9500c876cf637108ee7217a7678d17381df"
+  },
+  {
+    "name": "server_initial_v1_aead_decrypt",
+    "source": "computed_from_rfc9001_keys",
+    "operation": "aead_decrypt",
+    "key": "cf3a5331653c364c88f0f379b6067e37",
+    "nonce": "0ac1493ca1905853b0bba03e",
+    "aad": "c000000001088394c8f03e515708",
+    "plaintext": "7163312d616561642d636f6e666f726d616e63652d74657374",
+    "ciphertext": "d953089c7a39c8f7df6830b2dc5849d54985b72c091c5fe950",
+    "tag": "0c876cf637108ee7217a7678d17381df",
+    "ct_and_tag": "d953089c7a39c8f7df6830b2dc5849d54985b72c091c5fe9500c876cf637108ee7217a7678d17381df"
+  }
+]

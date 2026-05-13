@@ -1,0 +1,16 @@
+[
+  {
+    "name": "client_initial_v1_header_protection",
+    "source": "rfc9001_appendix_a2",
+    "hp_key": "9f50449e04a0e810283a1e9933adedd2",
+    "sample": "d1b1c98dd7689fb8ec11d242b123dc9b",
+    "mask": "437b9aec36"
+  },
+  {
+    "name": "server_initial_v1_header_protection_synthetic",
+    "source": "computed_from_rfc9001_keys",
+    "hp_key": "c206b8d9b9f0f37644430b490eeaa314",
+    "sample": "00112233445566778899aabbccddeeff",
+    "mask": "e29c24c0fd"
+  }
+]
