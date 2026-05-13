@@ -7,7 +7,6 @@
 
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from std.python import Python, PythonObject
 
 from src.tls.lib import RustlsLibrary
 from src.quic.connection import QuicConnection, QuicEvent
@@ -16,60 +15,16 @@ from src.quic.ecn import (
     ECN_STATE_PROBING, ECN_STATE_CAPABLE, ECN_STATE_DISABLED,
 )
 from src.quic.trans_param import TransportParams, default_transport_params
-from tests._test_util import assert_true, assert_false, assert_equal_int
+from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def py_bytes_to_mojo(raw: PythonObject) raises -> List[UInt8]:
-    """Convert Python bytes to Mojo List[UInt8]."""
-    var builtins = Python.import_module("builtins")
-    var result = List[UInt8]()
-    for i in range(Int(py=builtins.len(raw))):
-        result.append(UInt8(Int(py=raw[i])))
-    return result^
-
-
 def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
-    """Generate a self-signed EC cert+key via Python cryptography."""
-    var ec_mod = Python.import_module("cryptography.hazmat.primitives.asymmetric.ec")
-    var x509_mod = Python.import_module("cryptography.x509")
-    var oid_mod = Python.import_module("cryptography.x509.oid")
-    var ser_mod = Python.import_module("cryptography.hazmat.primitives.serialization")
-    var hash_mod = Python.import_module("cryptography.hazmat.primitives.hashes")
-    var dt_mod = Python.import_module("datetime")
-    var builtins = Python.import_module("builtins")
-
-    var py_key = ec_mod.generate_private_key(ec_mod.SECP256R1())
-    var name_attrs = builtins.list()
-    name_attrs.append(x509_mod.NameAttribute(oid_mod.NameOID.COMMON_NAME, "localhost"))
-    var subject = x509_mod.Name(name_attrs)
-    var san_list = builtins.list()
-    san_list.append(x509_mod.DNSName("localhost"))
-    var py_cert = (
-        x509_mod.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
-        .public_key(py_key.public_key())
-        .serial_number(x509_mod.random_serial_number())
-        .not_valid_before(dt_mod.datetime(2024, 1, 1))
-        .not_valid_after(dt_mod.datetime(2034, 1, 1))
-        .add_extension(
-            x509_mod.SubjectAlternativeName(san_list),
-            critical=False,
-        )
-        .sign(py_key, hash_mod.SHA256())
-    )
-    var cert_pem_py = py_cert.public_bytes(ser_mod.Encoding.PEM)
-    var key_pem_py = py_key.private_bytes(
-        ser_mod.Encoding.PEM,
-        ser_mod.PrivateFormat.PKCS8,
-        ser_mod.NoEncryption(),
-    )
-    var cert_bytes = py_bytes_to_mojo(cert_pem_py)
-    var key_bytes = py_bytes_to_mojo(key_pem_py)
-    return (cert_bytes^, key_bytes^)
+    # Backed by tests/fixtures/tls/server.{crt,key} (regen via
+    # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
+    return load_test_cert()
 
 
 def _create_configs(
