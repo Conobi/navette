@@ -233,6 +233,7 @@ def h1_handle_client_recv(
     var req_opt = state.client_http.next_request()
     if not req_opt:
         # Need more bytes — go back to reading.
+        phase = PHASE_PROXYING
         state.sub_phase = H1_SUB_READING_REQUEST
         queue_client_recv(send_state, out, client_fd, conn_id)
         return out^
