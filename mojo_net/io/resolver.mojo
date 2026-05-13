@@ -214,7 +214,10 @@ struct Resolver(Movable):
         """Drop any cached entry for `host:port`."""
         var key = host + ":" + String(port)
         if key in self.cache:
-            _ = self.cache.pop(key)
+            try:
+                _ = self.cache.pop(key)
+            except:
+                pass
 
     fn clear(mut self):
         """Drop the entire cache."""
