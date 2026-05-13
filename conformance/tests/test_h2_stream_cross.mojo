@@ -1,6 +1,12 @@
 # conformance/tests/test_h2_stream_cross.mojo
 #
 # HC-4b: Stream-level cross-validation against Python h2.
+#
+# As of §3.3 of the dependency-enhancement plan, Python h2 is no longer
+# imported at test runtime. Oracle outputs (request headers, DataReceived
+# flow_controlled_length) are pre-materialized into
+# conformance/vectors/rfc9113/h2_states.json by
+# conformance/scripts/oracle_h1_h2_states.py.
 from lib.test_util import assert_true, assert_equal
 from lib.http2.connection import (
     H2Config,
@@ -16,17 +22,17 @@ from lib.http2.connection import (
     H2Connection,
 )
 from lib.http2.frame import H2_NO_ERROR, H2_CANCEL
-from lib.http2.oracles import h2_roundtrip, h2_stream_data_scenario
+from lib.stateful_vectors import load_states, py_field_str
 from lib.http1.types import Header
-from std.python import Python
+from std.python import Python, PythonObject
 
 
-def test_cross_roundtrip_headers_match() raises:
+def test_cross_roundtrip_headers_match(states: PythonObject) raises:
     """Our H2Connection and Python h2 produce matching request headers."""
-    var oracle = h2_roundtrip()
-    assert_true(String(oracle["error"]) == "None", "oracle no error")
+    var oracle = states["roundtrip"]
+    var err = py_field_str(oracle, "error")
+    assert_true(len(err) == 0, "oracle no error: " + err)
 
-    # Our implementation: same scenario
     var client = H2Connection(client_side=True)
     client.initiate_connection()
     var client_preface = client.data_to_send()
@@ -54,34 +60,37 @@ def test_cross_roundtrip_headers_match() raises:
 
     # Compare: both should have RequestReceived with matching headers
     var oracle_srv_events = oracle["server_events"]
+    var builtins = Python.import_module("builtins")
     var our_req_found = False
     for i in range(len(srv_events)):
         if srv_events[i].kind == H2_EVT_REQUEST_RECEIVED:
             our_req_found = True
-            for j in range(Int(py=len(oracle_srv_events))):
+            for j in range(Int(py=builtins.len(oracle_srv_events))):
                 if String(oracle_srv_events[j]["type"]) == "RequestReceived":
                     var oracle_headers = oracle_srv_events[j]["headers"]
-                    assert_equal(len(srv_events[i].headers), Int(py=len(oracle_headers)), "header count match")
+                    assert_equal(
+                        len(srv_events[i].headers),
+                        Int(py=builtins.len(oracle_headers)),
+                        "header count match",
+                    )
                     for k in range(len(srv_events[i].headers)):
-                        assert_true(srv_events[i].headers[k].name == String(oracle_headers[k][0]), "header name " + String(k))
-                        assert_true(srv_events[i].headers[k].value == String(oracle_headers[k][1]), "header value " + String(k))
+                        assert_true(
+                            srv_events[i].headers[k].name == String(oracle_headers[k][0]),
+                            "header name " + String(k),
+                        )
+                        assert_true(
+                            srv_events[i].headers[k].value == String(oracle_headers[k][1]),
+                            "header value " + String(k),
+                        )
     assert_true(our_req_found, "our server emitted RequestReceived")
 
 
-def test_cross_data_flow_controlled_length() raises:
+def test_cross_data_flow_controlled_length(states: PythonObject) raises:
     """DataReceived flow_controlled_length matches Python h2."""
-    var oracle_hdrs = List[Header]()
-    oracle_hdrs.append(Header(":method", "POST"))
-    oracle_hdrs.append(Header(":path", "/"))
-    oracle_hdrs.append(Header(":scheme", "https"))
-    oracle_hdrs.append(Header(":authority", "example.com"))
-    var body = List[UInt8]()
-    for _ in range(100):
-        body.append(UInt8(0x41))
-    var oracle = h2_stream_data_scenario(oracle_hdrs, body, end_stream=True)
-    assert_true(String(oracle["error"]) == "None", "oracle no error")
+    var oracle = states["stream_data_100_A"]
+    var err = py_field_str(oracle, "error")
+    assert_true(len(err) == 0, "oracle no error: " + err)
 
-    # Our implementation
     var client = H2Connection(client_side=True)
     client.initiate_connection()
     var client_preface = client.data_to_send()
@@ -104,27 +113,37 @@ def test_cross_data_flow_controlled_length() raises:
     headers.append(Header(":authority", "example.com"))
     client.send_headers(UInt32(1), headers^, end_stream=False)
     _ = client.data_to_send()
+    var body = List[UInt8]()
+    for _ in range(100):
+        body.append(UInt8(0x41))
     client.send_data(UInt32(1), body, end_stream=True)
     var request_wire = client.data_to_send()
     var srv_events = server.receive_data(request_wire)
 
     var oracle_events = oracle["events"]
+    var builtins = Python.import_module("builtins")
     for i in range(len(srv_events)):
         if srv_events[i].kind == H2_EVT_DATA_RECEIVED:
-            for j in range(Int(py=len(oracle_events))):
+            for j in range(Int(py=builtins.len(oracle_events))):
                 if String(oracle_events[j]["type"]) == "DataReceived":
                     assert_equal(
                         srv_events[i].flow_controlled_length,
                         Int(py=oracle_events[j]["flow_controlled_length"]),
-                        "flow_controlled_length match"
+                        "flow_controlled_length match",
                     )
                     assert_equal(len(srv_events[i].data), 100, "our data length")
 
 
-def test_cross_response_round_trip() raises:
-    """Full request/response round-trip: our client receives matching response."""
-    var oracle = h2_roundtrip()
-    assert_true(String(oracle["error"]) == "None", "oracle no error")
+def test_cross_response_round_trip(states: PythonObject) raises:
+    """Full request/response round-trip: our client receives matching response.
+
+    The oracle confirms a successful round-trip happened (no error). The
+    assertions below verify our Mojo client emits the expected
+    ResponseReceived + DataReceived events and reaches STREAM_CLOSED.
+    """
+    var oracle = states["roundtrip"]
+    var err = py_field_str(oracle, "error")
+    assert_true(len(err) == 0, "oracle no error: " + err)
 
     var client = H2Connection(client_side=True)
     client.initiate_connection()
@@ -156,11 +175,11 @@ def test_cross_response_round_trip() raises:
     resp_headers.append(Header("content-type", "text/plain"))
     server.send_headers(UInt32(1), resp_headers^, end_stream=False)
     var resp_body = List[UInt8]()
-    resp_body.append(UInt8(0x68))  # h
-    resp_body.append(UInt8(0x65))  # e
-    resp_body.append(UInt8(0x6C))  # l
-    resp_body.append(UInt8(0x6C))  # l
-    resp_body.append(UInt8(0x6F))  # o
+    resp_body.append(UInt8(0x68))
+    resp_body.append(UInt8(0x65))
+    resp_body.append(UInt8(0x6C))
+    resp_body.append(UInt8(0x6C))
+    resp_body.append(UInt8(0x6F))
     server.send_data(UInt32(1), resp_body, end_stream=True)
     var resp_wire = server.data_to_send()
     var cli_events = client.receive_data(resp_wire)
@@ -183,7 +202,8 @@ def test_cross_response_round_trip() raises:
 
 
 def main() raises:
-    test_cross_roundtrip_headers_match()
-    test_cross_data_flow_controlled_length()
-    test_cross_response_round_trip()
+    var states = load_states("vectors/rfc9113/h2_states.json")
+    test_cross_roundtrip_headers_match(states)
+    test_cross_data_flow_controlled_length(states)
+    test_cross_response_round_trip(states)
     print("All tests passed.")

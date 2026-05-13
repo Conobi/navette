@@ -1,0 +1,1503 @@
+{
+  "conn-ka-two-gets": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-http10-default-close": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/page",
+        "version": "1.0",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-http10-keepalive-header": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.0",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "connection",
+            "keep-alive"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-explicit-keepalive-header": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "connection",
+            "keep-alive"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-three-gets": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/c",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-post-cl-then-get": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/submit",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/next",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-chunked-post-then-get": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/upload",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "transfer-encoding",
+            "chunked"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/next",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-single-get": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/page",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-ka-two-posts-cl": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "content-length",
+            "3"
+          ]
+        ],
+        "body_hex": "616263"
+      },
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "content-length",
+            "3"
+          ]
+        ],
+        "body_hex": "78797a"
+      }
+    ]
+  },
+  "conn-ka-response-two-200s": {
+    "direction": "response",
+    "request_methods": [
+      "GET",
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "2"
+          ]
+        ],
+        "body_hex": "6869"
+      }
+    ]
+  },
+  "conn-close-explicit": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/page",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "connection",
+            "close"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-close-on-second-request": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "connection",
+            "close"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-close-first-stops-parsing": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "connection",
+            "close"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-close-http10-default": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/page",
+        "version": "1.0",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-close-response-explicit": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "connection",
+            "close"
+          ],
+          [
+            "content-length",
+            "2"
+          ]
+        ],
+        "body_hex": "6869"
+      }
+    ]
+  },
+  "conn-close-response-second-has-close": {
+    "direction": "response",
+    "request_methods": [
+      "GET",
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "2"
+          ]
+        ],
+        "body_hex": "6869"
+      }
+    ]
+  },
+  "conn-upgrade-101-websocket": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": false,
+    "error": "Received server _SWITCH_UPGRADE event without a pending proposal",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-upgrade-101-with-trailing-data": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": false,
+    "error": "Received server _SWITCH_UPGRADE event without a pending proposal",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-upgrade-connect-200": {
+    "direction": "response",
+    "request_methods": [
+      "CONNECT"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-upgrade-connect-404": {
+    "direction": "response",
+    "request_methods": [
+      "CONNECT"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 404,
+        "reason": "Not Found",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "9"
+          ]
+        ],
+        "body_hex": "4e6f7420466f756e64"
+      }
+    ]
+  },
+  "conn-upgrade-101-websocket-full": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": false,
+    "error": "Received server _SWITCH_UPGRADE event without a pending proposal",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-upgrade-101-h2c": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": false,
+    "error": "Received server _SWITCH_UPGRADE event without a pending proposal",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-upgrade-connect-200-with-tunnel-data": {
+    "direction": "response",
+    "request_methods": [
+      "CONNECT"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-upgrade-426-not-upgraded": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 426,
+        "reason": "Upgrade Required",
+        "version": "1.1",
+        "headers": [
+          [
+            "upgrade",
+            "HTTP/2.0"
+          ],
+          [
+            "content-length",
+            "16"
+          ]
+        ],
+        "body_hex": "55706772616465207265717569726564"
+      }
+    ]
+  },
+  "conn-info-100-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "POST"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 100,
+        "reason": "Continue",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-info-103-early-hints-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 103,
+        "reason": "Early Hints",
+        "version": "1.1",
+        "headers": [
+          [
+            "link",
+            "</style.css>; rel=preload"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-info-100-103-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "POST"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 100,
+        "reason": "Continue",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 103,
+        "reason": "Early Hints",
+        "version": "1.1",
+        "headers": [
+          [
+            "link",
+            "</style.css>; rel=preload"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-info-101-terminal": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": false,
+    "error": "Received server _SWITCH_UPGRADE event without a pending proposal",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-info-100-close-ignored-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "POST"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 100,
+        "reason": "Continue",
+        "version": "1.1",
+        "headers": [
+          [
+            "connection",
+            "close"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-info-100-then-200-with-close": {
+    "direction": "response",
+    "request_methods": [
+      "POST"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 100,
+        "reason": "Continue",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "connection",
+            "close"
+          ],
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-info-102-processing-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 102,
+        "reason": "Processing",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "4"
+          ]
+        ],
+        "body_hex": "646f6e65"
+      }
+    ]
+  },
+  "conn-info-duplicate-100s-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "POST"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 100,
+        "reason": "Continue",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 100,
+        "reason": "Continue",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      },
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-pipe-three-gets": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/c",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-pipe-get-post-cl-get": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/c",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-pipe-get-chunked-post-get": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "transfer-encoding",
+            "chunked"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/c",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-pipe-response-two-200s": {
+    "direction": "response",
+    "request_methods": [
+      "GET",
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "5"
+          ]
+        ],
+        "body_hex": "68656c6c6f"
+      }
+    ]
+  },
+  "conn-pipe-response-head-then-get": {
+    "direction": "response",
+    "request_methods": [
+      "HEAD",
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "100"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-pipe-four-gets": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/c",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/d",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-pipe-chunked-post-cl-post-get": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "transfer-encoding",
+            "chunked"
+          ]
+        ],
+        "body_hex": "616263"
+      },
+      {
+        "type": "request",
+        "method": "POST",
+        "target": "/b",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ],
+          [
+            "content-length",
+            "3"
+          ]
+        ],
+        "body_hex": "78797a"
+      },
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/c",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-pipe-response-204-then-200": {
+    "direction": "response",
+    "request_methods": [
+      "DELETE",
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 204,
+        "reason": "No Content",
+        "version": "1.1",
+        "headers": [],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-err-malformed-second-request": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": false,
+    "error": "illegal request line: bytearray(b'BLARGH')",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-err-truncated-second-request": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "request",
+        "method": "GET",
+        "target": "/a",
+        "version": "1.1",
+        "headers": [
+          [
+            "host",
+            "example.com"
+          ]
+        ],
+        "body_hex": ""
+      }
+    ]
+  },
+  "conn-err-empty-wire": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": true,
+    "error": null,
+    "phase": "MUST_CLOSE",
+    "messages": []
+  },
+  "conn-err-bare-crlf": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": false,
+    "error": "no request line received",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "conn-err-malformed-second-response": {
+    "direction": "response",
+    "request_methods": [
+      "GET",
+      "GET"
+    ],
+    "ok": true,
+    "error": null,
+    "phase": "IDLE",
+    "messages": [
+      {
+        "type": "response",
+        "status_code": 200,
+        "reason": "OK",
+        "version": "1.1",
+        "headers": [
+          [
+            "content-length",
+            "2"
+          ]
+        ],
+        "body_hex": "6869"
+      }
+    ]
+  },
+  "conn-err-double-crlf-only": {
+    "direction": "request",
+    "request_methods": [],
+    "ok": false,
+    "error": "no request line received",
+    "phase": "ERROR",
+    "messages": []
+  },
+  "__random__": {
+    "seed": 2882343476,
+    "cases": [
+      {
+        "id": "rand-conn-0",
+        "wire_hex": "474554202f6120485454502f312e310d0a486f73743a20686e74666f746e2e746573740d0a0d0a474554202f6220485454502f312e310d0a486f73743a20687074666f746e2e746573740d0a0d0a",
+        "ok": true,
+        "error": null,
+        "phase": "IDLE",
+        "messages": [
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/a",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hntfotn.test"
+              ]
+            ],
+            "body_hex": ""
+          },
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/b",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hptfotn.test"
+              ]
+            ],
+            "body_hex": ""
+          }
+        ]
+      },
+      {
+        "id": "rand-conn-1",
+        "wire_hex": "474554202f6120485454502f312e310d0a486f73743a20687574666f746e2e746573740d0a0d0a474554202f6220485454502f312e310d0a486f73743a20686375666f746e2e746573740d0a0d0a",
+        "ok": true,
+        "error": null,
+        "phase": "IDLE",
+        "messages": [
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/a",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hutfotn.test"
+              ]
+            ],
+            "body_hex": ""
+          },
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/b",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hcufotn.test"
+              ]
+            ],
+            "body_hex": ""
+          }
+        ]
+      },
+      {
+        "id": "rand-conn-2",
+        "wire_hex": "474554202f6120485454502f312e310d0a486f73743a20686275666f746e2e746573740d0a0d0a474554202f6220485454502f312e310d0a486f73743a20687075666f746e2e746573740d0a0d0a",
+        "ok": true,
+        "error": null,
+        "phase": "IDLE",
+        "messages": [
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/a",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hbufotn.test"
+              ]
+            ],
+            "body_hex": ""
+          },
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/b",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hpufotn.test"
+              ]
+            ],
+            "body_hex": ""
+          }
+        ]
+      },
+      {
+        "id": "rand-conn-3",
+        "wire_hex": "474554202f6120485454502f312e310d0a486f73743a20686975666f746e2e746573740d0a0d0a474554202f6220485454502f312e310d0a486f73743a20686376666f746e2e746573740d0a0d0a",
+        "ok": true,
+        "error": null,
+        "phase": "IDLE",
+        "messages": [
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/a",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hiufotn.test"
+              ]
+            ],
+            "body_hex": ""
+          },
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/b",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hcvfotn.test"
+              ]
+            ],
+            "body_hex": ""
+          }
+        ]
+      },
+      {
+        "id": "rand-conn-4",
+        "wire_hex": "474554202f6120485454502f312e310d0a486f73743a20687075666f746e2e746573740d0a0d0a474554202f6220485454502f312e310d0a486f73743a20687076666f746e2e746573740d0a0d0a",
+        "ok": true,
+        "error": null,
+        "phase": "IDLE",
+        "messages": [
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/a",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hpufotn.test"
+              ]
+            ],
+            "body_hex": ""
+          },
+          {
+            "type": "request",
+            "method": "GET",
+            "target": "/b",
+            "version": "1.1",
+            "headers": [
+              [
+                "host",
+                "hpvfotn.test"
+              ]
+            ],
+            "body_hex": ""
+          }
+        ]
+      }
+    ]
+  }
+}

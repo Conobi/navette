@@ -3,5 +3,6 @@ from .types import ParserStrictness, ParseConfig, Header, ParsedRequest, ParsedR
 from .chunked import decode_chunked, encode_chunked
 from .parser import parse_request
 from .response import parse_response
-from .oracles import parse_with_h11, parse_with_httptools, parse_response_with_h11, parse_response_with_httptools, parse_connection_with_h11
+# Note: the .oracles module no longer exports h11/httptools wrappers as of
+# deps-enhancement §3.3 (commit pre-materializing stateful oracle outputs).
 from .connection import step_request, step_response, parse_messages

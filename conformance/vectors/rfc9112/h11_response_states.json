@@ -1,0 +1,1932 @@
+{
+  "response-status-200-ok": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    }
+  },
+  "response-status-404-not-found": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 404,
+      "reason": "Not Found",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "9"
+        ]
+      ],
+      "body_hex": "6e6f7420666f756e64"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 404,
+      "reason": "Not Found",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "9"
+        ]
+      ],
+      "body_hex": "6e6f7420666f756e64"
+    }
+  },
+  "response-status-301-redirect": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 301,
+      "reason": "Moved Permanently",
+      "version": "1.1",
+      "headers": [
+        [
+          "location",
+          "https://example.com/new"
+        ],
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 301,
+      "reason": "Moved Permanently",
+      "version": "1.1",
+      "headers": [
+        [
+          "Location",
+          "https://example.com/new"
+        ],
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-status-http10": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.0",
+      "headers": [
+        [
+          "content-length",
+          "2"
+        ]
+      ],
+      "body_hex": "6869"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.0",
+      "headers": [
+        [
+          "Content-Length",
+          "2"
+        ]
+      ],
+      "body_hex": "6869"
+    }
+  },
+  "response-status-empty-reason": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-status-999": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 999,
+      "reason": "Unknown",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 999,
+      "reason": "Unknown",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-status-099-reject": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "InformationalResponse status_code should be in range [100, 200), not 99"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 99,
+      "reason": "Too Low",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-status-four-digits-reject": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "illegal status line: bytearray(b'HTTP/1.1 0200 OK')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid response status"
+    }
+  },
+  "response-body-cl-exact": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    }
+  },
+  "response-body-chunked": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    }
+  },
+  "response-body-read-until-close": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "68656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "68656c6c6f"
+    }
+  },
+  "response-body-cl-less-than-available": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "3"
+        ]
+      ],
+      "body_hex": "68656c"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "response-body-cl-truncated": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "10"
+        ]
+      ],
+      "body_hex": "68656c"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "10"
+        ]
+      ],
+      "body_hex": "68656c"
+    }
+  },
+  "response-body-cl-mismatch": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "conflicting Content-Length headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Duplicate Content-Length"
+    }
+  },
+  "response-body-cl-zero": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-head-cl-no-body": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "500"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-head-te-chunked-no-body": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-head-cl-te-no-body": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "500"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-head-no-cl-no-te": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-head-304-cl": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "1000"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-head-cl-extra-bytes": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "500"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-head-204": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-head-same-wire-get-reject": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "500"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "500"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-info-100-continue": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-info-100-with-final": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    }
+  },
+  "response-info-101-upgrade": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "Received server _SWITCH_UPGRADE event without a pending proposal"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "77"
+    }
+  },
+  "response-info-103-early-hints": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 103,
+      "reason": "Early Hints",
+      "version": "1.1",
+      "headers": [
+        [
+          "link",
+          "</style.css>; rel=preload; as=style"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 103,
+      "reason": "Early Hints",
+      "version": "1.1",
+      "headers": [
+        [
+          "Link",
+          "</style.css>; rel=preload; as=style"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-info-100-with-te-reject": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-info-100-with-cl-zero": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 100,
+      "reason": "Continue",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-info-199-unknown": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 199,
+      "reason": "Unknown",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 199,
+      "reason": "Unknown",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-info-101-h2c-upgrade": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "Received server _SWITCH_UPGRADE event without a pending proposal"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "71"
+    }
+  },
+  "response-no-body-204": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-204-cl-zero": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-204-te-reject": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 204,
+      "reason": "No Content",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-304-cl": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "500"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "500"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-304-te": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 304,
+      "reason": "Not Modified",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-connect-200": {
+    "request_method": "CONNECT",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "Connection Established",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-connect-201": {
+    "request_method": "CONNECT",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 201,
+      "reason": "Created",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "response-no-body-connect-404-has-body": {
+    "request_method": "CONNECT",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 404,
+      "reason": "Not Found",
+      "version": "1.1",
+      "headers": [],
+      "body_hex": "6572726f722070616765"
+    }
+  },
+  "response-framing-chunked-multi": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "4d6f7a696c6c61446576656c6f7065724e6574776f726b"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "4d6f7a696c6c61446576656c6f7065724e6574776f726b"
+    }
+  },
+  "response-framing-chunked-trailers": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "trailer",
+          "Checksum"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ],
+        [
+          "Trailer",
+          "Checksum"
+        ],
+        [
+          "Checksum",
+          "abc123"
+        ]
+      ],
+      "body_hex": "68656c6c6f"
+    }
+  },
+  "response-framing-cl-exact": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "content-length",
+          "13"
+        ]
+      ],
+      "body_hex": "48656c6c6f2c20576f726c6421"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Content-Length",
+          "13"
+        ]
+      ],
+      "body_hex": "48656c6c6f2c20576f726c6421"
+    }
+  },
+  "response-framing-read-until-close": {
+    "request_method": "GET",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "connection",
+          "close"
+        ]
+      ],
+      "body_hex": "5468697320626f647920656e6473207768656e20636f6e6e656374696f6e20636c6f7365732e"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_hex": "5468697320626f647920656e6473207768656e20636f6e6e656374696f6e20636c6f7365732e"
+    }
+  },
+  "response-framing-malformed-chunk": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "illegal chunk header: bytearray(b'ZZ\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "response-framing-chunked-head-no-body": {
+    "request_method": "HEAD",
+    "h11": {
+      "ok": true,
+      "error": null,
+      "status_code": 200,
+      "reason": "OK",
+      "version": "1.1",
+      "headers": [
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "response-framing-cl-negative": {
+    "request_method": "GET",
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in Content-Length"
+    }
+  },
+  "__random__": {
+    "cases": [
+      {
+        "id": "rand-resp-0",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a2063376931736a7135307a716c0d0a0d0a6931736a7135",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "c7i1sjq50zql"
+            ]
+          ],
+          "body_hex": "6931736a7135"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "c7i1sjq50zql"
+            ]
+          ],
+          "body_hex": "6931736a7135"
+        }
+      },
+      {
+        "id": "rand-resp-1",
+        "status_code": 404,
+        "reason": "Not Found",
+        "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a436f6e74656e742d4c656e6774683a2031340d0a582d52616e643a20736a7135307a716c736a71680d0a0d0a7135307a716c736a716873336574",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "14"
+            ],
+            [
+              "x-rand",
+              "sjq50zqlsjqh"
+            ]
+          ],
+          "body_hex": "7135307a716c736a716873336574"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "14"
+            ],
+            [
+              "X-Rand",
+              "sjq50zqlsjqh"
+            ]
+          ],
+          "body_hex": "7135307a716c736a716873336574"
+        }
+      },
+      {
+        "id": "rand-resp-2",
+        "status_code": 201,
+        "reason": "Created",
+        "wire_hex": "485454502f312e312032303120437265617465640d0a436f6e74656e742d4c656e6774683a2032320d0a582d52616e643a20307a716c736a7168733365740d0a0d0a716c736a7168733365746f377964346a7539306e7978",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 201,
+          "reason": "Created",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "22"
+            ],
+            [
+              "x-rand",
+              "0zqlsjqhs3et"
+            ]
+          ],
+          "body_hex": "716c736a7168733365746f377964346a7539306e7978"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 201,
+          "reason": "Created",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "22"
+            ],
+            [
+              "X-Rand",
+              "0zqlsjqhs3et"
+            ]
+          ],
+          "body_hex": "716c736a7168733365746f377964346a7539306e7978"
+        }
+      },
+      {
+        "id": "rand-resp-3",
+        "status_code": 400,
+        "reason": "Bad Request",
+        "wire_hex": "485454502f312e31203430302042616420526571756573740d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a20736a7168733365746f3779640d0a0d0a716873336574",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "sjqhs3eto7yd"
+            ]
+          ],
+          "body_hex": "716873336574"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "sjqhs3eto7yd"
+            ]
+          ],
+          "body_hex": "716873336574"
+        }
+      },
+      {
+        "id": "rand-resp-4",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a2031380d0a582d52616e643a20733365746f377964346a75390d0a0d0a65746f377964346a7539306e797834373670",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "18"
+            ],
+            [
+              "x-rand",
+              "s3eto7yd4ju9"
+            ]
+          ],
+          "body_hex": "65746f377964346a7539306e797834373670"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "18"
+            ],
+            [
+              "X-Rand",
+              "s3eto7yd4ju9"
+            ]
+          ],
+          "body_hex": "65746f377964346a7539306e797834373670"
+        }
+      },
+      {
+        "id": "rand-resp-5",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a206f377964346a7539306e79780d0a0d0a7964346a7539",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "o7yd4ju90nyx"
+            ]
+          ],
+          "body_hex": "7964346a7539"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "o7yd4ju90nyx"
+            ]
+          ],
+          "body_hex": "7964346a7539"
+        }
+      },
+      {
+        "id": "rand-resp-6",
+        "status_code": 400,
+        "reason": "Bad Request",
+        "wire_hex": "485454502f312e31203430302042616420526571756573740d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a20346a7539306e7978343736700d0a0d0a7539306e7978",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "4ju90nyx476p"
+            ]
+          ],
+          "body_hex": "7539306e7978"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "4ju90nyx476p"
+            ]
+          ],
+          "body_hex": "7539306e7978"
+        }
+      },
+      {
+        "id": "rand-resp-7",
+        "status_code": 400,
+        "reason": "Bad Request",
+        "wire_hex": "485454502f312e31203430302042616420526571756573740d0a436f6e74656e742d4c656e6774683a2031380d0a582d52616e643a20306e7978343736707366756c0d0a0d0a7978343736707366756c6b6671646f6e6178",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "18"
+            ],
+            [
+              "x-rand",
+              "0nyx476psful"
+            ]
+          ],
+          "body_hex": "7978343736707366756c6b6671646f6e6178"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "18"
+            ],
+            [
+              "X-Rand",
+              "0nyx476psful"
+            ]
+          ],
+          "body_hex": "7978343736707366756c6b6671646f6e6178"
+        }
+      },
+      {
+        "id": "rand-resp-8",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a2032320d0a582d52616e643a20343736707366756c6b6671640d0a0d0a36707366756c6b6671646f6e61786b627578346e3231",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "22"
+            ],
+            [
+              "x-rand",
+              "476psfulkfqd"
+            ]
+          ],
+          "body_hex": "36707366756c6b6671646f6e61786b627578346e3231"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "22"
+            ],
+            [
+              "X-Rand",
+              "476psfulkfqd"
+            ]
+          ],
+          "body_hex": "36707366756c6b6671646f6e61786b627578346e3231"
+        }
+      },
+      {
+        "id": "rand-resp-9",
+        "status_code": 404,
+        "reason": "Not Found",
+        "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a436f6e74656e742d4c656e6774683a2032320d0a582d52616e643a207366756c6b6671646f6e61780d0a0d0a756c6b6671646f6e61786b627578346e323163726970",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "22"
+            ],
+            [
+              "x-rand",
+              "sfulkfqdonax"
+            ]
+          ],
+          "body_hex": "756c6b6671646f6e61786b627578346e323163726970"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "22"
+            ],
+            [
+              "X-Rand",
+              "sfulkfqdonax"
+            ]
+          ],
+          "body_hex": "756c6b6671646f6e61786b627578346e323163726970"
+        }
+      },
+      {
+        "id": "rand-resp-10",
+        "status_code": 201,
+        "reason": "Created",
+        "wire_hex": "485454502f312e312032303120437265617465640d0a436f6e74656e742d4c656e6774683a2031340d0a582d52616e643a206b6671646f6e61786b6275780d0a0d0a71646f6e61786b627578346e3231",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 201,
+          "reason": "Created",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "14"
+            ],
+            [
+              "x-rand",
+              "kfqdonaxkbux"
+            ]
+          ],
+          "body_hex": "71646f6e61786b627578346e3231"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 201,
+          "reason": "Created",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "14"
+            ],
+            [
+              "X-Rand",
+              "kfqdonaxkbux"
+            ]
+          ],
+          "body_hex": "71646f6e61786b627578346e3231"
+        }
+      },
+      {
+        "id": "rand-resp-11",
+        "status_code": 201,
+        "reason": "Created",
+        "wire_hex": "485454502f312e312032303120437265617465640d0a436f6e74656e742d4c656e6774683a2031340d0a582d52616e643a206f6e61786b627578346e32310d0a0d0a61786b627578346e323163726970",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 201,
+          "reason": "Created",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "14"
+            ],
+            [
+              "x-rand",
+              "onaxkbux4n21"
+            ]
+          ],
+          "body_hex": "61786b627578346e323163726970"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 201,
+          "reason": "Created",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "14"
+            ],
+            [
+              "X-Rand",
+              "onaxkbux4n21"
+            ]
+          ],
+          "body_hex": "61786b627578346e323163726970"
+        }
+      },
+      {
+        "id": "rand-resp-12",
+        "status_code": 301,
+        "reason": "Moved Permanently",
+        "wire_hex": "485454502f312e3120333031204d6f766564205065726d616e656e746c790d0a436f6e74656e742d4c656e6774683a2032320d0a582d52616e643a206b627578346e3231637269700d0a0d0a7578346e3231637269707737613138623270677a3264",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 301,
+          "reason": "Moved Permanently",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "22"
+            ],
+            [
+              "x-rand",
+              "kbux4n21crip"
+            ]
+          ],
+          "body_hex": "7578346e3231637269707737613138623270677a3264"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 301,
+          "reason": "Moved Permanently",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "22"
+            ],
+            [
+              "X-Rand",
+              "kbux4n21crip"
+            ]
+          ],
+          "body_hex": "7578346e3231637269707737613138623270677a3264"
+        }
+      },
+      {
+        "id": "rand-resp-13",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a2031340d0a582d52616e643a20346e323163726970773761310d0a0d0a3231637269707737613138623270",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "14"
+            ],
+            [
+              "x-rand",
+              "4n21cripw7a1"
+            ]
+          ],
+          "body_hex": "3231637269707737613138623270"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "14"
+            ],
+            [
+              "X-Rand",
+              "4n21cripw7a1"
+            ]
+          ],
+          "body_hex": "3231637269707737613138623270"
+        }
+      },
+      {
+        "id": "rand-resp-14",
+        "status_code": 400,
+        "reason": "Bad Request",
+        "wire_hex": "485454502f312e31203430302042616420526571756573740d0a436f6e74656e742d4c656e6774683a2031380d0a582d52616e643a206372697077376131386232700d0a0d0a69707737613138623270677a3264346e6131",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "18"
+            ],
+            [
+              "x-rand",
+              "cripw7a18b2p"
+            ]
+          ],
+          "body_hex": "69707737613138623270677a3264346e6131"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "18"
+            ],
+            [
+              "X-Rand",
+              "cripw7a18b2p"
+            ]
+          ],
+          "body_hex": "69707737613138623270677a3264346e6131"
+        }
+      },
+      {
+        "id": "rand-resp-15",
+        "status_code": 404,
+        "reason": "Not Found",
+        "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a207737613138623270677a32640d0a0d0a613138623270",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "w7a18b2pgz2d"
+            ]
+          ],
+          "body_hex": "613138623270"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "w7a18b2pgz2d"
+            ]
+          ],
+          "body_hex": "613138623270"
+        }
+      },
+      {
+        "id": "rand-resp-16",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a2038623270677a3264346e61310d0a0d0a3270677a3264",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "8b2pgz2d4na1"
+            ]
+          ],
+          "body_hex": "3270677a3264"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "8b2pgz2d4na1"
+            ]
+          ],
+          "body_hex": "3270677a3264"
+        }
+      },
+      {
+        "id": "rand-resp-17",
+        "status_code": 400,
+        "reason": "Bad Request",
+        "wire_hex": "485454502f312e31203430302042616420526571756573740d0a436f6e74656e742d4c656e6774683a2031380d0a582d52616e643a20677a3264346e6131737a69640d0a0d0a3264346e6131737a6964637279317772616c",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "18"
+            ],
+            [
+              "x-rand",
+              "gz2d4na1szid"
+            ]
+          ],
+          "body_hex": "3264346e6131737a6964637279317772616c"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 400,
+          "reason": "Bad Request",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "18"
+            ],
+            [
+              "X-Rand",
+              "gz2d4na1szid"
+            ]
+          ],
+          "body_hex": "3264346e6131737a6964637279317772616c"
+        }
+      },
+      {
+        "id": "rand-resp-18",
+        "status_code": 503,
+        "reason": "Service Unavailable",
+        "wire_hex": "485454502f312e3120353033205365727669636520556e617661696c61626c650d0a436f6e74656e742d4c656e6774683a2031340d0a582d52616e643a20346e6131737a6964637279310d0a0d0a6131737a6964637279317772616c",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "14"
+            ],
+            [
+              "x-rand",
+              "4na1szidcry1"
+            ]
+          ],
+          "body_hex": "6131737a6964637279317772616c"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 503,
+          "reason": "Service Unavailable",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "14"
+            ],
+            [
+              "X-Rand",
+              "4na1szidcry1"
+            ]
+          ],
+          "body_hex": "6131737a6964637279317772616c"
+        }
+      },
+      {
+        "id": "rand-resp-19",
+        "status_code": 404,
+        "reason": "Not Found",
+        "wire_hex": "485454502f312e3120343034204e6f7420466f756e640d0a436f6e74656e742d4c656e6774683a20360d0a582d52616e643a20737a6964637279317772616c0d0a0d0a696463727931",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "content-length",
+              "6"
+            ],
+            [
+              "x-rand",
+              "szidcry1wral"
+            ]
+          ],
+          "body_hex": "696463727931"
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "status_code": 404,
+          "reason": "Not Found",
+          "version": "1.1",
+          "headers": [
+            [
+              "Content-Length",
+              "6"
+            ],
+            [
+              "X-Rand",
+              "szidcry1wral"
+            ]
+          ],
+          "body_hex": "696463727931"
+        }
+      }
+    ]
+  }
+}

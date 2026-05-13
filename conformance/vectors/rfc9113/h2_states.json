@@ -1,0 +1,153 @@
+{
+  "server_preface_after_empty_recv_hex": "00002a04000000000000010000100000020000000000040000ffff000500004000000800000000000300000064000600010000",
+  "client_preface_hex": "505249202a20485454502f322e300d0a0d0a534d0d0a0d0a00002a04000000000000010000100000020000000100040000ffff000500004000000800000000000300000064000600010000",
+  "ping_payload_hex": "1020304050607080",
+  "ping_frame_hex": "0000080600000000001020304050607080",
+  "ping_oracle": {
+    "events": [
+      {
+        "type": "PingReceived",
+        "ping_data": "1020304050607080"
+      }
+    ],
+    "data_to_send_hex": "0000080601000000001020304050607080",
+    "error": null
+  },
+  "roundtrip": {
+    "server_events": [
+      {
+        "type": "RequestReceived",
+        "stream_id": 1,
+        "headers": [
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            ":authority",
+            "example.com"
+          ]
+        ]
+      },
+      {
+        "type": "StreamEnded",
+        "stream_id": 1
+      }
+    ],
+    "client_events": [
+      {
+        "type": "ResponseReceived",
+        "stream_id": 1,
+        "headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "content-type",
+            "text/plain"
+          ]
+        ]
+      },
+      {
+        "type": "DataReceived",
+        "stream_id": 1,
+        "data_hex": "68656c6c6f",
+        "flow_controlled_length": 5
+      },
+      {
+        "type": "StreamEnded",
+        "stream_id": 1
+      }
+    ],
+    "request_wire_hex": "00000d01050000000182848741882f91d35d055c87a7",
+    "response_wire_hex": "00000a010400000001885f87497ca58ae819aa00000500010000000168656c6c6f",
+    "error": null
+  },
+  "stream_data_100_A": {
+    "events": [
+      {
+        "type": "RequestReceived",
+        "stream_id": 1,
+        "headers": [
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            ":authority",
+            "example.com"
+          ]
+        ]
+      },
+      {
+        "type": "DataReceived",
+        "stream_id": 1,
+        "data_hex": "41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141",
+        "flow_controlled_length": 100
+      },
+      {
+        "type": "StreamEnded",
+        "stream_id": 1
+      }
+    ],
+    "wire_hex": "00000d01040000000183848741882f91d35d055c87a700006400010000000141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141",
+    "error": null
+  },
+  "h2_server_receive_client_preface": {
+    "preface_hex": "00002a04000000000000010000100000020000000000040000ffff000500004000000800000000000300000064000600010000",
+    "events": [
+      {
+        "type": "RemoteSettingsChanged",
+        "changed_settings": {
+          "1": {
+            "original_value": 4096,
+            "new_value": 4096
+          },
+          "2": {
+            "original_value": 1,
+            "new_value": 1
+          },
+          "4": {
+            "original_value": 65535,
+            "new_value": 65535
+          },
+          "5": {
+            "original_value": 16384,
+            "new_value": 16384
+          },
+          "8": {
+            "original_value": 0,
+            "new_value": 0
+          },
+          "3": {
+            "original_value": null,
+            "new_value": 100
+          },
+          "6": {
+            "original_value": null,
+            "new_value": 65536
+          }
+        }
+      }
+    ],
+    "response_hex": "000000040100000000",
+    "error": null
+  }
+}

@@ -1,0 +1,3658 @@
+{
+  "request-line-basic-get": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-post-with-body": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/submit",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "13"
+        ]
+      ],
+      "body_hex": "48656c6c6f2c20576f726c6421"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/submit",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "13"
+        ]
+      ],
+      "body_hex": "48656c6c6f2c20576f726c6421"
+    }
+  },
+  "request-line-head": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "HEAD",
+      "target": "/index.html",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "HEAD",
+      "target": "/index.html",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-options-asterisk": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "OPTIONS",
+      "target": "*",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "OPTIONS",
+      "target": "*",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-delete": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "DELETE",
+      "target": "/resource/42",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "DELETE",
+      "target": "/resource/42",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-unknown-method": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "FOOBAR",
+      "target": "/test",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid method encountered"
+    }
+  },
+  "request-line-query-string": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/search?q=hello",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/search?q=hello",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-missing-method": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b' / HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid method encountered"
+    }
+  },
+  "request-line-http09": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /')"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "0.9",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "request-line-http20": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "2.0",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "2.0",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-bare-lf": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "x"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected CRLF after version"
+    }
+  },
+  "request-line-tab-separator": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET\\t/\\tHTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected space after method"
+    }
+  },
+  "request-line-double-space": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET  / HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "request-line-empty-crlf": {
+    "h11": {
+      "ok": false,
+      "error": "no request line received"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "DELETE",
+      "target": "",
+      "version": "0.0",
+      "headers": [],
+      "body_hex": ""
+    }
+  },
+  "request-line-trailing-space-version": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET / HTTP/1.1 ')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected CRLF after version"
+    }
+  },
+  "llhttp-invalid-ice-protocol-and-get-method": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /music/sweet/music ICE/1.0')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected SOURCE method for ICE/x.x request"
+    }
+  },
+  "llhttp-invalid-ice-protocol-but-not-really": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /music/sweet/music IHTTP/1.0')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "llhttp-invalid-rtsp-protocol-and-put-method": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'PUT /music/sweet/music RTSP/1.0')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid method for RTSP/x.x request"
+    }
+  },
+  "llhttp-invalid-headers-separated-by-cr": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Foo: 1\\rBar: 2')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Missing expected LF after header value"
+    }
+  },
+  "llhttp-invalid-headers-separated-by-dummy-characters": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\rZGET /evil: HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after headers"
+    }
+  },
+  "llhttp-invalid-headers-separated-by-dummy-characters-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\rZGET /evil: HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after headers"
+    }
+  },
+  "llhttp-invalid-empty-headers-separated-by-cr": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'x:\\rTransfer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after CR"
+    }
+  },
+  "llhttp-invalid-invalid-header-token-1": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Fo@: Failure')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-invalid-invalid-header-token-2": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Foo\\\\01\\test: Bar')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-invalid-invalid-header-token-3": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b': Bar')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-invalid-invalid-method": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected space after method"
+    }
+  },
+  "llhttp-invalid-illegal-header-field-name-line-folding": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'name : value')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-invalid-corrupted-connection-header": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Connection\\r\\\\033\\\\065\\\\325eep-Alive')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-invalid-corrupted-header-name": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'X-Some-Header\\r\\\\033\\\\065\\\\325eep-Alive')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-invalid-invalid-space-after-start-line": {
+    "h11": {
+      "ok": false,
+      "error": "continuation line at start of headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected space after start line"
+    }
+  },
+  "llhttp-invalid-only-lfs-present": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected CRLF after version"
+    }
+  },
+  "llhttp-method-m-search-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "M-SEARCH",
+      "target": "*",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "239.255.255.250:1900"
+        ],
+        [
+          "man",
+          "\"ssdp:discover\""
+        ],
+        [
+          "st",
+          "\"ssdp:all\""
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "M-SEARCH",
+      "target": "*",
+      "version": "1.1",
+      "headers": [
+        [
+          "HOST",
+          "239.255.255.250:1900"
+        ],
+        [
+          "MAN",
+          "\"ssdp:discover\""
+        ],
+        [
+          "ST",
+          "\"ssdp:all\""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-method-patch-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "PATCH",
+      "target": "/file.txt",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "www.example.com"
+        ],
+        [
+          "content-type",
+          "application/example"
+        ],
+        [
+          "if-match",
+          "\"e0023aa4e\""
+        ],
+        [
+          "content-length",
+          "10"
+        ]
+      ],
+      "body_hex": "63636363636363636363"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "PATCH",
+      "target": "/file.txt",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "www.example.com"
+        ],
+        [
+          "Content-Type",
+          "application/example"
+        ],
+        [
+          "If-Match",
+          "\"e0023aa4e\""
+        ],
+        [
+          "Content-Length",
+          "10"
+        ]
+      ],
+      "body_hex": "63636363636363636363"
+    }
+  },
+  "llhttp-method-purge-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "PURGE",
+      "target": "/file.txt",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "www.example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "PURGE",
+      "target": "/file.txt",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "www.example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-method-search-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "SEARCH",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "www.example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "SEARCH",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "www.example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-method-link-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "LINK",
+      "target": "/images/my_dog.jpg",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "link",
+          "<http://example.com/profiles/joe>; rel=\"tag\""
+        ],
+        [
+          "link",
+          "<http://example.com/profiles/sally>; rel=\"tag\""
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "LINK",
+      "target": "/images/my_dog.jpg",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Link",
+          "<http://example.com/profiles/joe>; rel=\"tag\""
+        ],
+        [
+          "Link",
+          "<http://example.com/profiles/sally>; rel=\"tag\""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-method-source-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "SOURCE",
+      "target": "/music/sweet/music",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "SOURCE",
+      "target": "/music/sweet/music",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-method-pri-request-http2": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Pause on PRI/Upgrade"
+    }
+  },
+  "llhttp-method-query-request": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "QUERY",
+      "target": "/contacts",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.org"
+        ],
+        [
+          "content-type",
+          "example/query"
+        ],
+        [
+          "accept",
+          "text/csv"
+        ],
+        [
+          "content-length",
+          "41"
+        ]
+      ],
+      "body_hex": "73656c656374207375726e616d652c20676976656e6e616d652c20656d61696c206c696d6974203130"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "QUERY",
+      "target": "/contacts",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.org"
+        ],
+        [
+          "Content-Type",
+          "example/query"
+        ],
+        [
+          "Accept",
+          "text/csv"
+        ],
+        [
+          "Content-Length",
+          "41"
+        ]
+      ],
+      "body_hex": "73656c656374207375726e616d652c20676976656e6e616d652c20656d61696c206c696d6974203130"
+    }
+  },
+  "llhttp-sample-curl-get": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/test",
+      "version": "1.1",
+      "headers": [
+        [
+          "user-agent",
+          "curl/7.18.0 (i486-pc-linux-gnu) libcurl/7.18.0 OpenSSL/0.9.8g zlib/1.2.3.3 libidn/1.1"
+        ],
+        [
+          "host",
+          "0.0.0.0=5000"
+        ],
+        [
+          "accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/test",
+      "version": "1.1",
+      "headers": [
+        [
+          "User-Agent",
+          "curl/7.18.0 (i486-pc-linux-gnu) libcurl/7.18.0 OpenSSL/0.9.8g zlib/1.2.3.3 libidn/1.1"
+        ],
+        [
+          "Host",
+          "0.0.0.0=5000"
+        ],
+        [
+          "Accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-sample-firefox-get": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/favicon.ico",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "0.0.0.0=5000"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9) Gecko/2008061015 Firefox/3.0"
+        ],
+        [
+          "accept",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        ],
+        [
+          "accept-language",
+          "en-us,en;q=0.5"
+        ],
+        [
+          "accept-encoding",
+          "gzip,deflate"
+        ],
+        [
+          "accept-charset",
+          "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
+        ],
+        [
+          "keep-alive",
+          "300"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/favicon.ico",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "0.0.0.0=5000"
+        ],
+        [
+          "User-Agent",
+          "Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9) Gecko/2008061015 Firefox/3.0"
+        ],
+        [
+          "Accept",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        ],
+        [
+          "Accept-Language",
+          "en-us,en;q=0.5"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip,deflate"
+        ],
+        [
+          "Accept-Charset",
+          "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
+        ],
+        [
+          "Keep-Alive",
+          "300"
+        ],
+        [
+          "Connection",
+          "keep-alive"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-sample-apache-bench-get": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/test",
+      "version": "1.0",
+      "headers": [
+        [
+          "host",
+          "0.0.0.0:5000"
+        ],
+        [
+          "user-agent",
+          "ApacheBench/2.3"
+        ],
+        [
+          "accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/test",
+      "version": "1.0",
+      "headers": [
+        [
+          "Host",
+          "0.0.0.0:5000"
+        ],
+        [
+          "User-Agent",
+          "ApacheBench/2.3"
+        ],
+        [
+          "Accept",
+          "*/*"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-sample-line-folding-in-header-value-with-lf": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Missing expected CR after header value"
+    }
+  },
+  "llhttp-sample-no-lf-after-cr": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET / HTTP/1.1\\rLine: 1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected CRLF after version"
+    }
+  },
+  "llhttp-sample-no-lf-after-cr-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET / HTTP/1.1\\rLine: 1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected CRLF after version"
+    }
+  },
+  "llhttp-uri-space-in-uri": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /foo bar/ HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "aws-acceptable-empty-version-which-means-http-0-9": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /foo/bar ')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "aws-uri-specific-test-cases-t-in-uri": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /endpoint_a\\tHTTP/1.1 HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid characters in url"
+    }
+  },
+  "aws-uri-specific-test-cases-extra-spaces-in-version": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /endpoint_a HTTP/1.1 ')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected CRLF after version"
+    }
+  },
+  "aws-uri-specific-test-cases-x01-in-uri": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /endpoint_a\\x01HTTP/1.1 HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid char in url path"
+    }
+  },
+  "aws-uri-specific-test-cases-space-in-uri": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /endpoint_a?param=not escaped spaces HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "headers-single": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "headers-multiple-order": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "accept",
+          "text/html"
+        ],
+        [
+          "accept-language",
+          "en-US"
+        ],
+        [
+          "user-agent",
+          "test/1.0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Accept",
+          "text/html"
+        ],
+        [
+          "Accept-Language",
+          "en-US"
+        ],
+        [
+          "User-Agent",
+          "test/1.0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "headers-empty-value": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "x-empty",
+          ""
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "X-Empty",
+          ""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "headers-ows-stripped": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "x-foo",
+          "bar"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "X-Foo",
+          "bar  "
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "headers-duplicate-name": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "x-custom",
+          "first"
+        ],
+        [
+          "x-custom",
+          "second"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "X-Custom",
+          "first"
+        ],
+        [
+          "X-Custom",
+          "second"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "headers-nul-in-value": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'X-Bad: val\\x00ue')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header value char"
+    }
+  },
+  "headers-exceeds-max-size": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "x-huge",
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "X-Huge",
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "headers-nul-in-name": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'X-B\\x00ad: value')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "headers-non-token-bracket": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'X[Bad]: val')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "headers-del-in-name": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'X\\x7fBad: val')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-connection-multiple-tokens-with-folding-and-lws": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "75"
+    }
+  },
+  "llhttp-connection-multiple-tokens-with-folding-lws-and-crlf": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected whitespace after header value"
+    }
+  },
+  "llhttp-connection-invalid-whitespace-token-with-connection-header-field": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Connection : upgrade')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header field char"
+    }
+  },
+  "llhttp-connection-invalid-whitespace-token-with-connection-header-field-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Connection : upgrade')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header field char"
+    }
+  },
+  "llhttp-connection-upgrade": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "55"
+    }
+  },
+  "llhttp-connection-emitting-part-of-body-and-pausing": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "74"
+    }
+  },
+  "llhttp-finish-it-should-be-unsafe-to-finish-inside-of-the-header": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Content-Leng')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-lenient-header-value-relaxed-cr-without-lf-in-header-value-should-be-rejected-even-with-relaxed-flag": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'x:\\rTransfer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after CR"
+    }
+  },
+  "llhttp-lenient-header-value-relaxed-space-after-start-line-must-still-fail": {
+    "h11": {
+      "ok": false,
+      "error": "continuation line at start of headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected space after start line"
+    }
+  },
+  "llhttp-lenient-headers-empty-headers-separated-by-cr-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'x:\\rTransfer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after CR"
+    }
+  },
+  "aws-acceptable-a-non-essential-header-with-a-non-printable-character-x01": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01x-my-custom-header: some value')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-with-a-trailing-space-in-name": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer-Encoding : chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header field char"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-with-a-trailing-tab-in-name": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer-Encoding\\t: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-x01transfer-encoding-with-a-non-printable-character": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01Transfer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-x01-x01transfer-encoding-with-a-non-printable-character": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01\\x01Transfer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-x01-x01content-length-with-a-non-printable-character": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01\\x01Content-Length: 1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-x01content-length-with-a-non-printable-character": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01Content-Length: 1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-with-a-space-in-the-middle": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer- Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-empty-header-name": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b': chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-only-white-spaces-header-name": {
+    "h11": {
+      "ok": false,
+      "error": "continuation line at start of headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected space after start line"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-latin-small-letter-long-s": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Tran\\xc5\\xbffer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-latin-small-letter-dotless-i": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer-Encod\\xc4\\xb1ng: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-with-utf8-spaces": {
+    "h11": {
+      "ok": false,
+      "error": "continuation line at start of headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected space after start line"
+    }
+  },
+  "aws-ambiguous-content-length-with-utf8-spaces": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Content-Length   : 1000')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header field char"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-with-a-utf8-delimiter": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer\\xe2\\x80\\x95Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-with-arbitrary-non-ascii-chars": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer-Encoding\\x88: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-ambiguous-content-length-with-arbitrary-non-ascii-chars": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\xa0Content-Length: 100')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-x01transfer-encoding": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01Transfer-Encoding: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-transfer-encoding-x01": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Transfer-Encoding\\x01: chunked')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-x01content-length": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01Content-Length: 1000')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-content-length-x01": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Content-Length\\x01: 1000')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-some-header-x01": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Some-Custom-Header\\x01: Non-Rfc Compliant')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-x01some-header": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\x01Some-Custom-Header: Non-Rfc Compliant')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "aws-bad-header-characters-some-header-x01value": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header value char"
+    }
+  },
+  "aws-bad-header-characters-some-header-value-x01": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header value char"
+    }
+  },
+  "aws-more-compliant-tests-te-with-custom-parameters-ok": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Request has invalid `Transfer-Encoding`"
+    }
+  },
+  "aws-rfc-compliant-transfer-encoding-with-a-param-chunked-custom-param": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Request has invalid `Transfer-Encoding`"
+    }
+  },
+  "aws-rfc-compliant-international-in-uri": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET /\\xd1\\x81\\xd1\\x82\\xd1\\x80\\xd0\\xb0\\xd0\\xbd\\xd0\\xbd\\xd1\\x8b\\xd0\\xb5-\\xd1\\x81\\xd0\\xb8\\xd0\\xbc\\xd0\\xb2\\xd0\\xbe\\xd0\\xbb\\xd1\\x8b/\\xd0\\xbf\\xd0\\xbe\\xd0\\xb4\\xd0\\xb4\\xd0\\xb5\\xd1\\x80\\xd0\\xb6\\xd0\\xb8\\xd0\\xb2\\xd0\\xb0\\xd1\\x8e\\xd1\\x82\\xd1\\x81\\xd1\\x8f HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid char in url path"
+    }
+  },
+  "aws-rfc-compliant-empty-uri": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'GET  HTTP/1.1')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected char in url schema"
+    }
+  },
+  "content-length-exact": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  "content-length-zero": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "0"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "content-length-non-numeric": {
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in Content-Length"
+    }
+  },
+  "content-length-negative": {
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in Content-Length"
+    }
+  },
+  "content-length-duplicate-different": {
+    "h11": {
+      "ok": false,
+      "error": "conflicting Content-Length headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Duplicate Content-Length"
+    }
+  },
+  "content-length-larger-than-body": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "100"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "100"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  "content-length-overflow": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "99999999999999999999"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Content-Length overflow"
+    }
+  },
+  "content-length-excess-body": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "3"
+        ]
+      ],
+      "body_hex": "303132"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid method encountered"
+    }
+  },
+  "llhttp-content-length-error-on-content-length-overflow": {
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Content-Length overflow"
+    }
+  },
+  "llhttp-content-length-error-on-duplicate-content-length": {
+    "h11": {
+      "ok": false,
+      "error": "conflicting Content-Length headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Duplicate Content-Length"
+    }
+  },
+  "llhttp-content-length-error-on-simultaneous-content-length-and-transfer-encoding-identity": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Transfer-Encoding can't be present with Content-Length"
+    }
+  },
+  "llhttp-content-length-invalid-whitespace-token-with-content-length-header-field": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Content-Length : 4')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header field char"
+    }
+  },
+  "llhttp-content-length-invalid-whitespace-token-with-content-length-header-field-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Content-Length : 4')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header field char"
+    }
+  },
+  "llhttp-content-length-no-error-on-simultaneous-content-length-and-transfer-encoding-identity-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Transfer-Encoding can't be present with Content-Length"
+    }
+  },
+  "llhttp-content-length-funky-content-length-with-body": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/get_funky_content_length_body_hello",
+      "version": "1.0",
+      "headers": [
+        [
+          "content-length",
+          "5"
+        ]
+      ],
+      "body_hex": "48454c4c4f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/get_funky_content_length_body_hello",
+      "version": "1.0",
+      "headers": [
+        [
+          "conTENT-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48454c4c4f"
+    }
+  },
+  "llhttp-content-length-tabs-in-content-length-surrounding": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in Content-Length"
+    }
+  },
+  "llhttp-content-length-spaces-in-content-length-2": {
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in Content-Length"
+    }
+  },
+  "llhttp-content-length-spaces-in-content-length-3": {
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in Content-Length"
+    }
+  },
+  "llhttp-content-length-empty-content-length": {
+    "h11": {
+      "ok": false,
+      "error": "bad Content-Length"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Empty Content-Length"
+    }
+  },
+  "llhttp-content-length-content-length-with-cr-instead-of-dash": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'Content\\rLength: 003')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header token"
+    }
+  },
+  "llhttp-content-length-missing-crlf-crlf-before-body": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\rabc')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after headers"
+    }
+  },
+  "llhttp-content-length-missing-crlf-crlf-before-body-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal header line: bytearray(b'\\rabc')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after headers"
+    }
+  },
+  "aws-ambiguous-duplicate-content-length": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Duplicate Content-Length"
+    }
+  },
+  "aws-ambiguous-content-length-for-empty-protocol-which-is-http-0-9": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'POST /foo/bar ')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "aws-edge-cases-non-compliant-customer-header-does-not-shadow-ambiguous-cont": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header value char"
+    }
+  },
+  "aws-edge-cases-bad-uri-does-not-shadow-essential-ambiguous-headers": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header value char"
+    }
+  },
+  "aws-real-life-test-cases-two-identical-fields-cl": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Duplicate Content-Length"
+    }
+  },
+  "chunked-simple": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  "chunked-with-trailers": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ],
+        [
+          "X-Checksum",
+          "abc123"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  "chunked-cl-and-te": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "5"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Transfer-Encoding can't be present with Content-Length"
+    }
+  },
+  "chunked-multi-chunk": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "48656c6c6f20576f726c64"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": "48656c6c6f20576f726c64"
+    }
+  },
+  "chunked-invalid-hex": {
+    "h11": {
+      "ok": false,
+      "error": "illegal chunk header: bytearray(b'XZ\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "chunked-empty-body": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "chunked-overflow-size": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/upload",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Transfer-Encoding",
+          "chunked"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "llhttp-transfer-encoding-no-semicolon-before-chunk-extensions": {
+    "h11": {
+      "ok": false,
+      "error": "illegal chunk header: bytearray(b'2 erfrferferf\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "llhttp-transfer-encoding-unbalanced-chunk-extensions-quoting": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk extensions quoted value"
+    }
+  },
+  "llhttp-transfer-encoding-ignoring-pigeons": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Request has invalid `Transfer-Encoding`"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-transfer-encoding-and-content-length": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Content-Length can't be present with Transfer-Encoding"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-transfer-encoding-and-content-length-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Content-Length can't be present with Transfer-Encoding"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-empty-transfer-encoding-and-content-length-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Transfer-Encoding can't be present with Content-Length"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-chunked-before-other-transfer-coding-names": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid `Transfer-Encoding` header value"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-chunked-and-duplicate-transfer-encoding": {
+    "h11": {
+      "ok": false,
+      "error": "multiple Transfer-Encoding headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid `Transfer-Encoding` header value"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-chunked-before-other-transfer-coding-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid `Transfer-Encoding` header value"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-chunked-and-duplicate-transfer-encoding-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "multiple Transfer-Encoding headers"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid `Transfer-Encoding` header value"
+    }
+  },
+  "llhttp-transfer-encoding-post-with-chunkedchunked-as-transfer-encoding": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Request has invalid `Transfer-Encoding`"
+    }
+  },
+  "llhttp-transfer-encoding-missing-last-chunk": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "llhttp-transfer-encoding-validate-chunk-parameters": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "llhttp-transfer-encoding-invalid-obs-fold-after-chunked-value": {
+    "h11": {
+      "ok": false,
+      "error": "Only Transfer-Encoding: chunked is supported"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Unexpected whitespace after header value"
+    }
+  },
+  "llhttp-transfer-encoding-chunk-header-not-terminated-by-crlf": {
+    "h11": {
+      "ok": false,
+      "error": "illegal chunk header: bytearray(b'5\\r\\r;ABCD\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after chunk size"
+    }
+  },
+  "llhttp-transfer-encoding-chunk-header-not-terminated-by-crlf-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "illegal chunk header: bytearray(b'6\\r\\r;ABCD\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after chunk size"
+    }
+  },
+  "llhttp-transfer-encoding-chunk-data-not-terminated-by-crlf": {
+    "h11": {
+      "ok": false,
+      "error": "malformed chunk footer: bytearray(b'0\\r') (expected b'\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after chunk data"
+    }
+  },
+  "llhttp-transfer-encoding-chunk-data-not-terminated-by-crlf-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "malformed chunk footer: bytearray(b'0\\r') (expected b'\\r\\n')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected LF after chunk data"
+    }
+  },
+  "llhttp-transfer-encoding-space-after-chunk-header": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "llhttp-transfer-encoding-space-after-chunk-header-lenient": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid character in chunk size"
+    }
+  },
+  "aws-ambiguous-transfer-encoding-for-empty-protocol-which-is-http-0-9": {
+    "h11": {
+      "ok": false,
+      "error": "illegal request line: bytearray(b'POST /foo/bar ')"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Expected HTTP/, RTSP/ or ICE/"
+    }
+  },
+  "aws-edge-cases-non-compliant-customer-header-does-not-shadow-ambiguous-tran": {
+    "h11": {
+      "ok": false,
+      "error": "Missing mandatory Host: header"
+    },
+    "httptools": {
+      "ok": false,
+      "error": "Invalid header value char"
+    }
+  },
+  "host-single-valid": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "host-missing-http10": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.0",
+      "headers": [
+        [
+          "accept",
+          "text/html"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.0",
+      "headers": [
+        [
+          "Accept",
+          "text/html"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "host-with-port": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "example.com:8080"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "example.com:8080"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "host-empty-value": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          ""
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          ""
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "host-ip-address": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "host",
+          "127.0.0.1"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.1",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "host-present-http10": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.0",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "GET",
+      "target": "/",
+      "version": "1.0",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ]
+      ],
+      "body_hex": ""
+    }
+  },
+  "host-http10-content-length-body": {
+    "h11": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.0",
+      "headers": [
+        [
+          "host",
+          "example.com"
+        ],
+        [
+          "content-length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    },
+    "httptools": {
+      "ok": true,
+      "error": null,
+      "method": "POST",
+      "target": "/data",
+      "version": "1.0",
+      "headers": [
+        [
+          "Host",
+          "example.com"
+        ],
+        [
+          "Content-Length",
+          "5"
+        ]
+      ],
+      "body_hex": "48656c6c6f"
+    }
+  },
+  "__random__": {
+    "cases": [
+      {
+        "id": "rand-0",
+        "method": "HEAD",
+        "path": "/a/b/c/d",
+        "wire_hex": "48454144202f612f622f632f6420485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a20657838666935347271646b760d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "HEAD",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "ex8fi54rqdkv"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "HEAD",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "ex8fi54rqdkv"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-1",
+        "method": "PUT",
+        "path": "/data/42",
+        "wire_hex": "505554202f646174612f343220485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a20666935347271646b766939300d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "PUT",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "fi54rqdkvi90"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "PUT",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "fi54rqdkvi90"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-2",
+        "method": "OPTIONS",
+        "path": "/index.html",
+        "wire_hex": "4f5054494f4e53202f696e6465782e68746d6c20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a20347271646b766939307679740d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "OPTIONS",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "4rqdkvi90vyt"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "OPTIONS",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "4rqdkvi90vyt"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-3",
+        "method": "DELETE",
+        "path": "/data/42",
+        "wire_hex": "44454c455445202f646174612f343220485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a20646b766939307679746f33650d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "DELETE",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "dkvi90vyto3e"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "DELETE",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "dkvi90vyto3e"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-4",
+        "method": "PATCH",
+        "path": "/search?q=hello",
+        "wire_hex": "5041544348202f7365617263683f713d68656c6c6f20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206939307679746f33657477620d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "PATCH",
+          "target": "/search?q=hello",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "i90vyto3etwb"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "PATCH",
+          "target": "/search?q=hello",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "i90vyto3etwb"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-5",
+        "method": "OPTIONS",
+        "path": "/api/v1/users",
+        "wire_hex": "4f5054494f4e53202f6170692f76312f757365727320485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a207679746f33657477627568770d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "OPTIONS",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "vyto3etwbuhw"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "OPTIONS",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "vyto3etwbuhw"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-6",
+        "method": "HEAD",
+        "path": "/index.html",
+        "wire_hex": "48454144202f696e6465782e68746d6c20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206f33657477627568776a6d390d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "HEAD",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "o3etwbuhwjm9"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "HEAD",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "o3etwbuhwjm9"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-7",
+        "method": "PATCH",
+        "path": "/data/42",
+        "wire_hex": "5041544348202f646174612f343220485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a207477627568776a6d396b37360d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "PATCH",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "twbuhwjm9k76"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "PATCH",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "twbuhwjm9k76"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-8",
+        "method": "HEAD",
+        "path": "/index.html",
+        "wire_hex": "48454144202f696e6465782e68746d6c20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a207568776a6d396b37366c67660d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "HEAD",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "uhwjm9k76lgf"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "HEAD",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "uhwjm9k76lgf"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-9",
+        "method": "OPTIONS",
+        "path": "/data/42",
+        "wire_hex": "4f5054494f4e53202f646174612f343220485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206a6d396b37366c6766756c630d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "OPTIONS",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "jm9k76lgfulc"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "OPTIONS",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "jm9k76lgfulc"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-10",
+        "method": "PUT",
+        "path": "/a/b/c/d",
+        "wire_hex": "505554202f612f622f632f6420485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206b37366c6766756c637279680d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "PUT",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "k76lgfulcryh"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "PUT",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "k76lgfulcryh"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-11",
+        "method": "PUT",
+        "path": "/api/v1/users",
+        "wire_hex": "505554202f6170692f76312f757365727320485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206c6766756c637279686b6e750d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "PUT",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "lgfulcryhknu"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "PUT",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "lgfulcryhknu"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-12",
+        "method": "POST",
+        "path": "/a/b/c/d",
+        "wire_hex": "504f5354202f612f622f632f6420485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a20756c637279686b6e7574676e0d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "ulcryhknutgn"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "ulcryhknutgn"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-13",
+        "method": "POST",
+        "path": "/api/v1/users",
+        "wire_hex": "504f5354202f6170692f76312f757365727320485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a207279686b6e7574676e6139340d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "ryhknutgna94"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "ryhknutgna94"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-14",
+        "method": "POST",
+        "path": "/index.html",
+        "wire_hex": "504f5354202f696e6465782e68746d6c20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206b6e7574676e6139346a366c0d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "knutgna94j6l"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "knutgna94j6l"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-15",
+        "method": "GET",
+        "path": "/api/v1/users",
+        "wire_hex": "474554202f6170692f76312f757365727320485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a2074676e6139346a366c3072320d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "GET",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "tgna94j6l0r2"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "GET",
+          "target": "/api/v1/users",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "tgna94j6l0r2"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-16",
+        "method": "POST",
+        "path": "/index.html",
+        "wire_hex": "504f5354202f696e6465782e68746d6c20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206139346a366c30723270736e0d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "a94j6l0r2psn"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/index.html",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "a94j6l0r2psn"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-17",
+        "method": "GET",
+        "path": "/",
+        "wire_hex": "474554202f20485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a206a366c30723270736e3231380d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "GET",
+          "target": "/",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "j6l0r2psn218"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "GET",
+          "target": "/",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "j6l0r2psn218"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-18",
+        "method": "POST",
+        "path": "/a/b/c/d",
+        "wire_hex": "504f5354202f612f622f632f6420485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a2030723270736e3231386e36740d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "0r2psn218n6t"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "POST",
+          "target": "/a/b/c/d",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "0r2psn218n6t"
+            ]
+          ],
+          "body_hex": ""
+        }
+      },
+      {
+        "id": "rand-19",
+        "method": "GET",
+        "path": "/data/42",
+        "wire_hex": "474554202f646174612f343220485454502f312e310d0a486f73743a20746573742e6578616d706c652e636f6d0d0a582d52616e643a2070736e3231386e36743472690d0a0d0a",
+        "h11": {
+          "ok": true,
+          "error": null,
+          "method": "GET",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "host",
+              "test.example.com"
+            ],
+            [
+              "x-rand",
+              "psn218n6t4ri"
+            ]
+          ],
+          "body_hex": ""
+        },
+        "httptools": {
+          "ok": true,
+          "error": null,
+          "method": "GET",
+          "target": "/data/42",
+          "version": "1.1",
+          "headers": [
+            [
+              "Host",
+              "test.example.com"
+            ],
+            [
+              "X-Rand",
+              "psn218n6t4ri"
+            ]
+          ],
+          "body_hex": ""
+        }
+      }
+    ]
+  }
+}

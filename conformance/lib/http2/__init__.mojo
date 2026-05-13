@@ -45,18 +45,11 @@ from src.h2.hpack import HpackEncoder, HpackDecoder, HpackConfig
 from src.h2.hpack_huffman import HuffmanCodec
 from src.h2.hpack_integer import encode_integer, decode_integer
 from src.h2.hpack_table import StaticTable, DynamicTable
-from .oracles import (
-    decode_frame_with_hyperframe,
-    hpack_decode_with_python,
-    hpack_encode_with_python,
-    hpack_story_decode_with_python,
-    hpack_story_encode_with_python,
-    h2_server_receive,
-    h2_client_receive,
-    h2_ping_scenario,
-    h2_roundtrip,
-    h2_stream_data_scenario,
-)
+from .oracles import h2_roundtrip
+# Note: the bulk of the live h2 / hpack / hyperframe oracle wrappers were
+# pruned as of deps-enhancement §3.3. Only `h2_roundtrip` remains, used by
+# tests/test_h2_stream.mojo. See conformance/scripts/oracle_h1_h2_states.py
+# for the pre-materialization pipeline that replaced the others.
 from src.h2.payloads import (
     DataPayload,
     decode_data_payload,

@@ -1,24 +1,16 @@
 # conformance/tests/test_h1_response_cross.mojo
 #
 # HC-2a: Three-way cross-validation for response parsing.
-# For accept vectors, all three parsers must agree on status_code, reason,
-# version, headers, body.  For reject vectors, our parser must reject;
-# oracle disagreements are logged but not failures.
+#
+# As of §3.3 of the dependency-enhancement plan, h11 and httptools are no
+# longer imported at test runtime. Oracle outputs are pre-materialized into
+# conformance/vectors/rfc9112/h11_response_states.json by
+# conformance/scripts/oracle_h1_h2_states.py and loaded here.
 from lib.test_util import load_vectors, hex_decode, assert_true, assert_equal
 from lib.http1.types import ParseConfig, ParsedResponse
 from lib.http1.response import parse_response
-from lib.http1.oracles import parse_response_with_h11 as oracle_h11
-from lib.http1.oracles import parse_response_with_httptools as oracle_httptools
+from lib.stateful_vectors import load_states, py_has_key, py_field_str, py_field_int, py_field_bool
 from python import Python, PythonObject
-
-
-def _has_key(obj: PythonObject, key: String) -> Bool:
-    """Check if a Python dict has a given key."""
-    try:
-        var builtins = Python.import_module("builtins")
-        return Bool(builtins.bool(key in obj))
-    except:
-        return False
 
 
 def _iequals(a: String, b: String) -> Bool:
@@ -39,69 +31,27 @@ def _iequals(a: String, b: String) -> Bool:
     return True
 
 
-def _oracle_error(oracle: PythonObject) -> String:
-    """Return the error string from an oracle result, or empty if no error."""
-    try:
-        if _has_key(oracle, "error"):
-            var err = oracle["error"]
-            var builtins = Python.import_module("builtins")
-            if Bool(builtins.bool(err is builtins.None)):
-                return String("")
-            return String(err)
-        return String("")
-    except:
-        return String("(failed to read oracle error)")
-
-
-def _oracle_field(oracle: PythonObject, key: String) -> String:
-    """Read a string field from an oracle dict, return empty if None."""
-    try:
-        if not _has_key(oracle, key):
-            return String("")
-        var val = oracle[key]
-        var builtins = Python.import_module("builtins")
-        if Bool(builtins.bool(val is builtins.None)):
-            return String("")
-        return String(val)
-    except:
-        return String("")
-
-
-def _oracle_int_field(oracle: PythonObject, key: String) -> Int:
-    """Read an int field from an oracle dict, return -1 if None."""
-    try:
-        if not _has_key(oracle, key):
-            return -1
-        var val = oracle[key]
-        var builtins = Python.import_module("builtins")
-        if Bool(builtins.bool(val is builtins.None)):
-            return -1
-        return Int(py=val)
-    except:
-        return -1
+def _hex_to_bytes(s: String) raises -> List[UInt8]:
+    return hex_decode(s)
 
 
 def _oracle_header_count(oracle: PythonObject) raises -> Int:
-    """Return number of headers in oracle result."""
     var builtins = Python.import_module("builtins")
-    if not _has_key(oracle, "headers"):
+    if not py_has_key(oracle, "headers"):
         return 0
     return Int(py=builtins.len(oracle["headers"]))
 
 
-def _oracle_body_bytes(oracle: PythonObject) -> List[UInt8]:
-    """Extract body bytes from oracle result."""
+def _oracle_body_from_hex(oracle: PythonObject) -> List[UInt8]:
+    """Extract body bytes from oracle result (body_hex field)."""
     var result = List[UInt8]()
     try:
-        if not _has_key(oracle, "body"):
+        if not py_has_key(oracle, "body_hex"):
             return result^
-        var body = oracle["body"]
-        var builtins = Python.import_module("builtins")
-        if Bool(builtins.bool(body is builtins.None)):
+        var body_hex = py_field_str(oracle, "body_hex")
+        if len(body_hex) == 0:
             return result^
-        var body_len = Int(py=builtins.len(body))
-        for i in range(body_len):
-            result.append(UInt8(Int(py=body[i])))
+        result = hex_decode(body_hex)
     except:
         pass
     return result^
@@ -113,11 +63,9 @@ def _check_response_oracle_agrees(
     oracle_name: String,
     vec_id: String,
 ) raises -> Bool:
-    """Check that an oracle's successful parse agrees with our parser.
-    Returns True if all fields match, False otherwise.
-    """
-    var err = _oracle_error(oracle)
-    if len(err) > 0:
+    """Check that an oracle's successful parse agrees with our parser."""
+    if not py_field_bool(oracle, "ok"):
+        var err = py_field_str(oracle, "error")
         print(
             "    WARN [" + vec_id + "] " + oracle_name
             + " rejected but we accepted (oracle error: " + err + ")"
@@ -126,8 +74,7 @@ def _check_response_oracle_agrees(
 
     var ok = True
 
-    # Status code
-    var o_status = _oracle_int_field(oracle, "status_code")
+    var o_status = py_field_int(oracle, "status_code")
     if result.status_code != o_status:
         print(
             "    WARN [" + vec_id + "] " + oracle_name
@@ -136,8 +83,7 @@ def _check_response_oracle_agrees(
         )
         ok = False
 
-    # Reason
-    var o_reason = _oracle_field(oracle, "reason")
+    var o_reason = py_field_str(oracle, "reason")
     if not _iequals(result.reason, o_reason):
         print(
             "    WARN [" + vec_id + "] " + oracle_name
@@ -145,8 +91,7 @@ def _check_response_oracle_agrees(
         )
         ok = False
 
-    # Version
-    var o_version = _oracle_field(oracle, "version")
+    var o_version = py_field_str(oracle, "version")
     if result.version != o_version:
         print(
             "    WARN [" + vec_id + "] " + oracle_name
@@ -154,7 +99,6 @@ def _check_response_oracle_agrees(
         )
         ok = False
 
-    # Headers -- compare count and name/value pairs (case-insensitive names)
     var o_hdr_count = _oracle_header_count(oracle)
     if len(result.headers) != o_hdr_count:
         print(
@@ -184,8 +128,7 @@ def _check_response_oracle_agrees(
                 )
                 ok = False
 
-    # Body
-    var o_body = _oracle_body_bytes(oracle)
+    var o_body = _oracle_body_from_hex(oracle)
     if len(result.body) != len(o_body):
         print(
             "    WARN [" + vec_id + "] " + oracle_name
@@ -210,8 +153,9 @@ def run_accept_response_cross(
     wire: List[UInt8],
     vec_id: String,
     request_method: String,
+    states: PythonObject,
 ) raises -> Int:
-    """Cross-validate an accept response vector. Returns number of agreement failures."""
+    """Cross-validate an accept response vector. Returns number of failures."""
     var config = ParseConfig()
     var result = parse_response(wire, request_method, config)
 
@@ -220,29 +164,23 @@ def run_accept_response_cross(
         vec_id + ": our parser rejected but expected accept: " + result.error,
     )
 
+    if not py_has_key(states, vec_id):
+        return 0
+
+    var entry = states[vec_id]
     var failures = 0
 
-    # h11 -- always cross-validate
-    var wire_h11 = List[UInt8]()
-    for i in range(len(wire)):
-        wire_h11.append(wire[i])
-
-    var h11_result = oracle_h11(wire_h11, request_method)
-    var h11_ok = _check_response_oracle_agrees(result, h11_result, "h11", vec_id)
+    var h11_oracle = entry["h11"]
+    var h11_ok = _check_response_oracle_agrees(result, h11_oracle, "h11", vec_id)
     if not h11_ok:
         failures += 1
 
-    # httptools -- skip for HEAD and CONNECT (cannot model request context)
     var skip_httptools = _iequals(request_method, "HEAD") or _iequals(request_method, "CONNECT")
-    if skip_httptools:
+    if skip_httptools or not py_has_key(entry, "httptools"):
         print("    INFO [" + vec_id + "] skipping httptools (request_method=" + request_method + ")")
     else:
-        var wire_ht = List[UInt8]()
-        for i in range(len(wire)):
-            wire_ht.append(wire[i])
-
-        var ht_result = oracle_httptools(wire_ht, request_method)
-        var ht_ok = _check_response_oracle_agrees(result, ht_result, "httptools", vec_id)
+        var ht_oracle = entry["httptools"]
+        var ht_ok = _check_response_oracle_agrees(result, ht_oracle, "httptools", vec_id)
         if not ht_ok:
             failures += 1
 
@@ -253,10 +191,9 @@ def run_reject_response_cross(
     wire: List[UInt8],
     vec_id: String,
     request_method: String,
+    states: PythonObject,
 ) raises -> Int:
-    """Cross-validate a reject response vector. Returns 0 always (reject
-    disagreements are warnings only since oracles are more lenient).
-    """
+    """Cross-validate a reject vector. Returns 0 always."""
     var config = ParseConfig()
     var result = parse_response(wire, request_method, config)
 
@@ -265,28 +202,21 @@ def run_reject_response_cross(
         vec_id + ": our parser accepted but expected reject",
     )
 
-    # Check oracles -- log if they disagree but don't fail
-    var wire_h11 = List[UInt8]()
-    for i in range(len(wire)):
-        wire_h11.append(wire[i])
+    if not py_has_key(states, vec_id):
+        return 0
 
-    var h11_result = oracle_h11(wire_h11, request_method)
-    var h11_err = _oracle_error(h11_result)
-    if len(h11_err) == 0:
+    var entry = states[vec_id]
+    var h11_oracle = entry["h11"]
+    if py_field_bool(h11_oracle, "ok"):
         print(
             "    INFO [" + vec_id + "] h11 ACCEPTS what we reject"
             + " (our error: " + result.error + ")"
         )
 
     var skip_httptools = _iequals(request_method, "HEAD") or _iequals(request_method, "CONNECT")
-    if not skip_httptools:
-        var wire_ht = List[UInt8]()
-        for i in range(len(wire)):
-            wire_ht.append(wire[i])
-
-        var ht_result = oracle_httptools(wire_ht, request_method)
-        var ht_err = _oracle_error(ht_result)
-        if len(ht_err) == 0:
+    if not skip_httptools and py_has_key(entry, "httptools"):
+        var ht_oracle = entry["httptools"]
+        if py_field_bool(ht_oracle, "ok"):
             print(
                 "    INFO [" + vec_id + "] httptools ACCEPTS what we reject"
                 + " (our error: " + result.error + ")"
@@ -296,7 +226,6 @@ def run_reject_response_cross(
 
 
 def main() raises:
-    # Sentinel assertion check
     var _sentinel_ok = False
     try:
         assert_true(False, "sentinel")
@@ -306,7 +235,8 @@ def main() raises:
 
     var builtins = Python.import_module("builtins")
 
-    # ===== Phase 1: Vector-based cross-validation =====
+    var states = load_states("vectors/rfc9112/h11_response_states.json")
+
     print("=== Phase 1: Vector-based response cross-validation ===")
 
     var files = List[String]()
@@ -333,18 +263,13 @@ def main() raises:
             var vec_id = String(v["id"])
             var wire_hex = String(v["input"]["wire_hex"])
 
-            # Skip dual-mode vectors
-            if _has_key(v, "mode_flag") or _has_key(v, "mode_flags"):
+            if py_has_key(v, "mode_flag") or py_has_key(v, "mode_flags"):
                 skipped_dual += 1
                 continue
-
-            # Skip deferred vectors
-            if _has_key(v, "deferred"):
+            if py_has_key(v, "deferred"):
                 skipped_dual += 1
                 continue
-
-            # Skip oracle disagreement / auto-corrected vectors
-            if _has_key(v, "oracle_disagreement") or _has_key(v, "auto_corrected"):
+            if py_has_key(v, "oracle_disagreement") or py_has_key(v, "auto_corrected"):
                 skipped_dual += 1
                 continue
 
@@ -352,21 +277,22 @@ def main() raises:
             var behavior = String(expected["behavior"])
             var wire = hex_decode(wire_hex)
 
-            # Extract request_method (default to GET)
             var request_method = String("GET")
-            if _has_key(v, "request_method"):
+            if py_has_key(v, "request_method"):
                 request_method = String(v["request_method"])
 
             total_vectors += 1
 
             if behavior == "accept":
-                var n_disagree = run_accept_response_cross(wire, vec_id, request_method)
+                var n_disagree = run_accept_response_cross(
+                    wire, vec_id, request_method, states
+                )
                 if n_disagree == 0:
                     accept_agree += 1
                 else:
                     accept_disagree += 1
             else:
-                _ = run_reject_response_cross(wire, vec_id, request_method)
+                _ = run_reject_response_cross(wire, vec_id, request_method, states)
                 reject_tested += 1
 
         print("  " + path + ": processed")
@@ -383,129 +309,37 @@ def main() raises:
 
     assert_true(total_vectors >= 20, "expected at least 20 non-dual vectors, got " + String(total_vectors))
 
-    # ===== Phase 2: Random response cross-validation =====
+    # ===== Phase 2: Pre-materialized random response cross-validation =====
     print("")
-    print("=== Phase 2: Random response cross-validation ===")
+    print("=== Phase 2: Pre-materialized random response cross-validation ===")
 
-    var time_mod = Python.import_module("time")
-    var ts = Int(py=time_mod.time_ns())
-
-    var status_codes = List[Int]()
-    status_codes.append(200)
-    status_codes.append(201)
-    status_codes.append(204)
-    status_codes.append(301)
-    status_codes.append(302)
-    status_codes.append(400)
-    status_codes.append(403)
-    status_codes.append(404)
-    status_codes.append(500)
-    status_codes.append(503)
-
-    var reasons = List[String]()
-    reasons.append("OK")
-    reasons.append("Created")
-    reasons.append("No Content")
-    reasons.append("Moved Permanently")
-    reasons.append("Found")
-    reasons.append("Bad Request")
-    reasons.append("Forbidden")
-    reasons.append("Not Found")
-    reasons.append("Internal Server Error")
-    reasons.append("Service Unavailable")
-
+    var rand_root = states["__random__"]
+    var rand_cases = rand_root["cases"]
+    var rand_total = Int(py=builtins.len(rand_cases))
     var rand_agree = 0
-    var rand_total = 20
-    var seed = ts
 
     for ri in range(rand_total):
-        # Pseudo-random selection
-        var sc_idx = seed % len(status_codes)
-        seed = (seed * 6364136223846793005 + 1442695040888963407) % (1 << 63)
-        var status_code = status_codes[sc_idx]
-        var reason = reasons[sc_idx]
+        var rc = rand_cases[ri]
+        var rid = String(rc["id"])
+        var wire = hex_decode(String(rc["wire_hex"]))
 
-        # 204 has no body per spec -- pick a different one for body test
-        # We want to test body parsing, so skip 204 and replace with 200
-        var has_body = True
-        if status_code == 204:
-            has_body = False
-
-        # Generate random header value
-        var charset = String("abcdefghijklmnopqrstuvwxyz0123456789")
-        var cs_bytes = charset.as_bytes()
-        var rand_val = String()
-        var rv = seed
-        for _ in range(12):
-            var idx = rv % len(cs_bytes)
-            rand_val += chr(Int(cs_bytes[idx]))
-            rv = (rv * 6364136223846793005 + 1442695040888963407) % (1 << 63)
-        seed = rv
-
-        # Generate random body
-        var rand_body = String()
-        if has_body:
-            var body_rv = seed
-            var body_len = 5 + (seed % 20)
-            seed = (seed * 6364136223846793005 + 1442695040888963407) % (1 << 63)
-            for _ in range(body_len):
-                var idx = body_rv % len(cs_bytes)
-                rand_body += chr(Int(cs_bytes[idx]))
-                body_rv = (body_rv * 6364136223846793005 + 1442695040888963407) % (1 << 63)
-            seed = body_rv
-
-        # Build wire bytes
-        var resp_str = String()
-        if has_body:
-            var body_cl = String(len(rand_body))
-            resp_str = (
-                "HTTP/1.1 " + String(status_code) + " " + reason + "\r\n"
-                + "Content-Length: " + body_cl + "\r\n"
-                + "X-Rand: " + rand_val + "\r\n"
-                + "\r\n"
-                + rand_body
-            )
-        else:
-            resp_str = (
-                "HTTP/1.1 " + String(status_code) + " " + reason + "\r\n"
-                + "X-Rand: " + rand_val + "\r\n"
-                + "\r\n"
-            )
-
-        var resp_bytes = resp_str.as_bytes()
-        var wire = List[UInt8]()
-        for bi in range(len(resp_bytes)):
-            wire.append(resp_bytes[bi])
-
-        var rid = "rand-resp-" + String(ri)
-
-        # Our parser
         var config = ParseConfig()
         var result = parse_response(wire, String("GET"), config)
         assert_true(result.ok(), rid + ": our parser rejected: " + result.error)
 
-        # h11
-        var wire_h11 = List[UInt8]()
-        for bi2 in range(len(wire)):
-            wire_h11.append(wire[bi2])
-        var h11_res = oracle_h11(wire_h11, String("GET"))
+        var h11_oracle = rc["h11"]
+        var ht_oracle = rc["httptools"]
 
-        # httptools (GET is fine -- no HEAD/CONNECT context issue)
-        var wire_ht = List[UInt8]()
-        for bi3 in range(len(wire)):
-            wire_ht.append(wire[bi3])
-        var ht_res = oracle_httptools(wire_ht, String("GET"))
-
-        var h11_ok = _check_response_oracle_agrees(result, h11_res, "h11", rid)
-        var ht_ok = _check_response_oracle_agrees(result, ht_res, "httptools", rid)
+        var h11_ok = _check_response_oracle_agrees(result, h11_oracle, "h11", rid)
+        var ht_ok = _check_response_oracle_agrees(result, ht_oracle, "httptools", rid)
 
         if h11_ok and ht_ok:
             rand_agree += 1
         else:
-            # Random well-formed responses must agree across all parsers
             assert_true(
                 False,
-                rid + ": random response disagreement (status=" + String(status_code) + ")",
+                rid + ": random response disagreement (status="
+                + String(rc["status_code"]) + ")",
             )
 
     print(
@@ -513,7 +347,6 @@ def main() raises:
         + " random responses: full three-way agreement"
     )
 
-    # ===== Summary =====
     print("")
     print(
         "test_h1_response_cross: "
