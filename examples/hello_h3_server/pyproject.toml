@@ -1,0 +1,20 @@
+[project]
+name = "mojo-net-example-hello-h3-server"
+version = "0.0.0"
+description = "hello_h3_server — minimal HTTP/3-over-QUIC server using mojo-net"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo-net",
+    "boucle",
+    "json-simd-mojo",
+    "mojox>=0.2",
+    "mojo-compiler==0.26.2.0",
+]
+
+[tool.uv.sources]
+mojo-net       = { path = "../.." }
+boucle         = { path = "../../../boucle" }
+json-simd-mojo = { path = "../../../json-simd-mojo" }
+
+[tool.uv]
+package = false
