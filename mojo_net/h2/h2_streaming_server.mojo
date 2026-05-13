@@ -469,6 +469,35 @@ struct H2StreamingServer(Movable):
         """True when the H2 connection has reached terminal state."""
         return self._conn.is_closed()
 
+    def resume_stream(mut self, sid: Int) raises:
+        """Externally resume a suspended per-stream coroutine.
+
+        Designed for proxy / pipelined-backend use cases where the streaming
+        handler suspends waiting on an out-of-band signal (e.g. a backend
+        response arriving on a different transport). The caller plants
+        whatever state the handler was waiting on (typically into a shared
+        struct it found via `extra_data`) and then calls this to wake the
+        coro. The streaming server then drains any response frames the coro
+        emitted and pushes them into the outbound buffer for the next
+        `drain()` call.
+
+        Safe to call when the stream does not exist or its coro is already
+        DONE — both are no-ops. Errors raised by the coro are converted to
+        RST_STREAM in `_resume_stream`, so this method only propagates
+        accounting errors from `_drain_responses` / `_flush_outbound`.
+        """
+        if not self._has_stream(sid):
+            return
+        self._resume_stream(sid)
+        self._drain_responses()
+        self._flush_outbound()
+
+    def has_stream(self, sid: Int) -> Bool:
+        """Public wrapper around `_has_stream` for external coordination
+        (e.g. a proxy keying its handle→stream map needs to check whether
+        the stream still exists before resuming)."""
+        return self._has_stream(sid)
+
     # --- Internal -----------------------------------------------------------
 
     def _has_stream(self, sid: Int) -> Bool:
