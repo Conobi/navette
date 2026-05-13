@@ -14,5 +14,7 @@ from .io_trait import Io
 from .io_uring import IoUring
 from .udp_io import UdpIo
 from .io_uring_udp import IoUringUdp
-from .udp_socket import udp_listener
-from .tcp_socket import tcp_listener
+from .sockaddr import SockAddr, sockaddr_ipv4, sockaddr_ipv6, parse_dotted_ipv4
+from .resolver import resolve_host, Resolver
+from .udp_socket import udp_listener, udp_connect
+from .tcp_socket import tcp_listener, tcp_connect

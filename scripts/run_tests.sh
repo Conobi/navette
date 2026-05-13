@@ -101,6 +101,7 @@ TESTS=(
     test_quic_profile
     test_quic_profile_wiring
     test_h3_udp_server
+    test_io_loopback
     test_ecn
     test_cc_cubic
     test_cc_pacing

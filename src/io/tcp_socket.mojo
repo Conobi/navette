@@ -1,25 +1,27 @@
-"""TCP socket factory for H1 / H2 servers.
+"""TCP socket factories for H1 / H2 servers and clients.
 
-Provides `tcp_listener(port, backlog)` returning an `OwnedHandle` for a
-TCP socket configured for an HTTP server: dual-stack IPv6
-(`IPV6_V6ONLY=0`), `SO_REUSEADDR + SO_REUSEPORT` (multi-worker
-safe), `SOCK_NONBLOCK + SOCK_CLOEXEC`, bound to `[::]:port`, and
-already in the LISTEN state.
+* `tcp_listener(port, backlog)` — dual-stack server-side `[::]:port`
+  socket: `IPV6_V6ONLY=0`, `SO_REUSEADDR + SO_REUSEPORT`,
+  `SOCK_NONBLOCK + SOCK_CLOEXEC`, in LISTEN state. Caller owns the
+  returned `OwnedHandle` and threads it into `H1TcpServer` /
+  `H2TcpServer`.
+* `tcp_connect(addr)` — blocking client-side connect. Picks `AF_INET`
+  or `AF_INET6` from the `SockAddr` tag and returns the connected
+  `OwnedHandle`. `SOCK_CLOEXEC` only (no `SOCK_NONBLOCK` — callers
+  using blocking send/recv get the simpler programming model).
 
 # Ownership
 
-The returned `OwnedHandle` owns the fd; its `__del__` calls
-`close(2)` when the handle goes out of scope. The io_uring loop
-holds raw fd values in submitted SQEs that outlive a single
-function call, so the listener MUST live at least as long as the
-loop's references. Hand the handle to your `H1TcpServer` /
-`H2TcpServer` via `__init__` so the server's lifetime governs the
-fd's lifetime.
+`OwnedHandle.__del__` calls `close(2)` when the handle drops. The
+io_uring loop holds raw fd values in submitted SQEs that outlive a
+single function call, so the listener MUST live at least as long
+as the loop's references. Pass via `^` into the server struct so
+its lifetime governs the fd's.
 
-Bench's `bench/h1_server.mojo` / `bench/h2_server.mojo` use
-`boucle.net.socket.Socket` directly (which isn't `Movable` so
-can't be returned from a factory). This library factory bypasses
-`Socket` and uses raw syscalls, mirroring `udp_listener`.
+For client use, hold the `OwnedHandle` for the duration of the
+request and call `.raw()` at every syscall site — Mojo's NLL will
+otherwise drop the handle after the first `.raw()` and close the
+fd out from under you (see `examples/fetch/main.mojo`).
 """
 
 from std.ffi import external_call
@@ -27,9 +29,12 @@ from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from boucle.handle import RawHandle, OwnedHandle
 
+from .sockaddr import SockAddr
+
 
 # Linux socket constants (private — wrap them so callers never see
 # raw level/optname/protocol pairs).
+comptime _AF_INET: Int32 = 2
 comptime _AF_INET6: Int32 = 10
 comptime _SOCK_STREAM: Int32 = 1
 comptime _SOCK_NONBLOCK: Int32 = 0x800
@@ -108,4 +113,33 @@ fn tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     if lrc < 0:
         raise "tcp_listener: listen() failed"
 
+    return handle^
+
+
+fn tcp_connect(addr: SockAddr) raises -> OwnedHandle:
+    """Open a blocking TCP socket and connect it to `addr`.
+
+    Picks `AF_INET` vs `AF_INET6` from the `SockAddr` tag. Socket flags
+    are `SOCK_STREAM | SOCK_CLOEXEC` only — no `SOCK_NONBLOCK`, so the
+    returned fd is suitable for direct blocking `send(2)` / `recv(2)`.
+    Callers wanting an io_uring-driven client should set non-blocking
+    themselves after connect.
+    """
+    var family = _AF_INET if addr.is_ipv4() else _AF_INET6
+    var fd = external_call["socket", Int32](
+        family, _SOCK_STREAM | _SOCK_CLOEXEC, Int32(0),
+    )
+    if fd < 0:
+        raise "tcp_connect: socket() failed"
+    var handle = OwnedHandle(raw=fd)
+
+    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
+    var n = addr.pack(buf)
+    var rc = external_call["connect", Int32](handle.raw(), buf, n)
+    buf.free()
+    if rc < 0:
+        raise (
+            "tcp_connect: connect(" + addr.to_string() + ":"
+            + String(addr.port()) + ") failed: rc=" + String(Int(rc))
+        )
     return handle^

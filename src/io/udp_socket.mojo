@@ -33,9 +33,12 @@ from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from boucle.handle import RawHandle, OwnedHandle
 
+from .sockaddr import SockAddr
+
 
 # Linux socket constants (kept private — wrap them here so callers
 # never see raw level/optname/protocol pairs).
+comptime _AF_INET: Int32 = 2
 comptime _AF_INET6: Int32 = 10
 comptime _SOCK_DGRAM: Int32 = 2
 comptime _SOCK_NONBLOCK: Int32 = 0x800
@@ -113,4 +116,35 @@ fn udp_listener(port: Int) raises -> OwnedHandle:
     if rc < 0:
         raise "udp_listener: bind() failed on port " + String(port)
 
+    return handle^
+
+
+fn udp_connect(addr: SockAddr) raises -> OwnedHandle:
+    """Open a blocking UDP socket "connected" to `addr`.
+
+    `connect(2)` on a datagram socket pins the peer address so
+    subsequent `send(2)` / `recv(2)` calls skip the per-call addr
+    argument and only deliver datagrams from that peer (unsolicited
+    traffic is dropped by the kernel). Picks `AF_INET` vs `AF_INET6`
+    from the `SockAddr` tag. Socket flags: `SOCK_DGRAM | SOCK_CLOEXEC`
+    (no `SOCK_NONBLOCK` — callers wanting non-blocking I/O set it
+    after connect).
+    """
+    var family = _AF_INET if addr.is_ipv4() else _AF_INET6
+    var fd = external_call["socket", Int32](
+        family, _SOCK_DGRAM | _SOCK_CLOEXEC, Int32(0),
+    )
+    if fd < 0:
+        raise "udp_connect: socket() failed"
+    var handle = OwnedHandle(raw=fd)
+
+    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
+    var n = addr.pack(buf)
+    var rc = external_call["connect", Int32](handle.raw(), buf, n)
+    buf.free()
+    if rc < 0:
+        raise (
+            "udp_connect: connect(" + addr.to_string() + ":"
+            + String(addr.port()) + ") failed: rc=" + String(Int(rc))
+        )
     return handle^
