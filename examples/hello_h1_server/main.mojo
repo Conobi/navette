@@ -9,9 +9,10 @@ Plaintext HTTP/1.1 on `[::]:8080` by default (override via
 
 # Build + run
 
-  $ mojo build -I . -I ../boucle -I ../json-simd-mojo \\
-         examples/hello_h1_server.mojo -o hello_h1_server
-  $ ./hello_h1_server
+  $ cd examples/hello_h1_server
+  $ uv sync
+  $ LD_LIBRARY_PATH=../../lib uv run mojox build main.mojo -o hello_h1_server
+  $ LD_LIBRARY_PATH=../../lib ./hello_h1_server
 
 # Test the running server
 
@@ -20,6 +21,7 @@ Plaintext HTTP/1.1 on `[::]:8080` by default (override via
 Expected: `HTTP/1.1 200 OK` with `Hello, H1!\\n` body.
 """
 
+from std.ffi import external_call
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
@@ -38,7 +40,28 @@ from mojo_net.http.headers import Headers
 from mojo_net.http.status import StatusCode
 from mojo_net.io.tcp_socket import tcp_listener
 
-from interop.file_io import getenv_opt
+
+fn _getenv_int(name: String, default: Int) -> Int:
+    """Read an integer environment variable; fall back to default if unset/invalid."""
+    var nbuf = _heap_alloc[UInt8](len(name) + 1)
+    var name_bytes = name.as_bytes()
+    for i in range(len(name_bytes)):
+        nbuf[i] = name_bytes[i]
+    nbuf[len(name_bytes)] = 0
+    var ptr_int = external_call["getenv", Int](nbuf)
+    nbuf.free()
+    if ptr_int == 0:
+        return default
+    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var s = String()
+    var i = 0
+    while ptr[i] != 0:
+        s += chr(Int(ptr[i]))
+        i += 1
+    try:
+        return atol(s)
+    except:
+        return default
 
 
 struct HelloHandler(StreamHandler):
@@ -89,10 +112,7 @@ fn make_hello_handler() raises -> HelloHandler:
 
 
 fn main() raises:
-    var port_env = getenv_opt(String("HELLO_H1_PORT"))
-    var port: Int = 8080
-    if port_env:
-        port = atol(port_env.value())
+    var port = _getenv_int(String("HELLO_H1_PORT"), 8080)
 
     print("hello_h1_server: binding [::]:" + String(port))
 
