@@ -1,45 +1,158 @@
-# librustls-mojo FFI symbol schema (§2.3 scaffolding — 2026-05-13)
+# librustls-mojo FFI symbol schema (§2.3 - 2026-05-13)
 #
-# Goal: single source of truth for the rlsm_* symbols that cross the
-# Rust ↔ Mojo boundary. Today the Rust `#[no_mangle] extern "C" fn`
-# declarations live across crates/librustls-mojo/src/{tcp,decode,config,
-# handles,quic_hs,quic,error,lib}.rs and are mirrored by hand-written
-# `OwnedDLHandle.get_function_unsafe[...]` calls in
-# src/tls/lib.mojo + src/http/decode.mojo.
+# Single source of truth for the rlsm_* symbols that cross the
+# Rust <-> Mojo boundary. The `#[no_mangle] extern "C" fn` declarations
+# live across crates/librustls-mojo/src/{tcp,decode,config,handles,
+# quic_hs,quic,error,lib}.rs and are mirrored by hand-written
+# `OwnedDLHandle.call[...]` blocks in src/tls/{lib,config,connection}.mojo
+# and src/http/decode.mojo.
 #
-# This schema lets scripts/gen_rlsm_bindings.py emit the Mojo binding
-# module (and, in a follow-up, the Rust extern stubs too). Drift
-# between Rust source and this file is asserted by
-# scripts/check_integrations.sh.
-#
-# Status: scaffolding only. Full migration of ~50 symbols is a separable
-# spike — see plans/2026-05-13-deps-enhancement.md §2.3. The three
-# entries below are exemplars covering the type-surface boundaries:
-#   - simple primitive in/out  (rlsm_noop, rlsm_client_config_new)
-#   - handle + byte-buffer in  (rlsm_config_set_alpn_protocols)
+# scripts/gen_rlsm_bindings.py consumes this file to emit
+# src/tls/_rlsm_bindings.mojo. Drift between Rust source and this file
+# is asserted by scripts/check_integrations.sh (§2.3).
 #
 # Type mapping conventions:
-#   Rust i32                  ↔ Mojo Int32
-#   Rust usize                ↔ Mojo Int
-#   Rust *const u8 / *mut u8  ↔ Mojo UnsafePointer[UInt8]
-#   Rust handle pointers      ↔ Mojo UnsafePointer[NoneType] (opaque)
+#   Rust i32                       <-> Mojo Int32
+#   Rust i64                       <-> Mojo Int64
+#   Rust u8                        <-> Mojo UInt8
+#   Rust u32                       <-> Mojo UInt32
+#   Rust u64                       <-> Mojo UInt64
+#   Rust usize                     <-> Mojo Int
+#   Rust *const u8 / *mut u8       <-> Mojo UnsafePointer[UInt8]
+#   Rust *const i32 / *mut i32     <-> Mojo UnsafePointer[Int32]
+#   Rust *const u64 / *mut u64     <-> Mojo UnsafePointer[UInt64]
+#   Rust *const *mut u8            <-> Mojo UnsafePointer[UnsafePointer[UInt8]]
+#   Rust *mut <opaque struct>      <-> Mojo UnsafePointer[NoneType]
 
 schema_version = 1
 
+# ----------------------------------------------------------------------------
+# lib.rs - microbench stub
+# ----------------------------------------------------------------------------
+
 [[symbol]]
 name = "rlsm_noop"
-description = "Test stub — returns 0."
+description = "Test stub - returns 0."
+rust_args = []
+rust_ret  = "i32"
+mojo_args = []
+mojo_ret  = "Int32"
+
+# ----------------------------------------------------------------------------
+# error.rs - thread-local last error
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "rlsm_last_error"
+description = "Copy the last error message into out_buf (NUL-terminated)."
+rust_args = ["*mut u8", "i32"]
+rust_args_names = ["out_buf", "buf_len"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+# ----------------------------------------------------------------------------
+# decode.rs - streaming Content-Encoding decoders (gzip, brotli)
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "rlsm_gzip_init"
+description = "Allocate a GzipState. Returns an opaque pointer; free with rlsm_gzip_free."
+rust_args = []
+rust_ret  = "*mut GzipState"
+mojo_args = []
+mojo_ret  = "UnsafePointer[NoneType]"
+
+[[symbol]]
+name = "rlsm_gzip_feed"
+description = "Feed input bytes and write decompressed output. Returns bytes written or -1."
+rust_args = ["*mut GzipState", "*const u8", "usize", "*mut u8", "usize"]
+rust_args_names = ["state", "in_ptr", "in_len", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "rlsm_gzip_finish"
+description = "Drain the final decompressed bytes from the gzip state."
+rust_args = ["*mut GzipState", "*mut u8", "usize"]
+rust_args_names = ["state", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "rlsm_gzip_free"
+description = "Free a GzipState previously returned by rlsm_gzip_init."
+rust_args = ["*mut GzipState"]
+rust_args_names = ["state"]
+rust_ret  = "void"
+mojo_args = ["UnsafePointer[NoneType]"]
+mojo_ret  = "None"
+
+[[symbol]]
+name = "rlsm_br_init"
+description = "Allocate a BrotliState. Returns an opaque pointer; free with rlsm_br_free."
+rust_args = []
+rust_ret  = "*mut BrotliState"
+mojo_args = []
+mojo_ret  = "UnsafePointer[NoneType]"
+
+[[symbol]]
+name = "rlsm_br_feed"
+description = "Feed input bytes and write decompressed output. Returns bytes written or -1."
+rust_args = ["*mut BrotliState", "*const u8", "usize", "*mut u8", "usize"]
+rust_args_names = ["state", "in_ptr", "in_len", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "rlsm_br_finish"
+description = "Drain the final decompressed bytes from the brotli state."
+rust_args = ["*mut BrotliState", "*mut u8", "usize"]
+rust_args_names = ["state", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "rlsm_br_free"
+description = "Free a BrotliState previously returned by rlsm_br_init."
+rust_args = ["*mut BrotliState"]
+rust_args_names = ["state"]
+rust_ret  = "void"
+mojo_args = ["UnsafePointer[NoneType]"]
+mojo_ret  = "None"
+
+# ----------------------------------------------------------------------------
+# config.rs - TLS config handle table
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "rlsm_client_config_new"
+description = "Allocate a default rustls client config (webpki-roots) and return its handle."
 rust_args = []
 rust_ret  = "i32"
 mojo_args = []
 mojo_ret  = "Int32"
 
 [[symbol]]
-name = "rlsm_client_config_new"
-description = "Allocate a default rustls client config and return its handle."
-rust_args = []
+name = "rlsm_server_config_new"
+description = "Create a TLS server config from PEM cert chain and PEM private key."
+rust_args = ["*const u8", "i32", "*const u8", "i32"]
+rust_args_names = ["cert_pem", "cert_len", "key_pem", "key_len"]
 rust_ret  = "i32"
-mojo_args = []
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_config_free"
+description = "Free a config handle."
+rust_args = ["i32"]
+rust_args_names = ["handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
 mojo_ret  = "Int32"
 
 [[symbol]]
@@ -49,4 +162,402 @@ rust_args = ["i32", "*const u8", "i32"]
 rust_args_names = ["config_handle", "protocols", "protocols_len"]
 rust_ret  = "i32"
 mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+# ----------------------------------------------------------------------------
+# tcp.rs - TCP-TLS connection handles
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "rlsm_client_config_new_insecure"
+description = "Create a TLS client config accepting any server cert (feature=insecure)."
+rust_args = []
+rust_ret  = "i32"
+mojo_args = []
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_client_new"
+description = "Create a new TLS client connection bound to a config handle."
+rust_args = ["i32", "*const u8", "i32"]
+rust_args_names = ["config_handle", "server_name_ptr", "server_name_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_server_new"
+description = "Create a new TLS server connection bound to a config handle."
+rust_args = ["i32"]
+rust_args_names = ["config_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_free"
+description = "Free a TLS connection handle."
+rust_args = ["i32"]
+rust_args_names = ["handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_read_tls"
+description = "Feed ciphertext into the TLS state machine."
+rust_args = ["i32", "*const u8", "i32"]
+rust_args_names = ["handle", "ciphertext_ptr", "ct_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_write_tls"
+description = "Drain ciphertext from rustls into out_buf for transmission."
+rust_args = ["i32", "*mut u8", "i32"]
+rust_args_names = ["handle", "out_buf", "buf_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_read_plaintext"
+description = "Read decrypted application data from the TLS connection."
+rust_args = ["i32", "*mut u8", "i32"]
+rust_args_names = ["handle", "out_buf", "buf_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_write_plaintext"
+description = "Write application data into the TLS connection to be encrypted."
+rust_args = ["i32", "*const u8", "i32"]
+rust_args_names = ["handle", "data_ptr", "data_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_is_handshaking"
+description = "Returns 1 if the TLS handshake is in progress, 0 if complete, -1 on error."
+rust_args = ["i32"]
+rust_args_names = ["handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_alpn"
+description = "Copy negotiated ALPN protocol identifier into out_buf."
+rust_args = ["i32", "*mut u8", "i32"]
+rust_args_names = ["handle", "out_buf", "buf_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+# ----------------------------------------------------------------------------
+# quic.rs - Initial keys, packet seal/open, header protection, AES-GCM-128, HMAC
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "rlsm_initial_keys"
+description = "Derive QUIC Initial keys and return a KEYS_TABLE handle."
+rust_args = ["i32", "*const u8", "i32", "i32"]
+rust_args_names = ["version", "dcid_ptr", "dcid_len", "is_client"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_initial_keys_raw"
+description = "Derive raw QUIC Initial key material (key, IV, HP key)."
+rust_args = ["i32", "*const u8", "i32", "i32", "*mut u8", "*mut i32", "*mut u8", "*mut i32", "*mut u8", "*mut i32"]
+rust_args_names = ["version", "dcid_ptr", "dcid_len", "is_client", "out_key", "out_key_len", "out_iv", "out_iv_len", "out_hp", "out_hp_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "Int32", "UnsafePointer[UInt8]", "UnsafePointer[Int32]", "UnsafePointer[UInt8]", "UnsafePointer[Int32]", "UnsafePointer[UInt8]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_local_encrypt"
+description = "Encrypt a QUIC packet payload in place using local (sending) keys."
+rust_args = ["i32", "u64", "*const u8", "i32", "*mut u8", "i32", "i32"]
+rust_args_names = ["keys_handle", "packet_number", "header_ptr", "header_len", "payload_ptr", "payload_len", "buf_capacity"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UInt64", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_remote_decrypt"
+description = "Decrypt a QUIC packet payload in place using remote (receiving) keys."
+rust_args = ["i32", "u64", "*const u8", "i32", "*mut u8", "i32"]
+rust_args_names = ["keys_handle", "packet_number", "header_ptr", "header_len", "payload_ptr", "payload_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UInt64", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_local_header_protect"
+description = "Apply QUIC header protection using local (sending) header keys."
+rust_args = ["i32", "*const u8", "i32", "*mut u8", "*mut u8", "i32"]
+rust_args_names = ["keys_handle", "sample_ptr", "sample_len", "first_byte_ptr", "pn_bytes_ptr", "pn_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_remote_header_unprotect"
+description = "Remove QUIC header protection using remote (receiving) header keys."
+rust_args = ["i32", "*const u8", "i32", "*mut u8", "*mut u8", "i32"]
+rust_args_names = ["keys_handle", "sample_ptr", "sample_len", "first_byte_ptr", "pn_bytes_ptr", "pn_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_batch_header_unprotect"
+description = "Batch header unprotection for N packets using the same keys."
+rust_args = ["i32", "i32", "*const *mut u8", "*const i32", "*const i32", "*mut u8", "*mut i32"]
+rust_args_names = ["keys_handle", "count", "packet_ptrs", "packet_lens", "pn_offsets", "out_first_bytes", "out_pn_lengths"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "Int32", "UnsafePointer[UnsafePointer[UInt8]]", "UnsafePointer[Int32]", "UnsafePointer[Int32]", "UnsafePointer[UInt8]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_batch_decrypt"
+description = "Batch AEAD decryption for N packets using the same keys."
+rust_args = ["i32", "i32", "*const u64", "*const *mut u8", "*const i32", "*const i32", "*mut i32"]
+rust_args_names = ["keys_handle", "count", "packet_numbers", "packet_ptrs", "packet_lens", "header_lens", "out_plaintext_lens"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "Int32", "UnsafePointer[UInt64]", "UnsafePointer[UnsafePointer[UInt8]]", "UnsafePointer[Int32]", "UnsafePointer[Int32]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_batch_header_protect"
+description = "Batch header protection for N packets in the send direction."
+rust_args = ["i32", "i32", "*const *mut u8", "*const i32", "*const i32", "*const i32", "*mut i32"]
+rust_args_names = ["keys_handle", "count", "packet_ptrs", "packet_lens", "pn_offsets", "pn_lengths", "out_results"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "Int32", "UnsafePointer[UnsafePointer[UInt8]]", "UnsafePointer[Int32]", "UnsafePointer[Int32]", "UnsafePointer[Int32]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_batch_encrypt"
+description = "Batch AEAD encryption for N packets in the send direction."
+rust_args = ["i32", "i32", "*const u64", "*const *mut u8", "*const i32", "*const i32", "*const i32", "*mut i32"]
+rust_args_names = ["keys_handle", "count", "packet_numbers", "packet_ptrs", "header_lens", "payload_lens", "buf_capacities", "out_ciphertext_lens"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "Int32", "UnsafePointer[UInt64]", "UnsafePointer[UnsafePointer[UInt8]]", "UnsafePointer[Int32]", "UnsafePointer[Int32]", "UnsafePointer[Int32]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_tag_len"
+description = "Return the AEAD tag length for the local packet keys, or -1 on error."
+rust_args = ["i32"]
+rust_args_names = ["keys_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_keys_free"
+description = "Free a keys handle."
+rust_args = ["i32"]
+rust_args_names = ["keys_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_aes_gcm_128_seal"
+description = "Encrypt with raw AES-128-GCM. Output is ciphertext || 16-byte tag."
+rust_args = ["*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "*mut u8", "*mut i32"]
+rust_args_names = ["key_ptr", "key_len", "nonce_ptr", "nonce_len", "aad_ptr", "aad_len", "plaintext_ptr", "plaintext_len", "out_ptr", "out_len_ptr"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_aes_gcm_128_open"
+description = "Decrypt with raw AES-128-GCM. ciphertext includes the 16-byte tag."
+rust_args = ["*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "*mut u8", "*mut i32"]
+rust_args_names = ["key_ptr", "key_len", "nonce_ptr", "nonce_len", "aad_ptr", "aad_len", "ciphertext_ptr", "ciphertext_len", "out_ptr", "out_len_ptr"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_hmac_sha256"
+description = "Compute HMAC-SHA256(key, msg) and write the 32-byte tag to out_ptr."
+rust_args = ["*const u8", "i32", "*const u8", "i32", "*mut u8"]
+rust_args_names = ["key_ptr", "key_len", "msg_ptr", "msg_len", "out_ptr"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]"]
+mojo_ret  = "Int32"
+
+# ----------------------------------------------------------------------------
+# quic_hs.rs - QUIC TLS handshake (config + connection lifecycle)
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "rlsm_quic_server_config_new"
+description = "Create a QUIC server TLS config (TLS 1.3 only) with cert + key + ALPN."
+rust_args = ["*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "i32", "*mut i32"]
+rust_args_names = ["cert_pem", "cert_len", "key_pem", "key_len", "alpn_ptr", "alpn_len", "max_early_data", "out_handle"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_client_config_new"
+description = "Create a QUIC client TLS config (TLS 1.3, webpki-roots) with ALPN."
+rust_args = ["*const u8", "i32", "*mut i32"]
+rust_args_names = ["alpn_ptr", "alpn_len", "out_handle"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_client_config_new_insecure"
+description = "Create a QUIC client config accepting any server cert (feature=insecure)."
+rust_args = ["*const u8", "i32", "*mut i32"]
+rust_args_names = ["alpn_ptr", "alpn_len", "out_handle"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_client_config_with_ca"
+description = "Create a QUIC client config trusting a single CA cert PEM (test helper)."
+rust_args = ["*const u8", "i32", "*const u8", "i32", "*mut i32"]
+rust_args_names = ["ca_pem", "ca_len", "alpn_ptr", "alpn_len", "out_handle"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_client_conn_new"
+description = "Create a new QUIC client connection with SNI and transport parameters."
+rust_args = ["i32", "i32", "*const u8", "i32", "*const u8", "i32", "*mut i32"]
+rust_args_names = ["config_handle", "version", "server_name", "name_len", "transport_params", "tp_len", "out_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_server_conn_new"
+description = "Create a new QUIC server connection with transport parameters."
+rust_args = ["i32", "i32", "*const u8", "i32", "*mut i32"]
+rust_args_names = ["config_handle", "version", "transport_params", "tp_len", "out_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_free"
+description = "Free a QUIC connection handle. Drops any buffered pending key change."
+rust_args = ["i32"]
+rust_args_names = ["conn_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_write_hs"
+description = "Drain outgoing TLS handshake bytes; reports any pending key-change kind."
+rust_args = ["i32", "*mut u8", "i32", "*mut i32", "*mut u8"]
+rust_args_names = ["conn_handle", "out_buf", "out_capacity", "out_written", "out_key_change_type"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]", "UnsafePointer[UInt8]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_read_hs"
+description = "Feed CRYPTO frame payload into the QUIC TLS state machine."
+rust_args = ["i32", "*const u8", "i32", "*mut u64", "*mut u64"]
+rust_args_names = ["conn_handle", "data", "len", "out_state_machine_us", "out_handle_lookup_us"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt64]", "UnsafePointer[UInt64]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_alert"
+description = "Return the cached TLS AlertDescription code from the last read_hs failure."
+rust_args = ["i32"]
+rust_args_names = ["conn_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_take_keys"
+description = "Move the pending QUIC Keys into KEYS_TABLE; returns new keys handle."
+rust_args = ["i32", "*mut i32"]
+rust_args_names = ["conn_handle", "out_keys_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_take_next_keys"
+description = "Derive next 1-RTT packet keys from stored Secrets (RFC 9001 §6)."
+rust_args = ["i32", "*mut i32"]
+rust_args_names = ["conn_handle", "out_keys_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_is_handshaking"
+description = "Returns 1 if handshaking, 0 if complete, -1 on invalid handle."
+rust_args = ["i32"]
+rust_args_names = ["conn_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_handshake_kind"
+description = "Read the handshake kind for a server connection (Full/Resumed/HRR)."
+rust_args = ["i32"]
+rust_args_names = ["conn_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_transport_params"
+description = "Copy peer's transport parameters into out_buf."
+rust_args = ["i32", "*mut u8", "i32", "*mut i32"]
+rust_args_names = ["conn_handle", "out_buf", "out_capacity", "out_written"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_alpn"
+description = "Copy negotiated ALPN bytes into out_buf."
+rust_args = ["i32", "*mut u8", "i32", "*mut i32"]
+rust_args_names = ["conn_handle", "out_buf", "out_capacity", "out_written"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_zero_rtt_keys"
+description = "Write client-side 0-RTT DirectionalKeys into KEYS_TABLE if available."
+rust_args = ["i32", "*mut i32"]
+rust_args_names = ["conn_handle", "out_keys_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[Int32]"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_conn_is_early_data_accepted"
+description = "Returns 1 if server accepted early data (0-RTT), 0 otherwise, -1 on error."
+rust_args = ["i32"]
+rust_args_names = ["conn_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
 mojo_ret  = "Int32"
