@@ -14,8 +14,8 @@ Demonstrates:
   $ ./scripts/gen_test_certs.sh   # one-time: populate repo-root certs/
   $ cd examples/hello_h2_server
   $ uv sync
-  $ LD_LIBRARY_PATH=../../lib uv run mojox build main.mojo -o hello_h2_server
-  $ LD_LIBRARY_PATH=../../lib ./hello_h2_server
+  $ uv run mojox build main.mojo -o hello_h2_server
+  $ ./hello_h2_server
 
 # Test the running server
 
