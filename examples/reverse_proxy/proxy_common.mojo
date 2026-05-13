@@ -111,6 +111,202 @@ struct PendingSubmit(Copyable, Movable):
 
 
 # ---------------------------------------------------------------------------
+# ConnSendState — per-connection send/recv buffer bundle
+# ---------------------------------------------------------------------------
+#
+# Bundles the per-direction send buffers, "pending" overflow queues, and
+# in-flight flags that the H1 (and later H2) free-function handlers need
+# to mutate. Without this bundle, each handler would take ~10 individual
+# `mut` parameters for these fields; aggregating them keeps signatures
+# tractable until Task 3 introduces `ProxyConnection` to subsume the
+# whole connection record.
+
+
+struct ConnSendState(Movable):
+    """Per-direction send/recv buffers, overflow queues, in-flight flags.
+
+    Both H1 and H2 free-function handlers take `mut send_state: ConnSendState`
+    instead of ~10 individual `mut` parameters for the same fields.
+    """
+
+    var client_recv_buf: List[UInt8]
+    var backend_recv_buf: List[UInt8]
+    var client_send_buf: List[UInt8]
+    var backend_send_buf: List[UInt8]
+    var client_send_pending: List[UInt8]
+    var backend_send_pending: List[UInt8]
+    var client_send_in_flight: Bool
+    var backend_send_in_flight: Bool
+    var client_recv_in_flight: Bool
+    var backend_recv_in_flight: Bool
+
+    def __init__(out self):
+        self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
+        for _ in range(_RECV_BUF_SIZE):
+            self.client_recv_buf.append(0)
+        self.backend_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
+        for _ in range(_RECV_BUF_SIZE):
+            self.backend_recv_buf.append(0)
+        self.client_send_buf = List[UInt8]()
+        self.backend_send_buf = List[UInt8]()
+        self.client_send_pending = List[UInt8]()
+        self.backend_send_pending = List[UInt8]()
+        self.client_send_in_flight = False
+        self.backend_send_in_flight = False
+        self.client_recv_in_flight = False
+        self.backend_recv_in_flight = False
+
+    def __init__(out self, *, deinit take: Self):
+        self.client_recv_buf = take.client_recv_buf^
+        self.backend_recv_buf = take.backend_recv_buf^
+        self.client_send_buf = take.client_send_buf^
+        self.backend_send_buf = take.backend_send_buf^
+        self.client_send_pending = take.client_send_pending^
+        self.backend_send_pending = take.backend_send_pending^
+        self.client_send_in_flight = take.client_send_in_flight
+        self.backend_send_in_flight = take.backend_send_in_flight
+        self.client_recv_in_flight = take.client_recv_in_flight
+        self.backend_recv_in_flight = take.backend_recv_in_flight
+
+
+# ---------------------------------------------------------------------------
+# Send-side queueing helpers (free functions over ConnSendState)
+# ---------------------------------------------------------------------------
+
+
+def queue_client_recv(
+    mut send_state: ConnSendState,
+    mut out_submits: List[PendingSubmit],
+    client_fd: Int32,
+    conn_id: UInt64,
+):
+    """Queue a CLIENT_RECV op if no client recv is currently in flight."""
+    if send_state.client_recv_in_flight:
+        return
+    send_state.client_recv_in_flight = True
+    out_submits.append(
+        PendingSubmit(
+            kind=SUBMIT_RECV, fd=client_fd, conn_id=conn_id, op_kind=OP_CLIENT_RECV,
+        )
+    )
+
+
+def queue_client_send(
+    mut send_state: ConnSendState,
+    mut out_submits: List[PendingSubmit],
+    client_fd: Int32,
+    conn_id: UInt64,
+):
+    """Queue a CLIENT_SEND op (caller must have already populated
+    `client_send_buf`)."""
+    if send_state.client_send_in_flight:
+        return
+    if len(send_state.client_send_buf) == 0:
+        return
+    send_state.client_send_in_flight = True
+    out_submits.append(
+        PendingSubmit(
+            kind=SUBMIT_SEND, fd=client_fd, conn_id=conn_id, op_kind=OP_CLIENT_SEND,
+        )
+    )
+
+
+def queue_backend_connect(
+    mut out_submits: List[PendingSubmit],
+    backend_fd: Int32,
+    conn_id: UInt64,
+):
+    """Queue a BACKEND_CONNECT op."""
+    out_submits.append(
+        PendingSubmit(
+            kind=SUBMIT_CONNECT,
+            fd=backend_fd,
+            conn_id=conn_id,
+            op_kind=OP_BACKEND_CONNECT,
+        )
+    )
+
+
+def queue_backend_recv(
+    mut send_state: ConnSendState,
+    mut out_submits: List[PendingSubmit],
+    backend_fd: Int32,
+    conn_id: UInt64,
+):
+    """Queue a BACKEND_RECV op if no backend recv is in flight."""
+    if send_state.backend_recv_in_flight:
+        return
+    send_state.backend_recv_in_flight = True
+    out_submits.append(
+        PendingSubmit(
+            kind=SUBMIT_RECV, fd=backend_fd, conn_id=conn_id, op_kind=OP_BACKEND_RECV,
+        )
+    )
+
+
+def queue_backend_send(
+    mut send_state: ConnSendState,
+    mut out_submits: List[PendingSubmit],
+    backend_fd: Int32,
+    conn_id: UInt64,
+):
+    """Queue a BACKEND_SEND op (caller must have already populated
+    `backend_send_buf`)."""
+    if send_state.backend_send_in_flight:
+        return
+    if len(send_state.backend_send_buf) == 0:
+        return
+    send_state.backend_send_in_flight = True
+    out_submits.append(
+        PendingSubmit(
+            kind=SUBMIT_SEND, fd=backend_fd, conn_id=conn_id, op_kind=OP_BACKEND_SEND,
+        )
+    )
+
+
+def stage_client_send(
+    mut send_state: ConnSendState,
+    mut out_submits: List[PendingSubmit],
+    client_fd: Int32,
+    conn_id: UInt64,
+    var ct: List[UInt8],
+):
+    """Stage `ct` to be sent to the client.
+
+    If no client send is currently in flight, swap it into
+    `client_send_buf` and queue a CLIENT_SEND. Otherwise append to
+    `client_send_pending`; the in-flight send's completion handler will
+    promote it later.
+    """
+    if len(ct) == 0:
+        return
+    if send_state.client_send_in_flight:
+        for i in range(len(ct)):
+            send_state.client_send_pending.append(ct[i])
+        return
+    send_state.client_send_buf = ct^
+    queue_client_send(send_state, out_submits, client_fd, conn_id)
+
+
+def stage_backend_send(
+    mut send_state: ConnSendState,
+    mut out_submits: List[PendingSubmit],
+    backend_fd: Int32,
+    conn_id: UInt64,
+    var ct: List[UInt8],
+):
+    """Stage `ct` to be sent to the backend (see `stage_client_send`)."""
+    if len(ct) == 0:
+        return
+    if send_state.backend_send_in_flight:
+        for i in range(len(ct)):
+            send_state.backend_send_pending.append(ct[i])
+        return
+    send_state.backend_send_buf = ct^
+    queue_backend_send(send_state, out_submits, backend_fd, conn_id)
+
+
+# ---------------------------------------------------------------------------
 # File I/O helper (native, matches test_tls_connection.mojo)
 # ---------------------------------------------------------------------------
 
