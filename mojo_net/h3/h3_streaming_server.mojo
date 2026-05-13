@@ -393,15 +393,6 @@ struct H3StreamingServer(Movable):
         self._ctx_pool = H3StreamingCtxPool(capacity=4)
         self._coro_pool = CoroutinePool(capacity=4)
 
-    def __init__(out self, *, deinit take: Self):
-        self._h3 = take._h3^
-        self._handler_fn = take._handler_fn
-        self._extra_data = take._extra_data
-        self._outbuf = take._outbuf^
-        self._streams = take._streams^
-        self._ctx_pool = take._ctx_pool^
-        self._coro_pool = take._coro_pool^
-
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts and coroutines."""
         var keys = List[Int]()
