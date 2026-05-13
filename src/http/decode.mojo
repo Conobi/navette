@@ -6,6 +6,20 @@ from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+# Typed FFI loaders auto-generated from crates/librustls-mojo/symbols.toml.
+# §2.3 deps-enhancement: rlsm_* symbols resolve through the generated module
+# so signature drift between Rust and Mojo produces a compile error.
+from src.tls._rlsm_bindings import (
+    load_rlsm_br_feed,
+    load_rlsm_br_finish,
+    load_rlsm_br_free,
+    load_rlsm_br_init,
+    load_rlsm_gzip_feed,
+    load_rlsm_gzip_finish,
+    load_rlsm_gzip_free,
+    load_rlsm_gzip_init,
+)
+
 
 comptime _OUT_CAP = 262144  # 256 KiB decompression output buffer
 
@@ -72,13 +86,9 @@ struct ContentDecoder(Movable):
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = OwnedDLHandle(lib_path)
         if encoding._tag == _ENC_GZIP:
-            self._state = self._lib.call[
-                "rlsm_gzip_init", UnsafePointer[NoneType, MutAnyOrigin]
-            ]()
+            self._state = load_rlsm_gzip_init(self._lib)()
         elif encoding._tag == _ENC_BROTLI:
-            self._state = self._lib.call[
-                "rlsm_br_init", UnsafePointer[NoneType, MutAnyOrigin]
-            ]()
+            self._state = load_rlsm_br_init(self._lib)()
         else:
             self._state = UnsafePointer[NoneType, MutAnyOrigin]()
 
@@ -90,9 +100,9 @@ struct ContentDecoder(Movable):
     def __del__(deinit self):
         if self._state:
             if self._encoding._tag == _ENC_GZIP:
-                self._lib.call["rlsm_gzip_free", NoneType](self._state)
+                load_rlsm_gzip_free(self._lib)(self._state)
             elif self._encoding._tag == _ENC_BROTLI:
-                self._lib.call["rlsm_br_free", NoneType](self._state)
+                load_rlsm_br_free(self._lib)(self._state)
 
     # -- public API ------------------------------------------------------------
 
@@ -112,12 +122,12 @@ struct ContentDecoder(Movable):
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
-            n = self._lib.call["rlsm_gzip_feed", Int64](
-                self._state, in_ptr, UInt(len(data)), out_buf, UInt(_OUT_CAP),
+            n = load_rlsm_gzip_feed(self._lib)(
+                self._state, in_ptr, len(data), out_buf, _OUT_CAP,
             )
         else:
-            n = self._lib.call["rlsm_br_feed", Int64](
-                self._state, in_ptr, UInt(len(data)), out_buf, UInt(_OUT_CAP),
+            n = load_rlsm_br_feed(self._lib)(
+                self._state, in_ptr, len(data), out_buf, _OUT_CAP,
             )
 
         if n < 0:
@@ -143,12 +153,12 @@ struct ContentDecoder(Movable):
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
-            n = self._lib.call["rlsm_gzip_finish", Int64](
-                self._state, out_buf, UInt(_OUT_CAP),
+            n = load_rlsm_gzip_finish(self._lib)(
+                self._state, out_buf, _OUT_CAP,
             )
         else:
-            n = self._lib.call["rlsm_br_finish", Int64](
-                self._state, out_buf, UInt(_OUT_CAP),
+            n = load_rlsm_br_finish(self._lib)(
+                self._state, out_buf, _OUT_CAP,
             )
 
         if n < 0:

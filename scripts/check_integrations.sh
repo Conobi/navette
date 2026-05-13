@@ -100,8 +100,18 @@ fi
 # ---------------------------------------------------------------------------
 echo '§2.3 FFI symbol parity (Rust source vs Mojo bindings)'
 rust_count=$(grep -hE '^pub (unsafe )?extern "C" fn rlsm_' crates/librustls-mojo/src/*.rs 2>/dev/null | wc -l)
-mojo_count=$(grep -rhoE '"rlsm_[a-z_0-9]+"' src/tls/lib.mojo src/http/decode.mojo 2>/dev/null \
-    | sort -u | wc -l)
+# §2.3 caller refactor: rlsm_* symbol literals now live in the generated
+# bindings module (src/tls/_rlsm_bindings.mojo). Other source files import
+# typed load_rlsm_* helpers from there, so the count must come from the
+# generated module. Also scan the hand-written sites in src/tls/{lib,
+# config,connection}.mojo + src/http/decode.mojo to catch any drift.
+mojo_count=$(grep -rhoE '"rlsm_[a-z_0-9]+"' \
+    src/tls/_rlsm_bindings.mojo \
+    src/tls/lib.mojo \
+    src/tls/config.mojo \
+    src/tls/connection.mojo \
+    src/http/decode.mojo \
+    2>/dev/null | sort -u | wc -l)
 printf '  rust_count=%s mojo_count=%s\n' "$rust_count" "$mojo_count"
 if [ "$rust_count" -gt 0 ] && [ "$mojo_count" -gt 0 ]; then
     if [ "$rust_count" -ge "$mojo_count" ]; then

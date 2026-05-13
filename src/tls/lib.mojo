@@ -10,6 +10,57 @@ from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+# Typed FFI loaders auto-generated from crates/librustls-mojo/symbols.toml.
+# §2.3 deps-enhancement: all rlsm_* call sites resolve symbols through the
+# generated module so signature drift between Rust and Mojo produces a
+# compile error, not a runtime dlsym failure.
+from src.tls._rlsm_bindings import (
+    load_rlsm_aes_gcm_128_open,
+    load_rlsm_aes_gcm_128_seal,
+    load_rlsm_client_config_new,
+    load_rlsm_client_config_new_insecure,
+    load_rlsm_config_free,
+    load_rlsm_config_set_alpn_protocols,
+    load_rlsm_hmac_sha256,
+    load_rlsm_initial_keys,
+    load_rlsm_keys_batch_decrypt,
+    load_rlsm_keys_batch_encrypt,
+    load_rlsm_keys_batch_header_protect,
+    load_rlsm_keys_batch_header_unprotect,
+    load_rlsm_keys_free,
+    load_rlsm_keys_local_encrypt,
+    load_rlsm_keys_local_header_protect,
+    load_rlsm_keys_remote_decrypt,
+    load_rlsm_keys_remote_header_unprotect,
+    load_rlsm_keys_tag_len,
+    load_rlsm_last_error,
+    load_rlsm_noop,
+    load_rlsm_quic_client_config_new,
+    load_rlsm_quic_client_config_new_insecure,
+    load_rlsm_quic_client_config_with_ca,
+    load_rlsm_quic_client_conn_new,
+    load_rlsm_quic_conn_alert,
+    load_rlsm_quic_conn_free,
+    load_rlsm_quic_conn_handshake_kind,
+    load_rlsm_quic_conn_is_handshaking,
+    load_rlsm_quic_conn_read_hs,
+    load_rlsm_quic_conn_take_keys,
+    load_rlsm_quic_conn_transport_params,
+    load_rlsm_quic_conn_write_hs,
+    load_rlsm_quic_server_config_new,
+    load_rlsm_quic_server_conn_new,
+    load_rlsm_server_config_new,
+    load_rlsm_tls_client_new,
+    load_rlsm_tls_conn_alpn,
+    load_rlsm_tls_conn_free,
+    load_rlsm_tls_conn_is_handshaking,
+    load_rlsm_tls_conn_read_plaintext,
+    load_rlsm_tls_conn_read_tls,
+    load_rlsm_tls_conn_write_plaintext,
+    load_rlsm_tls_conn_write_tls,
+    load_rlsm_tls_server_new,
+)
+
 
 struct RustlsLibrary(Movable):
     """Dynamically loaded librustls_mojo.so (TCP-TLS symbols)."""
@@ -30,7 +81,7 @@ struct RustlsLibrary(Movable):
         Returns an empty string if no error is set.
         """
         var buf = _heap_alloc[UInt8](512).as_any_origin()
-        var n = self._handle.call["rlsm_last_error", Int32](buf, Int32(512))
+        var n = load_rlsm_last_error(self._handle)(buf, Int32(512))
         if n <= 0:
             buf.free()
             return String("")
@@ -49,7 +100,7 @@ struct RustlsLibrary(Movable):
 
         Returns a positive handle on success, or -1 on error.
         """
-        return self._handle.call["rlsm_client_config_new", Int32]()
+        return load_rlsm_client_config_new(self._handle)()
 
     @always_inline
     def client_config_new_insecure(self) -> Int32:
@@ -58,7 +109,7 @@ struct RustlsLibrary(Movable):
         Requires librustls_mojo.so built with --features insecure.
         Returns a positive handle on success, or -1 on error.
         """
-        return self._handle.call["rlsm_client_config_new_insecure", Int32]()
+        return load_rlsm_client_config_new_insecure(self._handle)()
 
     # -- Config: server --------------------------------------------------------
 
@@ -74,7 +125,7 @@ struct RustlsLibrary(Movable):
 
         Returns a positive handle on success, or -1 on error.
         """
-        return self._handle.call["rlsm_server_config_new", Int32](
+        return load_rlsm_server_config_new(self._handle)(
             cert_pem, cert_len, key_pem, key_len,
         )
 
@@ -83,7 +134,7 @@ struct RustlsLibrary(Movable):
     @always_inline
     def config_free(self, handle: Int32) -> Int32:
         """Free a config handle. Returns 0 on success, or -1 if not found."""
-        return self._handle.call["rlsm_config_free", Int32](handle)
+        return load_rlsm_config_free(self._handle)(handle)
 
     # -- Connection: create ----------------------------------------------------
 
@@ -99,7 +150,7 @@ struct RustlsLibrary(Movable):
         `server_name` is the SNI hostname (UTF-8, not NUL-terminated).
         Returns a positive connection handle on success, or -1 on error.
         """
-        return self._handle.call["rlsm_tls_client_new", Int32](
+        return load_rlsm_tls_client_new(self._handle)(
             config_handle, server_name, name_len,
         )
 
@@ -109,14 +160,14 @@ struct RustlsLibrary(Movable):
 
         Returns a positive connection handle on success, or -1 on error.
         """
-        return self._handle.call["rlsm_tls_server_new", Int32](config_handle)
+        return load_rlsm_tls_server_new(self._handle)(config_handle)
 
     # -- Connection: free ------------------------------------------------------
 
     @always_inline
     def tls_conn_free(self, handle: Int32) -> Int32:
         """Free a connection handle. Returns 0 on success, or -1 if not found."""
-        return self._handle.call["rlsm_tls_conn_free", Int32](handle)
+        return load_rlsm_tls_conn_free(self._handle)(handle)
 
     # -- Connection: ciphertext I/O -------------------------------------------
 
@@ -132,7 +183,7 @@ struct RustlsLibrary(Movable):
         Advances the state machine via process_new_packets() on the Rust side.
         Returns the number of bytes consumed, or -1 on error.
         """
-        return self._handle.call["rlsm_tls_conn_read_tls", Int32](
+        return load_rlsm_tls_conn_read_tls(self._handle)(
             handle, ciphertext, ct_len,
         )
 
@@ -148,7 +199,7 @@ struct RustlsLibrary(Movable):
         Returns the number of bytes written, 0 if nothing pending, or -1 on
         error.
         """
-        return self._handle.call["rlsm_tls_conn_write_tls", Int32](
+        return load_rlsm_tls_conn_write_tls(self._handle)(
             handle, out_buf, buf_len,
         )
 
@@ -166,7 +217,7 @@ struct RustlsLibrary(Movable):
         Returns the number of bytes written, 0 if no data is currently
         available, or -1 on error.
         """
-        return self._handle.call["rlsm_tls_conn_read_plaintext", Int32](
+        return load_rlsm_tls_conn_read_plaintext(self._handle)(
             handle, out_buf, buf_len,
         )
 
@@ -181,7 +232,7 @@ struct RustlsLibrary(Movable):
 
         Returns the number of bytes consumed, or -1 on error.
         """
-        return self._handle.call["rlsm_tls_conn_write_plaintext", Int32](
+        return load_rlsm_tls_conn_write_plaintext(self._handle)(
             handle, data, data_len,
         )
 
@@ -190,7 +241,7 @@ struct RustlsLibrary(Movable):
     @always_inline
     def tls_conn_is_handshaking(self, handle: Int32) -> Int32:
         """1 if the TLS handshake is in progress, 0 if complete, -1 on error."""
-        return self._handle.call["rlsm_tls_conn_is_handshaking", Int32](handle)
+        return load_rlsm_tls_conn_is_handshaking(self._handle)(handle)
 
     @always_inline
     def tls_conn_alpn(
@@ -204,7 +255,7 @@ struct RustlsLibrary(Movable):
         Returns the number of bytes written, 0 if no ALPN was negotiated, or
         -1 on error.
         """
-        return self._handle.call["rlsm_tls_conn_alpn", Int32](
+        return load_rlsm_tls_conn_alpn(self._handle)(
             handle, out_buf, buf_len,
         )
 
@@ -222,7 +273,7 @@ struct RustlsLibrary(Movable):
         protocols is a length-prefixed wire format buffer.
         Returns 0 on success, -1 on error.
         """
-        return self._handle.call["rlsm_config_set_alpn_protocols", Int32](
+        return load_rlsm_config_set_alpn_protocols(self._handle)(
             config_handle, protocols, protocols_len,
         )
 
@@ -240,14 +291,14 @@ struct RustlsLibrary(Movable):
 
         Returns a positive handle on success, -1 on error.
         """
-        return self._handle.call["rlsm_initial_keys", Int32](
+        return load_rlsm_initial_keys(self._handle)(
             version, dcid, dcid_len, is_client,
         )
 
     @always_inline
     def keys_tag_len(self, keys_handle: Int32) -> Int32:
         """Return AEAD tag length (16 for AES-128-GCM). -1 on error."""
-        return self._handle.call["rlsm_keys_tag_len", Int32](keys_handle)
+        return load_rlsm_keys_tag_len(self._handle)(keys_handle)
 
     @always_inline
     def keys_local_encrypt(
@@ -261,7 +312,7 @@ struct RustlsLibrary(Movable):
         buf_capacity: Int32,
     ) -> Int32:
         """Encrypt payload in-place. Returns ciphertext length or -1."""
-        return self._handle.call["rlsm_keys_local_encrypt", Int32](
+        return load_rlsm_keys_local_encrypt(self._handle)(
             keys_handle, packet_number,
             header, header_len,
             payload, payload_len, buf_capacity,
@@ -278,7 +329,7 @@ struct RustlsLibrary(Movable):
         payload_len: Int32,
     ) -> Int32:
         """Decrypt payload in-place. Returns plaintext length or -1."""
-        return self._handle.call["rlsm_keys_remote_decrypt", Int32](
+        return load_rlsm_keys_remote_decrypt(self._handle)(
             keys_handle, packet_number,
             header, header_len,
             payload, payload_len,
@@ -295,7 +346,7 @@ struct RustlsLibrary(Movable):
         pn_len: Int32,
     ) -> Int32:
         """Apply header protection (local/encrypt direction). Returns 0 or -1."""
-        return self._handle.call["rlsm_keys_local_header_protect", Int32](
+        return load_rlsm_keys_local_header_protect(self._handle)(
             keys_handle, sample, sample_len,
             first_byte, pn_bytes, pn_len,
         )
@@ -311,7 +362,7 @@ struct RustlsLibrary(Movable):
         pn_len: Int32,
     ) -> Int32:
         """Remove header protection (remote/decrypt direction). Returns 0 or -1."""
-        return self._handle.call["rlsm_keys_remote_header_unprotect", Int32](
+        return load_rlsm_keys_remote_header_unprotect(self._handle)(
             keys_handle, sample, sample_len,
             first_byte, pn_bytes, pn_len,
         )
@@ -328,9 +379,7 @@ struct RustlsLibrary(Movable):
         out_pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch header unprotection. Returns success count or -1."""
-        return self._handle.call[
-            "rlsm_keys_batch_header_unprotect", Int32
-        ](
+        return load_rlsm_keys_batch_header_unprotect(self._handle)(
             keys_handle, count,
             packet_ptrs, packet_lens, pn_offsets,
             out_first_bytes, out_pn_lengths,
@@ -348,9 +397,7 @@ struct RustlsLibrary(Movable):
         out_plaintext_lens: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch AEAD decryption. Returns success count or -1."""
-        return self._handle.call[
-            "rlsm_keys_batch_decrypt", Int32
-        ](
+        return load_rlsm_keys_batch_decrypt(self._handle)(
             keys_handle, count,
             packet_numbers, packet_ptrs, packet_lens, header_lens,
             out_plaintext_lens,
@@ -368,9 +415,7 @@ struct RustlsLibrary(Movable):
         out_results: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch header protection. Returns success count or -1."""
-        return self._handle.call[
-            "rlsm_keys_batch_header_protect", Int32
-        ](
+        return load_rlsm_keys_batch_header_protect(self._handle)(
             keys_handle, count,
             packet_ptrs, packet_lens, pn_offsets, pn_lengths,
             out_results,
@@ -389,9 +434,7 @@ struct RustlsLibrary(Movable):
         out_ciphertext_lens: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch AEAD encryption. Returns success count or -1."""
-        return self._handle.call[
-            "rlsm_keys_batch_encrypt", Int32
-        ](
+        return load_rlsm_keys_batch_encrypt(self._handle)(
             keys_handle, count,
             packet_numbers, packet_ptrs,
             header_lens, payload_lens, buf_capacities,
@@ -401,7 +444,7 @@ struct RustlsLibrary(Movable):
     @always_inline
     def keys_free(self, keys_handle: Int32) -> Int32:
         """Free keys. Returns 0 on success, -1 if handle not found."""
-        return self._handle.call["rlsm_keys_free", Int32](keys_handle)
+        return load_rlsm_keys_free(self._handle)(keys_handle)
 
     # -- QUIC Wave 2: handshake ------------------------------------------------
 
@@ -415,7 +458,7 @@ struct RustlsLibrary(Movable):
 
         Returns 0 on success, -1 on error. Handle written to out_handle.
         """
-        return self._handle.call["rlsm_quic_client_config_new", Int32](
+        return load_rlsm_quic_client_config_new(self._handle)(
             alpn_ptr, alpn_len, out_handle,
         )
 
@@ -431,7 +474,7 @@ struct RustlsLibrary(Movable):
         for local dev / CLI tools against self-signed certs.
         Returns 0 on success, -1 on error. Handle written to out_handle.
         """
-        return self._handle.call["rlsm_quic_client_config_new_insecure", Int32](
+        return load_rlsm_quic_client_config_new_insecure(self._handle)(
             alpn_ptr, alpn_len, out_handle,
         )
 
@@ -448,7 +491,7 @@ struct RustlsLibrary(Movable):
         (rustls aws_lc_rs Ticketer). max_early_data: 0 disables 0-RTT (default);
         non-zero plumbs to ServerConfig::max_early_data_size for P3.
         Returns 0 on success, -1 on error."""
-        return self._handle.call["rlsm_quic_server_config_new", Int32](
+        return load_rlsm_quic_server_config_new(self._handle)(
             cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len,
             max_early_data, out_handle,
         )
@@ -461,7 +504,7 @@ struct RustlsLibrary(Movable):
         out_handle: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC client TLS config trusting ca_pem (for testing). Returns 0."""
-        return self._handle.call["rlsm_quic_client_config_with_ca", Int32](
+        return load_rlsm_quic_client_config_with_ca(self._handle)(
             ca_pem, ca_len, alpn_ptr, alpn_len, out_handle,
         )
 
@@ -475,7 +518,7 @@ struct RustlsLibrary(Movable):
         out_handle: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC client connection. Returns 0 on success."""
-        return self._handle.call["rlsm_quic_client_conn_new", Int32](
+        return load_rlsm_quic_client_conn_new(self._handle)(
             config_handle, version, server_name, name_len, tp, tp_len, out_handle,
         )
 
@@ -488,14 +531,14 @@ struct RustlsLibrary(Movable):
         out_handle: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC server connection. Returns 0 on success."""
-        return self._handle.call["rlsm_quic_server_conn_new", Int32](
+        return load_rlsm_quic_server_conn_new(self._handle)(
             config_handle, version, tp, tp_len, out_handle,
         )
 
     @always_inline
     def quic_conn_free(self, conn_handle: Int32) -> Int32:
         """Free QUIC connection handle. Returns 0 on success."""
-        return self._handle.call["rlsm_quic_conn_free", Int32](conn_handle)
+        return load_rlsm_quic_conn_free(self._handle)(conn_handle)
 
     @always_inline
     def quic_conn_write_hs(
@@ -507,7 +550,7 @@ struct RustlsLibrary(Movable):
         out_kc: UnsafePointer[UInt8, MutAnyOrigin],
     ) -> Int32:
         """Drain outgoing TLS bytes. out_kc: 0=none, 1=Handshake, 2=OneRtt. Returns 0."""
-        return self._handle.call["rlsm_quic_conn_write_hs", Int32](
+        return load_rlsm_quic_conn_write_hs(self._handle)(
             conn_handle, out_buf, out_capacity, out_written, out_kc,
         )
 
@@ -526,7 +569,7 @@ struct RustlsLibrary(Movable):
           out_state_machine_us: rustls read_hs body µs (Q6 slot 1).
           out_handle_lookup_us: with_mut handle-table lookup µs (Q6 slot 2).
         """
-        return self._handle.call["rlsm_quic_conn_read_hs", Int32](
+        return load_rlsm_quic_conn_read_hs(self._handle)(
             conn_handle, data, data_len,
             out_state_machine_us, out_handle_lookup_us,
         )
@@ -538,19 +581,19 @@ struct RustlsLibrary(Movable):
         out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Move pending Keys into Wave 1 KEYS_TABLE. Returns 0 on success."""
-        return self._handle.call["rlsm_quic_conn_take_keys", Int32](
+        return load_rlsm_quic_conn_take_keys(self._handle)(
             conn_handle, out_keys_handle,
         )
 
     @always_inline
     def quic_conn_is_handshaking(self, conn_handle: Int32) -> Int32:
         """Returns 1 if handshaking, 0 if complete, -1 on invalid handle."""
-        return self._handle.call["rlsm_quic_conn_is_handshaking", Int32](conn_handle)
+        return load_rlsm_quic_conn_is_handshaking(self._handle)(conn_handle)
 
     @always_inline
     def quic_conn_handshake_kind(self, conn_handle: Int32) -> Int32:
         """Returns -2 client, -1 invalid, 0 unknown, 1 Full, 2 Resumed, 3 FullWithHRR."""
-        return self._handle.call["rlsm_quic_conn_handshake_kind", Int32](conn_handle)
+        return load_rlsm_quic_conn_handshake_kind(self._handle)(conn_handle)
 
     @always_inline
     def quic_conn_transport_params(
@@ -561,14 +604,14 @@ struct RustlsLibrary(Movable):
         out_written: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Read peer transport params. Returns 0 (available), 1 (not yet), -1 (error)."""
-        return self._handle.call["rlsm_quic_conn_transport_params", Int32](
+        return load_rlsm_quic_conn_transport_params(self._handle)(
             conn_handle, out_buf, out_capacity, out_written,
         )
 
     @always_inline
     def quic_conn_alert(self, conn_handle: Int32) -> Int32:
         """Read cached TLS alert code. Returns alert number, or -1 if no alert."""
-        return self._handle.call["rlsm_quic_conn_alert", Int32](conn_handle)
+        return load_rlsm_quic_conn_alert(self._handle)(conn_handle)
 
     # -- Raw AES-GCM-128 -------------------------------------------------------
 
@@ -583,7 +626,7 @@ struct RustlsLibrary(Movable):
         out_len: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """AES-GCM-128 encrypt. out_buf must hold pt_len + 16 bytes. Returns 0 or -1."""
-        return self._handle.call["rlsm_aes_gcm_128_seal", Int32](
+        return load_rlsm_aes_gcm_128_seal(self._handle)(
             key, key_len, nonce, nonce_len, aad, aad_len,
             plaintext, pt_len, out_buf, out_len,
         )
@@ -599,7 +642,7 @@ struct RustlsLibrary(Movable):
         out_len: UnsafePointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """AES-GCM-128 decrypt. ct_len includes 16-byte tag. Returns 0 or -1."""
-        return self._handle.call["rlsm_aes_gcm_128_open", Int32](
+        return load_rlsm_aes_gcm_128_open(self._handle)(
             key, key_len, nonce, nonce_len, aad, aad_len,
             ciphertext, ct_len, out_buf, out_len,
         )
@@ -610,7 +653,7 @@ struct RustlsLibrary(Movable):
     def noop(self) -> Int32:
         """No-op FFI call — for thunk-overhead microbench (Q5 follow-up).
         Returns 0. Body in Rust is `pub extern \"C\" fn rlsm_noop() -> i32 { 0 }`."""
-        return self._handle.call["rlsm_noop", Int32]()
+        return load_rlsm_noop(self._handle)()
 
     # -- Raw HMAC-SHA256 -------------------------------------------------------
 
@@ -622,6 +665,6 @@ struct RustlsLibrary(Movable):
         out_buf: UnsafePointer[UInt8, MutAnyOrigin],
     ) -> Int32:
         """HMAC-SHA256. out_buf must hold 32 bytes. Returns 0 or -1."""
-        return self._handle.call["rlsm_hmac_sha256", Int32](
+        return load_rlsm_hmac_sha256(self._handle)(
             key, key_len, msg, msg_len, out_buf,
         )
