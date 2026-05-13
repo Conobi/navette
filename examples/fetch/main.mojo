@@ -18,8 +18,12 @@
 #   https:// + --http3            → force QUIC/H3 regardless of cache.
 #   https:// + --http2 / --http1.1 → force TCP+TLS at that ALPN.
 #
-# Build + run:
-#   LD_LIBRARY_PATH=lib uv run mojo run -I . examples/fetch/main.mojo [OPTIONS] <URL>
+# Build + run
+#
+#   $ cd examples/fetch
+#   $ uv sync
+#   $ uv run mojox build main.mojo -o fetch
+#   $ ./fetch https://example.com/
 #
 # Options:
 #   -X METHOD        HTTP method (default: GET, or POST if -d given)
