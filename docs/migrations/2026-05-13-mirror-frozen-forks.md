@@ -1,6 +1,17 @@
-# §4.1 — mirror frozen-fork upstreams (research + scripted ops)
+# §4.1 — mirror frozen-fork upstreams (REJECTED — YAGNI, 2026-05-13)
 
-**Status:** scripted ops drafted; mirror infrastructure setup is user-owned. 2026-05-13.
+**Decision: do not implement.** The ongoing cost of maintaining 7 mirror repos and a sync workflow exceeds the expected cost of reactive remediation if an upstream disappears. Specifically:
+
+- **Mirror cost is certain and continuous**: 7 GitHub repos to keep in sync, a weekly Action whose failures we have to triage, naming/transfer hygiene if we ever consolidate accounts.
+- **Outage cost is uncertain and one-shot**: if e.g. `quictls/openssl` is deleted, the recovery options are (a) vendor a snapshot into mojo-net once, (b) swap to mainline OpenSSL 3.5+ which now ships the QUIC API natively, or (c) point at any successor fork. Each is hours of work, not days, and only paid once.
+
+The risk is real but tail-shaped; the maintenance is certain. YAGNI wins.
+
+If a future upstream deletion forces our hand, the analysis and substitution script below still apply — point them at a freshly-created mirror at that time. There's no value in standing up the mirror infrastructure pre-emptively.
+
+---
+
+**Original analysis preserved below for reference.**
 
 The v2 deps-enhancement plan §4.1 called for mirroring upstream repos that lack guaranteed availability so a bench / interop image build doesn't break the day they're deleted. This doc lists every upstream URL embedded in the repo, the proposed mirror strategy, and the substitution script.
 
