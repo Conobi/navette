@@ -31,8 +31,10 @@ audit_host() {
 
 run_iter() {
   local n=$1
+  local rps_file=$2
   audit_host || return 1
   echo "--- $PROTO iter $n ---"
+  : > "$rps_file"
   (cd "$DIR" && LD_LIBRARY_PATH="$REPO/lib" uv run --project . mojox run main.mojo \
       >/tmp/${PROTO}_iter${n}.log 2>&1) &
   local server_pid=$!
@@ -40,6 +42,12 @@ run_iter() {
     grep -q "listening" /tmp/${PROTO}_iter${n}.log 2>/dev/null && break
     sleep 0.1
   done
+  if ! grep -q "listening" /tmp/${PROTO}_iter${n}.log; then
+    echo "ABORT: $PROTO iter $n server did not become ready (see /tmp/${PROTO}_iter${n}.log)"
+    kill "$server_pid" 2>/dev/null
+    wait "$server_pid" 2>/dev/null
+    return 1
+  fi
   local rps
   if [ "$DRIVER" = "wrk" ]; then
     rps=$(wrk -t8 -c256 -d30s "$URL" 2>&1 \
@@ -52,14 +60,19 @@ run_iter() {
   wait "$server_pid" 2>/dev/null
   sleep 1
   echo "iter${n}_rps=${rps}"
-  echo "$rps"
+  printf '%s\n' "$rps" > "$rps_file"
 }
 
 declare -a RPS
 for n in 1 2 3; do
-  out=$(run_iter "$n")
-  echo "$out"
-  RPS+=("$(echo "$out" | tail -1)")
+  rps_file="/tmp/${PROTO}_iter${n}.rps"
+  run_iter "$n" "$rps_file" || { echo "iter $n aborted; exiting"; exit 3; }
+  rps_val=$(cat "$rps_file" 2>/dev/null | tr -d '[:space:]')
+  if ! [[ "$rps_val" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "ABORT: iter $n produced non-numeric rps: '$rps_val'"
+    exit 4
+  fi
+  RPS+=("$rps_val")
   if [ "$n" -lt 3 ]; then
     echo "--- sleep 30 ---"
     sleep 30
@@ -67,9 +80,9 @@ for n in 1 2 3; do
 done
 
 echo "--- verdict ---"
-python3 - <<PY
-import statistics
-rps=[float(x) for x in "${RPS[@]}".split() if x]
+python3 - "${RPS[@]}" <<'PY'
+import sys, statistics
+rps=[float(x) for x in sys.argv[1:]]
 if len(rps) < 3:
     print("FAIL: fewer than 3 iters captured")
     raise SystemExit(2)

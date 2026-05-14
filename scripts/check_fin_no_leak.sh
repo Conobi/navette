@@ -17,8 +17,8 @@ H2_DIR="$REPO/examples/hello_h2_server"
 N="${N:-1000}"
 
 run_one() {
-  local proto=$1 dir=$2 port=$3 curl_extra=$4
-  echo "--- $proto: $N sequential Connection: close ---"
+  local proto=$1 dir=$2 port=$3 scheme=$4 curl_extra=$5
+  echo "--- $proto: $N sequential Connection: close ($scheme) ---"
   (cd "$dir" && LD_LIBRARY_PATH="$REPO/lib" uv run --project . mojox run main.mojo \
       >/tmp/${proto}_server.log 2>&1) &
   local server_pid=$!
@@ -31,12 +31,14 @@ run_one() {
     kill "$server_pid" 2>/dev/null
     return 1
   fi
+  local errs=0
   for i in $(seq 1 "$N"); do
     curl -sS -o /dev/null $curl_extra -H 'Connection: close' \
-      "https://[::1]:${port}/" 2>/dev/null || \
-    curl -sS -o /dev/null $curl_extra -H 'Connection: close' \
-      "http://[::1]:${port}/" 2>/dev/null
+      "${scheme}://[::1]:${port}/" 2>/dev/null || errs=$((errs+1))
   done
+  if [ "$errs" -gt 0 ]; then
+    echo "WARN: $errs/$N curl errors against ${scheme}://[::1]:${port}/"
+  fi
   sleep 5
   local count
   count=$(ss -Htn state established "( sport = :${port} )" | wc -l)
@@ -47,8 +49,8 @@ run_one() {
 }
 
 H1_OK=0; H2_OK=0
-run_one h1 "$H1_DIR" "$H1_PORT" "" && H1_OK=1
-run_one h2 "$H2_DIR" "$H2_PORT" "-k --http2" && H2_OK=1
+run_one h1 "$H1_DIR" "$H1_PORT" http "" && H1_OK=1
+run_one h2 "$H2_DIR" "$H2_PORT" https "-k --http2" && H2_OK=1
 
 echo "--- Verdict ---"
 echo "H1 residual=0: $([ $H1_OK -eq 1 ] && echo PASS || echo FAIL)"
