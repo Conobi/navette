@@ -39,6 +39,7 @@ the factory once per accepted TCP connection.
 
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.ffi import external_call
 
 from boucle.handle import RawHandle, OwnedHandle
 from boucle.completion import CompletionHandler, CompletionLoop
@@ -420,6 +421,9 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
     def _close_connection(mut self, idx: Int):
         if self.connections[idx][].closed:
             return
+        # shutdown(SHUT_RDWR) -> FIN; close() doesn't send FIN while io_uring holds fd refs.
+        var fd = self.connections[idx][].fd.raw()
+        _ = external_call["shutdown", Int32](fd, Int32(2))
         self.connections[idx][].closed = True
         if (
             not self.connections[idx][].recv_in_flight
