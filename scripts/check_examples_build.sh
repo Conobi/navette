@@ -61,7 +61,7 @@ for ex_dir in "${EXAMPLES[@]}"; do
         echo "    --- log: /tmp/_examples_smoke_$name.log ---" >&2
         # Print the last 30 lines of the failure log to surface the actual error
         # without flooding stdout for a successful run.
-        sed -n '$-30,$p' "/tmp/_examples_smoke_$name.log" >&2 || true
+        tail -n 30 "/tmp/_examples_smoke_$name.log" >&2 || true
         echo "    --- end log ---" >&2
     fi
 done
