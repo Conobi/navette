@@ -11,10 +11,24 @@ set -u
 PROTO="${1:?usage: $0 h1|h2}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 case "$PROTO" in
-  h1) DIR="$REPO/examples/hello_h1_server"; PORT="${HELLO_H1_PORT:-8080}"; URL="http://[::1]:${PORT}/"; DRIVER=wrk ;;
-  h2) DIR="$REPO/examples/hello_h2_server"; PORT="${HELLO_H2_PORT:-8443}"; URL="https://[::1]:${PORT}/"; DRIVER=h2load ;;
+  h1)
+    DIR="$REPO/examples/hello_h1_server"; PORT="${HELLO_H1_PORT:-8080}"
+    URL="http://[::1]:${PORT}/"
+    if command -v wrk >/dev/null 2>&1; then DRIVER=wrk
+    elif command -v ab >/dev/null 2>&1; then DRIVER=ab
+    else echo "FATAL: neither wrk nor ab found in PATH"; exit 2
+    fi
+    ;;
+  h2)
+    DIR="$REPO/examples/hello_h2_server"; PORT="${HELLO_H2_PORT:-8443}"
+    URL="https://[::1]:${PORT}/"
+    if command -v h2load >/dev/null 2>&1; then DRIVER=h2load
+    else echo "FATAL: h2load not found in PATH (HTTP/2 requires h2load)"; exit 2
+    fi
+    ;;
   *)  echo "bad proto: $PROTO"; exit 2 ;;
 esac
+echo "driver: $DRIVER"
 
 audit_host() {
   echo "--- host audit pre-iter ---"
@@ -60,13 +74,22 @@ run_iter() {
     return 1
   fi
   local rps
-  if [ "$DRIVER" = "wrk" ]; then
-    rps=$(wrk -t8 -c256 -d30s "$URL" 2>&1 \
-          | awk '/Requests\/sec:/ {print $2}')
-  else
-    rps=$(h2load -t8 -c256 -D30 "$URL" 2>&1 \
-          | awk '/finished in/ {for(i=1;i<=NF;i++) if($i ~ /req\/s/) print $(i-1)}')
-  fi
+  case "$DRIVER" in
+    wrk)
+      rps=$(wrk -t8 -c256 -d30s "$URL" 2>&1 \
+            | awk '/Requests\/sec:/ {print $2}')
+      ;;
+    ab)
+      # ab is single-threaded; -c256 is the concurrency level.
+      # -t30 caps duration to 30s; -n100000 caps total requests if duration finishes first.
+      rps=$(ab -t 30 -n 100000 -c 256 "$URL" 2>&1 \
+            | awk '/Requests per second:/ {print $4}')
+      ;;
+    h2load)
+      rps=$(h2load -t8 -c256 -D30 "$URL" 2>&1 \
+            | awk '/finished in/ {for(i=1;i<=NF;i++) if($i ~ /req\/s/) print $(i-1)}')
+      ;;
+  esac
   kill_tree "$server_pid"
   wait "$server_pid" 2>/dev/null
   sleep 1
