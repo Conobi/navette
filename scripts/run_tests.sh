@@ -11,15 +11,19 @@ export LD_LIBRARY_PATH="$REPO_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cd "$REPO_ROOT"
 
+# Examples smoke gate — catches example bit-rot under refactors (per Plan 4).
+echo "=== examples-smoke gate ==="
+"$SCRIPT_DIR/check_examples_build.sh"
+
 # R1' grep gate — boucle.stackful is allowed only in *_streaming_server.mojo
-# files inside src/, plus src/tls/lib.mojo (FFI bridge slot, currently
+# files inside mojo_net/, plus mojo_net/tls/lib.mojo (FFI bridge slot, currently
 # unused). Tests at repo-root tests/ are not scoped here. See
 # specs/2026-04-27-sprint-2-h1h2h3-sync-streaming.md and
 # plans/2026-04-27-sprint-2-retrospective.md.
 
-R1_VIOLATIONS=$(grep -rEn 'from boucle\.stackful|import boucle\.stackful' src/ \
-  | grep -vE '^src/(h2/h2_streaming_server|h3/h3_streaming_server)\.mojo:' \
-  | grep -vE '^src/tls/lib\.mojo:' \
+R1_VIOLATIONS=$(grep -rEn 'from boucle\.stackful|import boucle\.stackful' mojo_net/ \
+  | grep -vE '^mojo_net/(h2/h2_streaming_server|h3/h3_streaming_server)\.mojo:' \
+  | grep -vE '^mojo_net/tls/lib\.mojo:' \
   || true)
 if [ -n "$R1_VIOLATIONS" ]; then
     echo "R1' violation: boucle.stackful imported outside allowed files:"
