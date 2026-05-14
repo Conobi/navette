@@ -29,22 +29,33 @@ audit_host() {
   fi
 }
 
+kill_tree() {
+  local pgid=$1
+  [ -z "$pgid" ] && return
+  kill -TERM -- "-$pgid" 2>/dev/null
+  for i in $(seq 1 30); do
+    if ! kill -0 -- "-$pgid" 2>/dev/null; then return; fi
+    sleep 0.1
+  done
+  kill -KILL -- "-$pgid" 2>/dev/null
+}
+
 run_iter() {
   local n=$1
   local rps_file=$2
   audit_host || return 1
   echo "--- $PROTO iter $n ---"
   : > "$rps_file"
-  (cd "$DIR" && LD_LIBRARY_PATH="$REPO/lib" uv run --project . mojox run main.mojo \
-      >/tmp/${PROTO}_iter${n}.log 2>&1) &
+  setsid bash -c "cd '$DIR' && exec env LD_LIBRARY_PATH='$REPO/lib' uv run --project . mojox run main.mojo" \
+    >"/tmp/${PROTO}_iter${n}.log" 2>&1 &
   local server_pid=$!
-  for i in $(seq 1 50); do
-    grep -q "listening" /tmp/${PROTO}_iter${n}.log 2>/dev/null && break
+  for i in $(seq 1 100); do
+    grep -q "listening" "/tmp/${PROTO}_iter${n}.log" 2>/dev/null && break
     sleep 0.1
   done
-  if ! grep -q "listening" /tmp/${PROTO}_iter${n}.log; then
+  if ! grep -q "listening" "/tmp/${PROTO}_iter${n}.log"; then
     echo "ABORT: $PROTO iter $n server did not become ready (see /tmp/${PROTO}_iter${n}.log)"
-    kill "$server_pid" 2>/dev/null
+    kill_tree "$server_pid"
     wait "$server_pid" 2>/dev/null
     return 1
   fi
@@ -56,7 +67,7 @@ run_iter() {
     rps=$(h2load -t8 -c256 -D30 "$URL" 2>&1 \
           | awk '/finished in/ {for(i=1;i<=NF;i++) if($i ~ /req\/s/) print $(i-1)}')
   fi
-  kill "$server_pid" 2>/dev/null
+  kill_tree "$server_pid"
   wait "$server_pid" 2>/dev/null
   sleep 1
   echo "iter${n}_rps=${rps}"
