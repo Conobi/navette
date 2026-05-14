@@ -30,14 +30,15 @@ case "$PROTO" in
 esac
 echo "driver: $DRIVER"
 
+AUDIT_THRESHOLD="${AUDIT_THRESHOLD:-50}"
 audit_host() {
-  echo "--- host audit pre-iter ---"
+  echo "--- host audit pre-iter (threshold ${AUDIT_THRESHOLD}%) ---"
   cat /proc/loadavg
   ps -eo pid,pcpu,comm --sort=-pcpu | head -5
   local foreign
-  foreign=$(ps -eo pcpu,comm --sort=-pcpu | awk 'NR>1 && $2=="mojo" && $1>50 {print $0}')
+  foreign=$(ps -eo pcpu,comm --sort=-pcpu | awk -v T="$AUDIT_THRESHOLD" 'NR>1 && $2=="mojo" && $1>T {print $0}')
   if [ -n "$foreign" ]; then
-    echo "ABORT: foreign mojo process at >50% CPU detected:"
+    echo "ABORT: foreign mojo process at >${AUDIT_THRESHOLD}% CPU detected:"
     echo "$foreign"
     return 1
   fi
@@ -63,7 +64,8 @@ run_iter() {
   setsid bash -c "cd '$DIR' && exec env LD_LIBRARY_PATH='$REPO/lib' uv run --project . mojox run main.mojo" \
     >"/tmp/${PROTO}_iter${n}.log" 2>&1 &
   local server_pid=$!
-  for i in $(seq 1 100); do
+  # 600 * 0.1s = 60s readiness window; covers first-time mojox rebuild after a library swap.
+  for i in $(seq 1 600); do
     grep -q "listening" "/tmp/${PROTO}_iter${n}.log" 2>/dev/null && break
     sleep 0.1
   done
