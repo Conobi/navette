@@ -40,9 +40,13 @@ run_one() {
     echo "WARN: $errs/$N curl errors against ${scheme}://[::1]:${port}/"
   fi
   sleep 5
+  echo "$proto state breakdown (server-side, excluding LISTEN):"
+  ss -Htn "( sport = :${port} )" 2>/dev/null \
+    | awk '$1 != "LISTEN" {print "  "$1}' | sort | uniq -c
   local count
-  count=$(ss -Htn state established "( sport = :${port} )" | wc -l)
-  echo "$proto residual ESTABLISHED count = $count (expected 0)"
+  count=$(ss -Htn "( sport = :${port} )" 2>/dev/null \
+          | awk '$1 != "LISTEN" && $1 != "TIME-WAIT"' | wc -l)
+  echo "$proto residual count (excl LISTEN, TIME-WAIT) = $count (expected 0 post-fix)"
   kill "$server_pid" 2>/dev/null
   wait "$server_pid" 2>/dev/null
   [ "$count" -eq 0 ]
