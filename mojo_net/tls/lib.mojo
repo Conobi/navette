@@ -62,6 +62,26 @@ from mojo_net.tls._rlsm_bindings import (
 )
 
 
+fn librustls_supports_insecure() raises -> Bool:
+    """Probe whether the loaded librustls_mojo.so exports the `*_new_insecure`
+    family, without aborting if the symbol is absent.
+
+    release/dev-profile builds export them (CLI tools' `--insecure` flag
+    works). hardened/bench-profile builds strip them. CLI tools that
+    gate self-signed-cert UX should call this before invoking the
+    insecure wrappers — `OwnedDLHandle.get_function` aborts the process
+    on a missing symbol, which is poor UX for "you passed -k against a
+    hardened-profile install."
+
+    Uses `OwnedDLHandle.check_symbol` (stdlib non-aborting symbol probe)
+    against a temporary handle. libc dlopen is refcounted, so opening
+    an already-loaded soname is a no-op — the probe doesn't disturb any
+    long-lived RustlsLibrary that's already holding the same .so.
+    """
+    var probe = _open_librustls()
+    return probe.check_symbol("rlsm_quic_client_config_new_insecure")
+
+
 fn _open_librustls() raises -> OwnedDLHandle:
     """Locate and dlopen librustls_mojo.so across deployment modes.
 

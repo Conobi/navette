@@ -64,6 +64,7 @@ from std.pathlib import Path
 from boucle.handle import OwnedHandle
 
 from mojo_net.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from mojo_net.tls.lib import librustls_supports_insecure
 from mojo_net.http import Method, Version, Headers, Request
 from mojo_net.http.request import RequestBody
 from mojo_net.http.response import Response
@@ -947,6 +948,18 @@ def _request_via_tcp(
 
 def main() raises:
     var args = _parse_args()
+
+    # Fail fast on `--insecure` against a hardened-profile librustls
+    # so the user gets a useful diagnostic instead of `dlsym` aborting
+    # inside OwnedDLHandle.get_function later in the TLS path.
+    if args.insecure and not librustls_supports_insecure():
+        raise (
+            "this fetch binary was built against a hardened librustls_mojo.so "
+            "that does not export the `*_insecure` symbols. Rebuild without "
+            "MOJOX_BUILD_PROFILE=hardened (default `release` exports them), "
+            "or drop -k / --insecure to use full WebPKI verification."
+        )
+
     var parsed = parse_url(args.url)
 
     var req = _build_request(args, parsed)
