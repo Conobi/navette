@@ -25,7 +25,7 @@ dev = [
 
 [build-system]
 requires = [
-    "mojox-build>=0.2.1",
+    "mojox-build>=0.2.3",
     "mojo-compiler==0.26.2.0",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
@@ -39,6 +39,12 @@ build-backend = "mojox_build"
 packages = ["mojo_net"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
 # uv-installed deps (boucle, json-simd-mojo) resolve without manual flags.
+
+# Build the Rust TLS shim (librustls-mojo) before compiling the Mojo package,
+# then bundle the resulting .so into the wheel as a native lib. Consumers
+# need cargo + rustc on PATH at build time; runtime users just need uv.
+pre-build = ["scripts/build_rustls.sh release"]
+native-libs = ["lib/librustls_mojo.so"]
 
 [tool.uv.sources]
 boucle         = { git = "ssh://git@github.com/Conobi/boucle.git",         rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
