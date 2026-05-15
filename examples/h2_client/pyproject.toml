@@ -13,8 +13,8 @@ dependencies = [
 
 [tool.uv.sources]
 mojo-net       = { path = "../.." }
-boucle         = { path = "../../../boucle" }
-json-simd-mojo = { path = "../../../json-simd-mojo" }
+boucle         = { git = "ssh://git@github.com/Conobi/boucle.git",         rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
+json-simd-mojo = { git = "ssh://git@github.com/Conobi/json-simd-mojo.git", rev = "e034f5ed6c97fc615c240e15c3c50f84a03dc54d" }
 
 [tool.uv]
 package = false

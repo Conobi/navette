@@ -24,16 +24,22 @@ dev = [
 ]
 
 [build-system]
-requires      = ["mojox-build>=0.2", "mojo-compiler==0.26.2.0"]
+requires = [
+    "mojox-build>=0.2.1",
+    "mojo-compiler==0.26.2.0",
+    # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
+    # which resolves cross-package imports). PEP 517 build envs are isolated from
+    # the project's runtime deps, so boucle and json-simd-mojo are pinned here too.
+    "boucle @ git+ssh://git@github.com/Conobi/boucle.git@fc7a2f516abaee0c6afb1b2de921e84e9c51826a",
+    "json-simd-mojo @ git+ssh://git@github.com/Conobi/json-simd-mojo.git@e034f5ed6c97fc615c240e15c3c50f84a03dc54d",
+]
 build-backend = "mojox_build"
 
 [tool.mojox-build]
 packages = ["mojo_net"]
-flags = [
-    "-I", "../boucle",
-    "-I", "../json-simd-mojo",
-]
+# mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
+# uv-installed deps (boucle, json-simd-mojo) resolve without manual flags.
 
 [tool.uv.sources]
-boucle         = { path = "../boucle" }
-json-simd-mojo = { path = "../json-simd-mojo" }
+boucle         = { git = "ssh://git@github.com/Conobi/boucle.git",         rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
+json-simd-mojo = { git = "ssh://git@github.com/Conobi/json-simd-mojo.git", rev = "e034f5ed6c97fc615c240e15c3c50f84a03dc54d" }
