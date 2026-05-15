@@ -88,10 +88,9 @@ else
     # don't conspire to mask a real match (nm gets SIGPIPE'd, pipeline fails).
     nm_out=$(nm $nm_args "$lib_path" 2>/dev/null || true)
     if printf '%s\n' "$nm_out" | grep -q rlsm_quic_client_config_new_insecure; then
-        # Insecure symbol present — fine only if user built the dev profile.
-        printf '  WARN librustls_mojo exports rlsm_quic_client_config_new_insecure — built with `build_rustls.sh dev`?\n' >&2
+        pass 'release/dev profile (insecure symbol exported — CLI -k works)'
     else
-        pass 'release/bench profile (no insecure symbol exported)'
+        pass 'hardened/bench profile (no insecure symbol exported)'
     fi
 fi
 

@@ -44,10 +44,16 @@ packages = ["mojo_net"]
 # then bundle the resulting .so into the wheel as a native lib. Consumers
 # need cargo + rustc on PATH at build time; runtime users just need uv.
 #
-# Profile is env-var driven so the SAME pyproject ships safely AND supports
-# local tests / examples that exercise rlsm_client_config_new_insecure:
-#   default ship: scripts/build_rustls.sh release   → strips insecure symbol
-#   local dev:    MOJOX_BUILD_PROFILE=dev uv sync   → includes insecure symbol
+# Default `release` profile exports the `*_insecure` Cargo symbol so CLI
+# tools (fetch -k) work like curl out of the box. Insecure cert verification
+# remains opt-in at the API level — production code must not call the
+# `*_new_insecure` wrappers; that's the safety contract.
+#
+# Production server deployments that want defense-in-depth (a .so that
+# *cannot* invoke the insecure verifier even if code accidentally references
+# it) opt in to the hardened profile:
+#   default ship: scripts/build_rustls.sh release  → includes insecure symbol
+#   hardened:     MOJOX_BUILD_PROFILE=hardened     → strips insecure symbol
 pre-build = ['scripts/build_rustls.sh "${MOJOX_BUILD_PROFILE:-release}"']
 native-libs = ["lib/librustls_mojo.so"]
 

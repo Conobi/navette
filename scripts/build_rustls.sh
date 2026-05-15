@@ -2,20 +2,28 @@
 # Build librustls-mojo into lib/librustls_mojo.{so,dylib}.
 #
 # Profiles:
-#   dev      — feature flags: skip-locks, insecure.   Use for local TLS
-#              client tests that skip peer-cert verification.
-#   release  — feature flags: skip-locks.             Default. Production-grade.
-#   bench    — feature flags: skip-locks.             Same flags as release;
-#              kept distinct in case bench gets profile-specific opts later.
+#   release  — feature flags: skip-locks, insecure.  Default. Standard ship.
+#              Exports `*_insecure` so CLI tools (fetch -k) work like curl.
+#              Insecure verification remains opt-in at the API level —
+#              production server code must not call `*_new_insecure`.
+#   dev      — feature flags: skip-locks, insecure.  Functional alias of
+#              release; kept for muscle memory in local-dev workflows.
+#   hardened — feature flags: skip-locks.            Strips `*_insecure` for
+#              defense-in-depth in production server builds where the .so
+#              must be unable to invoke the insecure verifier even if buggy
+#              code references the symbol.
+#   bench    — feature flags: skip-locks.            Bench harnesses measure
+#              prod-like cert paths (same flags as hardened).
 #
-# CI / Dockerfiles / bench harnesses MUST pass an explicit profile.
-# The default is `release` to make accidental insecure shipping impossible.
+# The default is `release` so a clone-and-go `uv sync` produces a binary
+# that behaves like curl. The leak check below fires only for `hardened`
+# and `bench` (the profiles whose contract is "no insecure symbol").
 set -euo pipefail
 profile="${1:-release}"
 case "$profile" in
-    dev)             features="skip-locks,insecure" ;;
-    release|bench)   features="skip-locks" ;;
-    *) echo "unknown profile: $profile (expected: dev|release|bench)" >&2; exit 1 ;;
+    release|dev)        features="skip-locks,insecure" ;;
+    hardened|bench)     features="skip-locks" ;;
+    *) echo "unknown profile: $profile (expected: release|dev|hardened|bench)" >&2; exit 1 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -44,22 +52,27 @@ case "$(uname -s)" in
     *)       cp target/release/liblibrustls_mojo.so "$LIB_DIR/librustls_mojo.so" ;;
 esac
 
-# Release/bench builds must NOT export the insecure symbol.
-if [ "$profile" != "dev" ]; then
-    case "$(uname -s)" in
-        Darwin*)
-            if command -v nm >/dev/null && nm -gU "$LIB_DIR/librustls_mojo.dylib" 2>/dev/null \
-                | grep -q rlsm_quic_client_config_new_insecure; then
-                echo "FAIL: $profile build leaked rlsm_quic_client_config_new_insecure" >&2
-                exit 1
-            fi ;;
-        *)
-            if command -v nm >/dev/null && nm -D "$LIB_DIR/librustls_mojo.so" 2>/dev/null \
-                | grep -q rlsm_quic_client_config_new_insecure; then
-                echo "FAIL: $profile build leaked rlsm_quic_client_config_new_insecure" >&2
-                exit 1
-            fi ;;
-    esac
-fi
+# Hardened / bench builds must NOT export the insecure symbol; the contract
+# is "this .so cannot perform insecure cert verification even if asked." For
+# the release / dev profiles the symbol is intentionally present (CLI tools
+# need it for `-k`).
+case "$profile" in
+    hardened|bench)
+        case "$(uname -s)" in
+            Darwin*)
+                if command -v nm >/dev/null && nm -gU "$LIB_DIR/librustls_mojo.dylib" 2>/dev/null \
+                    | grep -q rlsm_quic_client_config_new_insecure; then
+                    echo "FAIL: $profile build leaked rlsm_quic_client_config_new_insecure" >&2
+                    exit 1
+                fi ;;
+            *)
+                if command -v nm >/dev/null && nm -D "$LIB_DIR/librustls_mojo.so" 2>/dev/null \
+                    | grep -q rlsm_quic_client_config_new_insecure; then
+                    echo "FAIL: $profile build leaked rlsm_quic_client_config_new_insecure" >&2
+                    exit 1
+                fi ;;
+        esac
+        ;;
+esac
 
 echo "librustls_mojo (profile=$profile) built and copied to $LIB_DIR/"

@@ -33,6 +33,10 @@
 #   -I               HEAD request, print headers only
 #   -L               Follow redirects (up to 10 hops)
 #   -s               Silent: suppress progress/info messages
+#   -k, --insecure   Skip TLS cert verification (self-signed origins).
+#                    Requires the shipped librustls_mojo.so to include the
+#                    `*_insecure` symbol (release/dev profile, default).
+#                    Hardened-profile installs will abort if you pass this.
 #   --compressed     Request + decode gzip/brotli content-encoding
 #   --http1.1        Force HTTP/1.1 over TCP+TLS
 #   --http2          Force HTTP/2 over TCP+TLS
@@ -306,6 +310,7 @@ struct CliArgs(Movable):
     var force_h3: Bool
     var write_format: String
     var silent: Bool
+    var insecure: Bool
 
     def __init__(out self):
         self.url = String("")
@@ -321,6 +326,7 @@ struct CliArgs(Movable):
         self.force_h3 = False
         self.write_format = String("")
         self.silent = False
+        self.insecure = False
 
     def __init__(out self, *, deinit take: Self):
         self.url = take.url^
@@ -336,6 +342,7 @@ struct CliArgs(Movable):
         self.force_h3 = take.force_h3
         self.write_format = take.write_format^
         self.silent = take.silent
+        self.insecure = take.insecure
 
 
 def _parse_args() raises -> CliArgs:
@@ -375,6 +382,8 @@ def _parse_args() raises -> CliArgs:
             result.force_h2 = True
         elif arg == "--http3":
             result.force_h3 = True
+        elif arg == "-k" or arg == "--insecure":
+            result.insecure = True
         elif arg == "-w" and i + 1 < len(args):
             i += 1
             result.write_format = args[i]
@@ -680,17 +689,20 @@ def _request_via_h3(
     lib_ptr.init_pointee_move(RustlsLibrary())
     var lib_addr = UInt64(Int(lib_ptr))
 
-    # Create QUIC client TLS config with h3 ALPN. Insecure variant
-    # (accepts any server cert) — matches the TCP/TLS path's
-    # `TlsClientConfig(lib, insecure=True)` so fetch works against
-    # self-signed local servers.
+    # Create QUIC client TLS config with h3 ALPN. Cert verification
+    # mirrors the `-k`/`--insecure` flag: default = Mozilla WebPKI roots
+    # (matches curl), `-k` = accept any server cert (self-signed dev).
     var alpn_buf = _heap_alloc[UInt8](2).as_any_origin()
     alpn_buf[0] = UInt8(0x68)  # 'h'
     alpn_buf[1] = UInt8(0x33)  # '3'
     var cfg_out = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_client_config_new_insecure(alpn_buf, Int32(2), cfg_out)
+    var rc: Int32
+    if args.insecure:
+        rc = lib_ptr[].quic_client_config_new_insecure(alpn_buf, Int32(2), cfg_out)
+    else:
+        rc = lib_ptr[].quic_client_config_new(alpn_buf, Int32(2), cfg_out)
     if rc != 0:
-        raise "quic_client_config_new_insecure failed"
+        raise "quic_client_config_new failed"
     var quic_cfg = cfg_out[0]
     cfg_out.free()
     alpn_buf.free()
@@ -855,7 +867,7 @@ def _request_via_tcp(
     var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
     lib_ptr.init_pointee_move(RustlsLibrary())
     ref lib = lib_ptr[]
-    var cli_cfg = TlsClientConfig(lib, insecure=True)
+    var cli_cfg = TlsClientConfig(lib, insecure=args.insecure)
     var alpn_protos = List[String]()
     if args.force_h1:
         alpn_protos.append("http/1.1")
