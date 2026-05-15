@@ -43,7 +43,12 @@ packages = ["mojo_net"]
 # Build the Rust TLS shim (librustls-mojo) before compiling the Mojo package,
 # then bundle the resulting .so into the wheel as a native lib. Consumers
 # need cargo + rustc on PATH at build time; runtime users just need uv.
-pre-build = ["scripts/build_rustls.sh release"]
+#
+# Profile is env-var driven so the SAME pyproject ships safely AND supports
+# local tests / examples that exercise rlsm_client_config_new_insecure:
+#   default ship: scripts/build_rustls.sh release   → strips insecure symbol
+#   local dev:    MOJOX_BUILD_PROFILE=dev uv sync   → includes insecure symbol
+pre-build = ['scripts/build_rustls.sh "${MOJOX_BUILD_PROFILE:-release}"']
 native-libs = ["lib/librustls_mojo.so"]
 
 [tool.uv.sources]
