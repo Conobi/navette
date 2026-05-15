@@ -144,10 +144,16 @@ struct RustlsLibrary(Movable):
         key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
         alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
         out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        max_early_data: Int32 = 0,
     ) -> Int32:
-        """Create QUIC server TLS config. Returns 0 on success."""
+        """Create QUIC server TLS config. Returns 0 on success.
+
+        max_early_data: 0 disables 0-RTT (default). Set to a positive value
+        to enable rustls's session-resumption 0-RTT acceptance up to that byte budget.
+        """
         return self._handle.call["rlsm_quic_server_config_new", Int32](
-            cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len, out_handle,
+            cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len,
+            max_early_data, out_handle,
         )
 
     @always_inline
@@ -218,10 +224,18 @@ struct RustlsLibrary(Movable):
         conn_handle: Int32,
         data: UnsafePointer[UInt8, MutAnyOrigin],
         data_len: Int32,
+        out_state_machine_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
+        out_handle_lookup_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
     ) -> Int32:
-        """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success."""
+        """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success.
+
+        Q6 instrumentation out-params (both default-NULL, NULL-safe in Rust):
+          out_state_machine_us: rustls read_hs body µs.
+          out_handle_lookup_us: with_mut handle-table lookup µs.
+        """
         return self._handle.call["rlsm_quic_conn_read_hs", Int32](
             conn_handle, data, data_len,
+            out_state_machine_us, out_handle_lookup_us,
         )
 
     @always_inline
