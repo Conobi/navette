@@ -18,7 +18,7 @@ from mojo_net.tls.lib import RustlsLibrary
 from mojo_net.quic.connection import QuicConnection, QuicEvent
 from mojo_net.quic.profile import AcceptProfile
 from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from tests._test_util import assert_true, assert_equal_int, load_test_cert
+from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
 
 def test_quic_handshake_kind_invalid_handle_returns_minus_one() raises:
@@ -173,13 +173,16 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
 
     # Build an ephemeral cert shared across both conn pairs.
     var cert_key  = _generate_ephemeral_cert()
+    var ca_bytes  = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes  = cert_key[1].copy()
 
     var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
     var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
+    var ca_ptr   = ca_bytes.unsafe_ptr().as_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len  = Int32(len(key_bytes))
+    var ca_len   = Int32(len(ca_bytes))
 
     # ALPN = "h3".
     var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
@@ -204,7 +207,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
     cli_cfg_ptr[0] = Int32(-1)
     rc = lib_ptr[].quic_client_config_with_ca(
-        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
     )
     assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
     var client_config = cli_cfg_ptr[0]
@@ -345,13 +348,16 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var lib_addr = UInt64(Int(lib_ptr))
 
     var cert_key  = _generate_ephemeral_cert()
+    var ca_bytes  = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes  = cert_key[1].copy()
 
     var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
     var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
+    var ca_ptr   = ca_bytes.unsafe_ptr().as_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len  = Int32(len(key_bytes))
+    var ca_len   = Int32(len(ca_bytes))
 
     var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
     alpn_ptr[0] = UInt8(ord("h"))
@@ -371,7 +377,7 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
     cli_cfg_ptr[0] = Int32(-1)
     rc = lib_ptr[].quic_client_config_with_ca(
-        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
     )
     assert_true(rc == Int32(0), "quic_client_config_with_ca failed")
     var client_config = cli_cfg_ptr[0]
@@ -464,13 +470,16 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var lib_addr = UInt64(Int(lib_ptr))
 
     var cert_key  = _generate_ephemeral_cert()
+    var ca_bytes  = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes  = cert_key[1].copy()
 
     var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
     var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
+    var ca_ptr   = ca_bytes.unsafe_ptr().as_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len  = Int32(len(key_bytes))
+    var ca_len   = Int32(len(ca_bytes))
 
     var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
     alpn_ptr[0] = UInt8(ord("h"))
@@ -490,7 +499,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
     cli_cfg_ptr[0] = Int32(-1)
     rc = lib_ptr[].quic_client_config_with_ca(
-        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
     )
     assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
     var client_config = cli_cfg_ptr[0]

@@ -12,7 +12,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from mojo_net.tls.lib import RustlsLibrary
 from mojo_net.quic.connection import QuicConnection, QuicEvent
 from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert
+from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert, load_test_ca
 from interop.http09 import http09_request, http09_collect, http09_parse_path, http09_serve
 from interop.file_io import read_file, write_file, mkdir_p
 
@@ -30,13 +30,16 @@ def _create_configs(
     lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
 ) raises -> Tuple[Int32, Int32]:
     var cert_key = generate_ephemeral_cert()
+    var ca_bytes = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes = cert_key[1].copy()
 
     var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
     var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
+    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len = Int32(len(key_bytes))
+    var ca_len = Int32(len(ca_bytes))
 
     # ALPN = "hq-interop" for HTTP/0.9 interop
     var alpn_str = String("hq-interop")
@@ -57,7 +60,7 @@ def _create_configs(
 
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
     rc = lib_ptr[].quic_client_config_with_ca(
-        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
     )
     assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
     var client_config = cli_cfg_ptr[0]

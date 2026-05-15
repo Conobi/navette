@@ -32,7 +32,7 @@ from mojo_net.quic.retry import (
     validate_retry_token,
     compute_retry_integrity_tag,
 )
-from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert
+from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert, load_test_ca
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -52,13 +52,16 @@ def _create_configs_from_lib(
     Returns (server_config_handle, client_config_handle).
     """
     var cert_key = generate_ephemeral_cert()
+    var ca_bytes = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes = cert_key[1].copy()
 
     var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
     var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
+    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len = Int32(len(key_bytes))
+    var ca_len = Int32(len(ca_bytes))
 
     # ALPN = "h3" (2 bytes, raw).
     var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
@@ -83,7 +86,7 @@ def _create_configs_from_lib(
     # Client config (trusts the ephemeral cert as CA).
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
     rc = lib_ptr[].quic_client_config_with_ca(
-        cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr,
+        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
     )
     assert_true(
         rc == Int32(0),

@@ -5,7 +5,7 @@ from mojo_net.tls.lib import RustlsLibrary
 from mojo_net.quic.connection import QuicConnection
 from mojo_net.quic.trans_param import TransportParams, default_transport_params
 from mojo_net.h3.connection import H3Connection, H3Event
-from tests._test_util import assert_true, assert_equal_int, load_test_cert
+from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
 
 def test_h3event_zero_values() raises:
@@ -98,12 +98,15 @@ def test_h3_control_stream_setup() raises:
     lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
     var lib_addr = UInt64(Int(lib_ptr))
     var ck = generate_ephemeral_cert()
+    var ca_bytes = load_test_ca()
     var cert_bytes = ck[0].copy()
     var key_bytes = ck[1].copy()
     var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
     var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
+    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len = Int32(len(key_bytes))
+    var ca_len = Int32(len(ca_bytes))
     var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
     alpn_ptr[0] = UInt8(ord("h"))
     alpn_ptr[1] = UInt8(ord("3"))
@@ -113,7 +116,7 @@ def test_h3_control_stream_setup() raises:
     var server_config = srv_cfg_ptr[0]
     srv_cfg_ptr.free()
     var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    _ = lib_ptr[].quic_client_config_with_ca(cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_ptr)
+    _ = lib_ptr[].quic_client_config_with_ca(ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr)
     var client_config = cli_cfg_ptr[0]
     cli_cfg_ptr.free()
     alpn_ptr.free()
