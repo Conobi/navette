@@ -61,3 +61,8 @@ bench/profile/
 
 # Env files (LD_LIBRARY_PATH etc — set via direnv/shell, not committed)
 .env
+CLAUDE.md
+bench/h1_server
+bench/h2_server
+bench/h3_server
+bench/launcher

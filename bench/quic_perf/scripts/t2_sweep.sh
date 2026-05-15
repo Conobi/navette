@@ -10,7 +10,7 @@ set -uo pipefail
 WN="$1"
 ITERS="$2"
 
-REPO=<repo>
+REPO="$(git rev-parse --show-toplevel)"
 HERE="$REPO/bench/quic_perf"
 DEST="$HERE/results/baselines/io-path-wait-nr/wn=$WN"
 
