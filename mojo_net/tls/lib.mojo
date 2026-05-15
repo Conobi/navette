@@ -62,12 +62,34 @@ from mojo_net.tls._rlsm_bindings import (
 )
 
 
+fn _open_librustls() raises -> OwnedDLHandle:
+    """Locate and dlopen librustls_mojo.so across deployment modes.
+
+    Search order:
+      1. Bare soname `librustls_mojo.so` — resolves via the running
+         binary's RUNPATH (mojox-build injects an `$ORIGIN`-relative
+         path to the venv's mojo_packages/lib for installed scripts)
+         or `LD_LIBRARY_PATH` / `ld.so.cache`.
+      2. CWD-relative `lib/librustls_mojo.so` — for `mojo run` from
+         example directories that carry a committed `lib/` symlink
+         (the running process is the Mojo driver, which has no RPATH
+         configured for us).
+    """
+    try:
+        return OwnedDLHandle("librustls_mojo.so")
+    except:
+        return OwnedDLHandle("lib/librustls_mojo.so")
+
+
 struct RustlsLibrary(Movable):
     """Dynamically loaded librustls_mojo.so (TCP-TLS symbols)."""
 
     var _handle: OwnedDLHandle
 
-    def __init__(out self, path: String = "lib/librustls_mojo.so") raises:
+    def __init__(out self) raises:
+        self._handle = _open_librustls()
+
+    def __init__(out self, path: String) raises:
         self._handle = OwnedDLHandle(path)
 
     def __init__(out self, *, deinit take: Self):

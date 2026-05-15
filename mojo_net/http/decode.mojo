@@ -77,12 +77,25 @@ struct ContentDecoder(Movable):
 
     # -- lifecycle -------------------------------------------------------------
 
-    def __init__(
-        out self,
-        encoding: ContentEncoding,
-        lib_path: String = "lib/librustls_mojo.so",
-    ) raises:
-        """Create a decoder for the given encoding."""
+    def __init__(out self, encoding: ContentEncoding) raises:
+        """Create a decoder for the given encoding.
+
+        Resolves librustls_mojo.so via the shared loader (see
+        `mojo_net.tls.lib._open_librustls`); same RPATH / env-var /
+        CWD-relative fallback as `RustlsLibrary`.
+        """
+        from mojo_net.tls.lib import _open_librustls
+        self._encoding = ContentEncoding(copy_from=encoding)
+        self._lib = _open_librustls()
+        if encoding._tag == _ENC_GZIP:
+            self._state = load_rlsm_gzip_init(self._lib)()
+        elif encoding._tag == _ENC_BROTLI:
+            self._state = load_rlsm_br_init(self._lib)()
+        else:
+            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+
+    def __init__(out self, encoding: ContentEncoding, lib_path: String) raises:
+        """Create a decoder with an explicit librustls_mojo.so path."""
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = OwnedDLHandle(lib_path)
         if encoding._tag == _ENC_GZIP:
