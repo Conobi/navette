@@ -5,31 +5,19 @@ requires-python = ">=3.11"
 [[package]]
 name = "boucle"
 version = "0.1.0"
-source = { directory = "../../../boucle" }
+source = { git = "ssh://git@github.com/Conobi/boucle.git?rev=fc7a2f516abaee0c6afb1b2de921e84e9c51826a#fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojox" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mojo-compiler", specifier = "==0.26.2.0" },
-    { name = "mojox", specifier = ">=0.2" },
 ]
 
 [[package]]
 name = "json-simd-mojo"
 version = "0.1.0"
-source = { directory = "../../../json-simd-mojo" }
+source = { git = "ssh://git@github.com/Conobi/json-simd-mojo.git?rev=e034f5ed6c97fc615c240e15c3c50f84a03dc54d#e034f5ed6c97fc615c240e15c3c50f84a03dc54d" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojox" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mojo-compiler", specifier = "==0.26.2.0" },
-    { name = "mojox", specifier = ">=0.2" },
 ]
 
 [[package]]
@@ -56,7 +44,7 @@ wheels = [
 [[package]]
 name = "mojo-net"
 version = "0.1.0"
-source = { directory = "../../" }
+source = { editable = "../../" }
 dependencies = [
     { name = "boucle" },
     { name = "json-simd-mojo" },
@@ -66,8 +54,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", directory = "../../../boucle" },
-    { name = "json-simd-mojo", directory = "../../../json-simd-mojo" },
+    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=fc7a2f516abaee0c6afb1b2de921e84e9c51826a" },
+    { name = "json-simd-mojo", git = "ssh://git@github.com/Conobi/json-simd-mojo.git?rev=e034f5ed6c97fc615c240e15c3c50f84a03dc54d" },
     { name = "mojo-compiler", specifier = "==0.26.2.0" },
     { name = "mojox", specifier = ">=0.2" },
 ]
@@ -87,7 +75,7 @@ dev = [
 [[package]]
 name = "mojo-net-example-hello-h3-server"
 version = "0.0.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "boucle" },
     { name = "json-simd-mojo" },
@@ -98,10 +86,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", directory = "../../../boucle" },
-    { name = "json-simd-mojo", directory = "../../../json-simd-mojo" },
+    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=fc7a2f516abaee0c6afb1b2de921e84e9c51826a" },
+    { name = "json-simd-mojo", git = "ssh://git@github.com/Conobi/json-simd-mojo.git?rev=e034f5ed6c97fc615c240e15c3c50f84a03dc54d" },
     { name = "mojo-compiler", specifier = "==0.26.2.0" },
-    { name = "mojo-net", directory = "../../" },
+    { name = "mojo-net", editable = "../../" },
     { name = "mojox", specifier = ">=0.2" },
 ]
 

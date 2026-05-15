@@ -66,3 +66,9 @@ bench/h1_server
 bench/h2_server
 bench/h3_server
 bench/launcher
+
+# Legacy `mojo build -o main` outputs at example root. Each example's
+# binary is now produced into its own .venv/bin/<name> by `uv sync` via
+# the mojox-build `binaries` config; the root-level ELF is obsolete.
+examples/*/main
+examples/*/dist/
