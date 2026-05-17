@@ -3,17 +3,17 @@
 # Unit tests for HttpCoroClient (M6c).
 
 from std.memory import Span
-from mojo_net.http.coro_client import HttpCoroClient
-from mojo_net.http.session_slot import SessionSlot
-from mojo_net.http.alt_svc import Origin, AltSvcEntry
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.response import Response
-from mojo_net.http.method import Method
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.h1.h1_session import H1Session
-from mojo_net.h1.handler_server import H1HandlerServer
-from mojo_net.http.handler import StreamHandler, Capabilities, RecvBody, ResponseWriter, StreamError
+from navette.http.coro_client import HttpCoroClient
+from navette.http.session_slot import SessionSlot
+from navette.http.alt_svc import Origin, AltSvcEntry
+from navette.http.request import Request, RequestBody
+from navette.http.response import Response
+from navette.http.method import Method
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.h1.h1_session import H1Session
+from navette.h1.handler_server import H1HandlerServer
+from navette.http.handler import StreamHandler, Capabilities, RecvBody, ResponseWriter, StreamError
 from tests._test_util import assert_true, assert_equal_int
 
 

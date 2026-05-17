@@ -1,7 +1,7 @@
 # tests/test_headers.mojo
 #
 # Unit tests for Headers type.
-from mojo_net.http import Headers
+from navette.http import Headers
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

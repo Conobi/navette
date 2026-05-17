@@ -1,11 +1,11 @@
-from mojo_net.h3.frame import (
+from navette.h3.frame import (
     H3_FRAME_DATA, H3_FRAME_HEADERS, H3_FRAME_SETTINGS, H3_FRAME_GOAWAY,
     SETTINGS_QPACK_MAX_TABLE_CAPACITY, SETTINGS_MAX_FIELD_SECTION_SIZE,
     SETTINGS_QPACK_BLOCKED_STREAMS,
     H3RawFrame, DataFrame, HeadersFrame, SettingsPair, SettingsFrame,
     parse_h3_frame,
 )
-from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

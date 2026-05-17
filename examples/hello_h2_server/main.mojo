@@ -24,8 +24,8 @@ Demonstrates:
 Expected: `HTTP/2 200` with `Hello, H2!\\n` body.
 """
 
-from mojo_net.h2.h2_tcp_server import H2TcpServer, serve_forever
-from mojo_net.http.handler import (
+from navette.h2.h2_tcp_server import H2TcpServer, serve_forever
+from navette.http.handler import (
     StreamHandler,
     Request,
     RecvBody,
@@ -34,10 +34,10 @@ from mojo_net.http.handler import (
     StreamError,
     BodyFrame,
 )
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.io.tcp_socket import tcp_listener
-from mojo_net.tls import RustlsLibrary, TlsServerConfig
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.io.tcp_socket import tcp_listener
+from navette.tls import RustlsLibrary, TlsServerConfig
 
 from std.ffi import external_call
 from std.memory import UnsafePointer

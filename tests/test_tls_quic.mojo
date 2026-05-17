@@ -1,6 +1,6 @@
 # tests/test_tls_quic.mojo — FFI null-safety tests for QUIC handshake signatures.
 
-from mojo_net.tls import RustlsLibrary
+from navette.tls import RustlsLibrary
 from tests._test_util import assert_equal_int
 from std.memory import UnsafePointer
 

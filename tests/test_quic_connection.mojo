@@ -5,7 +5,7 @@
 # in memory (no real UDP).
 #
 # Run with:
-#   cd ~/Projets/perso/mojo-net && uv run mojo run -I . -I conformance \
+#   cd ~/Projets/perso/navette && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_connection.mojo
 
 from std.collections import Dict, Optional
@@ -13,21 +13,21 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.packet_protect import PacketProtect
-from mojo_net.quic.connection import (
+from navette.tls.lib import RustlsLibrary
+from navette.quic.packet_protect import PacketProtect
+from navette.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
     CONN_ADDR_VALIDATED,
 )
-from mojo_net.quic.cid import CID_ACTIVE
-from mojo_net.quic.frame import Frame, StreamFrame, ResetStreamFrame
-from mojo_net.quic.pn_space import SentPacket
-from mojo_net.quic.cc.cc_trait import AckedPacket, LostPacket
-from mojo_net.quic.stream import SEND_RESET_SENT
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from mojo_net.quic.ecn import ECN_STATE_DISABLED
-from mojo_net.quic.retry import (
+from navette.quic.cid import CID_ACTIVE
+from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
+from navette.quic.pn_space import SentPacket
+from navette.quic.cc.cc_trait import AckedPacket, LostPacket
+from navette.quic.stream import SEND_RESET_SENT
+from navette.quic.trans_param import TransportParams, default_transport_params
+from navette.quic.ecn import ECN_STATE_DISABLED
+from navette.quic.retry import (
     generate_retry_token,
     validate_retry_token,
     compute_retry_integrity_tag,
@@ -2866,7 +2866,7 @@ def test_dcid_to_u64_basic_cases() raises:
 
     Big-endian pack: result = (b[0]<<56) | (b[1]<<48) | ... | b[7].
     """
-    from mojo_net.quic.cid import dcid_to_u64
+    from navette.quic.cid import dcid_to_u64
 
     # Case 1: All-zero bytes → 0.
     var z = List[UInt8]()
@@ -2924,7 +2924,7 @@ def test_dcid_to_u64_injective_on_distinct_inputs() raises:
     `_dcid_to_u64` outputs. Trivially true for a bijection on 8-byte → UInt64;
     locked anyway as a regression guard.
     """
-    from mojo_net.quic.cid import dcid_to_u64
+    from navette.quic.cid import dcid_to_u64
 
     var outputs = List[UInt64]()
     for n in range(64):

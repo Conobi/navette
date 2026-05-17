@@ -1,18 +1,18 @@
 # tests/test_h1_server_handler.mojo
 #
 # Integration test for the H1HandlerServer adapter (M2.5a §8.1).
-from mojo_net.h1.handler_server import H1HandlerServer
-from mojo_net.http.handler import (
+from navette.h1.handler_server import H1HandlerServer
+from navette.http.handler import (
     StreamHandler,
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from mojo_net.http.request import Request
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.http.body import BodyFrame
+from navette.http.request import Request
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.http.body import BodyFrame
 from std.memory import Span
 from tests._test_util import assert_true, assert_equal_int
 

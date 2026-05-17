@@ -1,6 +1,6 @@
 # examples/fetch/main.mojo
 #
-# `fetch` — HTTP CLI built on mojo-net.
+# `fetch` — HTTP CLI built on navette.
 #
 # Transport selection (default → safe TCP+TLS, upgrade to H3 only when the
 # origin has advertised it):
@@ -63,24 +63,24 @@ from std.pathlib import Path
 
 from boucle.handle import OwnedHandle
 
-from mojo_net.tls import RustlsLibrary, TlsClientConfig, TlsConnection
-from mojo_net.tls.lib import librustls_supports_insecure
-from mojo_net.http import Method, Version, Headers, Request
-from mojo_net.http.request import RequestBody
-from mojo_net.http.response import Response
-from mojo_net.http.session import RequestHandle
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.url import parse_url, ParsedUrl
-from mojo_net.http.alt_svc import Origin, AltSvcEntry
-from mojo_net.http.coro_client import HttpCoroClient
-from mojo_net.http.session_slot import SessionSlot
-from mojo_net.h1.h1_session import H1Session
-from mojo_net.h2.h2_session import H2Session
-from mojo_net.h3.h3_session import H3Session
-from mojo_net.quic.connection import QuicConnection
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from mojo_net.http.decode import ContentDecoder, ContentEncoding
-from mojo_net.io import resolve_host, tcp_connect, udp_connect
+from navette.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from navette.tls.lib import librustls_supports_insecure
+from navette.http import Method, Version, Headers, Request
+from navette.http.request import RequestBody
+from navette.http.response import Response
+from navette.http.session import RequestHandle
+from navette.http.body import BodyFrame
+from navette.http.url import parse_url, ParsedUrl
+from navette.http.alt_svc import Origin, AltSvcEntry
+from navette.http.coro_client import HttpCoroClient
+from navette.http.session_slot import SessionSlot
+from navette.h1.h1_session import H1Session
+from navette.h2.h2_session import H2Session
+from navette.h3.h3_session import H3Session
+from navette.quic.connection import QuicConnection
+from navette.quic.trans_param import TransportParams, default_transport_params
+from navette.http.decode import ContentDecoder, ContentEncoding
+from navette.io import resolve_host, tcp_connect, udp_connect
 
 comptime _RECV_BUF: Int = 16384
 comptime _MAX_ITERS: Int = 500

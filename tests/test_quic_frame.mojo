@@ -1,5 +1,5 @@
-from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
-from mojo_net.quic.frame import (
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
+from navette.quic.frame import (
     Frame,
     AckFrame,
     AckRange,

@@ -5,7 +5,7 @@
 from std.collections.optional import Optional
 from std.memory import Span
 
-from mojo_net.http import (
+from navette.http import (
     Method,
     StatusCode,
     Version,
@@ -14,8 +14,8 @@ from mojo_net.http import (
     Request,
     Response,
 )
-from mojo_net.h1 import ParseConfig
-from mojo_net.h1.server import ServerConnection
+from navette.h1 import ParseConfig
+from navette.h1.server import ServerConnection
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

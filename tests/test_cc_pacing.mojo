@@ -1,4 +1,4 @@
-from mojo_net.quic.cc.pacing import Pacer
+from navette.quic.cc.pacing import Pacer
 from std.testing import assert_true
 
 def test_pacer_init_defaults() raises:

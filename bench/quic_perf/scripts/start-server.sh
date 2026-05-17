@@ -2,12 +2,12 @@
 # Launch the server under test, pinned to core 0, with all volumes mounted.
 # Calls wait-ready.sh after the container is up.
 #
-# Usage: start-server.sh <mojo-net|tquic>
+# Usage: start-server.sh <navette|tquic>
 
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-    echo "usage: start-server.sh <mojo-net|tquic>" >&2
+    echo "usage: start-server.sh <navette|tquic>" >&2
     exit 2
 fi
 
@@ -16,15 +16,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 
 # Image tag override (defaults preserve existing behaviour).
-# Set when parallel workflows might overwrite mojo-net-bench:latest.
-MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-mojo-net-bench:latest}"
+# Set when parallel workflows might overwrite navette-bench:latest.
+MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-navette-bench:latest}"
 TQUIC_IMAGE="${TQUIC_IMAGE:-tquic-bench:latest}"
 
 # Always start from a clean slate.
 "$HERE/scripts/stop-server.sh"
 
 case "$SERVER" in
-    mojo-net)
+    navette)
         # Ensure profile sidecar dir exists on host so the bind mount below
         # has a target to attach to. Server writes
         # bench/quic_perf/results/profile/INSTRUMENTATION-<ts>.json on
@@ -55,7 +55,7 @@ case "$SERVER" in
         ;;
     tquic)
         # Mount payloads under /data/static so tquic_server serves the same
-        # URL shape as mojo-net's handler (which routes /static/<file> → cache).
+        # URL shape as navette's handler (which routes /static/<file> → cache).
         docker run -d --name bench-tquic \
             --network host \
             --cpuset-cpus=0 \
@@ -72,7 +72,7 @@ case "$SERVER" in
         CONTAINER=bench-tquic
         ;;
     *)
-        echo "[start-server] unknown server: $SERVER (expected mojo-net or tquic)" >&2
+        echo "[start-server] unknown server: $SERVER (expected navette or tquic)" >&2
         exit 2
         ;;
 esac

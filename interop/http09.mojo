@@ -6,7 +6,7 @@
 #   server sends: <file bytes>   (with FIN)
 
 from std.memory import Span
-from mojo_net.quic.connection import QuicConnection
+from navette.quic.connection import QuicConnection
 from interop.file_io import read_file
 
 

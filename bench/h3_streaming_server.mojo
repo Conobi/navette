@@ -23,11 +23,11 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Dict, InlineArray
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.connection import QuicConnection
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from mojo_net.quic.packet import parse_packet_header
-from mojo_net.h3.h3_streaming_server import H3StreamingServer
+from navette.tls.lib import RustlsLibrary
+from navette.quic.connection import QuicConnection
+from navette.quic.trans_param import TransportParams, default_transport_params
+from navette.quic.packet import parse_packet_header
+from navette.h3.h3_streaming_server import H3StreamingServer
 
 from bench.streaming_handler import llm_stream_h3_handler
 

@@ -28,7 +28,7 @@ from lib.http2.connection import (
 
 from boucle.stackful import CoroYielder
 
-from mojo_net.h2.h2_streaming_server import (
+from navette.h2.h2_streaming_server import (
     H2StreamingServer,
     H2StreamingCtx,
     H2StreamingHandlerFn,
@@ -37,10 +37,10 @@ from mojo_net.h2.h2_streaming_server import (
     finish,
     cancelled,
 )
-from mojo_net.http.handler import Capabilities, RecvBody, ResponseWriter, StreamError
-from mojo_net.http.headers import Headers
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.status import StatusCode
+from navette.http.handler import Capabilities, RecvBody, ResponseWriter, StreamError
+from navette.http.headers import Headers
+from navette.http.body import BodyFrame
+from navette.http.status import StatusCode
 from tests._test_util import assert_true, assert_equal_int
 
 

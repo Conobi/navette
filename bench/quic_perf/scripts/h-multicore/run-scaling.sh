@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # H-multicore diagnostic driver: 6 cells × N iters with 30s pauses.
-# Cells: {mojo-net, tquic} × {0, 0-1, 0-3}
+# Cells: {navette, tquic} × {0, 0-1, 0-3}
 # Default ITERS=5, output dir: bench/quic_perf/results/baselines/h-multicore-scaling
 #
 # Usage: run-scaling.sh [ITERS]
@@ -13,9 +13,9 @@ OUTDIR="$HERE/results/baselines/h-multicore-scaling"
 mkdir -p "$OUTDIR"
 
 CELLS=(
-    "mojo-net 0"
-    "mojo-net 0-1"
-    "mojo-net 0-3"
+    "navette 0"
+    "navette 0-1"
+    "navette 0-3"
     "tquic 0"
     "tquic 0-1"
     "tquic 0-3"

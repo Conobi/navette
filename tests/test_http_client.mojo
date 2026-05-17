@@ -5,19 +5,19 @@
 from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from mojo_net.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1
-from mojo_net.http.handler import Capabilities, ALPN_H1, StreamHandler, RecvBody, ResponseWriter, StreamError
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.method import Method
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.http.response import Response
-from mojo_net.http.alt_svc import Origin
-from mojo_net.http.url import parse_url
-from mojo_net.http.client import HttpClient, _is_redirect, _is_idempotent
-from mojo_net.h1.h1_session import H1Session
-from mojo_net.h1.handler_server import H1HandlerServer
-from mojo_net.h2.h2_session import H2Session
+from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1
+from navette.http.handler import Capabilities, ALPN_H1, StreamHandler, RecvBody, ResponseWriter, StreamError
+from navette.http.request import Request, RequestBody
+from navette.http.method import Method
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.http.response import Response
+from navette.http.alt_svc import Origin
+from navette.http.url import parse_url
+from navette.http.client import HttpClient, _is_redirect, _is_idempotent
+from navette.h1.h1_session import H1Session
+from navette.h1.handler_server import H1HandlerServer
+from navette.h2.h2_session import H2Session
 from tests._test_util import assert_true, assert_equal_int
 
 

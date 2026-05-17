@@ -4,16 +4,16 @@
 # See specs/2026-04-25-quic-pacer-bypass-handshake.md for the design.
 #
 # Run with:
-#   cd ~/Projets/perso/mojo-net && LD_LIBRARY_PATH=lib uv run mojo run -I . -I conformance \
+#   cd ~/Projets/perso/navette && LD_LIBRARY_PATH=lib uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_pacer_bypass.mojo
 
 from std.collections import Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.connection import QuicConnection
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from navette.tls.lib import RustlsLibrary
+from navette.quic.connection import QuicConnection
+from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert, load_test_ca
 
 

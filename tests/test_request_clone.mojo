@@ -1,9 +1,9 @@
 # tests/test_request_clone.mojo
 #
 # Unit tests for Request.clone() / try_clone() (M2.5a §5.13).
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.method import Method
-from mojo_net.http.handler import RecvBody
+from navette.http.request import Request, RequestBody
+from navette.http.method import Method
+from navette.http.handler import RecvBody
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

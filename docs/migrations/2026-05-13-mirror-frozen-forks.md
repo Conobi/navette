@@ -3,7 +3,7 @@
 **Decision: do not implement.** The ongoing cost of maintaining 7 mirror repos and a sync workflow exceeds the expected cost of reactive remediation if an upstream disappears. Specifically:
 
 - **Mirror cost is certain and continuous**: 7 GitHub repos to keep in sync, a weekly Action whose failures we have to triage, naming/transfer hygiene if we ever consolidate accounts.
-- **Outage cost is uncertain and one-shot**: if e.g. `quictls/openssl` is deleted, the recovery options are (a) vendor a snapshot into mojo-net once, (b) swap to mainline OpenSSL 3.5+ which now ships the QUIC API natively, or (c) point at any successor fork. Each is hours of work, not days, and only paid once.
+- **Outage cost is uncertain and one-shot**: if e.g. `quictls/openssl` is deleted, the recovery options are (a) vendor a snapshot into navette once, (b) swap to mainline OpenSSL 3.5+ which now ships the QUIC API natively, or (c) point at any successor fork. Each is hours of work, not days, and only paid once.
 
 The risk is real but tail-shaped; the maintenance is certain. YAGNI wins.
 

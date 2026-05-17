@@ -2,16 +2,16 @@
 #
 # Verifies that StreamHandler can be implemented by a concrete struct,
 # i.e. the trait surface compiles end-to-end (M2.5a §5.9).
-from mojo_net.http.handler import (
+from navette.http.handler import (
     StreamHandler,
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from mojo_net.http.request import Request
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
+from navette.http.request import Request
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
 from tests._test_util import assert_equal_int
 
 

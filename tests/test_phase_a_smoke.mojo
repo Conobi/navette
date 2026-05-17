@@ -5,9 +5,9 @@
 # Cross-imports every Phase A type from both `src` (re-exports) and
 # `src.h1` (ParseConfig / ParserStrictness) and exercises them together
 # to verify the whole Phase A surface is wired up and usable.
-from mojo_net import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
-from mojo_net.http.request import RequestBody
-from mojo_net.h1 import ParseConfig, ParserStrictness
+from navette import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from navette.http.request import RequestBody
+from navette.h1 import ParseConfig, ParserStrictness
 from tests._test_util import assert_true
 
 
@@ -60,7 +60,7 @@ def test_phase_a_cross_imports() raises:
     assert_true(resp.status.code() == 200, "Response.status.code() == 200")
     assert_true(resp.reason == "OK", "Response.reason == 'OK'")
 
-    # ParseConfig / ParserStrictness (from mojo_net.h1)
+    # ParseConfig / ParserStrictness (from navette.h1)
     var strict = ParserStrictness()
     var cfg = ParseConfig(strictness=strict^)
     assert_true(cfg.max_header_count == 100, "ParseConfig default max_header_count")

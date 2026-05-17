@@ -10,29 +10,29 @@
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
 HERE      := $(REPO_ROOT)/bench/quic_perf
 
-SERVERS   := mojo-net tquic
+SERVERS   := navette tquic
 PAYLOADS  := 1k 5k 15k 2m
 SCENARIOS := long-conn short-conn
 CLIENTS   := tquic_client h2load
 
 .PHONY: setup bench-mvp bench-full summary clean help \
-        build-mojo-net build-tquic build-h2load gen-certs gen-payloads
+        build-navette build-tquic build-h2load gen-certs gen-payloads
 
 help:
 	@echo "Targets: setup bench-mvp bench-full summary clean"
 
-setup: build-mojo-net build-tquic build-h2load gen-certs gen-payloads
+setup: build-navette build-tquic build-h2load gen-certs gen-payloads
 	@echo "[setup] all images built, certs and payloads ready"
 
-build-mojo-net:
-	@if ! docker image inspect mojo-net-bench:latest >/dev/null 2>&1; then \
-	    echo "[setup] building mojo-net-bench:latest"; \
-	    docker build -t mojo-net-bench:latest \
+build-navette:
+	@if ! docker image inspect navette-bench:latest >/dev/null 2>&1; then \
+	    echo "[setup] building navette-bench:latest"; \
+	    docker build -t navette-bench:latest \
 	        --build-context boucle=$(REPO_ROOT)/../boucle \
 	        --build-context simdjson=$(REPO_ROOT)/../json-simd-mojo \
 	        -f $(REPO_ROOT)/bench/Dockerfile $(REPO_ROOT); \
 	else \
-	    echo "[setup] mojo-net-bench:latest exists (skip)"; \
+	    echo "[setup] navette-bench:latest exists (skip)"; \
 	fi
 
 build-tquic:

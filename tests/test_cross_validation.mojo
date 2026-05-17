@@ -8,7 +8,7 @@
 # to the conformance reference.
 #
 # Run with:
-#   cd ~/Projets/perso/mojo-net && rm -f src.mojopkg && \
+#   cd ~/Projets/perso/navette && rm -f src.mojopkg && \
 #     uv run mojo run -I . -I conformance -D ASSERT=all \
 #     tests/test_cross_validation.mojo
 
@@ -28,12 +28,12 @@ from lib.http1.response import parse_response as batch_parse_response
 
 # Production (incremental) parser — call directly so we don't have to
 # reason about H1Connection lifecycle (HTTP/1.0 close, error phase, etc.).
-from mojo_net.http.method import Method
-from mojo_net.http.request import Request
-from mojo_net.http.response import Response
-from mojo_net.http.body import BodyFrame
-from mojo_net.h1.config import ParseConfig
-from mojo_net.h1.parser import (
+from navette.http.method import Method
+from navette.http.request import Request
+from navette.http.response import Response
+from navette.http.body import BodyFrame
+from navette.h1.config import ParseConfig
+from navette.h1.parser import (
     try_parse_request,
     try_parse_response,
     ParseResult,

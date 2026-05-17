@@ -6,7 +6,7 @@
 #   uv run mojo run -I . -D ASSERT=all tests/test_quic_stream.mojo
 
 from tests._test_util import assert_true, assert_false, assert_equal_int
-from mojo_net.quic.stream import (
+from navette.quic.stream import (
     # State constants
     SEND_READY,
     SEND_SEND,

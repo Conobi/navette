@@ -2,7 +2,7 @@
 # HttpArena Benchmark Server — multi-stage build
 #
 # Build:
-#   docker build -t mojo-net-bench:latest \
+#   docker build -t navette-bench:latest \
 #       --build-context boucle=../boucle \
 #       --build-context simdjson=../json-simd-mojo \
 #       -f bench/Dockerfile .

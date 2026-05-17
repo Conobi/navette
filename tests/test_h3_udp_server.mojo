@@ -25,7 +25,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from boucle.completion import BatchCompletionLoop
 from boucle._sys.linux.raw.ctypes import c_void
 
-from mojo_net.h3.h3_udp_server import (
+from navette.h3.h3_udp_server import (
     H3UdpServer,
     drain_pending_submits,
     PBUF_COUNT,
@@ -35,7 +35,7 @@ from mojo_net.h3.h3_udp_server import (
     OP_TIMEOUT,
     OP_PROVIDE_BUF,
 )
-from mojo_net.http.handler import (
+from navette.http.handler import (
     StreamHandler,
     Request,
     RecvBody,
@@ -43,9 +43,9 @@ from mojo_net.http.handler import (
     Capabilities,
     StreamError,
 )
-from mojo_net.io.udp_socket import udp_listener
-from mojo_net.quic.trans_param import default_transport_params
-from mojo_net.tls.lib import RustlsLibrary
+from navette.io.udp_socket import udp_listener
+from navette.quic.trans_param import default_transport_params
+from navette.tls.lib import RustlsLibrary
 
 from interop.file_io import read_file
 

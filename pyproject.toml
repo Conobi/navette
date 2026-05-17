@@ -1,5 +1,5 @@
 [project]
-name = "mojo-net"
+name = "navette"
 version = "0.1.0"
 description = "Pure-Mojo networking stack: QUIC, HTTP/3, HTTP/2, HTTP/1.1"
 license = "Apache-2.0"
@@ -36,7 +36,7 @@ requires = [
 build-backend = "mojox_build"
 
 [tool.mojox-build]
-packages = ["mojo_net"]
+packages = ["navette"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
 # uv-installed deps (boucle, json-simd-mojo) resolve without manual flags.
 

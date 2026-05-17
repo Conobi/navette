@@ -1,9 +1,9 @@
 # tests/test_h1_client_session.mojo
 #
 # Loopback integration test for H1Session via H1HandlerServer (M2.5a §8.2).
-from mojo_net.h1.h1_session import H1Session
-from mojo_net.h1.handler_server import H1HandlerServer
-from mojo_net.http.handler import (
+from navette.h1.h1_session import H1Session
+from navette.h1.handler_server import H1HandlerServer
+from navette.http.handler import (
     StreamHandler,
     Capabilities,
     DetachedBody,
@@ -11,11 +11,11 @@ from mojo_net.http.handler import (
     ResponseWriter,
     StreamError,
 )
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.method import Method
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
+from navette.http.body import BodyFrame
+from navette.http.request import Request, RequestBody
+from navette.http.method import Method
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
 from std.memory import Span
 from tests._test_util import assert_true, assert_equal_int
 

@@ -19,9 +19,9 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.h1.handler_server import H1HandlerServer
-from mojo_net.io.io_uring import IoUring
-from mojo_net.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.h1.handler_server import H1HandlerServer
+from navette.io.io_uring import IoUring
+from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
 from bench.handler import (
     BenchHandler,
     BenchState,

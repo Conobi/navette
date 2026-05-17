@@ -2,7 +2,7 @@
 #
 # Data types for the HTTP/1.1 request parser.
 
-from mojo_net.h2.header import Header
+from navette.h2.header import Header
 
 
 struct ParserStrictness(Copyable, Movable):

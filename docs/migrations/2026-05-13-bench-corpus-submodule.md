@@ -2,7 +2,7 @@
 
 **Status:** scripted ops drafted; submodule repo creation is user-owned. 2026-05-13.
 
-The v2 deps-enhancement plan §4.2 called for moving bench/research corpora out of the main repo into a sibling `mojo-net-bench-corpus` submodule, so a default clone stays lean and the corpora are only fetched when running bench sweeps.
+The v2 deps-enhancement plan §4.2 called for moving bench/research corpora out of the main repo into a sibling `navette-bench-corpus` submodule, so a default clone stays lean and the corpora are only fetched when running bench sweeps.
 
 This doc lists what to move, the rationale, and the one-shot git operations.
 
@@ -12,7 +12,7 @@ Verified by `du -sh` on 2026-05-13:
 
 | Path                     | Size  | Purpose                                                          |
 |--------------------------|-------|------------------------------------------------------------------|
-| `.research/tquic/`       | 4.0 MB  | TQUIC vendored source for perf comparison; not linked into mojo-net runtime. |
+| `.research/tquic/`       | 4.0 MB  | TQUIC vendored source for perf comparison; not linked into navette runtime. |
 | `bench/.httparena/`      | 245 MB  | httparena vendor: ~50 framework Dockerfiles + wrk/ghz/gcannon helper scripts. Comparison sweep only. |
 
 Together: **~249 MB** added to every `git clone`. Neither path is consumed by `cargo build`, `uv sync`, `mojo build`, or `scripts/check_integrations.sh`.
@@ -27,13 +27,13 @@ Submodule wins.
 
 ## One-shot scripted move
 
-When the corpus repo exists (e.g., `github.com/Conobi/mojo-net-bench-corpus`):
+When the corpus repo exists (e.g., `github.com/Conobi/navette-bench-corpus`):
 
 ```bash
 #!/usr/bin/env bash
 # scripts/migrations/move_bench_corpus_to_submodule.sh — run ONCE on a clean working tree.
 set -euo pipefail
-CORPUS_REPO="${1:-git@github.com:Conobi/mojo-net-bench-corpus.git}"
+CORPUS_REPO="${1:-git@github.com:Conobi/navette-bench-corpus.git}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -54,8 +54,8 @@ git commit -m "chore(bench): stage tquic + httparena for corpus extraction"
 # 2) Use git-filter-repo to extract a new repo with only these paths.
 #    git-filter-repo is faster than filter-branch and recommended by git docs.
 #    If unavailable: `pip install --user git-filter-repo`.
-git clone . /tmp/mojo-net-corpus-staging
-cd /tmp/mojo-net-corpus-staging
+git clone . /tmp/navette-corpus-staging
+cd /tmp/navette-corpus-staging
 git filter-repo --path _corpus_staging --path-rename _corpus_staging/:
 # Result: a new repo whose contents are tquic/ + httparena/ at the root.
 # History preserved for those paths only.
@@ -64,7 +64,7 @@ git filter-repo --path _corpus_staging --path-rename _corpus_staging/:
 git remote add origin "$CORPUS_REPO"
 git push -u origin main
 
-# 4) Back in mojo-net main repo: delete the staging dir, add submodule.
+# 4) Back in navette main repo: delete the staging dir, add submodule.
 cd "$REPO_ROOT"
 git rm -r _corpus_staging
 git commit -m "chore(bench): remove staged corpus (will be re-added as submodule)"
@@ -92,14 +92,14 @@ After the move, ensure `.gitignore` does not exclude `bench/corpus` (submodules 
 
 Done when:
 - `bench/corpus/tquic` and `bench/corpus/httparena` are submodules.
-- `git clone` of mojo-net no longer pulls 249 MB by default.
+- `git clone` of navette no longer pulls 249 MB by default.
 - `git submodule update --init bench/corpus` pulls the corpus.
 - All affected bench scripts/Dockerfiles updated to new paths.
 - A bench sweep still runs end-to-end.
 
 ## Prerequisites (user-owned)
 
-1. Create `mojo-net-bench-corpus` repo on GitHub.
+1. Create `navette-bench-corpus` repo on GitHub.
 2. Run the migration script above.
 3. Update README / CONTRIBUTING (if any) to note the `--recurse-submodules` clone flag for users running benches.
 
@@ -109,4 +109,4 @@ This is a destructive history rewrite for the corpus paths. Anyone with an in-fl
 
 ## Why deferred
 
-User-side infra (the new GitHub repo) needs to exist before the migration runs. The script is ready to invoke once `mojo-net-bench-corpus` is created.
+User-side infra (the new GitHub repo) needs to exist before the migration runs. The script is ready to invoke once `navette-bench-corpus` is created.

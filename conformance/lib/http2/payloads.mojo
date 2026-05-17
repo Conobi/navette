@@ -1,5 +1,5 @@
-# conformance/lib/http2/payloads.mojo — re-exports from mojo_net.h2.payloads
-from mojo_net.h2.payloads import (
+# conformance/lib/http2/payloads.mojo — re-exports from navette.h2.payloads
+from navette.h2.payloads import (
     DataPayload,
     decode_data_payload,
     HeadersPayload,

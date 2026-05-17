@@ -6,7 +6,7 @@
 
 from lib.test_util import hex_decode, hex_encode, load_vectors, assert_true, assert_equal
 from python import Python, PythonObject
-from mojo_net.quic.packet import parse_packet_header, PacketType, PacketHeader
+from navette.quic.packet import parse_packet_header, PacketType, PacketHeader
 
 
 def packet_type_to_string(pt: PacketType) -> String:

@@ -2,13 +2,13 @@
 #
 # Unit tests for RequestHandle and Session trait shape (M2.5a §5.11).
 from std.collections.deque import Deque
-from mojo_net.http.session import RequestHandle, Session
-from mojo_net.http.handler import RecvBody, StreamError, Capabilities
-from mojo_net.http.response import Response
-from mojo_net.http.status import StatusCode
-from mojo_net.http.headers import Headers
-from mojo_net.http.request import Request
-from mojo_net.http.body import BodyFrame
+from navette.http.session import RequestHandle, Session
+from navette.http.handler import RecvBody, StreamError, Capabilities
+from navette.http.response import Response
+from navette.http.status import StatusCode
+from navette.http.headers import Headers
+from navette.http.request import Request
+from navette.http.body import BodyFrame
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

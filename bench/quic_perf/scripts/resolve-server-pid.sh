@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Echo the PID inside <container_name> so measure-cpu.sh can sample it.
-# For mojo-net we bypass the launcher (--entrypoint /usr/local/bin/h3_server),
+# For navette we bypass the launcher (--entrypoint /usr/local/bin/h3_server),
 # so the container init PID is the worker PID directly. For tquic, same.
 
 set -euo pipefail

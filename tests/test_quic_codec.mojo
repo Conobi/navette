@@ -1,5 +1,5 @@
-from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
-from mojo_net.quic.packet import is_long_header_initial
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.quic.packet import is_long_header_initial
 
 
 def test_varint_roundtrip() raises:

@@ -18,7 +18,7 @@
 
 from std.io.file import FileHandle
 
-from mojo_net.http import (
+from navette.http import (
     BodyFrame,
     Headers,
     Request,

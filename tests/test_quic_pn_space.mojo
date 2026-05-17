@@ -1,9 +1,9 @@
 # tests/test_quic_pn_space.mojo
 # Tests for PacketNumberSpace: PN allocation, ACK tracking, SentPacket records.
 
-from mojo_net.quic.frame import AckFrame, AckRange, Frame
-from mojo_net.quic.packet import PacketType
-from mojo_net.quic.pn_space import (
+from navette.quic.frame import AckFrame, AckRange, Frame
+from navette.quic.packet import PacketType
+from navette.quic.pn_space import (
     EncryptionLevel,
     PacketNumberSpace,
     SentPacket,

@@ -5,13 +5,13 @@
 # and the padding utility.
 #
 # Run with:
-#   cd ~/Projets/perso/mojo-net && uv run mojo run -I . -I conformance \
+#   cd ~/Projets/perso/navette && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_packet.mojo
 
 from std.python import Python, PythonObject
 
-from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode
-from mojo_net.quic.packet import (
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode
+from navette.quic.packet import (
     PacketHeader,
     PacketType,
     initial_packet_needs_padding,

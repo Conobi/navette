@@ -1,10 +1,10 @@
 # tests/test_response_writer.mojo
 #
 # Unit tests for ResponseWriter (M2.5a §5.8).
-from mojo_net.http.handler import ResponseWriter, WriteResult
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
+from navette.http.handler import ResponseWriter, WriteResult
+from navette.http.body import BodyFrame
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
 from tests._test_util import assert_true, assert_false
 
 

@@ -1,2 +1,2 @@
-# conformance/lib/http2/hpack_huffman.mojo — re-exports from mojo_net.h2.hpack_huffman
-from mojo_net.h2.hpack_huffman import HuffmanCodec
+# conformance/lib/http2/hpack_huffman.mojo — re-exports from navette.h2.hpack_huffman
+from navette.h2.hpack_huffman import HuffmanCodec

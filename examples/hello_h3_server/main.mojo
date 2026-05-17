@@ -1,6 +1,6 @@
 """hello_h3_server.mojo — minimal end-to-end H3 server.
 
-Demonstrates the full mojo-net library surface:
+Demonstrates the full navette library surface:
 
   * `udp_listener()`          — owns the listening UDP socket
   * `RustlsLibrary`           — loads librustls_mojo.so for the TLS handshake
@@ -33,8 +33,8 @@ You should see 4× 200 responses with "Hello, H3!" payloads.
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.h3.h3_udp_server import H3UdpServer, serve_forever
-from mojo_net.http.handler import (
+from navette.h3.h3_udp_server import H3UdpServer, serve_forever
+from navette.http.handler import (
     StreamHandler,
     Request,
     RecvBody,
@@ -43,11 +43,11 @@ from mojo_net.http.handler import (
     StreamError,
     BodyFrame,
 )
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.io.udp_socket import udp_listener
-from mojo_net.quic.trans_param import default_transport_params
-from mojo_net.tls.lib import RustlsLibrary
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.io.udp_socket import udp_listener
+from navette.quic.trans_param import default_transport_params
+from navette.tls.lib import RustlsLibrary
 
 from std.ffi import external_call
 from std.collections.optional import Optional

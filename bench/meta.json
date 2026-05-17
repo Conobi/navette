@@ -1,10 +1,10 @@
 {
-  "display_name": "mojo-net",
+  "display_name": "navette",
   "language": "Mojo",
   "type": "engine",
-  "engine": "mojo-net",
+  "engine": "navette",
   "description": "HTTP/1.1 + HTTP/2 + HTTP/3 server. Mojo, sans-I/O protocol layers, rustls TLS, io_uring I/O via boucle.",
-  "repo": "https://github.com/Conobi/mojo-net",
+  "repo": "https://github.com/Conobi/navette",
   "enabled": true,
   "tests": ["baseline", "json", "baseline-h2", "json-tls", "baseline-h3", "static", "static-h2", "static-h3"],
   "maintainers": ["Conobi"]

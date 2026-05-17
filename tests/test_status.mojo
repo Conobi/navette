@@ -1,7 +1,7 @@
 # tests/test_status.mojo
 #
 # Unit tests for StatusCode type.
-from mojo_net.http import StatusCode
+from navette.http import StatusCode
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

@@ -1,8 +1,8 @@
 # tests/test_recv_body.mojo
 #
 # Unit tests for RecvBody (M2.5a §5.6).
-from mojo_net.http.handler import RecvBody, StreamError
-from mojo_net.http.body import BodyFrame
+from navette.http.handler import RecvBody, StreamError
+from navette.http.body import BodyFrame
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 

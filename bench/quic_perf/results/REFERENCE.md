@@ -15,14 +15,14 @@ level via `docker stats --no-stream` once per second.
 
 ### tquic_client (4 threads, 25 conns/thread, saturating)
 
-| Payload | Scenario   | mojo-net req/s (n) | TQUIC req/s (n) | mojo-net CPU% | mojo-net / TQUIC |
+| Payload | Scenario   | navette req/s (n) | TQUIC req/s (n) | navette CPU% | navette / TQUIC |
 |---------|------------|--------------------|-----------------|---------------|------------------|
 | 1k      | long-conn  | 412 (3)            | 87,113 (3)      | 5.6           | 0.0047× |
 | 1k      | short-conn | 1 (3)              | 2,535 (3)       | 0.2           | 0.0004× |
 
 ### h2load-h3 (single-threaded, regression-tracking)
 
-| Payload | Scenario   | mojo-net req/s (n) | TQUIC req/s (n) | mojo-net CPU% | mojo-net / TQUIC |
+| Payload | Scenario   | navette req/s (n) | TQUIC req/s (n) | navette CPU% | navette / TQUIC |
 |---------|------------|--------------------|-----------------|---------------|------------------|
 | 1k      | long-conn  | 125 (3)            | 32,625 (3)      | 2.9           | 0.0038× |
 | 1k      | short-conn | 11 (3)             | 66,023 (3)      | 0.6           | 0.0002× |
@@ -32,14 +32,14 @@ level via `docker stats --no-stream` once per second.
 - **TQUIC's tquic_server hits 87K req/s with `tquic_client` and saturates core 0
   at 88% CPU** — server-side bottleneck reached, the hardware envelope on this
   laptop. This is the calibration anchor.
-- **mojo-net hits 412 req/s long-conn / 1 req/s short-conn while using <6% of
+- **navette hits 412 req/s long-conn / 1 req/s short-conn while using <6% of
   one CPU core.** Mojo-net is *not* CPU-bound on core 0 — there is huge headroom
   the server isn't using. The bottleneck is **per-connection cost**: under
   saturating load (400 attempted connections in 30 s) only ~3–10 complete the
   QUIC handshake, the rest time out. The successful handshakes then drive
   thousands of requests, but the throughput is gated by the trickle of
   conns the server can actually accept.
-- **h2load → mojo-net is single-threaded at the client** — those numbers are
+- **h2load → navette is single-threaded at the client** — those numbers are
   for regression tracking against prior runs, not absolute comparisons.
 
 ## Known limitations of these numbers
@@ -53,12 +53,12 @@ level via `docker stats --no-stream` once per second.
 - **No CI integration / no commit-to-commit tracking yet** — REFERENCE.md is
   a manual snapshot. Numbers will drift with kernel updates, thermals, and
   parallel host load.
-- **Single-worker mojo-net** (`--workers 1`). Multi-process via SO_REUSEPORT
+- **Single-worker navette** (`--workers 1`). Multi-process via SO_REUSEPORT
   is out of scope for this harness.
 
 ## Where the work goes from here
 
-The honest read: mojo-net is ~210× slower than TQUIC long-conn, ~2,500× slower
+The honest read: navette is ~210× slower than TQUIC long-conn, ~2,500× slower
 short-conn, while using essentially zero CPU. The next optimisation pass should
 target **connection-establishment throughput** — handshake latency, accept
 loop, packet decryption pipelining — rather than steady-state stream throughput.
@@ -75,7 +75,7 @@ each subsequent datagram for ~20 ms in a multishot recvmsg burst, pushing
 the pacer (and post-send token commit + timer-deadline branch) on
 `is_established()`; preserve anti-amp and CC cwnd unchanged.
 
-**Single-cell gate** (`bench.sh mojo-net 1k long-conn tquic_client --iters 3`):
+**Single-cell gate** (`bench.sh navette 1k long-conn tquic_client --iters 3`):
 
 | iter | rps | CPU% | success | fail |
 |---|---|---|---|---|
@@ -93,7 +93,7 @@ handshake throughput under concurrency.
 RFC-compatible (RFC 9002 §7's only normative MUST is "pace OR limit bursts
 to the initial congestion window"; retained anti-amp + cwnd checks satisfy
 the burst-limit clause). picoquic ships this exact design; quinn / TQUIC /
-ngtcp2 / quiche pace every encryption level. mojo-net is now in the
+ngtcp2 / quiche pace every encryption level. navette is now in the
 picoquic camp on this point. Commits: `911601e..ba3c254` on
 `fix/quic-pacer-bypass-handshake`.
 
@@ -200,11 +200,11 @@ Under saturating-handshake load (4×25=100 clients sending Initial packets simul
 
 ## TRUE diagnosis (verified 2026-04-26) — SUPERSEDED, see CORRECTED diagnosis below
 
-The "harness is the bottleneck" claim below ignored cross-client data already in this file (rows 16-28). Both `tquic_client` AND `h2load --h3` drive `tquic_server` to 5-digit rps on the same hardware; both bring `mojo-net` to its knees. The harness *can* saturate. The bottleneck IS in mojo-net. Section preserved verbatim for audit.
+The "harness is the bottleneck" claim below ignored cross-client data already in this file (rows 16-28). Both `tquic_client` AND `h2load --h3` drive `tquic_server` to 5-digit rps on the same hardware; both bring `navette` to its knees. The harness *can* saturate. The bottleneck IS in navette. Section preserved verbatim for audit.
 
 ---
 
-**The bench harness's calibrated 412 rps long-conn / 1 rps short-conn floor is set by the test harness, NOT by mojo-net's server.**
+**The bench harness's calibrated 412 rps long-conn / 1 rps short-conn floor is set by the test harness, NOT by navette's server.**
 
 **Verification:** added six diagnostic counters to `bench/h3_server.mojo` covering every layer where packets could be silently dropped:
 
@@ -228,7 +228,7 @@ UdpRcvbufErrors delta over run:  0   (via nstat -az before/after)
 
 **This means:**
 
-1. **mojo-net's per-packet FFI cost (~127us) is NOT the rate-limiter** at the rates this bench tests. At 13-21 conn arrivals / 30s = 0.4-0.7/sec, the server is loafing.
+1. **navette's per-packet FFI cost (~127us) is NOT the rate-limiter** at the rates this bench tests. At 13-21 conn arrivals / 30s = 0.4-0.7/sec, the server is loafing.
 2. **Buffer-ring exhaustion is NOT happening.** io_uring is fine. Kernel UDP buffer is fine.
 3. **The calibrated 412/1 rps numbers are test-harness floors, not server-stack floors.** Optimizing the server (batch FFI, multi-fiber fan-out, BufRing port) won't lift these numbers because the harness can't supply the load needed to reveal a server bottleneck.
 
@@ -251,12 +251,12 @@ UdpRcvbufErrors delta over run:  0   (via nstat -az before/after)
 
 A multi-subagent debate over which next investigation to pursue surfaced a fact that had been in this file unread: rows 16-28 above already contain N=2 cross-client validation. Same hardware, same network path, same harness orchestration:
 
-| Client | mojo-net long-conn | tquic_server long-conn | mojo-net short-conn | tquic_server short-conn |
+| Client | navette long-conn | tquic_server long-conn | navette short-conn | tquic_server short-conn |
 |---|---|---|---|---|
 | `tquic_client` (4 threads, 25 conns) | 412 | 87,113 (88% CPU on core 0) | 1 | 2,535 |
 | `h2load --h3` (single-threaded) | 125 | 32,625 | 11 | 66,023 |
 
-**Both clients drive `tquic_server` into 5-digit rps. Both bring mojo-net to <1% of that.** A harness that can saturate one server but not another is not the bottleneck — the slower server is. The "harness limit" diagnosis was a misread of the data.
+**Both clients drive `tquic_server` into 5-digit rps. Both bring navette to <1% of that.** A harness that can saturate one server but not another is not the bottleneck — the slower server is. The "harness limit" diagnosis was a misread of the data.
 
 **What the 6 zero counters DO and DO NOT prove:**
 - They prove: **packets that arrive at the server are processed without error.** No `-ENOBUFS`, no multishot termination, no kernel UDP drops, no QuicConnection construction failure.
@@ -364,7 +364,7 @@ The 4 src_ports correspond exactly to tquic_client's `--threads 4` configuration
 
 **This is the standard QUIC client multiplexing pattern, not an edge case.** Every QUIC client that uses connection-ID for multiplexing (tquic, quiche, ngtcp2, msquic, neqo) follows this design — open one socket per worker thread, distinguish concurrent conns by DCID over that socket. The protocol is explicitly designed for this (RFC 9000 §5.2: "An endpoint can use the destination connection ID for routing on the receive side to identify the connection that a packet belongs to").
 
-**Why mojo-net's `addr_key` (src_ip:src_port) demux fails here:**
+**Why navette's `addr_key` (src_ip:src_port) demux fails here:**
 - Thread 0 sends Initial for new logical conn N₁ from port 34130. Server creates `QuicConnection_N₁` and maps `addr_key="...:34130"` → `conn_idx=0` in `conn_map`.
 - N₁ completes handshake → `is_established()=True`.
 - Thread 0 sends Initial for new logical conn N₂ ALSO from port 34130 (different DCID).
@@ -374,12 +374,12 @@ The 4 src_ports correspond exactly to tquic_client's `--threads 4` configuration
 
 **This explains:**
 - Why tquic_server (REFERENCE.md row 20) gets 87,113 rps under the same harness — tquic uses DCID-based demux (verifiable in tquic source). It correctly demuxes 95 logical conns per src_port.
-- Why mojo-net's CPU usage is microscopic (~0.1% busy under saturating load) — most Initials are silently absorbed by 4-5 active QuicConnections in microseconds.
+- Why navette's CPU usage is microscopic (~0.1% busy under saturating load) — most Initials are silently absorbed by 4-5 active QuicConnections in microseconds.
 - Why FFI dominance was a red herring: ~378 logical conns try to hand-shake; only ~5 of the FIRST ones succeed; the remaining 373 die at the demux layer before the server's per-packet processing path even matters.
 
-**Caveat:** wire-level analysis is `tquic_client`-specific. `h2load --h3` (REFERENCE.md row 28) gives different absolute numbers (mojo-net 11 short-conn rps vs tquic_client's 1) which suggests h2load may use 1-socket-per-conn (no multiplexing) on its single thread — this would explain why h2load's mojo-net short-conn rps is meaningfully higher (less demux collapse). A follow-up h2load capture would confirm whether h2load also exposes the demux failure or sidesteps it via different socket allocation.
+**Caveat:** wire-level analysis is `tquic_client`-specific. `h2load --h3` (REFERENCE.md row 28) gives different absolute numbers (navette 11 short-conn rps vs tquic_client's 1) which suggests h2load may use 1-socket-per-conn (no multiplexing) on its single thread — this would explain why h2load's navette short-conn rps is meaningfully higher (less demux collapse). A follow-up h2load capture would confirm whether h2load also exposes the demux failure or sidesteps it via different socket allocation.
 
-**Falsified-during-investigation:** the initial T14 commit (`c7e128b`) speculated "kernel ephemeral-port reuse" as the mechanism. Wire-level pcap falsifies this — the kernel did NOT reuse ports. tquic_client deliberately keeps 4 long-lived sockets and multiplexes via DCID. The demux failure is on the SERVER side (mojo-net's choice to demux by addr_key), not in the kernel and not in the client.
+**Falsified-during-investigation:** the initial T14 commit (`c7e128b`) speculated "kernel ephemeral-port reuse" as the mechanism. Wire-level pcap falsifies this — the kernel did NOT reuse ports. tquic_client deliberately keeps 4 long-lived sockets and multiplexes via DCID. The demux failure is on the SERVER side (navette's choice to demux by addr_key), not in the kernel and not in the client.
 
 **Next hypothesis (post-FALSIFIED verdict, post-VERIFIED-mechanism — required-later, HIGH severity):**
 
@@ -398,7 +398,7 @@ The 4 src_ports correspond exactly to tquic_client's `--threads 4` configuration
 **Spec:** `specs/2026-04-25-quic-accept-loop-instrumentation.md`. Goal:
 distinguish three suspects (fan-out / per-packet cost / FFI-AEAD-SM
 decomposition) for the 412 req/s cold-start floor on
-`bench.sh mojo-net 1k long-conn tquic_client`.
+`bench.sh navette 1k long-conn tquic_client`.
 
 **On-build single-cell capture (1k long-conn, 30s window, SIGINT-driven sidecar):**
 
@@ -452,7 +452,7 @@ The handshake-latency tail IS suggestive: `p50=1.3ms` vs `p99/max=29ms` (n=5) �
 
 **Capture:** 30 s long-conn cell + 30 s short-conn cell, `tquic_client` (4 threads × 25 max-concurrent-conns), on-build (PROFILE_ACCEPT=True), SIGINT-driven sidecars via `start-server.sh + run-tquic-client.sh + docker kill --signal=SIGINT bench-h3 + docker cp + stop-server.sh`. Smoke gate (T5/T6) PASS at -2.63% / noise-bounded drift before captures (long-conn -2.63% on-build vs off-build; short-conn off-build 0.42 / on-build 0.71 — noise-bounded per the 6-iter span 0.26-0.71).
 
-**Stale-image incident (recorded for the lesson, not as an outcome):** the first T5/T6 measurement pass ran against a 16 h-old `mojo-net-bench:latest` image. Root cause: the docker rebuild's `cp` step failed silently because the worktree's `lib/` was a dangling symlink and the failure was masked by a `tail -3` in the bash wrapper. Fixed by replacing the symlink with a real empty directory and re-running. Same lesson as the queueing-tail Plan-C retro: silent build-step failures eat into the diagnostic-validity budget; future plans should pipe build output to a file and grep for explicit "Successfully built" markers, not rely on `tail -N` of the last lines.
+**Stale-image incident (recorded for the lesson, not as an outcome):** the first T5/T6 measurement pass ran against a 16 h-old `navette-bench:latest` image. Root cause: the docker rebuild's `cp` step failed silently because the worktree's `lib/` was a dangling symlink and the failure was masked by a `tail -3` in the bash wrapper. Fixed by replacing the symlink with a real empty directory and re-running. Same lesson as the queueing-tail Plan-C retro: silent build-step failures eat into the diagnostic-validity budget; future plans should pipe build output to a file and grep for explicit "Successfully built" markers, not rely on `tail -N` of the last lines.
 
 **LONG-CONN SIDECAR (`INSTRUMENTATION-20260427-165038-collision-longconn.json`, against image `342cae712d2c`):**
 - `dcid_mismatch_pkts`: **3125**
@@ -499,7 +499,7 @@ The handshake-latency tail IS suggestive: `p50=1.3ms` vs `p99/max=29ms` (n=5) �
 - New helpers: `_bytes_to_hex(Span)` + `_is_long_header_initial(Span)`.
 - New parallel list `conn_dcids: List[List[String]]` for B-permissive teardown (pop ALL of dying conn's entries; remap ALL of survivor's entries — no first-match-break).
 - New-conn creation gated on `_is_long_header_initial`; non-Initial DCID-misses dropped silently per RFC 9000 §12.4.
-- 4 reference impls audited (TQUIC + quiche + lsquic + quic-go for B-permissive; TQUIC + quiche + quic-go + aioquic for Strict gate); mojo-net mirrors TQUIC's pattern.
+- 4 reference impls audited (TQUIC + quiche + lsquic + quic-go for B-permissive; TQUIC + quiche + quic-go + aioquic for Strict gate); navette mirrors TQUIC's pattern.
 
 **Smoke gate (T8): PASS (intended fix).**
 | Cell | Off-build (T0) | On-build (T8) | Δ | Verdict |
@@ -532,7 +532,7 @@ Short-conn handshake throughput jumped from ~10 successful handshakes/30s (pre-m
 
    **Counter overhead on-build vs off-build: −2.3% long-conn, −1.8% short-conn — within run-to-run noise.** T8's iters 2-3 (4643 / 655) were anomalous-low outliers; iter 1 (13016) was the true steady-state. The corrected migration effect (pre-migration on-build T0 contaminated → post-migration on-build 10-iter median) is **33.6× long-conn** (420 → 14109) and **4562× short-conn** (0.26 → 1186). The migration's "fixed the bug" claim still rests on `dcid_mismatch_pkts: 3000+ → 0` (regression-detector invariant).
 
-3. **Cross-implementation reference (REFERENCE.md rows 254-257):** vs tquic_server (same machine + harness, tquic_client driver), mojo-net post-migration is at **16.2% of tquic_server long-conn** (14109 / 87113) and **46.8% of short-conn** (1186 / 2535). Long-conn gap > short-conn gap → next-investigation hint: post-migration bottleneck is in the steady-state per-packet hot path, not handshake throughput.
+3. **Cross-implementation reference (REFERENCE.md rows 254-257):** vs tquic_server (same machine + harness, tquic_client driver), navette post-migration is at **16.2% of tquic_server long-conn** (14109 / 87113) and **46.8% of short-conn** (1186 / 2535). Long-conn gap > short-conn gap → next-investigation hint: post-migration bottleneck is in the steady-state per-packet hot path, not handshake throughput.
 
 **Two lessons preserved:**
 - Future smoke gates must rebuild the docker image with current source-flag value before off-build capture (T0 hygiene).
@@ -560,16 +560,16 @@ Short-conn handshake throughput jumped from ~10 successful handshakes/30s (pre-m
 **Methodology gate satisfied:** re-read all 553 prior lines of REFERENCE.md before drafting. **Contradictions: none.** Sub-leg shares are consistent with the prior post-migration capture's `shim_ffi: 54μs avg, 9.72s total` — the new per-call decomposition refines (does not contradict) that aggregate.
 
 **Captures:**
-- Long-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015152-postmigration-longconn-subleg.json` (image `mojo-net-bench:subleg-T7`, sha `512ad39317ae`, 30s, busy 29.57s, pkt_count 115,508)
+- Long-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015152-postmigration-longconn-subleg.json` (image `navette-bench:subleg-T7`, sha `512ad39317ae`, 30s, busy 29.57s, pkt_count 115,508)
 - Short-conn: `bench/quic_perf/results/profile/INSTRUMENTATION-20260428-015250-postmigration-shortconn-subleg.json` (same image, 30s, busy 16.12s)
 
 **Smoke gates (T6/T7) — both cells PASS at ±10% gate:**
 
 | Build | Cell | n | Median rps | Drift vs baseline | IQR | Verdict |
 |---|---|---|---|---|---|---|
-| OFF-BUILD (`mojo-net-bench:subleg-T6`) | long-conn | 10 | 14,947 | +3.54% vs 14,436 | 167 | PASS |
+| OFF-BUILD (`navette-bench:subleg-T6`) | long-conn | 10 | 14,947 | +3.54% vs 14,436 | 167 | PASS |
 | OFF-BUILD | short-conn | 10 | 1,226.65 | +1.54% vs 1,208 | 37.5 | PASS |
-| ON-BUILD (`mojo-net-bench:subleg-T7`) | long-conn | 10 | 14,885 | +5.50% vs 14,109 | 167 | PASS |
+| ON-BUILD (`navette-bench:subleg-T7`) | long-conn | 10 | 14,885 | +5.50% vs 14,109 | 167 | PASS |
 | ON-BUILD | short-conn | 10 | 1,194.95 | +0.75% vs 1,186 | 27 | PASS |
 
 On-build vs off-build overhead: **−0.41% long-conn, −2.59% short-conn** (within noise). The single-pair clock-read pattern + function-scope `var t_start: UInt64 = 0` hoist keeps per-FFI clock reads at 2 (unchanged from pre-spec). The 4 new per-pkt loop-phase reads + 2 per-flush teardown reads add no measurable cost at 14k/1.2k rps.
@@ -618,11 +618,11 @@ Phase A's content (DCID hex encoding via `_bytes_to_hex` + `Dict[String, Int]` l
 
 **Test deviations from plan:**
 - T0 sanity-check 3-iter long-conn produced an out-of-band median (12,213 rps, −15.4% drift) due to a parallel `mojo run tests/test_cross_quic_hs_keys.mojo` test in `feat-h2-state-machine-path-a` worktree at 82% CPU. Rerun after CPU gate cleared landed at 14,494 rps (+0.4%). **Lesson preserved:** add a CPU-load gate before each bench run to detect competing processes (especially across worktrees).
-- T6 first attempt: long-conn iter 10 cratered to 426 rps (pre-migration baseline), short-conn ALL 10 iters got 0.42 rps. Root cause: parallel HttpArena workflow in another worktree retagged `mojo-net-bench:latest` mid-bench (sha `80fd3f5b0fc0` at 02:58:44) with code from a branch that lacks the DCID migration. **Resolution:** added `MOJO_NET_IMAGE` env-var override in `bench/quic_perf/scripts/start-server.sh` (defaults to `mojo-net-bench:latest`); retagged our build as `mojo-net-bench:subleg-T6` / `:subleg-T7` for tag isolation. **Lesson preserved:** when running benches alongside parallel workflows that may rebuild containers, use a unique image tag.
+- T6 first attempt: long-conn iter 10 cratered to 426 rps (pre-migration baseline), short-conn ALL 10 iters got 0.42 rps. Root cause: parallel HttpArena workflow in another worktree retagged `navette-bench:latest` mid-bench (sha `80fd3f5b0fc0` at 02:58:44) with code from a branch that lacks the DCID migration. **Resolution:** added `MOJO_NET_IMAGE` env-var override in `bench/quic_perf/scripts/start-server.sh` (defaults to `navette-bench:latest`); retagged our build as `navette-bench:subleg-T6` / `:subleg-T7` for tag isolation. **Lesson preserved:** when running benches alongside parallel workflows that may rebuild containers, use a unique image tag.
 - T1 + T2 + T3: 12 unit tests landed across data-structure-only commits. T2 dropped a `record_loop_iter` increment-count test in favour of indirect coverage via T3's `test_loop_phase_avg_uses_loop_iter_count_divisor` (which exercises both `record_loop_iter` AND the divisor-locking semantic). Total: exactly +12 per AC#1.
 
 **Next-step recommendation:** Spawn 3 parallel research subagents (already running) to produce evidence-grounded scope notes for the next spec:
-1. **`ffi_read_hs` deep dive** — identify which sub-section of rustls's TLS-engine consume path consumes 7s on short-conn (ECDHE derive vs cert verify vs HMAC vs FFI marshal), and which are addressable from mojo-net's side.
+1. **`ffi_read_hs` deep dive** — identify which sub-section of rustls's TLS-engine consume path consumes 7s on short-conn (ECDHE derive vs cert verify vs HMAC vs FFI marshal), and which are addressable from navette's side.
 2. **Long-conn 24.4s unaccounted gap** — identify the un-instrumented code paths (likely H3 handler invocation + `_drain_and_send` internal stages + `feed_datagram_from_buffer` early-returns) that dominate steady-state busy time.
 3. **`loop_pop_dispatch` finer split** — estimate share of DCID-hex / Dict lookup / cold conn-create within Phase A's 958ms; recommend the highest-ROI microoptimisation (likely `Dict[String, Int]` → `Dict[UInt64, Int]` to eliminate per-pkt String alloc).
 
@@ -665,7 +665,7 @@ Notable: variance also tightened post-migration (sub-leg stdev 2.69% → 1.55%; 
 | AC#6 (REFERENCE.md entry) | ✅ PASS | This entry. |
 | AC#7 (flag revert) | ✅ PASS | `comptime PROFILE_ACCEPT: Bool = False` verified at `src/quic/profile.mojo:16`. |
 
-**Verdict: SHIPPED.** Q3 microoptimisation lands all gates without escalation. The migration moves mojo-net's bench-side demux key shape from outlier (hex-string) to mainstream (every surveyed prod stack — TQUIC, quiche, lsquic, quic-go, aioquic — uses byte-keyed maps; mojo-net's 8-byte SCID invariant lets us go further to packed-u64).
+**Verdict: SHIPPED.** Q3 microoptimisation lands all gates without escalation. The migration moves navette's bench-side demux key shape from outlier (hex-string) to mainstream (every surveyed prod stack — TQUIC, quiche, lsquic, quic-go, aioquic — uses byte-keyed maps; navette's 8-byte SCID invariant lets us go further to packed-u64).
 
 **Predicted vs observed:**
 - `loop_pop_dispatch.total` drop: predicted 8-22%, observed **15.67%** (mid-range hit)
@@ -679,10 +679,10 @@ Notable: variance also tightened post-migration (sub-leg stdev 2.69% → 1.55%; 
 - AHash distribution check (skipped, sanity-only) → optional; DCIDs are random by construction.
 
 **Image SHAs (tag-isolated per `feedback_bench_offbuild_image_hygiene.md`):**
-- `mojo-net-bench:q3-pre-off`: `58355c391e7b...`
-- `mojo-net-bench:q3-pre-on`: `7dc8312bff74...`
-- `mojo-net-bench:q3-post-off`: `84acc5848671...`
-- `mojo-net-bench:q3-post-on`: `4c475002d91c...`
+- `navette-bench:q3-pre-off`: `58355c391e7b...`
+- `navette-bench:q3-pre-on`: `7dc8312bff74...`
+- `navette-bench:q3-post-off`: `84acc5848671...`
+- `navette-bench:q3-post-on`: `4c475002d91c...`
 
 **Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
 
@@ -750,10 +750,10 @@ Same shape on short-conn (median): `quic_post_recv` 2,085,686 μs > `drain_resp`
 - TLS 1.3 session resumption (Q2) becomes the next short-conn-targeted spec.
 
 **Image SHAs (tag-isolated):**
-- `mojo-net-bench:q1-pre-off`: `84acc5848671...`
-- `mojo-net-bench:q1-pre-on`: `db320611e265...`
-- `mojo-net-bench:q1-post-off`: `e77d7eb425ec...`
-- `mojo-net-bench:q1-post-on`: `6b3a214097a2...`
+- `navette-bench:q1-pre-off`: `84acc5848671...`
+- `navette-bench:q1-pre-on`: `db320611e265...`
+- `navette-bench:q1-post-off`: `e77d7eb425ec...`
+- `navette-bench:q1-post-on`: `6b3a214097a2...`
 
 **Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
 
@@ -792,14 +792,14 @@ Sidecar files: `bench/quic_perf/results/profile/INSTRUMENTATION-*-q1-{pre,post}-
 | `frame_parse_us` | small | 122,168 ≈ 0.1s | 0.5% |
 | `event_dispatch_us` (residual) | small | 139,129 ≈ 0.1s | 0.6% |
 
-**Interpretation:** at long-conn 14k rps, ≈14k HEADERS frames/sec; observed `qpack_decode_us` ÷ HEADERS-rate ≈ **50 μs per call** to `self._dec.decode(frame.payload)`. Reference QPACK (TQUIC + quiche static-only) is sub-µs/req per Topic 1 §4. mojo-net's `_dec.decode` call-site is **~50× slower** than the reference at the call boundary.
+**Interpretation:** at long-conn 14k rps, ≈14k HEADERS frames/sec; observed `qpack_decode_us` ÷ HEADERS-rate ≈ **50 μs per call** to `self._dec.decode(frame.payload)`. Reference QPACK (TQUIC + quiche static-only) is sub-µs/req per Topic 1 §4. navette's `_dec.decode` call-site is **~50× slower** than the reference at the call boundary.
 
 **Scope of the 95% claim:**
 
 - **What it proves:** `self._dec.decode(frame.payload)` end-to-end is 95.4% of `_drain_stream` wall-clock. Sum invariant closes exactly across all 6 sidecars (sum_legs = drain_stream_us_total to the byte) — no hidden bucket. `_H3StreamBuf` work was directly measured (B3a + B3b combined into `buf_accumulate_us`); it accounts for 1.1% on long-conn.
 - **What it does NOT prove:** *where inside* `_dec.decode` the 50 μs goes. Could be varint length-prefix parsing, 99-entry static-table lookup, per-call `List[QpackHeaderField]` allocation, header-name/value String construction, Mojo function-call / parameter-passing / result-allocation overhead, or some combination. The B5 bracket wraps the call, not its internals. No isolated microbench cross-check was performed, so we cannot separate "amortised algorithmic QPACK cost" from "per-invocation overhead".
 
-Topic 1's structural-difference critique of mojo-net's `_H3StreamBuf` accumulator was correct in principle (the accumulator + per-frame O(residual) shift IS architecturally novel vs reference stacks) but the magnitude gap (~1.1%) is below the bench harness sensitivity floor. The architectural-novelty argument was right; the magnitude prediction was 100× off.
+Topic 1's structural-difference critique of navette's `_H3StreamBuf` accumulator was correct in principle (the accumulator + per-frame O(residual) shift IS architecturally novel vs reference stacks) but the magnitude gap (~1.1%) is below the bench harness sensitivity floor. The architectural-novelty argument was right; the magnitude prediction was 100× off.
 
 Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream); other legs <10% each.
 
@@ -821,7 +821,7 @@ Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream);
 
 **Surprises (recorded for retrospective):**
 1. **Both Topic 1 predictions overturned** — `buf_accumulate` predicted dominant via architectural-difference argument; reality is 1.1%. QPACK predicted sub-µs/req; reality is 50µs/HEADERS-frame, dwarfing everything. **Inspection-driven dominant-phase predictions now have a 0/3 track record on this codebase** (Subagent B's Q1 prediction; sub-leg pass's `write_hs` prediction; Topic 1's `buf_accumulate` prediction).
-2. **Architectural critique was correct, magnitude was wrong** — Topic 1's claim that mojo-net's `_H3StreamBuf.buf` accumulator + per-frame O(residual) shift has no reference analogue is structurally true. But the magnitude is below the bench harness sensitivity floor. quiche maintainers were right to leave their framing FSM alone (per `b60449c` applying BufFactory only to body data) — mojo-net's framing cost is also negligible.
+2. **Architectural critique was correct, magnitude was wrong** — Topic 1's claim that navette's `_H3StreamBuf.buf` accumulator + per-frame O(residual) shift has no reference analogue is structurally true. But the magnitude is below the bench harness sensitivity floor. quiche maintainers were right to leave their framing FSM alone (per `b60449c` applying BufFactory only to body data) — navette's framing cost is also negligible.
 3. **Host noise amplified at long-conn cell** — pre-baselines under loadavg 1.5 = 14.5k rps; same image under loadavg 2.0+ = 13.5k rps (intrinsic ~7% noise floor). Same-window pre/post comparison required for valid drift gates. Future diagnostic plans should require pre+post captured back-to-back.
 4. **Bench infrastructure gap** — Q1's `start-server.sh` did NOT bind-mount `bench/quic_perf/results/profile`; SIGINT-handler sidecars were destroyed by `docker rm -f`. T0 added the bind mount + switched stop-server.sh to `docker stop -t 10` for SIGTERM grace. Lasting infrastructure fix.
 
@@ -831,10 +831,10 @@ Same shape on short-conn: `qpack_decode_us` 1,936,079 μs (87% of drain_stream);
 - Topic 1's recommended sub-leg taxonomy was structurally sound (5 legs map cleanly onto reference FSMs); the 0/3 prediction track record is on dominance-of-leg, not on taxonomy itself. Future diagnostic specs should keep using structural-mirror taxonomy + drop dominance predictions entirely.
 
 **Image SHAs (tag-isolated):**
-- `mojo-net-bench:drain-subleg-pre-off`: `e77d7eb425ec...` (re-tag of `q1-post-off` — zero src/+bench/ changes since Q1 merge)
-- `mojo-net-bench:drain-subleg-pre-on`: `6b3a214097a2...` (re-tag of `q1-post-on`)
-- `mojo-net-bench:drain-subleg-post-off`: `312b09299f99...`
-- `mojo-net-bench:drain-subleg-post-on`: `beefa96efcfb...`
+- `navette-bench:drain-subleg-pre-off`: `e77d7eb425ec...` (re-tag of `q1-post-off` — zero src/+bench/ changes since Q1 merge)
+- `navette-bench:drain-subleg-pre-on`: `6b3a214097a2...` (re-tag of `q1-post-on`)
+- `navette-bench:drain-subleg-post-off`: `312b09299f99...`
+- `navette-bench:drain-subleg-post-on`: `beefa96efcfb...`
 
 **Off-build flag confirmed `comptime PROFILE_ACCEPT: Bool = False` (post-capture, line 16 of `src/quic/profile.mojo`).**
 
@@ -879,8 +879,8 @@ The projection assumed resumed handshakes save ~50% of per-conn wall-clock. Obse
 
 ### Image SHAs (tag-isolated)
 
-- `mojo-net-bench:p2-pre-off`: `c0daf44b5d7a` (rebuilt from main `f22647b` source state, PROFILE_ACCEPT=False).
-- `mojo-net-bench:p2-post-on`: `733b02dd0d63` (rebuilt from `5b08a22`, PROFILE_ACCEPT=True).
+- `navette-bench:p2-pre-off`: `c0daf44b5d7a` (rebuilt from main `f22647b` source state, PROFILE_ACCEPT=False).
+- `navette-bench:p2-post-on`: `733b02dd0d63` (rebuilt from `5b08a22`, PROFILE_ACCEPT=True).
 
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
@@ -892,7 +892,7 @@ Sidecars: `bench/quic_perf/results/baselines/p2-post-on/{long,short}/INSTRUMENTA
 
 **Spec:** `specs/2026-05-03-q4-fresh-conn-cpu-decomposition.md` → **Plan:** `plans/2026-05-03-q4-fresh-conn-cpu-decomposition.md`. **Branch:** `feat/quic-q4-fresh-conn-cpu-decomp`. Diagnostic-only.
 
-Goal: name the dominant per-fresh-conn cost frame on short-conn after Topic 2 research falsified P4's worker-pool premise (TQUIC's bench server is single-threaded mio with synchronous boringssl FFI, identical architecture to mojo-net; the 0.543× short-conn gap is per-datagram CPU cost, not missing concurrency).
+Goal: name the dominant per-fresh-conn cost frame on short-conn after Topic 2 research falsified P4's worker-pool premise (TQUIC's bench server is single-threaded mio with synchronous boringssl FFI, identical architecture to navette; the 0.543× short-conn gap is per-datagram CPU cost, not missing concurrency).
 
 ### Captured numbers (n=3 short-conn, PROFILE_ACCEPT=True)
 
@@ -943,10 +943,10 @@ P4 (worker pool) remains falsified per Topic 2.
 
 ### Image SHAs (tag-isolated)
 
-- `mojo-net-bench:q4-pre-off`: `c0daf44b5d7a` (re-tag of P2 `:p2-pre-off`).
-- `mojo-net-bench:q4-pre-on`: `fce54a71a8ad` (rebuilt main `dbcdd0e` + PROFILE_ACCEPT=True).
-- `mojo-net-bench:q4-post-off`: `b080ae602eb6` (rebuilt with Q4 commits + PROFILE_ACCEPT=False).
-- `mojo-net-bench:q4-post-on`: `a8ded32be4f1` (rebuilt with Q4 commits + PROFILE_ACCEPT=True).
+- `navette-bench:q4-pre-off`: `c0daf44b5d7a` (re-tag of P2 `:p2-pre-off`).
+- `navette-bench:q4-pre-on`: `fce54a71a8ad` (rebuilt main `dbcdd0e` + PROFILE_ACCEPT=True).
+- `navette-bench:q4-post-off`: `b080ae602eb6` (rebuilt with Q4 commits + PROFILE_ACCEPT=False).
+- `navette-bench:q4-post-on`: `a8ded32be4f1` (rebuilt with Q4 commits + PROFILE_ACCEPT=True).
 
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
@@ -992,10 +992,10 @@ Both within ±5% calibrated gate (per `feedback_bench_gate_width_calibration.md`
 
 ### Image SHAs (tag-isolated)
 
-- `mojo-net-bench:q5-pre-off`: `dc7717c49121` (re-tag of `gate-cal-off`)
-- `mojo-net-bench:q5-pre-on`: `fb9d2dfc8b78`
-- `mojo-net-bench:q5-post-off`: built T3
-- `mojo-net-bench:q5-post-on`: built T3
+- `navette-bench:q5-pre-off`: `dc7717c49121` (re-tag of `gate-cal-off`)
+- `navette-bench:q5-pre-on`: `fb9d2dfc8b78`
+- `navette-bench:q5-post-off`: built T3
+- `navette-bench:q5-post-on`: built T3
 
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
@@ -1011,7 +1011,7 @@ Baseline doc: `bench/quic_perf/results/baselines/2026-05-04-apples-to-apples-col
 
 ### Captured numbers (n=10 each, short-conn 1k, tquic_client, 30s + 5s warmup, threads=4, max-concurrent-conns=25, max-requests-per-conn=1)
 
-| Metric | mojo-net | tquic | ratio mojo/tquic |
+| Metric | navette | tquic | ratio mojo/tquic |
 |---|---|---|---|
 | rps median | 1,391.3 | 2,846.3 | **0.489** |
 | rps min | 1,174.1 | 2,559.5 | — |
@@ -1036,7 +1036,7 @@ The 2.04× short-conn rps gap is primarily a **CPU-utilization gap** (52% vs 92%
               = ~73% of the gap     × ~16% of the gap (interaction term balance)
 ```
 
-Per-CPU-% efficiency gap is only **1.16× in TQUIC's favor** (26.6 vs 31.0 rps/%CPU) — the bound on what any rustls/FFI/Q6-style optimization can buy. The remaining ~73% slice is structural: mojo-net leaves 48% of the core idle while client load is offered. Better p50/p99 for mojo-net is diagnostic of under-saturation, not a feature.
+Per-CPU-% efficiency gap is only **1.16× in TQUIC's favor** (26.6 vs 31.0 rps/%CPU) — the bound on what any rustls/FFI/Q6-style optimization can buy. The remaining ~73% slice is structural: navette leaves 48% of the core idle while client load is offered. Better p50/p99 for navette is diagnostic of under-saturation, not a feature.
 
 **Disabling resumption did NOT widen the gap** vs the resumed-era ratio (~0.48), confirming TLS 1.3 resumption was not load-bearing for either side's published numbers. Resumption gives the client a wall-clock latency win (saves 1 RTT), not a server-CPU win.
 
@@ -1054,17 +1054,17 @@ Lever A (boringssl swap) and P3 (0-RTT) remain deferred until Q7 + Q6 verdicts i
 
 ### Source JSON files
 
-20 files in `bench/quic_perf/results/` matching glob `2026-05-04T08-*-{mojo-net,tquic}-1k-short-conn-tquic_client-iter*.json` (10 per server; mojo-net 08:27:10Z–08:33:25Z, tquic 08:34:33Z–08:42:42Z). Full enumeration in baseline doc.
+20 files in `bench/quic_perf/results/` matching glob `2026-05-04T08-*-{navette,tquic}-1k-short-conn-tquic_client-iter*.json` (10 per server; navette 08:27:10Z–08:33:25Z, tquic 08:34:33Z–08:42:42Z). Full enumeration in baseline doc.
 
 ### Image SHAs
 
-Unchanged from Q5 — bench-config-only patch. mojo-net image: rebuilt main `1484db4` (+ PROFILE_ACCEPT=False — the `comptime` `False` build is the one used for the baseline). tquic image: pinned per existing REFERENCE rows.
+Unchanged from Q5 — bench-config-only patch. navette image: rebuilt main `1484db4` (+ PROFILE_ACCEPT=False — the `comptime` `False` build is the one used for the baseline). tquic image: pinned per existing REFERENCE rows.
 
 ---
 
 ## Q7 — Cold-Handshake CPU-Utilization Decomposition (2026-05-04)
 
-**Spec:** `specs/2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.md` → **Plan:** `plans/2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.md`. **Branch:** `feat/quic-q7-cold-hs-cpu-util-decomp`. Diagnostic-only; decomposes the **40pp CPU-utilization gap** vs TQUIC under cold-handshake load (mojo-net 52.3% vs TQUIC 91.8%) — the ~73% slice of the 2.04× rps gap.
+**Spec:** `specs/2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.md` → **Plan:** `plans/2026-05-04-q7-cold-handshake-cpu-utilization-decomposition.md`. **Branch:** `feat/quic-q7-cold-hs-cpu-util-decomp`. Diagnostic-only; decomposes the **40pp CPU-utilization gap** vs TQUIC under cold-handshake load (navette 52.3% vs TQUIC 91.8%) — the ~73% slice of the 2.04× rps gap.
 
 Goal: name which of 7 hypotheses (H_A accept-loop / H_B lock contention / H_C I/O batch degeneracy / H_D FFI sync stalls / H_E conn-cap throttle / H_F io_uring park / DIFFUSE) owns the missing CPU.
 
@@ -1109,7 +1109,7 @@ Cross-link: Q6 (residual ~16% per-CPU efficiency gap) remains parallel — Q7's 
 
 ### Image SHAs (tag-isolated, to be torn down post-T5)
 
-- `mojo-net-bench:q7-pre-off`, `q7-pre-on`, `q7-post-off`, `q7-post-on`
+- `navette-bench:q7-pre-off`, `q7-pre-on`, `q7-post-off`, `q7-post-on`
 
 **Off-build flag:** `comptime PROFILE_ACCEPT: Bool = False` reverted post-capture at `src/quic/profile.mojo:16`.
 
@@ -1117,14 +1117,14 @@ Sidecars: `bench/quic_perf/results/baselines/q7-post-on-short/sidecar-iter{1,2,3
 
 ### Q7 ADDENDUM — TQUIC source triangulation (2026-05-04 post-verdict)
 
-**Multi-accept recommendation RETRACTED** after `Tencent/tquic` source review showed `tquic_server` is also single-thread / single-socket / no SO_REUSEPORT (search across repo: 0 hits). TQUIC's bench harness launches one process. TQUIC reaches 92% CPU with the same single-loop shape mojo-net has — so the 40pp utilization gap is **per-wake work density**, not lane count. Multi-accept would mirror an architecture TQUIC doesn't have.
+**Multi-accept recommendation RETRACTED** after `Tencent/tquic` source review showed `tquic_server` is also single-thread / single-socket / no SO_REUSEPORT (search across repo: 0 hits). TQUIC's bench harness launches one process. TQUIC reaches 92% CPU with the same single-loop shape navette has — so the 40pp utilization gap is **per-wake work density**, not lane count. Multi-accept would mirror an architecture TQUIC doesn't have.
 
 **Redirected next-spec priority:**
 1. Promote **Q6** (per-call read_hs decomposition) — directly measures per-call work density (the load-bearing axis).
-2. Audit mojo-net's io_uring multishot recvmsg vs TQUIC's `recv_from`-until-`WouldBlock` semantics. mojo-net is structurally more I/O-efficient; gap must be elsewhere.
+2. Audit navette's io_uring multishot recvmsg vs TQUIC's `recv_from`-until-`WouldBlock` semantics. navette is structurally more I/O-efficient; gap must be elsewhere.
 3. Compare per-datagram CPU cost: send-batch (TQUIC default 16), allocator (TQUIC uses jemalloc globally), encode/decode hot path, TLS parse.
 
-H_A + H_F verdict labels still describe mojo-net's behavior accurately; the spec's `H_A → multi-accept` mapping was authored from scaling intuition, not from TQUIC evidence. Diagnosis stands; recommended fix flips.
+H_A + H_F verdict labels still describe navette's behavior accurately; the spec's `H_A → multi-accept` mapping was authored from scaling intuition, not from TQUIC evidence. Diagnosis stands; recommended fix flips.
 
 **Triangulation source:** TQUIC `tools/src/bin/tquic_server.rs:790-815`, `tools/src/common.rs:121-138`, `.github/workflows/tquic-benchmark.yml:60`. `SO_REUSEPORT` count in repo: 0.
 
@@ -1134,7 +1134,7 @@ H_A + H_F verdict labels still describe mojo-net's behavior accurately; the spec
 
 **Spec:** `specs/2026-05-05-quic-bench-drain-extension.md`. **Branch:** `feat/quic-bench-drain-extension` (commits `cdc6614`/`5f9d6af`/`b7517a8`). **Verdict doc:** `bench/quic_perf/results/baselines/drain-ext-verdict.md`.
 
-**Hypothesis:** TQUIC's strace-measured 82.3 datagrams/`epoll_wait` wake vs mojo-net's 1.0/io_uring wake (audit `plans/research/2026-05-05-recvmsg-drain-semantics-audit.md`) suggested adding a userspace `recvfrom`-until-EAGAIN drain to mojo-net's `_flush_impl` would close a meaningful slice of the 73% CPU-utilization gap.
+**Hypothesis:** TQUIC's strace-measured 82.3 datagrams/`epoll_wait` wake vs navette's 1.0/io_uring wake (audit `plans/research/2026-05-05-recvmsg-drain-semantics-audit.md`) suggested adding a userspace `recvfrom`-until-EAGAIN drain to navette's `_flush_impl` would close a meaningful slice of the 73% CPU-utilization gap.
 
 **Verdict gate (n=10 short-conn pre-on vs post-on, both PROFILE_ACCEPT=True):**
 
@@ -1155,7 +1155,7 @@ Long-conn 1-iter sanity also regressed −25% (13,941 → 10,396 rps). Drain ext
 
 The drain extension fired correctly but pulled 0.57% of io_uring multishot's volume. **The kernel UDP socket is already nearly empty** by the time `_flush_impl` runs, because io_uring multishot consumes each datagram as it arrives. recv_batch_size remained 100% bucket-0.
 
-**The audit's interpretation was wrong:** TQUIC's 82-per-`epoll_wait` is a *symptom* of mio's poll cadence being slower than io_uring's CQE rate, not a kernel-level structural advantage. mojo-net consumes per-arrival; TQUIC consumes per-batch. Per-wake datagram density is downstream of poll cadence × arrival rate — not a direct cause of CPU utilization.
+**The audit's interpretation was wrong:** TQUIC's 82-per-`epoll_wait` is a *symptom* of mio's poll cadence being slower than io_uring's CQE rate, not a kernel-level structural advantage. navette consumes per-arrival; TQUIC consumes per-batch. Per-wake datagram density is downstream of poll cadence × arrival rate — not a direct cause of CPU utilization.
 
 **Why the regression:** added recvfrom-then-EAGAIN syscall path on every `_flush_impl` invocation = thousands of pointless syscalls/sec + scheduler hops. Server idle goes UP (39% busy vs 59% pre-on), confirming the added syscall-per-flush forces more fiber yields rather than more work.
 
@@ -1212,13 +1212,13 @@ Library swap closes the 16% slice but realistic lift is <1pp of total rps until 
 
 **Methodology gate satisfied:** re-read every prior REFERENCE.md row + drain-ext verdict before drafting. New finding (rustls compute = 99.5% of read_hs) is consistent with Q5's microbench (FFI thunk = 0.05% of read_hs cost). No contradictions.
 
-**Next-spec direction:** **Q8** — investigate the 73% CPU-utilization gap with a NEW diagnostic angle that doesn't replicate drain-extension's invalidated audit. Candidates: (a) per-handshake CPU-cost comparison via flame-graph or per-syscall accounting on TQUIC vs mojo-net; (b) instrument the boucle scheduler's wakeup → drain → flush → park cycle for time spent NOT in `read_hs`; (c) compare TQUIC's `process_connections` egress path against mojo-net's _drain_and_send for per-handshake overhead. Lever A (boringssl swap) stays deferred until Q8.
+**Next-spec direction:** **Q8** — investigate the 73% CPU-utilization gap with a NEW diagnostic angle that doesn't replicate drain-extension's invalidated audit. Candidates: (a) per-handshake CPU-cost comparison via flame-graph or per-syscall accounting on TQUIC vs navette; (b) instrument the boucle scheduler's wakeup → drain → flush → park cycle for time spent NOT in `read_hs`; (c) compare TQUIC's `process_connections` egress path against navette's _drain_and_send for per-handshake overhead. Lever A (boringssl swap) stays deferred until Q8.
 
 ---
 
 ### 2026-05-04 — Q8 egress hot-path batching (Phase 1) — VERDICT: PARTIAL-WITH-BUG (mechanism CONFIRMED, T2 reverted)
 
-**Spec:** `specs/2026-05-05-q8-egress-hot-path-batching.md`. **Audit:** `plans/research/2026-05-05-tquic-vs-mojo-net-per-wake-flow.md`. **Verdict doc:** `bench/quic_perf/results/baselines/q8-verdict.md`. **Sidecar:** `bench/quic_perf/results/baselines/q8-post-on-short/sidecar-iter1.json`.
+**Spec:** `specs/2026-05-05-q8-egress-hot-path-batching.md`. **Audit:** `plans/research/2026-05-05-tquic-vs-navette-per-wake-flow.md`. **Verdict doc:** `bench/quic_perf/results/baselines/q8-verdict.md`. **Sidecar:** `bench/quic_perf/results/baselines/q8-post-on-short/sidecar-iter1.json`.
 
 **Mechanism CONFIRMED:** per-packet `UdpTxSlot` heap-alloc + `List[UInt8](copy=)` churn in `_drain_and_send` is load-bearing on the egress hot path.
 
@@ -1285,7 +1285,7 @@ Same image, same command. Only difference: pause interval. **The back-to-back mo
 | CPU-utilization gap (residual) | rebaseline needed | unknown — Q9 candidate (per-fresh-conn alloc: `H3HandlerServer.__init__` + `QuicConnection.server`) | OPEN |
 | Per-CPU-% efficiency gap (residual) | rebaseline needed | LIB-BOUND (rustls compute) per Q6 | DEFERRED (Lever A multi-day) |
 
-mojo-net short-conn 1,211 rps / TQUIC 2,846 rps = 0.426×. ~1,635 rps to close to parity.
+navette short-conn 1,211 rps / TQUIC 2,846 rps = 0.426×. ~1,635 rps to close to parity.
 
 **Lessons recorded:**
 - `feedback_bench_iter_pacing.md` (NEW, 2026-05-04): bench iters need 30s pauses for verdict-grade measurement. Discovery from this Phase 2 disambiguating rerun.
@@ -1296,7 +1296,7 @@ mojo-net short-conn 1,211 rps / TQUIC 2,846 rps = 0.426×. ~1,635 rps to close t
 
 **Methodology gate satisfied:** re-read every prior REFERENCE.md row before drafting. The +22.8% short-conn lift attributable to alloc churn elimination coexists with: Q4 (rustls FFI thunk = 45.6% per-fresh-conn busy), Q6 (rustls compute = 99.5% of `read_hs`), drain-ext FALSIFIED (per-wake density was symptom not cause), Q8 Phase 1 PARTIAL-WITH-BUG (same mechanism, broken impl). All consistent — different per-event scopes, additive contributions.
 
-**Next-spec direction:** **Q9** — per-fresh-conn alloc decomposition. Per-wake-flow audit (`plans/research/2026-05-05-tquic-vs-mojo-net-per-wake-flow.md`) named `H3HandlerServer.__init__` + `QuicConnection.server` (h3_server.mojo:891-955) as the next likely source of residual gap. Spec must cite TQUIC's `src/connection/connection.rs` equivalents per `feedback_read_tquic_source_first.md`. Lever A (boringssl swap) stays deferred — Q6 capped its expected lift at <1pp until utilization closes.
+**Next-spec direction:** **Q9** — per-fresh-conn alloc decomposition. Per-wake-flow audit (`plans/research/2026-05-05-tquic-vs-navette-per-wake-flow.md`) named `H3HandlerServer.__init__` + `QuicConnection.server` (h3_server.mojo:891-955) as the next likely source of residual gap. Spec must cite TQUIC's `src/connection/connection.rs` equivalents per `feedback_read_tquic_source_first.md`. Lever A (boringssl swap) stays deferred — Q6 capped its expected lift at <1pp until utilization closes.
 
 ### 2026-05-04 — Q9 per-fresh-conn alloc decomposition — VERDICT: DIFFUSE-CONFIRMS-LIB-BOUND
 
@@ -1325,4 +1325,4 @@ The 47% of busy CPU in `fresh_conn_ffi_us` is handshake compute (read_hs + write
 
 **Track record (revised):** measurement-driven projections landed cleanly: 3/3 (Q4 + Q6 + Q8 Phase 2). DIFFUSE-FALSIFICATION via measurement: 1 (Q9). Inspection-only projections: still 0/6.
 
-**Next-spec direction:** **Q10** — TLS handle / config sharing. Per Q9 T0 TQUIC source read (`tls/tls.rs:243-249`): TQUIC `Arc::clone`'s a shared TlsConfig per fresh conn (cheap pointer-clone). Q10 spec uses Q7's existing `out_config_clone_us` + `out_ticket_store_lock_us` slots — NO new instrumentation — to test whether mojo-net's `quic_server_conn_new` rebuilds vs Arc-clones. If `out_config_clone_us` median > 50 µs → Arc-clone caching lever. If < 5 µs → residual is pure rustls compute, accept LIB-BOUND ceiling, evaluate Lever A (boringssl swap).
+**Next-spec direction:** **Q10** — TLS handle / config sharing. Per Q9 T0 TQUIC source read (`tls/tls.rs:243-249`): TQUIC `Arc::clone`'s a shared TlsConfig per fresh conn (cheap pointer-clone). Q10 spec uses Q7's existing `out_config_clone_us` + `out_ticket_store_lock_us` slots — NO new instrumentation — to test whether navette's `quic_server_conn_new` rebuilds vs Arc-clones. If `out_config_clone_us` median > 50 µs → Arc-clone caching lever. If < 5 µs → residual is pure rustls compute, accept LIB-BOUND ceiling, evaluate Lever A (boringssl swap).

@@ -8,7 +8,7 @@ matches the oracle byte-for-byte (possible only for fully-indexed fields
 where Huffman strategy is irrelevant, and for the name-reference case where
 pylsqpack and our encoder use the same encoding).
 """
-from mojo_net.h3.qpack import QpackDecoder, QpackEncoder, QpackHeaderField
+from navette.h3.qpack import QpackDecoder, QpackEncoder, QpackHeaderField
 from tests._test_util import assert_true, assert_equal_int
 
 

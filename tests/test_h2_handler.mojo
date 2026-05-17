@@ -14,18 +14,18 @@ from lib.http2.connection import (
     H2_EVT_STREAM_ENDED,
     H2_EVT_STREAM_RESET,
 )
-from mojo_net.http.handler import (
+from navette.http.handler import (
     StreamHandler,
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.http.request import Request
-from mojo_net.h2.h2_handler_server import H2HandlerServer
+from navette.http.body import BodyFrame
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.http.request import Request
+from navette.h2.h2_handler_server import H2HandlerServer
 
 
 # ---------------------------------------------------------------------------

@@ -3,15 +3,15 @@
 # HTTP/0.9 over QUIC integration tests.
 #
 # Run with:
-#   cd ~/Projets/perso/mojo-net && uv run mojo run -I . tests/test_interop_http09.mojo
+#   cd ~/Projets/perso/navette && uv run mojo run -I . tests/test_interop_http09.mojo
 
 from std.collections import Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.connection import QuicConnection, QuicEvent
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from navette.tls.lib import RustlsLibrary
+from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert, load_test_ca
 from interop.http09 import http09_request, http09_collect, http09_parse_path, http09_serve
 from interop.file_io import read_file, write_file, mkdir_p

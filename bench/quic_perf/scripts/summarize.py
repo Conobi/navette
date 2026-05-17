@@ -18,7 +18,7 @@ from collections import defaultdict
 
 PAYLOAD_ORDER = ["1k", "5k", "15k", "2m"]
 SCENARIO_ORDER = ["long-conn", "short-conn"]
-SERVER_ORDER = ["mojo-net", "tquic"]
+SERVER_ORDER = ["navette", "tquic"]
 CLIENT_HEADERS = {
     "tquic_client": "## tquic_client (saturating, 4 threads)\n",
     "h2load": "## h2load-h3 (single-threaded, regression-tracking only)\n",
@@ -52,7 +52,7 @@ def main() -> int:
     for client, header in CLIENT_HEADERS.items():
         any_rows = False
         out.append(header)
-        out.append("| Payload | Scenario   | mojo-net req/s (n) | TQUIC req/s (n) | mojo-net CPU% | Ratio |")
+        out.append("| Payload | Scenario   | navette req/s (n) | TQUIC req/s (n) | navette CPU% | Ratio |")
         out.append("|---------|------------|---------------------|-----------------|---------------|-------|")
         for scenario in SCENARIO_ORDER:
             for payload in PAYLOAD_ORDER:
@@ -68,13 +68,13 @@ def main() -> int:
                     rps = median_or_none([c.get("rps") for c in cs])
                     return f"{rps:,.0f} ({len(cs)})" if rps is not None else f"err ({len(cs)})"
 
-                cpu_mn = median_or_none([c.get("server_cpu_percent") for c in cells["mojo-net"]])
-                rps_m = median_or_none([c.get("rps") for c in cells["mojo-net"]])
+                cpu_mn = median_or_none([c.get("server_cpu_percent") for c in cells["navette"]])
+                rps_m = median_or_none([c.get("rps") for c in cells["navette"]])
                 rps_t = median_or_none([c.get("rps") for c in cells["tquic"]])
                 ratio = f"{rps_m / rps_t:.2f}x" if rps_m and rps_t else "—"
                 cpu_str = f"{cpu_mn:.1f}" if cpu_mn is not None else "—"
 
-                out.append(f"| {payload:<7} | {scenario:<10} | {fmt('mojo-net'):<19} | {fmt('tquic'):<15} | {cpu_str:<13} | {ratio:<5} |")
+                out.append(f"| {payload:<7} | {scenario:<10} | {fmt('navette'):<19} | {fmt('tquic'):<15} | {cpu_str:<13} | {ratio:<5} |")
         if not any_rows:
             out.append("_no runs for this client yet_")
         out.append("")

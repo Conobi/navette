@@ -18,8 +18,8 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.tls import RustlsLibrary, TlsServerConfig, TlsConnection
-from mojo_net.h2.h2_sync_server import H2CoroServer
+from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.h2.h2_sync_server import H2CoroServer
 from bench.handler import (
     bench_h2_body_fn,
     BenchState,

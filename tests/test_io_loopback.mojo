@@ -26,7 +26,7 @@ syscall shims to `src/io/` is structurally validated.
 from std.ffi import external_call
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.io import resolve_host, tcp_connect, tcp_listener
+from navette.io import resolve_host, tcp_connect, tcp_listener
 
 
 fn _accept_blocking(listener_fd: Int32) raises -> Int32:

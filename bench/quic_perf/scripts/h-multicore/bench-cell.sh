@@ -24,7 +24,7 @@ DURATION_S=30
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 case "$SERVER" in
-    mojo-net) CONTAINER=bench-h3 ;;
+    navette) CONTAINER=bench-h3 ;;
     tquic)    CONTAINER=bench-tquic ;;
     *) echo "unknown server: $SERVER" >&2; exit 2 ;;
 esac

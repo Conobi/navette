@@ -1,6 +1,6 @@
-# mojo-net external dependencies
+# navette external dependencies
 
-Living map of every external dependency mojo-net carries. Last updated: 2026-05-13.
+Living map of every external dependency navette carries. Last updated: 2026-05-13.
 
 When dependencies change, update this doc in the same PR. The deps-health smoke test
 (`scripts/check_integrations.sh`) asserts a subset of these invariants on every CI run.
@@ -100,7 +100,7 @@ Transitive (resolved by uv, not directly imported): `attrs`, `certifi`, `cffi`, 
 
 ## 2. Mojo sibling projects
 
-| Sibling       | Source                                            | Purpose                                                  | Consumers in mojo-net                                                                                                |
+| Sibling       | Source                                            | Purpose                                                  | Consumers in navette                                                                                                |
 |---------------|---------------------------------------------------|----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
 | **boucle**    | `$HOME/Projets/perso/boucle` (publishable via mojox-build, 2026-05-13) | io_uring loop, raw fd handles, stackful coroutines, Linux syscall raw types. | `src/io/{io_uring,io_uring_udp,udp_io,tcp_socket,udp_socket}.mojo`, `src/h{2,3}/*streaming_server.mojo`, `src/tls/lib.mojo`. |
 | **json-simd-mojo** | `$HOME/Projets/perso/json-simd-mojo` (publishable via mojox-build, 2026-05-13) | simdjson bindings.                                       | `bench/handler.mojo` only.                                                                                          |
@@ -156,7 +156,7 @@ All loaded via `external_call[...]` from Mojo or transitively through boucle:
 | **liburing**     | (via boucle's raw syscall bindings)                                       | `src/io/{io_uring,io_uring_udp,udp_io}.mojo` — delegates to boucle           |
 | **librustls_mojo.so** | ~57 `rlsm_*` symbols                                                | `src/tls/lib.mojo`, `src/http/decode.mojo`                                  |
 | **libpython**    | Mojo `std.python` runtime                                                 | Tests/conformance only                                                      |
-| **libssl3 / libcrypto3** | (bench runtime image only, h2load w/ quictls)                    | Not linked by mojo-net runtime — only by `bench/Dockerfile.h2load-h3`       |
+| **libssl3 / libcrypto3** | (bench runtime image only, h2load w/ quictls)                    | Not linked by navette runtime — only by `bench/Dockerfile.h2load-h3`       |
 
 ---
 
@@ -223,7 +223,7 @@ Vector directories under `conformance/vectors/`: `rfc7541` (HPACK), `rfc9000` (Q
 | **liburing version drift**                                                | io_uring backend stability         | Audit found no in-tree version pin — siblings install via apt. Add explicit pin if a future Dockerfile begins vendoring. |
 | **rustls `--features insecure` accidentally shipped**                     | Dev escape hatch in release binary | `scripts/build_rustls.sh release` + post-build `nm` check; `scripts/check_integrations.sh` WARNs on stray insecure symbol. |
 | **Sibling repo (boucle, json-simd-mojo) without pyproject `[build-system]`** | `uv add` against them fails       | Fixed 2026-05-13 — both have `[build-system]` + `[tool.mojox-build]`. |
-| **Mojo flat-layout setuptools-discovery footgun**                          | Library posture upgrade blocked    | Documented (§1.3 plan); requires `src/mojo_net/` reshuffle. |
+| **Mojo flat-layout setuptools-discovery footgun**                          | Library posture upgrade blocked    | Documented (§1.3 plan); requires `src/navette/` reshuffle. |
 
 ---
 

@@ -3,12 +3,12 @@
 # Unit tests for H2 pseudo-header translation functions.
 
 from lib.http1.types import Header
-from mojo_net.http.method import Method
-from mojo_net.http.version import Version
-from mojo_net.http.headers import Headers
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.status import StatusCode
-from mojo_net.h2.pseudo_headers import (
+from navette.http.method import Method
+from navette.http.version import Version
+from navette.http.headers import Headers
+from navette.http.request import Request, RequestBody
+from navette.http.status import StatusCode
+from navette.h2.pseudo_headers import (
     request_from_h2_headers,
     request_to_h2_headers,
     response_from_h2_headers,

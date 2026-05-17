@@ -24,8 +24,8 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.tls import RustlsLibrary, TlsServerConfig, TlsConnection
-from mojo_net.h2.h2_streaming_server import H2StreamingServer
+from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.h2.h2_streaming_server import H2StreamingServer
 
 from bench.streaming_handler import llm_stream_h2_handler
 

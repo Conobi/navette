@@ -26,8 +26,8 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.http.session import RequestHandle
-from mojo_net.tls import (
+from navette.http.session import RequestHandle
+from navette.tls import (
     RustlsLibrary,
     TlsClientConfig,
     TlsServerConfig,
@@ -141,7 +141,7 @@ fn _getenv_int(name: String, default: Int) -> Int:
 #
 # Mojo 0.26 has no native enum-with-payload, so we use the project's
 # hand-rolled `Int tag + Optional[T] per variant` pattern (see
-# `SessionSlot`, `RequestBody`, `H2Event` in mojo_net for precedents).
+# `SessionSlot`, `RequestBody`, `H2Event` in navette for precedents).
 
 
 comptime _VARIANT_HANDSHAKING: UInt8 = 0

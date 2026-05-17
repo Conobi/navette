@@ -1,12 +1,12 @@
 # bench/compare — quick side-by-side benchmarks
 
-Smoke-test scripts that run mojo-net against established HTTP servers
+Smoke-test scripts that run navette against established HTTP servers
 (hyper, nginx, h2o) on the HttpArena `/baseline2` endpoint.
 
 These are deliberately lightweight: a single endpoint, single profile,
 built for a fast pulse-check after invasive HTTP-stack changes. For
 full-coverage profiling (json, static, gateway, db, grpc, …) use
-`bench/.httparena/scripts/benchmark.sh mojo-net` directly.
+`bench/.httparena/scripts/benchmark.sh navette` directly.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ full-coverage profiling (json, static, gateway, db, grpc, …) use
 ## One-time setup
 
 ```bash
-# Build mojo-net image (uses bench/Dockerfile + boucle/json-simd-mojo
+# Build navette image (uses bench/Dockerfile + boucle/json-simd-mojo
 # build contexts):
 bash bench/build.sh
 
@@ -41,9 +41,9 @@ Knobs (env vars):
 - `h2-vs-others.sh`: `N`, `C`, `M`, `WARMUP_REQS`
 - `h1-vs-others.sh`: `DURATION`, `THREADS`, `CONNS`
 
-## Why mojo-net needs `--security-opt seccomp=unconfined`
+## Why navette needs `--security-opt seccomp=unconfined`
 
-mojo-net uses io_uring via boucle. Docker's default seccomp profile
+navette uses io_uring via boucle. Docker's default seccomp profile
 restricts several io_uring syscalls; without `seccomp=unconfined` the
 worker processes raise on first I/O setup. The comparator servers
 (epoll-based) don't strictly need this flag, but they're given the

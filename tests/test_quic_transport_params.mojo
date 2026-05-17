@@ -5,19 +5,19 @@
 # errors, and default values.
 #
 # Run with:
-#   cd ~/Projets/perso/mojo-net && uv run mojo run -I . -I conformance \
+#   cd ~/Projets/perso/navette && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_transport_params.mojo
 
 from std.collections import Dict, Optional
 from std.python import Python, PythonObject
 
-from mojo_net.quic.trans_param import (
+from navette.quic.trans_param import (
     TransportParams,
     default_transport_params,
     parse_transport_params,
     serialize_transport_params,
 )
-from mojo_net.quic.codec import ByteReader, ByteWriter, varint_encode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_len
 
 from lib.test_util import hex_decode, hex_encode, load_vectors
 from tests._test_util import assert_true, assert_equal_int

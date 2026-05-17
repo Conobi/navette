@@ -1,7 +1,7 @@
 # tests/test_write_result.mojo
 #
 # Unit tests for WriteResult (M2.5a §5.4).
-from mojo_net.http.handler import WriteResult
+from navette.http.handler import WriteResult
 from tests._test_util import assert_true, assert_false
 
 

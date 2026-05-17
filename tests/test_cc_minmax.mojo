@@ -1,5 +1,5 @@
 from std.testing import assert_true
-from mojo_net.quic.cc.minmax import MinMax, MinMaxSample
+from navette.quic.cc.minmax import MinMax, MinMaxSample
 
 comptime WIN_10MS: UInt64 = 10_000  # 10 ms in microseconds
 

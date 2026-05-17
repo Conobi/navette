@@ -16,13 +16,13 @@ from lib.http2.connection import (
     H2_EVT_STREAM_ENDED,
     H2_EVT_STREAM_RESET,
 )
-from mojo_net.http.handler import Capabilities, ALPN_H2
-from mojo_net.http.session import Session, RequestHandle
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.method import Method
-from mojo_net.http.version import Version
-from mojo_net.http.headers import Headers
-from mojo_net.h2.h2_session import H2Session
+from navette.http.handler import Capabilities, ALPN_H2
+from navette.http.session import Session, RequestHandle
+from navette.http.request import Request, RequestBody
+from navette.http.method import Method
+from navette.http.version import Version
+from navette.http.headers import Headers
+from navette.h2.h2_session import H2Session
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
-# §1.2 — library posture for mojo-net (research, deferred execution)
+# §1.2 — library posture for navette (research, deferred execution)
 
 **Status:** research complete; execution deferred pending posture choice. 2026-05-13.
 
-The v2 deps-enhancement plan (`plans/2026-05-13-deps-enhancement.md` §1.2) called for adding a `[build-system]` block to `pyproject.toml` so mojo-net itself can be consumed via `uv add mojo-net @ git+ssh://…`. That requires deciding how the `src/` tree maps onto a published Mojo package.
+The v2 deps-enhancement plan (`plans/2026-05-13-deps-enhancement.md` §1.2) called for adding a `[build-system]` block to `pyproject.toml` so navette itself can be consumed via `uv add navette @ git+ssh://…`. That requires deciding how the `src/` tree maps onto a published Mojo package.
 
 This doc captures what `mojox-build` 0.2 actually supports, the three viable reshuffle paths, and a recommendation. Nothing under `src/` has been moved yet.
 
@@ -30,11 +30,11 @@ return [p for p in sorted(pkg_root.iterdir()) if p.is_dir()]
 
 Each resolved dir is then compiled as a separate `.mojopkg` named after its leaf path component.
 
-## Current state of mojo-net
+## Current state of navette
 
 - `src/` contains 7 top-level subdirs: `h1`, `h2`, `h3`, `http`, `io`, `quic`, `tls`.
-- 154 `.mojo` files import via the `from mojo_net.<module>...` prefix (`grep -rln 'from src\.' --include='*.mojo'`).
-- No `mojo_net/` directory exists at the repo root.
+- 154 `.mojo` files import via the `from navette.<module>...` prefix (`grep -rln 'from src\.' --include='*.mojo'`).
+- No `navette/` directory exists at the repo root.
 
 ## Stdlib-name-collision constraint
 
@@ -42,7 +42,7 @@ Per `boucle/CLAUDE.md` and the existing src/ naming: Mojo 0.26.2's implicit stdl
 
 ## Three viable paths
 
-### Path A — single `mojo_net/` package at repo root (clean, big diff)
+### Path A — single `navette/` package at repo root (clean, big diff)
 
 ```toml
 [build-system]
@@ -50,29 +50,29 @@ requires      = ["mojox-build>=0.2", "mojo-compiler==0.26.2.0"]
 build-backend = "mojox_build"
 
 [tool.mojox-build]
-packages = ["mojo_net"]
+packages = ["navette"]
 ```
 
-**Layout:** `src/` is deleted; everything moves to `mojo_net/{h1,h2,h3,http,io,quic,tls}/`.
+**Layout:** `src/` is deleted; everything moves to `navette/{h1,h2,h3,http,io,quic,tls}/`.
 
-**Diff:** 154 `from mojo_net.X` imports become `from mojo_net.X`. A `git mv src mojo_net` plus a single `sed -i 's/from src\./from mojo_net./g'` (or Python script with proper Mojo awareness) across all `.mojo` files in `tests/`, `conformance/`, `bench/`, `examples/`.
+**Diff:** 154 `from navette.X` imports become `from navette.X`. A `git mv src navette` plus a single `sed -i 's/from src\./from navette./g'` (or Python script with proper Mojo awareness) across all `.mojo` files in `tests/`, `conformance/`, `bench/`, `examples/`.
 
-**Consumer experience:** `uv add mojo-net && from mojo_net.quic.connection import QuicConnection`. Clean.
+**Consumer experience:** `uv add navette && from navette.quic.connection import QuicConnection`. Clean.
 
 **Risk:** big mechanical PR; merge-conflict surface against any concurrent branch touching `src/` is huge.
 
-### Path B — keep `src/`, set `packages = ["src/mojo_net"]` (clean, medium diff)
+### Path B — keep `src/`, set `packages = ["src/navette"]` (clean, medium diff)
 
-Possible because `cfg.packages` entries are joined with `root` as `Path` segments, so `"src/mojo_net"` resolves to `<root>/src/mojo_net/`. The resulting `.mojopkg` is named after the leaf path component, so it would still be `mojo_net.mojopkg` and importable as `from mojo_net.X`.
+Possible because `cfg.packages` entries are joined with `root` as `Path` segments, so `"src/navette"` resolves to `<root>/src/navette/`. The resulting `.mojopkg` is named after the leaf path component, so it would still be `navette.mojopkg` and importable as `from navette.X`.
 
 ```toml
 [tool.mojox-build]
-packages = ["src/mojo_net"]
+packages = ["src/navette"]
 ```
 
-**Layout:** `src/{h1,h2,...}` → `src/mojo_net/{h1,h2,...}`.
+**Layout:** `src/{h1,h2,...}` → `src/navette/{h1,h2,...}`.
 
-**Diff:** Same 154 imports need rewriting — there's no way to keep `from mojo_net.X import Y` since the import resolution after install is `from mojo_net.X` (the `src` prefix never appears in the wheel-installed package).
+**Diff:** Same 154 imports need rewriting — there's no way to keep `from navette.X import Y` since the import resolution after install is `from navette.X` (the `src` prefix never appears in the wheel-installed package).
 
 **Comparison to A:** identical import diff; only difference is whether the `src/` directory survives at the repo root. Path A is cleaner because `src/` was just a Python convention that doesn't earn its keep here.
 
@@ -80,24 +80,24 @@ packages = ["src/mojo_net"]
 
 ### Path C — defer indefinitely (current state)
 
-Keep `[tool.uv] package = false`, no `[build-system]`, no library posture. mojo-net stays a top-level workspace consumable only by being cloned. Acceptable while:
+Keep `[tool.uv] package = false`, no `[build-system]`, no library posture. navette stays a top-level workspace consumable only by being cloned. Acceptable while:
 
-- No external repo wants to `uv add mojo-net`
+- No external repo wants to `uv add navette`
 - The lift to do 154-import migration isn't worth the optionality gain
 
 **Verdict:** fine for today. Revisit when a consumer materializes.
 
 ## Recommendation
 
-**Adopt Path A when there's a concrete consumer.** Today, no repo `uv add`s mojo-net, so the migration would be code churn for no immediate user benefit. The work itself is mostly mechanical and can be one PR.
+**Adopt Path A when there's a concrete consumer.** Today, no repo `uv add`s navette, so the migration would be code churn for no immediate user benefit. The work itself is mostly mechanical and can be one PR.
 
 When ready:
-1. `git mv src mojo_net` in a clean working tree.
+1. `git mv src navette` in a clean working tree.
 2. Run a migration script:
    ```bash
-   find mojo_net tests conformance bench examples \
+   find navette tests conformance bench examples \
         -type f -name '*.mojo' \
-        -exec sed -i 's|from src\.|from mojo_net.|g' {} +
+        -exec sed -i 's|from src\.|from navette.|g' {} +
    ```
 3. Update every `-I` flag and `include_paths` site:
    - `scripts/run_tests.sh`, `conformance/scripts/run_tests.sh`, `bench/Dockerfile`, etc.
@@ -109,10 +109,10 @@ When ready:
    build-backend = "mojox_build"
 
    [tool.mojox-build]
-   packages = ["mojo_net"]
+   packages = ["navette"]
    ```
 5. Remove `[tool.uv] package = false`.
-6. `uv build` should produce `mojo_net-0.1.0-…whl` containing `mojo_net.mojopkg`.
+6. `uv build` should produce `navette-0.1.0-…whl` containing `navette.mojopkg`.
 7. Run `bash scripts/check_integrations.sh` — §1.1 + §1.4 still pass; add a `[build-system]` presence check.
 8. Smoke-test the wheel install per the §1.6 pattern (see `/tmp/sibling-import-test/` from earlier sessions).
 

@@ -19,12 +19,12 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections.optional import Optional
 
-from mojo_net.tls import RustlsLibrary, TlsClientConfig, TlsConnection
-from mojo_net.http import Method, Version, Headers, Request
-from mojo_net.http.request import RequestBody
-from mojo_net.h2.h2_session import H2Session
-from mojo_net.http.session import RequestHandle
-from mojo_net.http.body import BodyFrame
+from navette.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from navette.http import Method, Version, Headers, Request
+from navette.http.request import RequestBody
+from navette.h2.h2_session import H2Session
+from navette.http.session import RequestHandle
+from navette.http.body import BodyFrame
 
 comptime _HOST: String = "1.1.1.1"
 comptime _PATH: String = "/cdn-cgi/trace"
@@ -199,7 +199,7 @@ def main() raises:
     print("[4] Submitting GET " + _PATH + " ...")
     var hdrs = Headers()
     hdrs.add("host", _HOST)          # maps to :authority pseudo-header
-    hdrs.add("user-agent", "mojo-net/h2-smoke")
+    hdrs.add("user-agent", "navette/h2-smoke")
     var req = Request(
         method=Method.get(),
         target=_PATH,

@@ -14,10 +14,10 @@
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.connection import QuicConnection, QuicEvent
-from mojo_net.quic.profile import AcceptProfile
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
+from navette.tls.lib import RustlsLibrary
+from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.profile import AcceptProfile
+from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
 

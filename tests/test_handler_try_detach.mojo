@@ -1,8 +1,8 @@
 # tests/test_handler_try_detach.mojo
 #
 # Tests for RecvBody._BODY_DETACHED tombstone behavior.
-from mojo_net.http.handler import RecvBody, DetachedBody, StreamError
-from mojo_net.http.body import BodyFrame
+from navette.http.handler import RecvBody, DetachedBody, StreamError
+from navette.http.body import BodyFrame
 from tests._test_util import assert_true, assert_equal_int
 
 

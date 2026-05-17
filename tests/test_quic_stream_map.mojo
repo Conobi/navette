@@ -6,8 +6,8 @@
 #   uv run mojo run -I . -D ASSERT=all tests/test_quic_stream_map.mojo
 
 from tests._test_util import assert_true, assert_false, assert_equal_int
-from mojo_net.quic.stream_map import StreamMap
-from mojo_net.quic.stream import (
+from navette.quic.stream_map import StreamMap
+from navette.quic.stream import (
     SEND_DATA_RECVD,
     RECV_DATA_READ,
     RECV_RECV,

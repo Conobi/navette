@@ -2,19 +2,19 @@
 #
 # Trait conformance test using the in-process MockServer/MockSession
 # substrate (M2.5a §5).
-from mojo_net.http.mock_session import MockServer, MockSession
-from mojo_net.http.handler import (
+from navette.http.mock_session import MockServer, MockSession
+from navette.http.handler import (
     StreamHandler,
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.method import Method
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.http.body import BodyFrame
+from navette.http.request import Request, RequestBody
+from navette.http.method import Method
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.http.body import BodyFrame
 from tests._test_util import assert_true, assert_equal_int
 
 

@@ -1,8 +1,8 @@
 # tests/test_request_response.mojo
 #
 # Unit tests for Request and Response types.
-from mojo_net.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
-from mojo_net.http.request import RequestBody
+from navette.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
+from navette.http.request import RequestBody
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

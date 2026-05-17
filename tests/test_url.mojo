@@ -1,5 +1,5 @@
 # tests/test_url.mojo
-from mojo_net.http.url import ParsedUrl, parse_url
+from navette.http.url import ParsedUrl, parse_url
 from tests._test_util import assert_true, assert_equal_int
 
 

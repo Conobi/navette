@@ -1,9 +1,9 @@
 # tests/test_cc_cubic.mojo
 # CUBIC congestion controller tests per spec §9.1 (RFC 9438).
 
-from mojo_net.quic.cc.cubic import (Cubic, _cube_root_u64,
+from navette.quic.cc.cubic import (Cubic, _cube_root_u64,
     HS_STATE_SS, HS_STATE_CSS, HS_STATE_DONE)
-from mojo_net.quic.cc.cc_trait import AckedPacket, LostPacket, INITIAL_WINDOW_BYTES_CAP
+from navette.quic.cc.cc_trait import AckedPacket, LostPacket, INITIAL_WINDOW_BYTES_CAP
 from std.testing import assert_true
 
 comptime MDS: UInt64 = 1200

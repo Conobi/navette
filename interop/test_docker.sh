@@ -31,7 +31,7 @@ dd if=/dev/urandom of="$TEST_DIR/www/medium.bin" bs=1024 count=100 2>/dev/null
 echo ""
 echo "[test] TESTCASE=zerortt (unsupported) should exit 127..."
 EXIT=0
-docker run --rm -e TESTCASE=zerortt -e ROLE=server mojo-net-interop:latest || EXIT=$?
+docker run --rm -e TESTCASE=zerortt -e ROLE=server navette-interop:latest || EXIT=$?
 if [ "$EXIT" = "127" ]; then
     echo "[test] PASS: unsupported testcase exited 127"
 else
@@ -50,7 +50,7 @@ docker run --rm -d --name interop-server \
     -e ROLE=server \
     -v "$TEST_DIR/www:/www:ro" \
     -v "$TEST_DIR/certs:/certs:ro" \
-    mojo-net-interop:latest
+    navette-interop:latest
 sleep 2
 
 docker run --rm --name interop-client \
@@ -60,7 +60,7 @@ docker run --rm --name interop-client \
     -e "REQUESTS=https://interop-server:443/small.bin" \
     -v "$TEST_DIR/certs:/certs:ro" \
     -v "$TEST_DIR/downloads:/downloads" \
-    mojo-net-interop:latest || true
+    navette-interop:latest || true
 
 docker stop interop-server 2>/dev/null || true
 
@@ -82,7 +82,7 @@ docker run --rm -d --name interop-server \
     -e ROLE=server \
     -v "$TEST_DIR/www:/www:ro" \
     -v "$TEST_DIR/certs:/certs:ro" \
-    mojo-net-interop:latest
+    navette-interop:latest
 sleep 2
 
 docker run --rm --name interop-client \
@@ -92,7 +92,7 @@ docker run --rm --name interop-client \
     -e "REQUESTS=https://interop-server:443/small.bin https://interop-server:443/medium.bin" \
     -v "$TEST_DIR/certs:/certs:ro" \
     -v "$TEST_DIR/downloads:/downloads" \
-    mojo-net-interop:latest || true
+    navette-interop:latest || true
 
 docker stop interop-server 2>/dev/null || true
 

@@ -14,7 +14,7 @@
 #
 # DESIGN NOTE (H2StreamingServer additive API):
 #   This file relies on the public `resume_stream(sid)` / `has_stream(sid)`
-#   helpers added to mojo_net.h2.h2_streaming_server. Without them the
+#   helpers added to navette.h2.h2_streaming_server. Without them the
 #   streaming server has no way for the proxy driver to wake a per-stream
 #   coro that's suspended waiting on a backend response arriving via a
 #   different transport.
@@ -24,13 +24,13 @@ from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.h2.h2_session import H2Session
-from mojo_net.h2.h2_streaming_server import (
+from navette.h2.h2_session import H2Session
+from navette.h2.h2_streaming_server import (
     H2StreamingServer,
     H2StreamingCtx,
     next_chunk,
 )
-from mojo_net.http import (
+from navette.http import (
     BodyFrame,
     Headers,
     Method,
@@ -39,9 +39,9 @@ from mojo_net.http import (
     StatusCode,
     Version,
 )
-from mojo_net.http.request import RequestBody
-from mojo_net.http.session import RequestHandle
-from mojo_net.tls import TlsConnection
+from navette.http.request import RequestBody
+from navette.http.session import RequestHandle
+from navette.tls import TlsConnection
 
 from boucle.stackful import CoroYielder
 

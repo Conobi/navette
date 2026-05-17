@@ -11,16 +11,16 @@
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.connection import QuicConnection
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from mojo_net.h3.connection import H3Connection, H3Event
-from mojo_net.h3.h3_sync_server import H3CoroServer, CoroStreamCtx, H3BodyFn
-from mojo_net.h3.qpack import QpackHeaderField
-from mojo_net.http.handler import RecvBody, ResponseWriter, StreamError, Capabilities
-from mojo_net.http.headers import Headers
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.status import StatusCode
+from navette.tls.lib import RustlsLibrary
+from navette.quic.connection import QuicConnection
+from navette.quic.trans_param import TransportParams, default_transport_params
+from navette.h3.connection import H3Connection, H3Event
+from navette.h3.h3_sync_server import H3CoroServer, CoroStreamCtx, H3BodyFn
+from navette.h3.qpack import QpackHeaderField
+from navette.http.handler import RecvBody, ResponseWriter, StreamError, Capabilities
+from navette.http.headers import Headers
+from navette.http.body import BodyFrame
+from navette.http.status import StatusCode
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
 

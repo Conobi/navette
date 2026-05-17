@@ -8,7 +8,7 @@ as either:
   - deferred to HC-2.
 
 Run:
-    cd ~/Projets/perso/mojo-net && uv run conformance/scripts/triage_disagreements.py
+    cd ~/Projets/perso/navette && uv run conformance/scripts/triage_disagreements.py
 """
 import json
 import os

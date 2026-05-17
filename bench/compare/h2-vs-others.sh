@@ -4,9 +4,9 @@
 # Spins up each Docker image in turn, hammers /baseline2?a=1&b=2 with
 # h2load over h2 TLS, and prints req/s + status code summary per server.
 #
-# Servers compared: mojo-net (us), hyper, nginx, h2o.
+# Servers compared: navette (us), hyper, nginx, h2o.
 # Build the images once before running:
-#   bash bench/build.sh                                   # mojo-net
+#   bash bench/build.sh                                   # navette
 #   bash bench/compare/build-comparators.sh               # everyone else
 set -uo pipefail
 
@@ -70,7 +70,7 @@ run_one() {
     sleep 2
 }
 
-run_one "mojo-net" "httparena-mojo-net"
+run_one "navette" "httparena-navette"
 run_one "hyper"    "httparena-hyper"
 run_one "nginx"    "httparena-nginx"
 run_one "h2o"      "httparena-h2o"

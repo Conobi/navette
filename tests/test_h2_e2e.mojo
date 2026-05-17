@@ -6,22 +6,22 @@
 
 from std.memory import Span
 
-from mojo_net.http.handler import (
+from navette.http.handler import (
     StreamHandler,
     Capabilities,
     RecvBody,
     ResponseWriter,
     StreamError,
 )
-from mojo_net.http.body import BodyFrame
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.http.request import Request, RequestBody
-from mojo_net.http.method import Method
-from mojo_net.http.version import Version
-from mojo_net.http.session import RequestHandle
-from mojo_net.h2.h2_handler_server import H2HandlerServer
-from mojo_net.h2.h2_session import H2Session
+from navette.http.body import BodyFrame
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.http.request import Request, RequestBody
+from navette.http.method import Method
+from navette.http.version import Version
+from navette.http.session import RequestHandle
+from navette.h2.h2_handler_server import H2HandlerServer
+from navette.h2.h2_session import H2Session
 
 
 # ---------------------------------------------------------------------------

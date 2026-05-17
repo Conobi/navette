@@ -2,7 +2,7 @@
 # H-multicore diagnostic variant of start-server.sh.
 # Same as scripts/start-server.sh but accepts a CPUSET as 2nd arg.
 #
-# Usage: start-server-cpuset.sh <mojo-net|tquic> <cpuset>
+# Usage: start-server-cpuset.sh <navette|tquic> <cpuset>
 #   cpuset examples: "0", "0-1", "0-3"
 #
 # DOES NOT MODIFY production scripts. Used by h-multicore bench harness only.
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-    echo "usage: start-server-cpuset.sh <mojo-net|tquic> <cpuset>" >&2
+    echo "usage: start-server-cpuset.sh <navette|tquic> <cpuset>" >&2
     exit 2
 fi
 
@@ -19,13 +19,13 @@ CPUSET="$2"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 
-MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-mojo-net-bench:latest}"
+MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-navette-bench:latest}"
 TQUIC_IMAGE="${TQUIC_IMAGE:-tquic-bench:latest}"
 
 "$HERE/scripts/stop-server.sh"
 
 case "$SERVER" in
-    mojo-net)
+    navette)
         mkdir -p "$REPO_ROOT/bench/quic_perf/results/profile"
         docker run -d --name bench-h3 \
             --network host \

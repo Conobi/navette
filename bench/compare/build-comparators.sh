@@ -3,7 +3,7 @@
 #
 # Pulls the three reference HTTP servers (hyper, nginx, h2o) plus the
 # h2load and wrk load generators from HttpArena's framework definitions.
-# mojo-net's own image is built by bench/build.sh — this script does NOT
+# navette's own image is built by bench/build.sh — this script does NOT
 # rebuild ours.
 set -euo pipefail
 

@@ -19,8 +19,8 @@
 from std.collections.optional import Optional
 from std.memory import Span
 
-from mojo_net.h1 import ParseConfig, ServerConnection, H1Session
-from mojo_net.http import (
+from navette.h1 import ParseConfig, ServerConnection, H1Session
+from navette.http import (
     BodyFrame,
     Headers,
     Method,
@@ -29,8 +29,8 @@ from mojo_net.http import (
     StatusCode,
     Version,
 )
-from mojo_net.http.session import RequestHandle
-from mojo_net.tls import TlsConnection
+from navette.http.session import RequestHandle
+from navette.tls import TlsConnection
 
 from boucle.handle import OwnedHandle
 

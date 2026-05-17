@@ -73,7 +73,7 @@ echo "[perf-record] warmup=${WARMUP_S}s duration=${DURATION_S}s perf_dur=${PERF_
 # UID-matching is the simplest fix that doesn't require sudo or container
 # capability changes (alternative is --cap-add=SYS_ADMIN per spec §4).
 # We bypass start-server.sh because it hardcodes root.
-MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-mojo-net-bench:latest}"
+MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-navette-bench:latest}"
 "$HERE/scripts/stop-server.sh" >/dev/null 2>&1 || true
 docker run -d --name bench-h3 \
     --network host \
@@ -152,7 +152,7 @@ perf script --symfs "$SYMFS" -i "$OUT/perf.data" \
     >"$OUT/perf-script.txt" 2>"$OUT/perf-script.err" || true
 "$FLAMEGRAPH/stackcollapse-perf.pl" "$OUT/perf-script.txt" >"$OUT/perf-folded.txt"
 "$FLAMEGRAPH/flamegraph.pl" \
-    --title "mojo-net h3 ${SCENARIO} ${PAYLOAD} (${GIT_SHA})" \
+    --title "navette h3 ${SCENARIO} ${PAYLOAD} (${GIT_SHA})" \
     --subtitle "perf -F ${PERF_FREQ} -g --call-graph=dwarf, ${PERF_DUR}s window" \
     "$OUT/perf-folded.txt" >"$OUT/perf.svg"
 
@@ -161,7 +161,7 @@ perf script --symfs "$SYMFS" -i "$OUT/perf.data" \
     echo "ts=$TS sha=$GIT_SHA payload=$PAYLOAD scenario=$SCENARIO"
     echo "perf_freq=$PERF_FREQ perf_dur=$PERF_DUR warmup=$WARMUP_S duration=$DURATION_S"
     echo "paranoid=$PARANOID host_pid=$PID"
-    echo "image=$(docker image inspect mojo-net-bench:latest --format '{{.Id}}' 2>/dev/null || echo unknown)"
+    echo "image=$(docker image inspect navette-bench:latest --format '{{.Id}}' 2>/dev/null || echo unknown)"
 } >"$OUT/meta.txt"
 
 echo

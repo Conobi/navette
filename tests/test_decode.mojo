@@ -1,7 +1,7 @@
 # tests/test_decode.mojo
 #
 # Unit tests for ContentDecoder (identity, gzip, brotli).
-from mojo_net.http.decode import ContentDecoder, ContentEncoding
+from navette.http.decode import ContentDecoder, ContentEncoding
 from tests._test_util import assert_true, assert_equal_str, assert_equal_int
 
 

@@ -35,7 +35,7 @@ for i in $(seq 1 "$ITERS"); do
     fi
 
     echo "[t2 wn=$WN iter=$i] running"
-    BENCH_WAIT_NR="$WN" "$HERE/scripts/bench.sh" mojo-net 1k short-conn tquic_client --iters 1 \
+    BENCH_WAIT_NR="$WN" "$HERE/scripts/bench.sh" navette 1k short-conn tquic_client --iters 1 \
         > "$DEST/iter-$i.log" 2>&1
     BENCH_RC=$?
 

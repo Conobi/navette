@@ -42,7 +42,19 @@ wheels = [
 ]
 
 [[package]]
-name = "mojo-net"
+name = "mojox"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mojo-compiler" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1f/76/69013eaec349f9dd09ede18e5e9ff2d1e10fcc3bed0d02207f2e0519f366/mojox-0.2.0.tar.gz", hash = "sha256:3461797d0f83f8d04779be9bf3cae85530772cc6797fcd2f96f60f8aa3c53298", size = 1659, upload-time = "2026-05-13T11:59:34.174Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/ec/d2b274ddfc2c54628d5dffb13c6cd44c398b0b2558a43073bd0388ebad57/mojox-0.2.0-py3-none-any.whl", hash = "sha256:b2e53f450cfcb8c7184822c3d2be53c4fd2b36f0281376299e1f2067651bdaea", size = 2481, upload-time = "2026-05-13T11:59:33.414Z" },
+]
+
+[[package]]
+name = "navette"
 version = "0.1.0"
 source = { editable = "../../" }
 dependencies = [
@@ -73,15 +85,15 @@ dev = [
 ]
 
 [[package]]
-name = "mojo-net-example-hello-h1-server"
+name = "navette-example-hello-h1-server"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "boucle" },
     { name = "json-simd-mojo" },
     { name = "mojo-compiler" },
-    { name = "mojo-net" },
     { name = "mojox" },
+    { name = "navette" },
 ]
 
 [package.metadata]
@@ -89,18 +101,6 @@ requires-dist = [
     { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=fc7a2f516abaee0c6afb1b2de921e84e9c51826a" },
     { name = "json-simd-mojo", git = "ssh://git@github.com/Conobi/json-simd-mojo.git?rev=e034f5ed6c97fc615c240e15c3c50f84a03dc54d" },
     { name = "mojo-compiler", specifier = "==0.26.2.0" },
-    { name = "mojo-net", editable = "../../" },
     { name = "mojox", specifier = ">=0.2" },
-]
-
-[[package]]
-name = "mojox"
-version = "0.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "mojo-compiler" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/76/69013eaec349f9dd09ede18e5e9ff2d1e10fcc3bed0d02207f2e0519f366/mojox-0.2.0.tar.gz", hash = "sha256:3461797d0f83f8d04779be9bf3cae85530772cc6797fcd2f96f60f8aa3c53298", size = 1659, upload-time = "2026-05-13T11:59:34.174Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/ec/d2b274ddfc2c54628d5dffb13c6cd44c398b0b2558a43073bd0388ebad57/mojox-0.2.0-py3-none-any.whl", hash = "sha256:b2e53f450cfcb8c7184822c3d2be53c4fd2b36f0281376299e1f2067651bdaea", size = 2481, upload-time = "2026-05-13T11:59:33.414Z" },
+    { name = "navette", editable = "../../" },
 ]

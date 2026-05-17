@@ -1,7 +1,7 @@
 # tests/test_method.mojo
 #
 # Unit tests for Method type.
-from mojo_net.http import Method
+from navette.http import Method
 from tests._test_util import assert_true, assert_equal_str
 
 

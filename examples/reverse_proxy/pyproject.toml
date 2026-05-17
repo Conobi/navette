@@ -1,10 +1,10 @@
 [project]
-name = "mojo-net-example-reverse-proxy"
+name = "navette-example-reverse-proxy"
 version = "0.0.0"
-description = "reverse_proxy — unified ALPN-dispatched H1+H2 reverse proxy using mojo-net"
+description = "reverse_proxy — unified ALPN-dispatched H1+H2 reverse proxy using navette"
 requires-python = ">=3.11"
 dependencies = [
-    "mojo-net",
+    "navette",
     "boucle",
     "json-simd-mojo",
     "mojox>=0.2",
@@ -15,7 +15,7 @@ dependencies = [
 requires = [
     "mojox-build>=0.3.0",
     "mojo-compiler==0.26.2.0",
-    "mojo-net",
+    "navette",
     "boucle",
     "json-simd-mojo",
 ]
@@ -29,6 +29,6 @@ binaries = [
 
 [tool.uv.sources]
 mojox-build    = { path = "/home/donokami/Projets/perso/mojox/packages/mojox-build", editable = true }
-mojo-net       = { path = "../..", editable = true }
+navette       = { path = "../..", editable = true }
 boucle         = { git = "ssh://git@github.com/Conobi/boucle.git",         rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
 json-simd-mojo = { git = "ssh://git@github.com/Conobi/json-simd-mojo.git", rev = "e034f5ed6c97fc615c240e15c3c50f84a03dc54d" }

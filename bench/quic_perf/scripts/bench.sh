@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bench.sh <server> <payload> <scenario> <client> [--iters N]
-#     server   : mojo-net | tquic
+#     server   : navette | tquic
 #     payload  : 1k | 5k | 15k | 2m
 #     scenario : long-conn | short-conn
 #     client   : tquic_client | h2load
@@ -42,7 +42,7 @@ case "$CLIENT" in
 esac
 
 case "$SERVER" in
-    mojo-net) CONTAINER=bench-h3 ;;
+    navette) CONTAINER=bench-h3 ;;
     tquic)    CONTAINER=bench-tquic ;;
     *) echo "unknown server: $SERVER" >&2; exit 2 ;;
 esac

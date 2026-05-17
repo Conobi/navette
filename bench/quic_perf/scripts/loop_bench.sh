@@ -27,8 +27,8 @@ wait_for_quiet() {
 for i in 1 2 3 4 5; do
     wait_for_quiet "$i"
     echo "=== $TAG iter $i/5 ==="
-    "$HERE/scripts/bench.sh" mojo-net 1k short-conn tquic_client --iters 1
-    LATEST=$(ls -1t "$HERE/results"/2026-*-mojo-net-1k-short-conn-tquic_client-iter1.json | head -1)
+    "$HERE/scripts/bench.sh" navette 1k short-conn tquic_client --iters 1
+    LATEST=$(ls -1t "$HERE/results"/2026-*-navette-1k-short-conn-tquic_client-iter1.json | head -1)
     cp "$LATEST" "$OUT_DIR/iter-${i}.json"
     if (( i < 5 )); then sleep 30; fi
 done

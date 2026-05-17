@@ -25,9 +25,9 @@ from std.ffi import external_call
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from mojo_net.h1.config import ParseConfig
-from mojo_net.h1.h1_tcp_server import H1TcpServer, serve_forever
-from mojo_net.http.handler import (
+from navette.h1.config import ParseConfig
+from navette.h1.h1_tcp_server import H1TcpServer, serve_forever
+from navette.http.handler import (
     StreamHandler,
     Request,
     RecvBody,
@@ -36,9 +36,9 @@ from mojo_net.http.handler import (
     StreamError,
     BodyFrame,
 )
-from mojo_net.http.headers import Headers
-from mojo_net.http.status import StatusCode
-from mojo_net.io.tcp_socket import tcp_listener
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
+from navette.io.tcp_socket import tcp_listener
 
 
 fn _getenv_int(name: String, default: Int) -> Int:

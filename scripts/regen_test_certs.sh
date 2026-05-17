@@ -33,7 +33,7 @@ openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
 
 openssl req -x509 -new -nodes -key "$OUT_DIR/ca.key" \
     -days 36500 \
-    -subj "/CN=mojo-net-test-ca" \
+    -subj "/CN=navette-test-ca" \
     -addext "basicConstraints=critical,CA:TRUE" \
     -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -out "$OUT_DIR/ca.crt" 2>/dev/null

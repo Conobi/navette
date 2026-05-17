@@ -13,10 +13,10 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Optional
 
-from mojo_net.tls.lib import RustlsLibrary
-from mojo_net.quic.connection import QuicConnection, QuicEvent
-from mojo_net.quic.trans_param import TransportParams, default_transport_params
-from mojo_net.quic.packet import parse_packet_header
+from navette.tls.lib import RustlsLibrary
+from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.trans_param import TransportParams, default_transport_params
+from navette.quic.packet import parse_packet_header
 from interop.file_io import read_file, getenv, getenv_opt, setenv
 from interop.http09 import http09_serve
 from interop.udp import udp_bind, udp_recvfrom, udp_sendto, udp_poll, monotonic_us, udp_close

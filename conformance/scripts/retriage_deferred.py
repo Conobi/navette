@@ -7,7 +7,7 @@ For each vector marked "deferred": "HC-2", tests:
   Path 3: Everything else stays deferred for HC-2b (multi_message later)
 
 Run:
-    cd ~/Projets/perso/mojo-net && uv run conformance/scripts/retriage_deferred.py
+    cd ~/Projets/perso/navette && uv run conformance/scripts/retriage_deferred.py
 """
 import itertools
 import json
