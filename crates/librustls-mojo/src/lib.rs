@@ -7,7 +7,10 @@
 
 pub mod handles;
 pub mod error;
-pub mod decode;
+// `decode` module (gzip/brotli) moved to crates/libcompress-mojo per
+// spec 2026-05-17-compress-shim-split.md. Removing the module makes
+// AC1's "zero compression symbols in librustls_mojo.so" provable via
+// `nm -D` (enforced in scripts/check_integrations.sh §2.5).
 mod quic;
 mod quic_hs;
 mod config;

@@ -99,17 +99,16 @@ fi
 # ---------------------------------------------------------------------------
 echo '§2.3 FFI symbol parity (Rust source vs Mojo bindings)'
 rust_count=$(grep -hE '^pub (unsafe )?extern "C" fn rlsm_' crates/librustls-mojo/src/*.rs 2>/dev/null | wc -l)
-# §2.3 caller refactor: rlsm_* symbol literals now live in the generated
-# bindings module (src/tls/_rlsm_bindings.mojo). Other source files import
-# typed load_rlsm_* helpers from there, so the count must come from the
-# generated module. Also scan the hand-written sites in src/tls/{lib,
-# config,connection}.mojo + src/http/decode.mojo to catch any drift.
+# §2.3 caller refactor: rlsm_* symbol literals live in the generated
+# bindings module (navette/tls/_rlsm_bindings.mojo). Other source files
+# import typed load_rlsm_* helpers from there, so the count comes from
+# the generated module. Hand-written sites under navette/tls + navette/
+# http are scanned to catch any drift.
 mojo_count=$(grep -rhoE '"rlsm_[a-z_0-9]+"' \
-    src/tls/_rlsm_bindings.mojo \
-    src/tls/lib.mojo \
-    src/tls/config.mojo \
-    src/tls/connection.mojo \
-    src/http/decode.mojo \
+    navette/tls/_rlsm_bindings.mojo \
+    navette/tls/lib.mojo \
+    navette/tls/config.mojo \
+    navette/tls/connection.mojo \
     2>/dev/null | sort -u | wc -l)
 printf '  rust_count=%s mojo_count=%s\n' "$rust_count" "$mojo_count"
 if [ "$rust_count" -gt 0 ] && [ "$mojo_count" -gt 0 ]; then
@@ -120,6 +119,52 @@ if [ "$rust_count" -gt 0 ] && [ "$mojo_count" -gt 0 ]; then
     fi
 else
     fail 'Could not count rlsm_ symbols on at least one side'
+fi
+
+# ---------------------------------------------------------------------------
+# §2.4 — libcompress-mojo FFI symbol parity (spec 2026-05-17-compress-shim-split)
+# ---------------------------------------------------------------------------
+echo '§2.4 libcompress FFI symbol parity (C source vs Mojo bindings vs .so)'
+c_count=$(grep -hE '^[A-Za-z_][A-Za-z0-9_ ]*\<lcm_[a-z_0-9]+\s*\(' \
+    crates/libcompress-mojo/src/*.c 2>/dev/null | wc -l)
+lcm_mojo_count=$(grep -hoE '"lcm_[a-z_0-9]+"' \
+    navette/compress/_lcm_bindings.mojo 2>/dev/null | sort -u | wc -l)
+printf '  c_count=%s mojo_count=%s\n' "$c_count" "$lcm_mojo_count"
+if [ "$c_count" -gt 0 ] && [ "$lcm_mojo_count" -gt 0 ]; then
+    if [ "$c_count" -ge "$lcm_mojo_count" ]; then
+        pass 'Mojo bindings consume ≤ C-defined lcm_ symbols'
+    else
+        fail 'Mojo references more lcm_ symbols than C exports (drift!)'
+    fi
+else
+    fail 'Could not count lcm_ symbols on at least one side'
+fi
+
+# ---------------------------------------------------------------------------
+# §2.5 — librustls_mojo.so exports zero compression symbols (AC1 of the
+# compress-shim-split spec). Decouples release surfaces: a zlib/brotli CVE
+# is a system-package update, never a Navette release.
+# ---------------------------------------------------------------------------
+echo '§2.5 librustls_mojo.so free of compression symbols'
+lcs_so="$REPO_ROOT/lib/librustls_mojo.so"
+lcs_dy="$REPO_ROOT/lib/librustls_mojo.dylib"
+lcs_path=''
+[ -f "$lcs_so" ] && lcs_path="$lcs_so"
+[ -z "$lcs_path" ] && [ -f "$lcs_dy" ] && lcs_path="$lcs_dy"
+if [ -z "$lcs_path" ]; then
+    pass 'librustls_mojo lib not present (skipped) — run scripts/build_rustls.sh release'
+elif ! command -v nm >/dev/null; then
+    pass '`nm` unavailable (skipped)'
+else
+    nm_args="-D"
+    [ "$lcs_path" = "$lcs_dy" ] && nm_args="-gU"
+    nm_out=$(nm $nm_args "$lcs_path" 2>/dev/null || true)
+    bad=$(printf '%s\n' "$nm_out" | grep -cE '\b(rlsm_(gzip|br)_|_compress_|_decompress_)' || true)
+    if [ "$bad" -eq 0 ]; then
+        pass 'no compression symbols (gzip/brotli/compress/decompress) leaked'
+    else
+        fail "$bad compression symbol(s) leaked into librustls_mojo (should be in libcompress_mojo)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

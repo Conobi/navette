@@ -1,27 +1,30 @@
 # src/http/decode.mojo
 #
 # ContentDecoder — streaming gzip / brotli / identity decoder backed by
-# librustls_mojo.so FFI (rlsm_gzip_* / rlsm_br_*).
+# libcompress_mojo.so FFI (lcm_gzip_* / lcm_br_*). Previously lived in
+# librustls_mojo.so; split out per spec 2026-05-17-compress-shim-split.md
+# so a future zlib/brotli CVE is a `apt upgrade` away, not a Navette release.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-# Typed FFI loaders auto-generated from crates/librustls-mojo/symbols.toml.
-# §2.3 deps-enhancement: rlsm_* symbols resolve through the generated module
-# so signature drift between Rust and Mojo produces a compile error.
-from navette.tls._rlsm_bindings import (
-    load_rlsm_br_feed,
-    load_rlsm_br_finish,
-    load_rlsm_br_free,
-    load_rlsm_br_init,
-    load_rlsm_gzip_feed,
-    load_rlsm_gzip_finish,
-    load_rlsm_gzip_free,
-    load_rlsm_gzip_init,
+# Typed FFI loaders auto-generated from crates/libcompress-mojo/symbols.toml
+# by scripts/gen_ffi_bindings.py — signature drift between C and Mojo
+# produces a compile error.
+from navette.compress._lcm_bindings import (
+    load_lcm_br_feed,
+    load_lcm_br_finish,
+    load_lcm_br_free,
+    load_lcm_br_init,
+    load_lcm_gzip_feed,
+    load_lcm_gzip_finish,
+    load_lcm_gzip_free,
+    load_lcm_gzip_init,
 )
+from navette.compress.lib import DecoderLimits, _open_libcompress
 
 
-comptime _OUT_CAP = 262144  # 256 KiB decompression output buffer
+comptime _OUT_CAP = 262144  # 256 KiB per-call output buffer
 
 comptime _ENC_IDENTITY: UInt8 = 0
 comptime _ENC_GZIP: UInt8 = 1
@@ -64,11 +67,15 @@ struct ContentEncoding:
 struct ContentDecoder(Movable):
     """Streaming content decoder (gzip, brotli, or identity passthrough).
 
-    Wraps the stateful C FFI in librustls_mojo.so.  Typical usage:
+    Wraps the stateful C FFI in libcompress_mojo.so. Typical usage:
 
         var dec = ContentDecoder(ContentEncoding.gzip())
         var chunk = dec.feed(compressed_bytes)
         var tail  = dec.finish()
+
+    Decompression caps are configurable per decoder via the optional
+    `limits` parameter — see DecoderLimits.default() for the ship
+    defaults (64 MiB input / 256 MiB output / 100:1 ratio).
     """
 
     var _encoding: ContentEncoding
@@ -78,30 +85,69 @@ struct ContentDecoder(Movable):
     # -- lifecycle -------------------------------------------------------------
 
     def __init__(out self, encoding: ContentEncoding) raises:
-        """Create a decoder for the given encoding.
-
-        Resolves librustls_mojo.so via the shared loader (see
-        `navette.tls.lib._open_librustls`); same RPATH / env-var /
-        CWD-relative fallback as `RustlsLibrary`.
-        """
-        from navette.tls.lib import _open_librustls
+        """Create a decoder for the given encoding, with default caps."""
+        var limits = DecoderLimits.default()
         self._encoding = ContentEncoding(copy_from=encoding)
-        self._lib = _open_librustls()
+        self._lib = _open_libcompress()
         if encoding._tag == _ENC_GZIP:
-            self._state = load_rlsm_gzip_init(self._lib)()
+            self._state = load_lcm_gzip_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
         elif encoding._tag == _ENC_BROTLI:
-            self._state = load_rlsm_br_init(self._lib)()
+            self._state = load_lcm_br_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
+        else:
+            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+
+    def __init__(out self, encoding: ContentEncoding, limits: DecoderLimits) raises:
+        """Create a decoder with explicit decompression caps.
+
+        Resolves libcompress_mojo.so via the shared loader
+        (`navette.compress.lib._open_libcompress`); same RPATH /
+        env-var / CWD-relative fallback as `RustlsLibrary`.
+        """
+        self._encoding = ContentEncoding(copy_from=encoding)
+        self._lib = _open_libcompress()
+        if encoding._tag == _ENC_GZIP:
+            self._state = load_lcm_gzip_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
+        elif encoding._tag == _ENC_BROTLI:
+            self._state = load_lcm_br_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
         else:
             self._state = UnsafePointer[NoneType, MutAnyOrigin]()
 
     def __init__(out self, encoding: ContentEncoding, lib_path: String) raises:
-        """Create a decoder with an explicit librustls_mojo.so path."""
+        """Create a decoder with an explicit libcompress_mojo.so path."""
+        var limits = DecoderLimits.default()
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = OwnedDLHandle(lib_path)
         if encoding._tag == _ENC_GZIP:
-            self._state = load_rlsm_gzip_init(self._lib)()
+            self._state = load_lcm_gzip_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
         elif encoding._tag == _ENC_BROTLI:
-            self._state = load_rlsm_br_init(self._lib)()
+            self._state = load_lcm_br_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
+        else:
+            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+
+    def __init__(out self, encoding: ContentEncoding, lib_path: String, limits: DecoderLimits) raises:
+        """Create a decoder with explicit lib path and caps."""
+        self._encoding = ContentEncoding(copy_from=encoding)
+        self._lib = OwnedDLHandle(lib_path)
+        if encoding._tag == _ENC_GZIP:
+            self._state = load_lcm_gzip_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
+        elif encoding._tag == _ENC_BROTLI:
+            self._state = load_lcm_br_init(self._lib)(
+                limits.input_cap, limits.output_cap, limits.ratio_x100,
+            )
         else:
             self._state = UnsafePointer[NoneType, MutAnyOrigin]()
 
@@ -113,9 +159,9 @@ struct ContentDecoder(Movable):
     def __del__(deinit self):
         if self._state:
             if self._encoding._tag == _ENC_GZIP:
-                load_rlsm_gzip_free(self._lib)(self._state)
+                load_lcm_gzip_free(self._lib)(self._state)
             elif self._encoding._tag == _ENC_BROTLI:
-                load_rlsm_br_free(self._lib)(self._state)
+                load_lcm_br_free(self._lib)(self._state)
 
     # -- public API ------------------------------------------------------------
 
@@ -135,17 +181,17 @@ struct ContentDecoder(Movable):
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
-            n = load_rlsm_gzip_feed(self._lib)(
+            n = load_lcm_gzip_feed(self._lib)(
                 self._state, in_ptr, len(data), out_buf, _OUT_CAP,
             )
         else:
-            n = load_rlsm_br_feed(self._lib)(
+            n = load_lcm_br_feed(self._lib)(
                 self._state, in_ptr, len(data), out_buf, _OUT_CAP,
             )
 
         if n < 0:
             out_buf.free()
-            raise "ContentDecoder.feed: decompression error"
+            raise "ContentDecoder.feed: decompression error (" + String(n) + ")"
 
         var result = List[UInt8]()
         for i in range(Int(n)):
@@ -156,7 +202,7 @@ struct ContentDecoder(Movable):
     def finish(self) raises -> List[UInt8]:
         """Flush any remaining decompressed bytes.
 
-        Must be called once after all data has been fed.  For identity
+        Must be called once after all data has been fed. For identity
         encoding, returns an empty list.
         """
         if self._encoding._tag == _ENC_IDENTITY:
@@ -166,17 +212,17 @@ struct ContentDecoder(Movable):
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
-            n = load_rlsm_gzip_finish(self._lib)(
+            n = load_lcm_gzip_finish(self._lib)(
                 self._state, out_buf, _OUT_CAP,
             )
         else:
-            n = load_rlsm_br_finish(self._lib)(
+            n = load_lcm_br_finish(self._lib)(
                 self._state, out_buf, _OUT_CAP,
             )
 
         if n < 0:
             out_buf.free()
-            raise "ContentDecoder.finish: decompression error"
+            raise "ContentDecoder.finish: decompression error (" + String(n) + ")"
 
         var result = List[UInt8]()
         for i in range(Int(n)):

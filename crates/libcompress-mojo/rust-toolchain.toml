@@ -1,0 +1,6 @@
+# Mirror crates/librustls-mojo/rust-toolchain.toml so both shims build
+# with the same Rust regardless of host default.
+[toolchain]
+channel    = "1.88.0"
+components = ["rustfmt", "clippy"]
+profile    = "minimal"

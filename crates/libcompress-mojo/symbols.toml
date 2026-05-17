@@ -1,0 +1,115 @@
+# libcompress-mojo FFI symbol schema.
+#
+# Single source of truth for the lcm_* symbols that cross the C <-> Mojo
+# boundary. The `extern` C declarations live in src/{zlib_wrapper,
+# brotli_wrapper,last_error}.c and are mirrored by the auto-generated
+# `load_lcm_*` helpers in navette/http/_lcm_bindings.mojo.
+#
+# scripts/gen_ffi_bindings.py consumes this file to emit
+# navette/http/_lcm_bindings.mojo. Drift between C source and this file
+# is asserted by scripts/check_integrations.sh (§2.4).
+#
+# Type mapping conventions (same as librustls-mojo):
+#   C int32_t / int                  <-> Mojo Int32
+#   C int64_t                        <-> Mojo Int64
+#   C uint8_t                        <-> Mojo UInt8
+#   C uint32_t                       <-> Mojo UInt32
+#   C uint64_t                       <-> Mojo UInt64
+#   C size_t                         <-> Mojo Int
+#   C const uint8_t * / uint8_t *    <-> Mojo UnsafePointer[UInt8]
+#   C <opaque struct> *              <-> Mojo UnsafePointer[NoneType]
+
+schema_version = 1
+
+# ----------------------------------------------------------------------------
+# last_error.c
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "lcm_last_error"
+description = "Copy the last libcompress-mojo error message into out_buf (NUL-terminated)."
+rust_args = ["*mut u8", "i32"]
+rust_args_names = ["out_buf", "buf_len"]
+rust_ret  = "i32"
+mojo_args = ["UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+# ----------------------------------------------------------------------------
+# zlib_wrapper.c — streaming gzip decoder (system zlib)
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "lcm_gzip_init"
+description = "Allocate a GzipState with explicit decompression caps. Cap of 0 disables the corresponding check."
+rust_args = ["u64", "u64", "u32"]
+rust_args_names = ["input_cap", "output_cap", "ratio_x100"]
+rust_ret  = "*mut GzipState"
+mojo_args = ["UInt64", "UInt64", "UInt32"]
+mojo_ret  = "UnsafePointer[NoneType]"
+
+[[symbol]]
+name = "lcm_gzip_feed"
+description = "Feed compressed bytes; write up to out_cap decompressed bytes. Returns bytes written (>=0) or -1 (error) / -2 (input cap) / -3 (output cap) / -4 (ratio cap)."
+rust_args = ["*mut GzipState", "*const u8", "usize", "*mut u8", "usize"]
+rust_args_names = ["state", "in_ptr", "in_len", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "lcm_gzip_finish"
+description = "Drain remaining decompressed bytes. Repeatable until it returns 0."
+rust_args = ["*mut GzipState", "*mut u8", "usize"]
+rust_args_names = ["state", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "lcm_gzip_free"
+description = "Free a GzipState previously returned by lcm_gzip_init."
+rust_args = ["*mut GzipState"]
+rust_args_names = ["state"]
+rust_ret  = "void"
+mojo_args = ["UnsafePointer[NoneType]"]
+mojo_ret  = "None"
+
+# ----------------------------------------------------------------------------
+# brotli_wrapper.c — streaming brotli decoder (system libbrotlidec)
+# ----------------------------------------------------------------------------
+
+[[symbol]]
+name = "lcm_br_init"
+description = "Allocate a BrotliState with explicit decompression caps. Cap of 0 disables the corresponding check."
+rust_args = ["u64", "u64", "u32"]
+rust_args_names = ["input_cap", "output_cap", "ratio_x100"]
+rust_ret  = "*mut BrotliState"
+mojo_args = ["UInt64", "UInt64", "UInt32"]
+mojo_ret  = "UnsafePointer[NoneType]"
+
+[[symbol]]
+name = "lcm_br_feed"
+description = "Feed compressed bytes; write up to out_cap decompressed bytes. Same return contract as lcm_gzip_feed."
+rust_args = ["*mut BrotliState", "*const u8", "usize", "*mut u8", "usize"]
+rust_args_names = ["state", "in_ptr", "in_len", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "lcm_br_finish"
+description = "Drain remaining decompressed bytes. Repeatable until it returns 0."
+rust_args = ["*mut BrotliState", "*mut u8", "usize"]
+rust_args_names = ["state", "out_ptr", "out_cap"]
+rust_ret  = "i64"
+mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int"]
+mojo_ret  = "Int64"
+
+[[symbol]]
+name = "lcm_br_free"
+description = "Free a BrotliState previously returned by lcm_br_init."
+rust_args = ["*mut BrotliState"]
+rust_args_names = ["state"]
+rust_ret  = "void"
+mojo_args = ["UnsafePointer[NoneType]"]
+mojo_ret  = "None"

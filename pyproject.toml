@@ -54,8 +54,18 @@ packages = ["navette"]
 # it) opt in to the hardened profile:
 #   default ship: scripts/build_rustls.sh release  → includes insecure symbol
 #   hardened:     MOJOX_BUILD_PROFILE=hardened     → strips insecure symbol
-pre-build = ['scripts/build_rustls.sh "${MOJOX_BUILD_PROFILE:-release}"']
-native-libs = ["lib/librustls_mojo.so"]
+# Build both native shims before mojox-build packages: librustls_mojo.so
+# (TLS) and libcompress_mojo.so (gzip/brotli, system zlib+brotli). The
+# compress shim has no security-mode profile knob — its safety contract
+# is "stays inside DecoderLimits"; see spec 2026-05-17-compress-shim-split.
+pre-build = [
+    'scripts/build_rustls.sh "${MOJOX_BUILD_PROFILE:-release}"',
+    'scripts/build_compress.sh release',
+]
+native-libs = [
+    "lib/librustls_mojo.so",
+    "lib/libcompress_mojo.so",
+]
 
 [tool.uv.sources]
 boucle         = { git = "ssh://git@github.com/Conobi/boucle.git",         rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }

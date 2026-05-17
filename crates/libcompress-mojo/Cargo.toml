@@ -1,0 +1,27 @@
+[package]
+name = "libcompress-mojo"
+version = "0.1.0"
+edition = "2021"
+description = "Thin C shim over system zlib + libbrotlidec, dlopen'd by Mojo. Splits compression CVE blast radius away from librustls-mojo (see specs/2026-05-17-compress-shim-split.md)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# All FFI exports live in C source compiled by build.rs (src/zlib_wrapper.c,
+# src/brotli_wrapper.c, src/last_error.c). The Rust side is a near-empty
+# stub — Cargo just needs *something* to produce the cdylib around.
+[dependencies]
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[profile.release]
+panic = "abort"
+# Match librustls-mojo: line-tables-only keeps perf-record flamegraphs
+# resolvable (~30-50% larger binary, dynsym intact) without full type info.
+debug = "line-tables-only"
+strip = false
+
+[profile.dev]
+panic = "abort"

@@ -52,78 +52,10 @@ mojo_args = ["UnsafePointer[UInt8]", "Int32"]
 mojo_ret  = "Int32"
 
 # ----------------------------------------------------------------------------
-# decode.rs - streaming Content-Encoding decoders (gzip, brotli)
+# decode.rs - REMOVED. Streaming gzip/brotli decoders moved to
+# crates/libcompress-mojo per spec 2026-05-17-compress-shim-split.md
+# (symbols are now lcm_gzip_* / lcm_br_* in libcompress_mojo.so).
 # ----------------------------------------------------------------------------
-
-[[symbol]]
-name = "rlsm_gzip_init"
-description = "Allocate a GzipState. Returns an opaque pointer; free with rlsm_gzip_free."
-rust_args = []
-rust_ret  = "*mut GzipState"
-mojo_args = []
-mojo_ret  = "UnsafePointer[NoneType]"
-
-[[symbol]]
-name = "rlsm_gzip_feed"
-description = "Feed input bytes and write decompressed output. Returns bytes written or -1."
-rust_args = ["*mut GzipState", "*const u8", "usize", "*mut u8", "usize"]
-rust_args_names = ["state", "in_ptr", "in_len", "out_ptr", "out_cap"]
-rust_ret  = "i64"
-mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int", "UnsafePointer[UInt8]", "Int"]
-mojo_ret  = "Int64"
-
-[[symbol]]
-name = "rlsm_gzip_finish"
-description = "Drain the final decompressed bytes from the gzip state."
-rust_args = ["*mut GzipState", "*mut u8", "usize"]
-rust_args_names = ["state", "out_ptr", "out_cap"]
-rust_ret  = "i64"
-mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int"]
-mojo_ret  = "Int64"
-
-[[symbol]]
-name = "rlsm_gzip_free"
-description = "Free a GzipState previously returned by rlsm_gzip_init."
-rust_args = ["*mut GzipState"]
-rust_args_names = ["state"]
-rust_ret  = "void"
-mojo_args = ["UnsafePointer[NoneType]"]
-mojo_ret  = "None"
-
-[[symbol]]
-name = "rlsm_br_init"
-description = "Allocate a BrotliState. Returns an opaque pointer; free with rlsm_br_free."
-rust_args = []
-rust_ret  = "*mut BrotliState"
-mojo_args = []
-mojo_ret  = "UnsafePointer[NoneType]"
-
-[[symbol]]
-name = "rlsm_br_feed"
-description = "Feed input bytes and write decompressed output. Returns bytes written or -1."
-rust_args = ["*mut BrotliState", "*const u8", "usize", "*mut u8", "usize"]
-rust_args_names = ["state", "in_ptr", "in_len", "out_ptr", "out_cap"]
-rust_ret  = "i64"
-mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int", "UnsafePointer[UInt8]", "Int"]
-mojo_ret  = "Int64"
-
-[[symbol]]
-name = "rlsm_br_finish"
-description = "Drain the final decompressed bytes from the brotli state."
-rust_args = ["*mut BrotliState", "*mut u8", "usize"]
-rust_args_names = ["state", "out_ptr", "out_cap"]
-rust_ret  = "i64"
-mojo_args = ["UnsafePointer[NoneType]", "UnsafePointer[UInt8]", "Int"]
-mojo_ret  = "Int64"
-
-[[symbol]]
-name = "rlsm_br_free"
-description = "Free a BrotliState previously returned by rlsm_br_init."
-rust_args = ["*mut BrotliState"]
-rust_args_names = ["state"]
-rust_ret  = "void"
-mojo_args = ["UnsafePointer[NoneType]"]
-mojo_ret  = "None"
 
 # ----------------------------------------------------------------------------
 # config.rs - TLS config handle table

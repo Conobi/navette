@@ -11,8 +11,8 @@ aws-lc-rs = "1"
 rustls = "0.23"
 rustls-pemfile = "2"
 webpki-roots = "1"
-flate2 = "1"
-brotli = "7"
+# flate2 + brotli moved to crates/libcompress-mojo per spec
+# 2026-05-17-compress-shim-split.md. librustls-mojo ships TLS only.
 
 [dev-dependencies]
 hex = "0.4"

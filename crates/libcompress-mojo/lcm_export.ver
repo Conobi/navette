@@ -1,0 +1,13 @@
+/* Version script: export every lcm_* symbol from the cdylib.
+ *
+ * rustc generates its own --version-script per cdylib build that
+ * restricts .dynsym to Rust-declared #[no_mangle] exports. Since
+ * libcompress-mojo's FFI surface is defined in C (compiled into a
+ * static archive via cc::Build), those symbols are otherwise hidden
+ * by the linker's local:* clause. Adding this script merges an
+ * additional global pattern so dlopen+dlsym can find them.
+ */
+{
+    global:
+        lcm_*;
+};
