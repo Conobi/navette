@@ -14,7 +14,7 @@ Drives multiple H3 connections off a single UDP socket using boucle's
     │  on_complete(token, result, flags) ───┘   (CQE)
     │  ├─ recvmsg CQE → parse, queue PendingDatagram, reprovide buf
     │  ├─ sendmsg CQE → free UdpTxSlot           (Stage B1c)
-    │  └─ timeout CQE → walk conn_h3s, drain     (Stage B1d)
+    │  └─ timeout CQE → walk conn_slots, drain   (Stage B1d)
     │
     │  on_flush() ─────────── (after all CQEs in this batch)
     │  └─ _flush_impl: demux pending_rx by DCID, route to
@@ -23,7 +23,7 @@ Drives multiple H3 connections off a single UDP socket using boucle's
     │
     │  outer driver: tick() → drain_pending_submits() ───→ SQE  (Stage B1d)
     │
-    └─ conn_h3s[i]: UnsafePointer[H3HandlerServer[H]]
+    └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + dcids + generation)
          └─ owns a QuicConnection + an H instance
 ```
 
@@ -267,6 +267,76 @@ struct PendingSubmit(Copyable, Movable):
         self.slot_idx = take.slot_idx
 
 
+# ── Connection slot + DCID demux entry ──────────────────────────────────────
+
+
+struct _DcidEntry(Copyable, Movable):
+    """`(idx, generation)` value of the DCID → connection-slot demux map.
+
+    The generation guard lets a stale entry — left behind when a closed
+    slot's index was reused by swap-and-pop — be detected at lookup time
+    by comparing against the current `conn_slots[idx].generation`.
+    """
+    var idx: Int
+    var generation: UInt32
+
+    def __init__(out self, idx: Int, generation: UInt32):
+        self.idx = idx
+        self.generation = generation
+
+    def __init__(out self, *, other: Self):
+        self.idx = other.idx
+        self.generation = other.generation
+
+    def __init__(out self, *, deinit take: Self):
+        self.idx = take.idx
+        self.generation = take.generation
+
+
+struct ConnSlot[H: StreamHandler](Copyable, Movable):
+    """One QUIC/H3 connection's parallel-list-collapsing record.
+
+    Holds the `H3HandlerServer[H]` pointer, peer sockaddr bytes, every
+    DCID this connection responds to (typically `[initial_dcid, local_cid]`),
+    and a generation counter. Generation increments every time the slot
+    is overwritten by a swap-and-pop survivor, so stale demux entries
+    can be detected at lookup time.
+
+    `Copyable` is required by `List[ConnSlot[H]]` storage; aliasing
+    `h3` across copies matches the prior `List[UnsafePointer[...]]`
+    semantics (the underlying pointer was already trivially copied
+    when the list grew).
+    """
+    var h3: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]
+    var addr: List[UInt8]
+    var dcids: List[UInt64]
+    var generation: UInt32
+
+    def __init__(
+        out self,
+        h3: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin],
+        var addr: List[UInt8],
+        var dcids: List[UInt64],
+        generation: UInt32,
+    ):
+        self.h3 = h3
+        self.addr = addr^
+        self.dcids = dcids^
+        self.generation = generation
+
+    def __init__(out self, *, other: Self):
+        self.h3 = other.h3
+        self.addr = List[UInt8](copy=other.addr)
+        self.dcids = List[UInt64](copy=other.dcids)
+        self.generation = other.generation
+
+    def __init__(out self, *, deinit take: Self):
+        self.h3 = take.h3
+        self.addr = take.addr^
+        self.dcids = take.dcids^
+        self.generation = take.generation
+
+
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
 
 
@@ -304,13 +374,15 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     # Per-conn handler factory.
     var make_handler: fn () raises -> Self.H
 
-    # Per-conn book-keeping. conn_h3s[i] is paired with conn_addrs[i]
-    # (peer sockaddr) + conn_dcids[i] (every DCID this conn responds
-    # to — typically [initial_dcid, local_cid] for dual-DCID demux).
-    var conn_h3s: List[UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]]
-    var conn_dcid_map: Dict[UInt64, Int]
-    var conn_dcids: List[List[UInt64]]
-    var conn_addrs: List[List[UInt8]]
+    # Per-conn book-keeping. `conn_slots[i]` collapses what used to be
+    # three parallel lists (h3 pointer / addr / dcids) plus a generation
+    # counter. `conn_dcid_map` keys every DCID this conn responds to
+    # (typically [initial_dcid, local_cid] for dual-DCID demux) to a
+    # `(idx, generation)` pair; the generation guard catches stale
+    # entries left behind by swap-and-pop.
+    var conn_slots: List[ConnSlot[Self.H]]
+    var conn_dcid_map: Dict[UInt64, _DcidEntry]
+    var next_generation: UInt32
 
     # Ingress staging. pending_rx fills from on_complete (one per
     # recvmsg CQE); _flush_impl drains it in on_flush.
@@ -360,10 +432,9 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         self.transport_params = transport_params^
         self.make_handler = make_handler
 
-        self.conn_h3s = List[UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]]()
-        self.conn_dcid_map = Dict[UInt64, Int]()
-        self.conn_dcids = List[List[UInt64]]()
-        self.conn_addrs = List[List[UInt8]]()
+        self.conn_slots = List[ConnSlot[Self.H]]()
+        self.conn_dcid_map = Dict[UInt64, _DcidEntry]()
+        self.next_generation = UInt32(0)
 
         self.pending_rx = List[PendingDatagram]()
         self.consumed_bufs = List[UInt16]()
@@ -406,14 +477,14 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     fn __del__(deinit self):
         """Free heap allocations owned by the handler.
 
-        Walks any live `conn_h3s` + `tx_slots`, destroying their pointees
-        before freeing the per-slot heap blocks. `pbuf_pool`,
+        Walks any live `conn_slots` + `tx_slots`, destroying their
+        pointees before freeing the per-slot heap blocks. `pbuf_pool`,
         `msghdr_template`, and `timeout_ts` are raw byte buffers — no
         pointee destructor. On clean teardown all three lists are typically
         empty; the walks defend against drop-mid-flight.
         """
-        for i in range(len(self.conn_h3s)):
-            var ptr = self.conn_h3s[i]
+        for i in range(len(self.conn_slots)):
+            var ptr = self.conn_slots[i].h3
             ptr.destroy_pointee()
             ptr.free()
         for i in range(len(self.tx_slots)):
@@ -428,12 +499,19 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     # ── Connection lookup ────────────────────────────────────────
 
     fn _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
-        if dcid_u64 in self.conn_dcid_map:
-            try:
-                return self.conn_dcid_map[dcid_u64]
-            except:
+        """Resolve `dcid → conn_slots index`, returning -1 if absent or
+        if the demux entry is stale (slot's generation has moved on)."""
+        if dcid_u64 not in self.conn_dcid_map:
+            return -1
+        try:
+            var entry = self.conn_dcid_map[dcid_u64].copy()
+            if entry.idx < 0 or entry.idx >= len(self.conn_slots):
                 return -1
-        return -1
+            if self.conn_slots[entry.idx].generation != entry.generation:
+                return -1
+            return entry.idx
+        except:
+            return -1
 
     # ── Buf-ring lifecycle ledger ────────────────────────────────
 
@@ -638,20 +716,24 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 for j in range(pd.addr_len):
                     addr.append(pd.buf_ptr[pd.addr_offset + j])
 
-                conn_idx = len(self.conn_h3s)
-                self.conn_dcid_map[icid_u64] = conn_idx
-                self.conn_dcid_map[lcid_u64] = conn_idx
-                self.conn_h3s.append(h3_ptr)
-                self.conn_addrs.append(addr^)
+                conn_idx = len(self.conn_slots)
+                var gen = self.next_generation
+                self.next_generation += UInt32(1)
+
+                self.conn_dcid_map[icid_u64] = _DcidEntry(conn_idx, gen)
+                self.conn_dcid_map[lcid_u64] = _DcidEntry(conn_idx, gen)
 
                 var dcids = List[UInt64]()
                 dcids.append(icid_u64)
                 dcids.append(lcid_u64)
-                self.conn_dcids.append(dcids^)
+
+                self.conn_slots.append(
+                    ConnSlot[Self.H](h3_ptr, addr^, dcids^, gen)
+                )
 
             # Feed datagram into the QuicConnection.
             try:
-                self.conn_h3s[conn_idx][].feed_datagram_from_buffer(
+                self.conn_slots[conn_idx].h3[].feed_datagram_from_buffer(
                     pd.payload_ptr, pd.payload_len, now
                 )
             except e:
@@ -663,7 +745,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             var addr_update = List[UInt8](capacity=pd.addr_len)
             for j in range(pd.addr_len):
                 addr_update.append(pd.buf_ptr[pd.addr_offset + j])
-            self.conn_addrs[conn_idx] = addr_update^
+            self.conn_slots[conn_idx].addr = addr_update^
 
             # Egress — drain QUIC + H3 packets and queue sendmsg submits.
             try:
@@ -681,7 +763,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         """Drain outgoing datagrams from a connection and queue sendmsg
         submissions for the outer driver to issue post-tick.
         """
-        var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
+        var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
         for i in range(len(datagrams)):
             var pkt = List[UInt8](copy=datagrams[i])
             if len(pkt) == 0:
@@ -691,7 +773,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             self.next_tx_id += 1
             var token = _encode_token(tx_id, OP_SENDMSG)
 
-            var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
+            var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
 
             var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
             tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
@@ -715,42 +797,44 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         """
         var now = monotonic_us()
 
-        # Walk conns (index-based; we mutate conn_h3s mid-iter via
+        # Walk conns (index-based; we mutate conn_slots mid-iter via
         # swap-and-pop). `should_close()` collapses idle, closed,
         # and drain-complete states into one signal.
         var i = 0
-        while i < len(self.conn_h3s):
+        while i < len(self.conn_slots):
             try:
                 self._drain_and_send(i, now)
             except:
                 pass
 
-            if self.conn_h3s[i][].should_close():
-                var ptr = self.conn_h3s[i]
-                ptr.destroy_pointee()
-                ptr.free()
+            if self.conn_slots[i].h3[].should_close():
+                var slot_h3 = self.conn_slots[i].h3
+                slot_h3.destroy_pointee()
+                slot_h3.free()
 
                 # B-permissive teardown: pop ALL of dying conn's DCID
                 # entries from the demux map (typically 2: initial_dcid
                 # + local_cid). NOT first-match-break — that was a
                 # pre-dual-DCID bug.
-                for dcid_u64 in self.conn_dcids[i]:
+                for dcid_u64 in self.conn_slots[i].dcids:
                     _ = self.conn_dcid_map.pop(dcid_u64)
 
-                var last = len(self.conn_h3s) - 1
+                var last = len(self.conn_slots) - 1
                 if i != last:
-                    # Swap-and-pop: pull last conn into index i across
-                    # all parallel lists (conn_h3s / conn_addrs /
-                    # conn_dcids), then remap the survivor's DCID entries.
-                    self.conn_h3s[i] = self.conn_h3s[last]
-                    self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
-                    self.conn_dcids[i] = List[UInt64](copy=self.conn_dcids[last])
-                    for dcid_u64 in self.conn_dcids[i]:
-                        self.conn_dcid_map[dcid_u64] = i
-
-                _ = self.conn_h3s.pop()
-                _ = self.conn_addrs.pop()
-                _ = self.conn_dcids.pop()
+                    # Swap-and-pop: pop the last slot (taking ownership),
+                    # bump its generation so any stale `(idx=i, old_gen)`
+                    # entries left in `conn_dcid_map` fail the generation
+                    # check in `_find_conn_by_dcid`, then remap the
+                    # survivor's DCIDs to `(i, new_gen)`.
+                    var survivor = self.conn_slots.pop()
+                    var new_gen = self.next_generation
+                    self.next_generation += UInt32(1)
+                    survivor.generation = new_gen
+                    for dcid_u64 in survivor.dcids:
+                        self.conn_dcid_map[dcid_u64] = _DcidEntry(i, new_gen)
+                    self.conn_slots[i] = survivor^
+                else:
+                    _ = self.conn_slots.pop()
                 continue  # re-check the swapped-in element at index i
             i += 1
 
