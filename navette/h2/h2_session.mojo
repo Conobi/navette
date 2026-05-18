@@ -32,6 +32,7 @@ from navette.http.status import StatusCode
 from navette.http.body import BodyFrame
 from navette.h2.pseudo_headers import request_to_h2_headers, response_from_h2_headers
 from navette.h2.config import h2_production_config
+from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +42,8 @@ from navette.h2.config import h2_production_config
 
 struct _ClientCtx(Movable):
     """Per-stream client state that lives on the heap.  Move-only types
-    prevent direct Dict storage, so we heap-allocate and store via
-    _ClientStreamPtr."""
+    prevent direct Dict storage; we heap-allocate and store the pointer
+    via PtrBox[_ClientCtx]."""
 
     var handle_id: UInt64
     var status_code: Int
@@ -72,32 +73,6 @@ struct _ClientCtx(Movable):
 
 
 # ---------------------------------------------------------------------------
-# _ClientStreamPtr — thin wrapper so Dict[Int, _ClientStreamPtr] satisfies
-# CollectionElement (Copyable + Movable).
-# ---------------------------------------------------------------------------
-
-
-struct _ClientStreamPtr(Copyable, Movable):
-    """Holds the address of a heap-allocated _ClientCtx as a UInt64."""
-
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[_ClientCtx, MutAnyOrigin]:
-        return UnsafePointer[_ClientCtx, MutAnyOrigin](
-            unsafe_from_address=Int(self.addr)
-        )
-
-
-# ---------------------------------------------------------------------------
 # H2Session — client session adapter
 # ---------------------------------------------------------------------------
 
@@ -110,7 +85,7 @@ struct H2Session(Session):
     var _conn: H2Connection
     var _outbuf: List[UInt8]
     var _next_handle_id: UInt64
-    var _stream_ctxs: Dict[Int, _ClientStreamPtr]
+    var _stream_ctxs: Dict[Int, PtrBox[_ClientCtx]]
     var _handle_to_stream: Dict[Int, Int]
 
     # --- Constructors -------------------------------------------------------
@@ -124,7 +99,7 @@ struct H2Session(Session):
         self._conn.initiate_connection()
         self._outbuf = List[UInt8]()
         self._next_handle_id = UInt64(0)
-        self._stream_ctxs = Dict[Int, _ClientStreamPtr]()
+        self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
         self._flush_outbound()
 
@@ -134,7 +109,7 @@ struct H2Session(Session):
         self._conn.initiate_connection()
         self._outbuf = List[UInt8]()
         self._next_handle_id = UInt64(0)
-        self._stream_ctxs = Dict[Int, _ClientStreamPtr]()
+        self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
         self._flush_outbound()
 
@@ -181,9 +156,7 @@ struct H2Session(Session):
         var ctx_ptr = _heap_alloc[_ClientCtx](1).as_any_origin()
         var ctx = _ClientCtx(handle_id=handle_id)
         ctx_ptr.init_pointee_move(ctx^)
-        self._stream_ctxs[Int(stream_id)] = _ClientStreamPtr(
-            UInt64(Int(ctx_ptr))
-        )
+        self._stream_ctxs[Int(stream_id)] = PtrBox[_ClientCtx](ctx_ptr)
         self._handle_to_stream[Int(handle_id)] = Int(stream_id)
         return RequestHandle(id=handle_id)
 
@@ -201,9 +174,9 @@ struct H2Session(Session):
         except:
             return
         # Look up the per-stream context
-        var ctx_wrap: _ClientStreamPtr
+        var ctx_wrap: PtrBox[_ClientCtx]
         try:
-            ctx_wrap = _ClientStreamPtr(other=self._stream_ctxs[stream_id])
+            ctx_wrap = PtrBox[_ClientCtx](other=self._stream_ctxs[stream_id])
         except:
             return
         var ctx_ptr = ctx_wrap.ptr()
