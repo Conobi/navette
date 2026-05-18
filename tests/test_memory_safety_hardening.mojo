@@ -107,7 +107,7 @@ fn make_stub_handler() raises -> StubHandler:
 fn _push_fake_slot(
     mut server: H3UdpServer[StubHandler],
     dcids: List[UInt64],
-    generation: UInt32,
+    generation: UInt64,
 ):
     """Push a ConnSlot with a NULL h3 pointer for demux-only tests.
 
@@ -159,19 +159,19 @@ def test_conn_slot_swap_and_pop_preserves_demux() raises:
     var d0 = List[UInt64]()
     d0.append(UInt64(0xAAAA_AAAA_AAAA_AAAA))
     d0.append(UInt64(0xBBBB_BBBB_BBBB_BBBB))
-    _push_fake_slot(server, d0, UInt32(0))
-    server.conn_dcid_map[UInt64(0xAAAA_AAAA_AAAA_AAAA)] = _DcidEntry(0, UInt32(0))
-    server.conn_dcid_map[UInt64(0xBBBB_BBBB_BBBB_BBBB)] = _DcidEntry(0, UInt32(0))
+    _push_fake_slot(server, d0, UInt64(0))
+    server.conn_dcid_map[UInt64(0xAAAA_AAAA_AAAA_AAAA)] = _DcidEntry(0, UInt64(0))
+    server.conn_dcid_map[UInt64(0xBBBB_BBBB_BBBB_BBBB)] = _DcidEntry(0, UInt64(0))
 
     # Slot 1: dcids = [0xCCC, 0xDDD], gen 1
     var d1 = List[UInt64]()
     d1.append(UInt64(0xCCCC_CCCC_CCCC_CCCC))
     d1.append(UInt64(0xDDDD_DDDD_DDDD_DDDD))
-    _push_fake_slot(server, d1, UInt32(1))
-    server.conn_dcid_map[UInt64(0xCCCC_CCCC_CCCC_CCCC)] = _DcidEntry(1, UInt32(1))
-    server.conn_dcid_map[UInt64(0xDDDD_DDDD_DDDD_DDDD)] = _DcidEntry(1, UInt32(1))
+    _push_fake_slot(server, d1, UInt64(1))
+    server.conn_dcid_map[UInt64(0xCCCC_CCCC_CCCC_CCCC)] = _DcidEntry(1, UInt64(1))
+    server.conn_dcid_map[UInt64(0xDDDD_DDDD_DDDD_DDDD)] = _DcidEntry(1, UInt64(1))
 
-    server.next_generation = UInt32(2)
+    server.next_generation = UInt64(2)
 
     # Sanity: pre-swap lookups all succeed.
     assert_equal(server._find_conn_by_dcid(UInt64(0xAAAA_AAAA_AAAA_AAAA)), 0)
@@ -183,7 +183,7 @@ def test_conn_slot_swap_and_pop_preserves_demux() raises:
         _ = server.conn_dcid_map.pop(dcid_u64)
     var survivor = server.conn_slots.pop()
     var new_gen = server.next_generation
-    server.next_generation += UInt32(1)
+    server.next_generation += UInt64(1)
     survivor.generation = new_gen
     for dcid_u64 in survivor.dcids:
         server.conn_dcid_map[dcid_u64] = _DcidEntry(0, new_gen)
@@ -208,18 +208,18 @@ def test_conn_slot_stale_generation_returns_negative_one() raises:
     # One real slot at idx 0 with generation 5.
     var dcids = List[UInt64]()
     dcids.append(UInt64(0x1234_5678_9ABC_DEF0))
-    _push_fake_slot(server, dcids, UInt32(5))
-    server.conn_dcid_map[UInt64(0x1234_5678_9ABC_DEF0)] = _DcidEntry(0, UInt32(5))
+    _push_fake_slot(server, dcids, UInt64(5))
+    server.conn_dcid_map[UInt64(0x1234_5678_9ABC_DEF0)] = _DcidEntry(0, UInt64(5))
 
     # Sanity: matching generation resolves.
     assert_equal(server._find_conn_by_dcid(UInt64(0x1234_5678_9ABC_DEF0)), 0)
 
     # Forge a stale demux entry: same dcid → (idx=0, gen=99).
-    server.conn_dcid_map[UInt64(0x1234_5678_9ABC_DEF0)] = _DcidEntry(0, UInt32(99))
+    server.conn_dcid_map[UInt64(0x1234_5678_9ABC_DEF0)] = _DcidEntry(0, UInt64(99))
     assert_equal(server._find_conn_by_dcid(UInt64(0x1234_5678_9ABC_DEF0)), -1)
 
     # And a stale entry pointing past the end of conn_slots also resolves to -1.
-    server.conn_dcid_map[UInt64(0xDEAD_BEEF_DEAD_BEEF)] = _DcidEntry(99, UInt32(0))
+    server.conn_dcid_map[UInt64(0xDEAD_BEEF_DEAD_BEEF)] = _DcidEntry(99, UInt64(0))
     assert_equal(server._find_conn_by_dcid(UInt64(0xDEAD_BEEF_DEAD_BEEF)), -1)
 
     _drain_fake_slots(server)

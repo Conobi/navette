@@ -278,9 +278,9 @@ struct _DcidEntry(Copyable, Movable):
     by comparing against the current `conn_slots[idx].generation`.
     """
     var idx: Int
-    var generation: UInt32
+    var generation: UInt64
 
-    def __init__(out self, idx: Int, generation: UInt32):
+    def __init__(out self, idx: Int, generation: UInt64):
         self.idx = idx
         self.generation = generation
 
@@ -310,14 +310,14 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     var h3: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]
     var addr: List[UInt8]
     var dcids: List[UInt64]
-    var generation: UInt32
+    var generation: UInt64
 
     def __init__(
         out self,
         h3: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin],
         var addr: List[UInt8],
         var dcids: List[UInt64],
-        generation: UInt32,
+        generation: UInt64,
     ):
         self.h3 = h3
         self.addr = addr^
@@ -382,7 +382,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     # entries left behind by swap-and-pop.
     var conn_slots: List[ConnSlot[Self.H]]
     var conn_dcid_map: Dict[UInt64, _DcidEntry]
-    var next_generation: UInt32
+    var next_generation: UInt64
 
     # Ingress staging. pending_rx fills from on_complete (one per
     # recvmsg CQE); _flush_impl drains it in on_flush.
@@ -434,7 +434,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
         self.conn_slots = List[ConnSlot[Self.H]]()
         self.conn_dcid_map = Dict[UInt64, _DcidEntry]()
-        self.next_generation = UInt32(0)
+        self.next_generation = UInt64(0)
 
         self.pending_rx = List[PendingDatagram]()
         self.consumed_bufs = List[UInt16]()
@@ -718,7 +718,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
                 conn_idx = len(self.conn_slots)
                 var gen = self.next_generation
-                self.next_generation += UInt32(1)
+                self.next_generation += UInt64(1)
 
                 self.conn_dcid_map[icid_u64] = _DcidEntry(conn_idx, gen)
                 self.conn_dcid_map[lcid_u64] = _DcidEntry(conn_idx, gen)
@@ -811,6 +811,13 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 var slot_h3 = self.conn_slots[i].h3
                 slot_h3.destroy_pointee()
                 slot_h3.free()
+                # Null out the field immediately so any later read on
+                # `conn_slots[i].h3` (before swap-and-pop overwrites
+                # the slot or `pop()` discards it) hits a clean null
+                # rather than a dangling pointer.
+                self.conn_slots[i].h3 = UnsafePointer[
+                    H3HandlerServer[Self.H], MutAnyOrigin
+                ]()
 
                 # B-permissive teardown: pop ALL of dying conn's DCID
                 # entries from the demux map (typically 2: initial_dcid
@@ -828,7 +835,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                     # survivor's DCIDs to `(i, new_gen)`.
                     var survivor = self.conn_slots.pop()
                     var new_gen = self.next_generation
-                    self.next_generation += UInt32(1)
+                    self.next_generation += UInt64(1)
                     survivor.generation = new_gen
                     for dcid_u64 in survivor.dcids:
                         self.conn_dcid_map[dcid_u64] = _DcidEntry(i, new_gen)
