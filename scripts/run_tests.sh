@@ -111,6 +111,7 @@ TESTS=(
     test_cc_pacing
     test_cc_controller
     test_cc_minmax
+    test_memory_safety_hardening
 )
 
 FILTER="${TESTS_FILTER:-}"
