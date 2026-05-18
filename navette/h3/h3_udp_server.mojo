@@ -393,6 +393,28 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
         self.profile = AcceptProfile()
 
+    fn __del__(deinit self):
+        """Free heap allocations owned by the handler.
+
+        Walks any live `conn_h3s` + `tx_slots`, destroying their pointees
+        before freeing the per-slot heap blocks. `pbuf_pool`,
+        `msghdr_template`, and `timeout_ts` are raw byte buffers — no
+        pointee destructor. On clean teardown all three lists are typically
+        empty; the walks defend against drop-mid-flight.
+        """
+        for i in range(len(self.conn_h3s)):
+            var ptr = self.conn_h3s[i]
+            ptr.destroy_pointee()
+            ptr.free()
+        for i in range(len(self.tx_slots)):
+            var ptr = self.tx_slots[i]
+            ptr[].free()
+            ptr.destroy_pointee()
+            ptr.free()
+        self.pbuf_pool.free()
+        self.msghdr_template.free()
+        self.timeout_ts.free()
+
     # ── Connection lookup ────────────────────────────────────────
 
     fn _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:

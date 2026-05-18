@@ -35,6 +35,13 @@ def test_ptrbox_null() raises:
     assert_false(box.is_some())
 
 
+# AC2 — H3UdpHandler.__del__ freeing pbuf_pool / msghdr_template /
+# timeout_ts is exercised implicitly by tests/test_h3_udp_server.mojo
+# (construct + tick + drop). Adding a standalone fixture here would
+# duplicate ~150 lines of TLS + UDP listener boilerplate; the green
+# `test_h3_udp_server_init_and_tick` is the AC2 signal.
+
+
 def main() raises:
     test_ptrbox_roundtrip()
     test_ptrbox_null()
