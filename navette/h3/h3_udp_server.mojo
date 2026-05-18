@@ -317,6 +317,12 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     var pending_rx: List[PendingDatagram]
     var consumed_bufs: List[UInt16]
 
+    # buf-ring lifecycle ledger. inflight_bufs[i] == True iff buf-id i is
+    # currently userspace-owned (between recvmsg CQE and the matching
+    # consumed_bufs.append). Under ASSERT=all, _release_buf catches
+    # double-returns (would silently corrupt kernel state under load).
+    var inflight_bufs: List[Bool]
+
     # io_uring multishot recvmsg infrastructure.
     var pbuf_pool: UnsafePointer[UInt8, MutAnyOrigin]
     var msghdr_template: UnsafePointer[UInt8, MutAnyOrigin]
@@ -361,6 +367,10 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
         self.pending_rx = List[PendingDatagram]()
         self.consumed_bufs = List[UInt16]()
+
+        self.inflight_bufs = List[Bool]()
+        for _ in range(PBUF_COUNT):
+            self.inflight_bufs.append(False)
 
         self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
@@ -425,6 +435,32 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 return -1
         return -1
 
+    # ── Buf-ring lifecycle ledger ────────────────────────────────
+
+    fn _acquire_buf(mut self, buf_id: UInt16):
+        """Mark `buf_id` as userspace-owned after the kernel hands it
+        back via a recvmsg CQE. Aborts under ASSERT=all if the kernel
+        somehow returned a buf-id that we still consider in-flight —
+        that would mean either a kernel buf-ring bug or a missed
+        `_release_buf` on a prior CQE."""
+        debug_assert(
+            not self.inflight_bufs[Int(buf_id)],
+            "buf-ring: kernel handed back buf_id already userspace-owned",
+        )
+        self.inflight_bufs[Int(buf_id)] = True
+
+    fn _release_buf(mut self, buf_id: UInt16):
+        """Return `buf_id` to the kernel via `consumed_bufs`. Aborts
+        under ASSERT=all if buf_id is not currently userspace-owned —
+        catches double-returns (would corrupt the buf-ring) and stray
+        returns of never-acquired buf-ids."""
+        debug_assert(
+            self.inflight_bufs[Int(buf_id)],
+            "buf-ring: releasing buf_id that is not userspace-owned",
+        )
+        self.inflight_bufs[Int(buf_id)] = False
+        self.consumed_bufs.append(buf_id)
+
     # ── BatchCompletionHandler conformance ───────────────────────
 
     fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
@@ -464,14 +500,15 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         if (flags & UInt32(IORING_CQE_F_BUFFER)) == 0:
             return
 
-        # Extract buffer ID from CQE flags.
+        # Extract buffer ID from CQE flags and mark it userspace-owned.
         var buf_id = UInt16(flags >> UInt32(IORING_CQE_BUFFER_SHIFT))
+        self._acquire_buf(buf_id)
         var buf_ptr = self.pbuf_pool + Int(buf_id) * PBUF_SIZE
 
         # Parse the io_uring_recvmsg_out 16-byte header:
         #   [namelen: u32][controllen: u32][payloadlen: u32][flags: u32]
         if result < Int32(_RECVMSG_OUT_HDR_SIZE):
-            self.consumed_bufs.append(buf_id)
+            self._release_buf(buf_id)
             return
 
         var namelen = Int(_read_u32_le(buf_ptr))
@@ -482,7 +519,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         # MSG_TRUNC (0x20) — drop truncated datagrams (PBUF_SIZE was too
         # small for the datagram).
         if (msg_flags & UInt32(0x20)) != 0:
-            self.consumed_bufs.append(buf_id)
+            self._release_buf(buf_id)
             return
 
         # Address starts after the 16-byte header.
@@ -494,7 +531,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         var payload_ptr = buf_ptr + payload_offset
 
         if payloadlen <= 0:
-            self.consumed_bufs.append(buf_id)
+            self._release_buf(buf_id)
             return
 
         # Extract DCID directly from the provided buffer — no copy.
@@ -504,7 +541,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen)
             )
         except:
-            self.consumed_bufs.append(buf_id)
+            self._release_buf(buf_id)
             return
 
         self.pending_rx.append(
@@ -545,7 +582,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 var first_byte_span = Span[UInt8, MutAnyOrigin](
                     ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
-                    self.consumed_bufs.append(pd.buf_id)
+                    self._release_buf(pd.buf_id)
                     continue
 
             if conn_idx < 0:
@@ -564,7 +601,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                     )
                 except e:
                     print("H3UdpServer: QuicConnection.server error:", e)
-                    self.consumed_bufs.append(pd.buf_id)
+                    self._release_buf(pd.buf_id)
                     continue
 
                 # B-permissive dual-DCID: both the client's Initial DCID
@@ -589,7 +626,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                     )
                 except e:
                     print("H3UdpServer: H3HandlerServer init error:", e)
-                    self.consumed_bufs.append(pd.buf_id)
+                    self._release_buf(pd.buf_id)
                     continue
 
                 var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_any_origin()
@@ -634,7 +671,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             except e:
                 print("H3UdpServer: drain_and_send error:", e)
 
-            self.consumed_bufs.append(pd.buf_id)
+            self._release_buf(pd.buf_id)
 
         self.pending_rx.clear()
 
