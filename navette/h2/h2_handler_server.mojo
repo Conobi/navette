@@ -28,6 +28,7 @@ from navette.http.handler import (
 )
 from navette.http.body import BodyFrame
 from navette.http.headers import Headers
+from navette.util.ptrbox import PtrBox
 from navette.http.request import Request
 from navette.h2.config import h2_production_config
 from navette.h2.pseudo_headers import (
@@ -75,32 +76,6 @@ struct _StreamCtx(Movable):
 
 
 # ---------------------------------------------------------------------------
-# _StreamPtr — thin wrapper so Dict[Int, _StreamPtr] satisfies
-# CollectionElement (Copyable + Movable) even if UnsafePointer does not.
-# ---------------------------------------------------------------------------
-
-
-struct _StreamPtr(Copyable, Movable):
-    """Holds the address of a heap-allocated _StreamCtx as a UInt64."""
-
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[_StreamCtx, MutAnyOrigin]:
-        return UnsafePointer[_StreamCtx, MutAnyOrigin](
-            unsafe_from_address=Int(self.addr)
-        )
-
-
-# ---------------------------------------------------------------------------
 # H2HandlerServer — server adapter
 # ---------------------------------------------------------------------------
 
@@ -114,7 +89,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     var _conn: H2Connection
     var handler: Self.H
     var _outbuf: List[UInt8]
-    var _streams: Dict[Int, _StreamPtr]
+    var _streams: Dict[Int, PtrBox[_StreamCtx]]
 
     # --- Constructors -------------------------------------------------------
 
@@ -127,7 +102,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._conn.initiate_connection()
         self.handler = handler^
         self._outbuf = List[UInt8]()
-        self._streams = Dict[Int, _StreamPtr]()
+        self._streams = Dict[Int, PtrBox[_StreamCtx]]()
         self._flush_outbound()
 
     def __init__(out self, *, var handler: Self.H, config: H2Config) raises:
@@ -136,7 +111,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._conn.initiate_connection()
         self.handler = handler^
         self._outbuf = List[UInt8]()
-        self._streams = Dict[Int, _StreamPtr]()
+        self._streams = Dict[Int, PtrBox[_StreamCtx]]()
         self._flush_outbound()
 
     def __init__(out self, *, deinit take: Self):
@@ -246,7 +221,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         ctx_ptr.init_pointee_move(ctx^)
 
         # Store in streams dict.
-        self._streams[stream_id] = _StreamPtr(UInt64(Int(ctx_ptr)))
+        self._streams[stream_id] = PtrBox[_StreamCtx](ctx_ptr)
 
     def _on_data_received(mut self, evt: H2Event) raises:
         """Handle DATA_RECEIVED: push data into RecvBody, manage flow control,
