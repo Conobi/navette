@@ -23,5 +23,16 @@ panic = "abort"
 debug = "line-tables-only"
 strip = false
 
+# Slim profile for distributed wheels. See librustls-mojo Cargo.toml for
+# the rationale; same shape so the CI pre-build step can pass a single
+# profile name across both shims. Named `dist` because `publish` is a
+# Cargo-reserved profile name.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = "symbols"
+lto = true
+codegen-units = 1
+
 [profile.dev]
 panic = "abort"

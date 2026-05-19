@@ -33,5 +33,19 @@ panic = "abort"
 debug = "line-tables-only"
 strip = false
 
+# Cargo profile for wheels distributed via PyPI. Inherits from release,
+# then strips symbols + enables LTO + single codegen unit. Drops .so size
+# ~50% and adds optimisation opportunities the per-CGU pipeline misses.
+# Named `dist` rather than `publish` because Cargo reserves the latter.
+# Used by scripts/build_rustls.sh dist; the CI workflow passes
+# MOJOX_BUILD_PROFILE=dist so user-installed wheels are slim while
+# local dev/bench keeps debug info for flamegraphs.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = "symbols"
+lto = true
+codegen-units = 1
+
 [profile.dev]
 panic = "abort"

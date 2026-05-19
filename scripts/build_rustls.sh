@@ -14,16 +14,21 @@
 #              code references the symbol.
 #   bench    — feature flags: skip-locks.            Bench harnesses measure
 #              prod-like cert paths (same flags as hardened).
+#   dist     — feature flags: skip-locks.            Cargo `--profile dist`
+#              (strip+LTO+CGU=1). For wheels uploaded to PyPI. Same security
+#              contract as hardened (no insecure symbol exported). Named
+#              `dist` because Cargo reserves the profile name `publish`.
 #
 # The default is `release` so a clone-and-go `uv sync` produces a binary
-# that behaves like curl. The leak check below fires only for `hardened`
-# and `bench` (the profiles whose contract is "no insecure symbol").
+# that behaves like curl. The leak check below fires only for `hardened`,
+# `bench`, and `dist` (the profiles whose contract is "no insecure symbol").
 set -euo pipefail
 profile="${1:-release}"
 case "$profile" in
-    release|dev)        features="skip-locks,insecure" ;;
-    hardened|bench)     features="skip-locks" ;;
-    *) echo "unknown profile: $profile (expected: release|dev|hardened|bench)" >&2; exit 1 ;;
+    release|dev)               features="skip-locks,insecure"; cargo_profile="release"; target_subdir="release" ;;
+    hardened|bench)            features="skip-locks";          cargo_profile="release"; target_subdir="release" ;;
+    dist)                      features="skip-locks";          cargo_profile="dist";    target_subdir="dist" ;;
+    *) echo "unknown profile: $profile (expected: release|dev|hardened|bench|dist)" >&2; exit 1 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -44,20 +49,20 @@ case ",$features," in
     *,skip-locks,*) cargo test --features "$features" -- --test-threads=1 ;;
     *)              cargo test --features "$features" ;;
 esac
-cargo build --release --features "$features"
+cargo build --profile "$cargo_profile" --features "$features"
 
 mkdir -p "$LIB_DIR"
 case "$(uname -s)" in
-    Darwin*) cp target/release/liblibrustls_mojo.dylib "$LIB_DIR/librustls_mojo.dylib" ;;
-    *)       cp target/release/liblibrustls_mojo.so "$LIB_DIR/librustls_mojo.so" ;;
+    Darwin*) cp "target/$target_subdir/liblibrustls_mojo.dylib" "$LIB_DIR/librustls_mojo.dylib" ;;
+    *)       cp "target/$target_subdir/liblibrustls_mojo.so" "$LIB_DIR/librustls_mojo.so" ;;
 esac
 
-# Hardened / bench builds must NOT export the insecure symbol; the contract
-# is "this .so cannot perform insecure cert verification even if asked." For
-# the release / dev profiles the symbol is intentionally present (CLI tools
-# need it for `-k`).
+# Hardened / bench / publish builds must NOT export the insecure symbol; the
+# contract is "this .so cannot perform insecure cert verification even if
+# asked." For the release / dev profiles the symbol is intentionally present
+# (CLI tools need it for `-k`).
 case "$profile" in
-    hardened|bench)
+    hardened|bench|dist)
         case "$(uname -s)" in
             Darwin*)
                 if command -v nm >/dev/null && nm -gU "$LIB_DIR/librustls_mojo.dylib" 2>/dev/null \

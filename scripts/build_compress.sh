@@ -8,11 +8,16 @@
 # Profiles:
 #   release — default. Standard ship.
 #   dev     — functional alias of release; kept for muscle memory.
+#   dist    — Cargo `--profile dist` (strip+LTO+CGU=1). For wheels uploaded
+#             to PyPI. ~50% smaller .so. Used by the CI workflow via
+#             MOJOX_BUILD_PROFILE=dist. Named `dist` because `publish` is a
+#             Cargo-reserved profile name.
 set -euo pipefail
 profile="${1:-release}"
 case "$profile" in
-    release|dev) ;;
-    *) echo "unknown profile: $profile (expected: release|dev)" >&2; exit 1 ;;
+    release|dev) cargo_profile="release"; target_subdir="release" ;;
+    dist)        cargo_profile="dist";    target_subdir="dist" ;;
+    *) echo "unknown profile: $profile (expected: release|dev|dist)" >&2; exit 1 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,12 +29,12 @@ cd "$CRATE_DIR"
 echo "building libcompress-mojo (profile=$profile)"
 
 cargo test
-cargo build --release
+cargo build --profile "$cargo_profile"
 
 mkdir -p "$LIB_DIR"
 case "$(uname -s)" in
-    Darwin*) cp target/release/liblibcompress_mojo.dylib "$LIB_DIR/libcompress_mojo.dylib" ;;
-    *)       cp target/release/liblibcompress_mojo.so    "$LIB_DIR/libcompress_mojo.so" ;;
+    Darwin*) cp "target/$target_subdir/liblibcompress_mojo.dylib" "$LIB_DIR/libcompress_mojo.dylib" ;;
+    *)       cp "target/$target_subdir/liblibcompress_mojo.so"    "$LIB_DIR/libcompress_mojo.so" ;;
 esac
 
 # Sanity: assert the exported symbol set is exactly the 9 we declared.
