@@ -257,7 +257,7 @@ struct H2CoroServer(Movable):
         body_fn: H2BodyFn,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
-        ](),
+        ](unsafe_from_address=0),
     ) raises:
         """Create with default production config (server-side)."""
         _check_stream_ctx_size()
@@ -280,7 +280,7 @@ struct H2CoroServer(Movable):
         config: H2Config,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
-        ](),
+        ](unsafe_from_address=0),
     ) raises:
         """Create with a custom H2Config (server-side)."""
         _check_stream_ctx_size()

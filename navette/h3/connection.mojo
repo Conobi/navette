@@ -159,7 +159,7 @@ struct H3Connection(Movable):
         self._peer_goaway_sid = Optional[UInt64]()
         self._enc = QpackEncoder(False)
         self._dec = QpackDecoder()
-        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin]()
+        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0)
 
     def __init__(out self, *, deinit take: Self):
         self._quic = take._quic^

@@ -456,7 +456,7 @@ struct QuicConnection(Movable):
         self.ecn_probe_pkts_needed = 10
         self.ecn_probe_pkts_sent = 0
         self.ecn_probe_first_pn = UInt64(0)
-        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin]()
+        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0)
         self.profile_first_initial_us = UInt64(0)
         self.profile_rustls_us_accum = UInt64(0)
         self.profile_first_iter_done = False
@@ -592,7 +592,7 @@ struct QuicConnection(Movable):
         client_dcid: Span[UInt8, _],
         now: UInt64,
         profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
-            = UnsafePointer[AcceptProfile, MutAnyOrigin](),
+            = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0),
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
 

@@ -224,8 +224,8 @@ struct RustlsLibrary(Movable):
         conn_handle: Int32,
         data: UnsafePointer[UInt8, MutAnyOrigin],
         data_len: Int32,
-        out_state_machine_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
-        out_handle_lookup_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](),
+        out_state_machine_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](unsafe_from_address=0),
+        out_handle_lookup_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](unsafe_from_address=0),
     ) -> Int32:
         """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success.
 

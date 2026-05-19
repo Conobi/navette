@@ -97,7 +97,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var quic: QuicConnection,
         var handler: Self.H,
         profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
-            = UnsafePointer[AcceptProfile, MutAnyOrigin](),
+            = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0),
     ) raises:
         self._h3 = H3Connection.server(quic^)
         self.handler = handler^

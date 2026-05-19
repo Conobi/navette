@@ -93,7 +93,7 @@ def resolve_host(host: String, port: Int) raises -> List[SockAddr]:
     out_res[0] = UInt64(0)
     var rc = external_call["getaddrinfo", Int32](
         host_cstr,
-        UnsafePointer[UInt8, MutAnyOrigin](),  # service = NULL
+        UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0),  # service = NULL
         hints,
         out_res,
     )

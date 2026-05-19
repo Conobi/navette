@@ -1142,7 +1142,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # tm_isdst — 9 Int32 fields = 36 bytes. Allocate 56 bytes to
         # cover tm_gmtoff + tm_zone tail (Linux extension).
         var now_t = external_call["time", Int64](
-            UnsafePointer[Int64, MutAnyOrigin]()
+            UnsafePointer[Int64, MutAnyOrigin](unsafe_from_address=0)
         )
         var t_buf = InlineArray[Int64, 1](fill=now_t)
         var tm_buf = InlineArray[UInt8, 56](fill=0)

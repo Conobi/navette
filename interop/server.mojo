@@ -314,7 +314,7 @@ def main() raises:
             if conn_ptrs[ci][].is_closed():
                 conn_ptrs[ci].destroy_pointee()
                 conn_ptrs[ci].free()
-                conn_ptrs[ci] = UnsafePointer[QuicConnection, MutAnyOrigin]()
+                conn_ptrs[ci] = UnsafePointer[QuicConnection, MutAnyOrigin](unsafe_from_address=0)
 
         # Check if all connections are closed (and we had at least one).
         # For the interop runner, we just keep listening.

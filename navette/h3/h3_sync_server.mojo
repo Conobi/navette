@@ -250,7 +250,7 @@ struct H3CoroServer(Movable):
         body_fn: H3BodyFn,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
-        ](),
+        ](unsafe_from_address=0),
     ) raises:
         """Create with a server-side QuicConnection."""
         _check_stream_ctx_size()

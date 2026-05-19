@@ -98,7 +98,7 @@ struct ContentDecoder(Movable):
                 limits.input_cap, limits.output_cap, limits.ratio_x100,
             )
         else:
-            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+            self._state = UnsafePointer[NoneType, MutAnyOrigin](unsafe_from_address=0)
 
     def __init__(out self, encoding: ContentEncoding, limits: DecoderLimits) raises:
         """Create a decoder with explicit decompression caps.
@@ -118,7 +118,7 @@ struct ContentDecoder(Movable):
                 limits.input_cap, limits.output_cap, limits.ratio_x100,
             )
         else:
-            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+            self._state = UnsafePointer[NoneType, MutAnyOrigin](unsafe_from_address=0)
 
     def __init__(out self, encoding: ContentEncoding, lib_path: String) raises:
         """Create a decoder with an explicit libcompress_mojo.so path."""
@@ -134,7 +134,7 @@ struct ContentDecoder(Movable):
                 limits.input_cap, limits.output_cap, limits.ratio_x100,
             )
         else:
-            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+            self._state = UnsafePointer[NoneType, MutAnyOrigin](unsafe_from_address=0)
 
     def __init__(out self, encoding: ContentEncoding, lib_path: String, limits: DecoderLimits) raises:
         """Create a decoder with explicit lib path and caps."""
@@ -149,7 +149,7 @@ struct ContentDecoder(Movable):
                 limits.input_cap, limits.output_cap, limits.ratio_x100,
             )
         else:
-            self._state = UnsafePointer[NoneType, MutAnyOrigin]()
+            self._state = UnsafePointer[NoneType, MutAnyOrigin](unsafe_from_address=0)
 
     def __init__(out self, *, deinit take: Self):
         self._encoding = ContentEncoding(copy_from=take._encoding)

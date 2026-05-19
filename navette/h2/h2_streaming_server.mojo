@@ -357,7 +357,7 @@ struct H2StreamingServer(Movable):
         handler_fn: H2StreamingHandlerFn,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
-        ](),
+        ](unsafe_from_address=0),
     ) raises:
         """Create with default production config (server-side)."""
         _check_streaming_ctx_size()
@@ -381,7 +381,7 @@ struct H2StreamingServer(Movable):
         config: H2Config,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
-        ](),
+        ](unsafe_from_address=0),
     ) raises:
         """Create with a custom H2Config (server-side)."""
         _check_streaming_ctx_size()

@@ -220,7 +220,7 @@ def udp_connect(host: String, port: Int) raises -> Int32:
 
     # result_ptr is a pointer-to-pointer
     var result_ptr = alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_any_origin()
-    result_ptr[0] = UnsafePointer[UInt8, MutAnyOrigin]()
+    result_ptr[0] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
 
     var rc = external_call["getaddrinfo", Int32](
         host_cstr, port_str, hints, result_ptr

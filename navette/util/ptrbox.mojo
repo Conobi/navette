@@ -23,7 +23,7 @@ struct PtrBox[T: AnyType](Copyable, Movable):
 
     @staticmethod
     def null() -> Self:
-        return PtrBox[Self.T](UnsafePointer[Self.T, MutAnyOrigin]())
+        return PtrBox[Self.T](UnsafePointer[Self.T, MutAnyOrigin](unsafe_from_address=0))
 
     def __init__(out self, *, other: Self):
         self._ptr = other._ptr

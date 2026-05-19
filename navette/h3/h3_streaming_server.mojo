@@ -381,7 +381,7 @@ struct H3StreamingServer(Movable):
         handler_fn: H3StreamingHandlerFn,
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
-        ](),
+        ](unsafe_from_address=0),
     ) raises:
         """Create with a server-side QuicConnection."""
         _check_streaming_ctx_size()
