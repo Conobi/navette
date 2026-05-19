@@ -1,0 +1,171 @@
+# Build multi-arch wheels for PyPI.
+#
+# Triggers
+# --------
+#   * push of a tag matching v*  → build wheels for both arches + sdist,
+#                                  upload as workflow artifacts. Publishing
+#                                  to PyPI is a separate manual step until
+#                                  trusted-publishing is wired up.
+#   * workflow_dispatch          → same as a tag build, but artefacts only.
+#   * PR (paths affecting build) → build-only smoke check, no artefacts kept
+#                                  past the run.
+#
+# Why two jobs instead of cross-compile
+# -------------------------------------
+# Mojo 1.0.0b1's cross-compile story is not established; Cargo can cross
+# but the Mojo half cannot. GitHub now exposes native ARM64 Linux runners
+# (`ubuntu-24.04-arm`), so the cheapest path to {x86_64, aarch64} wheels
+# is one native runner per arch. If Mojo gains cross support later, this
+# matrix collapses to a single job with `--target` flags.
+#
+# Private git deps
+# ----------------
+# pyproject.toml pins boucle via a git+ssh:// URL (private Conobi repo).
+# The PEP 517 build env tries to clone it, which requires SSH access.
+# The workflow loads a `BOT_SSH_KEY` repo secret into the agent — set that
+# up via Settings → Secrets → Actions before the first run. If/when boucle
+# goes public, switch to git+https and drop the SSH step entirely.
+#
+# Compactness
+# -----------
+# MOJOX_BUILD_PROFILE=dist makes scripts/build_{rustls,compress}.sh use
+# Cargo's `[profile.dist]` (strip+LTO+codegen-units=1), which shrinks
+# librustls_mojo.so from 16.6 MB to 3.9 MB. Local dev keeps `release` so
+# perf-record flamegraphs stay resolvable (debug=line-tables-only).
+
+name: wheels
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "crates/**"
+      - "scripts/build_*.sh"
+      - ".github/workflows/wheels.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: wheel (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      MOJOX_BUILD_PROFILE: dist  # → scripts/build_*.sh use Cargo's [profile.dist]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH for private git deps
+        # Needed so PEP 517's isolated build env can clone boucle from
+        # git+ssh://. Drop this step once boucle goes public or migrates
+        # to git+https.
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.BOT_SSH_KEY }}
+
+      - name: Install system build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            zlib1g-dev \
+            libbrotli-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ matrix.arch }}-${{ hashFiles('crates/**/Cargo.toml') }}
+          restore-keys: cargo-${{ matrix.arch }}-
+
+      - name: Cache cargo target dirs
+        uses: actions/cache@v4
+        with:
+          path: |
+            crates/librustls-mojo/target
+            crates/libcompress-mojo/target
+          key: cargo-target-${{ matrix.arch }}-${{ hashFiles('crates/**/Cargo.toml', 'crates/**/src/**') }}
+          restore-keys: cargo-target-${{ matrix.arch }}-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: List build output
+        run: ls -lh dist/
+
+      - name: Verify no insecure symbol leaked
+        # dist profile bundles `skip-locks` only (no `insecure` feature);
+        # build_rustls.sh already runs nm; mirror it here as a CI gate so a
+        # silent regression in the build script can't slip through.
+        run: |
+          if nm -D lib/librustls_mojo.so 2>/dev/null \
+            | grep -q rlsm_quic_client_config_new_insecure; then
+            echo "FAIL: dist wheel leaked rlsm_quic_client_config_new_insecure" >&2
+            exit 1
+          fi
+
+      - name: Upload wheel artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist
+        # sdist needs no compilation — mojox-build tars the source tree.
+        # The size assertion below guards against `target/` (or any new
+        # multi-GB sibling dir) regressing back into the tarball.
+        run: uv build --sdist
+
+      - name: Size guard
+        run: |
+          sdist_path=$(ls dist/*.tar.gz)
+          size_mb=$(( $(stat -c %s "$sdist_path") / 1024 / 1024 ))
+          echo "sdist size: ${size_mb} MB"
+          if [ "$size_mb" -gt 50 ]; then
+            echo "FAIL: sdist is ${size_mb} MB, expected < 50 MB" >&2
+            echo "Likely culprit: a build-artifact dir leaked into the sdist." >&2
+            echo "Audit [tool.mojox-build].source-exclude in pyproject.toml." >&2
+            exit 1
+          fi
+
+      - name: Upload sdist artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
