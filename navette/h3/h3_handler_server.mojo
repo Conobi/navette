@@ -89,15 +89,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _h3:      H3Connection
     var handler:  Self.H
     var _streams: Dict[Int, _H3StreamPtr]
-    var profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
+    var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
 
     def __init__(
         out self,
         *,
         var quic: QuicConnection,
         var handler: Self.H,
-        profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
-            = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0),
+        profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]] = None,
     ) raises:
         self._h3 = H3Connection.server(quic^)
         self.handler = handler^
@@ -146,23 +145,23 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # Bracket _dispatch_h3_events
         var t_dispatch_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
-            if Int(self.profile_ptr) != 0:
+            if self.profile_ptr is not None:
                 t_dispatch_start = monotonic_us()
         self._dispatch_h3_events(now)
         comptime if PROFILE_ACCEPT:
-            if Int(self.profile_ptr) != 0:
-                self.profile_ptr[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
 
         # Bracket _drain_responses (only when established)
         if self._h3.is_established():
             var t_drain_resp_start: UInt64 = 0
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     t_drain_resp_start = monotonic_us()
             self._drain_responses(now)
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
-                    self.profile_ptr[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
+                if self.profile_ptr is not None:
+                    self.profile_ptr.value()[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         return self._h3.drain_datagrams(now)

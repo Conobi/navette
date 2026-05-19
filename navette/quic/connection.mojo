@@ -331,7 +331,7 @@ struct QuicConnection(Movable):
     # Iter 1 of recv_from_buffer does NOT reset profile_rustls_us_accum at
     # its top — it inherits the constructor's accumulator (zero for server,
     # Initial-key-derivation cost for client). Iter 2+ resets at top.
-    var profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
+    var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
     var profile_first_initial_us: UInt64
     var profile_rustls_us_accum: UInt64
     var profile_first_iter_done: Bool
@@ -456,7 +456,7 @@ struct QuicConnection(Movable):
         self.ecn_probe_pkts_needed = 10
         self.ecn_probe_pkts_sent = 0
         self.ecn_probe_first_pn = UInt64(0)
-        self.profile_ptr = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0)
+        self.profile_ptr = None
         self.profile_first_initial_us = UInt64(0)
         self.profile_rustls_us_accum = UInt64(0)
         self.profile_first_iter_done = False
@@ -591,8 +591,7 @@ struct QuicConnection(Movable):
         orig_dcid: Span[UInt8, _],
         client_dcid: Span[UInt8, _],
         now: UInt64,
-        profile_ptr: UnsafePointer[AcceptProfile, MutAnyOrigin]
-            = UnsafePointer[AcceptProfile, MutAnyOrigin](unsafe_from_address=0),
+        profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]] = None,
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
 
@@ -642,8 +641,8 @@ struct QuicConnection(Movable):
             out_handle,
         )
         comptime if PROFILE_ACCEPT:
-            if Int(profile_ptr) != 0:
-                profile_ptr[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
+            if profile_ptr is not None:
+                profile_ptr.value()[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
 
         tp_buf.free()
 
@@ -688,8 +687,8 @@ struct QuicConnection(Movable):
         conn.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
 
         comptime if PROFILE_ACCEPT:
-            if Int(profile_ptr) != 0:
-                profile_ptr[].record_handshake_arrival()
+            if profile_ptr is not None:
+                profile_ptr.value()[].record_handshake_arrival()
 
         # 7. Derive initial keys from client's DCID (server side).
         conn.protect.derive_initial_keys(client_dcid, is_client=False)
@@ -749,7 +748,7 @@ struct QuicConnection(Movable):
         var offset = 0
         while offset < buf_len:
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     t_iter_start = monotonic_us()
                     if self.profile_first_iter_done:
                         self.profile_rustls_us_accum = UInt64(0)
@@ -772,7 +771,7 @@ struct QuicConnection(Movable):
             # via `Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len)`
             # since `parse_packet_header` only reads the buffer.
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     ph_header_parse_us = monotonic_us()
             var header_result = parse_packet_header(
                 Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len),
@@ -781,7 +780,7 @@ struct QuicConnection(Movable):
             var header = header_result[0].copy()
             var header_end = header_result[1]
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     ph_header_parse_us = monotonic_us() - ph_header_parse_us
 
             # 2b. Adopt peer's SCID as peer_cid (RFC 9000 §7.2).
@@ -825,13 +824,13 @@ struct QuicConnection(Movable):
             try:
                 # 6. Unprotect header in-place (zero-copy).
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_hp_us = monotonic_us()
                 var hp_result = self.protect.unprotect_header_ptr(
                     space_idx, pkt_ptr, pkt_len, header.pn_offset
                 )
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_hp_us = monotonic_us() - ph_hp_us
                 var first_byte = hp_result[0]
                 var pn_length = hp_result[1]
@@ -850,13 +849,13 @@ struct QuicConnection(Movable):
                 # 8. Decrypt payload in-place (zero-copy).
                 var header_len = header.pn_offset + pn_length
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_aead_us = monotonic_us()
                 var plaintext_len = self.protect.decrypt_payload_in_place(
                     space_idx, full_pn, header_len, pkt_ptr, pkt_len
                 )
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_aead_us = monotonic_us() - ph_aead_us
 
                 # 9. Server validates address on first Handshake decrypt.
@@ -870,7 +869,7 @@ struct QuicConnection(Movable):
                 # via `Span[UInt8, MutAnyOrigin](ptr=pkt_ptr+header_len, length=plaintext_len)`
                 # since ByteReader / parse_frames are generic over origin.
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us()
                 var reader = ByteReader(
                     Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len)
@@ -882,7 +881,7 @@ struct QuicConnection(Movable):
                         ack_eliciting = True
                     self._dispatch_frame(frames[i], space_idx, now)
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
 
                 # 11. Update PN space.
@@ -911,11 +910,11 @@ struct QuicConnection(Movable):
             # propagate to the caller (they are fatal, not recoverable).
             if decrypt_ok:
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_sm_us = monotonic_us()
                 self._drive_handshake(now)
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         ph_sm_us = monotonic_us() - ph_sm_us
 
             if not decrypt_ok:
@@ -924,10 +923,10 @@ struct QuicConnection(Movable):
             # Plan B: emit per-packet record at iteration end. Bleed-in:
             # iter 1 inherits constructor's profile_rustls_us_accum.
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     var t_iter_end = monotonic_us()
                     var total_us = t_iter_end - t_iter_start
-                    self.profile_ptr[].record_pkt(
+                    self.profile_ptr.value()[].record_pkt(
                         total_us=total_us,
                         ffi_us=self.profile_rustls_us_accum,
                         hp_us=ph_hp_us,
@@ -1618,9 +1617,9 @@ struct QuicConnection(Movable):
         # active_drive_count. Closing bracket fires at fall-through end.
         var t_drive_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
-            if Int(self.profile_ptr) != 0:
+            if self.profile_ptr is not None:
                 t_drive_start = monotonic_us()
-                self.profile_ptr[].active_drive_count = self.profile_ptr[].active_drive_count + UInt32(1)
+                self.profile_ptr.value()[].active_drive_count = self.profile_ptr.value()[].active_drive_count + UInt32(1)
 
         var lib = self._lib()
 
@@ -1634,7 +1633,7 @@ struct QuicConnection(Movable):
                     # + per-byte copy loop (the FFI input ABI marshalling).
                     var t_input_start: UInt64 = 0
                     comptime if PROFILE_ACCEPT:
-                        if Int(self.profile_ptr) != 0:
+                        if self.profile_ptr is not None:
                             t_input_start = monotonic_us()
                     var data_buf = _heap_alloc[UInt8](
                         len(crypto_data)
@@ -1643,12 +1642,12 @@ struct QuicConnection(Movable):
                         data_buf[i] = crypto_data[i]
                     var input_marshalling_us: UInt64 = 0
                     comptime if PROFILE_ACCEPT:
-                        if Int(self.profile_ptr) != 0:
+                        if self.profile_ptr is not None:
                             input_marshalling_us = monotonic_us() - t_input_start
 
                     var t_start: UInt64 = 0
                     comptime if PROFILE_ACCEPT:
-                        if Int(self.profile_ptr) != 0:
+                        if self.profile_ptr is not None:
                             t_start = monotonic_us()
                             self.profile_rustls_us_accum -= t_start
                     # Q6: out-param locals always declared (zero-cost; comptime
@@ -1660,7 +1659,7 @@ struct QuicConnection(Movable):
                     var out_sm_us: UInt64 = UInt64(0)
                     var out_lookup_us: UInt64 = UInt64(0)
                     comptime if PROFILE_ACCEPT:
-                        if Int(self.profile_ptr) != 0:
+                        if self.profile_ptr is not None:
                             rc = lib[].quic_conn_read_hs(
                                 self.conn_handle,
                                 data_buf,
@@ -1681,14 +1680,14 @@ struct QuicConnection(Movable):
                             Int32(len(crypto_data)),
                         )
                     comptime if PROFILE_ACCEPT:
-                        if Int(self.profile_ptr) != 0:
+                        if self.profile_ptr is not None:
                             var t_end = monotonic_us()
                             self.profile_rustls_us_accum += t_end
-                            self.profile_ptr[].record_ffi_read_hs(t_end - t_start)
+                            self.profile_ptr.value()[].record_ffi_read_hs(t_end - t_start)
                             self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
                             # Per-conn read_hs call count + per-call duration.
                             self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
-                            self.profile_ptr[].record_read_hs_us_per_call(t_end - t_start)
+                            self.profile_ptr.value()[].record_read_hs_us_per_call(t_end - t_start)
                             # Per-call read_hs sub-leg accumulation + histograms.
                             # output_marshalling is zero-by-design for read_hs
                             # (returns status only); slot reserved for future
@@ -1697,10 +1696,10 @@ struct QuicConnection(Movable):
                             self.read_hs_state_machine_us_total = self.read_hs_state_machine_us_total + out_sm_us
                             self.read_hs_output_alloc_us_total = self.read_hs_output_alloc_us_total + out_lookup_us
                             self.read_hs_output_marshalling_us_total = self.read_hs_output_marshalling_us_total + UInt64(0)
-                            self.profile_ptr[].record_read_hs_input_marshalling_us(input_marshalling_us)
-                            self.profile_ptr[].record_read_hs_state_machine_us(out_sm_us)
-                            self.profile_ptr[].record_read_hs_output_alloc_us(out_lookup_us)
-                            self.profile_ptr[].record_read_hs_output_marshalling_us(UInt64(0))
+                            self.profile_ptr.value()[].record_read_hs_input_marshalling_us(input_marshalling_us)
+                            self.profile_ptr.value()[].record_read_hs_state_machine_us(out_sm_us)
+                            self.profile_ptr.value()[].record_read_hs_output_alloc_us(out_lookup_us)
+                            self.profile_ptr.value()[].record_read_hs_output_marshalling_us(UInt64(0))
                     data_buf.free()
 
                     if rc < 0:
@@ -1719,7 +1718,7 @@ struct QuicConnection(Movable):
 
             var t_start: UInt64 = 0
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     t_start = monotonic_us()
                     self.profile_rustls_us_accum -= t_start
             var rc = lib[].quic_conn_write_hs(
@@ -1730,10 +1729,10 @@ struct QuicConnection(Movable):
                 out_kc,
             )
             comptime if PROFILE_ACCEPT:
-                if Int(self.profile_ptr) != 0:
+                if self.profile_ptr is not None:
                     var t_end = monotonic_us()
                     self.profile_rustls_us_accum += t_end
-                    self.profile_ptr[].record_ffi_write_hs(t_end - t_start)
+                    self.profile_ptr.value()[].record_ffi_write_hs(t_end - t_start)
                     self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
 
             if rc < 0:
@@ -1767,17 +1766,17 @@ struct QuicConnection(Movable):
 
                 var t_start: UInt64 = 0
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         t_start = monotonic_us()
                         self.profile_rustls_us_accum -= t_start
                 var take_rc = lib[].quic_conn_take_keys(
                     self.conn_handle, keys_handle_buf
                 )
                 comptime if PROFILE_ACCEPT:
-                    if Int(self.profile_ptr) != 0:
+                    if self.profile_ptr is not None:
                         var t_end = monotonic_us()
                         self.profile_rustls_us_accum += t_end
-                        self.profile_ptr[].record_ffi_take_keys(t_end - t_start)
+                        self.profile_ptr.value()[].record_ffi_take_keys(t_end - t_start)
                         self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
 
                 if take_rc < 0:
@@ -1818,11 +1817,11 @@ struct QuicConnection(Movable):
         # entry bracket above. raise paths leave the bracket unbalanced
         # but those terminate the connection so the imbalance is moot.
         comptime if PROFILE_ACCEPT:
-            if Int(self.profile_ptr) != 0 and t_drive_start > UInt64(0):
+            if self.profile_ptr is not None and t_drive_start > UInt64(0):
                 var delta = monotonic_us() - t_drive_start
                 self.hs_cpu_us_total = self.hs_cpu_us_total + delta
-                if self.profile_ptr[].active_drive_count > UInt32(0):
-                    self.profile_ptr[].active_drive_count = self.profile_ptr[].active_drive_count - UInt32(1)
+                if self.profile_ptr.value()[].active_drive_count > UInt32(0):
+                    self.profile_ptr.value()[].active_drive_count = self.profile_ptr.value()[].active_drive_count - UInt32(1)
 
     def _on_handshake_complete(mut self, now: UInt64) raises:
         """Called when TLS reports handshake is complete."""
@@ -1832,10 +1831,10 @@ struct QuicConnection(Movable):
         # Plan B: record handshake latency on the SERVER side. Clients
         # have profile_first_initial_us = 0 (default) and are skipped.
         comptime if PROFILE_ACCEPT:
-            if self.is_server and Int(self.profile_ptr) != 0:
+            if self.is_server and self.profile_ptr is not None:
                 if self.profile_first_initial_us > UInt64(0):
                     var latency_us = now - self.profile_first_initial_us
-                    self.profile_ptr[].record_handshake_complete(latency_us)
+                    self.profile_ptr.value()[].record_handshake_complete(latency_us)
 
         # Increment full/resumed counter exactly once per server connection.
         # Runtime gate only (not @parameter if PROFILE_ACCEPT:) so the test
@@ -1843,12 +1842,12 @@ struct QuicConnection(Movable):
         # profile_ptr directly — approach (c) per Plan 2026-05-03.
         # profile_ptr is null when PROFILE_ACCEPT=False (no bench attachment),
         # so the runtime branch is paid at most once per server handshake.
-        if self.is_server and Int(self.profile_ptr) != 0:
+        if self.is_server and self.profile_ptr is not None:
             var hs_kind = self._lib()[].quic_conn_handshake_kind(self.conn_handle)
             if hs_kind == Int32(1) or hs_kind == Int32(3):
-                self.profile_ptr[].record_handshake_full()
+                self.profile_ptr.value()[].record_handshake_full()
             elif hs_kind == Int32(2):
-                self.profile_ptr[].record_handshake_resumed()
+                self.profile_ptr.value()[].record_handshake_resumed()
             elif hs_kind == Int32(0):
                 raise (
                     "_on_handshake_complete: handshake_kind=0 with "
@@ -1866,9 +1865,9 @@ struct QuicConnection(Movable):
             # (no increments in the comptime-gated bracket sites) but the
             # record still fires — bucket[0] gets 1 sample (value=0 maps
             # to bucket index 0 in _per_pkt_bucket).
-            self.profile_ptr[].record_fresh_conn_ffi_us(self.fresh_conn_ffi_us_total)
+            self.profile_ptr.value()[].record_fresh_conn_ffi_us(self.fresh_conn_ffi_us_total)
             # Record per-handshake read_hs call count.
-            self.profile_ptr[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
+            self.profile_ptr.value()[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
             # Per-FD wait vs CPU breakdown.
             if self.accept_us > UInt64(0):
                 var now_hs = monotonic_us()
@@ -1877,8 +1876,8 @@ struct QuicConnection(Movable):
                     self.hs_wait_us_total = wall_us - self.hs_cpu_us_total
                 else:
                     self.hs_wait_us_total = UInt64(0)
-                self.profile_ptr[].record_hs_cpu_us_per_handshake(self.hs_cpu_us_total)
-                self.profile_ptr[].record_hs_wait_us_per_handshake(self.hs_wait_us_total)
+                self.profile_ptr.value()[].record_hs_cpu_us_per_handshake(self.hs_cpu_us_total)
+                self.profile_ptr.value()[].record_hs_wait_us_per_handshake(self.hs_wait_us_total)
 
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
