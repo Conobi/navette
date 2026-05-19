@@ -6,7 +6,6 @@ license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "boucle",
-    "json-simd-mojo",
     "mojox>=0.2",
     "mojo-compiler==0.26.2.0",
 ]
@@ -29,16 +28,63 @@ requires = [
     "mojo-compiler==0.26.2.0",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
-    # the project's runtime deps, so boucle and json-simd-mojo are pinned here too.
+    # the project's runtime deps, so boucle is pinned here too.
     "boucle @ git+ssh://git@github.com/Conobi/boucle.git@fc7a2f516abaee0c6afb1b2de921e84e9c51826a",
-    "json-simd-mojo @ git+ssh://git@github.com/Conobi/json-simd-mojo.git@e034f5ed6c97fc615c240e15c3c50f84a03dc54d",
 ]
 build-backend = "mojox_build"
 
 [tool.mojox-build]
 packages = ["navette"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
-# uv-installed deps (boucle, json-simd-mojo) resolve without manual flags.
+# uv-installed deps (boucle) resolve without manual flags.
+
+# Sdist hygiene. mojox-build's default walker prunes a fixed top-level set
+# (dist, build, .venv, …) but does NOT honour .gitignore, so anything the
+# project keeps local-only and out of git still leaks into the sdist tar.
+# Patterns use Python `fnmatch`, where `*` is greedy across `/` — so a
+# single pattern covers a subtree at any depth.
+#
+# Buckets:
+#   * Rust build artefacts (`target/` per crate; multi-GB)
+#   * Native .so/.dylib outputs (`lib/`; rebuilt by pre-build hook)
+#   * Bench evidence (perf.data, JSONs, symfs/, flamegraphs; regenerable,
+#     can be 100s of MB each)
+#   * Internal working files (`specs/`, `plans/`, `research/`, local docs)
+#   * Generated test certs and downloaded vectors
+#   * Built example binaries
+source-exclude = [
+    # Rust build artefacts
+    "*/target/*",
+    # Prebuilt native shims (sdist consumers rebuild via pre-build hooks)
+    "lib/*",
+    # Bench evidence
+    "bench/profile/*",
+    "bench/quic_perf/results/*",
+    "bench/quic_perf/logs/*",
+    "bench/.httparena/*",
+    "bench/h1_server",
+    "bench/h2_server",
+    "bench/h3_server",
+    "bench/launcher",
+    # Internal working files (gitignored, kept local-only)
+    "specs/*",
+    "plans/*",
+    "research/*",
+    "docs/project-context.md",
+    "docs/superpowers/*",
+    "docs/plans/*",
+    # Generated test material
+    "conformance/vectors/hpack-stories/*",
+    "certs/*",
+    "examples/*/certs/*",
+    "examples/*/main",
+    "examples/*/dist/*",
+    # Misc
+    "*/__pycache__/*",
+    "CLAUDE.md",
+]
+# Keep README + LICENSE + the navette package itself + pyproject — those
+# fall under the default include (the walker), filtered only by this list.
 
 # Build the Rust TLS shim (librustls-mojo) before compiling the Mojo package,
 # then bundle the resulting .so into the wheel as a native lib. Consumers
@@ -68,5 +114,4 @@ native-libs = [
 ]
 
 [tool.uv.sources]
-boucle         = { git = "ssh://git@github.com/Conobi/boucle.git",         rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
-json-simd-mojo = { git = "ssh://git@github.com/Conobi/json-simd-mojo.git", rev = "e034f5ed6c97fc615c240e15c3c50f84a03dc54d" }
+boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
