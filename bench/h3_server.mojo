@@ -487,8 +487,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # EGRESS_POOL_V2 is enabled. Slots hold uninitialized memory; the
         # legacy `UdpTxSlot(data, addr)` ctor runs via init_pointee_move at
         # _drain_and_send time. Off-build path: empty List (zero alloc).
-        @parameter
-        if EGRESS_POOL_V2:
+        comptime if EGRESS_POOL_V2:
             self.egress_pool_v2_freelist = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]](capacity=EGRESS_POOL_SIZE)
             for _ in range(EGRESS_POOL_SIZE):
                 self.egress_pool_v2_freelist.append(_heap_alloc[UdpTxSlot](1).as_any_origin())
@@ -572,8 +571,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # count CQEs drained per `loop.poll` cycle. Snapshot+reset happens
         # in the event loop after `loop.poll` returns. Off-build path elides
         # this branch entirely.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             self.cqes_this_wake_count = self.cqes_this_wake_count + UInt64(1)
         try:
             self._dispatch(token, result, flags)
@@ -638,8 +636,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # `recvmmsg`-batched baseline. Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition.
         # H3UdpHandler embeds AcceptProfile directly (line 511) — no pointer
         # indirection; call record_recv_batch on self.profile under the comptime gate.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             self.profile.record_recv_batch(1)
             # Q7 H_C: 8-bucket recvmsg batch histogram (raw shape, distinct
             # from Q4's per-flush total). With io_uring multishot recvmsg,
@@ -681,8 +678,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # in _flush_impl since timeout completions in the same poll batch may
         # swap-and-pop conn_h3s, invalidating any cached index.
         var stamp_us: UInt64 = UInt64(0)
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             stamp_us = profile_monotonic_us()
 
         self.pending_rx.append(
@@ -709,22 +705,19 @@ struct H3UdpHandler(BatchCompletionHandler):
         # `_drain_pending_submits` (run in the event loop after this
         # returns). Off-build path elides the brackets entirely.
         var t_flush_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             t_flush_start = profile_monotonic_us()
         try:
             self._flush_impl()
         except e:
             print("h3-bench: on_flush error:", e)
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             self.profile.record_flush_impl_us(profile_monotonic_us() - t_flush_start)
 
     def _flush_impl(mut self) raises:
         var t_busy_start = UInt64(0)
         var n_pkts_at_start = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             t_busy_start = profile_monotonic_us()
             if self.last_flush_end_us > UInt64(0):
                 self.profile.record_idle(t_busy_start - self.last_flush_end_us)
@@ -735,12 +728,10 @@ struct H3UdpHandler(BatchCompletionHandler):
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
             var t_pop_dispatch_start: UInt64 = 0
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 t_pop_dispatch_start = profile_monotonic_us()
                 self.profile.record_loop_iter()
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 # Queueing wait: now (flush start) - arrival_us (recvmsg ingress).
                 # delta is the wall-clock time the packet sat in pending_rx.
                 if pd.arrival_us > UInt64(0) and now >= pd.arrival_us:
@@ -760,14 +751,12 @@ struct H3UdpHandler(BatchCompletionHandler):
                     ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
                     self.consumed_bufs.append(pd.buf_id)
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
                 # Fall through to QuicConnection.server(...) construction below.
 
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 if conn_idx >= 0:
                     if not self.conn_h3s[conn_idx][]._h3._quic.is_expected_dcid(Span(pd.dcid)):
                         try:
@@ -782,8 +771,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var dcid_copy = List[UInt8](copy=pd.dcid)
                 var quic: QuicConnection
                 try:
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         quic = QuicConnection.server(
                             self.lib_addr,
                             self.server_config,
@@ -808,8 +796,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                         self.quic_server_err_first = True
                         print("h3-bench DIAG: first QuicConnection.server error:", e)
                     self.consumed_bufs.append(pd.buf_id)
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
@@ -829,8 +816,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
                 try:
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         h3 = H3HandlerServer[BenchHandler](
                             quic=quic^,
                             handler=handler^,
@@ -846,8 +832,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                     if self.h3_handler_err_count == UInt64(1):
                         print("h3-bench DIAG: first H3HandlerServer error:", e)
                     self.consumed_bufs.append(pd.buf_id)
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
@@ -870,15 +855,13 @@ struct H3UdpHandler(BatchCompletionHandler):
                 dcids.append(lcid_u64)
                 self.conn_dcids.append(dcids^)
 
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
             # Feed datagram to the connection.
             # Q10 §3.4 — flush_feed_datagram_us bracket. Fires AFTER
             # record_loop_pop_dispatch and BEFORE t_post_pkt_start.
             var t_feed_start: UInt64 = 0
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 t_feed_start = profile_monotonic_us()
             try:
                 self.conn_h3s[conn_idx][].feed_datagram_from_buffer(pd.payload_ptr, pd.payload_len, now)
@@ -886,13 +869,11 @@ struct H3UdpHandler(BatchCompletionHandler):
                 self.feed_datagram_err_count += UInt64(1)
                 if self.feed_datagram_err_count == UInt64(1):
                     print("h3-bench DIAG: first feed_datagram_from_buffer error:", e)
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 self.profile.record_flush_feed_datagram_us(profile_monotonic_us() - t_feed_start)
 
             var t_post_pkt_start: UInt64 = 0
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 t_post_pkt_start = profile_monotonic_us()
             # Update peer address.
             var addr_update = List[UInt8](capacity=pd.addr_len)
@@ -900,20 +881,17 @@ struct H3UdpHandler(BatchCompletionHandler):
                 addr_update.append(pd.buf_ptr[pd.addr_offset + j])
             self.conn_addrs[conn_idx] = addr_update^
 
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 self.profile.record_loop_post_pkt(profile_monotonic_us() - t_post_pkt_start)
             # Drain and send outgoing datagrams.
             var t_drain_start = UInt64(0)
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 t_drain_start = profile_monotonic_us()
             try:
                 self._drain_and_send(conn_idx, now)
             except:
                 pass
-            @parameter
-            if PROFILE_ACCEPT:
+            comptime if PROFILE_ACCEPT:
                 var drain_us = profile_monotonic_us() - t_drain_start
                 self.profile.record_drain(drain_us)
 
@@ -921,22 +899,18 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.consumed_bufs.append(pd.buf_id)
 
         var t_teardown_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             t_teardown_start = profile_monotonic_us()
         self.pending_rx.clear()
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             self.profile.record_loop_teardown(profile_monotonic_us() - t_teardown_start)
 
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             var t_busy_end = profile_monotonic_us()
             self.profile.record_flush(n_pkts_at_start, t_busy_end - t_busy_start)
             self.last_flush_end_us = t_busy_end
 
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             if _profile_dump_pending():
                 # Timeout sweep: count surviving non-established conns
                 # (B9 already counted evicted ones).
@@ -986,20 +960,17 @@ struct H3UdpHandler(BatchCompletionHandler):
             # savings are limited to the slot-struct heap-alloc itself.
             var tx_ptr: UnsafePointer[UdpTxSlot, MutAnyOrigin]
             var from_pool: Bool = False
-            @parameter
-            if EGRESS_POOL_V2:
+            comptime if EGRESS_POOL_V2:
                 if len(self.egress_pool_v2_freelist) > 0:
                     tx_ptr = self.egress_pool_v2_freelist.pop()
                     tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
                     from_pool = True
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         self.profile.record_egress_pool_hit()
                 else:
                     tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
                     tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
-                    @parameter
-                    if PROFILE_ACCEPT:
+                    comptime if PROFILE_ACCEPT:
                         self.profile.record_egress_pool_miss()
             else:
                 tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
@@ -1010,8 +981,7 @@ struct H3UdpHandler(BatchCompletionHandler):
             self.tx_slot_tokens.append(token)
             # Parallel-List source tracking — gated to preserve off-build
             # bit-identity (FR-4.6).
-            @parameter
-            if EGRESS_POOL_V2:
+            comptime if EGRESS_POOL_V2:
                 self.tx_slot_from_pool.append(from_pool)
             self.tx_slot_idx_by_token[token] = slot_idx
 
@@ -1032,8 +1002,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # freelist instead of calling ptr.free() — the slot-struct memory
         # stays alive for the next reuse cycle (Q8 Phase 2).
         var ptr = self.tx_slots[idx]
-        @parameter
-        if EGRESS_POOL_V2:
+        comptime if EGRESS_POOL_V2:
             var was_pooled = self.tx_slot_from_pool[idx]
             if was_pooled:
                 ptr[].free()
@@ -1052,14 +1021,12 @@ struct H3UdpHandler(BatchCompletionHandler):
             var moved_token = self.tx_slot_tokens[last]
             self.tx_slots[idx] = self.tx_slots[last]
             self.tx_slot_tokens[idx] = moved_token
-            @parameter
-            if EGRESS_POOL_V2:
+            comptime if EGRESS_POOL_V2:
                 self.tx_slot_from_pool[idx] = self.tx_slot_from_pool[last]
             self.tx_slot_idx_by_token[moved_token] = idx
         _ = self.tx_slots.pop()
         _ = self.tx_slot_tokens.pop()
-        @parameter
-        if EGRESS_POOL_V2:
+        comptime if EGRESS_POOL_V2:
             _ = self.tx_slot_from_pool.pop()
         _ = self.tx_slot_idx_by_token.pop(token)
 
@@ -1067,8 +1034,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # per-packet (one CQE per datagram) — bucket-0-dominant histogram is
         # itself H_C-positive evidence vs a hypothetical sendmmsg-batched path.
         # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             self.profile.record_sendmsg_batch_size(1)
 
     # --- timeout path ---
@@ -1087,8 +1053,7 @@ struct H3UdpHandler(BatchCompletionHandler):
 
             # Close dead connections (swap-and-pop).
             if self.conn_h3s[i][].should_close():
-                @parameter
-                if PROFILE_ACCEPT:
+                comptime if PROFILE_ACCEPT:
                     if not self.conn_h3s[i][]._h3.is_established():
                         self.profile.record_handshake_timeout(UInt64(1))
                 var ptr = self.conn_h3s[i]
@@ -1315,8 +1280,7 @@ def main() raises:
     # Plan B: install SIGINT/SIGTERM handler so that Ctrl-C / kill
     # triggers a profile dump + clean exit at the next flush boundary.
     # Off-build: zero overhead (no comptime branch elided at compile time).
-    @parameter
-    if PROFILE_ACCEPT:
+    comptime if PROFILE_ACCEPT:
         _profile_install_signal_handlers()
 
     # Build handler + loop.
@@ -1357,14 +1321,12 @@ def main() raises:
         # (work happens inside `record_iouring_park_us`).
         # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
         var t_park_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             t_park_start = profile_monotonic_us()
         # Q-IO-1: BENCH_WAIT_NR env-var runtime knob (parsed in main()).
         # Default 1 = pre-spec hardcoded value. Range [1, 256].
         loop.poll(wait_nr=wait_nr_runtime)
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             loop._handler.profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
             # Q-IO-1: snapshot+reset via method (Mojo 0.26.2 mojox ICEs on the
             # equivalent direct field write `loop._handler.<field> = 0`).
@@ -1397,16 +1359,13 @@ def main() raises:
         # (`park + flush_impl + drain_submits ≈ wall_clock`). Total-only;
         # bucket emit deferred to T2 if AC3 fails.
         var t_dsubmit_start: UInt64 = 0
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             t_dsubmit_start = profile_monotonic_us()
         _drain_pending_submits(loop)
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             loop._handler.profile.record_drain_submits_us(profile_monotonic_us() - t_dsubmit_start)
 
         # Q7 H_A: 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
         # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
-        @parameter
-        if PROFILE_ACCEPT:
+        comptime if PROFILE_ACCEPT:
             loop._handler.profile.tick_profile_gauges(profile_monotonic_us())
