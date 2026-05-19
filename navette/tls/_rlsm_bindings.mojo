@@ -8,250 +8,250 @@ from std.memory import UnsafePointer
 
 # -- Function-pointer aliases ----------------------------------------------
 
-comptime rlsm_noop_fn = fn() -> Int32
-comptime rlsm_last_error_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_client_config_new_fn = fn() -> Int32
-comptime rlsm_server_config_new_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_config_free_fn = fn(Int32) -> Int32
-comptime rlsm_config_set_alpn_protocols_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_client_config_new_insecure_fn = fn() -> Int32
-comptime rlsm_tls_client_new_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_tls_server_new_fn = fn(Int32) -> Int32
-comptime rlsm_tls_conn_free_fn = fn(Int32) -> Int32
-comptime rlsm_tls_conn_read_tls_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_tls_conn_write_tls_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_tls_conn_read_plaintext_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_tls_conn_write_plaintext_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_tls_conn_is_handshaking_fn = fn(Int32) -> Int32
-comptime rlsm_tls_conn_alpn_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_initial_keys_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) -> Int32
-comptime rlsm_initial_keys_raw_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_keys_local_encrypt_fn = fn(Int32, UInt64, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) -> Int32
-comptime rlsm_keys_remote_decrypt_fn = fn(Int32, UInt64, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_keys_local_header_protect_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_keys_remote_header_unprotect_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int32) -> Int32
-comptime rlsm_keys_batch_header_unprotect_fn = fn(Int32, Int32, UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_keys_batch_decrypt_fn = fn(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_keys_batch_header_protect_fn = fn(Int32, Int32, UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_keys_batch_encrypt_fn = fn(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_keys_tag_len_fn = fn(Int32) -> Int32
-comptime rlsm_keys_free_fn = fn(Int32) -> Int32
-comptime rlsm_aes_gcm_128_seal_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_aes_gcm_128_open_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_hmac_sha256_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_server_config_new_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_client_config_new_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_client_config_new_insecure_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_client_config_with_ca_fn = fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_client_conn_new_fn = fn(Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_server_conn_new_fn = fn(Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_free_fn = fn(Int32) -> Int32
-comptime rlsm_quic_conn_write_hs_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_read_hs_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UInt64, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_alert_fn = fn(Int32) -> Int32
-comptime rlsm_quic_conn_take_keys_fn = fn(Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_take_next_keys_fn = fn(Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_is_handshaking_fn = fn(Int32) -> Int32
-comptime rlsm_quic_conn_handshake_kind_fn = fn(Int32) -> Int32
-comptime rlsm_quic_conn_transport_params_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_alpn_fn = fn(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_zero_rtt_keys_fn = fn(Int32, UnsafePointer[Int32, MutAnyOrigin]) -> Int32
-comptime rlsm_quic_conn_is_early_data_accepted_fn = fn(Int32) -> Int32
+comptime rlsm_noop_fn = def() abi("C") thin -> Int32
+comptime rlsm_last_error_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_client_config_new_fn = def() abi("C") thin -> Int32
+comptime rlsm_server_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_config_free_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_config_set_alpn_protocols_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_client_config_new_insecure_fn = def() abi("C") thin -> Int32
+comptime rlsm_tls_client_new_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_server_new_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_free_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_read_tls_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_write_tls_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_read_plaintext_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_write_plaintext_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_is_handshaking_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_alpn_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_initial_keys_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) abi("C") thin -> Int32
+comptime rlsm_initial_keys_raw_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_local_encrypt_fn = def(Int32, UInt64, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) abi("C") thin -> Int32
+comptime rlsm_keys_remote_decrypt_fn = def(Int32, UInt64, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_keys_local_header_protect_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_keys_remote_header_unprotect_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_keys_batch_header_unprotect_fn = def(Int32, Int32, UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_batch_decrypt_fn = def(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_batch_header_protect_fn = def(Int32, Int32, UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_batch_encrypt_fn = def(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_tag_len_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_keys_free_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_aes_gcm_128_seal_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_aes_gcm_128_open_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_hmac_sha256_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_config_new_insecure_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_config_with_ca_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_conn_new_fn = def(Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_new_fn = def(Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_free_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_quic_conn_write_hs_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_read_hs_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UInt64, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_alert_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_quic_conn_take_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_take_next_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_is_handshaking_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_quic_conn_handshake_kind_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_quic_conn_transport_params_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_alpn_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_is_early_data_accepted_fn = def(Int32) abi("C") thin -> Int32
 
 # -- Loader helpers --------------------------------------------------------
 
 # Test stub - returns 0.
-fn load_rlsm_noop(ref handle: OwnedDLHandle) -> rlsm_noop_fn:
+def load_rlsm_noop(ref handle: OwnedDLHandle) -> rlsm_noop_fn:
     return handle.get_function[rlsm_noop_fn]("rlsm_noop")
 
 # Copy the last error message into out_buf (NUL-terminated).
-fn load_rlsm_last_error(ref handle: OwnedDLHandle) -> rlsm_last_error_fn:
+def load_rlsm_last_error(ref handle: OwnedDLHandle) -> rlsm_last_error_fn:
     return handle.get_function[rlsm_last_error_fn]("rlsm_last_error")
 
 # Allocate a default rustls client config (webpki-roots) and return its handle.
-fn load_rlsm_client_config_new(ref handle: OwnedDLHandle) -> rlsm_client_config_new_fn:
+def load_rlsm_client_config_new(ref handle: OwnedDLHandle) -> rlsm_client_config_new_fn:
     return handle.get_function[rlsm_client_config_new_fn]("rlsm_client_config_new")
 
 # Create a TLS server config from PEM cert chain and PEM private key.
-fn load_rlsm_server_config_new(ref handle: OwnedDLHandle) -> rlsm_server_config_new_fn:
+def load_rlsm_server_config_new(ref handle: OwnedDLHandle) -> rlsm_server_config_new_fn:
     return handle.get_function[rlsm_server_config_new_fn]("rlsm_server_config_new")
 
 # Free a config handle.
-fn load_rlsm_config_free(ref handle: OwnedDLHandle) -> rlsm_config_free_fn:
+def load_rlsm_config_free(ref handle: OwnedDLHandle) -> rlsm_config_free_fn:
     return handle.get_function[rlsm_config_free_fn]("rlsm_config_free")
 
 # Set ALPN wire-encoded protocols on the given config handle.
-fn load_rlsm_config_set_alpn_protocols(ref handle: OwnedDLHandle) -> rlsm_config_set_alpn_protocols_fn:
+def load_rlsm_config_set_alpn_protocols(ref handle: OwnedDLHandle) -> rlsm_config_set_alpn_protocols_fn:
     return handle.get_function[rlsm_config_set_alpn_protocols_fn]("rlsm_config_set_alpn_protocols")
 
 # Create a TLS client config accepting any server cert (feature=insecure).
-fn load_rlsm_client_config_new_insecure(ref handle: OwnedDLHandle) -> rlsm_client_config_new_insecure_fn:
+def load_rlsm_client_config_new_insecure(ref handle: OwnedDLHandle) -> rlsm_client_config_new_insecure_fn:
     return handle.get_function[rlsm_client_config_new_insecure_fn]("rlsm_client_config_new_insecure")
 
 # Create a new TLS client connection bound to a config handle.
-fn load_rlsm_tls_client_new(ref handle: OwnedDLHandle) -> rlsm_tls_client_new_fn:
+def load_rlsm_tls_client_new(ref handle: OwnedDLHandle) -> rlsm_tls_client_new_fn:
     return handle.get_function[rlsm_tls_client_new_fn]("rlsm_tls_client_new")
 
 # Create a new TLS server connection bound to a config handle.
-fn load_rlsm_tls_server_new(ref handle: OwnedDLHandle) -> rlsm_tls_server_new_fn:
+def load_rlsm_tls_server_new(ref handle: OwnedDLHandle) -> rlsm_tls_server_new_fn:
     return handle.get_function[rlsm_tls_server_new_fn]("rlsm_tls_server_new")
 
 # Free a TLS connection handle.
-fn load_rlsm_tls_conn_free(ref handle: OwnedDLHandle) -> rlsm_tls_conn_free_fn:
+def load_rlsm_tls_conn_free(ref handle: OwnedDLHandle) -> rlsm_tls_conn_free_fn:
     return handle.get_function[rlsm_tls_conn_free_fn]("rlsm_tls_conn_free")
 
 # Feed ciphertext into the TLS state machine.
-fn load_rlsm_tls_conn_read_tls(ref handle: OwnedDLHandle) -> rlsm_tls_conn_read_tls_fn:
+def load_rlsm_tls_conn_read_tls(ref handle: OwnedDLHandle) -> rlsm_tls_conn_read_tls_fn:
     return handle.get_function[rlsm_tls_conn_read_tls_fn]("rlsm_tls_conn_read_tls")
 
 # Drain ciphertext from rustls into out_buf for transmission.
-fn load_rlsm_tls_conn_write_tls(ref handle: OwnedDLHandle) -> rlsm_tls_conn_write_tls_fn:
+def load_rlsm_tls_conn_write_tls(ref handle: OwnedDLHandle) -> rlsm_tls_conn_write_tls_fn:
     return handle.get_function[rlsm_tls_conn_write_tls_fn]("rlsm_tls_conn_write_tls")
 
 # Read decrypted application data from the TLS connection.
-fn load_rlsm_tls_conn_read_plaintext(ref handle: OwnedDLHandle) -> rlsm_tls_conn_read_plaintext_fn:
+def load_rlsm_tls_conn_read_plaintext(ref handle: OwnedDLHandle) -> rlsm_tls_conn_read_plaintext_fn:
     return handle.get_function[rlsm_tls_conn_read_plaintext_fn]("rlsm_tls_conn_read_plaintext")
 
 # Write application data into the TLS connection to be encrypted.
-fn load_rlsm_tls_conn_write_plaintext(ref handle: OwnedDLHandle) -> rlsm_tls_conn_write_plaintext_fn:
+def load_rlsm_tls_conn_write_plaintext(ref handle: OwnedDLHandle) -> rlsm_tls_conn_write_plaintext_fn:
     return handle.get_function[rlsm_tls_conn_write_plaintext_fn]("rlsm_tls_conn_write_plaintext")
 
 # Returns 1 if the TLS handshake is in progress, 0 if complete, -1 on error.
-fn load_rlsm_tls_conn_is_handshaking(ref handle: OwnedDLHandle) -> rlsm_tls_conn_is_handshaking_fn:
+def load_rlsm_tls_conn_is_handshaking(ref handle: OwnedDLHandle) -> rlsm_tls_conn_is_handshaking_fn:
     return handle.get_function[rlsm_tls_conn_is_handshaking_fn]("rlsm_tls_conn_is_handshaking")
 
 # Copy negotiated ALPN protocol identifier into out_buf.
-fn load_rlsm_tls_conn_alpn(ref handle: OwnedDLHandle) -> rlsm_tls_conn_alpn_fn:
+def load_rlsm_tls_conn_alpn(ref handle: OwnedDLHandle) -> rlsm_tls_conn_alpn_fn:
     return handle.get_function[rlsm_tls_conn_alpn_fn]("rlsm_tls_conn_alpn")
 
 # Derive QUIC Initial keys and return a KEYS_TABLE handle.
-fn load_rlsm_initial_keys(ref handle: OwnedDLHandle) -> rlsm_initial_keys_fn:
+def load_rlsm_initial_keys(ref handle: OwnedDLHandle) -> rlsm_initial_keys_fn:
     return handle.get_function[rlsm_initial_keys_fn]("rlsm_initial_keys")
 
 # Derive raw QUIC Initial key material (key, IV, HP key).
-fn load_rlsm_initial_keys_raw(ref handle: OwnedDLHandle) -> rlsm_initial_keys_raw_fn:
+def load_rlsm_initial_keys_raw(ref handle: OwnedDLHandle) -> rlsm_initial_keys_raw_fn:
     return handle.get_function[rlsm_initial_keys_raw_fn]("rlsm_initial_keys_raw")
 
 # Encrypt a QUIC packet payload in place using local (sending) keys.
-fn load_rlsm_keys_local_encrypt(ref handle: OwnedDLHandle) -> rlsm_keys_local_encrypt_fn:
+def load_rlsm_keys_local_encrypt(ref handle: OwnedDLHandle) -> rlsm_keys_local_encrypt_fn:
     return handle.get_function[rlsm_keys_local_encrypt_fn]("rlsm_keys_local_encrypt")
 
 # Decrypt a QUIC packet payload in place using remote (receiving) keys.
-fn load_rlsm_keys_remote_decrypt(ref handle: OwnedDLHandle) -> rlsm_keys_remote_decrypt_fn:
+def load_rlsm_keys_remote_decrypt(ref handle: OwnedDLHandle) -> rlsm_keys_remote_decrypt_fn:
     return handle.get_function[rlsm_keys_remote_decrypt_fn]("rlsm_keys_remote_decrypt")
 
 # Apply QUIC header protection using local (sending) header keys.
-fn load_rlsm_keys_local_header_protect(ref handle: OwnedDLHandle) -> rlsm_keys_local_header_protect_fn:
+def load_rlsm_keys_local_header_protect(ref handle: OwnedDLHandle) -> rlsm_keys_local_header_protect_fn:
     return handle.get_function[rlsm_keys_local_header_protect_fn]("rlsm_keys_local_header_protect")
 
 # Remove QUIC header protection using remote (receiving) header keys.
-fn load_rlsm_keys_remote_header_unprotect(ref handle: OwnedDLHandle) -> rlsm_keys_remote_header_unprotect_fn:
+def load_rlsm_keys_remote_header_unprotect(ref handle: OwnedDLHandle) -> rlsm_keys_remote_header_unprotect_fn:
     return handle.get_function[rlsm_keys_remote_header_unprotect_fn]("rlsm_keys_remote_header_unprotect")
 
 # Batch header unprotection for N packets using the same keys.
-fn load_rlsm_keys_batch_header_unprotect(ref handle: OwnedDLHandle) -> rlsm_keys_batch_header_unprotect_fn:
+def load_rlsm_keys_batch_header_unprotect(ref handle: OwnedDLHandle) -> rlsm_keys_batch_header_unprotect_fn:
     return handle.get_function[rlsm_keys_batch_header_unprotect_fn]("rlsm_keys_batch_header_unprotect")
 
 # Batch AEAD decryption for N packets using the same keys.
-fn load_rlsm_keys_batch_decrypt(ref handle: OwnedDLHandle) -> rlsm_keys_batch_decrypt_fn:
+def load_rlsm_keys_batch_decrypt(ref handle: OwnedDLHandle) -> rlsm_keys_batch_decrypt_fn:
     return handle.get_function[rlsm_keys_batch_decrypt_fn]("rlsm_keys_batch_decrypt")
 
 # Batch header protection for N packets in the send direction.
-fn load_rlsm_keys_batch_header_protect(ref handle: OwnedDLHandle) -> rlsm_keys_batch_header_protect_fn:
+def load_rlsm_keys_batch_header_protect(ref handle: OwnedDLHandle) -> rlsm_keys_batch_header_protect_fn:
     return handle.get_function[rlsm_keys_batch_header_protect_fn]("rlsm_keys_batch_header_protect")
 
 # Batch AEAD encryption for N packets in the send direction.
-fn load_rlsm_keys_batch_encrypt(ref handle: OwnedDLHandle) -> rlsm_keys_batch_encrypt_fn:
+def load_rlsm_keys_batch_encrypt(ref handle: OwnedDLHandle) -> rlsm_keys_batch_encrypt_fn:
     return handle.get_function[rlsm_keys_batch_encrypt_fn]("rlsm_keys_batch_encrypt")
 
 # Return the AEAD tag length for the local packet keys, or -1 on error.
-fn load_rlsm_keys_tag_len(ref handle: OwnedDLHandle) -> rlsm_keys_tag_len_fn:
+def load_rlsm_keys_tag_len(ref handle: OwnedDLHandle) -> rlsm_keys_tag_len_fn:
     return handle.get_function[rlsm_keys_tag_len_fn]("rlsm_keys_tag_len")
 
 # Free a keys handle.
-fn load_rlsm_keys_free(ref handle: OwnedDLHandle) -> rlsm_keys_free_fn:
+def load_rlsm_keys_free(ref handle: OwnedDLHandle) -> rlsm_keys_free_fn:
     return handle.get_function[rlsm_keys_free_fn]("rlsm_keys_free")
 
 # Encrypt with raw AES-128-GCM. Output is ciphertext || 16-byte tag.
-fn load_rlsm_aes_gcm_128_seal(ref handle: OwnedDLHandle) -> rlsm_aes_gcm_128_seal_fn:
+def load_rlsm_aes_gcm_128_seal(ref handle: OwnedDLHandle) -> rlsm_aes_gcm_128_seal_fn:
     return handle.get_function[rlsm_aes_gcm_128_seal_fn]("rlsm_aes_gcm_128_seal")
 
 # Decrypt with raw AES-128-GCM. ciphertext includes the 16-byte tag.
-fn load_rlsm_aes_gcm_128_open(ref handle: OwnedDLHandle) -> rlsm_aes_gcm_128_open_fn:
+def load_rlsm_aes_gcm_128_open(ref handle: OwnedDLHandle) -> rlsm_aes_gcm_128_open_fn:
     return handle.get_function[rlsm_aes_gcm_128_open_fn]("rlsm_aes_gcm_128_open")
 
 # Compute HMAC-SHA256(key, msg) and write the 32-byte tag to out_ptr.
-fn load_rlsm_hmac_sha256(ref handle: OwnedDLHandle) -> rlsm_hmac_sha256_fn:
+def load_rlsm_hmac_sha256(ref handle: OwnedDLHandle) -> rlsm_hmac_sha256_fn:
     return handle.get_function[rlsm_hmac_sha256_fn]("rlsm_hmac_sha256")
 
 # Create a QUIC server TLS config (TLS 1.3 only) with cert + key + ALPN.
-fn load_rlsm_quic_server_config_new(ref handle: OwnedDLHandle) -> rlsm_quic_server_config_new_fn:
+def load_rlsm_quic_server_config_new(ref handle: OwnedDLHandle) -> rlsm_quic_server_config_new_fn:
     return handle.get_function[rlsm_quic_server_config_new_fn]("rlsm_quic_server_config_new")
 
 # Create a QUIC client TLS config (TLS 1.3, webpki-roots) with ALPN.
-fn load_rlsm_quic_client_config_new(ref handle: OwnedDLHandle) -> rlsm_quic_client_config_new_fn:
+def load_rlsm_quic_client_config_new(ref handle: OwnedDLHandle) -> rlsm_quic_client_config_new_fn:
     return handle.get_function[rlsm_quic_client_config_new_fn]("rlsm_quic_client_config_new")
 
 # Create a QUIC client config accepting any server cert (feature=insecure).
-fn load_rlsm_quic_client_config_new_insecure(ref handle: OwnedDLHandle) -> rlsm_quic_client_config_new_insecure_fn:
+def load_rlsm_quic_client_config_new_insecure(ref handle: OwnedDLHandle) -> rlsm_quic_client_config_new_insecure_fn:
     return handle.get_function[rlsm_quic_client_config_new_insecure_fn]("rlsm_quic_client_config_new_insecure")
 
 # Create a QUIC client config trusting a single CA cert PEM (test helper).
-fn load_rlsm_quic_client_config_with_ca(ref handle: OwnedDLHandle) -> rlsm_quic_client_config_with_ca_fn:
+def load_rlsm_quic_client_config_with_ca(ref handle: OwnedDLHandle) -> rlsm_quic_client_config_with_ca_fn:
     return handle.get_function[rlsm_quic_client_config_with_ca_fn]("rlsm_quic_client_config_with_ca")
 
 # Create a new QUIC client connection with SNI and transport parameters.
-fn load_rlsm_quic_client_conn_new(ref handle: OwnedDLHandle) -> rlsm_quic_client_conn_new_fn:
+def load_rlsm_quic_client_conn_new(ref handle: OwnedDLHandle) -> rlsm_quic_client_conn_new_fn:
     return handle.get_function[rlsm_quic_client_conn_new_fn]("rlsm_quic_client_conn_new")
 
 # Create a new QUIC server connection with transport parameters.
-fn load_rlsm_quic_server_conn_new(ref handle: OwnedDLHandle) -> rlsm_quic_server_conn_new_fn:
+def load_rlsm_quic_server_conn_new(ref handle: OwnedDLHandle) -> rlsm_quic_server_conn_new_fn:
     return handle.get_function[rlsm_quic_server_conn_new_fn]("rlsm_quic_server_conn_new")
 
 # Free a QUIC connection handle. Drops any buffered pending key change.
-fn load_rlsm_quic_conn_free(ref handle: OwnedDLHandle) -> rlsm_quic_conn_free_fn:
+def load_rlsm_quic_conn_free(ref handle: OwnedDLHandle) -> rlsm_quic_conn_free_fn:
     return handle.get_function[rlsm_quic_conn_free_fn]("rlsm_quic_conn_free")
 
 # Drain outgoing TLS handshake bytes; reports any pending key-change kind.
-fn load_rlsm_quic_conn_write_hs(ref handle: OwnedDLHandle) -> rlsm_quic_conn_write_hs_fn:
+def load_rlsm_quic_conn_write_hs(ref handle: OwnedDLHandle) -> rlsm_quic_conn_write_hs_fn:
     return handle.get_function[rlsm_quic_conn_write_hs_fn]("rlsm_quic_conn_write_hs")
 
 # Feed CRYPTO frame payload into the QUIC TLS state machine.
-fn load_rlsm_quic_conn_read_hs(ref handle: OwnedDLHandle) -> rlsm_quic_conn_read_hs_fn:
+def load_rlsm_quic_conn_read_hs(ref handle: OwnedDLHandle) -> rlsm_quic_conn_read_hs_fn:
     return handle.get_function[rlsm_quic_conn_read_hs_fn]("rlsm_quic_conn_read_hs")
 
 # Return the cached TLS AlertDescription code from the last read_hs failure.
-fn load_rlsm_quic_conn_alert(ref handle: OwnedDLHandle) -> rlsm_quic_conn_alert_fn:
+def load_rlsm_quic_conn_alert(ref handle: OwnedDLHandle) -> rlsm_quic_conn_alert_fn:
     return handle.get_function[rlsm_quic_conn_alert_fn]("rlsm_quic_conn_alert")
 
 # Move the pending QUIC Keys into KEYS_TABLE; returns new keys handle.
-fn load_rlsm_quic_conn_take_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_take_keys_fn:
+def load_rlsm_quic_conn_take_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_take_keys_fn:
     return handle.get_function[rlsm_quic_conn_take_keys_fn]("rlsm_quic_conn_take_keys")
 
 # Derive next 1-RTT packet keys from stored Secrets (RFC 9001 §6).
-fn load_rlsm_quic_conn_take_next_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_take_next_keys_fn:
+def load_rlsm_quic_conn_take_next_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_take_next_keys_fn:
     return handle.get_function[rlsm_quic_conn_take_next_keys_fn]("rlsm_quic_conn_take_next_keys")
 
 # Returns 1 if handshaking, 0 if complete, -1 on invalid handle.
-fn load_rlsm_quic_conn_is_handshaking(ref handle: OwnedDLHandle) -> rlsm_quic_conn_is_handshaking_fn:
+def load_rlsm_quic_conn_is_handshaking(ref handle: OwnedDLHandle) -> rlsm_quic_conn_is_handshaking_fn:
     return handle.get_function[rlsm_quic_conn_is_handshaking_fn]("rlsm_quic_conn_is_handshaking")
 
 # Read the handshake kind for a server connection (Full/Resumed/HRR).
-fn load_rlsm_quic_conn_handshake_kind(ref handle: OwnedDLHandle) -> rlsm_quic_conn_handshake_kind_fn:
+def load_rlsm_quic_conn_handshake_kind(ref handle: OwnedDLHandle) -> rlsm_quic_conn_handshake_kind_fn:
     return handle.get_function[rlsm_quic_conn_handshake_kind_fn]("rlsm_quic_conn_handshake_kind")
 
 # Copy peer's transport parameters into out_buf.
-fn load_rlsm_quic_conn_transport_params(ref handle: OwnedDLHandle) -> rlsm_quic_conn_transport_params_fn:
+def load_rlsm_quic_conn_transport_params(ref handle: OwnedDLHandle) -> rlsm_quic_conn_transport_params_fn:
     return handle.get_function[rlsm_quic_conn_transport_params_fn]("rlsm_quic_conn_transport_params")
 
 # Copy negotiated ALPN bytes into out_buf.
-fn load_rlsm_quic_conn_alpn(ref handle: OwnedDLHandle) -> rlsm_quic_conn_alpn_fn:
+def load_rlsm_quic_conn_alpn(ref handle: OwnedDLHandle) -> rlsm_quic_conn_alpn_fn:
     return handle.get_function[rlsm_quic_conn_alpn_fn]("rlsm_quic_conn_alpn")
 
 # Write client-side 0-RTT DirectionalKeys into KEYS_TABLE if available.
-fn load_rlsm_quic_conn_zero_rtt_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_zero_rtt_keys_fn:
+def load_rlsm_quic_conn_zero_rtt_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_zero_rtt_keys_fn:
     return handle.get_function[rlsm_quic_conn_zero_rtt_keys_fn]("rlsm_quic_conn_zero_rtt_keys")
 
 # Returns 1 if server accepted early data (0-RTT), 0 otherwise, -1 on error.
-fn load_rlsm_quic_conn_is_early_data_accepted(ref handle: OwnedDLHandle) -> rlsm_quic_conn_is_early_data_accepted_fn:
+def load_rlsm_quic_conn_is_early_data_accepted(ref handle: OwnedDLHandle) -> rlsm_quic_conn_is_early_data_accepted_fn:
     return handle.get_function[rlsm_quic_conn_is_early_data_accepted_fn]("rlsm_quic_conn_is_early_data_accepted")

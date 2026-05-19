@@ -6,8 +6,8 @@ schema path and writes any output path so the same script serves both
 librustls-mojo (`rlsm_*`) and libcompress-mojo (`lcm_*`).
 
 For each `[[symbol]]` block in the schema, emits:
-  - `comptime <name>_fn = fn(<args>) -> <ret>` (function-pointer type)
-  - `fn load_<name>(ref handle: OwnedDLHandle) -> <name>_fn`
+  - `comptime <name>_fn = def(<args>) abi("C") thin -> <ret>` (function-pointer type)
+  - `def load_<name>(ref handle: OwnedDLHandle) -> <name>_fn`
      (resolves the symbol from a dlopen handle).
 
 Type mapping (Rust → Mojo):
@@ -56,7 +56,7 @@ def render_alias(sym: dict) -> str:
     margs = [_ptr_with_origin(a) for a in (sym.get("mojo_args") or [])]
     mret = _ptr_with_origin(sym.get("mojo_ret", "Int32"))
     arg_sig = ", ".join(margs)
-    return f'comptime {name}_fn = fn({arg_sig}) -> {mret}'
+    return f'comptime {name}_fn = def({arg_sig}) abi("C") thin -> {mret}'
 
 
 def render_loader(sym: dict) -> str:
@@ -65,7 +65,7 @@ def render_loader(sym: dict) -> str:
     block = []
     if desc:
         block.append(f'# {desc}')
-    block.append(f'fn load_{name}(ref handle: OwnedDLHandle) -> {name}_fn:')
+    block.append(f'def load_{name}(ref handle: OwnedDLHandle) -> {name}_fn:')
     block.append(f'    return handle.get_function[{name}_fn]("{name}")')
     return "\n".join(block)
 
