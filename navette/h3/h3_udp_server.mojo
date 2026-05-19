@@ -817,7 +817,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 # rather than a dangling pointer.
                 self.conn_slots[i].h3 = UnsafePointer[
                     H3HandlerServer[Self.H], MutAnyOrigin
-                ]()
+                ](unsafe_from_address=0)
 
                 # B-permissive teardown: pop ALL of dying conn's DCID
                 # entries from the demux map (typically 2: initial_dcid

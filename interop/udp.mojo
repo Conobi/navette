@@ -236,7 +236,7 @@ def udp_connect(host: String, port: Int) raises -> Int32:
     var result = result_ptr[0]
     result_ptr.free()
 
-    if not result:
+    if Int(result) == 0:
         raise "udp_connect: getaddrinfo() returned null"
 
     # Read ai_addrlen at offset 16 (4 bytes LE)
