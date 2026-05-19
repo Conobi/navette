@@ -594,9 +594,9 @@ struct H2StreamingServer(Movable):
 
         # Acquire CoroHandle from pool; user_data = ctx_ptr reinterpreted as
         # an opaque MutExternalOrigin pointer (boucle's CoroBody.user_data type).
-        var user_data = ctx_ptr.bitcast[NoneType]().origin_cast[
-            mut=True, origin=MutExternalOrigin
-        ]()
+        var user_data = UnsafePointer[NoneType, MutExternalOrigin](
+            unsafe_from_address=Int(ctx_ptr)
+        )
         var coro_heap = self._coro_pool.acquire(self._handler_fn, user_data)
         ctx_ptr[].coro_addr = PtrBox[CoroHandle](coro_heap)
 
