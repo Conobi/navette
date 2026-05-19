@@ -69,7 +69,7 @@ from navette.util.ptrbox import PtrBox
 
 comptime H2BodyFn = def (
     UnsafePointer[CoroStreamCtx, MutAnyOrigin]
-) raises -> None
+) thin raises -> None
 
 
 # ---------------------------------------------------------------------------

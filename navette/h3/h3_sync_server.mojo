@@ -47,7 +47,7 @@ from navette.http.version import Version
 
 comptime H3BodyFn = def (
     UnsafePointer[CoroStreamCtx, MutAnyOrigin]
-) raises -> None
+) thin raises -> None
 
 
 # ---------------------------------------------------------------------------
