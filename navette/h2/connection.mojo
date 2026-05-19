@@ -387,7 +387,7 @@ def _client_magic() -> List[UInt8]:
     var m = List[UInt8]()
     var s = String("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
     var b = s.as_bytes()
-    for i in range(len(s)):
+    for i in range(s.byte_length()):
         m.append(b[i])
     return m^
 
@@ -1237,7 +1237,7 @@ struct H2Connection(Movable):
                     var decode_result = self._hpack_decoder.decode(hp.headers_block)
                     var decoded_headers = decode_result[0].copy()
                     var decode_error = decode_result[1]
-                    if len(decode_error) > 0:
+                    if decode_error.byte_length() > 0:
                         self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                         return
                     var end_stream = (frame.flags & FLAG_END_STREAM) != 0
@@ -1293,7 +1293,7 @@ struct H2Connection(Movable):
             var decode_result = self._hpack_decoder.decode(hp.headers_block)
             var decoded_headers = decode_result[0].copy()
             var decode_error = decode_result[1]
-            if len(decode_error) > 0:
+            if decode_error.byte_length() > 0:
                 self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                 return
             var end_stream = (frame.flags & FLAG_END_STREAM) != 0
@@ -1330,7 +1330,7 @@ struct H2Connection(Movable):
             var decode_result = self._hpack_decoder.decode(hp.headers_block)
             var decoded_headers = decode_result[0].copy()
             var decode_error = decode_result[1]
-            if len(decode_error) > 0:
+            if decode_error.byte_length() > 0:
                 self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                 return
             var s = StreamState(other=stream)
@@ -1390,7 +1390,7 @@ struct H2Connection(Movable):
                 var decode_result = self._hpack_decoder.decode(stream.header_block_buffer)
                 var decoded_headers = decode_result[0].copy()
                 var decode_error = decode_result[1]
-                if len(decode_error) > 0:
+                if decode_error.byte_length() > 0:
                     self._streams[stream_id] = stream^
                     self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                     return

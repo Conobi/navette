@@ -744,7 +744,7 @@ def try_parse_request(
     var pos = req_line_end + req_line_skip
     var hdr_result = _parse_headers(buf, pos, config)
     var hdr_error = hdr_result[2]
-    if len(hdr_error) > 0:
+    if hdr_error.byte_length() > 0:
         result.error = hdr_error^
         return result^
     var headers = hdr_result[0].copy()
@@ -830,7 +830,7 @@ def try_parse_request(
 
         var chunk_result = _decode_chunked(buf, body_start, config)
         var chunk_err = chunk_result[3]
-        if len(chunk_err) > 0:
+        if chunk_err.byte_length() > 0:
             if _is_incomplete_chunk_error(chunk_err):
                 result.new_last_scanned = header_end
                 return result^

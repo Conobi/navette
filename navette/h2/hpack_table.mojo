@@ -183,13 +183,13 @@ struct DynamicTable(Movable):
 
     def insert(mut self, name: String, value: String):
         """Insert at front. Evict from back until current_size <= max_size."""
-        var entry_size = len(name) + len(value) + 32  # RFC 7541 Section 4.1
+        var entry_size = name.byte_length() + value.byte_length() + 32  # RFC 7541 Section 4.1
         # Evict oldest entries until there is room
         while self.current_size + entry_size > self.max_size and len(
             self.entries
         ) > 0:
             var idx = len(self.entries) - 1
-            self.current_size -= len(self.entries[idx].name) + len(self.entries[idx].value) + 32
+            self.current_size -= self.entries[idx].name.byte_length() + self.entries[idx].value.byte_length() + 32
             _ = self.entries.pop()
         # If entry itself is too large, table is cleared (entry is not added)
         if entry_size > self.max_size:
@@ -232,7 +232,7 @@ struct DynamicTable(Movable):
         self.max_size = new_max
         while self.current_size > self.max_size and len(self.entries) > 0:
             var idx = len(self.entries) - 1
-            self.current_size -= len(self.entries[idx].name) + len(self.entries[idx].value) + 32
+            self.current_size -= self.entries[idx].name.byte_length() + self.entries[idx].value.byte_length() + 32
             _ = self.entries.pop()
 
     def size(self) -> Int:

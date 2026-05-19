@@ -201,19 +201,19 @@ struct HpackDecoder(Movable):
                 var result = decode_integer(wire, pos, 7)
                 var index = result[0]
                 pos += result[1]
-                if len(result[2]) > 0:
+                if result[2].byte_length() > 0:
                     return (List[Header](), result[2])
                 if index == 0:
                     return (List[Header](), String("index 0 is invalid"))
 
                 var header = self._lookup_index(index)
-                if len(header[0]) == 0 and len(header[1]) == 0:
+                if header[0].byte_length() == 0 and header[1].byte_length() == 0:
                     return (
                         List[Header](),
                         String("invalid index ") + String(index),
                     )
                 headers.append(Header(header[0], header[1]))
-                cumulative_size += len(header[0]) + len(header[1]) + 32
+                cumulative_size += header[0].byte_length() + header[1].byte_length() + 32
 
             elif byte & 0x40:
                 past_table_updates = True
@@ -221,12 +221,12 @@ struct HpackDecoder(Movable):
                 var name = result[0]
                 var value = result[1]
                 pos += result[2]
-                if len(result[3]) > 0:
+                if result[3].byte_length() > 0:
                     return (List[Header](), result[3])
 
                 self.dynamic_table.insert(name, value)
                 headers.append(Header(name, value))
-                cumulative_size += len(name) + len(value) + 32
+                cumulative_size += name.byte_length() + value.byte_length() + 32
 
             elif byte & 0x20:
                 if past_table_updates:
@@ -239,7 +239,7 @@ struct HpackDecoder(Movable):
                 var result = decode_integer(wire, pos, 5)
                 var new_size = result[0]
                 pos += result[1]
-                if len(result[2]) > 0:
+                if result[2].byte_length() > 0:
                     return (List[Header](), result[2])
                 if new_size > self.config.max_header_table_size:
                     return (
@@ -254,22 +254,22 @@ struct HpackDecoder(Movable):
                 past_table_updates = True
                 var result = self._decode_literal(wire, pos, 4)
                 pos += result[2]
-                if len(result[3]) > 0:
+                if result[3].byte_length() > 0:
                     return (List[Header](), result[3])
                 headers.append(Header(result[0], result[1]))
                 cumulative_size += (
-                    len(result[0]) + len(result[1]) + 32
+                    result[0].byte_length() + result[1].byte_length() + 32
                 )
 
             else:
                 past_table_updates = True
                 var result = self._decode_literal(wire, pos, 4)
                 pos += result[2]
-                if len(result[3]) > 0:
+                if result[3].byte_length() > 0:
                     return (List[Header](), result[3])
                 headers.append(Header(result[0], result[1]))
                 cumulative_size += (
-                    len(result[0]) + len(result[1]) + 32
+                    result[0].byte_length() + result[1].byte_length() + 32
                 )
 
             if cumulative_size > self.config.max_header_list_size:
@@ -308,7 +308,7 @@ struct HpackDecoder(Movable):
         var idx_result = decode_integer(wire, pos, prefix_bits)
         var name_index = idx_result[0]
         consumed += idx_result[1]
-        if len(idx_result[2]) > 0:
+        if idx_result[2].byte_length() > 0:
             return (String(""), String(""), 0, idx_result[2])
 
         var name: String
@@ -319,13 +319,13 @@ struct HpackDecoder(Movable):
             var str_result = self._decode_string(wire, pos + consumed)
             name = str_result[0]
             consumed += str_result[1]
-            if len(str_result[2]) > 0:
+            if str_result[2].byte_length() > 0:
                 return (String(""), String(""), 0, str_result[2])
 
         var val_result = self._decode_string(wire, pos + consumed)
         var value = val_result[0]
         consumed += val_result[1]
-        if len(val_result[2]) > 0:
+        if val_result[2].byte_length() > 0:
             return (String(""), String(""), 0, val_result[2])
 
         return (name^, value^, consumed, String(""))
@@ -342,7 +342,7 @@ struct HpackDecoder(Movable):
         var len_result = decode_integer(wire, pos, 7)
         var str_len = len_result[0]
         var consumed = len_result[1]
-        if len(len_result[2]) > 0:
+        if len_result[2].byte_length() > 0:
             return (String(""), 0, len_result[2])
 
         if pos + consumed + str_len > len(wire):
@@ -356,7 +356,7 @@ struct HpackDecoder(Movable):
             var raw = List[UInt8](capacity=str_len)
             raw.extend(Span(wire)[data_start:data_end])
             var huff_result = self.huffman.decode(raw)
-            if len(huff_result[1]) > 0:
+            if huff_result[1].byte_length() > 0:
                 return (String(""), 0, huff_result[1])
             var s = String(unsafe_from_utf8=huff_result[0])
             return (s^, consumed, String(""))

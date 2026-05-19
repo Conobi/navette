@@ -78,7 +78,7 @@ struct DataPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_data_payload(frame: Frame) -> DataPayload:
@@ -144,7 +144,7 @@ struct HeadersPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_headers_payload(frame: Frame) -> HeadersPayload:
@@ -258,7 +258,7 @@ struct RstStreamPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_rst_stream_payload(frame: Frame) -> RstStreamPayload:
@@ -325,7 +325,7 @@ struct SettingsPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_settings_payload(frame: Frame) -> SettingsPayload:
@@ -453,7 +453,7 @@ struct PingPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_ping_payload(frame: Frame) -> PingPayload:
@@ -501,7 +501,7 @@ struct GoawayPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_goaway_payload(frame: Frame) -> GoawayPayload:
@@ -547,7 +547,7 @@ struct WindowUpdatePayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_window_update_payload(frame: Frame) -> WindowUpdatePayload:
@@ -588,7 +588,7 @@ struct ContinuationPayload(Movable):
         self.error = take.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 def decode_continuation_payload(frame: Frame) -> ContinuationPayload:

@@ -104,7 +104,7 @@ def handle_baseline2(target: String, mut resp: ResponseWriter) raises:
     var result = String(a.value() + b.value())
     var hdrs = Headers()
     hdrs.add("content-type", "text/plain")
-    hdrs.add("content-length", String(len(result)))
+    hdrs.add("content-length", String(result.byte_length()))
     resp.send_status(StatusCode(200), hdrs^)
     _ = resp.try_send_body(BodyFrame.data(_str_to_bytes(result)))
     resp.end()
@@ -476,7 +476,7 @@ struct BenchState(Movable):
 def _accepts_encoding(headers: Headers, encoding: String) -> Bool:
     """Return True if the Accept-Encoding header contains *encoding*."""
     var ae = headers.get("accept-encoding")
-    if len(ae) == 0:
+    if ae.byte_length() == 0:
         return False
     # Simple substring search: scan for encoding bytes in ae.
     var ae_bytes = ae.as_bytes()

@@ -1538,7 +1538,7 @@ def _fmt_duration_us(us: UInt64) -> String:
     var ms_whole = ms_x1000 // 1000
     var ms_frac = ms_x1000 % 1000
     var frac_str = String(ms_frac)
-    while len(frac_str) < 3:
+    while frac_str.byte_length() < 3:
         frac_str = String("0") + frac_str
     return String(ms_whole) + "." + frac_str + "ms"
 
@@ -1548,7 +1548,7 @@ def _fmt_leg(label: String, total: UInt64, count: UInt64) -> String:
         return label + ":  avg=  0   total=        0us"
     var avg = total / count
     var avg_s = String(avg)
-    while len(avg_s) < 3:
+    while avg_s.byte_length() < 3:
         avg_s = String(" ") + avg_s
     var total_s = String(total)
     return label + ":  avg=" + avg_s + "   total=" + total_s + "us"
@@ -1559,6 +1559,6 @@ def _json_leg(name: String, total: UInt64, count: UInt64) -> String:
     if count > UInt64(0):
         avg = total / count
     var pad = String()
-    while len(pad) + len(name) < 14:
+    while pad.byte_length() + name.byte_length() < 14:
         pad += " "
     return '    "' + name + '":' + pad + '{"avg": ' + String(avg) + ', "total": ' + String(total) + "}"

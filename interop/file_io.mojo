@@ -37,7 +37,7 @@ comptime MODE_755: Int32 = 493
 def _to_cstr(s: String) -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Allocate a null-terminated C string from a Mojo String.
     Caller must call .free() on the returned pointer."""
-    var slen = len(s)
+    var slen = s.byte_length()
     var buf = alloc[UInt8](slen + 1).as_any_origin()
     var bytes = s.as_bytes()
     for i in range(slen):
@@ -151,7 +151,7 @@ def _bytes_to_string(data: Span[UInt8, _], start: Int, end: Int) -> String:
 
 def mkdir_p(path: String) raises:
     """Create directory and parents. Ignores EEXIST."""
-    var n = len(path)
+    var n = path.byte_length()
     var path_bytes = path.as_bytes()
     # Walk through each '/' separator and create partial paths
     var i = 1  # skip leading '/'

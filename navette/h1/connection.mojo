@@ -136,7 +136,7 @@ struct H1Connection(Movable):
             self._config,
         )
 
-        if len(result.error) > 0:
+        if result.error.byte_length() > 0:
             self._phase = PHASE_ERROR
             return Optional[Request]()
 

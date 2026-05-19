@@ -31,7 +31,7 @@ comptime _ADDR_SIZE: Int = 28  # sizeof(sockaddr_in6) — used for all address b
 def _to_cstr(s: String) -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Allocate a null-terminated C string from a Mojo String.
     Caller must call .free() on the returned pointer."""
-    var slen = len(s)
+    var slen = s.byte_length()
     var buf = alloc[UInt8](slen + 1).as_any_origin()
     var bytes = s.as_bytes()
     for i in range(slen):

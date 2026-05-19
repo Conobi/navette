@@ -181,7 +181,7 @@ struct Frame(Copyable, Movable):
 
     def ok(self) -> Bool:
         """Returns True if the frame decoded without error."""
-        return len(self.error) == 0
+        return self.error.byte_length() == 0
 
 
 # ---------------------------------------------------------------------------
