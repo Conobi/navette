@@ -56,7 +56,7 @@ trait Io:
     the Step-2 routing change a no-op semantic-wise.
     """
 
-    fn submit_accept_multishot(
+    def submit_accept_multishot(
         mut self, fd: RawHandle, token: UInt64
     ) raises:
         """Register multishot accept on a listener fd. Each new
@@ -64,7 +64,7 @@ trait Io:
         Re-submit when CQE flags lack `IORING_CQE_F_MORE`."""
         ...
 
-    fn submit_recv_multishot(
+    def submit_recv_multishot(
         mut self, fd: RawHandle, buf_group: UInt16, token: UInt64
     ) raises:
         """Register multishot recv via a registered buffer ring. Each
@@ -73,7 +73,7 @@ trait Io:
         `IORING_CQE_F_BUFFER` is set. Re-arm on multishot end."""
         ...
 
-    fn submit_recv(
+    def submit_recv(
         mut self,
         fd: RawHandle,
         buf: UnsafePointer[Int8, StaticConstantOrigin],
@@ -87,7 +87,7 @@ trait Io:
         with a buf-ring."""
         ...
 
-    fn submit_send(
+    def submit_send(
         mut self,
         fd: RawHandle,
         buf: UnsafePointer[Int8, StaticConstantOrigin],
@@ -99,7 +99,7 @@ trait Io:
         be re-submitted by the caller for the remaining bytes."""
         ...
 
-    fn register_buf_ring(
+    def register_buf_ring(
         mut self,
         buf_base: UnsafePointer[UInt8, MutAnyOrigin],
         buf_size: UInt32,
@@ -112,13 +112,13 @@ trait Io:
         own buffer-provisioning verb when they exist."""
         ...
 
-    fn tick(mut self, *, wait_nr: UInt32 = 1) raises:
+    def tick(mut self, *, wait_nr: UInt32 = 1) raises:
         """Drive the loop until at least `wait_nr` CQEs arrive, then
         dispatch them via the server's `CompletionHandler`. Equivalent
         to `boucle.CompletionLoop.poll`."""
         ...
 
-    fn now_us(self) -> UInt64:
+    def now_us(self) -> UInt64:
         """Monotonic microseconds. Used for timeouts, RTT estimation,
         and `bench.profile.AcceptProfile` telemetry."""
         ...

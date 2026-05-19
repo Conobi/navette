@@ -32,7 +32,7 @@ def _make_payload(size: Int, byte_val: Int) -> List[UInt8]:
     return data^
 
 
-fn _count_data_bytes(buf: List[UInt8]) -> Int:
+def _count_data_bytes(buf: List[UInt8]) -> Int:
     """Sum payload lengths of all DATA frames in a wire-format buffer."""
     var total = 0
     var i = 0
@@ -45,7 +45,7 @@ fn _count_data_bytes(buf: List[UInt8]) -> Int:
     return total
 
 
-fn _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
+def _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
     """Count DATA frames whose END_STREAM flag is set."""
     var count = 0
     var i = 0
@@ -59,7 +59,7 @@ fn _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
     return count
 
 
-fn _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[UInt8]:
+def _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[UInt8]:
     """Hand-build a wire-format WINDOW_UPDATE frame."""
     var b = List[UInt8]()
     # Length = 4

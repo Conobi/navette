@@ -53,7 +53,7 @@ comptime _IPV6_V6ONLY: Int32 = 26
 comptime _SOCKADDR_IN6_SIZE: Int32 = 28
 
 
-fn _setsockopt_int(fd: RawHandle, level: Int32, optname: Int32, value: Int32) raises:
+def _setsockopt_int(fd: RawHandle, level: Int32, optname: Int32, value: Int32) raises:
     """Set an Int32 socket option via `setsockopt(2)`."""
     var optval = _heap_alloc[Int32](1).as_any_origin()
     optval[0] = value
@@ -71,7 +71,7 @@ fn _setsockopt_int(fd: RawHandle, level: Int32, optname: Int32, value: Int32) ra
         )
 
 
-fn udp_listener(port: Int) raises -> OwnedHandle:
+def udp_listener(port: Int) raises -> OwnedHandle:
     """Create a dual-stack UDP socket bound to `[::]:port`.
 
     Socket flags: `SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC`.
@@ -119,7 +119,7 @@ fn udp_listener(port: Int) raises -> OwnedHandle:
     return handle^
 
 
-fn udp_connect(addr: SockAddr) raises -> OwnedHandle:
+def udp_connect(addr: SockAddr) raises -> OwnedHandle:
     """Open a blocking UDP socket "connected" to `addr`.
 
     `connect(2)` on a datagram socket pins the peer address so

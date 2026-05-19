@@ -974,7 +974,7 @@ struct QpackDecoder(Copyable, Movable):
     var _huff_trie: List[_HuffTrieNode]
     var _huff_fast: List[_HuffFast]
 
-    fn __init__(out self):
+    def __init__(out self):
         # The trie/fast-table builders only raise on a malformed encode table,
         # which is a static RFC 7541 Appendix B constant — never raises in
         # practice. We wrap in `try` so this `__init__` is non-raising and
@@ -989,7 +989,7 @@ struct QpackDecoder(Copyable, Movable):
             self._huff_trie = List[_HuffTrieNode]()
             self._huff_fast = List[_HuffFast]()
 
-    fn __init__(out self, *, copy_from: Self):
+    def __init__(out self, *, copy_from: Self):
         self._huff_trie = copy_from._huff_trie.copy()
         self._huff_fast = copy_from._huff_fast.copy()
 

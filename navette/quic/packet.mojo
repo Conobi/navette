@@ -127,7 +127,7 @@ struct PacketHeader(Copyable, Movable):
 # --- Fast-path DCID inspection (server demux helpers) ---
 
 
-fn is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
+def is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
     """True iff the QUIC packet's first byte indicates a long-header Initial.
 
     First byte (RFC 9000 v1):

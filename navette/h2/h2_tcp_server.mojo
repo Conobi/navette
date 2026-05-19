@@ -72,7 +72,7 @@ comptime _PHASE_H2_READY: UInt8 = 1
 comptime _PHASE_DONE: UInt8 = 2
 
 
-fn _encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
+def _encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
     return (conn_id << 8) | UInt64(op_kind)
 
 
@@ -157,14 +157,14 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
     var connections: List[UnsafePointer[H2Conn[Self.H], MutAnyOrigin]]
     var next_conn_id: UInt64
     var pending_submits: List[PendingSubmit]
-    var make_handler: fn () raises -> Self.H
+    var make_handler: def () thin raises -> Self.H
     var tls_lib: RustlsLibrary
     var server_tls_config: TlsServerConfig
 
-    fn __init__(
+    def __init__(
         out self,
         var listen_handle: OwnedHandle,
-        make_handler: fn () raises -> Self.H,
+        make_handler: def () thin raises -> Self.H,
         var tls_lib: RustlsLibrary,
         var server_tls_config: TlsServerConfig,
     ):
@@ -178,7 +178,7 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
 
     # ── Lookup ───────────────────────────────────────────────────
 
-    fn _find_index(self, conn_id: UInt64) -> Int:
+    def _find_index(self, conn_id: UInt64) -> Int:
         for i in range(len(self.connections)):
             if self.connections[i][].conn_id == conn_id:
                 return i
@@ -186,7 +186,7 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
 
     # ── CompletionHandler ────────────────────────────────────────
 
-    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
             self._dispatch(token, result, flags)
         except e:
@@ -444,7 +444,7 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
 # ── Outer driver helpers ─────────────────────────────────────────────────────
 
 
-fn drain_pending_submits[H: StreamHandler](
+def drain_pending_submits[H: StreamHandler](
     mut io: CompletionLoop[H2TcpServer[H]]
 ) raises:
     """Consume the server's `pending_submits` queue and issue
@@ -496,7 +496,7 @@ fn drain_pending_submits[H: StreamHandler](
                 io._handler.pending_submits.append(s.copy())
 
 
-fn serve_forever[H: StreamHandler](
+def serve_forever[H: StreamHandler](
     var server: H2TcpServer[H],
     sq_entries: UInt32 = 4096,
 ) raises:

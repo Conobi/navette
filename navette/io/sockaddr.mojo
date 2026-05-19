@@ -32,27 +32,27 @@ struct SockAddr(Copyable, Movable):
     var bytes: List[UInt8]
     var family_: Int32
 
-    fn __init__(out self, var bytes: List[UInt8], family: Int32):
+    def __init__(out self, var bytes: List[UInt8], family: Int32):
         self.bytes = bytes^
         self.family_ = family
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.bytes = take.bytes^
         self.family_ = take.family_
 
-    fn is_ipv4(self) -> Bool:
+    def is_ipv4(self) -> Bool:
         return self.family_ == _AF_INET
 
-    fn is_ipv6(self) -> Bool:
+    def is_ipv6(self) -> Bool:
         return self.family_ == _AF_INET6
 
-    fn family(self) -> Int32:
+    def family(self) -> Int32:
         return self.family_
 
-    fn byte_len(self) -> Int32:
+    def byte_len(self) -> Int32:
         return Int32(len(self.bytes))
 
-    fn pack(self, dst: UnsafePointer[UInt8, MutAnyOrigin]) -> Int32:
+    def pack(self, dst: UnsafePointer[UInt8, MutAnyOrigin]) -> Int32:
         """Copy packed sockaddr bytes to `dst`. Returns the length written.
 
         `dst` must point to at least `byte_len()` writable bytes — 16 for
@@ -63,13 +63,13 @@ struct SockAddr(Copyable, Movable):
             dst[i] = self.bytes[i]
         return Int32(len(self.bytes))
 
-    fn port(self) -> Int:
+    def port(self) -> Int:
         """The TCP/UDP port number encoded in the address."""
         var hi = Int(self.bytes[2])
         var lo = Int(self.bytes[3])
         return (hi << 8) | lo
 
-    fn to_string(self) -> String:
+    def to_string(self) -> String:
         """Dotted-IPv4 ('1.2.3.4') or hex-block IPv6 ('aaaa:bbbb:...') — no port."""
         if self.is_ipv4():
             return (
@@ -90,7 +90,7 @@ struct SockAddr(Copyable, Movable):
         return s^
 
 
-fn sockaddr_ipv4(o1: Int, o2: Int, o3: Int, o4: Int, port: Int) -> SockAddr:
+def sockaddr_ipv4(o1: Int, o2: Int, o3: Int, o4: Int, port: Int) -> SockAddr:
     """Build an AF_INET SockAddr from four octets + a port."""
     var b = List[UInt8](capacity=16)
     for _ in range(16):
@@ -105,7 +105,7 @@ fn sockaddr_ipv4(o1: Int, o2: Int, o3: Int, o4: Int, port: Int) -> SockAddr:
     return SockAddr(b^, _AF_INET)
 
 
-fn sockaddr_ipv6(
+def sockaddr_ipv6(
     addr16: List[UInt8], port: Int, scope_id: Int = 0
 ) raises -> SockAddr:
     """Build an AF_INET6 SockAddr from 16 raw address bytes + a port.
@@ -132,7 +132,7 @@ fn sockaddr_ipv6(
     return SockAddr(b^, _AF_INET6)
 
 
-fn parse_dotted_ipv4(s: String, port: Int) -> Optional[SockAddr]:
+def parse_dotted_ipv4(s: String, port: Int) -> Optional[SockAddr]:
     """Parse a strict dotted-quad IPv4 literal into a SockAddr.
 
     Accepts exactly four octets, exactly three dots, digits only, each

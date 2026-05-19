@@ -114,7 +114,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._streams = take._streams^
         self.profile_ptr = take.profile_ptr
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)

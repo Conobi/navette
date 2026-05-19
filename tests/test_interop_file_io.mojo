@@ -122,7 +122,7 @@ def test_basename() raises:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
-fn main() raises:
+def main() raises:
     test_write_and_read_file()
     test_read_large_file()
     test_mkdir_p()

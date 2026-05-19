@@ -18,7 +18,7 @@ struct HandshakeKeys:
     var client_1rtt: Int32
     var server_1rtt: Int32
 
-    fn __init__(out self):
+    def __init__(out self):
         self.client_hs   = Int32(-1)
         self.server_hs   = Int32(-1)
         self.client_1rtt = Int32(-1)

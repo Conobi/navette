@@ -53,7 +53,7 @@ from std.ffi import external_call
 from std.collections.optional import Optional
 
 
-fn _getenv_opt(name: String) -> Optional[String]:
+def _getenv_opt(name: String) -> Optional[String]:
     """Read environment variable; return None if unset."""
     var nbuf = _heap_alloc[UInt8](len(name) + 1)
     var name_bytes = name.as_bytes()
@@ -73,7 +73,7 @@ fn _getenv_opt(name: String) -> Optional[String]:
     return Optional(s^)
 
 
-fn _read_file(path: String) raises -> List[UInt8]:
+def _read_file(path: String) raises -> List[UInt8]:
     """Read entire file via open/fstat64/pread64/close (Linux x86_64)."""
     var pbuf = _heap_alloc[UInt8](len(path) + 1)
     var path_bytes = path.as_bytes()
@@ -121,10 +121,10 @@ fn _read_file(path: String) raises -> List[UInt8]:
 struct HelloHandler(StreamHandler):
     """Responds `200 Hello, H3!` to every request."""
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     def on_request(
@@ -163,7 +163,7 @@ struct HelloHandler(StreamHandler):
         pass
 
 
-fn make_hello_handler() raises -> HelloHandler:
+def make_hello_handler() raises -> HelloHandler:
     """Factory called once per QUIC connection by `H3UdpServer`."""
     return HelloHandler()
 
@@ -171,7 +171,7 @@ fn make_hello_handler() raises -> HelloHandler:
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 
-fn main() raises:
+def main() raises:
     var port_env = _getenv_opt(String("HELLO_H3_PORT"))
     var port: Int = 4433
     if port_env:

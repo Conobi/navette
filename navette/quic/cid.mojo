@@ -390,7 +390,7 @@ def _hmac_sha256_truncate16(
 # ── 8-byte DCID → UInt64 packing (server demux helper) ────────────────────────
 
 
-fn dcid_to_u64(bytes: Span[UInt8, _]) -> UInt64:
+def dcid_to_u64(bytes: Span[UInt8, _]) -> UInt64:
     """Pack 8 bytes (big-endian) into a UInt64 for use as a Dict[UInt64, Int]
     key. Server demux fast path — replaces String/hex-keyed lookup.
 

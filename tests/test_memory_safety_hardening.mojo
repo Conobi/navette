@@ -71,10 +71,10 @@ def test_ptrbox_null() raises:
 
 
 struct StubHandler(StreamHandler):
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     def on_request(
@@ -100,11 +100,11 @@ struct StubHandler(StreamHandler):
         pass
 
 
-fn make_stub_handler() raises -> StubHandler:
+def make_stub_handler() raises -> StubHandler:
     return StubHandler()
 
 
-fn _push_fake_slot(
+def _push_fake_slot(
     mut server: H3UdpServer[StubHandler],
     dcids: List[UInt64],
     generation: UInt64,
@@ -124,7 +124,7 @@ fn _push_fake_slot(
     server.conn_slots.append(slot^)
 
 
-fn _drain_fake_slots(mut server: H3UdpServer[StubHandler]):
+def _drain_fake_slots(mut server: H3UdpServer[StubHandler]):
     """Pop every fake slot before the server is dropped, so __del__
     doesn't try to destroy_pointee+free their null h3 pointers."""
     while len(server.conn_slots) > 0:

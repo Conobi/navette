@@ -159,7 +159,7 @@ struct ProxyShared(Movable):
         self.completed_responses = take.completed_responses^
         self.handle_to_stream = take.handle_to_stream^
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Free any remaining heap-allocated Requests / Responses if the
         proxy is torn down mid-flight (e.g. client RST during a backend
         round-trip)."""
@@ -187,7 +187,7 @@ struct ProxyShared(Movable):
 # ---------------------------------------------------------------------------
 
 
-fn proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
+def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
     """Per-stream coroutine body for the H2 reverse proxy.
 
     Lifecycle:
@@ -354,7 +354,7 @@ struct H2ProxyState(Movable):
         self.backend_handles = take.backend_handles^
         self.sub_phase = take.sub_phase
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         # Free the heap-allocated ProxyShared and any orphaned RequestHandles.
         var hkeys = List[Int]()
         for key in self.backend_handles.keys():

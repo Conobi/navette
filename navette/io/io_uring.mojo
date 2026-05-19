@@ -49,22 +49,22 @@ struct IoUring[H: CompletionHandler](Io):
 
     var loop: CompletionLoop[Self.H]
 
-    fn __init__(out self, var handler: Self.H, sq_entries: UInt32 = 64) raises:
+    def __init__(out self, var handler: Self.H, sq_entries: UInt32 = 64) raises:
         self.loop = CompletionLoop[Self.H](handler^, sq_entries=sq_entries)
 
     # ── Io trait verbs ────────────────────────────────────────────
 
-    fn submit_accept_multishot(
+    def submit_accept_multishot(
         mut self, fd: RawHandle, token: UInt64
     ) raises:
         self.loop.submit_accept_multishot(fd, token)
 
-    fn submit_recv_multishot(
+    def submit_recv_multishot(
         mut self, fd: RawHandle, buf_group: UInt16, token: UInt64
     ) raises:
         self.loop.submit_recv_multishot(fd, buf_group, token)
 
-    fn submit_recv(
+    def submit_recv(
         mut self,
         fd: RawHandle,
         buf: UnsafePointer[Int8, StaticConstantOrigin],
@@ -73,7 +73,7 @@ struct IoUring[H: CompletionHandler](Io):
     ) raises:
         self.loop.submit_recv(fd, buf, len, token)
 
-    fn submit_send(
+    def submit_send(
         mut self,
         fd: RawHandle,
         buf: UnsafePointer[Int8, StaticConstantOrigin],
@@ -82,7 +82,7 @@ struct IoUring[H: CompletionHandler](Io):
     ) raises:
         self.loop.submit_send(fd, buf, len, token)
 
-    fn register_buf_ring(
+    def register_buf_ring(
         mut self,
         buf_base: UnsafePointer[UInt8, MutAnyOrigin],
         buf_size: UInt32,
@@ -93,10 +93,10 @@ struct IoUring[H: CompletionHandler](Io):
             buf_base, buf_size, count, group_id
         )
 
-    fn tick(mut self, *, wait_nr: UInt32 = 1) raises:
+    def tick(mut self, *, wait_nr: UInt32 = 1) raises:
         self.loop.poll(wait_nr=wait_nr)
 
-    fn now_us(self) -> UInt64:
+    def now_us(self) -> UInt64:
         # Defer to boucle's monotonic clock when we have one wired.
         # Today the bench server reads it directly via `monotonic_us()`;
         # IoUring keeps the trait satisfied with a stub returning 0

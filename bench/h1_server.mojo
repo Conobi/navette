@@ -202,7 +202,7 @@ struct H1ServerHandler(CompletionHandler):
 
     # --- on_complete dispatch ---
 
-    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
             self._dispatch(token, result, flags)
         except e:

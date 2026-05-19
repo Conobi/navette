@@ -102,7 +102,7 @@ def _pump_sync_client(
 # ── Sync body functions ──────────────────────────────────────────────────────
 
 
-fn _simple_get_body(
+def _simple_get_body(
     ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises:
     """Respond immediately with 200 OK + 'hello' body."""
@@ -115,7 +115,7 @@ fn _simple_get_body(
     ctx_ptr[].resp_writer.end()
 
 
-fn _path_echo_body(
+def _path_echo_body(
     ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises:
     """Respond with 200 OK and an x-path header echoing the request target.
@@ -127,7 +127,7 @@ fn _path_echo_body(
     ctx_ptr[].resp_writer.end()
 
 
-fn _error_body(
+def _error_body(
     ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises:
     """Always raise — exercises the RST_STREAM-on-handler-error path."""

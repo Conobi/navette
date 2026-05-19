@@ -49,7 +49,7 @@ comptime _IPV6_V6ONLY: Int32 = 26
 comptime _SOCKADDR_IN6_SIZE: Int32 = 28
 
 
-fn _setsockopt_int(fd: RawHandle, level: Int32, optname: Int32, value: Int32) raises:
+def _setsockopt_int(fd: RawHandle, level: Int32, optname: Int32, value: Int32) raises:
     var optval = _heap_alloc[Int32](1).as_any_origin()
     optval[0] = value
     var rc = external_call["setsockopt", Int32](
@@ -66,7 +66,7 @@ fn _setsockopt_int(fd: RawHandle, level: Int32, optname: Int32, value: Int32) ra
         )
 
 
-fn tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
+def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     """Create a dual-stack TCP listening socket bound to `[::]:port`.
 
     Socket flags: `SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC`.
@@ -116,7 +116,7 @@ fn tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     return handle^
 
 
-fn tcp_connect(addr: SockAddr) raises -> OwnedHandle:
+def tcp_connect(addr: SockAddr) raises -> OwnedHandle:
     """Open a blocking TCP socket and connect it to `addr`.
 
     Picks `AF_INET` vs `AF_INET6` from the `SockAddr` tag. Socket flags

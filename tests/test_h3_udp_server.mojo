@@ -53,10 +53,10 @@ from interop.file_io import read_file
 # Stub handler — the smoke test never reaches a request, so all five
 # StreamHandler methods are `pass`.
 struct StubHandler(StreamHandler):
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     def on_request(
@@ -82,11 +82,11 @@ struct StubHandler(StreamHandler):
         pass
 
 
-fn make_stub_handler() raises -> StubHandler:
+def make_stub_handler() raises -> StubHandler:
     return StubHandler()
 
 
-fn _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
+def _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
     return (slot_idx << 8) | UInt64(op_kind)
 
 

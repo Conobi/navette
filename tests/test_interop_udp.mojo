@@ -102,7 +102,7 @@ from std.memory.unsafe_pointer import alloc
 from std.memory import UnsafePointer
 
 
-fn main() raises:
+def main() raises:
     test_bind_close()
     test_poll_timeout()
     test_monotonic_us()

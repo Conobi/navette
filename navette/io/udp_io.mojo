@@ -46,7 +46,7 @@ trait UdpIo:
     backend can be replaced without rewriting consumers.
     """
 
-    fn submit_recvmsg_multishot(
+    def submit_recvmsg_multishot(
         mut self,
         fd: RawHandle,
         msghdr_ptr: UnsafePointer[c_void, StaticConstantOrigin],
@@ -60,7 +60,7 @@ trait UdpIo:
         lack `IORING_CQE_F_MORE`."""
         ...
 
-    fn submit_sendmsg(
+    def submit_sendmsg(
         mut self,
         fd: RawHandle,
         msghdr_ptr: UnsafePointer[c_void, StaticConstantOrigin],
@@ -73,7 +73,7 @@ trait UdpIo:
         caller for the remaining bytes."""
         ...
 
-    fn submit_timeout(
+    def submit_timeout(
         mut self,
         ts_ptr: UnsafePointer[c_void, StaticConstantOrigin],
         token: UInt64,
@@ -85,7 +85,7 @@ trait UdpIo:
         semantics."""
         ...
 
-    fn provide_buffers(
+    def provide_buffers(
         mut self,
         buf_base: UnsafePointer[UInt8, MutAnyOrigin],
         buf_size: Int,
@@ -101,7 +101,7 @@ trait UdpIo:
         datagram; consumer reprovides via `reprovide_buffer`)."""
         ...
 
-    fn reprovide_buffer(
+    def reprovide_buffer(
         mut self,
         buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
         buf_size: Int,
@@ -114,7 +114,7 @@ trait UdpIo:
         and a specific `buf_id`."""
         ...
 
-    fn tick(mut self, *, wait_nr: UInt32 = 1) raises:
+    def tick(mut self, *, wait_nr: UInt32 = 1) raises:
         """Drive the loop until at least `wait_nr` CQEs arrive, then
         dispatch them via `on_complete` and call `on_flush` once.
         Equivalent to `BatchCompletionLoop.poll`."""

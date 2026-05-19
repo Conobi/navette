@@ -7,7 +7,7 @@
 from navette.quic.profile import monotonic_us
 
 
-fn main() raises:
+def main() raises:
     var iters = UInt64(1_000_000)
 
     # Warm the I-cache, page in the syscall page, etc.

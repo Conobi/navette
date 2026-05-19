@@ -41,7 +41,7 @@ from navette.http.status import StatusCode
 from navette.io.tcp_socket import tcp_listener
 
 
-fn _getenv_int(name: String, default: Int) -> Int:
+def _getenv_int(name: String, default: Int) -> Int:
     """Read an integer environment variable; fall back to default if unset/invalid."""
     var nbuf = _heap_alloc[UInt8](len(name) + 1)
     var name_bytes = name.as_bytes()
@@ -65,10 +65,10 @@ fn _getenv_int(name: String, default: Int) -> Int:
 
 
 struct HelloHandler(StreamHandler):
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     def on_request(
@@ -107,11 +107,11 @@ struct HelloHandler(StreamHandler):
         pass
 
 
-fn make_hello_handler() raises -> HelloHandler:
+def make_hello_handler() raises -> HelloHandler:
     return HelloHandler()
 
 
-fn main() raises:
+def main() raises:
     var port = _getenv_int(String("HELLO_H1_PORT"), 8080)
 
     print("hello_h1_server: binding [::]:" + String(port))

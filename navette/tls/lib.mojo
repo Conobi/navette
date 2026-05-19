@@ -62,7 +62,7 @@ from navette.tls._rlsm_bindings import (
 )
 
 
-fn librustls_supports_insecure() raises -> Bool:
+def librustls_supports_insecure() raises -> Bool:
     """Probe whether the loaded librustls_mojo.so exports the `*_new_insecure`
     family, without aborting if the symbol is absent.
 
@@ -82,7 +82,7 @@ fn librustls_supports_insecure() raises -> Bool:
     return probe.check_symbol("rlsm_quic_client_config_new_insecure")
 
 
-fn _open_librustls() raises -> OwnedDLHandle:
+def _open_librustls() raises -> OwnedDLHandle:
     """Locate and dlopen librustls_mojo.so across deployment modes.
 
     Search order:

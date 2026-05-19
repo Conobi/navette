@@ -20,7 +20,7 @@ comptime EGRESS_POOL_V2: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
-fn monotonic_us() -> UInt64:
+def monotonic_us() -> UInt64:
     """clock_gettime(CLOCK_MONOTONIC) → microseconds. Sans-I/O.
 
     Uses a stack-allocated InlineArray[Int64, 2] for the timespec to avoid
@@ -574,7 +574,7 @@ struct AcceptProfile(Copyable, Movable):
             self.alloc_tls_handle_us_buckets[b] = self.alloc_tls_handle_us_buckets[b] + UInt64(1)
 
     # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
-    fn tick_profile_gauges(mut self, now_us: UInt64):
+    def tick_profile_gauges(mut self, now_us: UInt64):
         """100ms-cadence sampler. No-ops if last sample < 100_000us ago.
         Cadence gate stored as field (not caller-owned) per spec §3.2 / AC2.
         Caller writes to active_drive_count via inc/dec at _drive_handshake;
@@ -627,7 +627,7 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.hs_wait_us_per_handshake_buckets[b] = self.hs_wait_us_per_handshake_buckets[b] + UInt64(1)
 
-    fn record_iouring_park_us(mut self, us: UInt64):
+    def record_iouring_park_us(mut self, us: UInt64):
         """Q7 Group F — H_F PARK-BOUND instrumentation. Total + 24-bucket
         pow2 histogram; bracket every io_uring_enter call site (or equivalent
         submit-and-wait entry).
@@ -643,7 +643,7 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.iouring_park_us_buckets[b] = self.iouring_park_us_buckets[b] + UInt64(1)
 
-    fn record_cqes_per_wake(mut self, n: UInt64):
+    def record_cqes_per_wake(mut self, n: UInt64):
         """Q-IO-1 — record CQE count for one `loop.poll` cycle.
 
         Spec: 2026-05-05-shortconn-io-path-investigation §4.1. Counts CQEs
@@ -666,7 +666,7 @@ struct AcceptProfile(Copyable, Movable):
         self.cqes_per_wake_count = self.cqes_per_wake_count + UInt64(1)
         self.cqes_total = self.cqes_total + n
 
-    fn record_flush_impl_us(mut self, us: UInt64):
+    def record_flush_impl_us(mut self, us: UInt64):
         """Q-IO-1 — record per-wake `_flush_impl` wall-clock duration.
 
         Spec: 2026-05-05-shortconn-io-path-investigation §4.1. 24-bucket
@@ -685,7 +685,7 @@ struct AcceptProfile(Copyable, Movable):
     # All 4 dispatch via `_per_pkt_bucket` (pow2 µs, [0, 2^23) us). Each
     # records BOTH a bucket and a running `_us_total` for AC4 sum-sanity.
 
-    fn record_flush_feed_datagram_us(mut self, us: UInt64):
+    def record_flush_feed_datagram_us(mut self, us: UInt64):
         """Wall-clock of `feed_datagram_from_buffer` call (QUIC ingress).
 
         Brackets the try/except wrapping `feed_datagram_from_buffer` in
@@ -705,7 +705,7 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.flush_feed_datagram_us_buckets[b] = self.flush_feed_datagram_us_buckets[b] + UInt64(1)
 
-    fn record_drain_submits_us(mut self, us: UInt64):
+    def record_drain_submits_us(mut self, us: UInt64):
         """Q-IO-1 — record per-iter `_drain_pending_submits` wall-clock.
 
         Spec: 2026-05-05-shortconn-io-path-investigation §4.1. Total-only.
@@ -1407,7 +1407,7 @@ struct AcceptProfile(Copyable, Movable):
         return s^
 
 
-fn _pkts_per_flush_bucket(pkts: Int) -> Int:
+def _pkts_per_flush_bucket(pkts: Int) -> Int:
     """Map fan-out count to bucket index 0..7. Buckets [1,2-3,4-7,...,128+]."""
     if pkts <= 1: return 0
     if pkts <= 3: return 1
@@ -1419,7 +1419,7 @@ fn _pkts_per_flush_bucket(pkts: Int) -> Int:
     return 7
 
 
-fn _per_pkt_bucket(us: UInt64) -> Int:
+def _per_pkt_bucket(us: UInt64) -> Int:
     """Map us to bucket 0..23 or 24 (overflow). bucket[0]={0}; bucket[i]=[2^(i-1), 2^i) for 1<=i<=23; overflow=24 for us>=2^23."""
     if us == UInt64(0):
         return 0
@@ -1433,7 +1433,7 @@ fn _per_pkt_bucket(us: UInt64) -> Int:
     return i  # floor(log2(us)) + 1 for us > 0
 
 
-fn _exact_percentile(values: List[UInt64], p: Float64) -> UInt64:
+def _exact_percentile(values: List[UInt64], p: Float64) -> UInt64:
     """Nearest-rank percentile of values. Sorts a copy. Returns 0 for empty."""
     var n = len(values)
     if n == 0:
@@ -1462,7 +1462,7 @@ fn _exact_percentile(values: List[UInt64], p: Float64) -> UInt64:
     return sorted_v[idx]
 
 
-fn _bucket_percentile(buckets: List[UInt64], total: UInt64, p: Float64) -> UInt64:
+def _bucket_percentile(buckets: List[UInt64], total: UInt64, p: Float64) -> UInt64:
     """Linear-interp percentile inside the containing 24-bucket histogram.
 
     `total` = sum of closed-bucket counts (overflow excluded). Returns 0 if total==0.
@@ -1500,7 +1500,7 @@ fn _bucket_percentile(buckets: List[UInt64], total: UInt64, p: Float64) -> UInt6
     return UInt64(1) << UInt64(23)
 
 
-fn _fmt_count(n: UInt64) -> String:
+def _fmt_count(n: UInt64) -> String:
     """Decimal with comma thousands separators. Uses byte-scan because Mojo 0.26.2 does not support String[i]."""
     var raw = String(n)
     var raw_b = raw.as_bytes()
@@ -1514,7 +1514,7 @@ fn _fmt_count(n: UInt64) -> String:
     return out^
 
 
-fn _fmt_pct(part: UInt64, whole: UInt64) -> String:
+def _fmt_pct(part: UInt64, whole: UInt64) -> String:
     if whole == UInt64(0):
         return String("(0.0%)")
     var pct = (Float64(part) * 100.0) / Float64(whole)
@@ -1524,7 +1524,7 @@ fn _fmt_pct(part: UInt64, whole: UInt64) -> String:
     return String("(") + String(whole_part) + "." + String(frac_part) + "%)"
 
 
-fn _fmt_duration_us(us: UInt64) -> String:
+def _fmt_duration_us(us: UInt64) -> String:
     """Format us as 'N.NNs' (>=1s) or 'N.NNNms' (<1s)."""
     if us >= UInt64(1_000_000):
         var secs_x100 = Int((Float64(us) / 10000.0) + 0.5)
@@ -1543,7 +1543,7 @@ fn _fmt_duration_us(us: UInt64) -> String:
     return String(ms_whole) + "." + frac_str + "ms"
 
 
-fn _fmt_leg(label: String, total: UInt64, count: UInt64) -> String:
+def _fmt_leg(label: String, total: UInt64, count: UInt64) -> String:
     if count == UInt64(0):
         return label + ":  avg=  0   total=        0us"
     var avg = total / count
@@ -1554,7 +1554,7 @@ fn _fmt_leg(label: String, total: UInt64, count: UInt64) -> String:
     return label + ":  avg=" + avg_s + "   total=" + total_s + "us"
 
 
-fn _json_leg(name: String, total: UInt64, count: UInt64) -> String:
+def _json_leg(name: String, total: UInt64, count: UInt64) -> String:
     var avg: UInt64 = UInt64(0)
     if count > UInt64(0):
         avg = total / count

@@ -90,12 +90,12 @@ comptime OP_TIMEOUT: UInt8 = 2
 comptime OP_PROVIDE_BUF: UInt8 = 3
 
 
-fn _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
+def _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
     return (slot_idx << 8) | UInt64(op_kind)
 
 
 @always_inline
-fn _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
+def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
     return (
         UInt32(ptr[0])
         | (UInt32(ptr[1]) << 8)
@@ -372,7 +372,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     var transport_params: TransportParams
 
     # Per-conn handler factory.
-    var make_handler: fn () raises -> Self.H
+    var make_handler: def () thin raises -> Self.H
 
     # Per-conn book-keeping. `conn_slots[i]` collapses what used to be
     # three parallel lists (h3 pointer / addr / dcids) plus a generation
@@ -418,13 +418,13 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
     # ── Construction ─────────────────────────────────────────────
 
-    fn __init__(
+    def __init__(
         out self,
         var udp_handle: OwnedHandle,
         lib_addr: UInt64,
         server_config: Int32,
         var transport_params: TransportParams,
-        make_handler: fn () raises -> Self.H,
+        make_handler: def () thin raises -> Self.H,
     ):
         self.udp_handle = udp_handle^
         self.lib_addr = lib_addr
@@ -474,7 +474,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
         self.profile = AcceptProfile()
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Free heap allocations owned by the handler.
 
         Walks any live `conn_slots` + `tx_slots`, destroying their
@@ -498,7 +498,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
     # ── Connection lookup ────────────────────────────────────────
 
-    fn _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
+    def _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
         """Resolve `dcid → conn_slots index`, returning -1 if absent or
         if the demux entry is stale (slot's generation has moved on)."""
         if dcid_u64 not in self.conn_dcid_map:
@@ -515,7 +515,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
     # ── Buf-ring lifecycle ledger ────────────────────────────────
 
-    fn _acquire_buf(mut self, buf_id: UInt16):
+    def _acquire_buf(mut self, buf_id: UInt16):
         """Mark `buf_id` as userspace-owned after the kernel hands it
         back via a recvmsg CQE. Aborts under ASSERT=all if the kernel
         somehow returned a buf-id that we still consider in-flight —
@@ -527,7 +527,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         )
         self.inflight_bufs[Int(buf_id)] = True
 
-    fn _release_buf(mut self, buf_id: UInt16):
+    def _release_buf(mut self, buf_id: UInt16):
         """Return `buf_id` to the kernel via `consumed_bufs`. Aborts
         under ASSERT=all if buf_id is not currently userspace-owned —
         catches double-returns (would corrupt the buf-ring) and stray
@@ -541,7 +541,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
     # ── BatchCompletionHandler conformance ───────────────────────
 
-    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         """CQE dispatch. Decodes op kind from token's low byte and
         routes to the matching handler."""
         try:
@@ -636,7 +636,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
     # ── Batch flush ──────────────────────────────────────────────
 
-    fn on_flush(mut self):
+    def on_flush(mut self):
         """Batch-end callback. Drains `pending_rx`, runs QUIC ingress
         + H3 dispatch + egress for each conn."""
         try:
@@ -879,7 +879,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 # ── Outer driver helpers ─────────────────────────────────────────────────────
 
 
-fn serve_forever[H: StreamHandler](
+def serve_forever[H: StreamHandler](
     var server: H3UdpServer[H],
     sq_entries: UInt32 = 4096,
 ) raises:
@@ -957,7 +957,7 @@ fn serve_forever[H: StreamHandler](
         drain_pending_submits(io)
 
 
-fn drain_pending_submits[H: StreamHandler](
+def drain_pending_submits[H: StreamHandler](
     mut io: BatchCompletionLoop[H3UdpServer[H]]
 ) raises:
     """Consume the server's `pending_submits` queue and issue the

@@ -64,7 +64,7 @@ def _do_preface(
 # ---------------------------------------------------------------------------
 
 
-fn _echo_body(
+def _echo_body(
     ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises:
     """Immediately send 200 OK with x-handler: echo."""
@@ -74,14 +74,14 @@ fn _echo_body(
     ctx_ptr[].resp_writer.end()
 
 
-fn _raising_body(
+def _raising_body(
     ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises:
     """Always raise — exercises the RST_STREAM-on-handler-error path."""
     raise Error("handler error")
 
 
-fn _noop_body(
+def _noop_body(
     ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises:
     """Do nothing — used by tests where the handler isn't the focus."""

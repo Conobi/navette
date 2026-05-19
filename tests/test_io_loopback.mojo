@@ -29,7 +29,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from navette.io import resolve_host, tcp_connect, tcp_listener
 
 
-fn _accept_blocking(listener_fd: Int32) raises -> Int32:
+def _accept_blocking(listener_fd: Int32) raises -> Int32:
     """Strip O_NONBLOCK from the listener and block in `accept(2)`."""
     # F_SETFL=4, flags=0 — clears O_NONBLOCK set by tcp_listener's
     # SOCK_NONBLOCK so the test can synchronously wait for the SYN.
@@ -45,7 +45,7 @@ fn _accept_blocking(listener_fd: Int32) raises -> Int32:
     return cfd
 
 
-fn _send_bytes(fd: Int32, data: List[UInt8]) raises:
+def _send_bytes(fd: Int32, data: List[UInt8]) raises:
     var buf = _heap_alloc[UInt8](len(data)).as_any_origin()
     for i in range(len(data)):
         buf[i] = data[i]
@@ -55,7 +55,7 @@ fn _send_bytes(fd: Int32, data: List[UInt8]) raises:
         raise "send() returned " + String(rc)
 
 
-fn _recv_bytes(fd: Int32, max_n: Int) raises -> List[UInt8]:
+def _recv_bytes(fd: Int32, max_n: Int) raises -> List[UInt8]:
     var buf = _heap_alloc[UInt8](max_n).as_any_origin()
     var rc = external_call["recv", Int](fd, buf, max_n, Int32(0))
     var out = List[UInt8]()
@@ -68,7 +68,7 @@ fn _recv_bytes(fd: Int32, max_n: Int) raises -> List[UInt8]:
     return out^
 
 
-fn _bytes_of(s: String) -> List[UInt8]:
+def _bytes_of(s: String) -> List[UInt8]:
     var sb = s.as_bytes()
     var out = List[UInt8](capacity=len(sb))
     for i in range(len(sb)):
@@ -76,14 +76,14 @@ fn _bytes_of(s: String) -> List[UInt8]:
     return out^
 
 
-fn _string_of(bytes: List[UInt8]) -> String:
+def _string_of(bytes: List[UInt8]) -> String:
     var s = String()
     for i in range(len(bytes)):
         s += chr(Int(bytes[i]))
     return s^
 
 
-fn test_loopback_roundtrip() raises:
+def test_loopback_roundtrip() raises:
     """Server binds dual-stack, client resolves+connects, both sides exchange."""
     var srv = tcp_listener(0)
 
@@ -125,5 +125,5 @@ fn test_loopback_roundtrip() raises:
     print("PASS: test_loopback_roundtrip")
 
 
-fn main() raises:
+def main() raises:
     test_loopback_roundtrip()

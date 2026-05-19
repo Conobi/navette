@@ -16,7 +16,7 @@ from navette.compress._lcm_bindings import (
 )
 
 
-fn _open_libcompress() raises -> OwnedDLHandle:
+def _open_libcompress() raises -> OwnedDLHandle:
     """Locate and dlopen libcompress_mojo.so across deployment modes.
 
     Search order mirrors `_open_librustls`:

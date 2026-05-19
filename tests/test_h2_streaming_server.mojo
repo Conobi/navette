@@ -101,7 +101,7 @@ def _pump(
 # ctx is accessed via yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
 
 
-fn _echo_body_streaming(mut yld: CoroYielder) raises:
+def _echo_body_streaming(mut yld: CoroYielder) raises:
     """POST handler: reads all body chunks, responds with 200 + x-body-length header."""
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
 
@@ -126,7 +126,7 @@ fn _echo_body_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-fn _trailer_check_streaming(mut yld: CoroYielder) raises:
+def _trailer_check_streaming(mut yld: CoroYielder) raises:
     """POST with trailers: reads body + trailer, sets found_ptr[]=1 if trailer seen."""
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
     var found_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_any_origin()
@@ -151,7 +151,7 @@ fn _trailer_check_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-fn _blocking_body_streaming(mut yld: CoroYielder) raises:
+def _blocking_body_streaming(mut yld: CoroYielder) raises:
     """POST handler that suspends in next_chunk waiting for body.
     On cancellation (H2StreamCancelled), writes signal=42 to extra_data."""
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
@@ -169,7 +169,7 @@ fn _blocking_body_streaming(mut yld: CoroYielder) raises:
         signal_ptr[0] = Int(42)
 
 
-fn _multi_chunk_concat_body(mut yld: CoroYielder) raises:
+def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     """POST handler: yield once to let multiple DATA frames queue into
     body_frame_ring before draining, then read chunks in arrival order
     and concatenate into extra_data (max 64 bytes).
@@ -206,7 +206,7 @@ fn _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-fn _cancel_signal_handler(mut yld: CoroYielder) raises:
+def _cancel_signal_handler(mut yld: CoroYielder) raises:
     """Streaming handler for cancel test. Writes 99 to extra_data on cancellation."""
     var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
     var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_any_origin()

@@ -35,7 +35,7 @@ comptime _AF_UNSPEC: Int32 = 0
 comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
-fn _monotonic_secs() -> Int:
+def _monotonic_secs() -> Int:
     """clock_gettime(CLOCK_MONOTONIC) → seconds (drops nsec)."""
     var ts = _heap_alloc[UInt8](16).as_any_origin()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts)
@@ -46,7 +46,7 @@ fn _monotonic_secs() -> Int:
 
 
 @always_inline
-fn _read_u64_le(p: UnsafePointer[UInt8, MutAnyOrigin], offset: Int) -> UInt64:
+def _read_u64_le(p: UnsafePointer[UInt8, MutAnyOrigin], offset: Int) -> UInt64:
     """Read 8 bytes little-endian from `p[offset..offset+8]`."""
     var v = UInt64(0)
     for i in range(8):
@@ -54,7 +54,7 @@ fn _read_u64_le(p: UnsafePointer[UInt8, MutAnyOrigin], offset: Int) -> UInt64:
     return v
 
 
-fn resolve_host(host: String, port: Int) raises -> List[SockAddr]:
+def resolve_host(host: String, port: Int) raises -> List[SockAddr]:
     """Resolve `host` to a list of SockAddr via getaddrinfo(3) AF_UNSPEC.
 
     Returns at least one address on success. Addresses appear in glibc's
@@ -159,11 +159,11 @@ struct _CacheEntry(Copyable, Movable):
     var addrs: List[SockAddr]
     var expires_secs: Int
 
-    fn __init__(out self, var addrs: List[SockAddr], expires_secs: Int):
+    def __init__(out self, var addrs: List[SockAddr], expires_secs: Int):
         self.addrs = addrs^
         self.expires_secs = expires_secs
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.addrs = take.addrs^
         self.expires_secs = take.expires_secs
 
@@ -182,15 +182,15 @@ struct Resolver(Movable):
     var ttl_secs: Int
     var cache: Dict[String, _CacheEntry]
 
-    fn __init__(out self, ttl_secs: Int = 60):
+    def __init__(out self, ttl_secs: Int = 60):
         self.ttl_secs = ttl_secs
         self.cache = Dict[String, _CacheEntry]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.ttl_secs = take.ttl_secs
         self.cache = take.cache^
 
-    fn resolve(mut self, host: String, port: Int) raises -> List[SockAddr]:
+    def resolve(mut self, host: String, port: Int) raises -> List[SockAddr]:
         """Resolve `host:port`, consulting + populating the TTL cache."""
         if self.ttl_secs <= 0:
             return resolve_host(host, port)
@@ -210,7 +210,7 @@ struct Resolver(Movable):
         self.cache[key] = _CacheEntry(cached^, now + self.ttl_secs)
         return fresh^
 
-    fn invalidate(mut self, host: String, port: Int):
+    def invalidate(mut self, host: String, port: Int):
         """Drop any cached entry for `host:port`."""
         var key = host + ":" + String(port)
         if key in self.cache:
@@ -219,6 +219,6 @@ struct Resolver(Movable):
             except:
                 pass
 
-    fn clear(mut self):
+    def clear(mut self):
         """Drop the entire cache."""
         self.cache.clear()

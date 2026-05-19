@@ -91,7 +91,7 @@ comptime PROFILE_SIGINT: Int32 = 2
 comptime PROFILE_SIGTERM: Int32 = 15
 
 
-fn _profile_signal_handler(signo: Int32):
+def _profile_signal_handler(signo: Int32):
     # Async-signal-safe: store `1` to the fixed-address flag word. No
     # allocation, no print, no Mojo runtime.
     var p = UnsafePointer[Int32, MutAnyOrigin](
@@ -123,7 +123,7 @@ def _profile_install_signal_handlers() raises:
     )
     p[0] = Int32(0)
 
-    var fn_ptr: fn(Int32) -> None = _profile_signal_handler
+    var fn_ptr: def(Int32) thin -> None = _profile_signal_handler
     var fp_value = UnsafePointer(to=fn_ptr).bitcast[UInt64]()[0]
     var handler_ptr = UnsafePointer[NoneType, MutAnyOrigin](
         unsafe_from_address=Int(fp_value)
@@ -137,7 +137,7 @@ def _profile_install_signal_handlers() raises:
 
 
 @always_inline
-fn _profile_dump_pending() -> Bool:
+def _profile_dump_pending() -> Bool:
     var p = UnsafePointer[Int32, MutAnyOrigin](
         unsafe_from_address=PROFILE_FLAG_ADDR
     )
@@ -153,7 +153,7 @@ def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
     return UInt32(ptr[0]) | (UInt32(ptr[1]) << 8) | (UInt32(ptr[2]) << 16) | (UInt32(ptr[3]) << 24)
 
 
-fn _zpad2_int(n: Int) -> String:
+def _zpad2_int(n: Int) -> String:
     """Zero-pad an Int to 2 digits (used for UTC timestamp formatting)."""
     if n < 10:
         return String("0") + String(n)
@@ -170,7 +170,7 @@ alias _HEX_DIGITS = "0123456789abcdef"
 # for ad-hoc debug rendering and for `tests/test_quic_connection.mojo`'s
 # `test_dcid_demux_disambiguates_two_conns`. Do not delete without
 # re-grepping across the repo.
-fn _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
+def _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
     """Hex-encode bytes for use as a Dict[String, Int] key.
 
     Pinned to 8-byte DCIDs (server SCID length is pinned at 8 bytes;
@@ -567,7 +567,7 @@ struct H3UdpHandler(BatchCompletionHandler):
 
     # --- on_complete dispatch ---
 
-    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
         # count CQEs drained per `loop.poll` cycle. Snapshot+reset happens
         # in the event loop after `loop.poll` returns. Off-build path elides
@@ -586,7 +586,7 @@ struct H3UdpHandler(BatchCompletionHandler):
     # works around a Mojo 0.26.2 mojox ICE on `loop._handler.cqes_this_wake_count = 0`
     # at the bench loop site (compiler crash via libstdc++ unwind, not a
     # source-level error). Functionally equivalent.
-    fn snapshot_and_reset_cqes_per_wake(mut self) -> UInt64:
+    def snapshot_and_reset_cqes_per_wake(mut self) -> UInt64:
         var n = self.cqes_this_wake_count
         self.cqes_this_wake_count = UInt64(0)
         return n
@@ -700,7 +700,7 @@ struct H3UdpHandler(BatchCompletionHandler):
 
     # --- on_flush: batch process all pending datagrams ---
 
-    fn on_flush(mut self):
+    def on_flush(mut self):
         # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
         # bracket `_flush_impl` to histogram per-wake wall-clock duration.
         # Measures end-to-end `_flush_impl` time only (per-pkt loop + drain

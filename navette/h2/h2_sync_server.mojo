@@ -67,7 +67,7 @@ from navette.util.ptrbox import PtrBox
 # handler when more body data arrives (for now, the bench server's
 # handlers are headers-only, so this is sufficient).
 
-comptime H2BodyFn = fn (
+comptime H2BodyFn = def (
     UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises -> None
 
@@ -150,7 +150,7 @@ struct CoroStreamCtx(Movable):
 # at module scope in Mojo 0.26, so this is the cleanest workaround.
 
 
-fn _check_stream_ctx_size():
+def _check_stream_ctx_size():
     comptime assert size_of[CoroStreamCtx]() < 1024, (
         "CoroStreamCtx exceeded R8 budget (1024 B) — investigate before"
         " raising the cap"
@@ -206,17 +206,17 @@ struct CoroStreamCtxPool(Movable):
         self._free = take._free^
         self._capacity = take._capacity
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         for i in range(len(self._free)):
             self._free[i].free()
 
-    fn acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
+    def acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
         return _heap_alloc[CoroStreamCtx](1).as_any_origin()
 
-    fn release(
+    def release(
         mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
@@ -226,7 +226,7 @@ struct CoroStreamCtxPool(Movable):
         else:
             ptr.free()
 
-    fn idle_count(self) -> Int:
+    def idle_count(self) -> Int:
         return len(self._free)
 
 
@@ -301,7 +301,7 @@ struct H2CoroServer(Movable):
         self._streams = take._streams^
         self._ctx_pool = take._ctx_pool^
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -341,7 +341,7 @@ struct H2CoroServer(Movable):
         """Check whether stream ID is present in the streams dict."""
         return sid in self._streams
 
-    fn _release_stream(
+    def _release_stream(
         mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Destroy the CoroStreamCtx pointee and return its memory

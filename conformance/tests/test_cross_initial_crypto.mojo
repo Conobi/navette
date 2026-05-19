@@ -20,7 +20,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from python import Python, PythonObject
 
 
-fn py_bytes_to_hex(raw: PythonObject) raises -> String:
+def py_bytes_to_hex(raw: PythonObject) raises -> String:
     """Convert a Python bytes object to a lowercase hex string."""
     var binascii = Python.import_module("binascii")
     return String(binascii.hexlify(raw).decode("ascii"))

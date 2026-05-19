@@ -79,7 +79,7 @@ struct HttpClient(Movable):
         self._max_redirects = take._max_redirects
         self._retry_idempotent = take._retry_idempotent
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Free all heap-allocated session slots."""
         for kv in self._pool.items():
             ref slots = kv.value

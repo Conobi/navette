@@ -76,7 +76,7 @@ def llm_stream_h3_handler(mut yld: CoroYielder) raises:
     h3_finish(ctx_ptr, yld)
 
 
-fn llm_stream_h2_handler(mut yld: CoroYielder) raises:
+def llm_stream_h2_handler(mut yld: CoroYielder) raises:
     """LLM-stream demo handler for H2.
 
     Mirrors llm_stream_h3_handler with H2StreamingCtx substitution. Sends

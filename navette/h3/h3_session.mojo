@@ -117,7 +117,7 @@ struct H3Session(Session):
         self._next_id = take._next_id
         self.received_goaway = take.received_goaway
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Free all heap-allocated client stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():

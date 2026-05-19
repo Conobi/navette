@@ -112,7 +112,7 @@ def test_byte_writer_bytes() raises:
 
 def test_is_long_header_initial_5_cases() raises:
     # Helper: build a 1-byte payload from a single hex value.
-    fn one_byte(b: UInt8) -> List[UInt8]:
+    def one_byte(b: UInt8) -> List[UInt8]:
         var out = List[UInt8]()
         out.append(b)
         return out^

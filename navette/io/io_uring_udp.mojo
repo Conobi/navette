@@ -37,12 +37,12 @@ struct IoUringUdp[H: BatchCompletionHandler](UdpIo):
 
     var loop: BatchCompletionLoop[Self.H]
 
-    fn __init__(out self, var handler: Self.H, sq_entries: UInt32 = 4096) raises:
+    def __init__(out self, var handler: Self.H, sq_entries: UInt32 = 4096) raises:
         self.loop = BatchCompletionLoop[Self.H](handler^, sq_entries=sq_entries)
 
     # ── UdpIo trait verbs ─────────────────────────────────────────
 
-    fn submit_recvmsg_multishot(
+    def submit_recvmsg_multishot(
         mut self,
         fd: RawHandle,
         msghdr_ptr: UnsafePointer[c_void, StaticConstantOrigin],
@@ -51,7 +51,7 @@ struct IoUringUdp[H: BatchCompletionHandler](UdpIo):
     ) raises:
         self.loop.submit_recvmsg_multishot(fd, msghdr_ptr, buf_group, token)
 
-    fn submit_sendmsg(
+    def submit_sendmsg(
         mut self,
         fd: RawHandle,
         msghdr_ptr: UnsafePointer[c_void, StaticConstantOrigin],
@@ -60,14 +60,14 @@ struct IoUringUdp[H: BatchCompletionHandler](UdpIo):
     ) raises:
         self.loop.submit_sendmsg(fd, msghdr_ptr, token, flags)
 
-    fn submit_timeout(
+    def submit_timeout(
         mut self,
         ts_ptr: UnsafePointer[c_void, StaticConstantOrigin],
         token: UInt64,
     ) raises:
         self.loop.submit_timeout(ts_ptr, token)
 
-    fn provide_buffers(
+    def provide_buffers(
         mut self,
         buf_base: UnsafePointer[UInt8, MutAnyOrigin],
         buf_size: Int,
@@ -80,7 +80,7 @@ struct IoUringUdp[H: BatchCompletionHandler](UdpIo):
             buf_base, buf_size, count, group_id, base_buf_id, token,
         )
 
-    fn reprovide_buffer(
+    def reprovide_buffer(
         mut self,
         buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
         buf_size: Int,
@@ -92,5 +92,5 @@ struct IoUringUdp[H: BatchCompletionHandler](UdpIo):
             buf_ptr, buf_size, group_id, buf_id, token,
         )
 
-    fn tick(mut self, *, wait_nr: UInt32 = 1) raises:
+    def tick(mut self, *, wait_nr: UInt32 = 1) raises:
         self.loop.poll(wait_nr=wait_nr)

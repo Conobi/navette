@@ -120,7 +120,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._outbuf = take._outbuf^
         self._streams = take._streams^
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():

@@ -2828,7 +2828,7 @@ struct QuicConnection(Movable):
         """True if the handshake is complete and the connection is usable."""
         return (self.state & CONN_ESTABLISHED) != 0
 
-    fn is_expected_dcid(self, dcid: Span[UInt8, _]) -> Bool:
+    def is_expected_dcid(self, dcid: Span[UInt8, _]) -> Bool:
         """True if `dcid` matches either initial_dcid or local_cid.
 
         - `initial_dcid` is the client's random Initial DCID, used for

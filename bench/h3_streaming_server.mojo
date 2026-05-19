@@ -374,7 +374,7 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
                 return -1
         return -1
 
-    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
             self._dispatch(token, result, flags)
         except e:
@@ -441,7 +441,7 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
             )
         )
 
-    fn on_flush(mut self):
+    def on_flush(mut self):
         try:
             self._flush_impl()
         except e:

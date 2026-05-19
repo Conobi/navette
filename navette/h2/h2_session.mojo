@@ -120,7 +120,7 @@ struct H2Session(Session):
         self._stream_ctxs = take._stream_ctxs^
         self._handle_to_stream = take._handle_to_stream^
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Free all heap-allocated client stream contexts."""
         var keys = List[Int]()
         for key in self._stream_ctxs.keys():

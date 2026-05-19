@@ -45,7 +45,7 @@ from navette.http.version import Version
 # in one call — no `yield_to_caller`. Streaming-handler use cases are
 # served by `src/h3/h3_streaming_server.mojo` (Plan 2B).
 
-comptime H3BodyFn = fn (
+comptime H3BodyFn = def (
     UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) raises -> None
 
@@ -117,7 +117,7 @@ struct CoroStreamCtx(Movable):
 # top of every H3CoroServer constructor.
 
 
-fn _check_stream_ctx_size():
+def _check_stream_ctx_size():
     comptime assert size_of[CoroStreamCtx]() < 1024, (
         "H3 CoroStreamCtx exceeded R8 budget (1024 B) — investigate"
         " before raising the cap"
@@ -186,14 +186,14 @@ struct CoroStreamCtxPool(Movable):
         self._free = take._free^
         self._capacity = take._capacity
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         for i in range(len(self._free)):
             var p = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
                 unsafe_from_address=Int(self._free[i])
             )
             p.free()
 
-    fn acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
+    def acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             var addr = self._free.pop()
@@ -202,7 +202,7 @@ struct CoroStreamCtxPool(Movable):
             )
         return _heap_alloc[CoroStreamCtx](1).as_any_origin()
 
-    fn release(
+    def release(
         mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
@@ -212,7 +212,7 @@ struct CoroStreamCtxPool(Movable):
         else:
             ptr.free()
 
-    fn idle_count(self) -> Int:
+    def idle_count(self) -> Int:
         return len(self._free)
 
 
@@ -269,7 +269,7 @@ struct H3CoroServer(Movable):
         self._streams = take._streams^
         self._ctx_pool = take._ctx_pool^
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -325,7 +325,7 @@ struct H3CoroServer(Movable):
     def _has_stream(self, sid: Int) -> Bool:
         return sid in self._streams
 
-    fn _release_stream(
+    def _release_stream(
         mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Destroy the CoroStreamCtx pointee and return its memory block to the

@@ -103,7 +103,7 @@ from proxy_h2 import (
 # ---------------------------------------------------------------------------
 
 
-fn _getenv_str(name: String, default: String) -> String:
+def _getenv_str(name: String, default: String) -> String:
     """Read a string environment variable; fall back to default if unset."""
     var nbuf = _heap_alloc[UInt8](len(name) + 1)
     var name_bytes = name.as_bytes()
@@ -123,7 +123,7 @@ fn _getenv_str(name: String, default: String) -> String:
     return s^
 
 
-fn _getenv_int(name: String, default: Int) -> Int:
+def _getenv_int(name: String, default: Int) -> Int:
     """Read an integer environment variable; fall back to default if
     unset / invalid."""
     var s = _getenv_str(name, String(""))
@@ -173,13 +173,13 @@ struct ProxyVariant(Movable):
         self.h1_state = h1_state^
         self.h2_state = h2_state^
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.tag = take.tag
         self.h1_state = take.h1_state^
         self.h2_state = take.h2_state^
 
     @staticmethod
-    fn handshaking() -> Self:
+    def handshaking() -> Self:
         return Self(
             tag=_VARIANT_HANDSHAKING,
             h1_state=Optional[H1ProxyState](),
@@ -187,7 +187,7 @@ struct ProxyVariant(Movable):
         )
 
     @staticmethod
-    fn h1(var s: H1ProxyState) -> Self:
+    def h1(var s: H1ProxyState) -> Self:
         return Self(
             tag=_VARIANT_H1,
             h1_state=Optional[H1ProxyState](s^),
@@ -195,7 +195,7 @@ struct ProxyVariant(Movable):
         )
 
     @staticmethod
-    fn h2(var s: H2ProxyState) -> Self:
+    def h2(var s: H2ProxyState) -> Self:
         return Self(
             tag=_VARIANT_H2,
             h1_state=Optional[H1ProxyState](),
@@ -203,15 +203,15 @@ struct ProxyVariant(Movable):
         )
 
     @always_inline
-    fn is_handshaking(self) -> Bool:
+    def is_handshaking(self) -> Bool:
         return self.tag == _VARIANT_HANDSHAKING
 
     @always_inline
-    fn is_h1(self) -> Bool:
+    def is_h1(self) -> Bool:
         return self.tag == _VARIANT_H1
 
     @always_inline
-    fn is_h2(self) -> Bool:
+    def is_h2(self) -> Bool:
         return self.tag == _VARIANT_H2
 
 
@@ -358,7 +358,7 @@ struct ProxyHandler(CompletionHandler):
 
     # --- on_complete dispatch -------------------------------------------
 
-    fn on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
+    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
             self._dispatch(token, result)
         except e:
