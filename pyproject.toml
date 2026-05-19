@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "boucle",
     "mojox>=0.2",
-    "mojo-compiler==0.26.2.0",
+    "mojo-compiler==1.0.0b1",
 ]
 
 [dependency-groups]
@@ -25,11 +25,12 @@ dev = [
 [build-system]
 requires = [
     "mojox-build>=0.2.3",
-    "mojo-compiler==0.26.2.0",
+    "mojo-compiler==1.0.0b1",
+    "mojo-compiler-mojo-libs==1.0.0b1",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
     # the project's runtime deps, so boucle is pinned here too.
-    "boucle @ git+ssh://git@github.com/Conobi/boucle.git@fc7a2f516abaee0c6afb1b2de921e84e9c51826a",
+    "boucle @ git+ssh://git@github.com/Conobi/boucle.git@956f1003ef68d50b1f65f7ad263a5374c5c9bbd2",
 ]
 build-backend = "mojox_build"
 
@@ -113,5 +114,9 @@ native-libs = [
     "lib/libcompress_mojo.so",
 ]
 
+[tool.uv]
+# 1.0.0b1 is a pre-release; allow uv to pick it up by default for this project.
+prerelease = "allow"
+
 [tool.uv.sources]
-boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "fc7a2f516abaee0c6afb1b2de921e84e9c51826a" }
+boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "956f1003ef68d50b1f65f7ad263a5374c5c9bbd2" }
