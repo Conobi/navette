@@ -153,7 +153,7 @@ struct H2StreamingCtx(Movable):
         self.headers_sent = take.headers_sent
         self.body_frame_ring = take.body_frame_ring^
         self.cancelled = take.cancelled
-        self.coro_addr = take.coro_addr
+        self.coro_addr = take.coro_addr^
 
     def coro_ptr(self) -> UnsafePointer[CoroHandle, MutAnyOrigin]:
         """Typed pointer into the coro's heap slot (null if none)."""
