@@ -334,7 +334,7 @@ struct ProxyHandler(CompletionHandler):
         self.backend_host = backend_host
         self.pending_submits = List[PendingSubmit]()
 
-    fn __moveinit__(out self, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
         self.connections = take.connections^
         self.next_conn_id = take.next_conn_id

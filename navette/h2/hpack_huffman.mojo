@@ -29,7 +29,7 @@ struct _TrieNode(Copyable, Movable):
         self.right = take.right
         self.symbol = take.symbol
 
-    def __copyinit__(out self, read copy: Self):
+    def __init__(out self, *, read copy: Self):
         self.left = copy.left
         self.right = copy.right
         self.symbol = copy.symbol
