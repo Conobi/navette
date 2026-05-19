@@ -163,7 +163,7 @@ def _zpad2_int(n: Int) -> String:
 # ── helpers (kept from original) ───────────────────────────────────────
 
 
-alias _HEX_DIGITS = "0123456789abcdef"
+comptime _HEX_DIGITS = "0123456789abcdef"
 
 
 # unused at hot-path post-2026-04-28-quic-bench-dcid-u64-demux; retained
