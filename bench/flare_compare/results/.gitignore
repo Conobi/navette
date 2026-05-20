@@ -1,0 +1,17 @@
+# Per-run wrk2 stdout is large (settle + overdrive + 5 cal probes + 5
+# retries + validation + 5 measurement runs × 7 targets ≈ 100 files
+# of ~5–10 KB each). Keep it on disk for forensic re-reads but don't
+# carry it in git — every iteration would balloon the repo.
+*/RAW/
+
+# Server stdout/stderr lives next to RAW; same logic.
+*/*.server.stdout
+*/*.server.stderr
+
+# What we DO commit per run, so each headline is interpretable
+# without re-running:
+#   summary.md          — the canonical headline table + run conditions
+#   env.json            — host fingerprint + image digests
+#   <target>-<cfg>.json — aggregated per-target stats (peak rps,
+#                         medians + σ per percentile, run-by-run rps)
+#   integrity.md        — response-byte integrity gate result

@@ -1,0 +1,13 @@
+# Single-worker plaintext config — matches Flare's `throughput.yaml`.
+# `-t1 -c64 -d30s` is the headline per-core load shape (single
+# wrk2 thread is enough to saturate a 1-worker reactor; 64 conns
+# matches Flare's published 1w table).
+wrk_threads: 1
+wrk_connections: 64
+wrk_duration_seconds: 30
+warmup_seconds: 20
+runs: 5
+quiet_seconds: 30
+settle_rps: 20000
+sustain_p99_budget_ms: 50
+sustain_rps_pct: 90

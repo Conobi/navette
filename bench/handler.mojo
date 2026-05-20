@@ -89,6 +89,22 @@ def _parse_query_int(target: String, name: String) -> Optional[Int]:
     return None
 
 
+def handle_plaintext(mut resp: ResponseWriter) raises:
+    """GET /plaintext -> 13-byte "Hello, World!" text/plain.
+
+    Matches Flare's `docs/benchmark.md` headline endpoint (TFB plaintext,
+    TechEmpower test #6). Keeps Content-Length explicit and Content-Type
+    text/plain so wrk2's response-integrity check accepts the body unchanged.
+    """
+    var body = String("Hello, World!")
+    var hdrs = Headers()
+    hdrs.add("content-type", "text/plain")
+    hdrs.add("content-length", String(body.byte_length()))
+    resp.send_status(StatusCode(200), hdrs^)
+    _ = resp.try_send_body(BodyFrame.data(_str_to_bytes(body)))
+    resp.end()
+
+
 def handle_baseline2(target: String, mut resp: ResponseWriter) raises:
     """GET /baseline2?a=X&b=Y -> text/plain sum."""
     var a = _parse_query_int(target, "a")
@@ -711,7 +727,9 @@ def _dispatch_request(
     state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
 ) raises:
     """Route a request based on URL path prefix."""
-    if _starts_with(target, String("/baseline2")) or _starts_with(target, String("/baseline11")):
+    if _starts_with(target, String("/plaintext")):
+        handle_plaintext(resp)
+    elif _starts_with(target, String("/baseline2")) or _starts_with(target, String("/baseline11")):
         handle_baseline2(target, resp)
     elif _starts_with(target, String("/json/")):
         handle_json(target, resp, state_ptr)

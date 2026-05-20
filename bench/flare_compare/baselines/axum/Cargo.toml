@@ -1,0 +1,15 @@
+[package]
+name = "axum-plaintext"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "axum-plaintext"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1.42", features = ["rt", "net", "macros", "signal"] }
+
+[profile.release]
+opt-level = 3

@@ -34,22 +34,54 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-# Copy dependency files first for Docker layer caching
-COPY pyproject.toml uv.lock ./
+# Bench builds don't pip-install navette as a Python package -- the
+# bench binaries are produced by `mojox build` with explicit `-I` paths
+# (see the per-server build steps further down). All we need from the
+# Python side is the mojox CLI + the Mojo compiler. Skipping the
+# project's [build-system] avoids dragging boucle's git+ssh source
+# into the build env, which would require an SSH client + deploy key
+# the bench image deliberately does not carry.
+RUN cat > pyproject.toml <<'EOF'
+[project]
+name = "navette-bench-build"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mojox==0.2.0",
+    "mojo-compiler==1.0.0b1",
+    "mojo-compiler-mojo-libs==1.0.0b1",
+]
 
-# Install Python deps (includes mojox which pulls mojo-compiler 0.26.2)
-RUN uv sync --group dev
+[tool.uv]
+package = false
+EOF
+RUN uv sync
 
-# Copy boucle source (from --build-context boucle=../boucle)
+# Copy boucle source (from --build-context boucle=../boucle) and
+# json-simd-mojo (from --build-context simdjson=../json-simd-mojo).
+# `mojox build` consumes them via -I /boucle / -I /simdjson; neither
+# is installed as a Python package.
 COPY --from=boucle . /boucle
-
-# Copy json-simd-mojo source (from --build-context simdjson=../json-simd-mojo).
-# The package layout is /simdjson/simdjson/, so -I /simdjson lets bench code
-# `from simdjson.parser import Parser` resolve correctly.
 COPY --from=simdjson . /simdjson
 
-# Copy the rest of the source tree
+# Copy the rest of the source tree, then re-stamp the stub pyproject
+# so the venv mojox we installed earlier isn't disturbed by uv
+# re-resolving the project's git+ssh boucle dep when the canonical
+# pyproject.toml lands on top. The COPY . . above clobbers it; the
+# re-stamp keeps the venv untouched for the mojox builds below.
 COPY . .
+RUN mv pyproject.toml pyproject.toml.navette \
+    && cat > pyproject.toml <<'EOF'
+[project]
+name = "navette-bench-build"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
+EOF
+RUN rm -f uv.lock
 
 # Build the Rust shared library
 RUN cargo build --release --features skip-locks --manifest-path crates/librustls-mojo/Cargo.toml
@@ -57,11 +89,13 @@ RUN cargo build --release --features skip-locks --manifest-path crates/librustls
 # Copy the .so into the conventional lib/ directory
 RUN mkdir -p lib && cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
 
-# Build the three benchmark server binaries (h1 covers both plaintext and TLS modes)
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h1_server.mojo -o /bench-h1
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h2_server.mojo -o /bench-h2
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle -I /simdjson bench/h3_server.mojo -o /bench-h3
-RUN LD_LIBRARY_PATH=lib uv run mojox build -I . -I /boucle bench/launcher.mojo -o /bench-launcher
+# Build the three benchmark server binaries directly via the venv mojox
+# (bypassing `uv run` so uv doesn't try to re-resolve the (now-stubbed)
+# project).
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/h1_server.mojo -o /bench-h1
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/h2_server.mojo -o /bench-h2
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/h3_server.mojo -o /bench-h3
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime

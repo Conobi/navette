@@ -1,0 +1,14 @@
+[package]
+name = "actix-plaintext"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "actix-plaintext"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = { version = "4.9", default-features = false, features = ["macros"] }
+
+[profile.release]
+opt-level = 3

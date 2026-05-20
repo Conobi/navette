@@ -1,0 +1,20 @@
+[package]
+name = "hyper-plaintext"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hyper-plaintext"
+path = "src/main.rs"
+
+[dependencies]
+hyper = { version = "1.5", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+http-body-util = "0.1"
+tokio = { version = "1.42", features = ["rt", "net", "io-util", "macros", "signal"] }
+bytes = "1"
+
+[profile.release]
+# Match Flare's `cargo build --release --locked` posture exactly:
+# default `release` profile, no LTO, no codegen-unit override.
+opt-level = 3
