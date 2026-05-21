@@ -44,6 +44,7 @@ TESTS=(
     test_cross_quic_packet_header
     test_h3_frame_cross
     test_qpack_cross
+    test_hpack_oracle_self
 )
 
 FILTER="${CONFORMANCE_FILTER:-}"
