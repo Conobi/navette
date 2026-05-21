@@ -112,6 +112,7 @@ TESTS=(
     test_cc_controller
     test_cc_minmax
     test_memory_safety_hardening
+    test_fuzz_infra
 )
 
 FILTER="${TESTS_FILTER:-}"
