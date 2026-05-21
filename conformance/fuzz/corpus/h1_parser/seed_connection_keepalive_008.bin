@@ -1,0 +1,9 @@
+POST /a HTTP/1.1
+Host: example.com
+Content-Length: 3
+
+abcPOST /b HTTP/1.1
+Host: example.com
+Content-Length: 3
+
+xyz

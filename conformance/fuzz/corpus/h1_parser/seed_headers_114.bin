@@ -1,0 +1,3 @@
+GET /path-%20-uri HTTP/1.1
+X-Forwarded-For: 1.1.1.1
+

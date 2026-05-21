@@ -1,0 +1,7 @@
+POST /foo/bar HTTP/1.1
+Transfer-Encoding: gzip
+Transfer-Encoding: deflate
+Transfer-Encoding: identity
+Transfer-Encoding: compress
+Transfer-Encoding: chunked
+

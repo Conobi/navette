@@ -1,0 +1,15 @@
+POST /a HTTP/1.1
+Host: example.com
+Transfer-Encoding: chunked
+
+3
+abc
+0
+
+POST /b HTTP/1.1
+Host: example.com
+Content-Length: 3
+
+xyzGET /c HTTP/1.1
+Host: example.com
+

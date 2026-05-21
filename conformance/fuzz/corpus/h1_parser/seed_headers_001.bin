@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: example.com
+Accept: text/html
+Accept-Language: en-US
+User-Agent: test/1.0
+

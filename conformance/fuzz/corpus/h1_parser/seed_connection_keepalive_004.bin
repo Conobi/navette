@@ -1,0 +1,9 @@
+GET /a HTTP/1.1
+Host: example.com
+
+GET /b HTTP/1.1
+Host: example.com
+
+GET /c HTTP/1.1
+Host: example.com
+

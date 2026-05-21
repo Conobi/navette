@@ -1,0 +1,4 @@
+POST /foo/bar HTTP/1.1
+Transfer-Encoding: chunked
+My-Custom-Header: 			Custom-Value;`…“ 
+

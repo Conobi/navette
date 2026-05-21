@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Host: www.example.com
+Connection\033\065\325eep-Alive
+Accept-Encoding: gzip
+

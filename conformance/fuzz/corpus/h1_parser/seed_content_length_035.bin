@@ -1,0 +1,4 @@
+GET /foo/bar\t/baz HTTP/1.1
+Some-Custom-Header: Non Rfc -Compliant
+Content-Length: 9000
+

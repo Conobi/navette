@@ -770,10 +770,17 @@ struct HpackOracleDecoder(Movable):
         var node_idx = 0
         var total_bits = len(encoded) * 8
         var bit_pos = 0
+        var last_emit_bit_pos = 0  # bit_pos right after the last full symbol emit
         while bit_pos < total_bits:
             var byte_idx = bit_pos // 8
             var bit_in_byte = 7 - (bit_pos % 8)
             var bit = Int((encoded[byte_idx] >> UInt8(bit_in_byte)) & UInt8(1))
+            # Padding bits must all be 1 (most-significant bits of EOS). If we're
+            # currently mid-code (node_idx != 0) and a 0 bit could land us inside
+            # an invalid prefix, the trie walk will catch it; but for valid-prefix
+            # partial codes with 0 bits, we'd accept invalid padding. So: every
+            # bit consumed *after* the last emitted symbol must be 1 if it ends
+            # up being padding. We enforce that retroactively at end-of-input.
             var child: Int
             if bit == 0:
                 child = self.trie[node_idx].left
@@ -790,11 +797,18 @@ struct HpackOracleDecoder(Movable):
                     return (List[UInt8](), String("huffman: EOS symbol decoded"))
                 out.append(UInt8(self.trie[node_idx].symbol))
                 node_idx = 0
-        # Final state check: if we ended mid-walk, it must be valid trailing
-        # padding — RFC 7541 §5.2: padding is the most significant bits of the
-        # EOS code, at most 7 bits. We accept the partial walk as padding iff
-        # remaining bits walked correspond to all-1 prefix of EOS.
-        # The trie walk has already validated each bit was a legal continuation
-        # from root; partial walks landing at internal nodes after all-1 bits
-        # are valid padding.
+                last_emit_bit_pos = bit_pos
+        # Final padding validation per RFC 7541 §5.2:
+        #   - Padding length must be ≤ 7 bits.
+        #   - Padding bits must be the most-significant bits of the EOS code
+        #     (which are all 1s; EOS = 30 bits of 1s, so any prefix is all 1s).
+        var pad_bits = total_bits - last_emit_bit_pos
+        if pad_bits > 7:
+            return (List[UInt8](), String("huffman: padding > 7 bits"))
+        for i in range(last_emit_bit_pos, total_bits):
+            var byte_idx = i // 8
+            var bit_in_byte = 7 - (i % 8)
+            var bit = Int((encoded[byte_idx] >> UInt8(bit_in_byte)) & UInt8(1))
+            if bit != 1:
+                return (List[UInt8](), String("huffman: invalid padding (must be all 1s)"))
         return (out^, String(""))

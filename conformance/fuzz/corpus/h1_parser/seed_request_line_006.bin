@@ -1,0 +1,3 @@
+GET /search?q=hello HTTP/1.1
+Host: example.com
+

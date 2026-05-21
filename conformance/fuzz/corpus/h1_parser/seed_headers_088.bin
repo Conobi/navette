@@ -1,0 +1,4 @@
+POST /foo/bar HTTP/1.1
+Some-Custom-Header: Non-Rfc Compliant
+Transfer-Encoding: chunked
+
