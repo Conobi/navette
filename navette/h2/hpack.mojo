@@ -73,8 +73,7 @@ struct HpackEncoder(Movable):
         if self._pending_table_size >= 0:
             var size_bytes = encode_integer(self._pending_table_size, 5)
             size_bytes[0] = size_bytes[0] | UInt8(0x20)
-            for i in range(len(size_bytes)):
-                wire.append(size_bytes[i])
+            wire.extend(Span(size_bytes))
             self.dynamic_table.set_max_size(self._pending_table_size)
             self._pending_table_size = -1
 
@@ -117,8 +116,7 @@ struct HpackEncoder(Movable):
         """Emit indexed header field: 1XXXXXXX."""
         var bytes = encode_integer(index, 7)
         bytes[0] = bytes[0] | UInt8(0x80)
-        for i in range(len(bytes)):
-            wire.append(bytes[i])
+        wire.extend(Span(bytes))
 
     def _emit_literal_indexed(
         self,
@@ -130,8 +128,7 @@ struct HpackEncoder(Movable):
         """Emit literal with incremental indexing: 01XXXXXX."""
         var idx_bytes = encode_integer(name_idx, 6)
         idx_bytes[0] = idx_bytes[0] | UInt8(0x40)
-        for i in range(len(idx_bytes)):
-            wire.append(idx_bytes[i])
+        wire.extend(Span(idx_bytes))
 
         if name_idx == 0:
             self._emit_string(wire, name)
@@ -140,25 +137,20 @@ struct HpackEncoder(Movable):
 
     def _emit_string(self, mut wire: List[UInt8], s: String):
         """Emit HPACK string literal (with optional Huffman)."""
-        var raw = List[UInt8]()
         var s_bytes = s.as_bytes()
-        for i in range(len(s_bytes)):
-            raw.append(s_bytes[i])
+        var raw = List[UInt8](capacity=len(s_bytes))
+        raw.extend(s_bytes)
 
         if self.config.use_huffman:
             var encoded = self.huffman.encode(raw)
             var len_bytes = encode_integer(len(encoded), 7)
             len_bytes[0] = len_bytes[0] | UInt8(0x80)
-            for i in range(len(len_bytes)):
-                wire.append(len_bytes[i])
-            for i in range(len(encoded)):
-                wire.append(encoded[i])
+            wire.extend(Span(len_bytes))
+            wire.extend(Span(encoded))
         else:
             var len_bytes = encode_integer(len(raw), 7)
-            for i in range(len(len_bytes)):
-                wire.append(len_bytes[i])
-            for i in range(len(raw)):
-                wire.append(raw[i])
+            wire.extend(Span(len_bytes))
+            wire.extend(Span(raw))
 
 
 struct HpackDecoder(Movable):

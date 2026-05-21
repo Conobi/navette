@@ -128,9 +128,7 @@ struct H1Conn(Movable):
         self.http = http^
         self.tls = tls^
         self.phase = _PHASE_TLS_HANDSHAKE if Bool(self.tls) else _PHASE_READY
-        self.recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
-        for _ in range(_RECV_BUF_SIZE):
-            self.recv_buf.append(0)
+        self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=UInt8(0))
         self.send_buf = List[UInt8]()
         self.send_pending = List[UInt8]()
         self.send_in_flight = False
@@ -285,8 +283,7 @@ struct H1ServerHandler(CompletionHandler):
         if len(data) == 0:
             return
         if self.connections[idx][].send_in_flight:
-            for i in range(len(data)):
-                self.connections[idx][].send_pending.append(data[i])
+            self.connections[idx][].send_pending.extend(Span(data))
             return
         self.connections[idx][].send_buf = data^
         self._queue_send(idx)
@@ -345,14 +342,13 @@ struct H1ServerHandler(CompletionHandler):
             return
 
         var n = Int(result)
-        var chunk = List[UInt8](capacity=n)
-        for i in range(n):
-            chunk.append(self.connections[idx][].recv_buf[i])
+        # Slice the recv buffer to just the bytes the kernel produced — no copy.
+        var recv_span = Span(self.connections[idx][].recv_buf)[0:n]
 
         if self.tls_enabled:
-            self._handle_recv_tls(idx, chunk^)
+            self._handle_recv_tls(idx, recv_span)
         else:
-            self.connections[idx][].http.feed(Span(chunk))
+            self.connections[idx][].http.feed(recv_span)
             var response_bytes = self.connections[idx][].http.drain()
             if len(response_bytes) > 0:
                 self._stage_send(idx, response_bytes^)
@@ -361,9 +357,9 @@ struct H1ServerHandler(CompletionHandler):
                 if not self.connections[idx][].http.should_close():
                     self._queue_recv(idx)
 
-    def _handle_recv_tls(mut self, idx: Int, var chunk: List[UInt8]) raises:
+    def _handle_recv_tls(mut self, idx: Int, chunk: Span[UInt8, _]) raises:
         # Feed ciphertext into rustls.
-        self.connections[idx][].tls.value().receive_data(Span(chunk))
+        self.connections[idx][].tls.value().receive_data(chunk)
 
         # Flush any handshake-reply ciphertext immediately.
         if self.connections[idx][].tls.value().wants_write():
@@ -406,22 +402,18 @@ struct H1ServerHandler(CompletionHandler):
         var buf_len = len(self.connections[idx][].send_buf)
         if sent < buf_len:
             var remaining = List[UInt8](capacity=buf_len - sent)
-            var i = sent
-            while i < buf_len:
-                remaining.append(self.connections[idx][].send_buf[i])
-                i += 1
+            remaining.extend(Span(self.connections[idx][].send_buf)[sent:buf_len])
             self.connections[idx][].send_buf = remaining^
             self._queue_send(idx)
             return
 
         self.connections[idx][].send_buf = List[UInt8]()
 
-        # Promote any pending data.
+        # Promote any pending data — single memcpy via extend, not byte-by-byte.
         if len(self.connections[idx][].send_pending) > 0:
-            var n_pending = len(self.connections[idx][].send_pending)
-            var pending = List[UInt8](capacity=n_pending)
-            for i in range(n_pending):
-                pending.append(self.connections[idx][].send_pending[i])
+            var pending_view = Span(self.connections[idx][].send_pending)
+            var pending = List[UInt8](capacity=len(pending_view))
+            pending.extend(pending_view)
             self.connections[idx][].send_pending = List[UInt8]()
             self.connections[idx][].send_buf = pending^
             self._queue_send(idx)

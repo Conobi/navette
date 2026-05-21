@@ -17,6 +17,8 @@
 #   * 304 MAY include a user-provided Content-Length but MUST NOT carry a
 #     body, so the serializer trusts the headers as-is and emits no body.
 
+from std.memory import Span
+
 from navette.http.method import Method
 from navette.http.status import StatusCode
 from navette.http.version import Version
@@ -30,9 +32,7 @@ from navette.http.response import Response
 
 def _append_str(mut buf: List[UInt8], s: String):
     """Append all bytes of a string to the buffer."""
-    var b = s.as_bytes()
-    for i in range(len(b)):
-        buf.append(b[i])
+    buf.extend(s.as_bytes())
 
 
 def _append_crlf(mut buf: List[UInt8]):
@@ -137,8 +137,7 @@ def _append_data_frames(mut buf: List[UInt8], body: List[BodyFrame]):
     for i in range(len(body)):
         if body[i].is_data():
             ref chunk = body[i].data()
-            for j in range(len(chunk)):
-                buf.append(chunk[j])
+            buf.extend(Span(chunk))
 
 
 def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
@@ -155,8 +154,7 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
             if chunk_len > 0:
                 _append_str(buf, _int_to_hex_lower(chunk_len))
                 _append_crlf(buf)
-                for j in range(chunk_len):
-                    buf.append(chunk[j])
+                buf.extend(Span(chunk))
                 _append_crlf(buf)
 
     # Final zero-length chunk marker.
@@ -210,8 +208,7 @@ def serialize_request(request: Request) raises -> List[UInt8]:
     # Body.
     if body_len > 0:
         ref chunk = request.body.bytes()
-        for j in range(len(chunk)):
-            buf.append(chunk[j])
+        buf.extend(Span(chunk))
 
     return buf^
 

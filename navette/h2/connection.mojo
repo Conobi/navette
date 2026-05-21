@@ -645,8 +645,7 @@ struct H2Connection(Movable):
         """Feed wire bytes, decode frames, return events."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
-        for i in range(len(data)):
-            self._inbuf.append(data[i])
+        self._inbuf.extend(Span(data))
         var events = List[H2Event]()
         var pos = 0
         # Server: validate client magic
@@ -1251,8 +1250,7 @@ struct H2Connection(Movable):
                     events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
                 else:
                     # CONTINUATION assembly for response headers
-                    for i in range(len(hp.headers_block)):
-                        stream.header_block_buffer.append(hp.headers_block[i])
+                    stream.header_block_buffer.extend(Span(hp.headers_block))
                     stream.expects_continuation = True
                     stream.headers_end_stream = (frame.flags & FLAG_END_STREAM) != 0
                     self._streams[stream_id] = stream^
@@ -1307,8 +1305,7 @@ struct H2Connection(Movable):
                 events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
         else:
             # Buffer fragment, wait for CONTINUATION
-            for i in range(len(hp.headers_block)):
-                stream.header_block_buffer.append(hp.headers_block[i])
+            stream.header_block_buffer.extend(Span(hp.headers_block))
             stream.expects_continuation = True
             stream.headers_end_stream = (frame.flags & FLAG_END_STREAM) != 0
             self._streams[stream_id] = stream^
@@ -1344,8 +1341,7 @@ struct H2Connection(Movable):
         else:
             # CONTINUATION assembly for trailers
             var s = StreamState(other=stream)
-            for i in range(len(hp.headers_block)):
-                s.header_block_buffer.append(hp.headers_block[i])
+            s.header_block_buffer.extend(Span(hp.headers_block))
             s.expects_continuation = True
             s.headers_end_stream = True  # already validated above
             self._streams[stream_id] = s^
@@ -1381,8 +1377,7 @@ struct H2Connection(Movable):
         # Read-modify-write for Dict value
         try:
             var stream = self._streams[stream_id].copy()
-            for i in range(len(cp.headers_block)):
-                stream.header_block_buffer.append(cp.headers_block[i])
+            stream.header_block_buffer.extend(Span(cp.headers_block))
             if frame.flags & FLAG_END_HEADERS != 0:
                 # Assembly complete — HPACK decode
                 stream.expects_continuation = False

@@ -116,8 +116,7 @@ struct H1Connection(Movable):
         var pending = len(self._inbound_buf) - self._inbound_cursor
         if pending + len(data) > cap:
             raise "receive_data: inbound buffer would exceed cap"
-        for i in range(len(data)):
-            self._inbound_buf.append(data[i])
+        self._inbound_buf.extend(data)
 
     def next_request(mut self) -> Optional[Request]:
         """Try to parse one complete request from the inbound buffer.
@@ -262,8 +261,7 @@ struct H1Connection(Movable):
 
         var pre_len = len(self._outbound_buf)
         var wire = serialize_response(response^)
-        for i in range(len(wire)):
-            self._outbound_buf.append(wire[i])
+        self._outbound_buf.extend(Span(wire))
 
         if head_in_flight:
             self._truncate_outbound_to_headers(pre_len)
@@ -286,14 +284,12 @@ struct H1Connection(Movable):
     def send_informational(mut self, var status: StatusCode, var headers: Headers):
         """Serialize a 1xx interim response and append it to the outbound buffer."""
         var wire = serialize_informational(status^, headers^)
-        for i in range(len(wire)):
-            self._outbound_buf.append(wire[i])
+        self._outbound_buf.extend(Span(wire))
 
     def send_request(mut self, var request: Request) raises:
         """Serialize a request and append wire bytes to the outbound buffer."""
         var wire = serialize_request(request^)
-        for i in range(len(wire)):
-            self._outbound_buf.append(wire[i])
+        self._outbound_buf.extend(Span(wire))
 
     def drain(mut self) -> List[UInt8]:
         """Remove and return all bytes currently in the outbound buffer."""
@@ -339,12 +335,11 @@ struct H1Connection(Movable):
         """
         if self._inbound_cursor == 0:
             return
-        var new_buf = List[UInt8]()
-        var i = self._inbound_cursor
         var n = len(self._inbound_buf)
-        while i < n:
-            new_buf.append(self._inbound_buf[i])
-            i += 1
+        var keep = n - self._inbound_cursor
+        var new_buf = List[UInt8](capacity=keep)
+        if keep > 0:
+            new_buf.extend(Span(self._inbound_buf)[self._inbound_cursor:n])
         self._inbound_buf = new_buf^
         self._inbound_cursor = 0
 
@@ -382,7 +377,6 @@ struct H1Connection(Movable):
             ):
                 var end = i + 4
                 # Drop everything from `end` to the buffer's tail.
-                while len(self._outbound_buf) > end:
-                    _ = self._outbound_buf.pop()
+                self._outbound_buf.resize(end, UInt8(0))
                 return
             i += 1

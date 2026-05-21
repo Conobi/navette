@@ -282,9 +282,8 @@ def decode_frame(
 
     # --- Check max_frame_size ---
     if not config.allow_oversized_frame and length > config.max_frame_size:
-        var payload = List[UInt8]()
-        for i in range(length):
-            payload.append(wire[pos + 9 + i])
+        var payload = List[UInt8](capacity=length)
+        payload.extend(Span(wire)[pos + 9 : pos + 9 + length])
         var f = _make_error_frame(
             length,
             frame_type,
@@ -301,9 +300,8 @@ def decode_frame(
         return (f^, 9 + length, f.error)
 
     # --- Copy payload ---
-    var payload = List[UInt8]()
-    for i in range(length):
-        payload.append(wire[pos + 9 + i])
+    var payload = List[UInt8](capacity=length)
+    payload.extend(Span(wire)[pos + 9 : pos + 9 + length])
 
     var consumed = 9 + length
 
@@ -627,7 +625,6 @@ def encode_frame(frame: Frame) -> List[UInt8]:
     result.append(UInt8(frame.stream_id & 0xFF))
 
     # Payload
-    for i in range(payload_len):
-        result.append(frame.payload[i])
+    result.extend(Span(frame.payload))
 
     return result^

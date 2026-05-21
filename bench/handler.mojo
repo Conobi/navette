@@ -35,11 +35,8 @@ from bench.json_writer import (
 def _str_to_bytes(s: String) -> List[UInt8]:
     """Convert a String to List[UInt8] for BodyFrame.data()."""
     var b = s.as_bytes()
-    var out = List[UInt8]()
-    var i = 0
-    while i < len(b):
-        out.append(b[i])
-        i += 1
+    var out = List[UInt8](capacity=len(b))
+    out.extend(b)
     return out^
 
 
