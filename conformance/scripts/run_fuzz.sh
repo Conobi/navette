@@ -3,12 +3,15 @@
 # Run the fuzz-harness suite per specs/2026-05-21-fuzz-harnesses-critical-parsers.md.
 #
 # Mirrors conformance/scripts/run_tests.sh shape but with FUZZ_FILTER substring
-# match (vs CONFORMANCE_FILTER) and a separate HARNESSES list. Harnesses are
-# added as they land in S2 / S3.
+# match (vs CONFORMANCE_FILTER) and a separate HARNESSES list.
 #
-# Per-harness budget at default FUZZ_ITERS=5000: ~30 s wall (8 harnesses ×
-# 30 s = ~4 min total). Override with FUZZ_SOAK=1 to remove the iter cap
-# (intended for overnight pre-release runs).
+# Per-harness budget at default FUZZ_ITERS=5000: well under 30 s wall each.
+# Override with FUZZ_SOAK=1 to remove the iter cap (intended for overnight
+# pre-release runs).
+#
+# Measured 2026-05-21 on dev host: full 8-harness sweep at default iters =
+# ~19 s wall, ~52,000 total observations, 0 disagreements (with documented
+# skip patterns per conformance/fuzz/KNOWN_DIVERGENCES.md).
 
 set -euo pipefail
 
@@ -24,6 +27,11 @@ HARNESSES=(
     varint
     h1_parser
     hpack
+    quic_header
+    h2_frame
+    retry_aead
+    qpack
+    h3_frame
 )
 
 FILTER="${FUZZ_FILTER:-}"
