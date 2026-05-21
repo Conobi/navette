@@ -92,9 +92,9 @@ RUN mkdir -p lib && cp crates/librustls-mojo/target/release/liblibrustls_mojo.so
 # Build the three benchmark server binaries directly via the venv mojox
 # (bypassing `uv run` so uv doesn't try to re-resolve the (now-stubbed)
 # project).
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/h1_server.mojo -o /bench-h1
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/h2_server.mojo -o /bench-h2
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/h3_server.mojo -o /bench-h3
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/servers/h1_server.mojo -o /bench-h1
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/servers/h2_server.mojo -o /bench-h2
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/servers/h3_server.mojo -o /bench-h3
 RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------

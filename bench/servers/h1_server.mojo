@@ -22,7 +22,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from navette.h1.handler_server import H1HandlerServer
 from navette.io.io_uring import IoUring
 from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
-from bench.handler import (
+from bench.lib.handler import (
     BenchHandler,
     BenchState,
     StaticEntry,

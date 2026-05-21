@@ -17,7 +17,7 @@ from navette.quic.packet import parse_packet_header, is_long_header_initial, ext
 from navette.quic.cid import dcid_to_u64
 from navette.io.udp_socket import udp_listener
 from navette.h3.h3_handler_server import H3HandlerServer
-from bench.handler import (
+from bench.lib.handler import (
     BenchHandler,
     BenchState,
     StaticEntry,

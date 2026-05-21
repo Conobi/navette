@@ -25,7 +25,7 @@ from simdjson.parser import Parser
 from simdjson.document import Document
 from simdjson.value import Value
 
-from bench.json_writer import (
+from bench.lib.json_writer import (
     write_bytes,
     write_uint,
     write_str_escaped,

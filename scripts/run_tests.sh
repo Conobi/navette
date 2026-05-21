@@ -35,84 +35,84 @@ echo "R1' grep gate: PASS"
 rm -f src.mojopkg tests.mojopkg
 
 TESTS=(
-    test_method
-    test_status
-    test_headers
-    test_body
-    test_request_response
     test_phase_a_smoke
-    test_serializer
-    test_h1_connection
-    test_server_connection
-    test_client_connection
-    test_cross_validation
-    test_tls_connection
-    test_tls_quic
-    test_proxy_token
-    test_capabilities
-    test_stream_error
-    test_write_result
-    test_body_frame_v2
-    test_recv_body
-    test_send_body
-    test_handler_detach
-    test_handler_try_detach
-    test_response_writer
-    test_request_body
-    test_request_clone
-    test_handler_lifecycle
-    test_h3_extension
-    test_h3_frame
-    test_h3_qpack
-    test_h3_connection
-    test_h3_e2e
-    test_session_handle
-    test_mock_session
-    test_h1_server_handler
-    test_h1_client_session
-    test_reverse_proxy_refactor
-    test_priority
-    test_alt_svc
-    test_sse
-    test_h2_pseudo_headers
-    test_h2_handler
-    test_h2_session
-    test_h2_e2e
-    test_h2_tls_alpn
-    test_h2_sync_server
-    test_h3_sync_server
-    test_h3_streaming_server
-    test_h2_streaming_server
-    test_url
-    test_http_client
-    test_decode
-    test_coro_client
-    test_quic_cid
-    test_quic_codec
-    test_quic_frame
-    test_quic_packet
-    test_quic_transport_params
-    test_quic_crypto_stream
-    test_quic_pn_space
-    test_quic_recovery
-    test_quic_retry
-    test_quic_flow_control
-    test_quic_stream
-    test_quic_stream_map
-    test_quic_connection
-    test_quic_pacer_bypass
-    test_quic_resumption
-    test_quic_profile
-    test_quic_profile_wiring
-    test_h3_udp_server
-    test_io_loopback
-    test_ecn
-    test_cc_cubic
-    test_cc_pacing
-    test_cc_controller
-    test_cc_minmax
     test_memory_safety_hardening
     test_fuzz_infra
+    http/test_method
+    http/test_status
+    http/test_headers
+    http/test_body
+    http/test_body_frame_v2
+    http/test_request_response
+    http/test_request_body
+    http/test_request_clone
+    http/test_recv_body
+    http/test_send_body
+    http/test_response_writer
+    http/test_url
+    http/test_decode
+    http/test_alt_svc
+    http/test_priority
+    http/test_sse
+    http/test_capabilities
+    http/test_stream_error
+    http/test_write_result
+    http/test_handler_detach
+    http/test_handler_try_detach
+    http/test_handler_lifecycle
+    http/test_session_handle
+    http/test_mock_session
+    http/test_http_client
+    http/test_coro_client
+    http/test_cross_validation
+    http/test_client_connection
+    http/test_server_connection
+    http/test_reverse_proxy_refactor
+    http/test_proxy_token
+    h1/test_h1_connection
+    h1/test_h1_server_handler
+    h1/test_h1_client_session
+    h1/test_serializer
+    h2/test_h2_pseudo_headers
+    h2/test_h2_handler
+    h2/test_h2_session
+    h2/test_h2_e2e
+    h2/test_h2_tls_alpn
+    h2/test_h2_sync_server
+    h2/test_h2_streaming_server
+    h3/test_h3_extension
+    h3/test_h3_frame
+    h3/test_h3_qpack
+    h3/test_h3_connection
+    h3/test_h3_e2e
+    h3/test_h3_sync_server
+    h3/test_h3_streaming_server
+    h3/test_h3_udp_server
+    quic/test_quic_cid
+    quic/test_quic_codec
+    quic/test_quic_frame
+    quic/test_quic_packet
+    quic/test_quic_transport_params
+    quic/test_quic_crypto_stream
+    quic/test_quic_pn_space
+    quic/test_quic_recovery
+    quic/test_quic_retry
+    quic/test_quic_flow_control
+    quic/test_quic_stream
+    quic/test_quic_stream_map
+    quic/test_quic_connection
+    quic/test_quic_pacer_bypass
+    quic/test_quic_resumption
+    quic/test_quic_profile
+    quic/test_quic_profile_wiring
+    quic/cc/test_cc_cubic
+    quic/cc/test_cc_pacing
+    quic/cc/test_cc_controller
+    quic/cc/test_cc_minmax
+    tls/test_tls_connection
+    tls/test_tls_quic
+    io/test_io_loopback
+    io/test_ecn
 )
 
 FILTER="${TESTS_FILTER:-}"
@@ -125,42 +125,16 @@ for t in "${TESTS[@]}"; do
     fi
     TOTAL=$((TOTAL + 1))
     echo "--- $t ---"
-    # The cross-validation test imports both src.h1 and the conformance
-    # batch parser (lib.http1) so it needs an extra include path.
+    # Conformance/oracle-using tests need `conformance/` on the include path.
+    # test_proxy_token additionally imports from examples/reverse_proxy.
     EXTRA_I=()
-    if [ "$t" = "test_cross_validation" ]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_proxy_token" ]; then
-        EXTRA_I=(-I examples/reverse_proxy)
-    fi
-    if [[ "$t" == test_h3_connection ]] || [[ "$t" == test_h3_e2e ]]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [[ "$t" == test_h2_* ]] || [[ "$t" == "test_http_client" ]] || [[ "$t" == "test_coro_client" ]]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [[ "$t" == test_quic_* ]]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_ecn" ]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_h2_sync_server" ]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_h3_sync_server" ]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_h3_streaming_server" ]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_h2_streaming_server" ]; then
-        EXTRA_I=(-I conformance)
-    fi
-    if [ "$t" = "test_h3_udp_server" ]; then
-        EXTRA_I=(-I conformance)
-    fi
+    case "$t" in
+        h2/*|h3/*|quic/*) EXTRA_I=(-I conformance) ;;
+        io/test_ecn) EXTRA_I=(-I conformance) ;;
+        http/test_cross_validation|http/test_http_client|http/test_coro_client)
+            EXTRA_I=(-I conformance) ;;
+        http/test_proxy_token) EXTRA_I=(-I examples/reverse_proxy) ;;
+    esac
     if uv run mojox run "${EXTRA_I[@]}" -D ASSERT=all "tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
     else

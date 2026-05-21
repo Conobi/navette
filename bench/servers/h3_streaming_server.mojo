@@ -29,7 +29,7 @@ from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header
 from navette.h3.h3_streaming_server import H3StreamingServer
 
-from bench.streaming_handler import llm_stream_h3_handler
+from bench.lib.streaming_handler import llm_stream_h3_handler
 
 from interop.file_io import read_file, getenv_opt
 from interop.udp import monotonic_us

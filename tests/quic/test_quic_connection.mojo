@@ -2818,7 +2818,7 @@ def test_dcid_demux_disambiguates_two_conns() raises:
     up a full H3UdpHandler. End-to-end behaviour is exercised by the
     smoke gate (T8) and SIGINT captures (T9).
     """
-    from bench.h3_server import _bytes_to_hex
+    from bench.servers.h3_server import _bytes_to_hex
 
     # Three distinct 8-byte DCIDs.
     var dcid_a = List[UInt8]()
