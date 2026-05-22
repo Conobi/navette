@@ -543,21 +543,36 @@ struct ResponseWriter(Movable):
 
         Skips serialize_response. The runtime adapter copies ``wire``
         straight into the outbound buffer. Mutually exclusive with
-        send_status — use this when the entire wire payload is known
-        ahead of time (e.g., a cached static response).
+        ``send_status``, ``send_informational``, and ``try_send_body``
+        — use this when the entire wire payload is known ahead of time
+        (e.g., a cached static response). Raises on:
+
+          * empty ``wire`` (would emit no bytes — caller bug);
+          * prior ``send_status`` (mixing serialized + prebuilt paths);
+          * prior ``send_informational`` (the 1xx hints would be
+            silently dropped by the adapter's prebuilt fast-path);
+          * second ``send_prebuilt`` call.
+
+        After ``send_prebuilt``, calling ``try_send_body`` raises
+        because the prebuilt wire already contains the body.
         """
         if self._status_sent:
             raise Error("ResponseWriter.send_prebuilt: send_status already used")
         if self._has_prebuilt:
             raise Error("ResponseWriter.send_prebuilt: already sent")
+        if len(self._captured_informational) > 0:
+            raise Error("ResponseWriter.send_prebuilt: send_informational already used")
+        if len(wire) == 0:
+            raise Error("ResponseWriter.send_prebuilt: empty wire")
         self._has_prebuilt = True
         self._status_sent = True
-        if len(wire) > 0:
-            self._prebuilt.extend(wire)
+        self._prebuilt.extend(wire)
 
     def send_informational(mut self, var status: StatusCode, var headers: Headers) raises:
         if self._status_sent:
             raise Error("ResponseWriter.send_informational: status already sent")
+        if self._has_prebuilt:
+            raise Error("ResponseWriter.send_informational: send_prebuilt already used")
         if not status.is_informational():
             raise Error("ResponseWriter.send_informational: status is not 1xx")
         self._captured_informational.append(status^)
@@ -567,6 +582,8 @@ struct ResponseWriter(Movable):
     def try_send_body(mut self, var frame: BodyFrame) raises -> WriteResult:
         if not self._status_sent:
             raise Error("ResponseWriter.try_send_body: status not sent yet")
+        if self._has_prebuilt:
+            raise Error("ResponseWriter.try_send_body: send_prebuilt already used")
         return self._send_body.try_write(frame^)
 
     @always_inline
