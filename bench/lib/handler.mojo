@@ -182,13 +182,12 @@ def _get_extension(path: String) -> String:
     var i = n - 1
     while i >= 0:
         if bytes[i] == UInt8(ord(".")):
-            # Build string from i+1 .. n
-            var ext = String()
-            var j = i + 1
-            while j < n:
-                ext += chr(Int(bytes[j]))
-                j += 1
-            return ext^
+            var ext_len = n - (i + 1)
+            if ext_len <= 0:
+                return String("")
+            var out = List[UInt8](capacity=ext_len)
+            out.extend(bytes[i + 1 : n])
+            return String(unsafe_from_utf8=out^)
         if bytes[i] == UInt8(ord("/")):
             break
         i -= 1
@@ -561,12 +560,12 @@ def handle_static(
             break
         k += 1
 
-    # Build filename string
-    var filename = String()
-    var fi = prefix_len
-    while fi < end:
-        filename += chr(Int(target_bytes[fi]))
-        fi += 1
+    # Build filename string in one bulk copy (no per-char String churn).
+    var fname_len = end - prefix_len
+    var fname_buf = List[UInt8](capacity=fname_len if fname_len > 0 else 1)
+    if fname_len > 0:
+        fname_buf.extend(target_bytes[prefix_len:end])
+    var filename = String(unsafe_from_utf8=fname_buf^)
 
     # Look up in cache
     if filename not in state_ptr[].static_cache:
