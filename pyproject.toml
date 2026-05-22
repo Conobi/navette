@@ -2,7 +2,7 @@
 name = "navette"
 version = "0.1.0"
 description = "Pure-Mojo networking stack: QUIC, HTTP/3, HTTP/2, HTTP/1.1"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "boucle",
