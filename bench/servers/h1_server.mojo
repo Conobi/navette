@@ -288,6 +288,22 @@ struct H1ServerHandler(CompletionHandler):
         self.connections[idx][].send_buf = data^
         self._queue_send(idx)
 
+    def _stage_send_drain(mut self, idx: Int) raises:
+        """Drain the H1 codec into the connection's owned send buffer.
+
+        Reuses both the connection-level outbound buffer (via
+        ``drain_into``) and the bench-server's ``send_buf`` /
+        ``send_pending`` storage — zero ``List`` allocations on the
+        response hot path of a keep-alive connection.
+        """
+        ref c = self.connections[idx][]
+        if c.send_in_flight:
+            c.http.drain_into(c.send_pending)
+            return
+        c.http.drain_into(c.send_buf)
+        if len(c.send_buf) > 0:
+            self._queue_send(idx)
+
     # --- Accept ---
 
     def _handle_accept(mut self, result: Int32, flags: UInt32) raises:
@@ -349,9 +365,7 @@ struct H1ServerHandler(CompletionHandler):
             self._handle_recv_tls(idx, recv_span)
         else:
             self.connections[idx][].http.feed(recv_span)
-            var response_bytes = self.connections[idx][].http.drain()
-            if len(response_bytes) > 0:
-                self._stage_send(idx, response_bytes^)
+            self._stage_send_drain(idx)
 
             if not self.connections[idx][].send_in_flight:
                 if not self.connections[idx][].http.should_close():
@@ -391,38 +405,40 @@ struct H1ServerHandler(CompletionHandler):
     # --- Send ---
 
     def _handle_send(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].send_in_flight = False
+        ref c = self.connections[idx][]
+        c.send_in_flight = False
 
         if result < 0:
             self._close_connection(idx)
             return
 
-        # Handle partial sends.
+        # Handle partial sends — left-shift the unsent tail in place,
+        # preserving send_buf's capacity rather than allocating a new List.
         var sent = Int(result)
-        var buf_len = len(self.connections[idx][].send_buf)
+        var buf_len = len(c.send_buf)
         if sent < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - sent)
-            remaining.extend(Span(self.connections[idx][].send_buf)[sent:buf_len])
-            self.connections[idx][].send_buf = remaining^
+            var keep = buf_len - sent
+            var ptr = c.send_buf.unsafe_ptr()
+            for i in range(keep):
+                ptr[i] = ptr[sent + i]
+            c.send_buf.resize(keep, UInt8(0))
             self._queue_send(idx)
             return
 
-        self.connections[idx][].send_buf = List[UInt8]()
+        # Full send completed — clear in place, preserve capacity.
+        c.send_buf.clear()
 
-        # Promote any pending data — single memcpy via extend, not byte-by-byte.
-        if len(self.connections[idx][].send_pending) > 0:
-            var pending_view = Span(self.connections[idx][].send_pending)
-            var pending = List[UInt8](capacity=len(pending_view))
-            pending.extend(pending_view)
-            self.connections[idx][].send_pending = List[UInt8]()
-            self.connections[idx][].send_buf = pending^
+        # Promote any pending data by swapping the buffers (no copy).
+        if len(c.send_pending) > 0:
+            # send_buf is empty, send_pending has data: swap.
+            c.send_buf = c.send_pending^
+            c.send_pending = List[UInt8]()
             self._queue_send(idx)
             return
 
-        if self.connections[idx][].http.should_close():
+        if c.http.should_close():
             self._close_connection(idx)
         else:
-            # Ready for next request.
             self._queue_recv(idx)
 
     # --- Close ---
