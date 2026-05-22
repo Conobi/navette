@@ -291,6 +291,7 @@ struct H1Connection(Movable):
         var wire = serialize_request(request^)
         self._outbound_buf.extend(Span(wire))
 
+    @always_inline
     def drain(mut self) -> List[UInt8]:
         """Remove and return all bytes currently in the outbound buffer.
 

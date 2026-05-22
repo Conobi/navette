@@ -28,36 +28,49 @@ struct H1HandlerServer[H: StreamHandler](Movable):
 
     var _conn: ServerConnection
     var handler: Self.H
-    var _outbuf: List[UInt8]
 
     def __init__(out self, *, var handler: Self.H):
         self._conn = ServerConnection(ParseConfig())
         self.handler = handler^
-        self._outbuf = List[UInt8]()
 
     def __init__(out self, *, var handler: Self.H, var config: ParseConfig):
         self._conn = ServerConnection(config^)
         self.handler = handler^
-        self._outbuf = List[UInt8]()
 
     def __init__(out self, *, deinit take: Self):
         self._conn = take._conn^
         self.handler = take.handler^
-        self._outbuf = take._outbuf^
 
     # --- Transport bridging API ---
 
+    @always_inline
     def feed(mut self, data: Span[UInt8, _]) raises:
         """Feed inbound transport bytes and dispatch any complete requests."""
         self._conn.receive_data(data)
         self._dispatch_pending()
 
+    @always_inline
     def drain(mut self) raises -> List[UInt8]:
-        """Drain queued outbound bytes for the transport to write."""
-        var out = self._outbuf^
-        self._outbuf = List[UInt8]()
-        return out^
+        """Drain queued outbound bytes for the transport to write.
 
+        Forwards directly to the underlying connection — the previous
+        intermediate ``_outbuf`` field added one extra ``extend`` and
+        one extra allocation per response without buying anything.
+        Callers that already own a sink should prefer ``drain_into``.
+        """
+        return self._conn.drain()
+
+    @always_inline
+    def drain_into(mut self, mut sink: List[UInt8]):
+        """Append queued outbound bytes into ``sink`` and clear in place.
+
+        Reuses both the connection-level outbound buffer and the
+        caller-owned sink across requests — zero ``List`` allocations
+        on the response hot path.
+        """
+        self._conn.drain_into(sink)
+
+    @always_inline
     def should_close(self) -> Bool:
         return self._conn.should_close()
 
@@ -135,4 +148,3 @@ struct H1HandlerServer[H: StreamHandler](Movable):
             body=body_frames^,
         )
         self._conn.send_response(response^)
-        self._outbuf.extend(self._conn.drain())

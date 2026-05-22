@@ -30,34 +30,48 @@ struct ServerConnection(Movable):
 
     # --- Inbound API (server reads requests) ---
 
+    @always_inline
     def receive_data(mut self, data: Span[UInt8, _]) raises:
         self._inner.receive_data(data)
 
+    @always_inline
     def next_request(mut self) -> Optional[Request]:
         return self._inner.next_request()
 
     # --- Outbound API (server sends responses) ---
 
+    @always_inline
     def send_response(mut self, var response: Response):
         self._inner.send_response(response^)
 
+    @always_inline
     def send_informational(mut self, var status: StatusCode, var headers: Headers):
         self._inner.send_informational(status^, headers^)
 
+    @always_inline
     def drain(mut self) -> List[UInt8]:
         return self._inner.drain()
 
+    @always_inline
+    def drain_into(mut self, mut sink: List[UInt8]):
+        """Append queued outbound bytes into ``sink`` and clear in place."""
+        self._inner.drain_into(sink)
+
     # --- State queries ---
 
+    @always_inline
     def should_close(self) -> Bool:
         return self._inner.should_close()
 
+    @always_inline
     def is_keep_alive(self) -> Bool:
         return self._inner.is_keep_alive()
 
+    @always_inline
     def wants_read(self) -> Bool:
         return self._inner.wants_read()
 
+    @always_inline
     def wants_write(self) -> Bool:
         return self._inner.wants_write()
 
