@@ -60,40 +60,75 @@ def _method_string(method: Method) -> String:
     return String(method)
 
 
-def _int_to_string(value: Int) -> String:
-    """Convert a non-negative integer to its decimal string representation."""
+@always_inline
+def _append_decimal(mut buf: List[UInt8], value: Int):
+    """Emit ``value`` as ASCII decimal digits straight into ``buf``.
+
+    Avoids the previous round-trip through a temporary List + per-byte
+    String concat. The digits are written in reverse and then reversed
+    in place inside ``buf``, so the operation is a constant number of
+    pointer ops plus the digit count's worth of byte writes — no
+    intermediate List, no String allocation.
+    """
     if value == 0:
-        return String("0")
-    var digits = List[UInt8]()
+        buf.append(UInt8(48))
+        return
+    var start = len(buf)
     var v = value
     while v > 0:
-        digits.append(UInt8(v % 10 + 48))
+        buf.append(UInt8((v % 10) + 48))
         v //= 10
-    var result = String()
-    var i = len(digits) - 1
-    while i >= 0:
-        result += chr(Int(digits[i]))
-        i -= 1
-    return result^
+    var end = len(buf) - 1
+    var ptr = buf.unsafe_ptr()
+    while start < end:
+        var t = ptr[start]
+        ptr[start] = ptr[end]
+        ptr[end] = t
+        start += 1
+        end -= 1
+
+
+@always_inline
+def _append_hex_lower(mut buf: List[UInt8], value: Int):
+    """Emit ``value`` as lowercase ASCII hex digits straight into ``buf``."""
+    if value == 0:
+        buf.append(UInt8(48))
+        return
+    var start = len(buf)
+    var v = value
+    while v > 0:
+        var nib = v & 0xF
+        if nib < 10:
+            buf.append(UInt8(nib + 48))
+        else:
+            buf.append(UInt8(nib - 10 + 97))
+        v >>= 4
+    var end = len(buf) - 1
+    var ptr = buf.unsafe_ptr()
+    while start < end:
+        var t = ptr[start]
+        ptr[start] = ptr[end]
+        ptr[end] = t
+        start += 1
+        end -= 1
+
+
+def _int_to_string(value: Int) -> String:
+    """Convert a non-negative integer to its decimal string representation.
+
+    Kept as a fallback for callers that still need a String. New code
+    on the hot path should use ``_append_decimal`` directly.
+    """
+    var buf = List[UInt8]()
+    _append_decimal(buf, value)
+    return String(unsafe_from_utf8=buf^)
 
 
 def _int_to_hex_lower(value: Int) -> String:
     """Convert a non-negative integer to a lowercase hex string."""
-    if value == 0:
-        return String("0")
-    var hex_chars = String("0123456789abcdef")
-    var hb = hex_chars.as_bytes()
-    var digits = List[UInt8]()
-    var v = value
-    while v > 0:
-        digits.append(hb[v & 0xF])
-        v >>= 4
-    var result = String()
-    var i = len(digits) - 1
-    while i >= 0:
-        result += chr(Int(digits[i]))
-        i -= 1
-    return result^
+    var buf = List[UInt8]()
+    _append_hex_lower(buf, value)
+    return String(unsafe_from_utf8=buf^)
 
 
 # --- Header / body helpers ---
@@ -152,7 +187,7 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
             ref chunk = body[i].data()
             var chunk_len = len(chunk)
             if chunk_len > 0:
-                _append_str(buf, _int_to_hex_lower(chunk_len))
+                _append_hex_lower(buf, chunk_len)
                 _append_crlf(buf)
                 buf.extend(Span(chunk))
                 _append_crlf(buf)
@@ -200,7 +235,10 @@ def serialize_request(request: Request) raises -> List[UInt8]:
 
     _serialize_headers(buf, request.headers)
     if body_len > 0 and not request.headers.has("content-length"):
-        _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
+        _append_str(buf, String("content-length"))
+        _append_colon_sp(buf)
+        _append_decimal(buf, body_len)
+        _append_crlf(buf)
 
     # End of header block.
     _append_crlf(buf)
@@ -231,7 +269,7 @@ def serialize_response(response: Response) -> List[UInt8]:
     # Status-line: version SP status-code SP reason-phrase CRLF.
     _append_str(buf, _version_string(response.version))
     buf.append(UInt8(0x20))
-    _append_str(buf, _int_to_string(status_int))
+    _append_decimal(buf, status_int)
     buf.append(UInt8(0x20))  # SP after status, even with empty reason.
     _append_str(buf, response.reason)
     _append_crlf(buf)
@@ -256,7 +294,11 @@ def serialize_response(response: Response) -> List[UInt8]:
     if use_chunked:
         _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
     elif body_len > 0 and not response.headers.has("content-length"):
-        _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
+        # Emit "content-length: <n>\r\n" without going through a String.
+        _append_str(buf, String("content-length"))
+        _append_colon_sp(buf)
+        _append_decimal(buf, body_len)
+        _append_crlf(buf)
 
     _append_crlf(buf)
 
@@ -277,7 +319,7 @@ def serialize_informational(status: StatusCode, headers: Headers) -> List[UInt8]
     var buf = List[UInt8]()
     _append_str(buf, String("HTTP/1.1"))
     buf.append(UInt8(0x20))
-    _append_str(buf, _int_to_string(Int(status.code())))
+    _append_decimal(buf, Int(status.code()))
     buf.append(UInt8(0x20))  # SP after status, even with empty reason.
     _append_crlf(buf)
     _serialize_headers(buf, headers)
