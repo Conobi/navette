@@ -86,7 +86,7 @@ def _parse_query_int(target: String, name: String) -> Optional[Int]:
     return None
 
 
-comptime _PLAINTEXT_WIRE: StaticString = (
+comptime _PLAINTEXT_WIRE_H1: StaticString = (
     "HTTP/1.1 200 OK\r\n"
     "content-type: text/plain\r\n"
     "content-length: 13\r\n"
@@ -99,12 +99,33 @@ def handle_plaintext(mut resp: ResponseWriter) raises:
     """GET /plaintext -> 13-byte "Hello, World!" text/plain.
 
     Matches Flare's `docs/benchmark.md` headline endpoint (TFB plaintext,
-    TechEmpower test #6). The full wire response (status line + headers +
-    body) is constant, so we ship it via the precompiled-response bypass
-    on ResponseWriter — the runtime adapter memcpys ``_PLAINTEXT_WIRE``
-    straight into the outbound buffer and skips the serializer entirely.
+    TechEmpower test #6). Generic slow path that goes through
+    send_status / try_send_body / serialize_response. Used by the H2
+    and H3 sync adapters (which do not yet wire the send_prebuilt
+    bypass — they call _take_status().unsafe_take() unconditionally
+    after _has_status()). The H1 path uses handle_plaintext_prebuilt
+    for the bypass.
     """
-    resp.send_prebuilt(_PLAINTEXT_WIRE.as_bytes())
+    var body = String("Hello, World!")
+    var hdrs = Headers()
+    hdrs.add("content-type", "text/plain")
+    hdrs.add("content-length", String(body.byte_length()))
+    resp.send_status(StatusCode(200), hdrs^)
+    _ = resp.try_send_body(BodyFrame.data(_str_to_bytes(body)))
+    resp.end()
+
+
+def handle_plaintext_prebuilt(mut resp: ResponseWriter) raises:
+    """H1-only fast path for GET /plaintext.
+
+    Ships a pre-rendered RFC 9112 response via send_prebuilt — the H1
+    runtime adapter memcpys ``_PLAINTEXT_WIRE_H1`` straight into the
+    outbound buffer and skips serialize_response + Response
+    materialization. Not safe to call from the H2 / H3 adapters: their
+    response emitters take _captured_status unconditionally and would
+    abort on the empty Optional that send_prebuilt leaves behind.
+    """
+    resp.send_prebuilt(_PLAINTEXT_WIRE_H1.as_bytes())
 
 
 def handle_baseline2(target: String, mut resp: ResponseWriter) raises:
@@ -763,6 +784,14 @@ struct BenchHandler(StreamHandler):
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
+        # H1 fast path: /plaintext ships via the precompiled-response
+        # bypass. Safe here because H1HandlerServer is the only adapter
+        # that wires _take_prebuilt; the H2 and H3 adapters
+        # (bench_h2_body_fn / bench_h3_body_fn) go through the slow
+        # _dispatch_request path which uses handle_plaintext.
+        if caps.is_h1() and _starts_with(req.target, String("/plaintext")):
+            handle_plaintext_prebuilt(resp)
+            return
         _dispatch_request(req.target, req.headers, resp, self.state_ptr)
 
     def on_body_available(
