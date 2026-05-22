@@ -49,6 +49,11 @@ struct ServerConnection(Movable):
         self._inner.send_informational(status^, headers^)
 
     @always_inline
+    def _append_outbound(mut self, wire: Span[UInt8, _]):
+        """Append a pre-rendered wire payload (prebuilt-response bypass)."""
+        self._inner._append_outbound(wire)
+
+    @always_inline
     def drain(mut self) -> List[UInt8]:
         return self._inner.drain()
 

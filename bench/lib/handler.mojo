@@ -86,20 +86,25 @@ def _parse_query_int(target: String, name: String) -> Optional[Int]:
     return None
 
 
+comptime _PLAINTEXT_WIRE: StaticString = (
+    "HTTP/1.1 200 OK\r\n"
+    "content-type: text/plain\r\n"
+    "content-length: 13\r\n"
+    "\r\n"
+    "Hello, World!"
+)
+
+
 def handle_plaintext(mut resp: ResponseWriter) raises:
     """GET /plaintext -> 13-byte "Hello, World!" text/plain.
 
     Matches Flare's `docs/benchmark.md` headline endpoint (TFB plaintext,
-    TechEmpower test #6). Keeps Content-Length explicit and Content-Type
-    text/plain so wrk2's response-integrity check accepts the body unchanged.
+    TechEmpower test #6). The full wire response (status line + headers +
+    body) is constant, so we ship it via the precompiled-response bypass
+    on ResponseWriter — the runtime adapter memcpys ``_PLAINTEXT_WIRE``
+    straight into the outbound buffer and skips the serializer entirely.
     """
-    var body = String("Hello, World!")
-    var hdrs = Headers()
-    hdrs.add("content-type", "text/plain")
-    hdrs.add("content-length", String(body.byte_length()))
-    resp.send_status(StatusCode(200), hdrs^)
-    _ = resp.try_send_body(BodyFrame.data(_str_to_bytes(body)))
-    resp.end()
+    resp.send_prebuilt(_PLAINTEXT_WIRE.as_bytes())
 
 
 def handle_baseline2(target: String, mut resp: ResponseWriter) raises:

@@ -112,6 +112,14 @@ struct H1HandlerServer[H: StreamHandler](Movable):
             )
             return
 
+        # Fast path: handler emitted a fully pre-rendered response. Copy
+        # the wire bytes straight into the outbound buffer and skip the
+        # serializer + Response materialization entirely.
+        if resp_writer._has_prebuilt_response():
+            var pre = resp_writer._take_prebuilt()
+            self._conn._append_outbound(Span(pre))
+            return
+
         # Drain any 1xx informational responses captured before the final
         # status, and emit them on the wire first.
         var info_statuses = resp_writer._take_informational()

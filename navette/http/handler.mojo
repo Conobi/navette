@@ -4,6 +4,7 @@
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional
+from std.memory import Span
 from navette.http.body import BodyFrame
 from navette.http.config import DEFAULT_STREAM_WINDOW_HIGH, DEFAULT_STREAM_WINDOW_LOW
 from navette.http.headers import Headers
@@ -485,7 +486,17 @@ struct ResponseWriter(Movable):
     SendBody. send_status must be called before any try_send_body. The
     runtime owns the actual byte emission for status/headers; M2.5a stores
     them in _captured_status / _captured_headers and the H1 adapter polls
-    them after each handler invocation."""
+    them after each handler invocation.
+
+    Fast-path bypass: handlers that have already rendered the wire bytes
+    of a complete response (status line + headers + body) can call
+    ``send_prebuilt`` instead of send_status / try_send_body / end. The
+    runtime adapter detects the prebuilt payload via ``_take_prebuilt``
+    and forwards it straight to the outbound buffer, skipping the
+    serializer entirely. Only valid when the handler produces a single
+    complete response (no informationals, no chunked encoding, no
+    trailers); the prebuilt path is mutually exclusive with send_status.
+    """
 
     var _status_sent: Bool
     var _send_body: SendBody
@@ -493,6 +504,8 @@ struct ResponseWriter(Movable):
     var _captured_headers: Optional[Headers]
     var _captured_informational: List[StatusCode]
     var _captured_informational_headers: List[Headers]
+    var _prebuilt: List[UInt8]
+    var _has_prebuilt: Bool
 
     def __init__(out self):
         self._status_sent = False
@@ -501,6 +514,8 @@ struct ResponseWriter(Movable):
         self._captured_headers = Optional[Headers]()
         self._captured_informational = List[StatusCode]()
         self._captured_informational_headers = List[Headers]()
+        self._prebuilt = List[UInt8]()
+        self._has_prebuilt = False
 
     def __init__(out self, *, deinit take: Self):
         self._status_sent = take._status_sent
@@ -509,14 +524,36 @@ struct ResponseWriter(Movable):
         self._captured_headers = take._captured_headers^
         self._captured_informational = take._captured_informational^
         self._captured_informational_headers = take._captured_informational_headers^
+        self._prebuilt = take._prebuilt^
+        self._has_prebuilt = take._has_prebuilt
 
     @always_inline
     def send_status(mut self, var status: StatusCode, var headers: Headers) raises:
         if self._status_sent:
             raise Error("ResponseWriter.send_status: already sent")
+        if self._has_prebuilt:
+            raise Error("ResponseWriter.send_status: send_prebuilt already used")
         self._status_sent = True
         self._captured_status = Optional[StatusCode](status^)
         self._captured_headers = Optional[Headers](headers^)
+
+    @always_inline
+    def send_prebuilt(mut self, wire: Span[UInt8, _]) raises:
+        """Emit a pre-rendered complete response (status + headers + body).
+
+        Skips serialize_response. The runtime adapter copies ``wire``
+        straight into the outbound buffer. Mutually exclusive with
+        send_status — use this when the entire wire payload is known
+        ahead of time (e.g., a cached static response).
+        """
+        if self._status_sent:
+            raise Error("ResponseWriter.send_prebuilt: send_status already used")
+        if self._has_prebuilt:
+            raise Error("ResponseWriter.send_prebuilt: already sent")
+        self._has_prebuilt = True
+        self._status_sent = True
+        if len(wire) > 0:
+            self._prebuilt.extend(wire)
 
     def send_informational(mut self, var status: StatusCode, var headers: Headers) raises:
         if self._status_sent:
@@ -579,6 +616,17 @@ struct ResponseWriter(Movable):
     @always_inline
     def _pop_body_frame(mut self) raises -> Optional[BodyFrame]:
         return self._send_body._pop()
+
+    @always_inline
+    def _has_prebuilt_response(self) -> Bool:
+        return self._has_prebuilt
+
+    @always_inline
+    def _take_prebuilt(mut self) -> List[UInt8]:
+        var out = self._prebuilt^
+        self._prebuilt = List[UInt8]()
+        self._has_prebuilt = False
+        return out^
 
 
 # ---------------------------------------------------------------------------
