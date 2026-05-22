@@ -446,6 +446,8 @@ struct H1ServerHandler(CompletionHandler):
         var sent = Int(result)
         var buf_len = len(c.send_buf)
         if sent < buf_len:
+            # Forward left-shift: src = sent+i > dst = i, so no aliasing
+            # corruption. Pure shrink — the resize fill byte is dead.
             var keep = buf_len - sent
             var ptr = c.send_buf.unsafe_ptr()
             for i in range(keep):
@@ -457,11 +459,15 @@ struct H1ServerHandler(CompletionHandler):
         # Full send completed — clear in place, preserve capacity.
         c.send_buf.clear()
 
-        # Promote any pending data by swapping the buffers (no copy).
+        # Promote any pending data by swapping the two Lists. After the
+        # clear above, send_buf is empty but retains its underlying
+        # capacity; the swap moves the pending bytes into send_buf and
+        # hands the now-empty send_buf storage to send_pending, so both
+        # buffers' capacities survive across requests on this connection.
         if len(c.send_pending) > 0:
-            # send_buf is empty, send_pending has data: swap.
+            var tmp = c.send_buf^
             c.send_buf = c.send_pending^
-            c.send_pending = List[UInt8]()
+            c.send_pending = tmp^
             self._queue_send(idx)
             return
 
