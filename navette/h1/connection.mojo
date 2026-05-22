@@ -292,10 +292,30 @@ struct H1Connection(Movable):
         self._outbound_buf.extend(Span(wire))
 
     def drain(mut self) -> List[UInt8]:
-        """Remove and return all bytes currently in the outbound buffer."""
+        """Remove and return all bytes currently in the outbound buffer.
+
+        Swaps the owned buffer into the caller and replaces it with an
+        empty List. For the hot path that wants to reuse the existing
+        capacity, prefer ``drain_into`` which appends into a caller-owned
+        sink and clears ``_outbound_buf`` in place.
+        """
         var out = self._outbound_buf^
         self._outbound_buf = List[UInt8]()
         return out^
+
+    @always_inline
+    def drain_into(mut self, mut sink: List[UInt8]):
+        """Append the outbound buffer into ``sink`` and clear in place.
+
+        Preserves ``_outbound_buf``'s underlying capacity across requests
+        so successive responses on the same keep-alive connection avoid
+        the per-request List allocation that ``drain`` produces.
+        """
+        var n = len(self._outbound_buf)
+        if n == 0:
+            return
+        sink.extend(Span(self._outbound_buf))
+        self._outbound_buf.clear()
 
     # --- Connection state queries ---
 
@@ -332,15 +352,30 @@ struct H1Connection(Movable):
 
         Called after every successful parse so the cursor stays at zero
         and the buffer does not grow without bound across many messages.
+
+        Fast paths:
+          * ``cursor == 0`` — nothing consumed yet, no work.
+          * ``cursor == len(buf)`` — buffer fully consumed (the common
+            case on keep-alive after a complete request). Clear in place
+            and preserve capacity instead of allocating a fresh List.
+          * ``keep > 0`` — shift the tail down via an in-place byte move
+            using the buffer's own pointer, then resize, again preserving
+            the underlying capacity.
         """
-        if self._inbound_cursor == 0:
+        var cursor = self._inbound_cursor
+        if cursor == 0:
             return
         var n = len(self._inbound_buf)
-        var keep = n - self._inbound_cursor
-        var new_buf = List[UInt8](capacity=keep)
-        if keep > 0:
-            new_buf.extend(Span(self._inbound_buf)[self._inbound_cursor:n])
-        self._inbound_buf = new_buf^
+        var keep = n - cursor
+        if keep <= 0:
+            self._inbound_buf.clear()
+            self._inbound_cursor = 0
+            return
+        # In-place left-shift of [cursor:n] to [0:keep].
+        var ptr = self._inbound_buf.unsafe_ptr()
+        for i in range(keep):
+            ptr[i] = ptr[cursor + i]
+        self._inbound_buf.resize(keep, UInt8(0))
         self._inbound_cursor = 0
 
     def _update_keep_alive(mut self, headers: Headers):
