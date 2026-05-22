@@ -59,6 +59,12 @@ comptime _RECV_BUF_SIZE: Int = 8192
 comptime _DEFAULT_PLAINTEXT_PORT: UInt16 = 8080
 comptime _DEFAULT_TLS_PORT: UInt16 = 8081
 comptime SO_REUSEPORT: Int32 = 15
+# TCP_NODELAY: disable Nagle so small responses (the bench /plaintext
+# body is 13 bytes) flush immediately instead of waiting on a delayed
+# ACK. Matches hyper / nginx / actix-web defaults — pure-loss without
+# this on a single-host wrk2 calibrated-peak run.
+comptime IPPROTO_TCP: Int32 = 6
+comptime TCP_NODELAY: Int32 = 1
 
 # TLS connection phases — only meaningful when tls_enabled.
 comptime _PHASE_TLS_HANDSHAKE: UInt8 = 0
@@ -163,6 +169,9 @@ struct H1ServerHandler(CompletionHandler):
     var tls_enabled: Bool
     var tls_lib: Optional[RustlsLibrary]
     var server_tls_config: Optional[TlsServerConfig]
+    # Shared 4-byte optval blob for setsockopt(TCP_NODELAY, 1) so each
+    # accept doesn't allocate / free its own copy.
+    var _sockopt_on: UnsafePointer[UInt8, MutAnyOrigin]
 
     def __init__(
         out self,
@@ -179,6 +188,12 @@ struct H1ServerHandler(CompletionHandler):
         self.tls_enabled = Bool(tls_lib) and Bool(server_tls_config)
         self.tls_lib = tls_lib^
         self.server_tls_config = server_tls_config^
+        var optval = _heap_alloc[UInt8](4).as_any_origin()
+        optval[0] = 1
+        optval[1] = 0
+        optval[2] = 0
+        optval[3] = 0
+        self._sockopt_on = optval
 
     def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
@@ -189,6 +204,14 @@ struct H1ServerHandler(CompletionHandler):
         self.tls_enabled = take.tls_enabled
         self.tls_lib = take.tls_lib^
         self.server_tls_config = take.server_tls_config^
+        self._sockopt_on = take._sockopt_on
+
+    @always_inline
+    def _set_tcp_nodelay(self, fd: Int32):
+        """setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &1, 4). Best-effort."""
+        _ = external_call["setsockopt", Int32](
+            fd, IPPROTO_TCP, TCP_NODELAY, self._sockopt_on, Int32(4)
+        )
 
     # --- Conn lookup ---
 
@@ -318,6 +341,12 @@ struct H1ServerHandler(CompletionHandler):
         var client_fd = result
         var conn_id = self.next_conn_id
         self.next_conn_id += 1
+
+        # TCP_NODELAY: flush every send immediately. Without this, a
+        # 13-byte plaintext body sits in the Nagle buffer until the
+        # peer's delayed-ACK timer fires (up to 40 ms on Linux),
+        # which is fatal to wrk2 calibrated-peak throughput.
+        self._set_tcp_nodelay(client_fd)
 
         var handle = OwnedHandle(raw=client_fd)
         var handler = BenchHandler(self.state_ptr)
