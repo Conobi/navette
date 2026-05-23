@@ -41,8 +41,8 @@ holds.
 
 `udp_fd` is a `RawHandle` (not owned). The caller owns the
 `OwnedHandle` from `udp_listener()` and must keep it alive across
-the server's lifetime. Same for the `RustlsLibrary` instance —
-`lib_addr` stores its address but does not own it.
+the server's lifetime. The `RustlsLibrary` and `QuicServerConfig`
+are moved into the server and destroyed after all connections.
 """
 
 from std.collections.dict import Dict
@@ -58,6 +58,8 @@ from boucle._sys.linux.raw.x86_64.io_uring import (
     IORING_CQE_BUFFER_SHIFT,
 )
 
+from navette.tls.lib import RustlsLibrary
+from navette.tls.config import QuicServerConfig
 from navette.http.handler import StreamHandler
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
@@ -360,14 +362,6 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     # needed for io_uring submission.
     var udp_handle: OwnedHandle
 
-    # rustls library pointer (cast to UInt64 to thread through QuicConnection
-    # FFI). Caller owns the RustlsLibrary instance.
-    var lib_addr: UInt64
-
-    # rustls server config handle (from src/tls/lib.mojo). Cloned per
-    # new conn via the QuicConnection.server() FFI path.
-    var server_config: Int32
-
     # Transport params reused for every new QuicConnection.server() call.
     var transport_params: TransportParams
 
@@ -383,6 +377,14 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     var conn_slots: List[ConnSlot[Self.H]]
     var conn_dcid_map: Dict[UInt64, _DcidEntry]
     var next_generation: UInt64
+
+    # rustls library instance. Declared AFTER conn_slots so that Mojo's
+    # declaration-order destruction destroys connections before the library.
+    var lib: RustlsLibrary
+
+    # QUIC server TLS config wrapper. Destroyed after connections, before
+    # the library (declaration order).
+    var server_config: QuicServerConfig
 
     # Ingress staging. pending_rx fills from on_complete (one per
     # recvmsg CQE); _flush_impl drains it in on_flush.
@@ -421,20 +423,21 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     def __init__(
         out self,
         var udp_handle: OwnedHandle,
-        lib_addr: UInt64,
-        server_config: Int32,
+        var lib: RustlsLibrary,
+        var server_config: QuicServerConfig,
         var transport_params: TransportParams,
         make_handler: def () thin raises -> Self.H,
     ):
         self.udp_handle = udp_handle^
-        self.lib_addr = lib_addr
-        self.server_config = server_config
         self.transport_params = transport_params^
         self.make_handler = make_handler
 
         self.conn_slots = List[ConnSlot[Self.H]]()
         self.conn_dcid_map = Dict[UInt64, _DcidEntry]()
         self.next_generation = UInt64(0)
+
+        self.lib = lib^
+        self.server_config = server_config^
 
         self.pending_rx = List[PendingDatagram]()
         self.consumed_bufs = List[UInt16]()
@@ -670,7 +673,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 var quic: QuicConnection
                 try:
                     quic = QuicConnection.server(
-                        self.lib_addr,
+                        self.lib,
                         self.server_config,
                         self.transport_params.copy(),
                         Span(pd.dcid),
