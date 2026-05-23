@@ -19,7 +19,7 @@ Cert + key paths default to `certs/server.crt` / `certs/server.key`
 """
 
 from std.collections.dict import Dict
-from std.memory import UnsafePointer
+from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.completion import BatchCompletionLoop
@@ -46,6 +46,7 @@ from navette.http.handler import (
 from navette.io.udp_socket import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls.lib import RustlsLibrary
+from navette.tls.config import QuicServerConfig
 
 from interop.file_io import read_file
 
@@ -101,37 +102,7 @@ def test_h3_udp_server_init_and_tick() raises:
     var cert = read_file(String("certs/server.crt"))
     var key = read_file(String("certs/server.key"))
     var lib = RustlsLibrary()
-
-    var cert_buf = _heap_alloc[UInt8](len(cert)).as_any_origin()
-    for i in range(len(cert)):
-        cert_buf[i] = cert[i]
-    var key_buf = _heap_alloc[UInt8](len(key)).as_any_origin()
-    for i in range(len(key)):
-        key_buf[i] = key[i]
-
-    var alpn = String("h3")
-    var alpn_bytes = alpn.as_bytes()
-    var alpn_buf = _heap_alloc[UInt8](len(alpn_bytes)).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_buf[i] = alpn_bytes[i]
-
-    var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    out_handle[0] = Int32(-1)
-    var rc = lib.quic_server_config_new(
-        cert_buf, Int32(len(cert)),
-        key_buf, Int32(len(key)),
-        alpn_buf, Int32(len(alpn_bytes)),
-        Int32(0),
-        out_handle,
-    )
-    cert_buf.free()
-    key_buf.free()
-    alpn_buf.free()
-    if rc != 0:
-        out_handle.free()
-        raise "quic_server_config_new failed: " + lib.last_error()
-    var server_config = out_handle[0]
-    out_handle.free()
+    var config = QuicServerConfig(lib, Span(cert), Span(key))
 
     # ── 2. UDP listener on ephemeral port ──────────────────────
     var sock = udp_listener(0)  # kernel picks a free port
@@ -141,8 +112,8 @@ def test_h3_udp_server_init_and_tick() raises:
     var tp = default_transport_params()
     var server = H3UdpServer[StubHandler](
         sock^,
-        UInt64(Int(UnsafePointer(to=lib))),
-        server_config,
+        lib^,
+        config^,
         tp^,
         make_stub_handler,
     )
