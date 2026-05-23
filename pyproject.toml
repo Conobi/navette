@@ -30,7 +30,10 @@ requires = [
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
     # the project's runtime deps, so boucle is pinned here too.
-    "boucle @ git+ssh://git@github.com/Conobi/boucle.git@956f1003ef68d50b1f65f7ad263a5374c5c9bbd2",
+    # Local-path source for now until the boucle commits including the public-API
+    # surface are pushed to the git remote; [tool.uv.sources] honours the editable
+    # path and PEP 508 falls back gracefully.
+    "boucle",
 ]
 build-backend = "mojox_build"
 
@@ -119,4 +122,4 @@ native-libs = [
 prerelease = "allow"
 
 [tool.uv.sources]
-boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "956f1003ef68d50b1f65f7ad263a5374c5c9bbd2" }
+boucle = { path = "../boucle", editable = true }
