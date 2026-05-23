@@ -11,6 +11,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Dict, InlineArray
 
 from navette.tls.lib import RustlsLibrary
+from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header, is_long_header_initial, extract_dcid
@@ -185,54 +186,6 @@ def _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
         key += chr(Int(hex_bytes[b >> 4]))
         key += chr(Int(hex_bytes[b & 0x0F]))
     return key^
-
-
-def _create_server_config(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
-    alpn: String,
-    certs_dir: String,
-) raises -> Int32:
-    """Create a QUIC server TLS config from PEM files in certs_dir."""
-    var cert_data = read_file(certs_dir + "/server.crt")
-    var key_data = read_file(certs_dir + "/server.key")
-
-    var cert_len = len(cert_data)
-    var key_len = len(key_data)
-
-    var cert_buf = _heap_alloc[UInt8](cert_len).as_any_origin()
-    for i in range(cert_len):
-        cert_buf[i] = cert_data[i]
-
-    var key_buf = _heap_alloc[UInt8](key_len).as_any_origin()
-    for i in range(key_len):
-        key_buf[i] = key_data[i]
-
-    # ALPN: raw protocol name bytes.
-    var alpn_bytes = alpn.as_bytes()
-    var alpn_wire_len = len(alpn_bytes)
-    var alpn_buf = _heap_alloc[UInt8](alpn_wire_len).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_buf[i] = alpn_bytes[i]
-
-    var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_buf, Int32(cert_len),
-        key_buf, Int32(key_len),
-        alpn_buf, Int32(alpn_wire_len),
-        Int32(0),  # max_early_data: 0-RTT disabled (P3 will flip)
-        out_handle,
-    )
-
-    var config_handle = out_handle[0]
-    cert_buf.free()
-    key_buf.free()
-    alpn_buf.free()
-    out_handle.free()
-
-    if rc != Int32(0):
-        raise "quic_server_config_new failed: " + lib_ptr[].last_error()
-
-    return config_handle
 
 
 # ── PendingDatagram ──────────────────────────────────────────────────
@@ -430,8 +383,8 @@ struct H3UdpHandler(BatchCompletionHandler):
     var tx_slot_from_pool: List[Bool]
     var next_tx_id: UInt64
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
-    var lib_addr: UInt64
-    var server_config: Int32
+    var lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin]
+    var server_config: QuicServerConfig
     var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
     # Plan B profile (always present; dead in off-build).
@@ -456,8 +409,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         out self,
         udp_fd: Int32,
         state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
-        lib_addr: UInt64,
-        server_config: Int32,
+        lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
+        var server_config: QuicServerConfig,
     ):
         self.udp_fd = udp_fd
         self.conn_dcid_map = Dict[UInt64, Int]()
@@ -496,8 +449,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slot_from_pool = List[Bool]()
         self.next_tx_id = UInt64(0)
         self.state_ptr = state_ptr
-        self.lib_addr = lib_addr
-        self.server_config = server_config
+        self.lib_ptr = lib_ptr
+        self.server_config = server_config^
         self.pending_submits = List[PendingSubmit]()
 
         # Allocate timeout timespec (16 bytes): 50ms = 50_000_000 ns LE.
@@ -540,8 +493,8 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slot_from_pool = take.tx_slot_from_pool^
         self.next_tx_id = take.next_tx_id
         self.state_ptr = take.state_ptr
-        self.lib_addr = take.lib_addr
-        self.server_config = take.server_config
+        self.lib_ptr = take.lib_ptr
+        self.server_config = take.server_config^
         self.timeout_ts = take.timeout_ts
         self.pending_submits = take.pending_submits^
         self.profile = take.profile^
@@ -773,7 +726,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 try:
                     comptime if PROFILE_ACCEPT:
                         quic = QuicConnection.server(
-                            self.lib_addr,
+                            self.lib_ptr[],
                             self.server_config,
                             tp,
                             Span(pd.dcid),
@@ -783,7 +736,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                         )
                     else:
                         quic = QuicConnection.server(
-                            self.lib_addr,
+                            self.lib_ptr[],
                             self.server_config,
                             tp,
                             Span(pd.dcid),
@@ -1231,12 +1184,11 @@ def main() raises:
     else:
         certs_dir = String("certs")
 
-    var lib = RustlsLibrary()
     var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
-    lib_ptr.init_pointee_move(lib^)
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var server_config = _create_server_config(lib_ptr, "h3", certs_dir)
+    lib_ptr.init_pointee_move(RustlsLibrary())
+    var cert = read_file(certs_dir + "/server.crt")
+    var key = read_file(certs_dir + "/server.key")
+    var server_config = QuicServerConfig(lib_ptr[], Span(cert), Span(key))
 
     # Create UDP socket via the library factory.
     # `sock` owns the fd via OwnedHandle and MUST outlive the io_uring
@@ -1287,8 +1239,8 @@ def main() raises:
     var handler = H3UdpHandler(
         udp_fd=udp_fd,
         state_ptr=state_ptr,
-        lib_addr=lib_addr,
-        server_config=server_config,
+        lib_ptr=lib_ptr,
+        server_config=server_config^,
     )
     var loop = BatchCompletionLoop[H3UdpHandler](handler^, sq_entries=4096)
 

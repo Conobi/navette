@@ -24,6 +24,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Dict, InlineArray
 
 from navette.tls.lib import RustlsLibrary
+from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header
@@ -108,45 +109,6 @@ def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
     else:
         var result = parse_packet_header(data, 8)
         return List[UInt8](copy=result[0].dcid)
-
-
-def _create_server_config(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
-    alpn: String,
-    certs_dir: String,
-) raises -> Int32:
-    """Create a QUIC server TLS config from PEM files in certs_dir."""
-    var cert_data = read_file(certs_dir + "/server.crt")
-    var key_data = read_file(certs_dir + "/server.key")
-    var cert_len = len(cert_data)
-    var key_len = len(key_data)
-    var cert_buf = _heap_alloc[UInt8](cert_len).as_any_origin()
-    for i in range(cert_len):
-        cert_buf[i] = cert_data[i]
-    var key_buf = _heap_alloc[UInt8](key_len).as_any_origin()
-    for i in range(key_len):
-        key_buf[i] = key_data[i]
-    var alpn_bytes = alpn.as_bytes()
-    var alpn_wire_len = len(alpn_bytes)
-    var alpn_buf = _heap_alloc[UInt8](alpn_wire_len).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_buf[i] = alpn_bytes[i]
-    var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_buf, Int32(cert_len),
-        key_buf, Int32(key_len),
-        alpn_buf, Int32(alpn_wire_len),
-        Int32(0),  # max_early_data: 0-RTT disabled (P3 will flip)
-        out_handle,
-    )
-    var config_handle = out_handle[0]
-    cert_buf.free()
-    key_buf.free()
-    alpn_buf.free()
-    out_handle.free()
-    if rc != Int32(0):
-        raise "quic_server_config_new failed: " + lib_ptr[].last_error()
-    return config_handle
 
 
 # ── PendingDatagram ──────────────────────────────────────────────────
@@ -306,16 +268,16 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
     var tx_slot_tokens: List[UInt64]
     var tx_slot_idx_by_token: Dict[UInt64, Int]
     var next_tx_id: UInt64
-    var lib_addr: UInt64
-    var server_config: Int32
+    var lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin]
+    var server_config: QuicServerConfig
     var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
 
     def __init__(
         out self,
         udp_fd: Int32,
-        lib_addr: UInt64,
-        server_config: Int32,
+        lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
+        var server_config: QuicServerConfig,
     ):
         self.udp_fd = udp_fd
         self.conn_map = Dict[String, Int]()
@@ -335,8 +297,8 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
         self.tx_slot_tokens = List[UInt64]()
         self.tx_slot_idx_by_token = Dict[UInt64, Int]()
         self.next_tx_id = UInt64(0)
-        self.lib_addr = lib_addr
-        self.server_config = server_config
+        self.lib_ptr = lib_ptr
+        self.server_config = server_config^
         self.pending_submits = List[PendingSubmit]()
         self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_any_origin()
         for i in range(TIMESPEC_SIZE):
@@ -361,8 +323,8 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
         self.tx_slot_tokens = take.tx_slot_tokens^
         self.tx_slot_idx_by_token = take.tx_slot_idx_by_token^
         self.next_tx_id = take.next_tx_id
-        self.lib_addr = take.lib_addr
-        self.server_config = take.server_config
+        self.lib_ptr = take.lib_ptr
+        self.server_config = take.server_config^
         self.timeout_ts = take.timeout_ts
         self.pending_submits = take.pending_submits^
 
@@ -458,7 +420,7 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
                 var quic: QuicConnection
                 try:
                     quic = QuicConnection.server(
-                        self.lib_addr,
+                        self.lib_ptr[],
                         self.server_config,
                         tp,
                         Span(pd.dcid),
@@ -663,12 +625,11 @@ def main() raises:
     else:
         certs_dir = String("certs")
 
-    var lib = RustlsLibrary()
     var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
-    lib_ptr.init_pointee_move(lib^)
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var server_config = _create_server_config(lib_ptr, "h3", certs_dir)
+    lib_ptr.init_pointee_move(RustlsLibrary())
+    var cert = read_file(certs_dir + "/server.crt")
+    var key = read_file(certs_dir + "/server.key")
+    var server_config = QuicServerConfig(lib_ptr[], Span(cert), Span(key))
 
     var port = DEFAULT_PORT
     var udp_fd = _setup_udp_socket(port)
@@ -678,8 +639,8 @@ def main() raises:
 
     var handler = H3StreamingUdpHandler(
         udp_fd=udp_fd,
-        lib_addr=lib_addr,
-        server_config=server_config,
+        lib_ptr=lib_ptr,
+        server_config=server_config^,
     )
     var loop = BatchCompletionLoop[H3StreamingUdpHandler](handler^, sq_entries=4096)
 
