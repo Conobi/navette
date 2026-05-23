@@ -541,8 +541,8 @@ struct QuicConnection(Movable):
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
 
-        var lib = _get_lib(lib_addr)
-        var rc = lib[].quic_client_conn_new(
+        var lib_ffi = _get_lib(lib_addr)
+        var rc = lib_ffi[].quic_client_conn_new(
             config_handle,
             Int32(1),  # QUIC version 1
             sni_buf,
@@ -556,7 +556,7 @@ struct QuicConnection(Movable):
         tp_buf.free()
 
         if rc < 0:
-            var err = lib[].last_error()
+            var err = lib_ffi[].last_error()
             out_handle.free()
             raise "quic_client_conn_new failed: " + err
 
@@ -633,12 +633,12 @@ struct QuicConnection(Movable):
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
 
-        var lib = _get_lib(lib_addr)
+        var lib_ffi = _get_lib(lib_addr)
         # alloc_tls_handle_us bracket — rustls TLS session alloc FFI call.
         var t_tls_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
             t_tls_start = monotonic_us()
-        var rc = lib[].quic_server_conn_new(
+        var rc = lib_ffi[].quic_server_conn_new(
             config_handle,
             Int32(1),  # QUIC version 1
             tp_buf,
@@ -652,7 +652,7 @@ struct QuicConnection(Movable):
         tp_buf.free()
 
         if rc < 0:
-            var err = lib[].last_error()
+            var err = lib_ffi[].last_error()
             out_handle.free()
             raise "quic_server_conn_new failed: " + err
 
