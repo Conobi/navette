@@ -15,6 +15,7 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.tls.lib import RustlsLibrary
+from navette.tls.config import QuicClientConfig
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.trans_param import default_transport_params
 from interop.file_io import read_file, write_file, getenv, getenv_opt, basename, setenv
@@ -216,29 +217,11 @@ def main() raises:
     # ── Load TLS library + CA cert ────────────────────────────────────────
     var lib_ptr = _heap_alloc[RustlsLibrary](1)
     lib_ptr.init_pointee_move(RustlsLibrary())
-    var lib_addr = UInt64(Int(lib_ptr))
 
     var ca_pem = read_file(certs_dir + "/ca.pem")
-    var ca_ptr = ca_pem.unsafe_ptr().as_any_origin()
-    var ca_len = Int32(len(ca_pem))
-
-    # ALPN = "hq-interop" for HTTP/0.9 interop
-    var alpn_str = String("hq-interop")
-    var alpn_bytes = alpn_str.as_bytes()
-    var alpn_ptr = _heap_alloc[UInt8](len(alpn_bytes)).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_ptr[i] = alpn_bytes[i]
-    var alpn_len = Int32(len(alpn_bytes))
-
-    var cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cfg_ptr,
+    var client_config = QuicClientConfig.with_ca(
+        lib_ptr[], Span(ca_pem), alpn="hq-interop",
     )
-    if rc != Int32(0):
-        raise "quic_client_config_with_ca failed: " + lib_ptr[].last_error()
-    var client_config = cfg_ptr[0]
-    cfg_ptr.free()
-    alpn_ptr.free()
 
     # ── Parse first URL for host:port (all URLs share the same server) ───
     var parsed0 = _parse_url(urls[0])
@@ -256,7 +239,7 @@ def main() raises:
     # ── Connect + handshake ───────────────────────────────────────────────
     var fd = udp_connect(host, port)
     var now = monotonic_us()
-    var quic = QuicConnection.client(lib_addr, client_config, host, params, now)
+    var quic = QuicConnection.client(lib_ptr[], client_config, host, params, now)
 
     _drive_handshake(quic, fd)
 
