@@ -128,14 +128,7 @@ def _to_lower(b: UInt8) -> UInt8:
 
 @always_inline
 def _bytes_to_string(data: List[UInt8], start: Int, end: Int) -> String:
-    """Build a String from an ASCII byte slice.
-
-    Bulk-copies into a sized List[UInt8] then converts once. Replaces the
-    previous per-byte `chr(Int(b))` + `String += chr` pattern, which did
-    O(n) heap allocations and quadratic-ish String growth per call. The
-    surface contract is unchanged: caller guarantees ASCII content
-    (parser validates request-line / header bytes upstream).
-    """
+    """Build a String from an ASCII byte slice (caller guarantees ASCII)."""
     var n = end - start
     if n <= 0:
         return String()

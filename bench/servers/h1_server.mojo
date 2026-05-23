@@ -167,8 +167,7 @@ struct H1ServerHandler(CompletionHandler):
     var tls_enabled: Bool
     var tls_lib: Optional[RustlsLibrary]
     var server_tls_config: Optional[TlsServerConfig]
-    # Shared 4-byte optval blob for setsockopt(TCP_NODELAY, 1) so each
-    # accept doesn't allocate / free its own copy.
+    # Shared "1" optval for setsockopt(TCP_NODELAY) so each accept doesn't realloc.
     var _sockopt_on: UnsafePointer[UInt8, MutAnyOrigin]
 
     def __init__(
@@ -439,8 +438,7 @@ struct H1ServerHandler(CompletionHandler):
         var sent = Int(result)
         var buf_len = len(c.send_buf)
         if sent < buf_len:
-            # Forward left-shift: src = sent+i > dst = i, so no aliasing
-            # corruption. Pure shrink — the resize fill byte is dead.
+            # Partial send: forward left-shift the unsent tail in place.
             var keep = buf_len - sent
             var ptr = c.send_buf.unsafe_ptr()
             for i in range(keep):
@@ -449,14 +447,9 @@ struct H1ServerHandler(CompletionHandler):
             self._queue_send(idx)
             return
 
-        # Full send completed — clear in place, preserve capacity.
         c.send_buf.clear()
 
-        # Promote any pending data by swapping the two Lists. After the
-        # clear above, send_buf is empty but retains its underlying
-        # capacity; the swap moves the pending bytes into send_buf and
-        # hands the now-empty send_buf storage to send_pending, so both
-        # buffers' capacities survive across requests on this connection.
+        # Swap with send_pending so both buffers' capacities persist.
         if len(c.send_pending) > 0:
             var tmp = c.send_buf^
             c.send_buf = c.send_pending^

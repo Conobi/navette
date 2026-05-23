@@ -62,14 +62,7 @@ def _method_string(method: Method) -> String:
 
 @always_inline
 def _append_decimal(mut buf: List[UInt8], value: Int):
-    """Emit ``value`` as ASCII decimal digits straight into ``buf``.
-
-    Avoids the previous round-trip through a temporary List + per-byte
-    String concat. The digits are written in reverse and then reversed
-    in place inside ``buf``, so the operation is a constant number of
-    pointer ops plus the digit count's worth of byte writes — no
-    intermediate List, no String allocation.
-    """
+    """Append ASCII decimal digits of ``value`` (>= 0) into ``buf``."""
     if value == 0:
         buf.append(UInt8(48))
         return
@@ -90,7 +83,7 @@ def _append_decimal(mut buf: List[UInt8], value: Int):
 
 @always_inline
 def _append_hex_lower(mut buf: List[UInt8], value: Int):
-    """Emit ``value`` as lowercase ASCII hex digits straight into ``buf``."""
+    """Append lowercase ASCII hex digits of ``value`` (>= 0) into ``buf``."""
     if value == 0:
         buf.append(UInt8(48))
         return
@@ -114,18 +107,14 @@ def _append_hex_lower(mut buf: List[UInt8], value: Int):
 
 
 def _int_to_string(value: Int) -> String:
-    """Convert a non-negative integer to its decimal string representation.
-
-    Kept as a fallback for callers that still need a String. New code
-    on the hot path should use ``_append_decimal`` directly.
-    """
+    """Decimal string for ``value`` (>= 0). Prefer ``_append_decimal`` on hot paths."""
     var buf = List[UInt8]()
     _append_decimal(buf, value)
     return String(unsafe_from_utf8=buf^)
 
 
 def _int_to_hex_lower(value: Int) -> String:
-    """Convert a non-negative integer to a lowercase hex string."""
+    """Lowercase-hex string for ``value`` (>= 0). Prefer ``_append_hex_lower`` on hot paths."""
     var buf = List[UInt8]()
     _append_hex_lower(buf, value)
     return String(unsafe_from_utf8=buf^)
@@ -294,7 +283,6 @@ def serialize_response(response: Response) -> List[UInt8]:
     if use_chunked:
         _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
     elif body_len > 0 and not response.headers.has("content-length"):
-        # Emit "content-length: <n>\r\n" without going through a String.
         _append_str(buf, String("content-length"))
         _append_colon_sp(buf)
         _append_decimal(buf, body_len)

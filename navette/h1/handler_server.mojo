@@ -51,23 +51,12 @@ struct H1HandlerServer[H: StreamHandler](Movable):
 
     @always_inline
     def drain(mut self) raises -> List[UInt8]:
-        """Drain queued outbound bytes for the transport to write.
-
-        Forwards directly to the underlying connection — the previous
-        intermediate ``_outbuf`` field added one extra ``extend`` and
-        one extra allocation per response without buying anything.
-        Callers that already own a sink should prefer ``drain_into``.
-        """
+        """Drain queued outbound bytes for the transport (prefer ``drain_into``)."""
         return self._conn.drain()
 
     @always_inline
     def drain_into(mut self, mut sink: List[UInt8]):
-        """Append queued outbound bytes into ``sink`` and clear in place.
-
-        Reuses both the connection-level outbound buffer and the
-        caller-owned sink across requests — zero ``List`` allocations
-        on the response hot path.
-        """
+        """Append queued outbound bytes into ``sink`` and clear in place."""
         self._conn.drain_into(sink)
 
     @always_inline
@@ -112,9 +101,7 @@ struct H1HandlerServer[H: StreamHandler](Movable):
             )
             return
 
-        # Fast path: handler emitted a fully pre-rendered response. Copy
-        # the wire bytes straight into the outbound buffer and skip the
-        # serializer + Response materialization entirely.
+        # Prebuilt-response fast path: skip serialize_response entirely.
         if resp_writer._has_prebuilt_response():
             var pre = resp_writer._take_prebuilt()
             self._conn._append_outbound(Span(pre))

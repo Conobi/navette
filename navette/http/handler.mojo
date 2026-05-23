@@ -488,14 +488,8 @@ struct ResponseWriter(Movable):
     them in _captured_status / _captured_headers and the H1 adapter polls
     them after each handler invocation.
 
-    Fast-path bypass: handlers that have already rendered the wire bytes
-    of a complete response (status line + headers + body) can call
-    ``send_prebuilt`` instead of send_status / try_send_body / end. The
-    runtime adapter detects the prebuilt payload via ``_take_prebuilt``
-    and forwards it straight to the outbound buffer, skipping the
-    serializer entirely. Only valid when the handler produces a single
-    complete response (no informationals, no chunked encoding, no
-    trailers); the prebuilt path is mutually exclusive with send_status.
+    Handlers that have already rendered the full wire response can call
+    ``send_prebuilt`` instead; mutually exclusive with send_status.
     """
 
     var _status_sent: Bool
@@ -541,20 +535,8 @@ struct ResponseWriter(Movable):
     def send_prebuilt(mut self, wire: Span[UInt8, _]) raises:
         """Emit a pre-rendered complete response (status + headers + body).
 
-        Skips serialize_response. The runtime adapter copies ``wire``
-        straight into the outbound buffer. Mutually exclusive with
-        ``send_status``, ``send_informational``, and ``try_send_body``
-        — use this when the entire wire payload is known ahead of time
-        (e.g., a cached static response). Raises on:
-
-          * empty ``wire`` (would emit no bytes — caller bug);
-          * prior ``send_status`` (mixing serialized + prebuilt paths);
-          * prior ``send_informational`` (the 1xx hints would be
-            silently dropped by the adapter's prebuilt fast-path);
-          * second ``send_prebuilt`` call.
-
-        After ``send_prebuilt``, calling ``try_send_body`` raises
-        because the prebuilt wire already contains the body.
+        Mutually exclusive with ``send_status``, ``send_informational``,
+        and ``try_send_body``; raises on empty wire or any conflict.
         """
         if self._status_sent:
             raise Error("ResponseWriter.send_prebuilt: send_status already used")

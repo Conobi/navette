@@ -96,16 +96,7 @@ comptime _PLAINTEXT_WIRE_H1: StaticString = (
 
 
 def handle_plaintext(mut resp: ResponseWriter) raises:
-    """GET /plaintext -> 13-byte "Hello, World!" text/plain.
-
-    Matches Flare's `docs/benchmark.md` headline endpoint (TFB plaintext,
-    TechEmpower test #6). Generic slow path that goes through
-    send_status / try_send_body / serialize_response. Used by the H2
-    and H3 sync adapters (which do not yet wire the send_prebuilt
-    bypass — they call _take_status().unsafe_take() unconditionally
-    after _has_status()). The H1 path uses handle_plaintext_prebuilt
-    for the bypass.
-    """
+    """GET /plaintext -> 13-byte "Hello, World!" text/plain. Slow path for H2/H3."""
     var body = String("Hello, World!")
     var hdrs = Headers()
     hdrs.add("content-type", "text/plain")
@@ -116,14 +107,9 @@ def handle_plaintext(mut resp: ResponseWriter) raises:
 
 
 def handle_plaintext_prebuilt(mut resp: ResponseWriter) raises:
-    """H1-only fast path for GET /plaintext.
+    """H1-only fast path: ship the precompiled wire response via send_prebuilt.
 
-    Ships a pre-rendered RFC 9112 response via send_prebuilt — the H1
-    runtime adapter memcpys ``_PLAINTEXT_WIRE_H1`` straight into the
-    outbound buffer and skips serialize_response + Response
-    materialization. Not safe to call from the H2 / H3 adapters: their
-    response emitters take _captured_status unconditionally and would
-    abort on the empty Optional that send_prebuilt leaves behind.
+    Unsafe on H2/H3 (their adapters call _take_status().unsafe_take()).
     """
     resp.send_prebuilt(_PLAINTEXT_WIRE_H1.as_bytes())
 
@@ -784,11 +770,7 @@ struct BenchHandler(StreamHandler):
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
-        # H1 fast path: /plaintext ships via the precompiled-response
-        # bypass. Safe here because H1HandlerServer is the only adapter
-        # that wires _take_prebuilt; the H2 and H3 adapters
-        # (bench_h2_body_fn / bench_h3_body_fn) go through the slow
-        # _dispatch_request path which uses handle_plaintext.
+        # H1 /plaintext: bypass via send_prebuilt (H2/H3 keep the slow path).
         if caps.is_h1() and _starts_with(req.target, String("/plaintext")):
             handle_plaintext_prebuilt(resp)
             return

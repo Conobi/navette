@@ -288,19 +288,9 @@ struct H1Connection(Movable):
 
     @always_inline
     def _append_outbound(mut self, wire: Span[UInt8, _]):
-        """Append a pre-rendered wire payload to the outbound buffer.
+        """Append a pre-rendered wire response. Suppresses body on HEAD (RFC 9112 §6.3).
 
-        Used by the prebuilt-response fast path (§3.2). The caller has
-        already produced a complete RFC 9112 message — there is nothing
-        for the serializer to add or check.
-
-        Mirrors ``send_response`` for the framing-sensitive cases that
-        the prebuilt caller cannot see at render time: if the in-flight
-        request was HEAD, truncate the body bytes after the first CRLF
-        CRLF (RFC 9112 §6.3 rule 1). 101 / CONNECT 2xx upgrades are not
-        valid prebuilt targets (the caller would need to know the request
-        context); we deliberately do not flip the phase here. Drops the
-        pending-method slot so the next request can dispatch.
+        Not safe for 101 / CONNECT 2xx (does not flip the connection phase).
         """
         var head_in_flight = False
         if self._pending_method.__bool__():
@@ -320,12 +310,9 @@ struct H1Connection(Movable):
 
     @always_inline
     def drain(mut self) -> List[UInt8]:
-        """Remove and return all bytes currently in the outbound buffer.
+        """Swap out the outbound buffer (allocates a fresh empty replacement).
 
-        Swaps the owned buffer into the caller and replaces it with an
-        empty List. For the hot path that wants to reuse the existing
-        capacity, prefer ``drain_into`` which appends into a caller-owned
-        sink and clears ``_outbound_buf`` in place.
+        For hot paths, prefer ``drain_into`` which preserves capacity.
         """
         var out = self._outbound_buf^
         self._outbound_buf = List[UInt8]()
@@ -333,12 +320,7 @@ struct H1Connection(Movable):
 
     @always_inline
     def drain_into(mut self, mut sink: List[UInt8]):
-        """Append the outbound buffer into ``sink`` and clear in place.
-
-        Preserves ``_outbound_buf``'s underlying capacity across requests
-        so successive responses on the same keep-alive connection avoid
-        the per-request List allocation that ``drain`` produces.
-        """
+        """Append the outbound buffer into ``sink`` and clear in place (keeps capacity)."""
         var n = len(self._outbound_buf)
         if n == 0:
             return
@@ -376,20 +358,7 @@ struct H1Connection(Movable):
     # --- Internal helpers ---
 
     def _compact_inbound(mut self):
-        """Drop consumed bytes from the front of the inbound buffer.
-
-        Called after every successful parse so the cursor stays at zero
-        and the buffer does not grow without bound across many messages.
-
-        Fast paths:
-          * ``cursor == 0`` — nothing consumed yet, no work.
-          * ``cursor == len(buf)`` — buffer fully consumed (the common
-            case on keep-alive after a complete request). Clear in place
-            and preserve capacity instead of allocating a fresh List.
-          * ``keep > 0`` — shift the tail down via an in-place byte move
-            using the buffer's own pointer, then resize, again preserving
-            the underlying capacity.
-        """
+        """Drop consumed bytes from the front of the inbound buffer (preserves capacity)."""
         var cursor = self._inbound_cursor
         if cursor == 0:
             return
@@ -399,7 +368,6 @@ struct H1Connection(Movable):
             self._inbound_buf.clear()
             self._inbound_cursor = 0
             return
-        # In-place left-shift of [cursor:n] to [0:keep].
         var ptr = self._inbound_buf.unsafe_ptr()
         for i in range(keep):
             ptr[i] = ptr[cursor + i]
