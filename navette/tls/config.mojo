@@ -247,3 +247,126 @@ struct QuicServerConfig(Movable):
     @always_inline
     def handle(self) -> Int32:
         return self._handle
+
+
+struct QuicClientConfig(Movable):
+    """RAII wrapper for a rustls QUIC client config handle."""
+
+    var _lib_addr: UInt64
+    var _handle: Int32
+
+    def __init__(
+        out self,
+        ref lib: RustlsLibrary,
+        *,
+        alpn: String = "h3",
+        insecure: Bool = False,
+    ) raises:
+        """Create a QUIC client config.
+
+        Args:
+            lib: The loaded RustlsLibrary (must outlive the config).
+            alpn: ALPN protocol identifier (default "h3").
+            insecure: If True, accept any server certificate.
+                      Requires librustls_mojo.so built with --features insecure.
+        """
+        self._lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+
+        var alpn_bytes = alpn.as_bytes()
+        var alpn_len = len(alpn_bytes)
+        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+        for i in range(alpn_len):
+            alpn_buf[i] = alpn_bytes[i]
+
+        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        out_handle[0] = Int32(-1)
+
+        var rc: Int32
+        if insecure:
+            rc = lib.quic_client_config_new_insecure(
+                alpn_buf, Int32(alpn_len), out_handle,
+            )
+        else:
+            rc = lib.quic_client_config_new(
+                alpn_buf, Int32(alpn_len), out_handle,
+            )
+
+        alpn_buf.free()
+
+        if rc != 0:
+            var err = lib.last_error()
+            out_handle.free()
+            self._handle = Int32(-1)
+            raise "quic_client_config_new failed: " + err
+        self._handle = out_handle[0]
+        out_handle.free()
+
+    def __init__(out self, *, _lib_addr: UInt64, _handle: Int32):
+        """Private constructor for static factory methods."""
+        self._lib_addr = _lib_addr
+        self._handle = _handle
+
+    @staticmethod
+    def with_ca(
+        ref lib: RustlsLibrary,
+        ca_pem: Span[UInt8, _],
+        alpn: String = "h3",
+    ) raises -> QuicClientConfig:
+        """Create a QUIC client config trusting a specific CA certificate.
+
+        Args:
+            lib: The loaded RustlsLibrary (must outlive the config).
+            ca_pem: PEM-encoded CA certificate bytes.
+            alpn: ALPN protocol identifier (default "h3").
+        """
+        var lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+
+        var ca_len = len(ca_pem)
+        var ca_buf = _heap_alloc[UInt8](ca_len).as_any_origin()
+        for i in range(ca_len):
+            ca_buf[i] = ca_pem[i]
+
+        var alpn_bytes = alpn.as_bytes()
+        var alpn_len = len(alpn_bytes)
+        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+        for i in range(alpn_len):
+            alpn_buf[i] = alpn_bytes[i]
+
+        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        out_handle[0] = Int32(-1)
+        var rc = lib.quic_client_config_with_ca(
+            ca_buf, Int32(ca_len),
+            alpn_buf, Int32(alpn_len),
+            out_handle,
+        )
+
+        ca_buf.free()
+        alpn_buf.free()
+
+        if rc != 0:
+            var err = lib.last_error()
+            var handle = out_handle[0]
+            out_handle.free()
+            raise "quic_client_config_with_ca failed: " + err
+        var handle = out_handle[0]
+        out_handle.free()
+        return QuicClientConfig(_lib_addr=lib_addr, _handle=handle)
+
+    def __init__(out self, *, deinit take: Self):
+        self._lib_addr = take._lib_addr
+        self._handle = take._handle
+
+    def __del__(deinit self):
+        if self._handle > 0:
+            _ = self._lib()[].config_free(self._handle)
+
+    @always_inline
+    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
+        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
+            unsafe_from_address=Int(self._lib_addr)
+        )
+
+    @always_inline
+    def handle(self) -> Int32:
+        """Return the raw config handle (borrowed; do not free)."""
+        return self._handle
