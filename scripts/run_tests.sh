@@ -111,7 +111,7 @@ TESTS=(
     quic/cc/test_cc_minmax
     tls/test_tls_connection
     tls/test_tls_quic
-    io/test_io_loopback
+    net/test_io_loopback
     io/test_ecn
 )
 

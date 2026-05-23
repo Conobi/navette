@@ -33,7 +33,7 @@ from navette.http.handler import (
     Capabilities,
     StreamError,
 )
-from navette.io.udp_socket import udp_listener
+from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
 
 

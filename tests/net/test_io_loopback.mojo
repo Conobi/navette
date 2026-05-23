@@ -1,14 +1,14 @@
 """test_io_loopback.mojo — in-process resolve → connect → byte roundtrip.
 
-Exercises the full client-side networking surface from `src/io/` without
-needing a separate server process:
+Exercises the navette client-side networking surface end-to-end:
 
-  * `tcp_listener(0)` — bind dual-stack `[::]:0`, recover the bound port
-    via `getsockname(2)`.
-  * `resolve_host("localhost", port)` — `getaddrinfo` returns the
-    glibc-preferred address (typically `::1` first via RFC 6724).
-  * `tcp_connect(addr)` — connect blocking, dual-stack pick from the
-    `SockAddr` family tag.
+  * `tcp_listener(0)` from `navette.runtime.socket_helpers` — bind
+    dual-stack `[::]:0`, recover the bound port via `getsockname(2)`.
+  * `resolve_host("localhost", port)` from `navette.net.resolver` —
+    `getaddrinfo` returns the glibc-preferred address (typically `::1`
+    first via RFC 6724).
+  * `tcp_connect(addr)` from `navette.runtime.socket_helpers` — connect
+    blocking, dual-stack pick from the `ResolvedAddr` family tag.
   * Same-process `accept(2)` (with `O_NONBLOCK` stripped) — proves the
     SYN/ACK actually completes between two `OwnedHandle`s in this proc.
   * Two-way `send(2)` / `recv(2)` roundtrip — proves the bytes flow.
@@ -16,17 +16,16 @@ needing a separate server process:
 # Why no h1/h2/h3 layer here?
 
 This is a *transport* loopback. The codec layers have their own tests.
-What this locks in is the new `src/io/` surface — `SockAddr`,
+What this locks in is the new navette surface — `ResolvedAddr`,
 `Resolver`, `tcp_connect` / `udp_connect` — without dragging in TLS or
-HTTP semantics. If `tests/test_h3_udp_server.mojo` (UDP path) plus
-this file pass, the migration in `examples/fetch/main.mojo` from local
-syscall shims to `src/io/` is structurally validated.
+HTTP semantics.
 """
 
 from std.ffi import external_call
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.io import resolve_host, tcp_connect, tcp_listener
+from navette.net.resolver import resolve_host
+from navette.runtime.socket_helpers import tcp_connect, tcp_listener
 
 
 def _accept_blocking(listener_fd: Int32) raises -> Int32:
