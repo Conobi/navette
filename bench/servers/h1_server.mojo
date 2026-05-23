@@ -460,6 +460,7 @@ struct H1ServerHandler(CompletionHandler):
         if c.http.should_close():
             self._close_connection(idx)
         else:
+            # Ready for next request.
             self._queue_recv(idx)
 
     # --- Close ---
