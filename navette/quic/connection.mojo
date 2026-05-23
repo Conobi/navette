@@ -17,6 +17,7 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.tls.lib import RustlsLibrary
+from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
@@ -500,8 +501,8 @@ struct QuicConnection(Movable):
 
     @staticmethod
     def client(
-        lib_addr: UInt64,
-        config_handle: Int32,
+        ref lib: RustlsLibrary,
+        ref config: QuicClientConfig,
         server_name: String,
         local_params: TransportParams,
         now: UInt64,
@@ -511,6 +512,8 @@ struct QuicConnection(Movable):
         Derives initial keys, creates TLS connection, and drives the
         initial write_hs to generate ClientHello CRYPTO data.
         """
+        var lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+        var config_handle = config.handle()
         # 1. Generate random 8-byte DCID and local CID.
         var dcid = _generate_random_cid()
         var local_cid = _generate_random_cid()
@@ -585,8 +588,8 @@ struct QuicConnection(Movable):
 
     @staticmethod
     def server(
-        lib_addr: UInt64,
-        config_handle: Int32,
+        ref lib: RustlsLibrary,
+        ref config: QuicServerConfig,
         local_params: TransportParams,
         orig_dcid: Span[UInt8, _],
         client_dcid: Span[UInt8, _],
@@ -598,6 +601,8 @@ struct QuicConnection(Movable):
         Derives initial keys from the client's DCID and waits for
         the client Initial to drive the handshake.
         """
+        var lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+        var config_handle = config.handle()
         # Plan B: stamp arrival timestamp BEFORE any FFI call so that
         # handshake-latency does not under-report by Initial-key-derivation.
         # The stamp is unconditional (8 bytes) — see spec §Constraints.
