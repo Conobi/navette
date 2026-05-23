@@ -28,6 +28,7 @@ from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header
+from navette.runtime.socket_helpers import udp_listener
 from navette.h3.h3_streaming_server import H3StreamingServer
 
 from bench.lib.streaming_handler import llm_stream_h3_handler
@@ -570,48 +571,8 @@ def _drain_pending_submits(mut loop: BatchCompletionLoop[H3StreamingUdpHandler])
                 loop._handler.pending_submits.append(s.copy())
 
 
-# ── _setup_udp_socket ────────────────────────────────────────────────
-
-
-comptime AF_INET6: Int32 = 10
-comptime SOCK_DGRAM: Int32 = 2
-
-
-def _setup_udp_socket(port: Int) raises -> Int32:
-    """Create a dual-stack UDP socket bound to [::]:port."""
-    var fd = external_call["socket", Int32](AF_INET6, SOCK_DGRAM, Int32(0))
-    if fd < 0:
-        raise "_setup_udp_socket: socket() failed"
-    var optval = _heap_alloc[UInt8](4).as_any_origin()
-    optval[0] = 1; optval[1] = 0; optval[2] = 0; optval[3] = 0
-    var sso = external_call["setsockopt", Int32](fd, SOL_SOCKET, SO_REUSEADDR, optval, Int32(4))
-    if sso < 0:
-        optval.free()
-        raise "setsockopt(SO_REUSEADDR) failed"
-    optval[0] = 1
-    var rp = external_call["setsockopt", Int32](fd, SOL_SOCKET, SO_REUSEPORT, optval, Int32(4))
-    if rp < 0:
-        optval.free()
-        raise "setsockopt(SO_REUSEPORT) failed"
-    optval[0] = 0
-    var v6o = external_call["setsockopt", Int32](fd, IPPROTO_IPV6, IPV6_V6ONLY, optval, Int32(4))
-    optval.free()
-    if v6o < 0:
-        raise "setsockopt(IPV6_V6ONLY) failed"
-    var addr = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-    for i in range(ADDR_SIZE):
-        addr[i] = 0
-    addr[0] = 10  # sin6_family = AF_INET6 LE
-    addr[1] = 0
-    var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
-    addr[2] = UInt8(port_be & 0xFF)
-    addr[3] = UInt8((port_be >> 8) & 0xFF)
-    var rc = external_call["bind", Int32](fd, addr, Int32(ADDR_SIZE))
-    addr.free()
-    if rc < 0:
-        _ = external_call["close", Int32](fd)
-        raise "_setup_udp_socket: bind() failed on port " + String(port)
-    return fd
+# UDP socket factory moved to navette/runtime/socket_helpers.mojo; bench
+# uses it via the `udp_listener(port)` import at the top of this file.
 
 
 # ── main ─────────────────────────────────────────────────────────────
@@ -631,8 +592,13 @@ def main() raises:
     var key = read_file(certs_dir + "/server.key")
     var server_config = QuicServerConfig(lib_ptr[], Span(cert), Span(key))
 
+    # Create UDP socket via the library factory.
+    # `sock` owns the fd via OwnedHandle and MUST outlive the io_uring
+    # loop's outstanding SQEs — stays on this stack frame for the
+    # entire serve loop below.
     var port = DEFAULT_PORT
-    var udp_fd = _setup_udp_socket(port)
+    var sock = udp_listener(port)
+    var udp_fd = sock.raw()
 
     print("h3-streaming-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3 streaming)")
     print("h3-streaming-bench: handler=llm_stream_h3_handler tokens=" + String(64) + " SSE chunks per request")
