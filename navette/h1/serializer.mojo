@@ -106,20 +106,6 @@ def _append_hex_lower(mut buf: List[UInt8], value: Int):
         end -= 1
 
 
-def _int_to_string(value: Int) -> String:
-    """Decimal string for ``value`` (>= 0). Prefer ``_append_decimal`` on hot paths."""
-    var buf = List[UInt8]()
-    _append_decimal(buf, value)
-    return String(unsafe_from_utf8=buf^)
-
-
-def _int_to_hex_lower(value: Int) -> String:
-    """Lowercase-hex string for ``value`` (>= 0). Prefer ``_append_hex_lower`` on hot paths."""
-    var buf = List[UInt8]()
-    _append_hex_lower(buf, value)
-    return String(unsafe_from_utf8=buf^)
-
-
 # --- Header / body helpers ---
 
 def _serialize_headers(mut buf: List[UInt8], headers: Headers):
