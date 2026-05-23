@@ -36,7 +36,7 @@ from navette.http.handler import (
 )
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
-from navette.io.tcp_socket import tcp_listener
+from navette.runtime.socket_helpers import tcp_listener
 from navette.tls import RustlsLibrary, TlsServerConfig
 
 from std.ffi import external_call

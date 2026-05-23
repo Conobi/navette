@@ -80,7 +80,8 @@ from navette.h3.h3_session import H3Session
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.http.decode import ContentDecoder, ContentEncoding
-from navette.io import resolve_host, tcp_connect, udp_connect
+from navette.net.resolver import resolve_host
+from navette.runtime.socket_helpers import tcp_connect, udp_connect
 
 comptime _RECV_BUF: Int = 16384
 comptime _MAX_ITERS: Int = 500

@@ -46,7 +46,7 @@ from navette.http.handler import (
 )
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
-from navette.io.udp_socket import udp_listener
+from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls.lib import RustlsLibrary
 from navette.tls.config import QuicServerConfig
