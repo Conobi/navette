@@ -42,8 +42,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.ffi import external_call
 
 from boucle.handle import RawHandle, OwnedHandle
-from boucle.completion import CompletionHandler, CompletionLoop
-from boucle._sys.linux.raw.x86_64.io_uring import IORING_CQE_F_MORE
+from boucle.completion import CompletionHandler, CompletionLoop, IORING_CQE_F_MORE
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer

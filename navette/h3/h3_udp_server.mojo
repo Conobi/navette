@@ -50,13 +50,14 @@ from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from boucle.handle import RawHandle, OwnedHandle
-from boucle.completion import BatchCompletionHandler, BatchCompletionLoop
-from boucle._sys.linux.raw.ctypes import c_void
-from boucle._sys.linux.raw.x86_64.io_uring import (
+from boucle.completion import (
+    BatchCompletionHandler,
+    BatchCompletionLoop,
     IORING_CQE_F_BUFFER,
     IORING_CQE_F_MORE,
     IORING_CQE_BUFFER_SHIFT,
 )
+from boucle.ctypes import c_void
 
 from navette.tls.lib import RustlsLibrary
 from navette.tls.config import QuicServerConfig
