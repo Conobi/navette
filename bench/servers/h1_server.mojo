@@ -59,10 +59,8 @@ comptime _RECV_BUF_SIZE: Int = 8192
 comptime _DEFAULT_PLAINTEXT_PORT: UInt16 = 8080
 comptime _DEFAULT_TLS_PORT: UInt16 = 8081
 comptime SO_REUSEPORT: Int32 = 15
-# TCP_NODELAY: disable Nagle so small responses (the bench /plaintext
-# body is 13 bytes) flush immediately instead of waiting on a delayed
-# ACK. Matches hyper / nginx / actix-web defaults — pure-loss without
-# this on a single-host wrk2 calibrated-peak run.
+# Disable Nagle so small writes flush immediately rather than waiting
+# for an ACK from the peer or the delayed-ACK timer to fire.
 comptime IPPROTO_TCP: Int32 = 6
 comptime TCP_NODELAY: Int32 = 1
 
@@ -312,12 +310,11 @@ struct H1ServerHandler(CompletionHandler):
         self._queue_send(idx)
 
     def _stage_send_drain(mut self, idx: Int) raises:
-        """Drain the H1 codec into the connection's owned send buffer.
+        """Drain queued response bytes into the connection's owned send buffer.
 
-        Reuses both the connection-level outbound buffer (via
-        ``drain_into``) and the bench-server's ``send_buf`` /
-        ``send_pending`` storage — zero ``List`` allocations on the
-        response hot path of a keep-alive connection.
+        Appends directly into ``send_buf`` (or ``send_pending`` when a
+        send is already in flight) via ``H1HandlerServer.drain_into``,
+        reusing both buffers' underlying capacity across requests.
         """
         ref c = self.connections[idx][]
         if c.send_in_flight:
@@ -342,10 +339,6 @@ struct H1ServerHandler(CompletionHandler):
         var conn_id = self.next_conn_id
         self.next_conn_id += 1
 
-        # TCP_NODELAY: flush every send immediately. Without this, a
-        # 13-byte plaintext body sits in the Nagle buffer until the
-        # peer's delayed-ACK timer fires (up to 40 ms on Linux),
-        # which is fatal to wrk2 calibrated-peak throughput.
         self._set_tcp_nodelay(client_fd)
 
         var handle = OwnedHandle(raw=client_fd)
