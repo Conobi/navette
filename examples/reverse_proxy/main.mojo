@@ -38,15 +38,9 @@ from boucle import CompletionLoop, CompletionHandler
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
-from boucle.net.options import (
-    Backlog,
-    AddrFamily,
-    SocketType,
-    SocketFlags,
-    Protocol,
-)
-from boucle._sys.linux.net.socket import socket as _sys_socket
-from boucle._sys.linux.fd import close as _sys_close
+from boucle.net.options import Backlog
+
+from navette.runtime.socket_helpers import tcp_v4_nonblocking
 
 from proxy_common import (
     ConnSendState,
@@ -417,12 +411,7 @@ struct ProxyHandler(CompletionHandler):
 
         # Create the backend TCP socket up front so we have an fd to
         # connect once we know which backend to dial.
-        var backend_handle = _sys_socket(
-            AddrFamily.INET,
-            SocketType.STREAM,
-            SocketFlags.NONBLOCK | SocketFlags.CLOEXEC,
-            Protocol.TCP,
-        )
+        var backend_handle = tcp_v4_nonblocking()
 
         # The actual backend addr is decided post-ALPN; seed with H1.
         var backend_addr_stor = self.h1_backend_addr.addr_stor()
@@ -849,10 +838,13 @@ struct ProxyHandler(CompletionHandler):
         ptr[].closed = True
         var client_fd = ptr[].client_handle.raw()
         var backend_fd = ptr[].backend_handle.raw()
+        # Explicit shutdown(SHUT_RDWR) before letting RAII close the fds:
+        # close() alone can leave the peer in ESTABLISHED if io_uring still
+        # holds references; FIN must be sent synchronously to unblock the
+        # backend's accept loop. OwnedHandle.__del__ (via destroy_pointee
+        # below) reclaims each fd.
         _ = external_call["shutdown", Int32](client_fd, Int32(2))
         _ = external_call["shutdown", Int32](backend_fd, Int32(2))
-        _sys_close(unsafe_fd=client_fd)
-        _sys_close(unsafe_fd=backend_fd)
         var last = len(self.connections) - 1
         if idx != last:
             self.connections[idx] = self.connections[last]

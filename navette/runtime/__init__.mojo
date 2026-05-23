@@ -14,4 +14,10 @@ from .io_trait import Io
 from .io_uring import IoUring
 from .udp_io_trait import UdpIo
 from .io_uring_udp import IoUringUdp
-from .socket_helpers import tcp_listener, udp_listener, tcp_connect, udp_connect
+from .socket_helpers import (
+    tcp_listener,
+    udp_listener,
+    tcp_connect,
+    udp_connect,
+    tcp_v4_nonblocking,
+)

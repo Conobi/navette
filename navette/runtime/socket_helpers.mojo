@@ -116,6 +116,23 @@ def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     return handle^
 
 
+def tcp_v4_nonblocking() raises -> OwnedHandle:
+    """Create a non-blocking TCP IPv4 socket. Bare fd; no bind/connect.
+
+    Equivalent to `Socket.tcp_v4()` but returns an `OwnedHandle` (rather
+    than the non-Movable `Socket`). Use when you need to hand the fd
+    to an io_uring submission and own it via RAII in a struct field.
+    """
+    var fd = external_call["socket", Int32](
+        _AF_INET,
+        _SOCK_STREAM | _SOCK_NONBLOCK | _SOCK_CLOEXEC,
+        Int32(0),
+    )
+    if fd < 0:
+        raise "tcp_v4_nonblocking: socket() failed"
+    return OwnedHandle(raw=fd)
+
+
 def _pack_v4(addr: ResolvedAddr, dst: UnsafePointer[UInt8, MutAnyOrigin]) -> Int32:
     """Pack a `ResolvedAddr` (IPv4) into a `sockaddr_in` byte buffer."""
     # sockaddr_in (16 bytes): family(2 LE) port(2 BE) addr(4) zero(8)
