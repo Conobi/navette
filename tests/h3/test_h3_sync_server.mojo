@@ -45,23 +45,30 @@ def _h3_default_params() -> TransportParams:
     return p^
 
 
-def _make_lib_and_configs() raises -> Tuple[
-    UnsafePointer[RustlsLibrary, MutAnyOrigin],
-    QuicServerConfig,
-    QuicClientConfig,
-]:
-    """Return (lib_ptr, server_config, client_config)."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var ck = generate_ephemeral_cert()
-    var ca_bytes = load_test_ca()
-    var srv_cfg = QuicServerConfig(
-        lib_ptr[], Span(ck[0]), Span(ck[1]),
-    )
-    var cli_cfg = QuicClientConfig.with_ca(
-        lib_ptr[], Span(ca_bytes),
-    )
-    return (lib_ptr.as_any_origin(), srv_cfg^, cli_cfg^)
+struct _TestConfigs(Movable):
+    var lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin]
+    var srv_cfg: QuicServerConfig
+    var cli_cfg: QuicClientConfig
+
+    def __init__(out self) raises:
+        var lib = _heap_alloc[RustlsLibrary](1)
+        lib.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+        self.lib_ptr = lib.as_any_origin()
+        var ck = generate_ephemeral_cert()
+        var cert_bytes = ck[0].copy()
+        var key_bytes = ck[1].copy()
+        var ca_bytes = load_test_ca()
+        self.srv_cfg = QuicServerConfig(
+            self.lib_ptr[], Span(cert_bytes), Span(key_bytes),
+        )
+        self.cli_cfg = QuicClientConfig.with_ca(
+            self.lib_ptr[], Span(ca_bytes),
+        )
+
+    def __init__(out self, *, deinit take: Self):
+        self.lib_ptr = take.lib_ptr
+        self.srv_cfg = take.srv_cfg^
+        self.cli_cfg = take.cli_cfg^
 
 
 def _pump_sync_client(
@@ -128,18 +135,15 @@ def _error_body(
 
 def test_h3_sync_simple_get() raises:
     """GET / → sync handler responds immediately with 200 OK + 'hello'."""
-    var configs = _make_lib_and_configs()
-    var lib_ptr = configs[0]
-    var srv_cfg = configs[1]
-    var cli_cfg = configs[2]
+    var tc = _TestConfigs()
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
 
-    var client_quic = QuicConnection.client(lib_ptr[], cli_cfg, "localhost", params, now)
+    var client_quic = QuicConnection.client(tc.lib_ptr[], tc.cli_cfg, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var server_quic = QuicConnection.server(
-        lib_ptr[], srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+        tc.lib_ptr[], tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
     var server = H3CoroServer(quic=server_quic^, body_fn=_simple_get_body)
     var client = H3Connection.client(client_quic^)
@@ -182,18 +186,15 @@ def test_h3_sync_simple_get() raises:
 
 def test_h3_sync_goaway() raises:
     """Server sends GOAWAY → client receives GOAWAY_RECEIVED event."""
-    var configs = _make_lib_and_configs()
-    var lib_ptr = configs[0]
-    var srv_cfg = configs[1]
-    var cli_cfg = configs[2]
+    var tc = _TestConfigs()
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
 
-    var client_quic = QuicConnection.client(lib_ptr[], cli_cfg, "localhost", params, now)
+    var client_quic = QuicConnection.client(tc.lib_ptr[], tc.cli_cfg, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var server_quic = QuicConnection.server(
-        lib_ptr[], srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+        tc.lib_ptr[], tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
     var server = H3CoroServer(quic=server_quic^, body_fn=_simple_get_body)
     var client = H3Connection.client(client_quic^)
@@ -224,18 +225,15 @@ def test_h3_sync_multiple_streams() raises:
     Verify every stream gets its own response — proves per-stream ctx
     isolation in the H3 sync server. Mirrors test_multiple_streams in
     test_h2_sync_server.mojo."""
-    var configs = _make_lib_and_configs()
-    var lib_ptr = configs[0]
-    var srv_cfg = configs[1]
-    var cli_cfg = configs[2]
+    var tc = _TestConfigs()
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
 
-    var client_quic = QuicConnection.client(lib_ptr[], cli_cfg, "localhost", params, now)
+    var client_quic = QuicConnection.client(tc.lib_ptr[], tc.cli_cfg, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var server_quic = QuicConnection.server(
-        lib_ptr[], srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+        tc.lib_ptr[], tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
     var server = H3CoroServer(quic=server_quic^, body_fn=_path_echo_body)
     var client = H3Connection.client(client_quic^)
@@ -297,18 +295,15 @@ def test_h3_sync_multiple_streams() raises:
 def test_h3_sync_error_propagation() raises:
     """Handler raises an Error → server sends RST_STREAM and survives.
     Mirrors test_error_propagation in test_h2_sync_server.mojo."""
-    var configs = _make_lib_and_configs()
-    var lib_ptr = configs[0]
-    var srv_cfg = configs[1]
-    var cli_cfg = configs[2]
+    var tc = _TestConfigs()
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
 
-    var client_quic = QuicConnection.client(lib_ptr[], cli_cfg, "localhost", params, now)
+    var client_quic = QuicConnection.client(tc.lib_ptr[], tc.cli_cfg, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var server_quic = QuicConnection.server(
-        lib_ptr[], srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+        tc.lib_ptr[], tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
     var server = H3CoroServer(quic=server_quic^, body_fn=_error_body)
     var client = H3Connection.client(client_quic^)
