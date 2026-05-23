@@ -4,7 +4,6 @@
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional
-from std.memory import Span
 from navette.http.body import BodyFrame
 from navette.http.config import DEFAULT_STREAM_WINDOW_HIGH, DEFAULT_STREAM_WINDOW_LOW
 from navette.http.headers import Headers
@@ -487,9 +486,6 @@ struct ResponseWriter(Movable):
     runtime owns the actual byte emission for status/headers; M2.5a stores
     them in _captured_status / _captured_headers and the H1 adapter polls
     them after each handler invocation.
-
-    Handlers that have already rendered the full wire response can call
-    ``send_prebuilt`` instead; mutually exclusive with send_status.
     """
 
     var _status_sent: Bool
@@ -498,8 +494,6 @@ struct ResponseWriter(Movable):
     var _captured_headers: Optional[Headers]
     var _captured_informational: List[StatusCode]
     var _captured_informational_headers: List[Headers]
-    var _prebuilt: List[UInt8]
-    var _has_prebuilt: Bool
 
     def __init__(out self):
         self._status_sent = False
@@ -508,8 +502,6 @@ struct ResponseWriter(Movable):
         self._captured_headers = Optional[Headers]()
         self._captured_informational = List[StatusCode]()
         self._captured_informational_headers = List[Headers]()
-        self._prebuilt = List[UInt8]()
-        self._has_prebuilt = False
 
     def __init__(out self, *, deinit take: Self):
         self._status_sent = take._status_sent
@@ -518,43 +510,18 @@ struct ResponseWriter(Movable):
         self._captured_headers = take._captured_headers^
         self._captured_informational = take._captured_informational^
         self._captured_informational_headers = take._captured_informational_headers^
-        self._prebuilt = take._prebuilt^
-        self._has_prebuilt = take._has_prebuilt
 
     @always_inline
     def send_status(mut self, var status: StatusCode, var headers: Headers) raises:
         if self._status_sent:
             raise Error("ResponseWriter.send_status: already sent")
-        if self._has_prebuilt:
-            raise Error("ResponseWriter.send_status: send_prebuilt already used")
         self._status_sent = True
         self._captured_status = Optional[StatusCode](status^)
         self._captured_headers = Optional[Headers](headers^)
 
-    @always_inline
-    def send_prebuilt(mut self, wire: Span[UInt8, _]) raises:
-        """Emit a pre-rendered complete response (status + headers + body).
-
-        Mutually exclusive with ``send_status``, ``send_informational``,
-        and ``try_send_body``; raises on empty wire or any conflict.
-        """
-        if self._status_sent:
-            raise Error("ResponseWriter.send_prebuilt: send_status already used")
-        if self._has_prebuilt:
-            raise Error("ResponseWriter.send_prebuilt: already sent")
-        if len(self._captured_informational) > 0:
-            raise Error("ResponseWriter.send_prebuilt: send_informational already used")
-        if len(wire) == 0:
-            raise Error("ResponseWriter.send_prebuilt: empty wire")
-        self._has_prebuilt = True
-        self._status_sent = True
-        self._prebuilt.extend(wire)
-
     def send_informational(mut self, var status: StatusCode, var headers: Headers) raises:
         if self._status_sent:
             raise Error("ResponseWriter.send_informational: status already sent")
-        if self._has_prebuilt:
-            raise Error("ResponseWriter.send_informational: send_prebuilt already used")
         if not status.is_informational():
             raise Error("ResponseWriter.send_informational: status is not 1xx")
         self._captured_informational.append(status^)
@@ -564,8 +531,6 @@ struct ResponseWriter(Movable):
     def try_send_body(mut self, var frame: BodyFrame) raises -> WriteResult:
         if not self._status_sent:
             raise Error("ResponseWriter.try_send_body: status not sent yet")
-        if self._has_prebuilt:
-            raise Error("ResponseWriter.try_send_body: send_prebuilt already used")
         return self._send_body.try_write(frame^)
 
     @always_inline
@@ -615,17 +580,6 @@ struct ResponseWriter(Movable):
     @always_inline
     def _pop_body_frame(mut self) raises -> Optional[BodyFrame]:
         return self._send_body._pop()
-
-    @always_inline
-    def _has_prebuilt_response(self) -> Bool:
-        return self._has_prebuilt
-
-    @always_inline
-    def _take_prebuilt(mut self) -> List[UInt8]:
-        var out = self._prebuilt^
-        self._prebuilt = List[UInt8]()
-        self._has_prebuilt = False
-        return out^
 
 
 # ---------------------------------------------------------------------------

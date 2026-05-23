@@ -286,23 +286,6 @@ struct H1Connection(Movable):
         var wire = serialize_informational(status^, headers^)
         self._outbound_buf.extend(Span(wire))
 
-    @always_inline
-    def _append_outbound(mut self, wire: Span[UInt8, _]):
-        """Append a pre-rendered wire response. Suppresses body on HEAD (RFC 9112 §6.3).
-
-        Not safe for 101 / CONNECT 2xx (does not flip the connection phase).
-        """
-        var head_in_flight = False
-        if self._pending_method.__bool__():
-            head_in_flight = self._pending_method.value().is_head()
-
-        var pre_len = len(self._outbound_buf)
-        self._outbound_buf.extend(wire)
-        if head_in_flight:
-            self._truncate_outbound_to_headers(pre_len)
-
-        self._pending_method = Optional[Method]()
-
     def send_request(mut self, var request: Request) raises:
         """Serialize a request and append wire bytes to the outbound buffer."""
         var wire = serialize_request(request^)
