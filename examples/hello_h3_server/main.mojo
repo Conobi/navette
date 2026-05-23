@@ -30,8 +30,9 @@ With `h2load` from nghttp2:
 You should see 4× 200 responses with "Hello, H3!" payloads.
 """
 
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Span
+from std.io.file import open as open_file
+from std.os.env import getenv
 
 from navette.h3.h3_udp_server import H3UdpServer, serve_forever
 from navette.http.handler import (
@@ -48,71 +49,7 @@ from navette.http.status import StatusCode
 from navette.io.udp_socket import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls.lib import RustlsLibrary
-
-from std.ffi import external_call
-from std.collections.optional import Optional
-
-
-def _getenv_opt(name: String) -> Optional[String]:
-    """Read environment variable; return None if unset."""
-    var nbuf = _heap_alloc[UInt8](len(name) + 1)
-    var name_bytes = name.as_bytes()
-    for i in range(len(name_bytes)):
-        nbuf[i] = name_bytes[i]
-    nbuf[len(name_bytes)] = 0
-    var ptr_int = external_call["getenv", Int](nbuf)
-    nbuf.free()
-    if ptr_int == 0:
-        return None
-    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
-    var s = String()
-    var i = 0
-    while ptr[i] != 0:
-        s += chr(Int(ptr[i]))
-        i += 1
-    return Optional(s^)
-
-
-def _read_file(path: String) raises -> List[UInt8]:
-    """Read entire file via open/fstat64/pread64/close (Linux x86_64)."""
-    var pbuf = _heap_alloc[UInt8](len(path) + 1)
-    var path_bytes = path.as_bytes()
-    for i in range(len(path_bytes)):
-        pbuf[i] = path_bytes[i]
-    pbuf[len(path_bytes)] = 0
-    var fd = external_call["open", Int32](pbuf, Int32(0), Int32(0))  # O_RDONLY
-    pbuf.free()
-    if fd < 0:
-        raise "_read_file: open failed for " + path
-    var statbuf = _heap_alloc[UInt8](144).as_any_origin()
-    var fstat_rc = external_call["fstat64", Int32](fd, statbuf)
-    if fstat_rc < 0:
-        _ = external_call["close", Int32](fd)
-        statbuf.free()
-        raise "_read_file: fstat64 failed"
-    var file_size: Int = 0
-    for i in range(8):
-        file_size |= Int(statbuf[48 + i]) << (i * 8)
-    statbuf.free()
-    var result = List[UInt8](capacity=file_size)
-    var chunk_size = 65536
-    var buf = _heap_alloc[UInt8](chunk_size).as_any_origin()
-    var offset = 0
-    while offset < file_size:
-        var to_read = min(chunk_size, file_size - offset)
-        var n = external_call["pread64", Int](Int32(fd), buf, to_read, offset)
-        if n < 0:
-            buf.free()
-            _ = external_call["close", Int32](fd)
-            raise "_read_file: pread64 failed"
-        if n == 0:
-            break
-        for i in range(n):
-            result.append(buf[i])
-        offset += n
-    buf.free()
-    _ = external_call["close", Int32](fd)
-    return result^
+from navette.tls.config import QuicServerConfig
 
 
 # ── Hello handler ────────────────────────────────────────────────────────────
@@ -172,79 +109,26 @@ def make_hello_handler() raises -> HelloHandler:
 
 
 def main() raises:
-    var port_env = _getenv_opt(String("HELLO_H3_PORT"))
-    var port: Int = 4433
-    if port_env:
-        port = atol(port_env.value())
-
-    var cert_path_env = _getenv_opt(String("HELLO_H3_CERT"))
-    var cert_path: String = String("certs/server.crt")
-    if cert_path_env:
-        cert_path = cert_path_env.value()
-
-    var key_path_env = _getenv_opt(String("HELLO_H3_KEY"))
-    var key_path: String = String("certs/server.key")
-    if key_path_env:
-        key_path = key_path_env.value()
+    var port_str = getenv("HELLO_H3_PORT")
+    var port = atol(port_str) if port_str else 4433
+    var cert_path = getenv("HELLO_H3_CERT", "certs/server.crt")
+    var key_path = getenv("HELLO_H3_KEY", "certs/server.key")
 
     print("hello_h3_server: binding [::]:" + String(port))
     print("  cert: " + cert_path)
     print("  key:  " + key_path)
 
-    # 1. Load PEM cert + key from disk.
-    var cert = _read_file(cert_path)
-    var key = _read_file(key_path)
+    var cert = open_file(cert_path, "r").read_bytes()
+    var key = open_file(key_path, "r").read_bytes()
 
-    # 2. Bring up the rustls FFI library + a QUIC server config with
-    #    ALPN=h3 and TLS 1.3 session resumption (always-on per rustls
-    #    config builder).
     var lib = RustlsLibrary()
+    var config = QuicServerConfig(lib, Span(cert), Span(key))
 
-    var cert_buf = _heap_alloc[UInt8](len(cert)).as_any_origin()
-    for i in range(len(cert)):
-        cert_buf[i] = cert[i]
-    var key_buf = _heap_alloc[UInt8](len(key)).as_any_origin()
-    for i in range(len(key)):
-        key_buf[i] = key[i]
-
-    var alpn = String("h3")
-    var alpn_bytes = alpn.as_bytes()
-    var alpn_buf = _heap_alloc[UInt8](len(alpn_bytes)).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_buf[i] = alpn_bytes[i]
-
-    var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    out_handle[0] = Int32(-1)
-    var rc = lib.quic_server_config_new(
-        cert_buf, Int32(len(cert)),
-        key_buf, Int32(len(key)),
-        alpn_buf, Int32(len(alpn_bytes)),
-        Int32(0),  # max_early_data — disable 0-RTT for this example
-        out_handle,
-    )
-    cert_buf.free()
-    key_buf.free()
-    alpn_buf.free()
-    if rc != 0:
-        out_handle.free()
-        raise "quic_server_config_new failed: " + lib.last_error()
-
-    var server_config = out_handle[0]
-    out_handle.free()
-
-    # 3. Bind the listening UDP socket and hand ownership to the
-    #    server. H3UdpServer's OwnedHandle field RAII-closes the fd
-    #    when the server is destroyed.
     var sock = udp_listener(port)
     print("hello_h3_server: listening (fd=" + String(Int(sock.raw())) + ")")
 
-    # 4. Construct the server + run forever.
     var tp = default_transport_params()
     var server = H3UdpServer[HelloHandler](
-        sock^,
-        UInt64(Int(UnsafePointer(to=lib))),
-        server_config,
-        tp^,
-        make_hello_handler,
+        sock^, lib^, config^, tp^, make_hello_handler,
     )
     serve_forever(server^)
