@@ -43,10 +43,16 @@ wheels = [
 [[package]]
 name = "boucle"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/Conobi/boucle.git?rev=956f1003ef68d50b1f65f7ad263a5374c5c9bbd2#956f1003ef68d50b1f65f7ad263a5374c5c9bbd2" }
+source = { editable = "../boucle" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojox" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mojo-compiler", specifier = "==1.0.0b1" },
+    { name = "mojox", specifier = ">=0.2" },
 ]
 
 [[package]]
@@ -320,7 +326,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=956f1003ef68d50b1f65f7ad263a5374c5c9bbd2" },
+    { name = "boucle", editable = "../boucle" },
     { name = "mojo-compiler", specifier = "==1.0.0b1" },
     { name = "mojox", specifier = ">=0.2" },
 ]
