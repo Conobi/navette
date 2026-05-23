@@ -16,7 +16,7 @@ from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header, is_long_header_initial, extract_dcid
 from navette.quic.cid import dcid_to_u64
-from navette.io.udp_socket import udp_listener
+from navette.runtime.socket_helpers import udp_listener
 from navette.h3.h3_handler_server import H3HandlerServer
 from bench.lib.handler import (
     BenchHandler,
@@ -30,9 +30,9 @@ from interop.udp import monotonic_us
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, EGRESS_POOL_SIZE, EGRESS_POOL_V2, monotonic_us as profile_monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
+from boucle.completion import IORING_CQE_F_BUFFER, IORING_CQE_F_MORE, IORING_CQE_BUFFER_SHIFT
+from boucle.ctypes import c_void
 from boucle.handle import RawHandle
-from boucle._sys.linux.raw.ctypes import c_void
-from boucle._sys.linux.raw.x86_64.io_uring import IORING_CQE_F_BUFFER, IORING_CQE_F_MORE, IORING_CQE_BUFFER_SHIFT
 
 
 # ── constants ──────────────────────────────────────────────────────────

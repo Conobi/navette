@@ -36,9 +36,9 @@ from interop.file_io import read_file, getenv_opt
 from interop.udp import monotonic_us
 
 from boucle import BatchCompletionLoop, BatchCompletionHandler
+from boucle.completion import IORING_CQE_F_BUFFER, IORING_CQE_F_MORE, IORING_CQE_BUFFER_SHIFT
+from boucle.ctypes import c_void
 from boucle.handle import RawHandle
-from boucle._sys.linux.raw.ctypes import c_void
-from boucle._sys.linux.raw.x86_64.io_uring import IORING_CQE_F_BUFFER, IORING_CQE_F_MORE, IORING_CQE_BUFFER_SHIFT
 
 
 # ── constants ──────────────────────────────────────────────────────────

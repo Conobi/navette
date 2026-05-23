@@ -29,16 +29,16 @@ from bench.lib.handler import (
 )
 
 from boucle import CompletionLoop, CompletionHandler
-from boucle.completion import BufRing
-from boucle.handle import OwnedHandle
-from boucle.net.socket import Socket
-from boucle.net.addr import SocketAddrV4
-from boucle.net.options import Backlog
-from boucle._sys.linux.raw.x86_64.io_uring import (
+from boucle.completion import (
+    BufRing,
     IORING_CQE_F_BUFFER,
     IORING_CQE_F_MORE,
     IORING_CQE_BUFFER_SHIFT,
 )
+from boucle.handle import OwnedHandle
+from boucle.net.socket import Socket
+from boucle.net.addr import SocketAddrV4
+from boucle.net.options import Backlog
 
 from interop.file_io import read_file, getenv_opt
 

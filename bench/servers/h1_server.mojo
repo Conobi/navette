@@ -20,7 +20,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.h1.handler_server import H1HandlerServer
-from navette.io.io_uring import IoUring
+from navette.runtime.io_uring import IoUring
 from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
 from bench.lib.handler import (
     BenchHandler,

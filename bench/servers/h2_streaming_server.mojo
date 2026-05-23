@@ -30,13 +30,11 @@ from navette.h2.h2_streaming_server import H2StreamingServer
 from bench.lib.streaming_handler import llm_stream_h2_handler
 
 from boucle import CompletionLoop, CompletionHandler
+from boucle.completion import IORING_CQE_F_MORE
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4
 from boucle.net.options import Backlog
-from boucle._sys.linux.raw.x86_64.io_uring import (
-    IORING_CQE_F_MORE,
-)
 
 from interop.file_io import read_file, getenv_opt
 
