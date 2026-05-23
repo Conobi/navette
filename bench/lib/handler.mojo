@@ -86,17 +86,14 @@ def _parse_query_int(target: String, name: String) -> Optional[Int]:
     return None
 
 
-comptime _PLAINTEXT_WIRE_H1: StaticString = (
-    "HTTP/1.1 200 OK\r\n"
-    "content-type: text/plain\r\n"
-    "content-length: 13\r\n"
-    "\r\n"
-    "Hello, World!"
-)
-
-
 def handle_plaintext(mut resp: ResponseWriter) raises:
-    """GET /plaintext -> 13-byte "Hello, World!" text/plain. Slow path for H2/H3."""
+    """GET /plaintext -> 13-byte "Hello, World!" text/plain.
+
+    Matches Flare's headline endpoint (TFB plaintext, TechEmpower test
+    #6). Goes through the standard send_status / try_send_body /
+    serialize_response pipeline. Status-line emission is short-circuited
+    inside the serializer for HTTP/1.1 200 OK (see serialize_response).
+    """
     var body = String("Hello, World!")
     var hdrs = Headers()
     hdrs.add("content-type", "text/plain")
@@ -104,14 +101,6 @@ def handle_plaintext(mut resp: ResponseWriter) raises:
     resp.send_status(StatusCode(200), hdrs^)
     _ = resp.try_send_body(BodyFrame.data(_str_to_bytes(body)))
     resp.end()
-
-
-def handle_plaintext_prebuilt(mut resp: ResponseWriter) raises:
-    """H1-only fast path: ship the precompiled wire response via send_prebuilt.
-
-    Unsafe on H2/H3 (their adapters call _take_status().unsafe_take()).
-    """
-    resp.send_prebuilt(_PLAINTEXT_WIRE_H1.as_bytes())
 
 
 def handle_baseline2(target: String, mut resp: ResponseWriter) raises:
@@ -770,10 +759,6 @@ struct BenchHandler(StreamHandler):
         mut resp: ResponseWriter,
         caps: Capabilities,
     ) raises:
-        # H1 /plaintext: bypass via send_prebuilt (H2/H3 keep the slow path).
-        if caps.is_h1() and _starts_with(req.target, String("/plaintext")):
-            handle_plaintext_prebuilt(resp)
-            return
         _dispatch_request(req.target, req.headers, resp, self.state_ptr)
 
     def on_body_available(
