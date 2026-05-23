@@ -240,6 +240,9 @@ def serialize_request(request: Request) raises -> List[UInt8]:
     return buf^
 
 
+comptime _STATUS_LINE_HTTP_11_200_OK: StaticString = "HTTP/1.1 200 OK\r\n"
+
+
 def serialize_response(response: Response) -> List[UInt8]:
     """Serialize a Response into HTTP/1.1 wire bytes.
 
@@ -255,13 +258,22 @@ def serialize_response(response: Response) -> List[UInt8]:
     var buf = List[UInt8]()
     var status_int = Int(response.status.code())
 
-    # Status-line: version SP status-code SP reason-phrase CRLF.
-    _append_str(buf, _version_string(response.version))
-    buf.append(UInt8(0x20))
-    _append_decimal(buf, status_int)
-    buf.append(UInt8(0x20))  # SP after status, even with empty reason.
-    _append_str(buf, response.reason)
-    _append_crlf(buf)
+    # Common-case status-line memcpy (mirrors hyper's role.rs:405-409).
+    # HTTP/1.1 200 OK with an empty reason is the bulk of real responses.
+    if (
+        response.version.is_http_1_1()
+        and status_int == 200
+        and response.reason.byte_length() == 0
+    ):
+        buf.extend(_STATUS_LINE_HTTP_11_200_OK.as_bytes())
+    else:
+        # General path: version SP status-code SP reason-phrase CRLF.
+        _append_str(buf, _version_string(response.version))
+        buf.append(UInt8(0x20))
+        _append_decimal(buf, status_int)
+        buf.append(UInt8(0x20))  # SP after status, even with empty reason.
+        _append_str(buf, response.reason)
+        _append_crlf(buf)
 
     var bodyless = (
         (status_int >= 100 and status_int <= 199)

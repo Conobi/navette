@@ -123,9 +123,14 @@ def test_serialize_200_response() raises:
 
 
 def test_serialize_empty_reason() raises:
-    """Empty reason still emits the SP after the status code per RFC 9112."""
+    """Empty reason on the general (non-fast) path still emits the SP per RFC 9112.
+
+    HTTP/1.1 200 with an empty reason takes the fast path which canonicalises
+    to 'OK'. Use 418 here to stay on the general path so the SP-after-status
+    invariant is exercised.
+    """
     var resp = Response(
-        status=StatusCode(200),
+        status=StatusCode(418),
         reason="",
         version=Version.http_1_1(),
         headers=Headers(),
@@ -133,7 +138,7 @@ def test_serialize_empty_reason() raises:
     var wire = serialize_response(resp)
     _assert_bytes_eq(
         wire,
-        "HTTP/1.1 200 \r\n\r\n",
+        "HTTP/1.1 418 \r\n\r\n",
         "test_serialize_empty_reason",
     )
 
@@ -248,6 +253,77 @@ def test_serialize_multiple_headers_same_name() raises:
     )
 
 
+def test_serialize_200_ok_empty_reason_uses_fast_path() raises:
+    """HTTP/1.1 200 OK with no reason phrase emits the cached status line.
+
+    The fast path (mirroring hyper's role.rs:405-409) writes
+    'HTTP/1.1 200 OK\r\n' verbatim instead of formatting the status code
+    and inserting a trailing space + empty reason. Verifying byte-for-byte
+    that callers see the same wire bytes as the general path would have
+    produced for status==200, reason=='OK'.
+    """
+    var resp = Response(
+        status=StatusCode(200),
+        reason="",
+        version=Version.http_1_1(),
+        headers=Headers(),
+    )
+    var wire = serialize_response(resp)
+    _assert_bytes_eq(
+        wire,
+        "HTTP/1.1 200 OK\r\n\r\n",
+        "test_serialize_200_ok_empty_reason_uses_fast_path",
+    )
+
+
+def test_serialize_201_skips_fast_path() raises:
+    """Non-200 status codes go through the general status-line path."""
+    var resp = Response(
+        status=StatusCode(201),
+        reason="",
+        version=Version.http_1_1(),
+        headers=Headers(),
+    )
+    var wire = serialize_response(resp)
+    _assert_bytes_eq(
+        wire,
+        "HTTP/1.1 201 \r\n\r\n",
+        "test_serialize_201_skips_fast_path",
+    )
+
+
+def test_serialize_200_custom_reason_skips_fast_path() raises:
+    """A custom reason phrase suppresses the fast path."""
+    var resp = Response(
+        status=StatusCode(200),
+        reason="All Good",
+        version=Version.http_1_1(),
+        headers=Headers(),
+    )
+    var wire = serialize_response(resp)
+    _assert_bytes_eq(
+        wire,
+        "HTTP/1.1 200 All Good\r\n\r\n",
+        "test_serialize_200_custom_reason_skips_fast_path",
+    )
+
+
+def test_serialize_200_http10_skips_fast_path() raises:
+    """HTTP/1.0 200 must not hit the HTTP/1.1-only fast path."""
+    var resp = Response(
+        status=StatusCode(200),
+        reason="",
+        version=Version.http_1_0(),
+        headers=Headers(),
+    )
+    var wire = serialize_response(resp)
+    _assert_bytes_eq(
+        wire,
+        "HTTP/1.0 200 \r\n\r\n",
+        "test_serialize_200_http10_skips_fast_path",
+    )
+
+
 def main() raises:
     test_serialize_get_request()
     test_serialize_post_request_with_body()
@@ -259,4 +335,8 @@ def main() raises:
     test_serialize_304_allows_content_length()
     test_serialize_http10_request()
     test_serialize_multiple_headers_same_name()
-    print("test_serializer: all 10 tests passed")
+    test_serialize_200_ok_empty_reason_uses_fast_path()
+    test_serialize_201_skips_fast_path()
+    test_serialize_200_custom_reason_skips_fast_path()
+    test_serialize_200_http10_skips_fast_path()
+    print("test_serializer: all 14 tests passed")
