@@ -6,11 +6,8 @@
 # Run with:
 #   uv run mojo run -I . -D ASSERT=all tests/test_quic_cid.mojo
 
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
-
 from tests._test_util import assert_true, assert_false, assert_equal_int
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.quic.cid import (
     CidEntry,
     CidManager,
@@ -39,18 +36,18 @@ def _make_token() -> List[UInt8]:
     return tok^
 
 
-def _make_manager(lib_addr: UInt64) raises -> CidManager:
+def _make_manager(lib: SharedLibrary) raises -> CidManager:
     """Create a CidManager with known CIDs for deterministic testing."""
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    return CidManager(lib_addr, local_cid, remote_cid, UInt64(4), UInt64(4))
+    return CidManager(lib, local_cid, remote_cid, UInt64(4), UInt64(4))
 
 
 # ── 1. test_initial_state ─────────────────────────────────────────────────────
 
 
-def test_initial_state(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_initial_state(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # One local CID at seq=0 (Active)
     assert_equal_int(len(mgr.local_cids), 1, "local_cids should have 1 entry")
@@ -74,8 +71,8 @@ def test_initial_state(lib_addr: UInt64) raises:
 # ── 2. test_cid_generation ────────────────────────────────────────────────────
 
 
-def test_cid_generation(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_cid_generation(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # Each generated CID is 8 bytes
     var cid0 = mgr.generate_cid()
@@ -105,8 +102,8 @@ def test_cid_generation(lib_addr: UInt64) raises:
 # ── 3. test_reset_token_deterministic ─────────────────────────────────────────
 
 
-def test_reset_token_deterministic(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_reset_token_deterministic(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     var cid_a = _make_cid(UInt8(0x01))
     var cid_b = _make_cid(UInt8(0x02))
@@ -139,8 +136,8 @@ def test_reset_token_deterministic(lib_addr: UInt64) raises:
 # ── 4. test_issue_new_cid ─────────────────────────────────────────────────────
 
 
-def test_issue_new_cid(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_issue_new_cid(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # Initially 1 active local CID
     assert_equal_int(mgr.active_local_count(), 1, "initial active local count = 1")
@@ -163,11 +160,11 @@ def test_issue_new_cid(lib_addr: UInt64) raises:
 # ── 5. test_issue_cid_respects_limit ──────────────────────────────────────────
 
 
-def test_issue_cid_respects_limit(lib_addr: UInt64) raises:
+def test_issue_cid_respects_limit(lib: SharedLibrary) raises:
     # peer_active_limit=2: we start with seq=0 (1 active), can issue seq=1 → 2 active, but not seq=2
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    var mgr = CidManager(lib_addr, local_cid, remote_cid, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib, local_cid, remote_cid, UInt64(2), UInt64(2))
 
     # Start: 1 active (seq=0)
     assert_equal_int(mgr.active_local_count(), 1, "initial active = 1")
@@ -186,8 +183,8 @@ def test_issue_cid_respects_limit(lib_addr: UInt64) raises:
 # ── 6. test_on_new_connection_id_basic ────────────────────────────────────────
 
 
-def test_on_new_connection_id_basic(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_on_new_connection_id_basic(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # Initially 1 remote CID
     assert_equal_int(len(mgr.remote_cids), 1, "initial remote count = 1")
@@ -206,8 +203,8 @@ def test_on_new_connection_id_basic(lib_addr: UInt64) raises:
 # ── 7. test_retire_prior_to ────────────────────────────────────────────────────
 
 
-def test_retire_prior_to(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_retire_prior_to(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # Add remote CID seq=1 first
     var cid1 = _make_cid(UInt8(0xC1))
@@ -239,11 +236,11 @@ def test_retire_prior_to(lib_addr: UInt64) raises:
 # ── 8. test_retirement_queue_cap ──────────────────────────────────────────────
 
 
-def test_retirement_queue_cap(lib_addr: UInt64) raises:
+def test_retirement_queue_cap(lib: SharedLibrary) raises:
     # peer_active_limit=2 → retire_queue_cap = 2 * 8 = 16
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    var mgr = CidManager(lib_addr, local_cid, remote_cid, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib, local_cid, remote_cid, UInt64(2), UInt64(2))
 
     # Add retire_queue_cap + 1 sequences to overflow the queue.
     # Cap = peer_active_limit * 8 = 16.
@@ -278,8 +275,8 @@ def test_retirement_queue_cap(lib_addr: UInt64) raises:
 # ── 9. test_late_arriving_cid ─────────────────────────────────────────────────
 
 
-def test_late_arriving_cid(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_late_arriving_cid(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # Advance highest_retire_prior_to to 3 via a CID that says retire_prior_to=3
     var cid3 = _make_cid(UInt8(0xD0))
@@ -307,8 +304,8 @@ def test_late_arriving_cid(lib_addr: UInt64) raises:
 # ── 10. test_on_retire_connection_id ─────────────────────────────────────────
 
 
-def test_on_retire_connection_id(lib_addr: UInt64) raises:
-    var mgr = _make_manager(lib_addr)
+def test_on_retire_connection_id(lib: SharedLibrary) raises:
+    var mgr = _make_manager(lib)
 
     # Issue seq=1 so we have 2 active local CIDs
     _ = mgr.issue_new_cid()
@@ -332,12 +329,12 @@ def test_on_retire_connection_id(lib_addr: UInt64) raises:
 # ── 11. test_retire_triggers_replacement ─────────────────────────────────────
 
 
-def test_retire_triggers_replacement(lib_addr: UInt64) raises:
+def test_retire_triggers_replacement(lib: SharedLibrary) raises:
     """RFC 9000 §5.1.1: retiring a local CID below peer_active_limit issues a replacement."""
     # peer_active_limit=2; start with seq=0 (1 active). Issue seq=1 → 2 active.
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
-    var mgr = CidManager(lib_addr, local_cid, remote_cid, UInt64(4), UInt64(2))
+    var mgr = CidManager(lib, local_cid, remote_cid, UInt64(4), UInt64(2))
 
     _ = mgr.issue_new_cid()  # seq=1; now 2 active == peer_active_limit
     assert_equal_int(mgr.active_local_count(), 2, "2 active before retire")
@@ -354,9 +351,9 @@ def test_retire_triggers_replacement(lib_addr: UInt64) raises:
 # ── 12. test_pending_new_cid_entries ─────────────────────────────────────────
 
 
-def test_pending_new_cid_entries(lib_addr: UInt64) raises:
+def test_pending_new_cid_entries(lib: SharedLibrary) raises:
     """Verify pending_new_cid_entries returns Active CIDs not yet advertised."""
-    var mgr = _make_manager(lib_addr)
+    var mgr = _make_manager(lib)
 
     # Initial seq=0 is marked advertised=True (handshake CID, no frame needed).
     var pending0 = mgr.pending_new_cid_entries()
@@ -379,11 +376,11 @@ def test_pending_new_cid_entries(lib_addr: UInt64) raises:
 # ── 13. test_clear_advertised ─────────────────────────────────────────────────
 
 
-def test_clear_advertised(lib_addr: UInt64) raises:
+def test_clear_advertised(lib: SharedLibrary) raises:
     """Clear_advertised allows a CID to be re-advertised on loss."""
     var local = _make_cid(UInt8(0x01))
     var remote = _make_cid(UInt8(0x03))
-    var mgr = CidManager(lib_addr, local^, remote^, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib, local^, remote^, UInt64(2), UInt64(2))
     var entry = mgr.issue_new_cid()
     assert_true(entry.__bool__(), "issued seq=1")
     mgr.mark_advertised(UInt64(1))
@@ -401,23 +398,22 @@ def test_clear_advertised(lib_addr: UInt64) raises:
 def main() raises:
     print("test_quic_cid:")
 
-    # Initialise shared RustlsLibrary for HMAC-SHA256.
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary())
-    var lib_addr = UInt64(Int(lib_ptr))
+    # Initialise shared TlsBackend for HMAC-SHA256.
+    var tls = TlsBackend()
+    var shared = tls.shared()
 
-    test_initial_state(lib_addr)
-    test_cid_generation(lib_addr)
-    test_reset_token_deterministic(lib_addr)
-    test_issue_new_cid(lib_addr)
-    test_issue_cid_respects_limit(lib_addr)
-    test_on_new_connection_id_basic(lib_addr)
-    test_retire_prior_to(lib_addr)
-    test_retirement_queue_cap(lib_addr)
-    test_late_arriving_cid(lib_addr)
-    test_on_retire_connection_id(lib_addr)
-    test_retire_triggers_replacement(lib_addr)
-    test_pending_new_cid_entries(lib_addr)
-    test_clear_advertised(lib_addr)
+    test_initial_state(shared)
+    test_cid_generation(shared)
+    test_reset_token_deterministic(shared)
+    test_issue_new_cid(shared)
+    test_issue_cid_respects_limit(shared)
+    test_on_new_connection_id_basic(shared)
+    test_retire_prior_to(shared)
+    test_retirement_queue_cap(shared)
+    test_late_arriving_cid(shared)
+    test_on_retire_connection_id(shared)
+    test_retire_triggers_replacement(shared)
+    test_pending_new_cid_entries(shared)
+    test_clear_advertised(shared)
 
     print("All test_quic_cid tests passed.")

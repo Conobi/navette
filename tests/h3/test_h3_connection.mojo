@@ -1,7 +1,6 @@
 # tests/test_h3_connection.mojo
 from std.memory import Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
@@ -94,21 +93,20 @@ def _pump_h3(
 
 def test_h3_control_stream_setup() raises:
     """After 50 pump rounds, client must receive SETTINGS_RECEIVED."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
+    var tls = TlsBackend("lib/librustls_mojo.so")
     var ck = generate_ephemeral_cert()
     var cert_bytes = ck[0].copy()
     var key_bytes = ck[1].copy()
     var ca_bytes = load_test_ca()
-    var srv_cfg = QuicServerConfig(lib_ptr[], Span(cert_bytes), Span(key_bytes))
-    var cli_cfg = QuicClientConfig.with_ca(lib_ptr[], Span(ca_bytes))
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
-    var client_quic = QuicConnection.client(lib_ptr[], cli_cfg, "localhost", params, now)
+    var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
     var server_quic = QuicConnection.server(
-        lib_ptr[], srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+        tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
     var server_h3 = H3Connection.server(server_quic^)
     var client_h3 = H3Connection.client(client_quic^)

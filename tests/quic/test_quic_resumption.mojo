@@ -14,7 +14,8 @@
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.profile import AcceptProfile
 from navette.quic.trans_param import TransportParams, default_transport_params
@@ -23,16 +24,18 @@ from tests._test_util import assert_true, assert_equal_int, load_test_cert, load
 
 def test_quic_handshake_kind_invalid_handle_returns_minus_one() raises:
     """An invalid conn handle must yield -1 with last_error set."""
-    var lib = RustlsLibrary()
-    var rc = lib.quic_conn_handshake_kind(Int32(-99))
+    var tls = TlsBackend()
+    var rlib = tls.shared().inner_ptr()
+    var rc = rlib[].quic_conn_handshake_kind(Int32(-99))
     assert_equal_int(Int(rc), -1, "invalid handle must return -1")
-    var err = lib.last_error()
+    var err = rlib[].last_error()
     assert_true(len(err) > 0, "last_error must be set on invalid handle")
 
 
 def test_quic_handshake_kind_client_returns_minus_two() raises:
     """Client connections must always return -2 (not applicable)."""
-    var lib = RustlsLibrary()
+    var tls = TlsBackend()
+    var lib = tls.shared().inner_ptr()[]
 
     var alpn_bytes = String("h3").as_bytes()
     var alpn_len = len(alpn_bytes)
@@ -97,38 +100,15 @@ def test_quic_server_config_new_accepts_max_early_data_param() raises:
     """Smoke test: rlsm_quic_server_config_new accepts the new max_early_data
     8th param (passed as 0). Direct read of ticketer is not exposed via FFI;
     success is signaled by rc == 0 and a non-negative handle."""
-    var lib = RustlsLibrary()
+    var tls = TlsBackend()
 
     # Use the bench's self-signed test fixtures.
     var cert_pem = _read_file_bytes("certs/server.crt")
     var key_pem  = _read_file_bytes("certs/server.key")
 
-    var alpn_bytes = String("h3").as_bytes()
-    var alpn_len = len(alpn_bytes)
-
-    var cert_buf = _heap_alloc[UInt8](len(cert_pem)).as_any_origin()
-    for i in range(len(cert_pem)):
-        cert_buf[i] = cert_pem[i]
-    var key_buf = _heap_alloc[UInt8](len(key_pem)).as_any_origin()
-    for i in range(len(key_pem)):
-        key_buf[i] = key_pem[i]
-    var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
-    for i in range(alpn_len):
-        alpn_buf[i] = alpn_bytes[i]
-    var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    out_handle[0] = Int32(-1)
-
-    var rc = lib.quic_server_config_new(
-        cert_buf, Int32(len(cert_pem)),
-        key_buf,  Int32(len(key_pem)),
-        alpn_buf, Int32(alpn_len),
-        Int32(0),                # max_early_data: 0 = 0-RTT disabled
-        out_handle,
-    )
-    assert_equal_int(Int(rc), 0, "rc==0")
-    assert_true(out_handle[0] >= Int32(0), "handle must be non-negative")
-
-    cert_buf.free(); key_buf.free(); alpn_buf.free(); out_handle.free()
+    # QuicServerConfig wraps the FFI call; success means the handle is valid.
+    var cfg = QuicServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
+    assert_true(cfg.handle() >= Int32(0), "handle must be non-negative")
 
 
 # ── T4 helpers ───────────────────────────────────────────────────────────
@@ -166,10 +146,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     QUIC ServerConfig handle. The second server connection's profile counter
     must show handshakes_resumed_total == 1. Validates FR-Ticketer (§4.1),
     FR-Counters (§4.4), and FR-Increment-Once (§4.5)."""
-    # Heap-allocate the library to avoid stack-pointer invalidation.
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
+    var tls = TlsBackend("lib/librustls_mojo.so")
 
     # Build an ephemeral cert shared across both conn pairs.
     var cert_key  = _generate_ephemeral_cert()
@@ -177,43 +154,8 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var cert_bytes = cert_key[0].copy()
     var key_bytes  = cert_key[1].copy()
 
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr   = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len  = Int32(len(key_bytes))
-    var ca_len   = Int32(len(ca_bytes))
-
-    # ALPN = "h3".
-    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_ptr[0] = UInt8(ord("h"))
-    alpn_ptr[1] = UInt8(ord("3"))
-    var alpn_len = Int32(2)
-
-    # Create server config (SAME handle for both conn pairs — tickets are bound
-    # to the config's ticketer, so resumption only works with the same config).
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    srv_cfg_ptr[0] = Int32(-1)
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0),   # max_early_data: 0 (0-RTT disabled, P3)
-        srv_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    # Create client config trusting the ephemeral cert.
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    cli_cfg_ptr[0] = Int32(-1)
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-
-    alpn_ptr.free()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     # Heap-allocate a shared AcceptProfile so both server connections accumulate
     # into the same counters.
@@ -228,12 +170,12 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # Inlined handshake loop — must NOT delegate to a helper with `mut
     # QuicConnection` params (copy-in/copy-out would free the Rust handle).
     var client1 = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var dcid1_a = List[UInt8](copy=client1.initial_dcid)
     var dcid1_b = List[UInt8](copy=client1.initial_dcid)
     var server1 = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(dcid1_a), Span(dcid1_b), now,
         p_ptr,
     )
@@ -286,12 +228,12 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
 
     # ── Second connection pair (same server_config, same client_config) ──
     var client2 = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var dcid2_a = List[UInt8](copy=client2.initial_dcid)
     var dcid2_b = List[UInt8](copy=client2.initial_dcid)
     var server2 = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(dcid2_a), Span(dcid2_b), now,
         p_ptr,
     )
@@ -327,8 +269,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
 
     profile_heap.destroy_pointee()
     profile_heap.free()
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_resumption_kind_after_two_handshakes_against_same_config: PASS")
 
 
@@ -343,46 +284,15 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     Uses a runtime profile_ptr (not @parameter if PROFILE_ACCEPT:) so the
     increment fires regardless of the PROFILE_ACCEPT compile-time flag — this
     is approach (c) from the T4 task description."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
+    var tls = TlsBackend("lib/librustls_mojo.so")
 
     var cert_key  = _generate_ephemeral_cert()
     var ca_bytes  = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes  = cert_key[1].copy()
 
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr   = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len  = Int32(len(key_bytes))
-    var ca_len   = Int32(len(ca_bytes))
-
-    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_ptr[0] = UInt8(ord("h"))
-    alpn_ptr[1] = UInt8(ord("3"))
-    var alpn_len = Int32(2)
-
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    srv_cfg_ptr[0] = Int32(-1)
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0), srv_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    cli_cfg_ptr[0] = Int32(-1)
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_client_config_with_ca failed")
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-    alpn_ptr.free()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _resumption_params()
     var now = UInt64(2_000_000)
@@ -393,14 +303,14 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var p_ptr = profile_heap.as_any_origin()
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var dcid_a = List[UInt8](copy=client.initial_dcid)
     var dcid_b = List[UInt8](copy=client.initial_dcid)
     # Attach profile before driving the handshake so the server connection
     # has a live profile_ptr when _on_handshake_complete fires.
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(dcid_a), Span(dcid_b), now,
         p_ptr,
     )
@@ -450,8 +360,7 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
 
     profile_heap.destroy_pointee()
     profile_heap.free()
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_double_count_guard_on_handshake_complete_idempotent: PASS")
 
 
@@ -465,46 +374,15 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     sample in fresh_conn_ffi_us_buckets (recorded once at
     _on_handshake_complete) and the recorded value must be > 0 (proving
     accumulation across the multi-iter handshake)."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
+    var tls = TlsBackend("lib/librustls_mojo.so")
 
     var cert_key  = _generate_ephemeral_cert()
     var ca_bytes  = load_test_ca()
     var cert_bytes = cert_key[0].copy()
     var key_bytes  = cert_key[1].copy()
 
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr   = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len  = Int32(len(key_bytes))
-    var ca_len   = Int32(len(ca_bytes))
-
-    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_ptr[0] = UInt8(ord("h"))
-    alpn_ptr[1] = UInt8(ord("3"))
-    var alpn_len = Int32(2)
-
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    srv_cfg_ptr[0] = Int32(-1)
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0), srv_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    cli_cfg_ptr[0] = Int32(-1)
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-    alpn_ptr.free()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
@@ -515,13 +393,13 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var now = UInt64(3_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var dcid_a = List[UInt8](copy=client.initial_dcid)
     var dcid_b = List[UInt8](copy=client.initial_dcid)
     # Attach profile so server can accumulate fresh_conn_ffi_us_total.
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(dcid_a), Span(dcid_b), now,
         p_ptr,
     )
@@ -573,8 +451,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
 
     profile_heap.destroy_pointee()
     profile_heap.free()
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets: PASS")
 
 

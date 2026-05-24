@@ -13,7 +13,8 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.python import Python, PythonObject
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.packet_protect import PacketProtect
 from navette.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
@@ -42,62 +43,6 @@ def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
-
-
-def _create_configs_from_lib(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
-) raises -> Tuple[Int32, Int32]:
-    """Create QUIC server config + client config using an ephemeral cert.
-
-    Returns (server_config_handle, client_config_handle).
-    """
-    var cert_key = generate_ephemeral_cert()
-    var ca_bytes = load_test_ca()
-    var cert_bytes = cert_key[0].copy()
-    var key_bytes = cert_key[1].copy()
-
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len = Int32(len(key_bytes))
-    var ca_len = Int32(len(ca_bytes))
-
-    # ALPN = "h3" (2 bytes, raw).
-    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_ptr[0] = UInt8(ord("h"))
-    alpn_ptr[1] = UInt8(ord("3"))
-    var alpn_len = Int32(2)
-
-    # Server config.
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0),  # max_early_data: 0 = 0-RTT disabled (T3 signature update)
-        srv_cfg_ptr,
-    )
-    assert_true(
-        rc == Int32(0),
-        "quic_server_config_new failed: " + lib_ptr[].last_error(),
-    )
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    # Client config (trusts the ephemeral cert as CA).
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(
-        rc == Int32(0),
-        "quic_client_config_with_ca failed: " + lib_ptr[].last_error(),
-    )
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-
-    alpn_ptr.free()
-
-    return (server_config, client_config)
 
 
 def _default_params() -> TransportParams:
@@ -217,20 +162,20 @@ def test_loopback_handshake() raises:
     """Full client <-> server handshake in memory."""
     # Heap-allocate the library to avoid stack-pointer invalidation
     # when two QuicConnection objects coexist in the same frame.
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     # Create client -- generates initial DCID, drives ClientHello.
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
 
     # Two copies of DCID to avoid aliasing.
@@ -239,7 +184,7 @@ def test_loopback_handshake() raises:
 
     # Create server.
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -296,31 +241,30 @@ def test_loopback_handshake() raises:
     assert_true(server_got_hs, "server: missing HANDSHAKE_COMPLETE event")
     assert_true(server_got_tp, "server: missing PEER_TRANSPORT_PARAMS event")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_loopback_handshake: PASS")
 
 
 def test_connection_close() raises:
     """After handshake, client closes; server transitions to draining."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -392,20 +336,19 @@ def test_connection_close() raises:
     _ = server.send(now)
     assert_true(server.is_closed(), "server not closed after drain timeout")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_connection_close: PASS")
 
 
 def test_idle_timeout() raises:
     """Idle timeout triggers connection closure after max_idle_timeout."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     params.max_idle_timeout = UInt64(5_000)  # 5 seconds for faster test
@@ -413,12 +356,12 @@ def test_idle_timeout() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -473,34 +416,33 @@ def test_idle_timeout() raises:
         "client: missing CONNECTION_CLOSED event from idle timeout",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_idle_timeout: PASS")
 
 
 def test_handshake_with_loss() raises:
     """Client retransmits Initial CRYPTO after PTO when server response is dropped."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     # Create client.
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
 
     # Create server.
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -557,27 +499,26 @@ def test_handshake_with_loss() raises:
     assert_true(client.is_established(), "client not established after loss recovery")
     assert_true(server.is_established(), "server not established after loss recovery")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_handshake_with_loss: PASS")
 
 
 def test_handshake_with_retry() raises:
     """Retry token round-trip integrated with a normal handshake."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     # 1. Create initial client to get its initial_dcid.
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var client_initial_dcid = List[UInt8](copy=client.initial_dcid)
 
@@ -598,7 +539,7 @@ def test_handshake_with_retry() raises:
         client_addr_hash.append(UInt8(Int(py=py_hash[i])))
 
     var token = generate_retry_token(
-        lib_addr,
+        tls.shared(),
         Span(server_secret),
         Span(client_initial_dcid),
         Span(client_addr_hash),
@@ -607,7 +548,7 @@ def test_handshake_with_retry() raises:
 
     # 3. Validate the token (proving the round-trip works).
     var recovered_dcid = validate_retry_token(
-        lib_addr,
+        tls.shared(),
         Span(server_secret),
         Span(token),
         Span(client_addr_hash),
@@ -626,7 +567,7 @@ def test_handshake_with_retry() raises:
     var orig_dcid = List[UInt8](copy=recovered_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -652,31 +593,30 @@ def test_handshake_with_retry() raises:
 
     assert_true(established, "handshake did not complete with retry token")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_handshake_with_retry: PASS")
 
 
 def test_coalesced_packets() raises:
     """Server coalesces Initial + Handshake into a single datagram."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -729,31 +669,30 @@ def test_coalesced_packets() raises:
 
     assert_true(established, "handshake did not complete with coalesced packets")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_coalesced_packets: PASS")
 
 
 def test_anti_amplification() raises:
     """Server respects 3x amplification limit before address validation."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -822,31 +761,30 @@ def test_anti_amplification() raises:
 
     assert_true(established, "handshake did not complete after anti-amplification test")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_anti_amplification: PASS")
 
 
 def test_stream_data_transfer() raises:
     """Client <-> server bidi stream echo: "hello" -> "world"."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -899,31 +837,30 @@ def test_stream_data_transfer() raises:
     assert_true(_bytes_equal(cli_read[0], "world"), "client did not read 'world'")
     assert_true(cli_read[1], "client did not see FIN on stream")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_stream_data_transfer: PASS")
 
 
 def test_multi_stream() raises:
     """Three concurrent bidi streams retain independent data."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -959,31 +896,30 @@ def test_multi_stream() raises:
     assert_true(_bytes_equal(srv_c[0], "CCCC"), "stream c data mismatch")
     assert_true(srv_c[1], "stream c missing FIN")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_multi_stream: PASS")
 
 
 def test_unidirectional_stream() raises:
     """Client and server each open a uni stream and deliver data once."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1023,31 +959,30 @@ def test_unidirectional_stream() raises:
     )
     assert_true(cli_read[1], "client missed FIN on server uni stream")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_unidirectional_stream: PASS")
 
 
 def test_reset_stream() raises:
     """Client resets a stream mid-transfer; server observes STREAM_RESET."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1086,31 +1021,30 @@ def test_reset_stream() raises:
             assert_equal_int(Int(e.final_size), 7, "reset final_size (len('partial'))")
     assert_true(saw_reset, "server missed STREAM_RESET event")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_reset_stream: PASS")
 
 
 def test_stop_sending() raises:
     """Server STOP_SENDING triggers client RESET_STREAM; server sees STREAM_RESET."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1174,31 +1108,30 @@ def test_stop_sending() raises:
             saw_reset = True
     assert_true(saw_reset, "server missed STREAM_RESET after stop_sending")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_stop_sending: PASS")
 
 
 def test_cid_issuance() raises:
     """Both endpoints issue a new CID (seq=1) post-handshake via NEW_CONNECTION_ID."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1221,31 +1154,30 @@ def test_cid_issuance() raises:
         + String(server.cid_mgr.active_remote_count()),
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_cid_issuance: PASS")
 
 
 def test_flow_control_error_on_overflow() raises:
     """Sender exceeds peer's stream FC limit → FLOW_CONTROL_ERROR (0x03)."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1272,21 +1204,20 @@ def test_flow_control_error_on_overflow() raises:
             raised_fc = True
     assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on stream FC overflow")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_flow_control_error_on_overflow: PASS")
 
 
 def test_conn_flow_control_error_on_overflow() raises:
     """Sender exceeds peer's MAX_DATA (conn-level) → FLOW_CONTROL_ERROR (0x03) on conn FC.
     Stream limits are set high so the conn-level check fires first."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     # Server advertises a low conn-level limit but high stream-level limits,
     # so only the conn-FC check can trip on the frame we inject.
@@ -1299,12 +1230,12 @@ def test_conn_flow_control_error_on_overflow() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", client_params, now,
+        tls.shared(), client_config, "localhost", client_params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, server_params,
+        tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1329,31 +1260,30 @@ def test_conn_flow_control_error_on_overflow() raises:
             raised_fc = True
     assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on conn FC overflow")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_conn_flow_control_error_on_overflow: PASS")
 
 
 def test_final_size_error_on_reset_mismatch() raises:
     """RESET_STREAM with final_size < previously-observed offset → FINAL_SIZE_ERROR (0x06)."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1383,21 +1313,20 @@ def test_final_size_error_on_reset_mismatch() raises:
             raised_fse = True
     assert_true(raised_fse, "server should raise FINAL_SIZE_ERROR on reset with final_size < received")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_final_size_error_on_reset_mismatch: PASS")
 
 
 def test_max_stream_data_and_max_data_cycle() raises:
     """Sender fills a stream past 50% of advertised FC, receiver consumes,
     receiver emits MAX_STREAM_DATA, sender sees advanced limit and writes more."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     # Force low FC limits so the 50%-threshold logic trips predictably.
     # server_params.initial_max_stream_data_bidi_remote = 10 KiB means:
@@ -1414,12 +1343,12 @@ def test_max_stream_data_and_max_data_cycle() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", client_params, now,
+        tls.shared(), client_config, "localhost", client_params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, server_params,
+        tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1486,20 +1415,19 @@ def test_max_stream_data_and_max_data_cycle() raises:
         extra.append(UInt8(0x42))
     client.send_stream_data(sid, Span(extra), False)  # raises if state error
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_max_stream_data_and_max_data_cycle: PASS")
 
 
 def test_max_streams_linear_growth() raises:
     """After peer completes N streams, receiver emits MAX_STREAMS(bidi) = N + initial_max_streams_bidi."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     # Use small initial_max_streams_bidi for a fast, deterministic test.
     var client_params = _default_params()
@@ -1510,12 +1438,12 @@ def test_max_streams_linear_growth() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", client_params, now,
+        tls.shared(), client_config, "localhost", client_params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, server_params,
+        tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1582,8 +1510,7 @@ def test_max_streams_linear_growth() raises:
         + String(granted_bidi),
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_max_streams_linear_growth: PASS")
 
 
@@ -1620,24 +1547,24 @@ def _drain_pending_cid_frames(mut conn: QuicConnection) -> Int:
 
 def test_cid_retire_triggers_reissue() raises:
     """Client retires a server CID → server issues a replacement CID."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1702,8 +1629,7 @@ def test_cid_retire_triggers_reissue() raises:
         + ")",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_cid_retire_triggers_reissue: PASS")
 
 
@@ -1741,23 +1667,24 @@ def _app_has_kind(conn: QuicConnection, pn: Int, kind: UInt8, stream_id: Int) ra
 def test_m3c_frames_retransmit_on_loss() raises:
     """RESET_STREAM, STOP_SENDING, MAX_STREAM_DATA, MAX_DATA, and NEW_CONNECTION_ID
     are re-emitted when their carrier App-space packet is declared lost."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var srv_cfg = configs[0]
-    var cli_cfg = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     # ── Subsection A: RESET_STREAM (client) + STOP_SENDING (server) ──────
 
     var now_a = UInt64(1_000_000)
     var params_a = _default_params()
 
-    var client_a = QuicConnection.client(lib_addr, cli_cfg, "localhost", params_a, now_a)
+    var client_a = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params_a, now_a)
     var orig_dcid_a = List[UInt8](copy=client_a.initial_dcid)
     var cli_dcid_a = List[UInt8](copy=client_a.initial_dcid)
     var server_a = QuicConnection.server(
-        lib_addr, srv_cfg, params_a, Span(orig_dcid_a), Span(cli_dcid_a), now_a,
+        tls.shared(), srv_cfg, params_a, Span(orig_dcid_a), Span(cli_dcid_a), now_a,
     )
     now_a = _establish_handshake(client_a, server_a, now_a)
     _drain_events(client_a)
@@ -1822,11 +1749,11 @@ def test_m3c_frames_retransmit_on_loss() raises:
     server_params_b.initial_max_data = UInt64(10240)
     var client_params_b = _default_params()
 
-    var client_b = QuicConnection.client(lib_addr, cli_cfg, "localhost", client_params_b, now_b)
+    var client_b = QuicConnection.client(tls.shared(), cli_cfg, "localhost", client_params_b, now_b)
     var orig_dcid_b = List[UInt8](copy=client_b.initial_dcid)
     var cli_dcid_b = List[UInt8](copy=client_b.initial_dcid)
     var server_b = QuicConnection.server(
-        lib_addr, srv_cfg, server_params_b, Span(orig_dcid_b), Span(cli_dcid_b), now_b,
+        tls.shared(), srv_cfg, server_params_b, Span(orig_dcid_b), Span(cli_dcid_b), now_b,
     )
     now_b = _establish_handshake(client_b, server_b, now_b)
     _drain_events(client_b)
@@ -1876,11 +1803,11 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var now_c = UInt64(3_000_000)
     var params_c = _default_params()
 
-    var client_c = QuicConnection.client(lib_addr, cli_cfg, "localhost", params_c, now_c)
+    var client_c = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params_c, now_c)
     var orig_dcid_c = List[UInt8](copy=client_c.initial_dcid)
     var cli_dcid_c = List[UInt8](copy=client_c.initial_dcid)
     var server_c = QuicConnection.server(
-        lib_addr, srv_cfg, params_c, Span(orig_dcid_c), Span(cli_dcid_c), now_c,
+        tls.shared(), srv_cfg, params_c, Span(orig_dcid_c), Span(cli_dcid_c), now_c,
     )
     now_c = _establish_handshake(client_c, server_c, now_c)
     _drain_events(client_c)
@@ -1911,32 +1838,31 @@ def test_m3c_frames_retransmit_on_loss() raises:
         "server re-emits NEW_CID after loss",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_m3c_frames_retransmit_on_loss: PASS")
 
 
 def test_anti_amp_ok_extract_parity() raises:
     """_anti_amp_ok mirrors the inline check: unvalidated server rejects
     oversized sends; validated server and clients are unrestricted."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -1988,8 +1914,7 @@ def test_anti_amp_ok_extract_parity() raises:
         "client: anti-amp check always passes",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_anti_amp_ok_extract_parity: PASS")
 
 
@@ -2001,24 +1926,24 @@ def test_persistent_congestion_end_to_end() raises:
     on_packets_lost fan-out through _detect_losses/_handle_ack via a synthetic
     ACK that declares the injected packets lost via the packet-threshold rule.
     """
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -2148,8 +2073,7 @@ def test_persistent_congestion_end_to_end() raises:
         "persistent NOT declared when last_ae_acked_time_sent falls in range",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_persistent_congestion_end_to_end: PASS")
 
 
@@ -2158,24 +2082,24 @@ def test_persistent_congestion_end_to_end() raises:
 
 def test_pacer_delays_burst() raises:
     """With a low pacing rate, timeout() exposes a pacer deadline delaying the next send."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -2204,31 +2128,30 @@ def test_pacer_delays_burst() raises:
             "deadline not in past; got " + String(deadline.value()),
         )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_pacer_delays_burst: PASS")
 
 
 def test_cubic_cwnd_gates_send_path() raises:
     """A connection with CUBIC cannot send beyond cwnd."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -2250,25 +2173,26 @@ def test_cubic_cwnd_gates_send_path() raises:
     ok = client._can_send(UInt64(1200), now)
     assert_true(ok, "1200-byte send permitted within cwnd=2400")
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_cubic_cwnd_gates_send_path: PASS")
 
 
 def test_blocked_frames_emitted_on_conn_fc_stall() raises:
     """CLIENT emits DATA_BLOCKED when conn-level FC is exhausted."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params,
+    var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish_handshake(client, server, now)
@@ -2287,25 +2211,26 @@ def test_blocked_frames_emitted_on_conn_fc_stall() raises:
         "blocked_at should equal limit after conn-FC stall",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_blocked_frames_emitted_on_conn_fc_stall: PASS")
 
 
 def test_blocked_not_re_emitted_at_same_limit() raises:
     """DATA_BLOCKED is not emitted twice at the same limit."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params,
+    var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish_handshake(client, server, now)
@@ -2328,25 +2253,26 @@ def test_blocked_not_re_emitted_at_same_limit() raises:
         "blocked_at should not change on second send at same limit",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_blocked_not_re_emitted_at_same_limit: PASS")
 
 
 def test_blocked_cleared_on_max_data_increase() raises:
     """blocked_at resets to 0 after MAX_DATA raises the limit."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params,
+    var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish_handshake(client, server, now)
@@ -2372,25 +2298,26 @@ def test_blocked_cleared_on_max_data_increase() raises:
         "blocked_at should be 0 after MAX_DATA limit increase",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_blocked_cleared_on_max_data_increase: PASS")
 
 
 def test_ecn_disabled_after_probing() raises:
     """ECN transitions to DISABLED when probes are sent but path strips marks."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params,
+    var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish_handshake(client, server, now)
@@ -2433,25 +2360,26 @@ def test_ecn_disabled_after_probing() raises:
         "client ECN state should be DISABLED when probes sent but path strips marks",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_disabled_after_probing: PASS")
 
 
 def test_pn_skip_active_after_handshake() raises:
     """Application-space pn_skip_rng is seeded at handshake; Initial/Handshake remain zero."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params,
+    var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish_handshake(client, server, now)
@@ -2480,25 +2408,26 @@ def test_pn_skip_active_after_handshake() raises:
         "server: Application-space pn_skip_rng should be non-zero after handshake",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_pn_skip_active_after_handshake: PASS")
 
 
 def test_pn_skip_next_in_valid_range() raises:
     """pn_skip_next is in [200, 499] immediately after handshake seeding."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params,
+    var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish_handshake(client, server, now)
@@ -2513,24 +2442,26 @@ def test_pn_skip_next_in_valid_range() raises:
         "pn_skip_next must be < 500, got " + String(skip_next),
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_pn_skip_next_in_valid_range: PASS")
 
 
 def test_streams_blocked_bidi_emitted() raises:
     """CLIENT emits STREAMS_BLOCKED_BIDI when peer's bidi stream limit is exhausted."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+        tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
     now = _establish_handshake(client, server, now)
     _drain_events(client)
@@ -2559,24 +2490,26 @@ def test_streams_blocked_bidi_emitted() raises:
         "streams_blocked_at_bidi must equal peer_max_streams_bidi after send",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_streams_blocked_bidi_emitted: PASS")
 
 
 def test_streams_blocked_dedup_no_resend() raises:
     """STREAMS_BLOCKED is NOT re-emitted for the same peer limit (dedup)."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+        tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
     now = _establish_handshake(client, server, now)
     _drain_events(client)
@@ -2603,19 +2536,16 @@ def test_streams_blocked_dedup_no_resend() raises:
         "streams_blocked_at_bidi must not change on second send (dedup)",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_streams_blocked_dedup_no_resend: PASS")
 
 
 def test_batch_crypto_roundtrip() raises:
     """Encrypt with client batch methods, decrypt with server batch methods."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
+    var tls = TlsBackend("lib/librustls_mojo.so")
 
-    var client = PacketProtect(lib_addr)
-    var server = PacketProtect(lib_addr)
+    var client = PacketProtect(tls.shared())
+    var server = PacketProtect(tls.shared())
 
     var dcid: List[UInt8] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
@@ -2722,25 +2652,27 @@ def test_batch_crypto_roundtrip() raises:
     out_pt_lens.free()
     buf_ptr.free()
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_batch_crypto_roundtrip: PASS")
 
 
 def test_is_expected_dcid_initial_and_local() raises:
     """is_expected_dcid matches initial_dcid and local_cid; rejects others."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+        tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
 
     # Expected DCID #1: matches initial_dcid (== client_dcid in this fixture).
@@ -2766,8 +2698,7 @@ def test_is_expected_dcid_initial_and_local() raises:
         "is_expected_dcid should reject unrelated DCIDs",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_is_expected_dcid_initial_and_local: PASS")
 
 
@@ -2780,18 +2711,21 @@ def test_quic_connection_dcid_lengths_are_8_bytes() raises:
     the parser AND this test together.
     """
     # Mirror the construction from test_is_expected_dcid_initial_and_local.
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now
+        tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
 
     # New invariant assertions: both server-side CIDs must be 8 bytes.
@@ -2804,8 +2738,7 @@ def test_quic_connection_dcid_lengths_are_8_bytes() raises:
         "expected len(initial_dcid) == 8, got " + String(len(server.initial_dcid)),
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("PASS: test_quic_connection_dcid_lengths_are_8_bytes")
 
 

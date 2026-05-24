@@ -7,7 +7,7 @@
 # the self-signed test cert in crates/librustls-mojo/testdata/.
 #
 # Requires librustls_mojo.so built with `--features insecure`.
-from navette.tls import RustlsLibrary, TlsClientConfig, TlsServerConfig, TlsConnection
+from navette.tls import TlsBackend, TlsClientConfig, TlsServerConfig, TlsConnection
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 from std.memory import Span
 from std.io.file import FileHandle
@@ -51,16 +51,16 @@ def _shuttle(mut client: TlsConnection, mut server: TlsConnection) raises -> Int
 
 def test_handshake_and_data_roundtrip() raises:
     """Complete TLS handshake + plaintext exchange without sockets."""
-    var lib = RustlsLibrary()
+    var tls = TlsBackend()
 
     var cert_pem = _read_file("crates/librustls-mojo/testdata/server.crt")
     var key_pem = _read_file("crates/librustls-mojo/testdata/server.key")
 
-    var cli_cfg = TlsClientConfig(lib, insecure=True)
-    var srv_cfg = TlsServerConfig(lib, Span(cert_pem), Span(key_pem))
+    var cli_cfg = TlsClientConfig(tls.shared(), insecure=True)
+    var srv_cfg = TlsServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
 
-    var client = TlsConnection.new_client(lib, cli_cfg, "localhost")
-    var server = TlsConnection.new_server(lib, srv_cfg)
+    var client = TlsConnection.new_client(tls.shared(), cli_cfg, "localhost")
+    var server = TlsConnection.new_server(tls.shared(), srv_cfg)
 
     # Client should have ClientHello buffered immediately after construction.
     assert_true(client.wants_write(), "client should have ClientHello buffered")
@@ -117,20 +117,20 @@ def test_handshake_and_data_roundtrip() raises:
     _ = server^
     _ = cli_cfg^
     _ = srv_cfg^
-    _ = lib^
+    _ = tls^
 
 
 def test_is_handshaking_before_handshake() raises:
     """Newly created connections report is_handshaking() == True."""
-    var lib = RustlsLibrary()
+    var tls = TlsBackend()
     var cert_pem = _read_file("crates/librustls-mojo/testdata/server.crt")
     var key_pem = _read_file("crates/librustls-mojo/testdata/server.key")
 
-    var cli_cfg = TlsClientConfig(lib, insecure=True)
-    var srv_cfg = TlsServerConfig(lib, Span(cert_pem), Span(key_pem))
+    var cli_cfg = TlsClientConfig(tls.shared(), insecure=True)
+    var srv_cfg = TlsServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
 
-    var client = TlsConnection.new_client(lib, cli_cfg, "localhost")
-    var server = TlsConnection.new_server(lib, srv_cfg)
+    var client = TlsConnection.new_client(tls.shared(), cli_cfg, "localhost")
+    var server = TlsConnection.new_server(tls.shared(), srv_cfg)
 
     assert_true(client.is_handshaking(), "fresh client is handshaking")
     assert_true(server.is_handshaking(), "fresh server is handshaking")
@@ -139,20 +139,20 @@ def test_is_handshaking_before_handshake() raises:
     _ = server^
     _ = cli_cfg^
     _ = srv_cfg^
-    _ = lib^
+    _ = tls^
 
 
 def test_wants_write_after_construction() raises:
     """Client buffers ClientHello after construction; server has nothing yet."""
-    var lib = RustlsLibrary()
+    var tls = TlsBackend()
     var cert_pem = _read_file("crates/librustls-mojo/testdata/server.crt")
     var key_pem = _read_file("crates/librustls-mojo/testdata/server.key")
 
-    var cli_cfg = TlsClientConfig(lib, insecure=True)
-    var srv_cfg = TlsServerConfig(lib, Span(cert_pem), Span(key_pem))
+    var cli_cfg = TlsClientConfig(tls.shared(), insecure=True)
+    var srv_cfg = TlsServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
 
-    var client = TlsConnection.new_client(lib, cli_cfg, "localhost")
-    var server = TlsConnection.new_server(lib, srv_cfg)
+    var client = TlsConnection.new_client(tls.shared(), cli_cfg, "localhost")
+    var server = TlsConnection.new_server(tls.shared(), srv_cfg)
 
     assert_true(client.wants_write(), "client wants_write (ClientHello)")
     assert_true(
@@ -164,7 +164,7 @@ def test_wants_write_after_construction() raises:
     _ = server^
     _ = cli_cfg^
     _ = srv_cfg^
-    _ = lib^
+    _ = tls^
 
 
 def main() raises:

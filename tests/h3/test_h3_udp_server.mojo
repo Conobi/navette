@@ -45,7 +45,7 @@ from navette.http.handler import (
 )
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
 
 from interop.file_io import read_file
@@ -101,8 +101,8 @@ def test_h3_udp_server_init_and_tick() raises:
     # ── 1. TLS setup ────────────────────────────────────────────
     var cert = read_file(String("certs/server.crt"))
     var key = read_file(String("certs/server.key"))
-    var lib = RustlsLibrary()
-    var config = QuicServerConfig(lib, Span(cert), Span(key))
+    var tls = TlsBackend()
+    var config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
 
     # ── 2. UDP listener on ephemeral port ──────────────────────
     var sock = udp_listener(0)  # kernel picks a free port
@@ -112,7 +112,7 @@ def test_h3_udp_server_init_and_tick() raises:
     var tp = default_transport_params()
     var server = H3UdpServer[StubHandler](
         sock^,
-        lib^,
+        tls^,
         config^,
         tp^,
         make_stub_handler,

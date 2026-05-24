@@ -14,7 +14,7 @@ See specs/2026-05-18-memory-safety-hardening.md.
 
 from std.testing import assert_equal, assert_true, assert_false
 
-from std.memory import UnsafePointer
+from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.util.ptrbox import PtrBox
@@ -35,6 +35,9 @@ from navette.http.handler import (
 )
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
+from navette.tls.lib import TlsBackend
+from navette.tls.config import QuicServerConfig
+from interop.file_io import read_file
 
 
 # ---------------------------------------------------------------------------
@@ -134,16 +137,19 @@ def _drain_fake_slots(mut server: H3UdpServer[StubHandler]):
 def _make_test_server() raises -> H3UdpServer[StubHandler]:
     """Minimal H3UdpServer for demux-only tests.
 
-    Uses dummy lib_addr / server_config — never reached on this code
-    path since we only call _find_conn_by_dcid. UDP socket is real
-    (ephemeral port) because H3UdpServer wants an OwnedHandle.
+    UDP socket is real (ephemeral port) because H3UdpServer wants an
+    OwnedHandle.
     """
+    var cert = read_file(String("certs/server.crt"))
+    var key = read_file(String("certs/server.key"))
+    var tls = TlsBackend()
+    var config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
     var sock = udp_listener(0)
     var tp = default_transport_params()
     return H3UdpServer[StubHandler](
         sock^,
-        UInt64(0),
-        Int32(-1),
+        tls^,
+        config^,
         tp^,
         make_stub_handler,
     )

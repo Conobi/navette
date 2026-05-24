@@ -1,6 +1,6 @@
 # tests/test_tls_quic.mojo — FFI null-safety tests for QUIC handshake signatures.
 
-from navette.tls import RustlsLibrary
+from navette.tls import TlsBackend
 from tests._test_util import assert_equal_int
 from std.memory import UnsafePointer
 
@@ -12,8 +12,9 @@ def test_quic_conn_read_hs_null_out_params_do_not_crash() raises:
     Rust side's NULL-safe out-param writes are exercised here via Mojo's
     default-NULL pointer arguments on the wrapper.
     """
-    var lib = RustlsLibrary()
-    var rc = lib.quic_conn_read_hs(
+    var tls = TlsBackend()
+    var rlib = tls.shared().inner_ptr()
+    var rc = rlib[].quic_conn_read_hs(
         Int32(-1),
         UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0),
         Int32(0),
@@ -32,10 +33,11 @@ def test_quic_conn_read_hs_q6_profiled_form_null_safe() raises:
     handle-lookup). Invalid handle returns -1 without writing to the out-pointers;
     this exercises the Rust-side early-return-before-out-param-write path.
     """
-    var lib = RustlsLibrary()
+    var tls = TlsBackend()
+    var rlib = tls.shared().inner_ptr()
     var out_sm_us: UInt64 = UInt64(0)
     var out_lookup_us: UInt64 = UInt64(0)
-    var rc = lib.quic_conn_read_hs(
+    var rc = rlib[].quic_conn_read_hs(
         Int32(-1),
         UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0),
         Int32(0),

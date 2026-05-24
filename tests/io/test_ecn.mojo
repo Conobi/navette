@@ -8,7 +8,8 @@
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.ecn import (
     ECN_NOT_ECT, ECN_ECT0, ECN_ECT1, ECN_CE,
@@ -27,45 +28,7 @@ def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
     return load_test_cert()
 
 
-def _create_configs(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
-) raises -> Tuple[Int32, Int32]:
-    var cert_key = generate_ephemeral_cert()
-    var ca_bytes = load_test_ca()
-    var cert_bytes = cert_key[0].copy()
-    var key_bytes = cert_key[1].copy()
-
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len = Int32(len(key_bytes))
-    var ca_len = Int32(len(ca_bytes))
-
-    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_ptr[0] = UInt8(ord("h"))
-    alpn_ptr[1] = UInt8(ord("3"))
-    var alpn_len = Int32(2)
-
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0), srv_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_server_config_new failed")
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_client_config_with_ca failed")
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-    alpn_ptr.free()
-
-    return (server_config, client_config)
+    # _create_configs removed — use QuicServerConfig / QuicClientConfig directly.
 
 
 def _default_params() -> TransportParams:
@@ -149,18 +112,20 @@ def _to_bytes(s: String) -> List[UInt8]:
 
 def test_ecn_recv_counts_ce_mark() raises:
     """Server receives client datagram with ECN_CE; recv_ecn.ce increments."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -186,25 +151,26 @@ def test_ecn_recv_counts_ce_mark() raises:
         "server.spaces[2].recv_ecn.ce should have incremented after CE-marked recv",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_recv_counts_ce_mark: PASS")
 
 
 def test_ecn_ack_includes_ecn_counts() raises:
     """After server receives CE-marked datagram, recv_ecn is non-zero."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -227,25 +193,26 @@ def test_ecn_ack_includes_ecn_counts() raises:
         "server recv_ecn should be non-zero after receiving CE-marked packet",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_ack_includes_ecn_counts: PASS")
 
 
 def test_ecn_probing_to_capable() raises:
     """ECN state transitions PROBING -> CAPABLE when ACK echoes ECN counts."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -285,25 +252,26 @@ def test_ecn_probing_to_capable() raises:
         "client ECN state should be CAPABLE after probe ACK with ECN counts",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_probing_to_capable: PASS")
 
 
 def test_ecn_probing_to_disabled_no_counts() raises:
     """ECN state transitions PROBING -> DISABLED when ACK has no ECN counts."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -356,25 +324,26 @@ def test_ecn_probing_to_disabled_no_counts() raises:
         "client ECN state should be DISABLED when ACK carries no ECN counts",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_probing_to_disabled_no_counts: PASS")
 
 
 def test_ecn_disabled_no_ecn_mark() raises:
     """When ECN state is DISABLED, ecn_mark() returns ECN_NOT_ECT."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -386,25 +355,26 @@ def test_ecn_disabled_no_ecn_mark() raises:
         "ecn_mark() must return ECN_NOT_ECT when state is DISABLED",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_disabled_no_ecn_mark: PASS")
 
 
 def test_ecn_ce_triggers_congestion() raises:
     """CE delta > 0 in ACK → _process_ecn_feedback → on_congestion_event → cwnd reduces."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -460,25 +430,26 @@ def test_ecn_ce_triggers_congestion() raises:
         "CE in ACK must trigger cwnd reduction via ECN feedback path",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_ce_triggers_congestion: PASS")
 
 
 def test_ecn_bleaching_disables() raises:
     """ECT0-in-flight but ACK with no ECN counts (bleaching) → DISABLED."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, configs[1], "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
-    var server = QuicConnection.server(lib_addr, configs[0], params, Span(orig_dcid), Span(client_dcid), now)
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
     _drain_events(client)
@@ -525,8 +496,7 @@ def test_ecn_bleaching_disables() raises:
         "client ECN state should be DISABLED when ECT0 packets sent but ACK has no ECN counts (bleaching)",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_ecn_bleaching_disables: PASS")
 
 

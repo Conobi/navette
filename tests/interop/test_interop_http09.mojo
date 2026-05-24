@@ -9,7 +9,8 @@ from std.collections import Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert, load_test_ca
@@ -26,48 +27,7 @@ def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
     return load_test_cert()
 
 
-def _create_configs(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
-) raises -> Tuple[Int32, Int32]:
-    var cert_key = generate_ephemeral_cert()
-    var ca_bytes = load_test_ca()
-    var cert_bytes = cert_key[0].copy()
-    var key_bytes = cert_key[1].copy()
-
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len = Int32(len(key_bytes))
-    var ca_len = Int32(len(ca_bytes))
-
-    # ALPN = "hq-interop" for HTTP/0.9 interop
-    var alpn_str = String("hq-interop")
-    var alpn_bytes = alpn_str.as_bytes()
-    var alpn_ptr = _heap_alloc[UInt8](len(alpn_bytes)).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_ptr[i] = alpn_bytes[i]
-    var alpn_len = Int32(len(alpn_bytes))
-
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0), srv_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_server_config_new failed: " + lib_ptr[].last_error())
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(rc == Int32(0), "quic_client_config_with_ca failed: " + lib_ptr[].last_error())
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-    alpn_ptr.free()
-
-    return (server_config, client_config)
+    # _create_configs removed — use QuicServerConfig / QuicClientConfig directly.
 
 
 def _default_params() -> TransportParams:
@@ -169,22 +129,22 @@ def test_http09_loopback() raises:
     write_file(www_dir + "/test1k.bin", Span(test_data))
 
     # ── Create QUIC loopback pair ─────────────────────────────────────────
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes), alpn="hq-interop")
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes), alpn="hq-interop")
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
-    var client = QuicConnection.client(lib_addr, client_config, "localhost", params, now)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params, Span(orig_dcid), Span(client_dcid), now,
+        tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now,
     )
 
     now = _establish_handshake(client, server, now)

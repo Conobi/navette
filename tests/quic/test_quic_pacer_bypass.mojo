@@ -11,7 +11,8 @@ from std.collections import Optional
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert, load_test_ca
@@ -24,54 +25,6 @@ def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
-
-
-def _create_configs_from_lib(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
-) raises -> Tuple[Int32, Int32]:
-    var cert_key = generate_ephemeral_cert()
-    var ca_bytes = load_test_ca()
-    var cert_bytes = cert_key[0].copy()
-    var key_bytes = cert_key[1].copy()
-
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr = key_bytes.unsafe_ptr().as_any_origin()
-    var ca_ptr = ca_bytes.unsafe_ptr().as_any_origin()
-    var cert_len = Int32(len(cert_bytes))
-    var key_len = Int32(len(key_bytes))
-    var ca_len = Int32(len(ca_bytes))
-
-    var alpn_ptr = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_ptr[0] = UInt8(ord("h"))
-    alpn_ptr[1] = UInt8(ord("3"))
-    var alpn_len = Int32(2)
-
-    var srv_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
-        cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len,
-        Int32(0), srv_cfg_ptr,
-    )
-    assert_true(
-        rc == Int32(0),
-        "quic_server_config_new failed: " + lib_ptr[].last_error(),
-    )
-    var server_config = srv_cfg_ptr[0]
-    srv_cfg_ptr.free()
-
-    var cli_cfg_ptr = _heap_alloc[Int32](1).as_any_origin()
-    rc = lib_ptr[].quic_client_config_with_ca(
-        ca_ptr, ca_len, alpn_ptr, alpn_len, cli_cfg_ptr,
-    )
-    assert_true(
-        rc == Int32(0),
-        "quic_client_config_with_ca failed: " + lib_ptr[].last_error(),
-    )
-    var client_config = cli_cfg_ptr[0]
-    cli_cfg_ptr.free()
-
-    alpn_ptr.free()
-
-    return (server_config, client_config)
 
 
 def _default_params() -> TransportParams:
@@ -118,19 +71,19 @@ def test_pacer_bypassed_during_handshake() raises:
     """_can_send returns True for non-established connections even when the
     pacer would otherwise block. The bypass is the surgical fix from
     specs/2026-04-25-quic-pacer-bypass-handshake.md."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
 
     # Sanity: handshake has not completed.
@@ -172,7 +125,7 @@ def test_pacer_bypassed_during_handshake() raises:
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
     server.bytes_received = UInt64(0)
@@ -182,32 +135,31 @@ def test_pacer_bypassed_during_handshake() raises:
         "anti-amp must still gate non-established server with bytes_received=0",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_pacer_bypassed_during_handshake: PASS")
 
 
 def test_pacer_active_after_handshake() raises:
     """After is_established(), the pacer continues to gate sends. Regression
     guard ensuring the bypass is scoped strictly to the handshake phase."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var server_config = configs[0]
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
     var orig_dcid = List[UInt8](copy=client.initial_dcid)
     var client_dcid = List[UInt8](copy=client.initial_dcid)
     var server = QuicConnection.server(
-        lib_addr, server_config, params,
+        tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
@@ -235,8 +187,7 @@ def test_pacer_active_after_handshake() raises:
         "_can_send must return True after pacer deadline elapses",
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_pacer_active_after_handshake: PASS")
 
 
@@ -244,18 +195,16 @@ def test_handshake_padding_still_works() raises:
     """A fresh client's first Initial flight is still padded to MIN_DATAGRAM_SIZE
     after the bypass change. Regression guard for the padding logic at
     src/quic/connection.mojo:1714-1728."""
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    var configs = _create_configs_from_lib(lib_ptr.as_any_origin())
-    var client_config = configs[1]
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var ca_bytes = load_test_ca()
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
 
     var params = _default_params()
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(
-        lib_addr, client_config, "localhost", params, now,
+        tls.shared(), client_config, "localhost", params, now,
     )
 
     # Drive one round of send: client should emit a padded Initial datagram.
@@ -270,8 +219,7 @@ def test_handshake_padding_still_works() raises:
         "first Initial datagram must be padded to >= 1200 bytes; got " + String(first_dg_len),
     )
 
-    lib_ptr.destroy_pointee()
-    lib_ptr.free()
+    _ = tls^
     print("  test_handshake_padding_still_works: PASS")
 
 

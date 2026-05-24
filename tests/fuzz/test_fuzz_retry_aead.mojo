@@ -15,20 +15,13 @@
 #   P6 — Nonce uniqueness probe: two generate() calls with identical inputs
 #        produce tokens whose nonce prefix (bytes 0..11) differs.
 
-from std.memory import UnsafePointer
 from std.os import getenv
 
 from tests.fuzz.lib.prng import SplitMix64
 from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.quic.retry import generate_retry_token, validate_retry_token
-
-
-def _get_lib_addr(ref [_] lib: RustlsLibrary) -> UInt64:
-    """Mirror tests/test_quic_retry.mojo helper — taking the lib by ref
-    avoids stack-move surprises when grabbing its address."""
-    return UInt64(Int(UnsafePointer(to=lib)))
 
 
 def _random_bytes(mut rng: SplitMix64, n: Int) -> List[UInt8]:
@@ -38,7 +31,7 @@ def _random_bytes(mut rng: SplitMix64, n: Int) -> List[UInt8]:
     return out^
 
 
-def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> ObserveResult:
+def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> ObserveResult:
     """Each invocation exercises P1-P6 on freshly-generated inputs."""
     var secret = _random_bytes(rng, 16)
     var dcid_len = Int(rng.next_below(UInt64(21)))  # 0-20
@@ -49,12 +42,12 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
     # P1: inverse identity
     var token: List[UInt8]
     try:
-        token = generate_retry_token(lib_addr, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
+        token = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
     except e:
         return ObserveResult(False, String("P1: generate_retry_token raised: ") + String(e))
     var recovered: List[UInt8]
     try:
-        recovered = validate_retry_token(lib_addr, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        recovered = validate_retry_token(lib, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except e:
         return ObserveResult(False, String("P1: validate raised on its own token: ") + String(e))
     if len(recovered) != dcid_len:
@@ -71,7 +64,7 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
         tampered[byte_idx] = tampered[byte_idx] ^ UInt8(1 << bit)
         var raised = False
         try:
-            _ = validate_retry_token(lib_addr, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
+            _ = validate_retry_token(lib, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
         except:
             raised = True
         if not raised:
@@ -84,7 +77,7 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
     nonce_tampered[nbyte] = nonce_tampered[nbyte] ^ UInt8(1 << nbit)
     var raised_2b = False
     try:
-        _ = validate_retry_token(lib_addr, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
+        _ = validate_retry_token(lib, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
     except:
         raised_2b = True
     if not raised_2b:
@@ -97,7 +90,7 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
         secret2[0] = secret2[0] ^ UInt8(0xFF)
     var raised_3 = False
     try:
-        _ = validate_retry_token(lib_addr, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        _ = validate_retry_token(lib, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except:
         raised_3 = True
     if not raised_3:
@@ -109,7 +102,7 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
         hash2[0] = hash2[0] ^ UInt8(0xFF)
     var raised_4 = False
     try:
-        _ = validate_retry_token(lib_addr, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
+        _ = validate_retry_token(lib, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
     except:
         raised_4 = True
     if not raised_4:
@@ -119,7 +112,7 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
     var now_v = now_g + UInt64(100)
     var raised_5 = False
     try:
-        _ = validate_retry_token(lib_addr, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
+        _ = validate_retry_token(lib, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
     except:
         raised_5 = True
     if not raised_5:
@@ -128,7 +121,7 @@ def _check_all_properties(mut rng: SplitMix64, lib_addr: UInt64) raises -> Obser
     return ObserveResult(True, String(""))
 
 
-def _check_p6(lib_addr: UInt64) raises -> ObserveResult:
+def _check_p6(lib: SharedLibrary) raises -> ObserveResult:
     """Nonce-uniqueness probe: two calls with identical inputs → distinct nonces."""
     var secret = List[UInt8]()
     for i in range(16):
@@ -139,8 +132,8 @@ def _check_p6(lib_addr: UInt64) raises -> ObserveResult:
     var addr_hash = List[UInt8]()
     for i in range(32):
         addr_hash.append(UInt8(i))
-    var t1 = generate_retry_token(lib_addr, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
-    var t2 = generate_retry_token(lib_addr, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    var t1 = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    var t2 = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
     var same = True
     for i in range(12):
         if t1[i] != t2[i]:
@@ -175,27 +168,25 @@ def main() raises:
     var iters = _env_int(String("FUZZ_ITERS"), 1000)  # AEAD is heavier; smaller default
     var soak = _env_bool(String("FUZZ_SOAK"))
 
-    var lib = RustlsLibrary("lib/librustls_mojo.so")
-    var lib_addr = _get_lib_addr(lib)
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var shared = tls.shared()
 
     var rng = SplitMix64(seed)
     var report = FuzzReport(String("fuzz_retry_aead"), seed, iters)
 
     # P6 once at startup
-    report.observe(_check_p6(lib_addr))
+    report.observe(_check_p6(shared))
 
     # P1-P5 per iteration
     var stage = 0
     for _ in range(iters):
         if (not soak) and report.disagreements >= 20: break
-        report.observe(_check_all_properties(rng, lib_addr))
+        report.observe(_check_all_properties(rng, shared))
         stage += 1
     print("stage (P1-P5):", stage, "iters")
     print("plus P6 (nonce-uniqueness probe)")
 
     report.finish()
 
-    # Keep lib alive past the FFI calls — Mojo would otherwise drop it as soon
-    # as the last reference goes out of scope, destructing the dlopen handle
-    # mid-FFI. See tests/test_quic_retry.mojo for the same pattern.
-    _ = lib^
+    # Keep tls alive past the FFI calls.
+    _ = tls^

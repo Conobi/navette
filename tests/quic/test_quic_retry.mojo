@@ -7,9 +7,7 @@
 #   cd ~/Projets/perso/navette && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_quic_retry.mojo
 
-from std.memory import UnsafePointer
-
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.quic.retry import (
     generate_retry_token,
     validate_retry_token,
@@ -20,11 +18,6 @@ from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 
 # --- Helpers ---
-
-
-def _get_lib_addr(ref [_] lib: RustlsLibrary) -> UInt64:
-    """Get the address of a RustlsLibrary as UInt64 for FFI functions."""
-    return UInt64(Int(UnsafePointer(to=lib)))
 
 
 def _make_secret() -> List[UInt8]:
@@ -54,7 +47,7 @@ def _make_addr_hash_ones() -> List[UInt8]:
 # === Test 1: Token round-trip ===
 
 
-def test_token_round_trip(lib_addr: UInt64) raises:
+def test_token_round_trip(lib: SharedLibrary) raises:
     """Generate a token and validate immediately; verify returned dcid matches."""
     var secret = _make_secret()
     var dcid = hex_decode("0102030405060708")
@@ -62,7 +55,7 @@ def test_token_round_trip(lib_addr: UInt64) raises:
     var now = UInt64(1000)
 
     var token = generate_retry_token(
-        lib_addr,
+        lib,
         Span(secret),
         Span(dcid),
         Span(addr_hash),
@@ -73,7 +66,7 @@ def test_token_round_trip(lib_addr: UInt64) raises:
     assert_true(len(token) >= 28, "token too short: " + String(len(token)))
 
     var recovered_dcid = validate_retry_token(
-        lib_addr,
+        lib,
         Span(secret),
         Span(token),
         Span(addr_hash),
@@ -92,14 +85,14 @@ def test_token_round_trip(lib_addr: UInt64) raises:
 # === Test 2: Token expired ===
 
 
-def test_token_expired(lib_addr: UInt64) raises:
+def test_token_expired(lib: SharedLibrary) raises:
     """Generate with now=0, validate with now=10 (>5s default max_age); should raise."""
     var secret = _make_secret()
     var dcid = hex_decode("aabbccdd")
     var addr_hash = _make_addr_hash_zeros()
 
     var token = generate_retry_token(
-        lib_addr,
+        lib,
         Span(secret),
         Span(dcid),
         Span(addr_hash),
@@ -109,7 +102,7 @@ def test_token_expired(lib_addr: UInt64) raises:
     var caught = False
     try:
         _ = validate_retry_token(
-            lib_addr,
+            lib,
             Span(secret),
             Span(token),
             Span(addr_hash),
@@ -129,7 +122,7 @@ def test_token_expired(lib_addr: UInt64) raises:
 # === Test 3: Token wrong address ===
 
 
-def test_token_wrong_address(lib_addr: UInt64) raises:
+def test_token_wrong_address(lib: SharedLibrary) raises:
     """Generate with addr_hash A, validate with addr_hash B; should raise."""
     var secret = _make_secret()
     var dcid = hex_decode("deadbeef")
@@ -137,7 +130,7 @@ def test_token_wrong_address(lib_addr: UInt64) raises:
     var addr_b = _make_addr_hash_ones()
 
     var token = generate_retry_token(
-        lib_addr,
+        lib,
         Span(secret),
         Span(dcid),
         Span(addr_a),
@@ -147,7 +140,7 @@ def test_token_wrong_address(lib_addr: UInt64) raises:
     var caught = False
     try:
         _ = validate_retry_token(
-            lib_addr,
+            lib,
             Span(secret),
             Span(token),
             Span(addr_b),
@@ -167,14 +160,14 @@ def test_token_wrong_address(lib_addr: UInt64) raises:
 # === Test 4: Token tampered ===
 
 
-def test_token_tampered(lib_addr: UInt64) raises:
+def test_token_tampered(lib: SharedLibrary) raises:
     """Generate valid token, flip a byte, validate; should raise AEAD auth failure."""
     var secret = _make_secret()
     var dcid = hex_decode("0102030405")
     var addr_hash = _make_addr_hash_zeros()
 
     var token = generate_retry_token(
-        lib_addr,
+        lib,
         Span(secret),
         Span(dcid),
         Span(addr_hash),
@@ -187,7 +180,7 @@ def test_token_tampered(lib_addr: UInt64) raises:
     var caught = False
     try:
         _ = validate_retry_token(
-            lib_addr,
+            lib,
             Span(secret),
             Span(token),
             Span(addr_hash),
@@ -207,7 +200,7 @@ def test_token_tampered(lib_addr: UInt64) raises:
 # === Test 5: Integrity tag known vector (RFC 9001 A.4) ===
 
 
-def test_integrity_tag_known_vector(lib_addr: UInt64) raises:
+def test_integrity_tag_known_vector(lib: SharedLibrary) raises:
     """Test compute_retry_integrity_tag against RFC 9001 Appendix A.4.
 
     RFC 9001 A.4 Retry Packet (QUIC v1):
@@ -231,7 +224,7 @@ def test_integrity_tag_known_vector(lib_addr: UInt64) raises:
     var expected_tag_hex = "04a265ba2eff4d829058fb3f0f2496ba"
 
     var computed_tag = compute_retry_integrity_tag(
-        lib_addr,
+        lib,
         Span(orig_dcid),
         Span(packet_without_tag),
     )
@@ -248,7 +241,7 @@ def test_integrity_tag_known_vector(lib_addr: UInt64) raises:
 # === Test 6: Integrity tag deterministic ===
 
 
-def test_integrity_tag_deterministic(lib_addr: UInt64) raises:
+def test_integrity_tag_deterministic(lib: SharedLibrary) raises:
     """Compute the same tag twice with same input; verify identical."""
     var orig_dcid = hex_decode("0102030405060708")
     var retry_packet = hex_decode(
@@ -256,12 +249,12 @@ def test_integrity_tag_deterministic(lib_addr: UInt64) raises:
     )
 
     var tag1 = compute_retry_integrity_tag(
-        lib_addr,
+        lib,
         Span(orig_dcid),
         Span(retry_packet),
     )
     var tag2 = compute_retry_integrity_tag(
-        lib_addr,
+        lib,
         Span(orig_dcid),
         Span(retry_packet),
     )
@@ -291,18 +284,18 @@ def main() raises:
         "assertions are not firing -- test infrastructure is broken",
     )
 
-    var lib = RustlsLibrary("lib/librustls_mojo.so")
-    var lib_addr = _get_lib_addr(lib)
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var shared = tls.shared()
 
     print("test_quic_retry:")
 
-    test_token_round_trip(lib_addr)
-    test_token_expired(lib_addr)
-    test_token_wrong_address(lib_addr)
-    test_token_tampered(lib_addr)
-    test_integrity_tag_known_vector(lib_addr)
-    test_integrity_tag_deterministic(lib_addr)
+    test_token_round_trip(shared)
+    test_token_expired(shared)
+    test_token_wrong_address(shared)
+    test_token_tampered(shared)
+    test_integrity_tag_known_vector(shared)
+    test_integrity_tag_deterministic(shared)
 
     print("All test_quic_retry tests passed.")
 
-    _ = lib^
+    _ = tls^
