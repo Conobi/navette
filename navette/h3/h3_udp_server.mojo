@@ -494,7 +494,6 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         for i in range(len(self.tx_slots)):
             var ptr = self.tx_slots[i]
             ptr[].free()
-            ptr.destroy_pointee()
             ptr.free()
         self.pbuf_pool.free()
         self.msghdr_template.free()

@@ -159,6 +159,13 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
         self.make_handler = make_handler
         self.parse_config = parse_config^
 
+    def __del__(deinit self):
+        """Free all heap-allocated connections on server teardown."""
+        for i in range(len(self.connections)):
+            var ptr = self.connections[i]
+            ptr.destroy_pointee()
+            ptr.free()
+
     # ── Lookup ───────────────────────────────────────────────────
 
     def _find_index(self, conn_id: UInt64) -> Int:
