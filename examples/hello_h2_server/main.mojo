@@ -38,7 +38,6 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.runtime.socket_helpers import tcp_listener
 from navette.tls import TlsBackend, TlsServerConfig
-from navette.tls.lib import RustlsLibrary
 
 from std.ffi import external_call
 from std.memory import UnsafePointer
@@ -190,7 +189,7 @@ def main() raises:
     var server = H2TcpServer[HelloHandler](
         sock^,
         make_hello_handler,
-        RustlsLibrary()^,
+        TlsBackend(other=tls),
         server_config^,
     )
     serve_forever(server^)

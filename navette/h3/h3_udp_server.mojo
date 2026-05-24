@@ -41,7 +41,7 @@ holds.
 
 `udp_fd` is a `RawHandle` (not owned). The caller owns the
 `OwnedHandle` from `udp_listener()` and must keep it alive across
-the server's lifetime. The `RustlsLibrary` and `QuicServerConfig`
+the server's lifetime. The `TlsBackend` and `QuicServerConfig`
 are moved into the server and destroyed after all connections.
 """
 
@@ -59,7 +59,7 @@ from boucle.completion import (
 )
 from boucle.ctypes import c_void
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
 from navette.http.handler import StreamHandler
 from navette.h3.h3_handler_server import H3HandlerServer
@@ -379,9 +379,9 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     var conn_dcid_map: Dict[UInt64, _DcidEntry]
     var next_generation: UInt64
 
-    # rustls library instance. Declared AFTER conn_slots so that Mojo's
+    # TLS backend instance. Declared AFTER conn_slots so that Mojo's
     # declaration-order destruction destroys connections before the library.
-    var lib: RustlsLibrary
+    var _tls: TlsBackend
 
     # QUIC server TLS config wrapper. Destroyed after connections, before
     # the library (declaration order).
@@ -424,7 +424,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     def __init__(
         out self,
         var udp_handle: OwnedHandle,
-        var lib: RustlsLibrary,
+        var tls: TlsBackend,
         var server_config: QuicServerConfig,
         var transport_params: TransportParams,
         make_handler: def () thin raises -> Self.H,
@@ -437,7 +437,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         self.conn_dcid_map = Dict[UInt64, _DcidEntry]()
         self.next_generation = UInt64(0)
 
-        self.lib = lib^
+        self._tls = tls^
         self.server_config = server_config^
 
         self.pending_rx = List[PendingDatagram]()
@@ -673,7 +673,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 var quic: QuicConnection
                 try:
                     quic = QuicConnection.server(
-                        self.lib,
+                        self._tls.shared(),
                         self.server_config,
                         self.transport_params.copy(),
                         Span(pd.dcid),

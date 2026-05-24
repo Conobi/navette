@@ -49,7 +49,6 @@ from navette.http.status import StatusCode
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls import TlsBackend
-from navette.tls.lib import RustlsLibrary
 from navette.tls.config import QuicServerConfig
 
 
@@ -130,6 +129,6 @@ def main() raises:
 
     var tp = default_transport_params()
     var server = H3UdpServer[HelloHandler](
-        sock^, RustlsLibrary()^, config^, tp^, make_hello_handler,
+        sock^, TlsBackend(other=tls), config^, tp^, make_hello_handler,
     )
     serve_forever(server^)

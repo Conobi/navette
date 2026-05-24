@@ -46,7 +46,7 @@ from boucle.completion import CompletionHandler, CompletionLoop, IORING_CQE_F_MO
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer
-from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.tls import TlsBackend, TlsServerConfig, TlsConnection
 
 
 # ── Token encoding ──────────────────────────────────────────────────────────
@@ -157,14 +157,14 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
     var next_conn_id: UInt64
     var pending_submits: List[PendingSubmit]
     var make_handler: def () thin raises -> Self.H
-    var tls_lib: RustlsLibrary
+    var _tls: TlsBackend
     var server_tls_config: TlsServerConfig
 
     def __init__(
         out self,
         var listen_handle: OwnedHandle,
         make_handler: def () thin raises -> Self.H,
-        var tls_lib: RustlsLibrary,
+        var tls: TlsBackend,
         var server_tls_config: TlsServerConfig,
     ):
         self.listen_handle = listen_handle^
@@ -172,7 +172,7 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
         self.next_conn_id = 1
         self.pending_submits = List[PendingSubmit]()
         self.make_handler = make_handler
-        self.tls_lib = tls_lib^
+        self._tls = tls^
         self.server_tls_config = server_tls_config^
 
     def __del__(deinit self):
@@ -293,7 +293,7 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
         self.next_conn_id += 1
 
         var handle = OwnedHandle(raw=client_fd)
-        var tls = TlsConnection.new_server(self.tls_lib, self.server_tls_config)
+        var tls = TlsConnection.new_server(self._tls.shared(), self.server_tls_config)
 
         var handler = self.make_handler()
         var http = H2HandlerServer[Self.H](handler=handler^)
