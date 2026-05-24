@@ -32,4 +32,4 @@ prerelease = "allow"
 [tool.uv.sources]
 mojox-build = { path = "/home/donokami/Projets/perso/mojox/packages/mojox-build", editable = true }
 navette     = { path = "../..", editable = true }
-boucle      = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "956f1003ef68d50b1f65f7ad263a5374c5c9bbd2" }
+boucle      = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "d0f8717c50a5aa40e6c513477fe02fee295dc76b" }
