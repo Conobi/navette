@@ -35,7 +35,9 @@ def test_quic_handshake_kind_invalid_handle_returns_minus_one() raises:
 def test_quic_handshake_kind_client_returns_minus_two() raises:
     """Client connections must always return -2 (not applicable)."""
     var tls = TlsBackend()
-    var lib = tls.shared().inner_ptr()[]
+    var shared = tls.shared()
+    var lib_ptr = shared.inner_ptr()
+    ref lib = lib_ptr[]
 
     var alpn_bytes = String("h3").as_bytes()
     var alpn_len = len(alpn_bytes)
