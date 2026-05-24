@@ -5,60 +5,55 @@
 # TlsClientConfig wraps a `rlsm_client_config_new[_insecure]` handle.
 # TlsServerConfig wraps a `rlsm_server_config_new` handle (PEM cert + key).
 #
-# Both store a non-owning UInt64 address of the RustlsLibrary that created
-# them — the caller MUST ensure the library outlives any config it produced.
+# Each config holds a SharedLibrary (ref-counted) so the underlying
+# RustlsLibrary stays alive as long as any config or connection exists.
 # Destructors call `rlsm_config_free`.
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.memory import Span
 
-from .lib import RustlsLibrary
+from .lib import SharedLibrary
 
 
 struct TlsClientConfig(Movable):
     """RAII wrapper for a rustls client config handle."""
 
-    var _lib_addr: UInt64
+    var _lib: SharedLibrary
     var _handle: Int32
 
     def __init__(
-        out self, ref lib: RustlsLibrary, *, insecure: Bool = False
+        out self, lib: SharedLibrary, *, insecure: Bool = False
     ) raises:
         """Create a client config.
 
         Args:
-            lib: The loaded RustlsLibrary (must outlive the config).
+            lib: SharedLibrary handle (refcount is incremented).
             insecure: If True, use a config that accepts any certificate.
                       Requires librustls_mojo.so built with --features insecure.
         """
-        self._lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+        self._lib = SharedLibrary(other=lib)
+        var rlib = self._lib.inner_ptr()
         if insecure:
-            self._handle = lib.client_config_new_insecure()
+            self._handle = rlib[].client_config_new_insecure()
         else:
-            self._handle = lib.client_config_new()
+            self._handle = rlib[].client_config_new()
         if self._handle < 0:
-            raise "rlsm_client_config_new failed: " + lib.last_error()
+            raise "rlsm_client_config_new failed: " + rlib[].last_error()
 
     def __init__(out self, *, deinit take: Self):
-        self._lib_addr = take._lib_addr
+        self._lib = take._lib^
         self._handle = take._handle
 
     def __del__(deinit self):
         if self._handle > 0:
-            _ = self._lib()[].config_free(self._handle)
-
-    @always_inline
-    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-            unsafe_from_address=Int(self._lib_addr)
-        )
+            _ = self._lib.inner_ptr()[].config_free(self._handle)
 
     @always_inline
     def handle(self) -> Int32:
         """Return the raw config handle (borrowed; do not free)."""
         return self._handle
 
-    def set_alpn_protocols(mut self, ref lib: RustlsLibrary, protocols: List[String]) raises:
+    def set_alpn_protocols(mut self, protocols: List[String]) raises:
         """Set ALPN protocol preferences. Call before creating connections.
 
         Protocols are ordered by preference (e.g., ["h2", "http/1.1"]).
@@ -76,23 +71,23 @@ struct TlsClientConfig(Movable):
         var buf_ptr = _heap_alloc[UInt8](len(buf)).as_any_origin()
         for i in range(len(buf)):
             buf_ptr[i] = buf[i]
-        var rc = lib.config_set_alpn_protocols(
+        var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
         buf_ptr.free()
         if rc < 0:
-            raise "set_alpn_protocols failed: " + lib.last_error()
+            raise "set_alpn_protocols failed: " + self._lib.inner_ptr()[].last_error()
 
 
 struct TlsServerConfig(Movable):
     """RAII wrapper for a rustls server config handle."""
 
-    var _lib_addr: UInt64
+    var _lib: SharedLibrary
     var _handle: Int32
 
     def __init__(
         out self,
-        ref lib: RustlsLibrary,
+        lib: SharedLibrary,
         cert_pem: Span[UInt8, _],
         key_pem: Span[UInt8, _],
     ) raises:
@@ -102,7 +97,7 @@ struct TlsServerConfig(Movable):
         FFI call and freed before returning, so the caller's spans only
         need to be valid for the duration of `__init__`.
         """
-        self._lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+        self._lib = SharedLibrary(other=lib)
 
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
@@ -115,7 +110,8 @@ struct TlsServerConfig(Movable):
         for i in range(key_len):
             key_buf[i] = key_pem[i]
 
-        var handle = lib.server_config_new(
+        var rlib = self._lib.inner_ptr()
+        var handle = rlib[].server_config_new(
             cert_buf,
             Int32(cert_len),
             key_buf,
@@ -127,29 +123,23 @@ struct TlsServerConfig(Movable):
 
         if handle < 0:
             self._handle = handle
-            raise "rlsm_server_config_new failed: " + lib.last_error()
+            raise "rlsm_server_config_new failed: " + rlib[].last_error()
         self._handle = handle
 
     def __init__(out self, *, deinit take: Self):
-        self._lib_addr = take._lib_addr
+        self._lib = take._lib^
         self._handle = take._handle
 
     def __del__(deinit self):
         if self._handle > 0:
-            _ = self._lib()[].config_free(self._handle)
-
-    @always_inline
-    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-            unsafe_from_address=Int(self._lib_addr)
-        )
+            _ = self._lib.inner_ptr()[].config_free(self._handle)
 
     @always_inline
     def handle(self) -> Int32:
         """Return the raw config handle (borrowed; do not free)."""
         return self._handle
 
-    def set_alpn_protocols(mut self, ref lib: RustlsLibrary, protocols: List[String]) raises:
+    def set_alpn_protocols(mut self, protocols: List[String]) raises:
         """Set ALPN protocol preferences. Call before creating connections.
 
         Protocols are ordered by preference (e.g., ["h2", "http/1.1"]).
@@ -167,29 +157,29 @@ struct TlsServerConfig(Movable):
         var buf_ptr = _heap_alloc[UInt8](len(buf)).as_any_origin()
         for i in range(len(buf)):
             buf_ptr[i] = buf[i]
-        var rc = lib.config_set_alpn_protocols(
+        var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
         buf_ptr.free()
         if rc < 0:
-            raise "set_alpn_protocols failed: " + lib.last_error()
+            raise "set_alpn_protocols failed: " + self._lib.inner_ptr()[].last_error()
 
 
 struct QuicServerConfig(Movable):
     """RAII wrapper for a rustls QUIC server config handle."""
 
-    var _lib_addr: UInt64
+    var _lib: SharedLibrary
     var _handle: Int32
 
     def __init__(
         out self,
-        ref lib: RustlsLibrary,
+        lib: SharedLibrary,
         cert_pem: Span[UInt8, _],
         key_pem: Span[UInt8, _],
         alpn: String = "h3",
         max_early_data: Int32 = 0,
     ) raises:
-        self._lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+        self._lib = SharedLibrary(other=lib)
 
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
@@ -210,7 +200,8 @@ struct QuicServerConfig(Movable):
 
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
-        var rc = lib.quic_server_config_new(
+        var rlib = self._lib.inner_ptr()
+        var rc = rlib[].quic_server_config_new(
             cert_buf, Int32(cert_len),
             key_buf, Int32(key_len),
             alpn_buf, Int32(alpn_len),
@@ -223,7 +214,7 @@ struct QuicServerConfig(Movable):
         alpn_buf.free()
 
         if rc != 0:
-            var err = lib.last_error()
+            var err = rlib[].last_error()
             out_handle.free()
             self._handle = Int32(-1)
             raise "quic_server_config_new failed: " + err
@@ -231,18 +222,12 @@ struct QuicServerConfig(Movable):
         out_handle.free()
 
     def __init__(out self, *, deinit take: Self):
-        self._lib_addr = take._lib_addr
+        self._lib = take._lib^
         self._handle = take._handle
 
     def __del__(deinit self):
         if self._handle > 0:
-            _ = self._lib()[].config_free(self._handle)
-
-    @always_inline
-    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-            unsafe_from_address=Int(self._lib_addr)
-        )
+            _ = self._lib.inner_ptr()[].config_free(self._handle)
 
     @always_inline
     def handle(self) -> Int32:
@@ -252,12 +237,12 @@ struct QuicServerConfig(Movable):
 struct QuicClientConfig(Movable):
     """RAII wrapper for a rustls QUIC client config handle."""
 
-    var _lib_addr: UInt64
+    var _lib: SharedLibrary
     var _handle: Int32
 
     def __init__(
         out self,
-        ref lib: RustlsLibrary,
+        lib: SharedLibrary,
         *,
         alpn: String = "h3",
         insecure: Bool = False,
@@ -265,12 +250,12 @@ struct QuicClientConfig(Movable):
         """Create a QUIC client config.
 
         Args:
-            lib: The loaded RustlsLibrary (must outlive the config).
+            lib: SharedLibrary handle (refcount is incremented).
             alpn: ALPN protocol identifier (default "h3").
             insecure: If True, accept any server certificate.
                       Requires librustls_mojo.so built with --features insecure.
         """
-        self._lib_addr = UInt64(Int(UnsafePointer(to=lib)))
+        self._lib = SharedLibrary(other=lib)
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
@@ -281,46 +266,45 @@ struct QuicClientConfig(Movable):
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
 
+        var rlib = self._lib.inner_ptr()
         var rc: Int32
         if insecure:
-            rc = lib.quic_client_config_new_insecure(
+            rc = rlib[].quic_client_config_new_insecure(
                 alpn_buf, Int32(alpn_len), out_handle,
             )
         else:
-            rc = lib.quic_client_config_new(
+            rc = rlib[].quic_client_config_new(
                 alpn_buf, Int32(alpn_len), out_handle,
             )
 
         alpn_buf.free()
 
         if rc != 0:
-            var err = lib.last_error()
+            var err = rlib[].last_error()
             out_handle.free()
             self._handle = Int32(-1)
             raise "quic_client_config_new failed: " + err
         self._handle = out_handle[0]
         out_handle.free()
 
-    def __init__(out self, *, _lib_addr: UInt64, _handle: Int32):
+    def __init__(out self, *, _lib: SharedLibrary, _handle: Int32):
         """Private constructor for static factory methods."""
-        self._lib_addr = _lib_addr
+        self._lib = SharedLibrary(other=_lib)
         self._handle = _handle
 
     @staticmethod
     def with_ca(
-        ref lib: RustlsLibrary,
+        lib: SharedLibrary,
         ca_pem: Span[UInt8, _],
         alpn: String = "h3",
     ) raises -> QuicClientConfig:
         """Create a QUIC client config trusting a specific CA certificate.
 
         Args:
-            lib: The loaded RustlsLibrary (must outlive the config).
+            lib: SharedLibrary handle (refcount is incremented).
             ca_pem: PEM-encoded CA certificate bytes.
             alpn: ALPN protocol identifier (default "h3").
         """
-        var lib_addr = UInt64(Int(UnsafePointer(to=lib)))
-
         var ca_len = len(ca_pem)
         var ca_buf = _heap_alloc[UInt8](ca_len).as_any_origin()
         for i in range(ca_len):
@@ -334,7 +318,8 @@ struct QuicClientConfig(Movable):
 
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
-        var rc = lib.quic_client_config_with_ca(
+        var rlib = lib.inner_ptr()
+        var rc = rlib[].quic_client_config_with_ca(
             ca_buf, Int32(ca_len),
             alpn_buf, Int32(alpn_len),
             out_handle,
@@ -344,27 +329,21 @@ struct QuicClientConfig(Movable):
         alpn_buf.free()
 
         if rc != 0:
-            var err = lib.last_error()
+            var err = rlib[].last_error()
             var handle = out_handle[0]
             out_handle.free()
             raise "quic_client_config_with_ca failed: " + err
         var handle = out_handle[0]
         out_handle.free()
-        return QuicClientConfig(_lib_addr=lib_addr, _handle=handle)
+        return QuicClientConfig(_lib=lib, _handle=handle)
 
     def __init__(out self, *, deinit take: Self):
-        self._lib_addr = take._lib_addr
+        self._lib = take._lib^
         self._handle = take._handle
 
     def __del__(deinit self):
         if self._handle > 0:
-            _ = self._lib()[].config_free(self._handle)
-
-    @always_inline
-    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-            unsafe_from_address=Int(self._lib_addr)
-        )
+            _ = self._lib.inner_ptr()[].config_free(self._handle)
 
     @always_inline
     def handle(self) -> Int32:

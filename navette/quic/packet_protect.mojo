@@ -13,7 +13,7 @@
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import SharedLibrary
 
 comptime _AEAD_TAG_LEN: Int = 16
 comptime _HP_SAMPLE_LEN: Int = 16
@@ -29,26 +29,26 @@ struct PacketProtect(Movable):
     """
 
     var keys: List[Int32]
-    var lib_addr: UInt64
+    var _lib: SharedLibrary
 
     # -- Construction ----------------------------------------------------------
 
-    def __init__(out self, lib_addr: UInt64):
+    def __init__(out self, lib: SharedLibrary):
         """Create a PacketProtect with no keys installed."""
         self.keys = List[Int32](capacity=3)
         self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
-        self.lib_addr = lib_addr
+        self._lib = SharedLibrary(other=lib)
 
     def __init__(out self, *, deinit take: Self):
         self.keys = take.keys^
-        self.lib_addr = take.lib_addr
+        self._lib = take._lib^
 
     def __del__(deinit self):
         for i in range(len(self.keys)):
             if self.keys[i] != Int32(-1):
-                _ = self._lib()[].keys_free(self.keys[i])
+                _ = self._lib.inner_ptr()[].keys_free(self.keys[i])
 
     # -- Key management --------------------------------------------------------
 
@@ -61,7 +61,7 @@ struct PacketProtect(Movable):
         self._check_level(level)
         # Free old handle if present to prevent leak.
         if self.keys[level] != Int32(-1):
-            _ = self._lib()[].keys_free(self.keys[level])
+            _ = self._lib.inner_ptr()[].keys_free(self.keys[level])
         self.keys[level] = handle
 
     def has_keys(self, level: Int) -> Bool:
@@ -75,7 +75,7 @@ struct PacketProtect(Movable):
         if level < 0 or level >= 3:
             return
         if self.keys[level] != Int32(-1):
-            _ = self._lib()[].keys_free(self.keys[level])
+            _ = self._lib.inner_ptr()[].keys_free(self.keys[level])
             self.keys[level] = Int32(-1)
 
     def derive_initial_keys(mut self, dcid: Span[UInt8, _], is_client: Bool) raises:
@@ -95,7 +95,7 @@ struct PacketProtect(Movable):
             dcid_buf[i] = dcid[i]
 
         var is_client_i32 = Int32(1) if is_client else Int32(0)
-        var handle = self._lib()[].initial_keys(
+        var handle = self._lib.inner_ptr()[].initial_keys(
             Int32(1),  # version = QUIC v1
             dcid_buf,
             Int32(dcid_len),
@@ -106,7 +106,7 @@ struct PacketProtect(Movable):
         if handle < 0:
             raise (
                 "derive_initial_keys failed: "
-                + self._lib()[].last_error()
+                + self._lib.inner_ptr()[].last_error()
             )
         self.keys[0] = handle
 
@@ -135,7 +135,7 @@ struct PacketProtect(Movable):
             raise "packet too short for header unprotection"
 
         # Pass pointers directly into the packet buffer — no copies.
-        var rc = self._lib()[].keys_remote_header_unprotect(
+        var rc = self._lib.inner_ptr()[].keys_remote_header_unprotect(
             keys_handle,
             pkt_ptr + pn_offset + _MAX_PN_LEN,  # sample (16 bytes, read-only)
             Int32(_HP_SAMPLE_LEN),
@@ -145,7 +145,7 @@ struct PacketProtect(Movable):
         )
 
         if rc < 0:
-            raise "header unprotect failed: " + self._lib()[].last_error()
+            raise "header unprotect failed: " + self._lib.inner_ptr()[].last_error()
 
         var fb = pkt_ptr[0]
         var pn_length = Int(fb & 0x03) + 1
@@ -190,7 +190,7 @@ struct PacketProtect(Movable):
 
         var payload_len = pkt_len - header_len
 
-        var rc = self._lib()[].keys_remote_decrypt(
+        var rc = self._lib.inner_ptr()[].keys_remote_decrypt(
             keys_handle,
             pn,
             pkt_ptr,                 # header (AAD)
@@ -200,7 +200,7 @@ struct PacketProtect(Movable):
         )
 
         if rc < 0:
-            raise "decrypt_payload failed: " + self._lib()[].last_error()
+            raise "decrypt_payload failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
 
@@ -252,7 +252,7 @@ struct PacketProtect(Movable):
 
         var buf_capacity = total_capacity - header_len
 
-        var rc = self._lib()[].keys_local_encrypt(
+        var rc = self._lib.inner_ptr()[].keys_local_encrypt(
             keys_handle,
             pn,
             pkt_ptr,                 # header (AAD)
@@ -263,7 +263,7 @@ struct PacketProtect(Movable):
         )
 
         if rc < 0:
-            raise "encrypt_payload failed: " + self._lib()[].last_error()
+            raise "encrypt_payload failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
 
@@ -319,7 +319,7 @@ struct PacketProtect(Movable):
         if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > pkt_len:
             raise "packet too short for header protection"
 
-        var rc = self._lib()[].keys_local_header_protect(
+        var rc = self._lib.inner_ptr()[].keys_local_header_protect(
             keys_handle,
             pkt_ptr + pn_offset + _MAX_PN_LEN,  # sample
             Int32(_HP_SAMPLE_LEN),
@@ -329,7 +329,7 @@ struct PacketProtect(Movable):
         )
 
         if rc < 0:
-            raise "header protect failed: " + self._lib()[].last_error()
+            raise "header protect failed: " + self._lib.inner_ptr()[].last_error()
 
     def protect_header(
         self,
@@ -368,14 +368,14 @@ struct PacketProtect(Movable):
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
-        var rc = self._lib()[].keys_batch_header_unprotect(
+        var rc = self._lib.inner_ptr()[].keys_batch_header_unprotect(
             keys_handle, Int32(count),
             packet_ptrs, packet_lens, pn_offsets,
             out_first_bytes, out_pn_lengths,
         )
 
         if rc < 0:
-            raise "batch_unprotect_headers failed: " + self._lib()[].last_error()
+            raise "batch_unprotect_headers failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
 
@@ -398,14 +398,14 @@ struct PacketProtect(Movable):
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
-        var rc = self._lib()[].keys_batch_decrypt(
+        var rc = self._lib.inner_ptr()[].keys_batch_decrypt(
             keys_handle, Int32(count),
             packet_numbers, packet_ptrs, packet_lens, header_lens,
             out_plaintext_lens,
         )
 
         if rc < 0:
-            raise "batch_decrypt_in_place failed: " + self._lib()[].last_error()
+            raise "batch_decrypt_in_place failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
 
@@ -429,7 +429,7 @@ struct PacketProtect(Movable):
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
-        var rc = self._lib()[].keys_batch_encrypt(
+        var rc = self._lib.inner_ptr()[].keys_batch_encrypt(
             keys_handle, Int32(count),
             packet_numbers, packet_ptrs,
             header_lens, payload_lens, buf_capacities,
@@ -437,7 +437,7 @@ struct PacketProtect(Movable):
         )
 
         if rc < 0:
-            raise "batch_encrypt_in_place failed: " + self._lib()[].last_error()
+            raise "batch_encrypt_in_place failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
 
@@ -460,21 +460,14 @@ struct PacketProtect(Movable):
         if keys_handle == Int32(-1):
             raise "no keys for level " + String(level)
 
-        var rc = self._lib()[].keys_batch_header_protect(
+        var rc = self._lib.inner_ptr()[].keys_batch_header_protect(
             keys_handle, Int32(count),
             packet_ptrs, packet_lens, pn_offsets, pn_lengths,
             out_results,
         )
 
         if rc < 0:
-            raise "batch_protect_headers failed: " + self._lib()[].last_error()
+            raise "batch_protect_headers failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
 
-    # -- Internal --------------------------------------------------------------
-
-    @always_inline
-    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-            unsafe_from_address=Int(self.lib_addr)
-        )

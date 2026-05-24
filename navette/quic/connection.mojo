@@ -6,7 +6,7 @@
 # crypto streams, and the TLS handshake via FFI into librustls_mojo.
 #
 # Usage:
-#   var conn = QuicConnection.client(lib_addr, cfg, "example.com", tp, now)
+#   var conn = QuicConnection.client(lib, cfg, "example.com", tp, now)
 #   var datagrams = conn.send(now)       # Initial with ClientHello
 #   conn.recv(response_bytes, now)       # Feed server reply
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
@@ -16,7 +16,7 @@ from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION
@@ -293,7 +293,7 @@ struct QuicConnection(Movable):
     var recovery: Recovery
     var protect: PacketProtect
     var conn_handle: Int32
-    var lib_addr: UInt64
+    var _lib: SharedLibrary
     var local_params: TransportParams
     var peer_params: Optional[TransportParams]
     var local_cid: List[UInt8]
@@ -372,7 +372,7 @@ struct QuicConnection(Movable):
         self.recovery = take.recovery^
         self.protect = take.protect^
         self.conn_handle = take.conn_handle
-        self.lib_addr = take.lib_addr
+        self._lib = take._lib^
         self.local_params = take.local_params^
         self.peer_params = take.peer_params^
         self.local_cid = take.local_cid^
@@ -415,7 +415,7 @@ struct QuicConnection(Movable):
     def __init__(
         out self,
         is_server: Bool,
-        lib_addr: UInt64,
+        lib: SharedLibrary,
         conn_handle: Int32,
         local_params: TransportParams,
         local_cid: List[UInt8],
@@ -434,9 +434,9 @@ struct QuicConnection(Movable):
         self.crypto_streams.append(CryptoStream())
         self.crypto_streams.append(CryptoStream())
         self.recovery = Recovery()
-        self.protect = PacketProtect(lib_addr)
+        self.protect = PacketProtect(lib)
         self.conn_handle = conn_handle
-        self.lib_addr = lib_addr
+        self._lib = SharedLibrary(other=lib)
         self.local_params = TransportParams(other=local_params)
         self.peer_params = None
         self.local_cid = List[UInt8](copy=local_cid)
@@ -482,7 +482,7 @@ struct QuicConnection(Movable):
             local_window_uni=local_params.initial_max_stream_data_uni,
         )
         self.cid_mgr = CidManager(
-            lib_addr=self.lib_addr,
+            lib=self._lib,
             initial_local_cid=List[UInt8](copy=local_cid),
             initial_remote_cid=List[UInt8](copy=peer_cid),
             local_active_limit=UInt64(2),
@@ -494,14 +494,14 @@ struct QuicConnection(Movable):
 
     def __del__(deinit self):
         if self.conn_handle >= 0:
-            _ = self._lib()[].quic_conn_free(self.conn_handle)
+            _ = self._lib.inner_ptr()[].quic_conn_free(self.conn_handle)
         # PacketProtect.__del__ handles key cleanup.
 
     # ── Static factory methods ───────────────────────────────────────
 
     @staticmethod
     def client(
-        ref lib: RustlsLibrary,
+        lib: SharedLibrary,
         ref config: QuicClientConfig,
         server_name: String,
         local_params: TransportParams,
@@ -512,7 +512,6 @@ struct QuicConnection(Movable):
         Derives initial keys, creates TLS connection, and drives the
         initial write_hs to generate ClientHello CRYPTO data.
         """
-        var lib_addr = UInt64(Int(UnsafePointer(to=lib)))
         var config_handle = config.handle()
         # 1. Generate random 8-byte DCID and local CID.
         var dcid = _generate_random_cid()
@@ -541,8 +540,8 @@ struct QuicConnection(Movable):
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
 
-        var lib_ffi = _get_lib(lib_addr)
-        var rc = lib_ffi[].quic_client_conn_new(
+        var rlib = lib.inner_ptr()
+        var rc = rlib[].quic_client_conn_new(
             config_handle,
             Int32(1),  # QUIC version 1
             sni_buf,
@@ -556,7 +555,7 @@ struct QuicConnection(Movable):
         tp_buf.free()
 
         if rc < 0:
-            var err = lib_ffi[].last_error()
+            var err = rlib[].last_error()
             out_handle.free()
             raise "quic_client_conn_new failed: " + err
 
@@ -569,7 +568,7 @@ struct QuicConnection(Movable):
         # 4. Build connection object.
         var conn = QuicConnection(
             is_server=False,
-            lib_addr=lib_addr,
+            lib=lib,
             conn_handle=conn_handle,
             local_params=params_copy,
             local_cid=local_cid,
@@ -588,7 +587,7 @@ struct QuicConnection(Movable):
 
     @staticmethod
     def server(
-        ref lib: RustlsLibrary,
+        lib: SharedLibrary,
         ref config: QuicServerConfig,
         local_params: TransportParams,
         orig_dcid: Span[UInt8, _],
@@ -601,7 +600,6 @@ struct QuicConnection(Movable):
         Derives initial keys from the client's DCID and waits for
         the client Initial to drive the handshake.
         """
-        var lib_addr = UInt64(Int(UnsafePointer(to=lib)))
         var config_handle = config.handle()
         # Plan B: stamp arrival timestamp BEFORE any FFI call so that
         # handshake-latency does not under-report by Initial-key-derivation.
@@ -633,12 +631,12 @@ struct QuicConnection(Movable):
         var out_handle = _heap_alloc[Int32](1).as_any_origin()
         out_handle[0] = Int32(-1)
 
-        var lib_ffi = _get_lib(lib_addr)
+        var rlib = lib.inner_ptr()
         # alloc_tls_handle_us bracket — rustls TLS session alloc FFI call.
         var t_tls_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
             t_tls_start = monotonic_us()
-        var rc = lib_ffi[].quic_server_conn_new(
+        var rc = rlib[].quic_server_conn_new(
             config_handle,
             Int32(1),  # QUIC version 1
             tp_buf,
@@ -652,7 +650,7 @@ struct QuicConnection(Movable):
         tp_buf.free()
 
         if rc < 0:
-            var err = lib_ffi[].last_error()
+            var err = rlib[].last_error()
             out_handle.free()
             raise "quic_server_conn_new failed: " + err
 
@@ -675,7 +673,7 @@ struct QuicConnection(Movable):
         # 6. Build connection object.
         var conn = QuicConnection(
             is_server=True,
-            lib_addr=lib_addr,
+            lib=lib,
             conn_handle=conn_handle,
             local_params=params_copy,
             local_cid=local_cid,
@@ -1626,7 +1624,7 @@ struct QuicConnection(Movable):
                 t_drive_start = monotonic_us()
                 self.profile_ptr.value()[].active_drive_count = self.profile_ptr.value()[].active_drive_count + UInt32(1)
 
-        var lib = self._lib()
+        var lib = self._lib.inner_ptr()
 
         # 1. Drain contiguous CRYPTO bytes from each space's crypto_stream
         #    and feed them to the TLS engine.
@@ -1848,7 +1846,7 @@ struct QuicConnection(Movable):
         # profile_ptr is null when PROFILE_ACCEPT=False (no bench attachment),
         # so the runtime branch is paid at most once per server handshake.
         if self.is_server and self.profile_ptr is not None:
-            var hs_kind = self._lib()[].quic_conn_handshake_kind(self.conn_handle)
+            var hs_kind = self._lib.inner_ptr()[].quic_conn_handshake_kind(self.conn_handle)
             if hs_kind == Int32(1) or hs_kind == Int32(3):
                 self.profile_ptr.value()[].record_handshake_full()
             elif hs_kind == Int32(2):
@@ -1892,7 +1890,7 @@ struct QuicConnection(Movable):
         var tp_written = _heap_alloc[Int32](1).as_any_origin()
         tp_written[0] = Int32(0)
 
-        var lib = self._lib()
+        var lib = self._lib.inner_ptr()
         var rc = lib[].quic_conn_transport_params(
             self.conn_handle,
             tp_buf,
@@ -3036,22 +3034,9 @@ struct QuicConnection(Movable):
         """True if the peer address has been validated."""
         return (self.state & CONN_ADDR_VALIDATED) != 0
 
-    @always_inline
-    def _lib(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-            unsafe_from_address=Int(self.lib_addr)
-        )
 
 
 # ── Module-level helpers ─────────────────────────────────────────────
-
-
-def _get_lib(
-    lib_addr: UInt64,
-) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-    return UnsafePointer[RustlsLibrary, MutAnyOrigin](
-        unsafe_from_address=Int(lib_addr)
-    )
 
 
 def _generate_random_cid() raises -> List[UInt8]:

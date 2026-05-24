@@ -6,7 +6,7 @@ from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import SharedLibrary
 
 
 # --- RFC 9001 Section 5.8: Retry Integrity Tag key and nonce (QUIC v1) ---
@@ -55,7 +55,7 @@ def _read_u64_be(
 
 
 def generate_retry_token(
-    lib_addr: UInt64,
+    lib: SharedLibrary,
     server_secret: Span[UInt8, _],
     orig_dcid: Span[UInt8, _],
     client_addr_hash: Span[UInt8, _],
@@ -73,7 +73,7 @@ def generate_retry_token(
     if len(orig_dcid) > 20:
         raise "orig_dcid too long"
 
-    var lib = UnsafePointer[RustlsLibrary, MutAnyOrigin](unsafe_from_address=Int(lib_addr))
+    var rlib = lib.inner_ptr()
 
     # Build plaintext: 1 + dcid_len + 32 + 8
     var pt_len = 1 + len(orig_dcid) + 32 + 8
@@ -106,7 +106,7 @@ def generate_retry_token(
     var out_len_ptr = _heap_alloc[Int32](1).as_any_origin()
     out_len_ptr[0] = Int32(0)
 
-    var rc = lib[].aes_gcm_128_seal(
+    var rc = rlib[].aes_gcm_128_seal(
         key_ptr,
         Int32(16),
         nonce_ptr,
@@ -120,7 +120,7 @@ def generate_retry_token(
     )
 
     if rc != 0:
-        var err = lib[].last_error()
+        var err = rlib[].last_error()
         pt_ptr.free()
         nonce_ptr.free()
         key_ptr.free()
@@ -150,7 +150,7 @@ def generate_retry_token(
 
 
 def validate_retry_token(
-    lib_addr: UInt64,
+    lib: SharedLibrary,
     server_secret: Span[UInt8, _],
     token: Span[UInt8, _],
     client_addr_hash: Span[UInt8, _],
@@ -169,7 +169,7 @@ def validate_retry_token(
     if len(token) < 28:
         raise "token too short"
 
-    var lib = UnsafePointer[RustlsLibrary, MutAnyOrigin](unsafe_from_address=Int(lib_addr))
+    var rlib = lib.inner_ptr()
 
     # Extract nonce (first 12 bytes) and ciphertext+tag (rest)
     var nonce_ptr = _heap_alloc[UInt8](12).as_any_origin()
@@ -207,7 +207,7 @@ def validate_retry_token(
     var out_len_ptr = _heap_alloc[Int32](1).as_any_origin()
     out_len_ptr[0] = Int32(0)
 
-    var rc = lib[].aes_gcm_128_open(
+    var rc = rlib[].aes_gcm_128_open(
         key_ptr,
         Int32(16),
         nonce_ptr,
@@ -221,7 +221,7 @@ def validate_retry_token(
     )
 
     if rc != 0:
-        var err = lib[].last_error()
+        var err = rlib[].last_error()
         nonce_ptr.free()
         ct_ptr.free()
         key_ptr.free()
@@ -293,7 +293,7 @@ def validate_retry_token(
 
 
 def compute_retry_integrity_tag(
-    lib_addr: UInt64,
+    lib: SharedLibrary,
     orig_dcid: Span[UInt8, _],
     retry_packet_without_tag: Span[UInt8, _],
 ) raises -> List[UInt8]:
@@ -302,7 +302,7 @@ def compute_retry_integrity_tag(
     Uses fixed key/nonce from the spec, with the pseudo-Retry packet as AAD
     and empty plaintext.
     """
-    var lib = UnsafePointer[RustlsLibrary, MutAnyOrigin](unsafe_from_address=Int(lib_addr))
+    var rlib = lib.inner_ptr()
 
     # Fixed key: 0xbe0c690b9f66575a1d766b54e368c84e
     var key_ptr = _heap_alloc[UInt8](16).as_any_origin()
@@ -352,7 +352,7 @@ def compute_retry_integrity_tag(
     var out_len_ptr = _heap_alloc[Int32](1).as_any_origin()
     out_len_ptr[0] = Int32(0)
 
-    var rc = lib[].aes_gcm_128_seal(
+    var rc = rlib[].aes_gcm_128_seal(
         key_ptr,
         Int32(16),
         nonce_ptr,
@@ -366,7 +366,7 @@ def compute_retry_integrity_tag(
     )
 
     if rc != 0:
-        var err = lib[].last_error()
+        var err = rlib[].last_error()
         key_ptr.free()
         nonce_ptr.free()
         aad_ptr.free()

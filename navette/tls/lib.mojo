@@ -2,6 +2,12 @@
 #
 # RustlsLibrary — dynamically loaded librustls_mojo.so with TCP-TLS FFI.
 #
+# SharedLibrary — ref-counted wrapper keeping RustlsLibrary alive while
+# any QUIC/TLS object holds a copy. Internal type.
+#
+# TlsBackend — public facade owning a SharedLibrary. Consumers never see
+# RustlsLibrary directly.
+#
 # Follows the same OwnedDLHandle pattern as conformance/lib/rustls.mojo, but
 # wraps the 13 TCP-TLS FFI symbols (4 config + 9 connection) plus the shared
 # rlsm_last_error helper. QUIC FFI symbols consolidated from
@@ -60,6 +66,105 @@ from navette.tls._rlsm_bindings import (
     load_rlsm_tls_conn_write_tls,
     load_rlsm_tls_server_new,
 )
+
+
+# ── SharedLibrary (internal ref-counted wrapper) ─────────────────────────────
+
+
+struct _SharedLibraryInner:
+    """Heap-allocated interior: the library handle + a reference count."""
+
+    var lib: RustlsLibrary
+    var refcount: Int
+
+    def __init__(out self, deinit lib: RustlsLibrary):
+        self.lib = lib^
+        self.refcount = 1
+
+    def __init__(out self, *, deinit take: Self):
+        self.lib = take.lib^
+        self.refcount = take.refcount
+
+
+struct SharedLibrary(Copyable, Movable):
+    """Ref-counted handle to a RustlsLibrary.
+
+    Internal type — consumers use `TlsBackend`. Every copy increments
+    the refcount; destruction decrements it. When the count reaches zero
+    the inner `RustlsLibrary` (and its `OwnedDLHandle`) is destroyed.
+
+    The pointer dereference depth is the same as the old `UInt64` →
+    `unsafe_from_address` pattern, so there is zero runtime overhead on
+    the FFI hot path.
+    """
+
+    var _ptr: UnsafePointer[_SharedLibraryInner, MutAnyOrigin]
+
+    def __init__(out self, deinit lib: RustlsLibrary):
+        """Take ownership of a RustlsLibrary, heap-allocating the inner."""
+        var p = _heap_alloc[_SharedLibraryInner](1).as_any_origin()
+        p.init_pointee_move(_SharedLibraryInner(lib^))
+        self._ptr = p
+
+    def __init__(out self, *, other: Self):
+        """Copy constructor — increments the refcount."""
+        other._ptr[].refcount += 1
+        self._ptr = other._ptr
+
+    def __init__(out self, *, deinit take: Self):
+        """Move constructor — transfers pointer, no refcount change."""
+        self._ptr = take._ptr
+
+    def __del__(deinit self):
+        """Decrement refcount; destroy inner when it reaches zero."""
+        self._ptr[].refcount -= 1
+        if self._ptr[].refcount == 0:
+            self._ptr.destroy_pointee()
+            self._ptr.free()
+
+    @always_inline
+    def inner_ptr(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
+        """Return a pointer to the inner RustlsLibrary for FFI calls."""
+        return UnsafePointer.address_of(self._ptr[].lib).as_any_origin()
+
+
+# ── TlsBackend (public facade) ──────────────────────────────────────────────
+
+
+struct TlsBackend(Copyable, Movable):
+    """Public entry point for navette's TLS/QUIC cryptography.
+
+    Wraps a `SharedLibrary` so that every config and connection object
+    can hold a refcounted copy, keeping the underlying `RustlsLibrary`
+    alive for the entire lifetime of the connection graph.  Consumers
+    never see `RustlsLibrary` directly.
+    """
+
+    var _lib: SharedLibrary
+
+    def __init__(out self) raises:
+        """Load librustls_mojo.so and wrap it in a SharedLibrary."""
+        self._lib = SharedLibrary(RustlsLibrary())
+
+    def __init__(out self, path: String) raises:
+        """Load a specific .so path."""
+        self._lib = SharedLibrary(RustlsLibrary(path))
+
+    def __init__(out self, *, other: Self):
+        """Copy — shares the underlying SharedLibrary (bumps refcount)."""
+        self._lib = SharedLibrary(other=other._lib)
+
+    def __init__(out self, *, deinit take: Self):
+        """Move — transfers ownership."""
+        self._lib = take._lib^
+
+    def shared(self) -> SharedLibrary:
+        """Return a refcounted copy of the inner SharedLibrary.
+
+        Config and connection constructors call this to obtain their own
+        handle to the library.
+        """
+        return SharedLibrary(other=self._lib)
 
 
 def librustls_supports_insecure() raises -> Bool:
