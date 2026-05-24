@@ -33,6 +33,7 @@ from navette.http.method import Method
 from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
+from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
@@ -125,32 +126,6 @@ def _check_stream_ctx_size():
 
 
 # ---------------------------------------------------------------------------
-# _CoroStreamPtr — thin wrapper so Dict[Int, _CoroStreamPtr] satisfies
-# CollectionElement (Copyable + Movable).
-# ---------------------------------------------------------------------------
-
-
-struct _CoroStreamPtr(Copyable, Movable):
-    """Holds the address of a heap-allocated CoroStreamCtx as a UInt64."""
-
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
-        return UnsafePointer[CoroStreamCtx, MutAnyOrigin](
-            unsafe_from_address=Int(self.addr)
-        )
-
-
-# ---------------------------------------------------------------------------
 # _free_stream — single cleanup path for CoroStreamCtx
 # ---------------------------------------------------------------------------
 
@@ -175,11 +150,11 @@ struct CoroStreamCtxPool(Movable):
     owns initialisation/destruction of the pointee; the pool only
     manages the underlying memory."""
 
-    var _free: List[UInt64]
+    var _free: List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 16):
-        self._free = List[UInt64]()
+        self._free = List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
     def __init__(out self, *, deinit take: Self):
@@ -188,18 +163,12 @@ struct CoroStreamCtxPool(Movable):
 
     def __del__(deinit self):
         for i in range(len(self._free)):
-            var p = UnsafePointer[CoroStreamCtx, MutAnyOrigin](
-                unsafe_from_address=Int(self._free[i])
-            )
-            p.free()
+            self._free[i].free()
 
     def acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
-            var addr = self._free.pop()
-            return UnsafePointer[CoroStreamCtx, MutAnyOrigin](
-                unsafe_from_address=Int(addr)
-            )
+            return self._free.pop()
         return _heap_alloc[CoroStreamCtx](1).as_any_origin()
 
     def release(
@@ -208,7 +177,7 @@ struct CoroStreamCtxPool(Movable):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
-            self._free.append(UInt64(Int(ptr)))
+            self._free.append(ptr)
         else:
             ptr.free()
 
@@ -238,7 +207,7 @@ struct H3CoroServer(Movable):
     var _body_fn: H3BodyFn
     var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
     var _outbuf: List[List[UInt8]]
-    var _streams: Dict[Int, _CoroStreamPtr]
+    var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
 
     # --- Constructors -------------------------------------------------------
@@ -258,7 +227,7 @@ struct H3CoroServer(Movable):
         self._body_fn = body_fn
         self._extra_data = extra_data
         self._outbuf = List[List[UInt8]]()
-        self._streams = Dict[Int, _CoroStreamPtr]()
+        self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
 
     def __init__(out self, *, deinit take: Self):
@@ -451,7 +420,7 @@ struct H3CoroServer(Movable):
             ctx.request_ended = True
 
         ctx_ptr.init_pointee_move(ctx^)
-        self._streams[stream_id] = _CoroStreamPtr(UInt64(Int(ctx_ptr)))
+        self._streams[stream_id] = PtrBox[CoroStreamCtx](ctx_ptr)
 
         # Run handler synchronously — Path A simplification.
         self._run_handler(stream_id)

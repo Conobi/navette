@@ -21,6 +21,7 @@ from navette.http.status import StatusCode
 from navette.http.version import Version
 from navette.http.body import BodyFrame
 from navette.http.method import Method
+from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ from navette.http.method import Method
 struct _H3ClientCtx(Movable):
     """Per-stream client state that lives on the heap.  Move-only types
     prevent direct Dict storage, so we heap-allocate and store via
-    _H3ClientPtr."""
+    PtrBox[_H3ClientCtx]."""
 
     var handle_id:  UInt64
     var status_code: Int
@@ -61,31 +62,6 @@ struct _H3ClientCtx(Movable):
 
 
 # ---------------------------------------------------------------------------
-# _H3ClientPtr — thin Copyable+Movable wrapper around heap pointer
-# ---------------------------------------------------------------------------
-
-
-struct _H3ClientPtr(Copyable, Movable):
-    """Holds the address of a heap-allocated _H3ClientCtx as a UInt64."""
-
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[_H3ClientCtx, MutAnyOrigin]:
-        return UnsafePointer[_H3ClientCtx, MutAnyOrigin](
-            unsafe_from_address=Int(self.addr)
-        )
-
-
-# ---------------------------------------------------------------------------
 # H3Session — client session adapter
 # ---------------------------------------------------------------------------
 
@@ -95,7 +71,7 @@ struct H3Session(Session):
     Supports multiple concurrent streams (multiplexed over QUIC)."""
 
     var _h3:               H3Connection
-    var _streams:          Dict[Int, _H3ClientPtr]
+    var _streams:          Dict[Int, PtrBox[_H3ClientCtx]]
     var _handle_to_stream: Dict[Int, Int]
     var _next_id:          UInt64
     var received_goaway:   Bool
@@ -105,7 +81,7 @@ struct H3Session(Session):
     def __init__(out self, *, var quic: QuicConnection) raises:
         """Wrap a client-side QuicConnection."""
         self._h3 = H3Connection.client(quic^)
-        self._streams = Dict[Int, _H3ClientPtr]()
+        self._streams = Dict[Int, PtrBox[_H3ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
         self._next_id = UInt64(0)
         self.received_goaway = False
@@ -197,7 +173,7 @@ struct H3Session(Session):
         var ctx_ptr = _heap_alloc[_H3ClientCtx](1).as_any_origin()
         var ctx = _H3ClientCtx(handle_id=handle_id)
         ctx_ptr.init_pointee_move(ctx^)
-        self._streams[Int(stream_id)] = _H3ClientPtr(UInt64(Int(ctx_ptr)))
+        self._streams[Int(stream_id)] = PtrBox[_H3ClientCtx](ctx_ptr)
         self._handle_to_stream[Int(handle_id)] = Int(stream_id)
 
         return RequestHandle(id=handle_id)
@@ -218,12 +194,12 @@ struct H3Session(Session):
         # Dispatch any pending events first
         self._dispatch_events()
 
-        var ctx_wrap: _H3ClientPtr
+        var ctx_box: PtrBox[_H3ClientCtx]
         try:
-            ctx_wrap = _H3ClientPtr(other=self._streams[stream_id])
+            ctx_box = PtrBox[_H3ClientCtx](other=self._streams[stream_id])
         except:
             return
-        var ctx_ptr = ctx_wrap.ptr()
+        var ctx_ptr = ctx_box.ptr()
 
         # Error path: stream was reset before response headers arrived
         if ctx_ptr[].errored and not handle.is_complete():

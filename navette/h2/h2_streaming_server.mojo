@@ -268,6 +268,7 @@ def _free_streaming_stream(ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin])
         var coro_p = ctx_ptr[].coro_ptr()
         coro_p.destroy_pointee()
         coro_p.free()
+        ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
     ctx_ptr.destroy_pointee()
     ctx_ptr.free()
 
@@ -485,6 +486,7 @@ struct H2StreamingServer(Movable):
             var coro_p = ctx_ptr[].coro_ptr()
             coro_p.destroy_pointee()
             coro_p.free()
+            ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
         ctx_ptr.destroy_pointee()
         self._ctx_pool.release(ctx_ptr)
 

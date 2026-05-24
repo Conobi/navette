@@ -57,6 +57,7 @@ from navette.http.method import Method
 from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
+from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,7 @@ struct H3StreamingCtx(Movable):
     var headers_sent: Bool
     var body_frame_ring: List[BodyFrame]
     var cancelled: Bool
-    var coro_addr: UInt64
+    var coro_addr: PtrBox[CoroHandle]
 
     def __init__(
         out self,
@@ -124,7 +125,7 @@ struct H3StreamingCtx(Movable):
         self.headers_sent = False
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
-        self.coro_addr = UInt64(0)
+        self.coro_addr = PtrBox[CoroHandle].null()
 
     def __init__(out self, *, deinit take: Self):
         self.request = take.request^
@@ -138,13 +139,11 @@ struct H3StreamingCtx(Movable):
         self.headers_sent = take.headers_sent
         self.body_frame_ring = take.body_frame_ring^
         self.cancelled = take.cancelled
-        self.coro_addr = take.coro_addr
+        self.coro_addr = take.coro_addr^
 
     def coro_ptr(self) -> UnsafePointer[CoroHandle, MutAnyOrigin]:
-        """Convert coro_addr to a typed CoroHandle pointer."""
-        return UnsafePointer[CoroHandle, MutAnyOrigin](
-            unsafe_from_address=Int(self.coro_addr)
-        )
+        """Typed pointer into the coro's heap slot (null if none)."""
+        return self.coro_addr.ptr()
 
 
 # ---------------------------------------------------------------------------
@@ -243,32 +242,6 @@ def cancelled(
 
 
 # ---------------------------------------------------------------------------
-# _StreamingPtr — thin wrapper so Dict[Int, _StreamingPtr] satisfies
-# CollectionElement (Copyable + Movable).
-# ---------------------------------------------------------------------------
-
-
-struct _StreamingPtr(Copyable, Movable):
-    """Holds the address of a heap-allocated H3StreamingCtx as a UInt64."""
-
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[H3StreamingCtx, MutAnyOrigin]:
-        return UnsafePointer[H3StreamingCtx, MutAnyOrigin](
-            unsafe_from_address=Int(self.addr)
-        )
-
-
-# ---------------------------------------------------------------------------
 # _free_streaming_stream — DESTRUCTOR-PATH-ONLY cleanup for H3StreamingCtx
 # ---------------------------------------------------------------------------
 
@@ -278,10 +251,11 @@ def _free_streaming_stream(ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin])
     H3StreamingServer._free_streaming_stream() instead — this module-level
     variant exists only because __del__(deinit self) cannot call mut-self
     methods. ALWAYS call _streams.pop(sid) BEFORE calling this function."""
-    if ctx_ptr[].coro_addr != UInt64(0):
+    if ctx_ptr[].coro_addr.is_some():
         var coro_p = ctx_ptr[].coro_ptr()
         coro_p.destroy_pointee()
         coro_p.free()
+        ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
     ctx_ptr.destroy_pointee()
     ctx_ptr.free()
 
@@ -300,11 +274,11 @@ struct H3StreamingCtxPool(Movable):
     owns initialisation/destruction of the pointee; the pool only
     manages the underlying memory."""
 
-    var _free: List[UInt64]
+    var _free: List[UnsafePointer[H3StreamingCtx, MutAnyOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 4):
-        self._free = List[UInt64]()
+        self._free = List[UnsafePointer[H3StreamingCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
     def __init__(out self, *, deinit take: Self):
@@ -313,18 +287,12 @@ struct H3StreamingCtxPool(Movable):
 
     def __del__(deinit self):
         for i in range(len(self._free)):
-            var p = UnsafePointer[H3StreamingCtx, MutAnyOrigin](
-                unsafe_from_address=Int(self._free[i])
-            )
-            p.free()
+            self._free[i].free()
 
     def acquire(mut self) raises -> UnsafePointer[H3StreamingCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
-            var addr = self._free.pop()
-            return UnsafePointer[H3StreamingCtx, MutAnyOrigin](
-                unsafe_from_address=Int(addr)
-            )
+            return self._free.pop()
         return _heap_alloc[H3StreamingCtx](1).as_any_origin()
 
     def release(
@@ -333,7 +301,7 @@ struct H3StreamingCtxPool(Movable):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
-            self._free.append(UInt64(Int(ptr)))
+            self._free.append(ptr)
         else:
             ptr.free()
 
@@ -368,7 +336,7 @@ struct H3StreamingServer(Movable):
     var _handler_fn: H3StreamingHandlerFn
     var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
     var _outbuf: List[List[UInt8]]
-    var _streams: Dict[Int, _StreamingPtr]
+    var _streams: Dict[Int, PtrBox[H3StreamingCtx]]
     var _ctx_pool: H3StreamingCtxPool
     var _coro_pool: CoroutinePool
 
@@ -389,7 +357,7 @@ struct H3StreamingServer(Movable):
         self._handler_fn = handler_fn
         self._extra_data = extra_data
         self._outbuf = List[List[UInt8]]()
-        self._streams = Dict[Int, _StreamingPtr]()
+        self._streams = Dict[Int, PtrBox[H3StreamingCtx]]()
         self._ctx_pool = H3StreamingCtxPool(capacity=4)
         self._coro_pool = CoroutinePool(capacity=4)
 
@@ -403,7 +371,7 @@ struct H3StreamingServer(Movable):
                 var ctx_ptr = self._streams[keys[i]].ptr()
                 # Set cancelled so any resumed coro exits cleanly
                 ctx_ptr[].cancelled = True
-                if ctx_ptr[].coro_addr != UInt64(0):
+                if ctx_ptr[].coro_addr.is_some():
                     var coro_p = ctx_ptr[].coro_ptr()
                     if coro_p[].can_resume():
                         try:
@@ -467,10 +435,11 @@ struct H3StreamingServer(Movable):
         (beyond capacity), so this restores the freelist that earlier
         revisions silently bypassed by calling ctx_ptr.free() directly.
         ALWAYS call _streams.pop(sid) BEFORE invoking this method."""
-        if ctx_ptr[].coro_addr != UInt64(0):
+        if ctx_ptr[].coro_addr.is_some():
             var coro_p = ctx_ptr[].coro_ptr()
             coro_p.destroy_pointee()
             coro_p.free()
+            ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
         ctx_ptr.destroy_pointee()
         self._ctx_pool.release(ctx_ptr)
 
@@ -508,7 +477,7 @@ struct H3StreamingServer(Movable):
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        if ctx_ptr[].coro_addr == UInt64(0):
+        if not ctx_ptr[].coro_addr.is_some():
             return
         var coro_p = ctx_ptr[].coro_ptr()
         if not coro_p[].can_resume():
@@ -614,10 +583,10 @@ struct H3StreamingServer(Movable):
             unsafe_from_address=Int(ctx_ptr)
         )
         var coro_heap = self._coro_pool.acquire(self._handler_fn, user_data)
-        ctx_ptr[].coro_addr = UInt64(Int(coro_heap))
+        ctx_ptr[].coro_addr = PtrBox[CoroHandle](coro_heap)
 
         # Insert BEFORE first resume so _drain_responses can find the stream
-        self._streams[stream_id] = _StreamingPtr(UInt64(Int(ctx_ptr)))
+        self._streams[stream_id] = PtrBox[H3StreamingCtx](ctx_ptr)
 
         # First resume: runs handler until first suspend or completion
         self._resume_stream(stream_id)
@@ -678,7 +647,7 @@ struct H3StreamingServer(Movable):
             return
         var ctx_ptr = self._streams[sid].ptr()
         ctx_ptr[].cancelled = True
-        if ctx_ptr[].coro_addr != UInt64(0):
+        if ctx_ptr[].coro_addr.is_some():
             var coro_p = ctx_ptr[].coro_ptr()
             if coro_p[].can_resume():
                 try:
@@ -700,7 +669,7 @@ struct H3StreamingServer(Movable):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
             ctx_ptr[].cancelled = True
-            if ctx_ptr[].coro_addr != UInt64(0):
+            if ctx_ptr[].coro_addr.is_some():
                 var coro_p = ctx_ptr[].coro_ptr()
                 if coro_p[].can_resume():
                     try:

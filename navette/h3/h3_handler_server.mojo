@@ -25,6 +25,7 @@ from navette.http.headers import Headers
 from navette.http.method import Method
 from navette.http.version import Version
 from navette.http.body import BodyFrame
+from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
@@ -58,27 +59,6 @@ struct _H3StreamCtx(Movable):
 
 
 # ---------------------------------------------------------------------------
-# _H3StreamPtr — thin Copyable+Movable wrapper around heap pointer
-# ---------------------------------------------------------------------------
-
-
-struct _H3StreamPtr(Copyable, Movable):
-    var addr: UInt64
-
-    def __init__(out self, addr: UInt64):
-        self.addr = addr
-
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
-
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
-
-    def ptr(self) -> UnsafePointer[_H3StreamCtx, MutAnyOrigin]:
-        return UnsafePointer[_H3StreamCtx, MutAnyOrigin](unsafe_from_address=Int(self.addr))
-
-
-# ---------------------------------------------------------------------------
 # H3HandlerServer
 # ---------------------------------------------------------------------------
 
@@ -88,7 +68,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     var _h3:      H3Connection
     var handler:  Self.H
-    var _streams: Dict[Int, _H3StreamPtr]
+    var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
     var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
 
     def __init__(
@@ -100,7 +80,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     ) raises:
         self._h3 = H3Connection.server(quic^)
         self.handler = handler^
-        self._streams = Dict[Int, _H3StreamPtr]()
+        self._streams = Dict[Int, PtrBox[_H3StreamCtx]]()
         self.profile_ptr = profile_ptr
         # Shape B threading: H3Connection.server/.client have ~15 call sites
         # in src/h3/ and tests/; we set profile_ptr post-construction here
@@ -240,7 +220,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx.resp_writer = resp^
         ctx.detached = detached
         ctx_ptr.init_pointee_move(ctx^)
-        self._streams[Int(ev.stream_id)] = _H3StreamPtr(UInt64(Int(ctx_ptr)))
+        self._streams[Int(ev.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
 
     def _on_data(mut self, ev: H3Event) raises:
         var sid = Int(ev.stream_id)
@@ -279,8 +259,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var sid = Int(ev.stream_id)
         if sid not in self._streams:
             return
-        var p = self._streams[sid].copy()
-        var ctx_ptr = p.ptr()
+        var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
         var err = StreamError.rst_stream(UInt32(ev.error_code))
         self.handler.on_reset(err)
@@ -364,8 +343,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         """Free stream context if both sides are done."""
         if sid not in self._streams:
             return
-        var p = self._streams[sid].copy()
-        var ctx_ptr = p.ptr()
+        var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
             _ = self._streams.pop(sid)
             ctx_ptr.destroy_pointee()
