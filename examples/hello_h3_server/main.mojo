@@ -3,7 +3,7 @@
 Demonstrates the full navette library surface:
 
   * `udp_listener()`          — owns the listening UDP socket
-  * `RustlsLibrary`           — loads librustls_mojo.so for the TLS handshake
+  * `TlsBackend`              — loads librustls_mojo.so for the TLS handshake
   * `quic_server_config_new`  — builds a rustls server config from PEM
   * `default_transport_params` — sane QUIC transport params for v1
   * `H3UdpServer[HelloHandler]` — the generic server
@@ -48,6 +48,7 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
+from navette.tls import TlsBackend
 from navette.tls.lib import RustlsLibrary
 from navette.tls.config import QuicServerConfig
 
@@ -121,14 +122,14 @@ def main() raises:
     var cert = open_file(cert_path, "r").read_bytes()
     var key = open_file(key_path, "r").read_bytes()
 
-    var lib = RustlsLibrary()
-    var config = QuicServerConfig(lib, Span(cert), Span(key))
+    var tls = TlsBackend()
+    var config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
 
     var sock = udp_listener(port)
     print("hello_h3_server: listening (fd=" + String(Int(sock.raw())) + ")")
 
     var tp = default_transport_params()
     var server = H3UdpServer[HelloHandler](
-        sock^, lib^, config^, tp^, make_hello_handler,
+        sock^, RustlsLibrary()^, config^, tp^, make_hello_handler,
     )
     serve_forever(server^)

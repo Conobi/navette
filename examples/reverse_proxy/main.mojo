@@ -28,7 +28,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.http.session import RequestHandle
 from navette.tls import (
-    RustlsLibrary,
+    TlsBackend,
     TlsClientConfig,
     TlsServerConfig,
     TlsConnection,
@@ -294,7 +294,7 @@ struct ProxyHandler(CompletionHandler):
     # stable addresses across `List` reallocations).
     var connections: List[UnsafePointer[ProxyConnection, MutAnyOrigin]]
     var next_conn_id: UInt64
-    var tls_lib: RustlsLibrary
+    var tls: TlsBackend
     var server_tls_config: TlsServerConfig
     var h1_client_tls_config: TlsClientConfig
     var h2_client_tls_config: TlsClientConfig
@@ -306,7 +306,7 @@ struct ProxyHandler(CompletionHandler):
     def __init__(
         out self,
         listener_fd: Int32,
-        var tls_lib: RustlsLibrary,
+        var tls: TlsBackend,
         var server_tls_config: TlsServerConfig,
         var h1_client_tls_config: TlsClientConfig,
         var h2_client_tls_config: TlsClientConfig,
@@ -319,7 +319,7 @@ struct ProxyHandler(CompletionHandler):
             UnsafePointer[ProxyConnection, MutAnyOrigin]
         ]()
         self.next_conn_id = 1
-        self.tls_lib = tls_lib^
+        self.tls = tls^
         self.server_tls_config = server_tls_config^
         self.h1_client_tls_config = h1_client_tls_config^
         self.h2_client_tls_config = h2_client_tls_config^
@@ -332,7 +332,7 @@ struct ProxyHandler(CompletionHandler):
         self.listener_fd = take.listener_fd
         self.connections = take.connections^
         self.next_conn_id = take.next_conn_id
-        self.tls_lib = take.tls_lib^
+        self.tls = take.tls^
         self.server_tls_config = take.server_tls_config^
         self.h1_client_tls_config = take.h1_client_tls_config^
         self.h2_client_tls_config = take.h2_client_tls_config^
@@ -406,7 +406,7 @@ struct ProxyHandler(CompletionHandler):
         # server config; the backend TLS half is deferred until the
         # ALPN is known.
         var client_tls = TlsConnection.new_server(
-            self.tls_lib, self.server_tls_config
+            self.tls.shared(), self.server_tls_config
         )
 
         # Create the backend TCP socket up front so we have an fd to
@@ -418,7 +418,7 @@ struct ProxyHandler(CompletionHandler):
 
         # A placeholder backend TLS connection. Replaced post-ALPN.
         var backend_tls = TlsConnection.new_client(
-            self.tls_lib, self.h1_client_tls_config, self.backend_host
+            self.tls.shared(), self.h1_client_tls_config, self.backend_host
         )
 
         var client_handle = OwnedHandle(raw=client_fd)
@@ -559,7 +559,7 @@ struct ProxyHandler(CompletionHandler):
             ptr[].variant = ProxyVariant.h2(h2^)
             ptr[].backend_addr_stor = self.h2_backend_addr.addr_stor()
             var backend_tls = TlsConnection.new_client(
-                self.tls_lib,
+                self.tls.shared(),
                 self.h2_client_tls_config,
                 self.backend_host,
             )
@@ -569,7 +569,7 @@ struct ProxyHandler(CompletionHandler):
             ptr[].variant = ProxyVariant.h1(h1^)
             ptr[].backend_addr_stor = self.h1_backend_addr.addr_stor()
             var backend_tls = TlsConnection.new_client(
-                self.tls_lib,
+                self.tls.shared(),
                 self.h1_client_tls_config,
                 self.backend_host,
             )
@@ -949,28 +949,28 @@ def main() raises:
     var proxy_cert = _read_file(_CERT_DIR + "/proxy_cert.pem")
     var proxy_key = _read_file(_CERT_DIR + "/proxy_key.pem")
 
-    # Initialize TLS library + dual-ALPN server config.
-    var tls_lib = RustlsLibrary()
+    # Initialize TLS backend + dual-ALPN server config.
+    var tls = TlsBackend()
     var server_config = TlsServerConfig(
-        tls_lib, Span(proxy_cert), Span(proxy_key)
+        tls.shared(), Span(proxy_cert), Span(proxy_key)
     )
     var server_alpn = List[String]()
     server_alpn.append(String("h2"))
     server_alpn.append(String("http/1.1"))
-    server_config.set_alpn_protocols(tls_lib, server_alpn)
+    server_config.set_alpn_protocols(server_alpn)
 
     # Two client configs, each pinned to one ALPN. Self-signed backend
     # cert — use insecure client config (requires librustls_mojo.so
     # built with --features insecure).
-    var h1_client_config = TlsClientConfig(tls_lib, insecure=True)
+    var h1_client_config = TlsClientConfig(tls.shared(), insecure=True)
     var h1_alpn = List[String]()
     h1_alpn.append(String("http/1.1"))
-    h1_client_config.set_alpn_protocols(tls_lib, h1_alpn)
+    h1_client_config.set_alpn_protocols(h1_alpn)
 
-    var h2_client_config = TlsClientConfig(tls_lib, insecure=True)
+    var h2_client_config = TlsClientConfig(tls.shared(), insecure=True)
     var h2_alpn = List[String]()
     h2_alpn.append(String("h2"))
-    h2_client_config.set_alpn_protocols(tls_lib, h2_alpn)
+    h2_client_config.set_alpn_protocols(h2_alpn)
 
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
@@ -997,7 +997,7 @@ def main() raises:
 
     var handler = ProxyHandler(
         listener_fd=listener_fd,
-        tls_lib=tls_lib^,
+        tls=tls^,
         server_tls_config=server_config^,
         h1_client_tls_config=h1_client_config^,
         h2_client_tls_config=h2_client_config^,

@@ -63,7 +63,8 @@ from std.pathlib import Path
 
 from boucle.handle import OwnedHandle
 
-from navette.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from navette.tls import TlsBackend, TlsClientConfig, TlsConnection
+from navette.tls.config import QuicClientConfig
 from navette.tls.lib import librustls_supports_insecure
 from navette.http import Method, Version, Headers, Request
 from navette.http.request import RequestBody
@@ -686,32 +687,12 @@ def _request_via_h3(
     if args.verbose:
         print("* UDP socket ready in " + String(Int(t_connect - t_start)) + "ms")
 
-    # Heap-allocate library (same Mojo compiler bug workaround as TCP path)
-    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
-    lib_ptr.init_pointee_move(RustlsLibrary())
-    var lib_addr = UInt64(Int(lib_ptr))
-
-    # Create QUIC client TLS config with h3 ALPN. Cert verification
-    # mirrors the `-k`/`--insecure` flag: default = Mozilla WebPKI roots
-    # (matches curl), `-k` = accept any server cert (self-signed dev).
-    var alpn_buf = _heap_alloc[UInt8](2).as_any_origin()
-    alpn_buf[0] = UInt8(0x68)  # 'h'
-    alpn_buf[1] = UInt8(0x33)  # '3'
-    var cfg_out = _heap_alloc[Int32](1).as_any_origin()
-    var rc: Int32
-    if args.insecure:
-        rc = lib_ptr[].quic_client_config_new_insecure(alpn_buf, Int32(2), cfg_out)
-    else:
-        rc = lib_ptr[].quic_client_config_new(alpn_buf, Int32(2), cfg_out)
-    if rc != 0:
-        raise "quic_client_config_new failed"
-    var quic_cfg = cfg_out[0]
-    cfg_out.free()
-    alpn_buf.free()
+    var tls = TlsBackend()
+    var quic_cfg = QuicClientConfig(tls.shared(), insecure=args.insecure)
 
     var now = _monotonic_ms() * UInt64(1000)  # microseconds
     var params = _h3_default_params()
-    var quic = QuicConnection.client(lib_addr, quic_cfg, parsed.host, params, now)
+    var quic = QuicConnection.client(tls.shared(), quic_cfg, parsed.host, params, now)
 
     # QUIC handshake: send/recv loop with a 3s wall-clock deadline.
     #
@@ -865,19 +846,16 @@ def _request_via_tcp(
     if args.verbose:
         print("* Connected in " + String(Int(t_connect - t_start)) + "ms")
 
-    # Heap-allocate RustlsLibrary (Mojo compiler bug workaround)
-    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
-    lib_ptr.init_pointee_move(RustlsLibrary())
-    ref lib = lib_ptr[]
-    var cli_cfg = TlsClientConfig(lib, insecure=args.insecure)
+    var tls_backend = TlsBackend()
+    var cli_cfg = TlsClientConfig(tls_backend.shared(), insecure=args.insecure)
     var alpn_protos = List[String]()
     if args.force_h1:
         alpn_protos.append("http/1.1")
     else:
         alpn_protos.append("h2")
         alpn_protos.append("http/1.1")
-    cli_cfg.set_alpn_protocols(lib, alpn_protos)
-    var tls = TlsConnection.new_client(lib, cli_cfg, parsed.host)
+    cli_cfg.set_alpn_protocols(alpn_protos)
+    var tls = TlsConnection.new_client(tls_backend.shared(), cli_cfg, parsed.host)
 
     _tls_send(sock.raw(), tls)
     while tls.is_handshaking():

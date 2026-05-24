@@ -19,7 +19,7 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections.optional import Optional
 
-from navette.tls import RustlsLibrary, TlsClientConfig, TlsConnection
+from navette.tls import TlsBackend, TlsClientConfig, TlsConnection
 from navette.http import Method, Version, Headers, Request
 from navette.http.request import RequestBody
 from navette.h2.h2_session import H2Session
@@ -165,12 +165,12 @@ def main() raises:
 
     # 2. TLS with ALPN h2
     print("[2] TLS handshake (ALPN: h2, insecure=True) ...")
-    var lib = RustlsLibrary()
-    var cli_cfg = TlsClientConfig(lib, insecure=True)
+    var tls_backend = TlsBackend()
+    var cli_cfg = TlsClientConfig(tls_backend.shared(), insecure=True)
     var alpn_protos = List[String]()
     alpn_protos.append("h2")
-    cli_cfg.set_alpn_protocols(lib, alpn_protos)
-    var tls = TlsConnection.new_client(lib, cli_cfg, _HOST)
+    cli_cfg.set_alpn_protocols(alpn_protos)
+    var tls = TlsConnection.new_client(tls_backend.shared(), cli_cfg, _HOST)
 
     # Send ClientHello (already buffered by new_client)
     _tls_send(fd, tls)

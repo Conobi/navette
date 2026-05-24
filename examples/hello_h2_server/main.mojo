@@ -4,7 +4,7 @@
 Demonstrates:
 
   * `tcp_listener(port)`         — owns the listening TCP socket
-  * `RustlsLibrary`               — loads librustls_mojo.so
+  * `TlsBackend`                  — loads librustls_mojo.so
   * `TlsServerConfig`             — PEM cert+key + ALPN=h2
   * `H2TcpServer[HelloHandler]`   — generic h2 server
   * `serve_forever(server)`       — io_uring event loop
@@ -37,7 +37,8 @@ from navette.http.handler import (
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.runtime.socket_helpers import tcp_listener
-from navette.tls import RustlsLibrary, TlsServerConfig
+from navette.tls import TlsBackend, TlsServerConfig
+from navette.tls.lib import RustlsLibrary
 
 from std.ffi import external_call
 from std.memory import UnsafePointer
@@ -177,11 +178,11 @@ def main() raises:
     var cert = _read_file(cert_path)
     var key = _read_file(key_path)
 
-    var tls_lib = RustlsLibrary()
-    var server_config = TlsServerConfig(tls_lib, Span(cert), Span(key))
+    var tls = TlsBackend()
+    var server_config = TlsServerConfig(tls.shared(), Span(cert), Span(key))
     var alpn = List[String]()
     alpn.append(String("h2"))
-    server_config.set_alpn_protocols(tls_lib, alpn)
+    server_config.set_alpn_protocols(alpn)
 
     var sock = tcp_listener(port)
     print("hello_h2_server: listening (fd=" + String(Int(sock.raw())) + ")")
@@ -189,7 +190,7 @@ def main() raises:
     var server = H2TcpServer[HelloHandler](
         sock^,
         make_hello_handler,
-        tls_lib^,
+        RustlsLibrary()^,
         server_config^,
     )
     serve_forever(server^)
