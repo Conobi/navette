@@ -13,7 +13,8 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Optional
 
-from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.lib import TlsBackend
+from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header
@@ -70,51 +71,14 @@ def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
 
 
 def _create_server_config(
-    lib: SharedLibrary,
+    tls: TlsBackend,
     alpn: String,
     certs_dir: String,
-) raises -> Int32:
+) raises -> QuicServerConfig:
     """Create a QUIC server TLS config from PEM files in certs_dir."""
     var cert_data = read_file(certs_dir + "/cert.pem")
     var key_data = read_file(certs_dir + "/priv.key")
-
-    var cert_len = len(cert_data)
-    var key_len = len(key_data)
-
-    var cert_buf = _heap_alloc[UInt8](cert_len).as_any_origin()
-    for i in range(cert_len):
-        cert_buf[i] = cert_data[i]
-
-    var key_buf = _heap_alloc[UInt8](key_len).as_any_origin()
-    for i in range(key_len):
-        key_buf[i] = key_data[i]
-
-    # ALPN: raw protocol name bytes (Rust wraps in vec![]).
-    var alpn_bytes = alpn.as_bytes()
-    var alpn_wire_len = len(alpn_bytes)
-    var alpn_buf = _heap_alloc[UInt8](alpn_wire_len).as_any_origin()
-    for i in range(len(alpn_bytes)):
-        alpn_buf[i] = alpn_bytes[i]
-
-    var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    var rlib = lib.inner_ptr()
-    var rc = rlib[].quic_server_config_new(
-        cert_buf, Int32(cert_len),
-        key_buf, Int32(key_len),
-        alpn_buf, Int32(alpn_wire_len),
-        out_handle,
-    )
-
-    var config_handle = out_handle[0]
-    cert_buf.free()
-    key_buf.free()
-    alpn_buf.free()
-    out_handle.free()
-
-    if rc != Int32(0):
-        raise "quic_server_config_new failed: " + rlib[].last_error()
-
-    return config_handle
+    return QuicServerConfig(tls.shared(), Span(cert_data), Span(key_data), alpn=alpn)
 
 
 # ── stream buffering ────────────────────────────────────────────────────
@@ -159,15 +123,15 @@ def main() raises:
     # Nothing extra needed; just ensure it's set in the environment.
 
     # Create server TLS config with hq-interop ALPN.
-    var server_config = _create_server_config(tls.shared(), "hq-interop", certs_dir)
+    var server_config = _create_server_config(tls, "hq-interop", certs_dir)
 
     # Bind UDP socket.
     var udp_fd = udp_bind(port)
     print("interop-server: listening on :" + String(port) + ", testcase=" + testcase)
 
-    # Connection state — parallel lists (Dict iteration not supported in 0.26.2).
+    # Connection state — parallel lists.
     var conn_keys = List[String]()
-    var conn_ptrs = List[UnsafePointer[QuicConnection, MutAnyOrigin]]()
+    var conn_ptrs = List[Optional[UnsafePointer[QuicConnection, MutAnyOrigin]]]()
     var conn_addrs = List[List[UInt8]]()
 
     # Per-stream request buffers: indexed by (conn_index * 65536 + stream_id).
@@ -181,9 +145,9 @@ def main() raises:
         var timeout_ms = 50  # Default poll timeout.
         var now = monotonic_us()
         for ci in range(len(conn_keys)):
-            if not conn_ptrs[ci]:
+            if not conn_ptrs[ci].__bool__():
                 continue
-            var t = conn_ptrs[ci][].timeout(now)
+            var t = conn_ptrs[ci].value()[].timeout(now)
             if t.__bool__():
                 var t_ms = Int(t.value() / 1000)
                 if t_ms < timeout_ms:
@@ -223,28 +187,29 @@ def main() raises:
 
                     conn_idx = len(conn_keys)
                     conn_keys.append(addr_key)
-                    conn_ptrs.append(conn_ptr)
+                    conn_ptrs.append(Optional(conn_ptr))
                     conn_addrs.append(List[UInt8](copy=addr))
                 except e:
                     # Could not parse packet — skip.
                     print("interop-server: failed to create connection: " + String(e))
                     continue
 
-            if conn_ptrs[conn_idx]:
+            if conn_ptrs[conn_idx].__bool__():
                 try:
-                    conn_ptrs[conn_idx][].recv(Span(data), now)
+                    conn_ptrs[conn_idx].value()[].recv(Span(data), now)
                 except e:
                     print("interop-server: recv error: " + String(e))
 
         # Drive all connections: send datagrams, handle events.
         now = monotonic_us()
         for ci in range(len(conn_keys)):
-            if not conn_ptrs[ci]:
+            if not conn_ptrs[ci].__bool__():
                 continue
+            var cp = conn_ptrs[ci].value()
 
             # Send outgoing datagrams.
             try:
-                var out = conn_ptrs[ci][].send(now)
+                var out = cp[].send(now)
                 for di in range(len(out)):
                     udp_sendto(udp_fd, Span(out[di]), Span(conn_addrs[ci]))
             except e:
@@ -252,7 +217,7 @@ def main() raises:
 
             # Handle events.
             while True:
-                var ev_opt = conn_ptrs[ci][].poll()
+                var ev_opt = cp[].poll()
                 if not ev_opt.__bool__():
                     break
                 var ev = ev_opt.value().copy()
@@ -261,7 +226,7 @@ def main() raises:
                     var stream_id = ev.stream_id
                     # Read stream data.
                     try:
-                        var rd = conn_ptrs[ci][].recv_stream_data(stream_id)
+                        var rd = cp[].recv_stream_data(stream_id)
                         var chunk = rd[0].copy()
                         var fin = rd[1]
 
@@ -288,7 +253,7 @@ def main() raises:
                         # Check if we have a complete request (\r\n) or FIN with data.
                         if len(stream_buf_vals[buf_idx]) > 0 and (_has_crlf(stream_buf_vals[buf_idx]) or fin):
                             http09_serve(
-                                conn_ptrs[ci][],
+                                cp[],
                                 stream_id,
                                 Span(stream_buf_vals[buf_idx]),
                                 www_dir,
@@ -310,10 +275,10 @@ def main() raises:
                     print("interop-server: connection closed for conn " + String(ci))
 
             # Check if connection is closed and clean up.
-            if conn_ptrs[ci][].is_closed():
-                conn_ptrs[ci].destroy_pointee()
-                conn_ptrs[ci].free()
-                conn_ptrs[ci] = UnsafePointer[QuicConnection, MutAnyOrigin](unsafe_from_address=0)
+            if cp[].is_closed():
+                cp.destroy_pointee()
+                cp.free()
+                conn_ptrs[ci] = Optional[UnsafePointer[QuicConnection, MutAnyOrigin]]()
 
         # Check if all connections are closed (and we had at least one).
         # For the interop runner, we just keep listening.
