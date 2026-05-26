@@ -24,7 +24,8 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.tls import TlsServerConfig, TlsConnection
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.h2.h2_streaming_server import H2StreamingServer
 
 from bench.lib.streaming_handler import llm_stream_h2_handler
@@ -163,14 +164,14 @@ struct H2StreamingServerHandler(CompletionHandler):
     var listener_fd: Int32
     var connections: List[UnsafePointer[H2StreamingConn, MutAnyOrigin]]
     var next_conn_id: UInt64
-    var tls_lib: RustlsLibrary
+    var tls_lib: SharedLibrary
     var server_tls_config: TlsServerConfig
     var pending_submits: List[PendingSubmit]
 
     def __init__(
         out self,
         listener_fd: Int32,
-        var tls_lib: RustlsLibrary,
+        var tls_lib: SharedLibrary,
         var server_tls_config: TlsServerConfig,
     ):
         self.listener_fd = listener_fd
@@ -304,7 +305,7 @@ struct H2StreamingServerHandler(CompletionHandler):
         self.next_conn_id += 1
 
         var tls_conn = TlsConnection.new_server(
-            self.tls_lib, self.server_tls_config
+            SharedLibrary(other=self.tls_lib), self.server_tls_config
         )
 
         var h2 = H2StreamingServer(handler_fn=llm_stream_h2_handler)
@@ -514,13 +515,14 @@ def main() raises:
     var key_pem = read_file(certs_dir + "/server.key")
 
     # TLS setup with ALPN "h2"
-    var tls_lib = RustlsLibrary()
+    var tls = TlsBackend()
+    var shared = tls.shared()
     var server_config = TlsServerConfig(
-        tls_lib, Span(cert_pem), Span(key_pem)
+        shared, Span(cert_pem), Span(key_pem)
     )
     var server_alpn = List[String]()
     server_alpn.append("h2")
-    server_config.set_alpn_protocols(tls_lib, server_alpn)
+    server_config.set_alpn_protocols(server_alpn)
 
     # Listening socket on port 8445
     var listener = Socket.tcp_v4()
@@ -545,7 +547,7 @@ def main() raises:
 
     var handler = H2StreamingServerHandler(
         listener_fd=listener_fd,
-        tls_lib=tls_lib^,
+        tls_lib=tls.shared(),
         server_tls_config=server_config^,
     )
     var loop = CompletionLoop[H2StreamingServerHandler](handler^, sq_entries=4096)

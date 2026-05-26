@@ -10,7 +10,7 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Dict, InlineArray
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
@@ -383,7 +383,7 @@ struct H3UdpHandler(BatchCompletionHandler):
     var tx_slot_from_pool: List[Bool]
     var next_tx_id: UInt64
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
-    var lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin]
+    var tls_lib: SharedLibrary
     var server_config: QuicServerConfig
     var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
@@ -409,7 +409,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         out self,
         udp_fd: Int32,
         state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
-        lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
+        var tls_lib: SharedLibrary,
         var server_config: QuicServerConfig,
     ):
         self.udp_fd = udp_fd
@@ -449,7 +449,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slot_from_pool = List[Bool]()
         self.next_tx_id = UInt64(0)
         self.state_ptr = state_ptr
-        self.lib_ptr = lib_ptr
+        self.tls_lib = tls_lib^
         self.server_config = server_config^
         self.pending_submits = List[PendingSubmit]()
 
@@ -493,7 +493,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.tx_slot_from_pool = take.tx_slot_from_pool^
         self.next_tx_id = take.next_tx_id
         self.state_ptr = take.state_ptr
-        self.lib_ptr = take.lib_ptr
+        self.tls_lib = take.tls_lib^
         self.server_config = take.server_config^
         self.timeout_ts = take.timeout_ts
         self.pending_submits = take.pending_submits^
@@ -726,7 +726,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                 try:
                     comptime if PROFILE_ACCEPT:
                         quic = QuicConnection.server(
-                            self.lib_ptr[],
+                            SharedLibrary(other=self.tls_lib),
                             self.server_config,
                             tp,
                             Span(pd.dcid),
@@ -736,7 +736,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                         )
                     else:
                         quic = QuicConnection.server(
-                            self.lib_ptr[],
+                            SharedLibrary(other=self.tls_lib),
                             self.server_config,
                             tp,
                             Span(pd.dcid),
@@ -1184,11 +1184,10 @@ def main() raises:
     else:
         certs_dir = String("certs")
 
-    var lib_ptr = _heap_alloc[RustlsLibrary](1).as_any_origin()
-    lib_ptr.init_pointee_move(RustlsLibrary())
+    var tls = TlsBackend()
     var cert = read_file(certs_dir + "/server.crt")
     var key = read_file(certs_dir + "/server.key")
-    var server_config = QuicServerConfig(lib_ptr[], Span(cert), Span(key))
+    var server_config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
 
     # Create UDP socket via the library factory.
     # `sock` owns the fd via OwnedHandle and MUST outlive the io_uring
@@ -1239,7 +1238,7 @@ def main() raises:
     var handler = H3UdpHandler(
         udp_fd=udp_fd,
         state_ptr=state_ptr,
-        lib_ptr=lib_ptr,
+        tls_lib=tls.shared(),
         server_config=server_config^,
     )
     var loop = BatchCompletionLoop[H3UdpHandler](handler^, sq_entries=4096)

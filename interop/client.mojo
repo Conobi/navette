@@ -14,7 +14,7 @@ from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicClientConfig
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.trans_param import default_transport_params
@@ -215,12 +215,11 @@ def main() raises:
     var downloads_dir = dl_opt.value() if dl_opt else String("/downloads")
 
     # ── Load TLS library + CA cert ────────────────────────────────────────
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary())
+    var tls = TlsBackend()
 
     var ca_pem = read_file(certs_dir + "/ca.pem")
     var client_config = QuicClientConfig.with_ca(
-        lib_ptr[], Span(ca_pem), alpn="hq-interop",
+        tls.shared(), Span(ca_pem), alpn="hq-interop",
     )
 
     # ── Parse first URL for host:port (all URLs share the same server) ───
@@ -239,7 +238,7 @@ def main() raises:
     # ── Connect + handshake ───────────────────────────────────────────────
     var fd = udp_connect(host, port)
     var now = monotonic_us()
-    var quic = QuicConnection.client(lib_ptr[], client_config, host, params, now)
+    var quic = QuicConnection.client(tls.shared(), client_config, host, params, now)
 
     _drive_handshake(quic, fd)
 

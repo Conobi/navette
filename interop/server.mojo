@@ -13,7 +13,7 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.collections import Optional
 
-from navette.tls.lib import RustlsLibrary
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header
@@ -70,7 +70,7 @@ def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
 
 
 def _create_server_config(
-    lib_ptr: UnsafePointer[RustlsLibrary, MutAnyOrigin],
+    lib: SharedLibrary,
     alpn: String,
     certs_dir: String,
 ) raises -> Int32:
@@ -97,7 +97,8 @@ def _create_server_config(
         alpn_buf[i] = alpn_bytes[i]
 
     var out_handle = _heap_alloc[Int32](1).as_any_origin()
-    var rc = lib_ptr[].quic_server_config_new(
+    var rlib = lib.inner_ptr()
+    var rc = rlib[].quic_server_config_new(
         cert_buf, Int32(cert_len),
         key_buf, Int32(key_len),
         alpn_buf, Int32(alpn_wire_len),
@@ -111,7 +112,7 @@ def _create_server_config(
     out_handle.free()
 
     if rc != Int32(0):
-        raise "quic_server_config_new failed: " + lib_ptr[].last_error()
+        raise "quic_server_config_new failed: " + rlib[].last_error()
 
     return config_handle
 
@@ -152,15 +153,13 @@ def main() raises:
         port = port * 10 + (Int(ps_bytes[pi]) - 48)
 
     # Load TLS library.
-    var lib_ptr = _heap_alloc[RustlsLibrary](1)
-    lib_ptr.init_pointee_move(RustlsLibrary("lib/librustls_mojo.so"))
-    var lib_addr = UInt64(Int(lib_ptr))
+    var tls = TlsBackend("lib/librustls_mojo.so")
 
     # SSLKEYLOGFILE — rustls reads this env var automatically.
     # Nothing extra needed; just ensure it's set in the environment.
 
     # Create server TLS config with hq-interop ALPN.
-    var server_config = _create_server_config(lib_ptr.as_any_origin(), "hq-interop", certs_dir)
+    var server_config = _create_server_config(tls.shared(), "hq-interop", certs_dir)
 
     # Bind UDP socket.
     var udp_fd = udp_bind(port)
@@ -217,7 +216,7 @@ def main() raises:
                     var conn_ptr = _heap_alloc[QuicConnection](1).as_any_origin()
                     conn_ptr.init_pointee_move(
                         QuicConnection.server(
-                            lib_addr, server_config, params,
+                            tls.shared(), server_config, params,
                             Span(orig_dcid), Span(client_dcid), now,
                         )
                     )

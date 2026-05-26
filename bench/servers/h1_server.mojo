@@ -21,7 +21,8 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.h1.handler_server import H1HandlerServer
 from navette.runtime.io_uring import IoUring
-from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.tls import TlsServerConfig, TlsConnection
+from navette.tls.lib import TlsBackend, SharedLibrary
 from bench.lib.handler import (
     BenchHandler,
     BenchState,
@@ -161,14 +162,14 @@ struct H1ServerHandler(CompletionHandler):
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
     var tls_enabled: Bool
-    var tls_lib: Optional[RustlsLibrary]
+    var tls_lib: Optional[SharedLibrary]
     var server_tls_config: Optional[TlsServerConfig]
 
     def __init__(
         out self,
         listener_fd: Int32,
         state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
-        var tls_lib: Optional[RustlsLibrary],
+        var tls_lib: Optional[SharedLibrary],
         var server_tls_config: Optional[TlsServerConfig],
     ):
         self.listener_fd = listener_fd
@@ -310,7 +311,7 @@ struct H1ServerHandler(CompletionHandler):
         var tls_opt: Optional[TlsConnection]
         if self.tls_enabled:
             var tls_conn = TlsConnection.new_server(
-                self.tls_lib.value(), self.server_tls_config.value()
+                SharedLibrary(other=self.tls_lib.value()), self.server_tls_config.value()
             )
             tls_opt = Optional[TlsConnection](tls_conn^)
         else:
@@ -555,8 +556,8 @@ def main() raises:
     var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
     state_ptr.init_pointee_move(state^)
 
-    # Optionally build the rustls library + server config (TLS mode).
-    var tls_lib_opt: Optional[RustlsLibrary]
+    # Optionally build the TLS backend + server config (TLS mode).
+    var tls_lib_opt: Optional[SharedLibrary]
     var server_tls_config_opt: Optional[TlsServerConfig]
     if tls_enabled:
         var certs_dir_opt = getenv_opt("CERTS_DIR")
@@ -567,17 +568,18 @@ def main() raises:
             certs_dir = String("/certs")
         var cert_pem = read_file(certs_dir + "/server.crt")
         var key_pem = read_file(certs_dir + "/server.key")
-        var tls_lib = RustlsLibrary()
+        var tls = TlsBackend()
+        var shared = tls.shared()
         var server_config = TlsServerConfig(
-            tls_lib, Span(cert_pem), Span(key_pem)
+            shared, Span(cert_pem), Span(key_pem)
         )
         var alpn = List[String]()
         alpn.append("http/1.1")
-        server_config.set_alpn_protocols(tls_lib, alpn)
-        tls_lib_opt = Optional[RustlsLibrary](tls_lib^)
+        server_config.set_alpn_protocols(alpn)
+        tls_lib_opt = Optional[SharedLibrary](tls.shared())
         server_tls_config_opt = Optional[TlsServerConfig](server_config^)
     else:
-        tls_lib_opt = Optional[RustlsLibrary]()
+        tls_lib_opt = Optional[SharedLibrary]()
         server_tls_config_opt = Optional[TlsServerConfig]()
 
     # Listening socket (IPv4 TCP, non-blocking).

@@ -18,7 +18,8 @@ from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
-from navette.tls import RustlsLibrary, TlsServerConfig, TlsConnection
+from navette.tls import TlsServerConfig, TlsConnection
+from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.h2.h2_sync_server import H2CoroServer
 from bench.lib.handler import (
     bench_h2_body_fn,
@@ -179,7 +180,7 @@ struct H2ServerHandler(CompletionHandler):
     var listener_fd: Int32
     var connections: List[UnsafePointer[H2Conn, MutAnyOrigin]]
     var next_conn_id: UInt64
-    var tls_lib: RustlsLibrary
+    var tls_lib: SharedLibrary
     var server_tls_config: TlsServerConfig
     var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
     var pending_submits: List[PendingSubmit]
@@ -191,7 +192,7 @@ struct H2ServerHandler(CompletionHandler):
     def __init__(
         out self,
         listener_fd: Int32,
-        var tls_lib: RustlsLibrary,
+        var tls_lib: SharedLibrary,
         var server_tls_config: TlsServerConfig,
         state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
         var bring: BufRing,
@@ -341,7 +342,7 @@ struct H2ServerHandler(CompletionHandler):
         self.next_conn_id += 1
 
         var tls_conn = TlsConnection.new_server(
-            self.tls_lib, self.server_tls_config
+            SharedLibrary(other=self.tls_lib), self.server_tls_config
         )
 
         var noneptr = UnsafePointer[NoneType, MutExternalOrigin](
@@ -599,13 +600,14 @@ def main() raises:
     var key_pem = read_file(certs_dir + "/server.key")
 
     # TLS setup
-    var tls_lib = RustlsLibrary()
+    var tls = TlsBackend()
+    var shared = tls.shared()
     var server_config = TlsServerConfig(
-        tls_lib, Span(cert_pem), Span(key_pem)
+        shared, Span(cert_pem), Span(key_pem)
     )
     var server_alpn = List[String]()
     server_alpn.append("h2")
-    server_config.set_alpn_protocols(tls_lib, server_alpn)
+    server_config.set_alpn_protocols(server_alpn)
 
     # Load static files
     var cache = _load_static_files(static_dir)
@@ -659,7 +661,7 @@ def main() raises:
     # CompletionLoop is built (since register_buf_ring is on the loop).
     var handler = H2ServerHandler(
         listener_fd=listener_fd,
-        tls_lib=tls_lib^,
+        tls_lib=tls.shared(),
         server_tls_config=server_config^,
         state_ptr=state_ptr,
         bring=BufRing(),
