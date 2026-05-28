@@ -17,6 +17,7 @@ FIXTURE = REPO / "tests" / "conformance" / "fixtures" / "h3spec_stdout_sample.tx
 
 
 def _parse() -> dict:
+    """Run h3spec_parse.py against the captured fixture and return the parsed JSON."""
     out = subprocess.check_output(["python3", str(PARSE), str(FIXTURE)])
     return json.loads(out)
 
