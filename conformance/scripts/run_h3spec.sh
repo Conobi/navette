@@ -43,7 +43,7 @@ ensure_binary() {
     fi
 }
 
-[[ -f "$VENDOR/SHA256SUMS" ]] || { echo "[run_h3spec] missing $VENDOR/SHA256SUMS — run Task 1 of plan A.0" >&2; exit 2; }
+[[ -f "$VENDOR/SHA256SUMS" ]] || { echo "[run_h3spec] missing $VENDOR/SHA256SUMS — see $VENDOR/README.md for the pin refresh procedure" >&2; exit 2; }
 [[ -f "$THRESHOLD_FILE" ]] || { echo "[run_h3spec] missing $THRESHOLD_FILE" >&2; exit 2; }
 [[ -x "$SERVER_BIN" ]] || { echo "[run_h3spec] missing $SERVER_BIN — build hello_h3_server first" >&2; exit 2; }
 ensure_binary || exit 2
