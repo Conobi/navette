@@ -19,6 +19,7 @@ dev = [
     "hpack>=4.1.0",
     "httptools>=0.7.1",
     "hyperframe>=6.0.0",
+    "pytest>=9.0.3",
     "pyyaml>=6.0.3",
 ]
 
