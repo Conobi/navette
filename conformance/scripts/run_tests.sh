@@ -69,3 +69,10 @@ done
 
 echo ""
 echo "All $PASSED/$TOTAL conformance tests passed."
+
+# h3spec gate — opt-in via H3SPEC=1 to keep the inner-loop dev run fast.
+# CI sets H3SPEC=1; the local conformance loop defaults to off.
+if [[ "${H3SPEC:-0}" == "1" ]]; then
+    echo "Running h3spec gate..."
+    "$SCRIPT_DIR/run_h3spec.sh"
+fi
