@@ -1,0 +1,6 @@
+hello_h3_server: binding [::]:4433
+  cert: certs/server.crt
+  key:  certs/server.key
+hello_h3_server: listening (fd=3)
+H3UdpServer: feed_datagram error: quic_conn_read_hs failed: rlsm_quic_conn_read_hs: TLS error: peer doesn't support any known protocol
+H3UdpServer: feed_datagram error: quic_conn_read_hs failed: rlsm_quic_conn_read_hs: TLS error: peer misbehaved: MissingQuicTransportParameters
