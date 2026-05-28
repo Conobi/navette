@@ -7,7 +7,13 @@
 from std.collections import Dict, Optional
 from std.memory import Span, UnsafePointer
 
-from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.connection import (
+    QuicConnection,
+    QuicEvent,
+    CONN_CLOSING,
+    CONN_DRAINING,
+    CONN_CLOSED,
+)
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.frame import (
@@ -433,6 +439,10 @@ struct H3Connection(Movable):
 
     def _drain_stream(mut self, stream_id: UInt64, now: UInt64) raises:
         """Read bytes from QUIC, accumulate in _stream_bufs, parse frames."""
+        # RFC 9000 §10.2.1: once CLOSING/DRAINING/CLOSED, drop further inbound
+        # stream data — no more frames flow on this connection.
+        if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return
         var key = Int(stream_id)
         if key not in self._stream_bufs:
             return  # locally-initiated stream or unknown — ignore
