@@ -6,7 +6,7 @@ publish = false
 description = "h3i-driven QUIC/H3 conformance scenarios for navette."
 
 [dependencies]
-h3i = "0.6"
+h3i = "=0.6.0"
 serde_json = "1"
 
 [[bin]]

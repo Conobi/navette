@@ -27,7 +27,7 @@ THRESHOLD="$(tr -d '[:space:]' < "$THRESHOLD_FILE")"
 
 # Build scenario binaries once (release profile keeps things fast at run time).
 echo "[run_h3i] building scenarios (release)..."
-(cd "$SCENARIOS_DIR" && cargo build --release --bins) >&2 || {
+(cd "$SCENARIOS_DIR" && cargo build --release --locked --bins) >&2 || {
     echo "[run_h3i] cargo build failed" >&2
     exit 2
 }
