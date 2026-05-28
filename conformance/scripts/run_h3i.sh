@@ -19,8 +19,43 @@ SERVER_BIN="$SERVER_DIR/hello_h3_server"
 # Preflight — exit 2 on misconfig.
 [[ -d "$SCENARIOS_DIR" ]] || { echo "[run_h3i] missing $SCENARIOS_DIR" >&2; exit 2; }
 [[ -f "$THRESHOLD_FILE" ]] || { echo "[run_h3i] missing $THRESHOLD_FILE" >&2; exit 2; }
-[[ -x "$SERVER_BIN" ]] || { echo "[run_h3i] missing $SERVER_BIN — build hello_h3_server first" >&2; exit 2; }
 command -v cargo >/dev/null 2>&1 || { echo "[run_h3i] cargo not in PATH" >&2; exit 2; }
+
+# Freshness check: if any navette/*.mojo is newer than $SERVER_BIN, rebuild
+# the example. The editable-install of navette in the example's .venv does
+# NOT auto-bust navette.mojopkg, so source edits to navette/ leave a stale
+# binary on disk that would otherwise pass the gate with pre-edit behaviour.
+ensure_server_fresh() {
+    if [[ ! -x "$SERVER_BIN" ]]; then
+        echo "[run_h3i] $SERVER_BIN not built; rebuilding" >&2
+    else
+        local newest_src
+        newest_src="$(find "$REPO_ROOT/navette" -name '*.mojo' -newer "$SERVER_BIN" -print -quit 2>/dev/null)"
+        if [[ -z "$newest_src" ]]; then
+            return 0
+        fi
+        echo "[run_h3i] navette source newer than $SERVER_BIN; rebuilding" >&2
+    fi
+
+    local example_dir="$REPO_ROOT/examples/hello_h3_server"
+    (
+        cd "$example_dir" || exit 2
+        uv sync --reinstall-package navette >&2 || exit 2
+        rm -f hello_h3_server
+        uv build --wheel >&2 || exit 2
+        local whl
+        whl="$(ls -t dist/navette_example_hello_h3_server-*.whl 2>/dev/null | head -1)"
+        [[ -n "$whl" ]] || { echo "[run_h3i] could not locate built wheel" >&2; exit 2; }
+        unzip -p "$whl" '*/hello_h3_server' > hello_h3_server || exit 2
+        chmod +x hello_h3_server
+    )
+}
+
+if [[ "${RUN_H3I_SKIP_REBUILD:-0}" == "1" ]]; then
+    [[ -x "$SERVER_BIN" ]] || { echo "[run_h3i] $SERVER_BIN missing and RUN_H3I_SKIP_REBUILD=1" >&2; exit 2; }
+else
+    ensure_server_fresh || { echo "[run_h3i] failed to rebuild $SERVER_BIN" >&2; exit 2; }
+fi
 
 THRESHOLD="$(tr -d '[:space:]' < "$THRESHOLD_FILE")"
 [[ "$THRESHOLD" =~ ^[0-9]+$ ]] || { echo "[run_h3i] threshold is not an integer: '$THRESHOLD'" >&2; exit 2; }
