@@ -72,3 +72,7 @@ bench/launcher
 # the mojox-build `binaries` config; the root-level ELF is obsolete.
 examples/*/main
 examples/*/dist/
+
+# h3spec binary — downloaded on demand by conformance/scripts/run_h3spec.sh;
+# pinned via conformance/vendor/h3spec/SHA256SUMS (binary itself not committed).
+conformance/vendor/h3spec/h3spec
