@@ -2,8 +2,9 @@
 """Generate the h3spec triage table draft.
 
 Reads the captured fixture pair (h3spec.out, server.err), runs the
-classifier, and emits a markdown row per failure. Used once during
-T9 to seed `research/h3spec-failure-triage.md`.
+classifier, and emits a markdown row per failure plus auto-clusters
+by (RFC top-section, target_module). Used to seed the local triage
+document; hand-clustering still required.
 """
 
 from __future__ import annotations
@@ -82,7 +83,6 @@ def target_module(name: str, rfc_clause: str) -> str:
       - [TLS 6 / 8.x] (key-update / alerts / quic_transport_parameters) -> tls/connection.mojo
       - [TLS 8.3] CRYPTO-in-0-RTT -> quic/crypto_stream.mojo
     """
-    low = name.lower()
     # Transport section
     if rfc_clause.startswith("RFC 9000"):
         # Frame-type errors: 17.x reserved-bits / no-frames -> packet+codec
