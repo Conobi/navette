@@ -17,7 +17,7 @@
 //! Once the two OpenUniStream actions have been emitted, the scenario does
 //! NOT block on a fixed WaitDuration. h3i's sync_client main loop exits
 //! naturally as soon as the peer sends CONNECTION_CLOSE (via
-//! `conn.is_closed()`), and the 2 s idle timeout from `default_local_config`
+//! `conn.is_closed()`), and the 2 s idle timeout from `loopback_config`
 //! caps the no-close case. Eliminating the prior 1 s WaitDuration race
 //! prevents false FAILs on slow CI hosts.
 //!
@@ -31,7 +31,7 @@
 
 use h3i::actions::h3::Action;
 use h3i::client::sync_client;
-use h3i_scenarios::default_local_config;
+use h3i_scenarios::loopback_config;
 
 /// RFC 9114 §8.1: H3_STREAM_CREATION_ERROR (0x0103).
 const H3_STREAM_CREATION_ERROR: u64 = 0x0103;
@@ -52,7 +52,7 @@ const STREAM_TYPE_CONTROL: u64 = 0x00;
 const EXPECTED_REASON_SUBSTRING: &str = "control stream";
 
 fn main() {
-    let config = default_local_config(4433);
+    let config = loopback_config(4433);
 
     let actions = vec![
         Action::OpenUniStream {

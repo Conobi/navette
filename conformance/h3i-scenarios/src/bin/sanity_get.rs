@@ -10,12 +10,12 @@
 use h3i::actions::h3::{send_headers_frame, Action, StreamEvent, StreamEventType, WaitType};
 use h3i::client::sync_client;
 use h3i::quiche::h3::{Header, NameValue};
-use h3i_scenarios::default_local_config;
+use h3i_scenarios::loopback_config;
 
 const STREAM_ID: u64 = 0;
 
 fn main() {
-    let config = default_local_config(4433);
+    let config = loopback_config(4433);
 
     let headers = vec![
         Header::new(b":method", b"GET"),

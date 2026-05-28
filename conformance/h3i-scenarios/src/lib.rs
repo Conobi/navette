@@ -2,11 +2,11 @@
 
 use h3i::config::Config;
 
-/// Build an h3i `Config` targeting the local hello_h3_server on the given port.
-///
-/// Loopback usage, so cert verification is disabled. Idle timeout kept short
-/// so failing scenarios fail fast (2s).
-pub fn default_local_config(port: u16) -> Config {
+/// Build an h3i `Config` targeting `127.0.0.1:<port>` with peer
+/// verification DISABLED. Suitable only for loopback testing against
+/// a server using a self-signed cert — never use this against a
+/// non-loopback target.
+pub fn loopback_config(port: u16) -> Config {
     Config::new()
         .with_host_port(format!("127.0.0.1:{port}"))
         .with_idle_timeout(2000)
