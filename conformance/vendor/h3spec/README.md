@@ -14,7 +14,7 @@ To refresh the pin (new upstream release):
 3. Bump `VERSION` to the new tag.
 4. Update `RELEASE_URL` in `conformance/scripts/run_h3spec.sh` if the
    asset name changed.
-5. Re-run Phase 0 calibration
-   (`research/quic-extension-testing-phase-0-calibration.md`) to confirm
-   the new pin's pass/fail numbers match expectations; if not,
-   `conformance/h3spec_min_pass.txt` may need adjustment.
+5. Re-run `conformance/scripts/run_h3spec.sh` against the current
+   `examples/hello_h3_server` to confirm the new pin's pass count
+   matches expectations; if not, `conformance/h3spec_min_pass.txt`
+   may need adjustment.
