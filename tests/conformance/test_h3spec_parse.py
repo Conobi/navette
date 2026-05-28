@@ -78,3 +78,22 @@ def test_triage_passed_rows_omit_pattern() -> None:
     pass_rows = [r for r in result["rows"] if r["h3spec_status"] == "pass"]
     for r in pass_rows:
         assert r.get("classified_pattern") in {None, ""}
+
+
+CAPTURE = CAPTURE_DIR / "h3spec.out"
+
+
+def _parse_capture() -> dict:
+    """Parse the triage-capture h3spec fixture (richer than the stdout sample)."""
+    out = subprocess.check_output(["python3", str(PARSE), str(CAPTURE)])
+    return json.loads(out)
+
+
+def test_parse_failures_block_attaches_messages() -> None:
+    """Failed rows should carry a `message` field with diagnostic text from the Failures block."""
+    result = _parse_capture()
+    fail_rows = [r for r in result["per_test"] if r["status"] == "fail"]
+    assert fail_rows, "expected at least one failure"
+    rows_with_msg = [r for r in fail_rows if r.get("message", "").strip()]
+    assert len(rows_with_msg) >= len(fail_rows) * 0.9, \
+        f"expected diagnostic on >=90% of failures, got {len(rows_with_msg)}/{len(fail_rows)}"

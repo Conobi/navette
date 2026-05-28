@@ -18,8 +18,10 @@ trailing token on each description line encodes the outcome:
 
 Interspersed flush-left lines such as section headers ('QUIC servers',
 'H3 servers') and runner debug noise ('Drop packet whose size is N') are
-ignored. Iteration stops at the 'Failures:' divider so the per-failure
-re-prints below it are not double-counted.
+ignored. The per-test scan stops at the 'Failures:' divider so the
+per-failure re-prints below it are not double-counted; a second pass
+re-reads that detail block to harvest per-test diagnostic messages and
+attach them to the matching failed rows.
 """
 
 from __future__ import annotations
@@ -43,13 +45,93 @@ _REQ_KEYWORDS = (" MUST ", " SHOULD ", " MAY ")
 
 _FAILURES_DIVIDER = "Failures:"
 
+# A source-file header line introducing a failure paragraph, e.g.
+# "  TransportError.hs:34:13: " (trailing whitespace tolerated).
+_FAILURE_HEADER_RX = re.compile(r"^\s+\S+\.hs:\d+:\d+:\s*$")
+
+# A numbered test-name line, e.g.
+# "  1) QUIC servers MUST send FLOW_CONTROL_ERROR ... [Transport 4.1]".
+_FAILURE_NAME_RX = re.compile(r"^\s+\d+\)\s+(?P<name>.+\S)\s*$")
+
+
+def _extract_failures(text: str) -> dict[str, str]:
+    """Return ``{full_test_name: diagnostic_message}`` mined from the 'Failures:' block.
+
+    The block lives after the ``Failures:`` divider in h3spec stdout. It is
+    a sequence of paragraphs (blank-line separated). A failure paragraph has
+    three pieces:
+
+        <source_file>.hs:<line>:<col>:
+        <N>) <full test name>
+            <indented diagnostic lines>
+
+    where the test name is prefixed by the section header from the per-test
+    scan ('QUIC servers ...' or 'H3 servers ...') and the diagnostic spans
+    one or more indented continuation lines. 'To rerun use: ...' paragraphs
+    interleave the failure paragraphs and are skipped. The returned dict
+    keys are the full names verbatim; callers reconcile them against the
+    section-stripped names captured during the per-test scan.
+    """
+    lines = text.splitlines()
+    try:
+        start = next(i for i, raw in enumerate(lines) if raw.rstrip() == _FAILURES_DIVIDER)
+    except StopIteration:
+        return {}
+
+    # Split the post-divider region into paragraphs on blank-line boundaries.
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    for raw in lines[start + 1 :]:
+        if raw.strip() == "":
+            if current:
+                paragraphs.append(current)
+                current = []
+            continue
+        current.append(raw)
+    if current:
+        paragraphs.append(current)
+
+    messages: dict[str, str] = {}
+    for para in paragraphs:
+        first = para[0]
+        # Skip rerun hints and the trailing 'Randomized with seed ...' /
+        # 'Finished in ...' summary lines.
+        if first.lstrip().startswith("To rerun use:"):
+            continue
+        if not _FAILURE_HEADER_RX.match(first):
+            continue
+        if len(para) < 2:
+            continue
+
+        name_match = _FAILURE_NAME_RX.match(para[1])
+        if not name_match:
+            continue
+        name = name_match.group("name").strip()
+
+        # Remaining lines are the diagnostic; strip common leading whitespace
+        # so a multi-line message stays readable when surfaced to triage.
+        diag_lines = para[2:]
+        if not diag_lines:
+            continue
+        common = min(
+            (len(ln) - len(ln.lstrip(" ")) for ln in diag_lines if ln.strip()),
+            default=0,
+        )
+        message = "\n".join(ln[common:] if ln.strip() else "" for ln in diag_lines)
+        if message.strip():
+            messages[name] = message
+
+    return messages
+
 
 def parse(text: str) -> dict:
     """Parse h3spec stdout text into a structured result dict.
 
     Returns a dict with keys ``total``, ``passed``, ``failed``, ``skipped``
-    (all int) and ``per_test`` (list of ``{name, status}`` dicts). The
-    invariant ``total == passed + failed + skipped`` always holds.
+    (all int) and ``per_test`` (list of ``{name, status, message?}`` dicts).
+    Failed rows additionally carry a ``message`` field with the diagnostic
+    text harvested from the 'Failures:' detail block. The invariant
+    ``total == passed + failed + skipped`` always holds.
     """
     rows: list[dict] = []
 
@@ -73,6 +155,19 @@ def parse(text: str) -> dict:
         # Pass candidate: indented line referencing an RFC requirement.
         if line.startswith(("  ", "\t")) and any(kw in line for kw in _REQ_KEYWORDS):
             rows.append({"name": line.strip(), "status": "pass"})
+
+    # Attach per-failure diagnostic messages. The Failures-block names carry
+    # the section prefix ('QUIC servers ' / 'H3 servers ') that the per-test
+    # scan dropped, so reconcile by suffix.
+    messages = _extract_failures(text)
+    for row in rows:
+        if row["status"] != "fail":
+            continue
+        row_name = row["name"]
+        for full_name, msg in messages.items():
+            if full_name == row_name or full_name.endswith(" " + row_name):
+                row["message"] = msg
+                break
 
     counts = {"pass": 0, "fail": 0, "skip": 0}
     for row in rows:
