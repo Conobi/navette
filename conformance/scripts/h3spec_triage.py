@@ -15,15 +15,17 @@ Pattern C_wrong_error: h3spec reports failure with a diagnostic
 Pattern B_no_detection: everything else — h3spec reports failure
   with no server-side evidence of detection.
 
-UNCLASSIFIED: the test has no diagnostic block at all; T9 hand
-  review must resolve.
+UNCLASSIFIED: the test has no diagnostic block at all; downstream
+  human curation must resolve.
 
 CAVEAT: h3spec's stdout does not include per-test start timestamps,
 so we cannot align stderr lines to individual tests by wall clock.
 The classifier uses substring-based matching of stderr feed_datagram
-tokens against the h3spec diagnostic block. If two h3spec tests
-share token vocabulary, both may match the same stderr line; T9
-hand review breaks the tie.
+tokens against the h3spec diagnostic block, restricted to CONSTANT_CASE
+QUIC/H3 error-code tokens to avoid false positives on generic words
+like "error" or "failed". If two h3spec tests share token vocabulary,
+both may match the same stderr line; downstream human curation
+breaks the tie.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ _TLS_TOKENS = (
     "illegal_parameter",
 )
 _FEED_DATAGRAM_RX = re.compile(r"feed_datagram error:\s*(?P<msg>.+)$")
-_SIGNIFICANT_TOKEN_RX = re.compile(r"[A-Za-z_][A-Za-z_0-9]{4,}")
+_SIGNIFICANT_TOKEN_RX = re.compile(r"[A-Z][A-Z_0-9]{6,}")
 
 
 def _stderr_messages(server_err_text: str) -> list[str]:
