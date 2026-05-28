@@ -70,9 +70,15 @@ done
 echo ""
 echo "All $PASSED/$TOTAL conformance tests passed."
 
-# h3spec gate — opt-in via H3SPEC=1 to keep the inner-loop dev run fast.
-# CI sets H3SPEC=1; the local conformance loop defaults to off.
-if [[ "${H3SPEC:-0}" == "1" ]]; then
-    echo "Running h3spec gate..."
-    "$SCRIPT_DIR/run_h3spec.sh"
+# h3i conformance gate — opt-in via H3I=1 to keep the inner-loop dev run fast.
+# CI sets H3I=1; the local conformance loop defaults to off.
+#
+# The earlier h3spec gate (H3SPEC=1) is kept on disk but no longer wired here:
+# h3spec's Haskell QUIC client cannot complete a handshake with navette's
+# rustls-based server (curl/ngtcp2 + h3i both handshake fine, so it is not a
+# navette bug). Invoke conformance/scripts/run_h3spec.sh directly if you want
+# to probe whether a future h3spec build has fixed the interop.
+if [[ "${H3I:-0}" == "1" ]]; then
+    echo "Running h3i conformance gate..."
+    "$SCRIPT_DIR/run_h3i.sh"
 fi
