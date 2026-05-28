@@ -19,7 +19,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from navette.tls.lib import SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
-from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION
+from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.frame import (
     Frame,
@@ -2121,9 +2121,23 @@ struct QuicConnection(Movable):
 
         # When CLOSING, only send CONNECTION_CLOSE (RFC 9000 §10.2.1).
         if (self.state & CONN_CLOSING) != 0 and self.pending_close:
-            frames.append(
-                Frame.connection_close(self.pending_close.value())
-            )
+            # RFC 9000 §10.2.3: a CONNECTION_CLOSE of type 0x1d
+            # (application namespace) MUST be replaced with a 0x1c
+            # CONNECTION_CLOSE when emitted in Initial or Handshake
+            # packets — application error codes have no meaning in those
+            # spaces, so we re-pack as a transport-close carrying
+            # APPLICATION_ERROR (0x0c) and drop the original code.
+            if not self.pending_close.value().is_transport and space_idx != 2:
+                var cc_to_emit = ConnectionCloseFrame()
+                cc_to_emit.is_transport = True
+                cc_to_emit.error_code = APPLICATION_ERROR
+                cc_to_emit.frame_type = UInt64(0)
+                cc_to_emit.reason = List[UInt8](copy=self.pending_close.value().reason)
+                frames.append(Frame.connection_close(cc_to_emit))
+            else:
+                frames.append(
+                    Frame.connection_close(self.pending_close.value())
+                )
             return frames^
 
         # ACK frame (if needed).
