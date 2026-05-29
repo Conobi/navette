@@ -72,6 +72,9 @@ bench/launcher
 # the mojox-build `binaries` config; the root-level ELF is obsolete.
 examples/*/main
 examples/*/dist/
+# `conformance/scripts/run_h3i.sh` extracts the example's wheel binary
+# back to the example root for direct exec; never commit.
+examples/hello_h3_server/hello_h3_server
 
 # h3spec binary — downloaded on demand by conformance/scripts/run_h3spec.sh;
 # pinned via conformance/vendor/h3spec/SHA256SUMS (binary itself not committed).

@@ -60,54 +60,114 @@ fi
 THRESHOLD="$(tr -d '[:space:]' < "$THRESHOLD_FILE")"
 [[ "$THRESHOLD" =~ ^[0-9]+$ ]] || { echo "[run_h3i] threshold is not an integer: '$THRESHOLD'" >&2; exit 2; }
 
-# Build scenario binaries once (release profile keeps things fast at run time).
-echo "[run_h3i] building scenarios (release)..."
-(cd "$SCENARIOS_DIR" && cargo build --release --locked --bins) >&2 || {
-    echo "[run_h3i] cargo build failed" >&2
-    exit 2
-}
-
+# Create the log directory up front so we can capture build diagnostics too.
 LOGDIR="${RUN_H3I_LOGDIR:-/tmp/run_h3i.$$}"
 mkdir -p "$LOGDIR"
 SERVER_OUT="$LOGDIR/server.stdout.log"
 SERVER_ERR="$LOGDIR/server.stderr.log"
 
+# Build scenario binaries once (release profile keeps things fast at run time).
+# Tee stderr to a log so a failed build leaves a postmortem-able artifact.
+echo "[run_h3i] building scenarios (release)..."
+(cd "$SCENARIOS_DIR" && cargo build --release --locked --bins) > "$LOGDIR/cargo.log" 2>&1 || {
+    echo "[run_h3i] cargo build failed — see $LOGDIR/cargo.log" >&2
+    tail -20 "$LOGDIR/cargo.log" >&2
+    exit 2
+}
+
 # Terminate the backgrounded server on script exit so no listener lingers.
+# If SIGTERM doesn't take (D-state, signal mask, deadlock) we escalate to
+# SIGKILL after 5s so the script never hangs waiting on a wedged child.
 cleanup() {
     if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill -TERM "$SERVER_PID" 2>/dev/null || true
+        # Give the server 5s to exit gracefully, then SIGKILL.
+        ( sleep 5; kill -KILL "$SERVER_PID" 2>/dev/null || true ) &
+        local killer_pid=$!
         wait "$SERVER_PID" 2>/dev/null || true
+        # Reap the killer if it hasn't fired yet.
+        kill "$killer_pid" 2>/dev/null || true
+        wait "$killer_pid" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT INT TERM
 
 # Server must run from its own directory so its CWD-relative lib/ and certs/
 # symlinks resolve.
-(cd "$SERVER_DIR" && exec ./hello_h3_server) > "$SERVER_OUT" 2> "$SERVER_ERR" &
+#
+# Mojo-built binaries link against the Modular runtime (libKGENCompilerRTShared
+# et al.), which lives in the example's uv-managed .venv under
+# `modular/lib/`. Neither the binary's RPATH nor `uv run` propagates this
+# directory into LD_LIBRARY_PATH, so a fresh shell that hasn't sourced the
+# Modular SDK env hits "libKGENCompilerRTShared.so: cannot open shared object
+# file" the moment the loader resolves the binary. Detecting the dir by glob
+# (Python minor version floats with the SDK) keeps the gate self-contained.
+MODULAR_LIB="$(ls -d "$SERVER_DIR"/.venv/lib/python*/site-packages/modular/lib 2>/dev/null | head -1 || true)"
+if [[ -z "$MODULAR_LIB" ]]; then
+    echo "[run_h3i] could not locate modular/lib under $SERVER_DIR/.venv — run 'uv sync' in $SERVER_DIR" >&2
+    exit 2
+fi
+
+(
+    cd "$SERVER_DIR"
+    export LD_LIBRARY_PATH="$MODULAR_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    exec ./hello_h3_server
+) > "$SERVER_OUT" 2> "$SERVER_ERR" &
 SERVER_PID=$!
 
-# Wait up to 5s for the listener to bind.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if ss -uln 2>/dev/null | grep -q ':4433 '; then break; fi
+# Pin bind-detection to OUR backgrounded server's PID. Plain `ss -uln` would
+# also accept a zombie listener from a prior crashed run, falsely greenlighting
+# the gate. `ss -ulnp` shows pid=NNNN entries; we match only our PID. For the
+# user's own process this works without CAP_NET_ADMIN. As a defensive fallback,
+# if `ss -p` ever omits the PID (locked-down kernel), we accept "listener on
+# :4433 exists AND our SERVER_PID is still alive" — best we can do without -p.
+is_server_bound() {
+    local listeners
+    listeners="$(ss -ulnp 2>/dev/null | grep ':4433 ' || true)"
+    [[ -n "$listeners" ]] || return 1
+    if grep -q "pid=$SERVER_PID," <<< "$listeners"; then
+        return 0
+    fi
+    # Fallback: PIDs are hidden but a listener exists and our server is alive.
+    if ! grep -q 'pid=' <<< "$listeners" && kill -0 "$SERVER_PID" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Wait up to BIND_TIMEOUT_S seconds (default 15) for the listener to bind.
+# Cold-cache VMs and CI runners regularly miss the old 5s budget.
+BIND_TIMEOUT_S="${RUN_H3I_BIND_TIMEOUT_S:-15}"
+BIND_ITERS=$(( BIND_TIMEOUT_S * 2 ))
+for _ in $(seq 1 "$BIND_ITERS"); do
+    if is_server_bound; then break; fi
     sleep 0.5
 done
-if ! ss -uln 2>/dev/null | grep -q ':4433 '; then
-    echo "[run_h3i] server failed to bind 4433 within 5s" >&2
+if ! is_server_bound; then
+    echo "[run_h3i] server (pid $SERVER_PID) failed to bind 4433 within ${BIND_TIMEOUT_S}s" >&2
     cat "$SERVER_ERR" >&2
     exit 2
 fi
 
-# Enumerate scenario binaries from the cargo target dir. Each binary exits 0
-# on PASS and non-zero on FAIL; we count exit codes.
+# Enumerate scenarios from Cargo.toml [[bin]] entries, not the filesystem,
+# so stale binaries from renamed scenarios or stray `cargo install` artifacts
+# don't pollute the count. Each binary exits 0 on PASS and non-zero on FAIL;
+# we count exit codes.
 TARGET_DIR="$SCENARIOS_DIR/target/release"
 PASSED=0
 FAILED=0
 TOTAL=0
-for bin in "$TARGET_DIR"/*; do
-    [[ -x "$bin" && -f "$bin" ]] || continue
-    # Skip dep build artifacts (everything in `target/release/deps/`, `build/`, etc.
-    # is excluded by the glob above since those live in subdirs).
-    name="$(basename "$bin")"
+
+SCENARIO_NAMES=$(cargo metadata --manifest-path "$SCENARIOS_DIR/Cargo.toml" --no-deps --format-version 1 \
+    | python3 -c 'import json,sys; m=json.load(sys.stdin); pkg=next(p for p in m["packages"] if p["name"]=="h3i-scenarios"); print("\n".join(t["name"] for t in pkg["targets"] if "bin" in t["kind"]))')
+
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    bin="$TARGET_DIR/$name"
+    if [[ ! -x "$bin" ]]; then
+        echo "[run_h3i] missing built binary for scenario '$name' at $bin" >&2
+        exit 2
+    fi
     TOTAL=$((TOTAL + 1))
     if "$bin" > "$LOGDIR/scenario.$name.log" 2>&1; then
         PASSED=$((PASSED + 1))
@@ -116,7 +176,7 @@ for bin in "$TARGET_DIR"/*; do
         FAILED=$((FAILED + 1))
         echo "[run_h3i] FAIL $name (see $LOGDIR/scenario.$name.log)"
     fi
-done
+done <<< "$SCENARIO_NAMES"
 
 echo "[run_h3i] passed=$PASSED failed=$FAILED total=$TOTAL threshold=$THRESHOLD"
 echo "[run_h3i] logs: $LOGDIR"
