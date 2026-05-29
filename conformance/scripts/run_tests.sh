@@ -7,45 +7,21 @@ REPO_ROOT="$(cd "$CONFORMANCE_DIR/.." && pwd)"
 
 export LD_LIBRARY_PATH="$REPO_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-TESTS=(
-    test_util_smoke
-    test_cursor
-    test_varint
-    test_packet_number
-    test_initial_protection
-    test_cross_varint
-    test_cross_packet_number
-    test_cross_initial_crypto
-    test_rustls_initial
-    test_rustls_aead
-    test_h1_chunked
-    test_h1_parser
-    test_h1_security
-    test_h1_cross_parser
-    test_h1_response
-    test_h1_response_cross
-    test_h1_connection
-    test_h1_connection_cross
-    test_h2_frame
-    test_h2_payloads_smoke
-    test_h2_frame_cross
-    test_hpack_integer
-    test_hpack_huffman
-    test_hpack_decode
-    test_hpack_roundtrip
-    test_hpack_cross
-    test_hpack_security
-    test_h2_connection
-    test_h2_connection_cross
-    test_h2_stream
-    test_h2_stream_cross
-    test_h2_send_window_exhaustion
-    test_cross_quic_hs_keys
-    test_cross_quic_packet_header
-    test_h3_frame_cross
-    test_qpack_cross
-    test_hpack_oracle_self
+# Auto-enumerate every test_*.mojo in conformance/tests/ so a new file is
+# never silently orphaned. Glob-based discovery replaces a hand-curated array
+# that was silently ~2.6% short for two months (test_http1_types_smoke was
+# added 2026-04-05 but never registered, and went stale against the
+# strictness refactor without anyone noticing). Sorted for deterministic
+# ordering across hosts; each test is self-contained so order is irrelevant
+# to correctness.
+mapfile -t TESTS < <(
+    cd "$CONFORMANCE_DIR/tests" && \
+    ls test_*.mojo 2>/dev/null | sed 's/\.mojo$//' | LC_ALL=C sort
 )
+if [ "${#TESTS[@]}" -eq 0 ]; then
+    echo "run_tests: no test_*.mojo files found under $CONFORMANCE_DIR/tests" >&2
+    exit 2
+fi
 
 FILTER="${CONFORMANCE_FILTER:-}"
 PASSED=0
