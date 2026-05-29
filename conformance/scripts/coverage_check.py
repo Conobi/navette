@@ -13,8 +13,11 @@ Invariants enforced:
   always-on ``sanity_get`` scenario.
 - Inv-5: every ``comptime GUARD_TAG_<NAME> = "[<BRACKETED>]"`` declaration in
   ``--tags`` files appears exactly once across all tag files, AND every
-  bracketed tag is referenced at least once from either a COVERAGE.md row or
-  a ``.rs`` scenario binary under ``--scenarios-dir/src/bin/``.
+  bracketed tag is referenced at least once from either a COVERAGE.md row,
+  a ``.rs`` scenario binary under ``--scenarios-dir/src/bin/``, or a
+  ``guard_predicates.mojo`` sibling of any ``--tags`` file. Predicate
+  modules are the canonical reference site for guards that ship as
+  defensive code without a paired scenario binary.
 
 A separate sub-mode, ``--verify-tag-proximity``, checks ``--connection-files``
 only: every ``GUARD_TAG_<NAME>`` *identifier* reference must appear on the
@@ -47,10 +50,12 @@ PROXIMITY_WINDOW = 4
 
 
 def parse_tag_defs(paths):
-    """Parse all tag-definition files, returning {bracketed_tag: (path, line)}.
+    """Parse all tag-definition files, returning {bracketed_tag: (path, line, ident)}.
 
     Exits 1 on a duplicate definition across the union of all tag files,
-    which violates the first half of Inv-5.
+    which violates the first half of Inv-5. The ``ident`` is the
+    ``GUARD_TAG_<NAME>`` identifier — predicate modules reference tags via
+    this identifier rather than the bracketed string literal.
     """
     tags = {}
     for raw in paths:
@@ -59,16 +64,17 @@ def parse_tag_defs(paths):
             match = TAG_DEF.match(line)
             if not match:
                 continue
+            ident = match.group(1)
             tag = match.group(2)
             if tag in tags:
-                prior_path, prior_line = tags[tag]
+                prior_path, prior_line, _ = tags[tag]
                 print(
                     f"Inv-5: duplicate tag {tag} defined at "
                     f"{prior_path}:{prior_line} and {path}:{lineno}",
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            tags[tag] = (str(path), lineno)
+            tags[tag] = (str(path), lineno, ident)
     return tags
 
 
@@ -148,9 +154,18 @@ def parse_cargo_bins(scenarios_dir):
     return bins
 
 
-def collect_tag_references(coverage_path, scenarios_dir):
-    """Collect every bracketed tag that COVERAGE.md or a scenario binary
-    references, so Inv-5's "at least once" half can be evaluated.
+def collect_tag_references(coverage_path, scenarios_dir, tag_paths, ident_to_tag):
+    """Collect every bracketed tag referenced by an in-tree reference site.
+
+    Reference sites scanned, in order:
+
+    - COVERAGE.md (bracketed literals).
+    - ``.rs`` scenario binaries under ``--scenarios-dir/src/bin/``
+      (bracketed literals).
+    - ``guard_predicates.mojo`` files that sit alongside each ``--tags``
+      file (``GUARD_TAG_<NAME>`` identifier references, translated through
+      ``ident_to_tag`` into bracketed form). Predicate modules are the
+      canonical reference site when a scenario binary has been deferred.
     """
     refs = set()
     refs.update(TAG_LITERAL.findall(Path(coverage_path).read_text()))
@@ -158,6 +173,14 @@ def collect_tag_references(coverage_path, scenarios_dir):
     if src_bin.is_dir():
         for rs in src_bin.glob("*.rs"):
             refs.update(TAG_LITERAL.findall(rs.read_text()))
+    for raw in tag_paths:
+        predicate = Path(raw).parent / "guard_predicates.mojo"
+        if not predicate.is_file():
+            continue
+        for ident in GUARD_TAG_REF.findall(predicate.read_text()):
+            tag = ident_to_tag.get(ident)
+            if tag is not None:
+                refs.add(tag)
     return refs
 
 
@@ -216,12 +239,15 @@ def check_invariants(args):
 
     # Inv-5
     tags = parse_tag_defs(args.tags)
-    refs = collect_tag_references(args.coverage, args.scenarios_dir)
-    for tag, (path, line) in sorted(tags.items()):
+    ident_to_tag = {ident: tag for tag, (_, _, ident) in tags.items()}
+    refs = collect_tag_references(
+        args.coverage, args.scenarios_dir, args.tags, ident_to_tag
+    )
+    for tag, (path, line, _) in sorted(tags.items()):
         if tag not in refs:
             violations.append(
                 f"Inv-5: tag {tag} defined at {path}:{line} is never referenced "
-                f"in COVERAGE.md or scenario binaries"
+                f"in COVERAGE.md, scenario binaries, or guard_predicates.mojo"
             )
 
     return violations

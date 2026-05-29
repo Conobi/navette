@@ -169,7 +169,10 @@ def test_predicate_f31_negative_sibling_input() raises:
 
 def test_predicate_f32_positive() raises:
     """F32 fires when GOAWAY arrives as first frame on the peer ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=False,
+        first_frame_seen=False,
+    )
     var v = predicate_f32_first_control_not_settings(UInt64(0x07), ctx)
     assert_true(v.__bool__(), "F32 positive must return Some")
     var verdict = v.value().copy()
@@ -180,7 +183,10 @@ def test_predicate_f32_positive() raises:
 
 def test_predicate_f32_negative_no_violation() raises:
     """F32 stays silent when SETTINGS arrives first on the ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=False,
+        first_frame_seen=False,
+    )
     var v = predicate_f32_first_control_not_settings(UInt64(0x04), ctx)
     assert_false(v.__bool__(), "F32 no-violation when first frame is SETTINGS")
     print("  test_predicate_f32_negative_no_violation: PASS")
@@ -188,15 +194,33 @@ def test_predicate_f32_negative_no_violation() raises:
 
 def test_predicate_f32_negative_sibling_input() raises:
     """F32 stays silent on a request stream (kind=0)."""
-    var ctx = H3StreamCtx(kind=UInt8(0), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(0), headers_seen=False, settings_seen=False,
+        first_frame_seen=False,
+    )
     var v = predicate_f32_first_control_not_settings(UInt64(0x07), ctx)
     assert_false(v.__bool__(), "F32 sibling: kind=0 is request, not control")
     print("  test_predicate_f32_negative_sibling_input: PASS")
 
 
+def test_predicate_f32_negative_post_first_frame() raises:
+    """F32 stays silent once any frame has arrived — second-frame
+    non-SETTINGS arrivals must route to F33/F34, not re-fire F32."""
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=False,
+        first_frame_seen=True,
+    )
+    var v = predicate_f32_first_control_not_settings(UInt64(0x07), ctx)
+    assert_false(v.__bool__(), "F32 silent once first_frame_seen=True")
+    print("  test_predicate_f32_negative_post_first_frame: PASS")
+
+
 def test_predicate_f33_positive() raises:
-    """F33 fires when DATA arrives on the peer ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=True)
+    """F33 fires when DATA arrives on the peer ctrl stream (post first-frame)."""
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=True,
+        first_frame_seen=True,
+    )
     var v = predicate_f33_data_on_control(UInt64(0x00), ctx)
     assert_true(v.__bool__(), "F33 positive must return Some")
     var verdict = v.value().copy()
@@ -207,7 +231,10 @@ def test_predicate_f33_positive() raises:
 
 def test_predicate_f33_negative_no_violation() raises:
     """F33 stays silent on SETTINGS over the ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=False,
+        first_frame_seen=True,
+    )
     var v = predicate_f33_data_on_control(UInt64(0x04), ctx)
     assert_false(v.__bool__(), "F33 no-violation when frame is SETTINGS")
     print("  test_predicate_f33_negative_no_violation: PASS")
@@ -215,15 +242,21 @@ def test_predicate_f33_negative_no_violation() raises:
 
 def test_predicate_f33_negative_sibling_input() raises:
     """F33 stays silent on DATA on a request stream (F31 territory)."""
-    var ctx = H3StreamCtx(kind=UInt8(0), headers_seen=True, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(0), headers_seen=True, settings_seen=False,
+        first_frame_seen=True,
+    )
     var v = predicate_f33_data_on_control(UInt64(0x00), ctx)
     assert_false(v.__bool__(), "F33 sibling: DATA on kind=0 is F31, not F33")
     print("  test_predicate_f33_negative_sibling_input: PASS")
 
 
 def test_predicate_f34_positive() raises:
-    """F34 fires when HEADERS arrives on the peer ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=True)
+    """F34 fires when HEADERS arrives on the peer ctrl stream (post first-frame)."""
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=True,
+        first_frame_seen=True,
+    )
     var v = predicate_f34_headers_on_control(UInt64(0x01), ctx)
     assert_true(v.__bool__(), "F34 positive must return Some")
     var verdict = v.value().copy()
@@ -234,7 +267,10 @@ def test_predicate_f34_positive() raises:
 
 def test_predicate_f34_negative_no_violation() raises:
     """F34 stays silent on SETTINGS over the ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=False,
+        first_frame_seen=True,
+    )
     var v = predicate_f34_headers_on_control(UInt64(0x04), ctx)
     assert_false(v.__bool__(), "F34 no-violation when frame is SETTINGS")
     print("  test_predicate_f34_negative_no_violation: PASS")
@@ -242,7 +278,10 @@ def test_predicate_f34_negative_no_violation() raises:
 
 def test_predicate_f34_negative_sibling_input() raises:
     """F34 stays silent on HEADERS on a request stream (legal there)."""
-    var ctx = H3StreamCtx(kind=UInt8(0), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(0), headers_seen=False, settings_seen=False,
+        first_frame_seen=True,
+    )
     var v = predicate_f34_headers_on_control(UInt64(0x01), ctx)
     assert_false(v.__bool__(), "F34 sibling: HEADERS on kind=0 is legal")
     print("  test_predicate_f34_negative_sibling_input: PASS")
@@ -250,7 +289,10 @@ def test_predicate_f34_negative_sibling_input() raises:
 
 def test_predicate_f35_positive() raises:
     """F35 fires when a second SETTINGS arrives on the ctrl stream."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=True)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=True,
+        first_frame_seen=True,
+    )
     var v = predicate_f35_second_settings(UInt64(0x04), ctx)
     assert_true(v.__bool__(), "F35 positive must return Some")
     var verdict = v.value().copy()
@@ -261,7 +303,10 @@ def test_predicate_f35_positive() raises:
 
 def test_predicate_f35_negative_no_violation() raises:
     """F35 stays silent on the first SETTINGS frame."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=False)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=False,
+        first_frame_seen=False,
+    )
     var v = predicate_f35_second_settings(UInt64(0x04), ctx)
     assert_false(v.__bool__(), "F35 no-violation on first SETTINGS")
     print("  test_predicate_f35_negative_no_violation: PASS")
@@ -269,7 +314,10 @@ def test_predicate_f35_negative_no_violation() raises:
 
 def test_predicate_f35_negative_sibling_input() raises:
     """F35 stays silent on GOAWAY (post-SETTINGS GOAWAY is legal)."""
-    var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=True)
+    var ctx = H3StreamCtx(
+        kind=UInt8(1), headers_seen=False, settings_seen=True,
+        first_frame_seen=True,
+    )
     var v = predicate_f35_second_settings(UInt64(0x07), ctx)
     assert_false(v.__bool__(), "F35 sibling: GOAWAY is not SETTINGS")
     print("  test_predicate_f35_negative_sibling_input: PASS")
@@ -346,75 +394,79 @@ def test_h3_request_stream_cohort_exclusivity() raises:
 
 
 def test_h3_control_stream_cohort_exclusivity() raises:
-    """For each (frame_type, settings_seen) input on the peer ctrl stream,
-    at most one of F32 / F33 / F34 / F35 returns Some.
+    """For each (frame_type, settings_seen, first_frame_seen) input on the
+    peer ctrl stream, at most one of F32 / F33 / F34 / F35 returns Some.
+
+    With `first_frame_seen` now part of `H3StreamCtx`, F32 is silent on
+    every cell where the stream already saw a frame. The cohort therefore
+    enforces TRUE exclusivity at the predicate layer — no external
+    dispatch-time gate is required to keep F32 from overlapping F33/F34.
 
     Truth table (kind=1):
-      - DATA (0x00) → F33 (and if settings_seen=False, F32 also fires —
-        but only if it's the first frame; here we simulate per-frame
-        membership so F32 returns Some on first-frame=GOAWAY-class only
-        when settings_seen=False AND first_frame_type != SETTINGS. The
-        cohort assumption is that F32 is gated by `first_frame_seen`
-        externally; here we treat any non-SETTINGS frame on ctrl with
-        settings_seen=False as F32-eligible).
-      - HEADERS (0x01) → F34 only (+ F32 when settings_seen=False).
-      - SETTINGS (0x04) + settings_seen=True → F35 only.
-      - SETTINGS (0x04) + settings_seen=False → none.
-      - GOAWAY (0x07) + settings_seen=True → none.
-      - GOAWAY (0x07) + settings_seen=False → F32 only.
+      - first_frame_seen=False, ft=SETTINGS, ss=False → none.
+      - first_frame_seen=False, ft!=SETTINGS,  ss=False → F32 only.
+      - first_frame_seen=True,  ft=DATA               → F33 only.
+      - first_frame_seen=True,  ft=HEADERS            → F34 only.
+      - first_frame_seen=True,  ft=SETTINGS, ss=True  → F35 only.
+      - first_frame_seen=True,  ft=SETTINGS, ss=False → none.
+      - first_frame_seen=True,  ft=GOAWAY             → none.
     """
     var frame_types = List[UInt64]()
     frame_types.append(UInt64(0x00))
     frame_types.append(UInt64(0x01))
     frame_types.append(UInt64(0x04))
     frame_types.append(UInt64(0x07))
-    var settings_seen_values = List[Bool]()
-    settings_seen_values.append(True)
-    settings_seen_values.append(False)
+    var bool_values = List[Bool]()
+    bool_values.append(True)
+    bool_values.append(False)
     for fi in range(len(frame_types)):
         var ft = frame_types[fi]
-        for si in range(len(settings_seen_values)):
-            var ss = settings_seen_values[si]
-            var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=ss)
-            var f32 = predicate_f32_first_control_not_settings(ft, ctx)
-            var f33 = predicate_f33_data_on_control(ft, ctx)
-            var f34 = predicate_f34_headers_on_control(ft, ctx)
-            var f35 = predicate_f35_second_settings(ft, ctx)
-            # Expected truth table:
-            #   F32: ctx.settings_seen=False AND ft != SETTINGS.
-            #   F33: ft == DATA.
-            #   F34: ft == HEADERS.
-            #   F35: ft == SETTINGS AND ctx.settings_seen=True.
-            var exp_f32 = (not ss) and (ft != UInt64(0x04))
-            var exp_f33 = ft == UInt64(0x00)
-            var exp_f34 = ft == UInt64(0x01)
-            var exp_f35 = ft == UInt64(0x04) and ss
-            assert_equal_int(
-                Int(f32.__bool__()), Int(exp_f32),
-                "F32 membership",
-            )
-            assert_equal_int(
-                Int(f33.__bool__()), Int(exp_f33),
-                "F33 membership",
-            )
-            assert_equal_int(
-                Int(f34.__bool__()), Int(exp_f34),
-                "F34 membership",
-            )
-            assert_equal_int(
-                Int(f35.__bool__()), Int(exp_f35),
-                "F35 membership",
-            )
-            # Exclusivity across DATA/HEADERS/SETTINGS rows: F33, F34, F35
-            # are pairwise disjoint on frame_type. F32 may overlap with
-            # F33/F34 when settings_seen=False (e.g. DATA before SETTINGS
-            # on the ctrl stream — both predicates fire, but dispatch
-            # branches by `first_frame_seen` externally).
-            var ctrl_cohort_count = Int(exp_f33) + Int(exp_f34) + Int(exp_f35)
-            assert_true(
-                ctrl_cohort_count <= 1,
-                "F33/F34/F35 cohort is pairwise exclusive",
-            )
+        for si in range(len(bool_values)):
+            var ss = bool_values[si]
+            for ffi in range(len(bool_values)):
+                var ffs = bool_values[ffi]
+                var ctx = H3StreamCtx(
+                    kind=UInt8(1), headers_seen=False,
+                    settings_seen=ss, first_frame_seen=ffs,
+                )
+                var f32 = predicate_f32_first_control_not_settings(ft, ctx)
+                var f33 = predicate_f33_data_on_control(ft, ctx)
+                var f34 = predicate_f34_headers_on_control(ft, ctx)
+                var f35 = predicate_f35_second_settings(ft, ctx)
+                # Expected truth table (all four predicates self-gate on
+                # first_frame_seen so the cohort is strictly exclusive):
+                #   F32: first_frame_seen=False AND settings_seen=False AND ft!=SETTINGS.
+                #   F33: first_frame_seen=True  AND ft == DATA.
+                #   F34: first_frame_seen=True  AND ft == HEADERS.
+                #   F35: ft == SETTINGS AND settings_seen=True.
+                var exp_f32 = (not ffs) and (not ss) and (ft != UInt64(0x04))
+                var exp_f33 = ffs and (ft == UInt64(0x00))
+                var exp_f34 = ffs and (ft == UInt64(0x01))
+                var exp_f35 = ft == UInt64(0x04) and ss
+                assert_equal_int(
+                    Int(f32.__bool__()), Int(exp_f32),
+                    "F32 membership",
+                )
+                assert_equal_int(
+                    Int(f33.__bool__()), Int(exp_f33),
+                    "F33 membership",
+                )
+                assert_equal_int(
+                    Int(f34.__bool__()), Int(exp_f34),
+                    "F34 membership",
+                )
+                assert_equal_int(
+                    Int(f35.__bool__()), Int(exp_f35),
+                    "F35 membership",
+                )
+                # TRUE exclusivity: at most one Some across F32/F33/F34/F35.
+                var some_count = (
+                    Int(exp_f32) + Int(exp_f33) + Int(exp_f34) + Int(exp_f35)
+                )
+                assert_true(
+                    some_count <= 1,
+                    "F32/F33/F34/F35 cohort is mutually exclusive",
+                )
     print("  test_h3_control_stream_cohort_exclusivity: PASS")
 
 

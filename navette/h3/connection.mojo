@@ -653,6 +653,7 @@ struct H3Connection(Movable):
             var _f32_ctx = H3StreamCtx(
                 kind=UInt8(1), headers_seen=False,
                 settings_seen=self._peer_ctrl_settings,
+                first_frame_seen=False,
             )
             var _f32_v = predicate_f32_first_control_not_settings(frame.frame_type, _f32_ctx)
             if _f32_v:
@@ -667,6 +668,7 @@ struct H3Connection(Movable):
             var _f35_ctx = H3StreamCtx(
                 kind=UInt8(1), headers_seen=False,
                 settings_seen=self._peer_ctrl_settings,
+                first_frame_seen=self._peer_ctrl_first_frame_seen,
             )
             var _f35_v = predicate_f35_second_settings(frame.frame_type, _f35_ctx)
             if _f35_v:
@@ -692,6 +694,7 @@ struct H3Connection(Movable):
             var _ctrl_ctx = H3StreamCtx(
                 kind=UInt8(1), headers_seen=False,
                 settings_seen=self._peer_ctrl_settings,
+                first_frame_seen=self._peer_ctrl_first_frame_seen,
             )
             var _f33_v = predicate_f33_data_on_control(frame.frame_type, _ctrl_ctx)
             if _f33_v:
