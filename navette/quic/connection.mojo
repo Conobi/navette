@@ -60,6 +60,12 @@ from navette.quic.frame import (
     FRAME_STREAMS_BLOCKED_UNI,
 )
 from navette.quic.stream_map import StreamMap
+from navette.quic.guard_predicates import (
+    predicate_f15_reset_on_server_uni,
+    predicate_f16_stop_sending_local_not_created,
+    QuicResetCtx,
+    QuicStopSendingCtx,
+)
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
@@ -1049,6 +1055,19 @@ struct QuicConnection(Movable):
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
         """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
+        # F15 — RESET on a server-uni stream is illegal: the peer cannot
+        # RESET a stream where this endpoint is the sender (§19.4 + §3.2).
+        var _f15_ctx = QuicResetCtx(
+            stream_id=reset_frame.stream_id,
+            local_uni_opened=self.stream_map.local_opened_uni,
+            local_bidi_opened=self.stream_map.local_opened_bidi,
+        )
+        var _f15_verdict = predicate_f15_reset_on_server_uni(_f15_ctx)
+        if _f15_verdict:
+            var v = _f15_verdict.value().copy()
+            self.close_transport(v.error_code, v.tag, monotonic_us())
+            return
+
         var stream_id = reset_frame.stream_id
         var error_code = reset_frame.error_code
         var final_size = reset_frame.final_size
@@ -1105,6 +1124,20 @@ struct QuicConnection(Movable):
 
     def _handle_stop_sending(mut self, stop_frame: StopSendingFrame) raises:
         """Process an incoming STOP_SENDING frame (RFC 9000 §19.5)."""
+        # F16 — STOP_SENDING for an uncreated locally-initiated stream is
+        # STREAM_STATE_ERROR. Predicate keys on the stream-id suffix and
+        # the local-opened watermarks for each (uni, bidi) class.
+        var _f16_ctx = QuicStopSendingCtx(
+            stream_id=stop_frame.stream_id,
+            local_uni_opened=self.stream_map.local_opened_uni,
+            local_bidi_opened=self.stream_map.local_opened_bidi,
+        )
+        var _f16_verdict = predicate_f16_stop_sending_local_not_created(_f16_ctx)
+        if _f16_verdict:
+            var v = _f16_verdict.value().copy()
+            self.close_transport(v.error_code, v.tag, monotonic_us())
+            return
+
         var stream_id = stop_frame.stream_id
         var error_code = stop_frame.error_code
 

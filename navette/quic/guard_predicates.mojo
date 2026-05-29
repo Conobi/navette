@@ -69,14 +69,52 @@ struct QuicStopSendingCtx(Copyable, Movable):
 
 
 def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdict]:
-    """Stub for the F15 guard: tripped when the peer RESET_STREAMs a
-    stream id the server itself opened. Returns None until the real
-    check lands in a later commit."""
-    return Optional[GuardVerdict]()
+    """Return Some(STREAM_STATE_ERROR + tag) when a RESET_STREAM targets
+    a server-uni stream (RFC 9000 §19.4 + §3.2 — the peer cannot RESET a
+    stream where this endpoint is the sender).
+
+    RFC 9000 §2.1: server-uni stream IDs end in 0b11 (suffix 3 mod 4).
+    """
+    var sid = ctx.stream_id
+    var is_server_uni = (sid & UInt64(3)) == UInt64(3)
+    if not is_server_uni:
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x05),  # STREAM_STATE_ERROR
+            tag=String(GUARD_TAG_RESET_SEND_ONLY),
+        )
+    )
 
 
-def predicate_f16_stop_sending_local_not_created(ctx: QuicStopSendingCtx) -> Optional[GuardVerdict]:
-    """Stub for the F16 guard: tripped when the peer STOP_SENDINGs a
-    stream id past the highest local-opened watermark. Returns None
-    until the real check lands in a later commit."""
-    return Optional[GuardVerdict]()
+def predicate_f16_stop_sending_local_not_created(
+    ctx: QuicStopSendingCtx,
+) -> Optional[GuardVerdict]:
+    """Return Some(STREAM_STATE_ERROR + tag) when STOP_SENDING targets a
+    locally-initiated stream that has not yet been created
+    (RFC 9000 §19.5).
+
+    On the server: server-uni IDs end in 0b11 (suffix 3 mod 4) and
+    server-bidi IDs end in 0b01 (suffix 1 mod 4). For each class the
+    max ever-created local id = `(count-1)*4 + base`; anything strictly
+    greater is uncreated and MUST trip STREAM_STATE_ERROR.
+    """
+    var sid = ctx.stream_id
+    var suffix = sid & UInt64(3)
+    var is_local_uni = suffix == UInt64(3)
+    var is_local_bidi = suffix == UInt64(1)
+    if not is_local_uni and not is_local_bidi:
+        return Optional[GuardVerdict]()
+    var created: Bool
+    if is_local_uni:
+        created = sid < (ctx.local_uni_opened * UInt64(4) + UInt64(3))
+    else:
+        created = sid < (ctx.local_bidi_opened * UInt64(4) + UInt64(1))
+    if created:
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x05),  # STREAM_STATE_ERROR
+            tag=String(GUARD_TAG_STOP_LOCAL_NOT_CREATED),
+        )
+    )

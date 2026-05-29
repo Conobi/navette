@@ -34,12 +34,12 @@
 | F28 | C6 | RFC 9001 §8.2 | deferred:tls-conformance | — |
 | F29 | C6 | RFC 9001 §8.3 | deferred:tls-conformance | — |
 | F30 | C7 | RFC 9001 §8.3 | deferred:quiche-raw-frame | — |
-| F31 | C8 | RFC 9114 §4.1 | red | s_f31_data_before_headers |
-| F32 | C9 | RFC 9114 §6.2.1 | red | s_f32_first_control_frame_not_settings |
-| F33 | C9 | RFC 9114 §7.2.1 | red | s_f33_data_on_control_stream |
-| F34 | C9 | RFC 9114 §7.2.2 | red | s_f34_headers_on_control_stream |
-| F35 | C9 | RFC 9114 §7.2.4 | red | s_f35_second_settings_frame |
-| F36 | C8 | RFC 9114 §7.2.5 | red | s_f36_cancel_push_on_request |
+| F31 | C8 | RFC 9114 §4.1 | gated | s_f31_data_before_headers |
+| F32 | C9 | RFC 9114 §6.2.1 | gated | s_f32_first_control_frame_not_settings |
+| F33 | C9 | RFC 9114 §7.2.1 | gated | s_f33_data_on_control_stream |
+| F34 | C9 | RFC 9114 §7.2.2 | gated | s_f34_headers_on_control_stream |
+| F35 | C9 | RFC 9114 §7.2.4 | gated | s_f35_second_settings_frame |
+| F36 | C8 | RFC 9114 §7.2.5 | gated | s_f36_cancel_push_on_request |
 
 ## Table B — synthetic gated scenarios
 

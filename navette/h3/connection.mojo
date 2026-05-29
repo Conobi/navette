@@ -37,6 +37,19 @@ from navette.h3.error import (
     H3_STREAM_CREATION_ERROR,
 )
 from navette.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField
+from navette.h3.guard_predicates import (
+    H3StreamCtx,
+    predicate_f31_data_before_headers,
+    predicate_f32_first_control_not_settings,
+    predicate_f33_data_on_control,
+    predicate_f34_headers_on_control,
+    predicate_f35_second_settings,
+    predicate_f36_cancel_push_on_request,
+)
+
+
+# HTTP/3 CANCEL_PUSH frame type (RFC 9114 §7.2.3 — type 0x03).
+comptime H3_FRAME_CANCEL_PUSH: UInt64 = 0x03
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +158,9 @@ struct H3Connection(Movable):
     var _peer_goaway_sid:            Optional[UInt64]
     var _enc:                        QpackEncoder
     var _dec:                        QpackDecoder
+    # Per-request-stream HEADERS-seen flag, feeding the F31 (DATA-before-
+    # HEADERS) and F36 (CANCEL_PUSH-on-request) predicate inputs.
+    var _request_headers_seen:       Dict[Int, Bool]
     var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
@@ -165,6 +181,7 @@ struct H3Connection(Movable):
         self._peer_goaway_sid = Optional[UInt64]()
         self._enc = QpackEncoder(False)
         self._dec = QpackDecoder()
+        self._request_headers_seen = Dict[Int, Bool]()
         self.profile_ptr = None
 
     def __init__(out self, *, deinit take: Self):
@@ -185,6 +202,7 @@ struct H3Connection(Movable):
         self._peer_goaway_sid = take._peer_goaway_sid^
         self._enc = take._enc^
         self._dec = take._dec^
+        self._request_headers_seen = take._request_headers_seen^
         self.profile_ptr = take.profile_ptr
 
     @staticmethod
@@ -627,16 +645,33 @@ struct H3Connection(Movable):
 
     def _handle_control_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on the peer control stream."""
-        # RFC 9114 §6.2.1: first frame on peer control stream MUST be SETTINGS
+        # F32 — first frame on the peer ctrl stream MUST be SETTINGS
+        # (RFC 9114 §6.2.1). Tracks first-frame state via the existing
+        # `_peer_ctrl_first_frame_seen` flag.
         if not self._peer_ctrl_first_frame_seen:
             self._peer_ctrl_first_frame_seen = True
-            if frame.frame_type != H3_FRAME_SETTINGS:
-                self._quic.close_app(H3_MISSING_SETTINGS, "first ctrl frame must be SETTINGS", now)
+            var _f32_ctx = H3StreamCtx(
+                kind=UInt8(1), headers_seen=False,
+                settings_seen=self._peer_ctrl_settings,
+            )
+            var _f32_v = predicate_f32_first_control_not_settings(frame.frame_type, _f32_ctx)
+            if _f32_v:
+                var v = _f32_v.value().copy()
+                self._quic.close_app(v.error_code, v.tag, now)
                 return
 
         if frame.frame_type == H3_FRAME_SETTINGS:
-            if self._peer_ctrl_settings:
-                self._quic.close_app(H3_GENERAL_PROTOCOL_ERROR, "duplicate SETTINGS", now)
+            # F35 — second SETTINGS on the peer ctrl stream is
+            # H3_FRAME_UNEXPECTED (RFC 9114 §7.2.4). Replaces the legacy
+            # H3_GENERAL_PROTOCOL_ERROR + "duplicate SETTINGS" close.
+            var _f35_ctx = H3StreamCtx(
+                kind=UInt8(1), headers_seen=False,
+                settings_seen=self._peer_ctrl_settings,
+            )
+            var _f35_v = predicate_f35_second_settings(frame.frame_type, _f35_ctx)
+            if _f35_v:
+                var v = _f35_v.value().copy()
+                self._quic.close_app(v.error_code, v.tag, now)
                 return
             self._peer_ctrl_settings = True
             _ = SettingsFrame.decode(frame.payload)
@@ -651,14 +686,56 @@ struct H3Connection(Movable):
             h3ev.last_stream_id = last_sid
             self._h3_events.append(h3ev^)
 
-        elif frame.frame_type == H3_FRAME_DATA or frame.frame_type == H3_FRAME_HEADERS:
-            # RFC 9114 §7.2.1 / §7.2.2: DATA and HEADERS forbidden on control streams
-            self._quic.close_app(H3_FRAME_UNEXPECTED, "DATA/HEADERS on control stream", now)
+        else:
+            # F33 — DATA on the peer ctrl stream (RFC 9114 §7.2.1).
+            # F34 — HEADERS on the peer ctrl stream (RFC 9114 §7.2.2).
+            var _ctrl_ctx = H3StreamCtx(
+                kind=UInt8(1), headers_seen=False,
+                settings_seen=self._peer_ctrl_settings,
+            )
+            var _f33_v = predicate_f33_data_on_control(frame.frame_type, _ctrl_ctx)
+            if _f33_v:
+                var v = _f33_v.value().copy()
+                self._quic.close_app(v.error_code, v.tag, now)
+                return
+            var _f34_v = predicate_f34_headers_on_control(frame.frame_type, _ctrl_ctx)
+            if _f34_v:
+                var v = _f34_v.value().copy()
+                self._quic.close_app(v.error_code, v.tag, now)
+                return
 
         # else: unknown frame types are ignored (RFC 9114 §7.2.8)
 
     def _handle_request_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on a request/response bidi stream."""
+        # F31 — DATA before HEADERS on a request-bidi stream is illegal
+        # (RFC 9114 §4.1). The predicate keys on (frame_type, headers_seen)
+        # so dispatch order in this function is irrelevant — see the
+        # cohort exclusivity tests.
+        var _headers_seen = self._request_headers_seen.get(Int(stream_id), False)
+        var _f31_ctx = H3StreamCtx(
+            kind=UInt8(0),
+            headers_seen=_headers_seen,
+            settings_seen=False,
+        )
+        var _f31_verdict = predicate_f31_data_before_headers(frame.frame_type, _f31_ctx)
+        if _f31_verdict:
+            var v = _f31_verdict.value().copy()
+            self._quic.close_app(v.error_code, v.tag, now)
+            return
+
+        # F36 — CANCEL_PUSH is illegal on request streams (RFC 9114 §7.2.5).
+        var _f36_ctx = H3StreamCtx(
+            kind=UInt8(0),
+            headers_seen=_headers_seen,
+            settings_seen=False,
+        )
+        var _f36_verdict = predicate_f36_cancel_push_on_request(frame.frame_type, _f36_ctx)
+        if _f36_verdict:
+            var v = _f36_verdict.value().copy()
+            self._quic.close_app(v.error_code, v.tag, now)
+            return
+
         var t_start_qpack: UInt64 = 0
         comptime if not PROFILE_ACCEPT:
             _ = t_start_qpack
@@ -671,6 +748,7 @@ struct H3Connection(Movable):
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)
+            self._request_headers_seen[Int(stream_id)] = True
             var h3ev = H3Event(H3Event.HEADERS_RECEIVED)
             h3ev.stream_id = stream_id
             h3ev.fields = fields^

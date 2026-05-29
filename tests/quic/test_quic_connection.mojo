@@ -21,6 +21,12 @@ from navette.quic.connection import (
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
     CONN_ADDR_VALIDATED,
 )
+from navette.quic.guard_predicates import (
+    predicate_f15_reset_on_server_uni,
+    predicate_f16_stop_sending_local_not_created,
+    QuicResetCtx,
+    QuicStopSendingCtx,
+)
 from navette.quic.cid import CID_ACTIVE
 from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
 from navette.quic.pn_space import SentPacket
@@ -2880,6 +2886,60 @@ def test_dcid_to_u64_injective_on_distinct_inputs() raises:
     print("PASS: test_dcid_to_u64_injective_on_distinct_inputs")
 
 
+def test_predicate_f15_positive() raises:
+    """F15 fires when sid=3 (server-uni control stream)."""
+    var ctx = QuicResetCtx(stream_id=UInt64(3), local_uni_opened=UInt64(1), local_bidi_opened=UInt64(0))
+    var v = predicate_f15_reset_on_server_uni(ctx)
+    assert_true(v.__bool__(), "F15 positive must return Some")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x05, "F15 error_code is STREAM_STATE_ERROR")
+    assert_true(verdict.tag == "[QUIC-RESET-SEND-ONLY]", "F15 tag matches")
+    print("  test_predicate_f15_positive: PASS")
+
+
+def test_predicate_f15_negative_no_violation() raises:
+    """F15 stays silent on client-bidi (sid=0)."""
+    var ctx = QuicResetCtx(stream_id=UInt64(0), local_uni_opened=UInt64(0), local_bidi_opened=UInt64(0))
+    var v = predicate_f15_reset_on_server_uni(ctx)
+    assert_false(v.__bool__(), "F15 negative (client-bidi) returns None")
+    print("  test_predicate_f15_negative_no_violation: PASS")
+
+
+def test_predicate_f15_negative_sibling_input() raises:
+    """F15 stays silent on server-bidi (sid=5, suffix 0b01) — sibling input."""
+    var ctx = QuicResetCtx(stream_id=UInt64(5), local_uni_opened=UInt64(0), local_bidi_opened=UInt64(1))
+    var v = predicate_f15_reset_on_server_uni(ctx)
+    assert_false(v.__bool__(), "F15 sibling (server-bidi) returns None")
+    print("  test_predicate_f15_negative_sibling_input: PASS")
+
+
+def test_predicate_f16_positive() raises:
+    """F16 fires on STOP_SENDING for an uncreated server-uni stream."""
+    var ctx = QuicStopSendingCtx(stream_id=UInt64(999), local_uni_opened=UInt64(1), local_bidi_opened=UInt64(0))
+    var v = predicate_f16_stop_sending_local_not_created(ctx)
+    assert_true(v.__bool__(), "F16 positive must return Some")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x05, "F16 error_code is STREAM_STATE_ERROR")
+    assert_true(verdict.tag == "[QUIC-STOP-LOCAL-NOT-CREATED]", "F16 tag matches")
+    print("  test_predicate_f16_positive: PASS")
+
+
+def test_predicate_f16_negative_no_violation() raises:
+    """F16 stays silent when STOP_SENDING targets an already-created local stream."""
+    var ctx = QuicStopSendingCtx(stream_id=UInt64(3), local_uni_opened=UInt64(1), local_bidi_opened=UInt64(0))
+    var v = predicate_f16_stop_sending_local_not_created(ctx)
+    assert_false(v.__bool__(), "F16 no-violation: sid=3 with opened=1 is created")
+    print("  test_predicate_f16_negative_no_violation: PASS")
+
+
+def test_predicate_f16_negative_sibling_input() raises:
+    """F16 stays silent when the counter advances past the target sid."""
+    var ctx = QuicStopSendingCtx(stream_id=UInt64(7), local_uni_opened=UInt64(2), local_bidi_opened=UInt64(0))
+    var v = predicate_f16_stop_sending_local_not_created(ctx)
+    assert_false(v.__bool__(), "F16 sibling: sid=7 with opened=2 is created")
+    print("  test_predicate_f16_negative_sibling_input: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2920,4 +2980,10 @@ def main() raises:
     test_dcid_demux_disambiguates_two_conns()
     test_dcid_to_u64_basic_cases()
     test_dcid_to_u64_injective_on_distinct_inputs()
+    test_predicate_f15_positive()
+    test_predicate_f15_negative_no_violation()
+    test_predicate_f15_negative_sibling_input()
+    test_predicate_f16_positive()
+    test_predicate_f16_negative_no_violation()
+    test_predicate_f16_negative_sibling_input()
     print("All test_quic_connection tests passed.")
