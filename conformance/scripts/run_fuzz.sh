@@ -21,17 +21,12 @@ REPO_ROOT="$(cd "$CONFORMANCE_DIR/.." && pwd)"
 
 export LD_LIBRARY_PATH="$REPO_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# Harnesses are appended here as they land (S2 + S3 per the plan).
-# Empty list at S1 commit time — the script verifies its own structure.
-HARNESSES=(
-    varint
-    h1_parser
-    hpack
-    quic_header
-    h2_frame
-    retry_aead
-    qpack
-    h3_frame
+# Auto-enumerate every test_fuzz_*.mojo harness in tests/fuzz/ so a new
+# harness is never silently orphaned. Each harness name is derived from
+# the filename by stripping the test_fuzz_ prefix and .mojo suffix.
+mapfile -t HARNESSES < <(
+    cd "$REPO_ROOT/tests/fuzz" && \
+    ls test_fuzz_*.mojo 2>/dev/null | sed 's/^test_fuzz_//; s/\.mojo$//' | LC_ALL=C sort
 )
 
 FILTER="${FUZZ_FILTER:-}"

@@ -34,86 +34,31 @@ echo "R1' grep gate: PASS"
 
 rm -f src.mojopkg tests.mojopkg
 
-TESTS=(
-    test_phase_a_smoke
-    test_memory_safety_hardening
-    test_fuzz_infra
-    http/test_method
-    http/test_status
-    http/test_headers
-    http/test_body
-    http/test_body_frame_v2
-    http/test_request_response
-    http/test_request_body
-    http/test_request_clone
-    http/test_recv_body
-    http/test_send_body
-    http/test_response_writer
-    http/test_url
-    http/test_decode
-    http/test_alt_svc
-    http/test_priority
-    http/test_sse
-    http/test_capabilities
-    http/test_stream_error
-    http/test_write_result
-    http/test_handler_detach
-    http/test_handler_try_detach
-    http/test_handler_lifecycle
-    http/test_session_handle
-    http/test_mock_session
-    http/test_http_client
-    http/test_coro_client
-    http/test_cross_validation
-    http/test_client_connection
-    http/test_server_connection
-    http/test_reverse_proxy_refactor
-    http/test_proxy_token
-    h1/test_h1_connection
-    h1/test_h1_server_handler
-    h1/test_h1_client_session
-    h1/test_serializer
-    h2/test_h2_pseudo_headers
-    h2/test_h2_handler
-    h2/test_h2_session
-    h2/test_h2_e2e
-    h2/test_h2_tls_alpn
-    h2/test_h2_sync_server
-    h2/test_h2_streaming_server
-    h3/test_h3_extension
-    h3/test_h3_frame
-    h3/test_h3_qpack
-    h3/test_h3_connection
-    h3/test_h3_e2e
-    h3/test_h3_sync_server
-    h3/test_h3_streaming_server
-    h3/test_h3_udp_server
-    quic/test_quic_cid
-    quic/test_quic_codec
-    quic/test_quic_frame
-    quic/test_quic_packet
-    quic/test_quic_transport_params
-    quic/test_quic_crypto_stream
-    quic/test_quic_pn_space
-    quic/test_quic_recovery
-    quic/test_quic_retry
-    quic/test_quic_flow_control
-    quic/test_quic_stream
-    quic/test_quic_stream_map
-    quic/test_quic_connection
-    quic/test_quic_pacer_bypass
-    quic/test_quic_resumption
-    quic/test_quic_profile
-    quic/test_quic_profile_wiring
-    quic/cc/test_cc_cubic
-    quic/cc/test_cc_pacing
-    quic/cc/test_cc_controller
-    quic/cc/test_cc_minmax
-    tls/test_tls_connection
-    tls/test_tls_quic
-    net/test_io_loopback
-    io/test_ecn
+# Auto-enumerate every test_*.mojo under tests/ so a new file is never
+# silently orphaned. Walks the top-level tests/ entries (test_*.mojo) and
+# every immediate sub-tree (h1/, h2/, h3/, http/, interop/, io/, net/,
+# quic/, quic/cc/, tls/, fuzz/). Sorted for deterministic ordering across
+# hosts; each test is self-contained so order is irrelevant.
+#
+# Fuzz harnesses (tests/fuzz/) AND the original opt-in skipped them via
+# conformance/scripts/run_fuzz.sh — keep that gating here by default so
+# the inner-loop dev run stays fast. Set FUZZ_IN_SRC=1 to fold them in.
+mapfile -t TESTS < <(
+    cd "$REPO_ROOT/tests" && \
+    {
+        # Top-level test_*.mojo
+        find . -maxdepth 1 -name 'test_*.mojo' -type f 2>/dev/null \
+            | sed 's|^\./||; s|\.mojo$||'
+        # Per-subdirectory test_*.mojo, two levels deep (handles quic/cc/)
+        find . -mindepth 2 -name 'test_*.mojo' -type f 2>/dev/null \
+            | sed 's|^\./||; s|\.mojo$||' \
+            | { if [ "${FUZZ_IN_SRC:-0}" != "1" ]; then grep -v '^fuzz/' || true; else cat; fi; }
+    } | LC_ALL=C sort
 )
+if [ "${#TESTS[@]}" -eq 0 ]; then
+    echo "run_tests: no test_*.mojo files found under tests/" >&2
+    exit 2
+fi
 
 FILTER="${TESTS_FILTER:-}"
 PASSED=0
@@ -131,6 +76,8 @@ for t in "${TESTS[@]}"; do
     case "$t" in
         h2/*|h3/*|quic/*) EXTRA_I=(-I conformance) ;;
         io/test_ecn) EXTRA_I=(-I conformance) ;;
+        # interop tests share helpers via tests/_test_util and conformance/lib
+        interop/*) EXTRA_I=(-I conformance) ;;
         http/test_cross_validation|http/test_http_client|http/test_coro_client)
             EXTRA_I=(-I conformance) ;;
         http/test_proxy_token) EXTRA_I=(-I examples/reverse_proxy) ;;

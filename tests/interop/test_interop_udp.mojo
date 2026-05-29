@@ -87,8 +87,11 @@ def test_bind_and_sendto_recvfrom() raises:
     assert_equal_int(Int(data[3]), 108, "byte 3 = 'l'")
     assert_equal_int(Int(data[4]), 111, "byte 4 = 'o'")
 
-    # addr_bytes should be 16 bytes (sockaddr_in)
-    assert_equal_int(len(addr_bytes), 16, "addr is 16 bytes")
+    # addr_bytes should be 28 bytes (sockaddr_in6). interop/udp.mojo went
+    # dual-stack — see _ADDR_SIZE in interop/udp.mojo — so every recvfrom
+    # address buffer is sized for IPv6 even when the underlying transport
+    # is IPv4-mapped.
+    assert_equal_int(len(addr_bytes), 28, "addr is 28 bytes (sockaddr_in6)")
 
     udp_close(cli_fd)
     udp_close(srv_fd)

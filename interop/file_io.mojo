@@ -17,6 +17,7 @@ from std.ffi import external_call
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc
 from std.collections import Optional
+from std.os import mkdir
 
 # ── open flags (x86_64 Linux) ─────────────────────────────────────────────────
 
@@ -150,7 +151,13 @@ def _bytes_to_string(data: Span[UInt8, _], start: Int, end: Int) -> String:
 
 
 def mkdir_p(path: String) raises:
-    """Create directory and parents. Ignores EEXIST."""
+    """Create directory and parents. Ignores EEXIST.
+
+    Uses `std.os.mkdir` rather than a hand-rolled `external_call["mkdir"]`:
+    Mojo 1.0.0b1's stdlib binds the C `mkdir` symbol itself with a specific
+    signature, and a duplicate `external_call` declaration here is rejected
+    at LLVM-lowering time as a conflicting symbol.
+    """
     var n = path.byte_length()
     var path_bytes = path.as_bytes()
     # Walk through each '/' separator and create partial paths
@@ -158,10 +165,12 @@ def mkdir_p(path: String) raises:
     while i <= n:
         if i == n or path_bytes[i] == UInt8(ord("/")):
             var partial = _bytes_to_string(path_bytes, 0, i)
-            var pbuf = _to_cstr(partial)
-            # mkdir syscall = 83; ignore errors (EEXIST etc.)
-            _ = external_call["mkdir", Int32](pbuf, MODE_755)
-            pbuf.free()
+            try:
+                mkdir(partial, 0o755)
+            except:
+                # ignore EEXIST etc. — same loose semantics as the prior
+                # external_call form which swallowed the int return code.
+                pass
         i += 1
 
 
