@@ -73,6 +73,7 @@ dev = [
     { name = "hpack", specifier = ">=4.1.0" },
     { name = "httptools", specifier = ">=0.7.1" },
     { name = "hyperframe", specifier = ">=6.0.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
