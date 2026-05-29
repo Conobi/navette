@@ -18,14 +18,6 @@ name = "c9_double_control_stream"
 path = "src/bin/c9_double_control_stream.rs"
 
 [[bin]]
-name = "s_f15_reset_on_server_uni_stream"
-path = "src/bin/s_f15_reset_on_server_uni_stream.rs"
-
-[[bin]]
-name = "s_f16_stop_sending_local_not_created"
-path = "src/bin/s_f16_stop_sending_local_not_created.rs"
-
-[[bin]]
 name = "s_f31_data_before_headers"
 path = "src/bin/s_f31_data_before_headers.rs"
 

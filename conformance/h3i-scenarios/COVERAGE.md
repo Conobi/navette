@@ -18,8 +18,8 @@
 | F12 | C2 | RFC 9000 §17.2 | deferred:quiche-raw-frame | — |
 | F13 | C2 | RFC 9000 §17.2.4 | deferred:quiche-raw-frame | — |
 | F14 | C2 | RFC 9000 §17.2 | deferred:quiche-raw-frame | — |
-| F15 | C4 | RFC 9000 §19.4 | red | s_f15_reset_on_server_uni_stream |
-| F16 | C4 | RFC 9000 §19.5 | red | s_f16_stop_sending_local_not_created |
+| F15 | C4 | RFC 9000 §19.4 | deferred:quiche-raw-frame | — |
+| F16 | C4 | RFC 9000 §19.5 | deferred:quiche-raw-frame | — |
 | F17 | C3 | RFC 9000 §19.7 | deferred:quiche-raw-frame | — |
 | F18 | C4 | RFC 9000 §19.10 | deferred:quiche-raw-frame | — |
 | F19 | C4 | RFC 9000 §19.10 | deferred:quiche-raw-frame | — |
