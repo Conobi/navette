@@ -12,3 +12,7 @@ serde_json = "1"
 [[bin]]
 name = "sanity_get"
 path = "src/bin/sanity_get.rs"
+
+[[bin]]
+name = "c9_double_control_stream"
+path = "src/bin/c9_double_control_stream.rs"
