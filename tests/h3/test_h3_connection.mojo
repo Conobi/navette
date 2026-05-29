@@ -302,6 +302,122 @@ def test_predicate_f36_negative_sibling_input() raises:
     print("  test_predicate_f36_negative_sibling_input: PASS")
 
 
+def test_h3_request_stream_cohort_exclusivity() raises:
+    """For each (frame_type, headers_seen) input on a request-bidi stream,
+    at most one of F31 / F36 returns Some — dispatch order is irrelevant
+    by construction.
+
+    Truth table (kind=0):
+      - DATA (0x00), headers_seen=False → F31 only.
+      - DATA (0x00), headers_seen=True  → none.
+      - HEADERS (0x01), any              → none.
+      - CANCEL_PUSH (0x03), any          → F36 only.
+    """
+    var frame_types = List[UInt64]()
+    frame_types.append(UInt64(0x00))
+    frame_types.append(UInt64(0x01))
+    frame_types.append(UInt64(0x03))
+    var headers_seen_values = List[Bool]()
+    headers_seen_values.append(True)
+    headers_seen_values.append(False)
+    for fi in range(len(frame_types)):
+        var ft = frame_types[fi]
+        for hi in range(len(headers_seen_values)):
+            var hs = headers_seen_values[hi]
+            var ctx = H3StreamCtx(kind=UInt8(0), headers_seen=hs, settings_seen=False)
+            var f31 = predicate_f31_data_before_headers(ft, ctx)
+            var f36 = predicate_f36_cancel_push_on_request(ft, ctx)
+            var n_some = 0
+            if f31.__bool__():
+                n_some += 1
+            if f36.__bool__():
+                n_some += 1
+            # Expected truth table.
+            var expected_some = 0
+            if ft == UInt64(0x00) and not hs:
+                expected_some = 1  # F31
+            if ft == UInt64(0x03):
+                expected_some = 1  # F36
+            assert_equal_int(
+                n_some, expected_some,
+                "request-cohort exclusivity",
+            )
+    print("  test_h3_request_stream_cohort_exclusivity: PASS")
+
+
+def test_h3_control_stream_cohort_exclusivity() raises:
+    """For each (frame_type, settings_seen) input on the peer ctrl stream,
+    at most one of F32 / F33 / F34 / F35 returns Some.
+
+    Truth table (kind=1):
+      - DATA (0x00) → F33 (and if settings_seen=False, F32 also fires —
+        but only if it's the first frame; here we simulate per-frame
+        membership so F32 returns Some on first-frame=GOAWAY-class only
+        when settings_seen=False AND first_frame_type != SETTINGS. The
+        cohort assumption is that F32 is gated by `first_frame_seen`
+        externally; here we treat any non-SETTINGS frame on ctrl with
+        settings_seen=False as F32-eligible).
+      - HEADERS (0x01) → F34 only (+ F32 when settings_seen=False).
+      - SETTINGS (0x04) + settings_seen=True → F35 only.
+      - SETTINGS (0x04) + settings_seen=False → none.
+      - GOAWAY (0x07) + settings_seen=True → none.
+      - GOAWAY (0x07) + settings_seen=False → F32 only.
+    """
+    var frame_types = List[UInt64]()
+    frame_types.append(UInt64(0x00))
+    frame_types.append(UInt64(0x01))
+    frame_types.append(UInt64(0x04))
+    frame_types.append(UInt64(0x07))
+    var settings_seen_values = List[Bool]()
+    settings_seen_values.append(True)
+    settings_seen_values.append(False)
+    for fi in range(len(frame_types)):
+        var ft = frame_types[fi]
+        for si in range(len(settings_seen_values)):
+            var ss = settings_seen_values[si]
+            var ctx = H3StreamCtx(kind=UInt8(1), headers_seen=False, settings_seen=ss)
+            var f32 = predicate_f32_first_control_not_settings(ft, ctx)
+            var f33 = predicate_f33_data_on_control(ft, ctx)
+            var f34 = predicate_f34_headers_on_control(ft, ctx)
+            var f35 = predicate_f35_second_settings(ft, ctx)
+            # Expected truth table:
+            #   F32: ctx.settings_seen=False AND ft != SETTINGS.
+            #   F33: ft == DATA.
+            #   F34: ft == HEADERS.
+            #   F35: ft == SETTINGS AND ctx.settings_seen=True.
+            var exp_f32 = (not ss) and (ft != UInt64(0x04))
+            var exp_f33 = ft == UInt64(0x00)
+            var exp_f34 = ft == UInt64(0x01)
+            var exp_f35 = ft == UInt64(0x04) and ss
+            assert_equal_int(
+                Int(f32.__bool__()), Int(exp_f32),
+                "F32 membership",
+            )
+            assert_equal_int(
+                Int(f33.__bool__()), Int(exp_f33),
+                "F33 membership",
+            )
+            assert_equal_int(
+                Int(f34.__bool__()), Int(exp_f34),
+                "F34 membership",
+            )
+            assert_equal_int(
+                Int(f35.__bool__()), Int(exp_f35),
+                "F35 membership",
+            )
+            # Exclusivity across DATA/HEADERS/SETTINGS rows: F33, F34, F35
+            # are pairwise disjoint on frame_type. F32 may overlap with
+            # F33/F34 when settings_seen=False (e.g. DATA before SETTINGS
+            # on the ctrl stream — both predicates fire, but dispatch
+            # branches by `first_frame_seen` externally).
+            var ctrl_cohort_count = Int(exp_f33) + Int(exp_f34) + Int(exp_f35)
+            assert_true(
+                ctrl_cohort_count <= 1,
+                "F33/F34/F35 cohort is pairwise exclusive",
+            )
+    print("  test_h3_control_stream_cohort_exclusivity: PASS")
+
+
 def main() raises:
     print("=== test_h3_connection ===")
     test_h3event_zero_values()
@@ -327,4 +443,6 @@ def main() raises:
     test_predicate_f36_positive()
     test_predicate_f36_negative_no_violation()
     test_predicate_f36_negative_sibling_input()
+    test_h3_request_stream_cohort_exclusivity()
+    test_h3_control_stream_cohort_exclusivity()
     print("All H3Connection tests passed.")
