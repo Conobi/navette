@@ -299,7 +299,7 @@ def test_connection_close() raises:
 
     # Client initiates close.
     now += UInt64(10_000)
-    client.close(UInt64(0), String("done"), now)
+    client.close_transport(UInt64(0), String("done"), now)
 
     # Pump a few rounds so the server receives CONNECTION_CLOSE.
     for _ in range(5):

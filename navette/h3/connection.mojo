@@ -401,6 +401,36 @@ struct H3Connection(Movable):
 
     # --- Internal: stream drain + frame parse --------------------------------
 
+    def _close_duplicate_uni_stream(
+        mut self,
+        var existing: Optional[UInt64],
+        label: String,
+        now: UInt64,
+        t_start_buf: UInt64,
+        t_start_drain: UInt64,
+    ) -> Bool:
+        """Return True (and queue a CONNECTION_CLOSE_APP) if `existing` is set.
+
+        Used to detect a second peer-initiated unidirectional control /
+        QPACK encoder / QPACK decoder stream per RFC 9114 §6.2.1 and
+        RFC 9204 §4.2. Centralises the existence-check + close + profile
+        bookkeeping common to all three well-known unidirectional types so
+        a future fourth type doesn't re-introduce the same copy-paste.
+
+        `label` is interpolated as `"duplicate " + label + " stream"` into
+        the CONNECTION_CLOSE reason field. `t_start_buf` and `t_start_drain`
+        are the monotonic-µs stamps captured at the top of `_drain_stream`
+        used by the PROFILE_ACCEPT comptime sidecar.
+        """
+        if not existing:
+            return False
+        self._quic.close_app(H3_STREAM_CREATION_ERROR, "duplicate " + label + " stream", now)
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
+                self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
+        return True
+
     def _drain_stream(mut self, stream_id: UInt64, now: UInt64) raises:
         """Read bytes from QUIC, accumulate in _stream_bufs, parse frames."""
         var key = Int(stream_id)
@@ -466,10 +496,22 @@ struct H3Connection(Movable):
                 sbuf2.type_byte = Optional[UInt8](type_byte)
                 self._stream_bufs[key] = sbuf2^
                 if type_byte == UInt8(0x00):
+                    # RFC 9114 §6.2.1: at most one control stream per peer.
+                    var existing_ctrl = self._peer_ctrl_sid.copy()
+                    if self._close_duplicate_uni_stream(existing_ctrl^, "control", now, t_start_buf, t_start_drain):
+                        return
                     self._peer_ctrl_sid = Optional[UInt64](stream_id)
                 elif type_byte == UInt8(0x02):
+                    # RFC 9204 §4.2: at most one QPACK encoder stream per peer.
+                    var existing_qenc = self._peer_qenc_sid.copy()
+                    if self._close_duplicate_uni_stream(existing_qenc^, "qpack encoder", now, t_start_buf, t_start_drain):
+                        return
                     self._peer_qenc_sid = Optional[UInt64](stream_id)
                 elif type_byte == UInt8(0x03):
+                    # RFC 9204 §4.2: at most one QPACK decoder stream per peer.
+                    var existing_qdec = self._peer_qdec_sid.copy()
+                    if self._close_duplicate_uni_stream(existing_qdec^, "qpack decoder", now, t_start_buf, t_start_drain):
+                        return
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                 else:
                     # B3a + B1 exit (return path 2 — unknown UNI type).
@@ -485,7 +527,7 @@ struct H3Connection(Movable):
         var sbuf3 = self._stream_bufs[key].copy()
         if not sbuf3.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
             self._stream_bufs[key] = sbuf3^
-            self._quic.close(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
+            self._quic.close_app(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
             # B3a + B1 exit (return path 3 — bidi rejection).
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
@@ -579,12 +621,12 @@ struct H3Connection(Movable):
         if not self._peer_ctrl_first_frame_seen:
             self._peer_ctrl_first_frame_seen = True
             if frame.frame_type != H3_FRAME_SETTINGS:
-                self._quic.close(H3_MISSING_SETTINGS, "first ctrl frame must be SETTINGS", now)
+                self._quic.close_app(H3_MISSING_SETTINGS, "first ctrl frame must be SETTINGS", now)
                 return
 
         if frame.frame_type == H3_FRAME_SETTINGS:
             if self._peer_ctrl_settings:
-                self._quic.close(H3_GENERAL_PROTOCOL_ERROR, "duplicate SETTINGS", now)
+                self._quic.close_app(H3_GENERAL_PROTOCOL_ERROR, "duplicate SETTINGS", now)
                 return
             self._peer_ctrl_settings = True
             _ = SettingsFrame.decode(frame.payload)
@@ -601,7 +643,7 @@ struct H3Connection(Movable):
 
         elif frame.frame_type == H3_FRAME_DATA or frame.frame_type == H3_FRAME_HEADERS:
             # RFC 9114 §7.2.1 / §7.2.2: DATA and HEADERS forbidden on control streams
-            self._quic.close(H3_FRAME_UNEXPECTED, "DATA/HEADERS on control stream", now)
+            self._quic.close_app(H3_FRAME_UNEXPECTED, "DATA/HEADERS on control stream", now)
 
         # else: unknown frame types are ignored (RFC 9114 §7.2.8)
 
@@ -632,5 +674,5 @@ struct H3Connection(Movable):
 
         elif frame.frame_type == H3_FRAME_SETTINGS or frame.frame_type == H3_FRAME_GOAWAY:
             # Forbidden on request streams (RFC 9114 §7.2.5)
-            self._quic.close(H3_FRAME_UNEXPECTED, "SETTINGS/GOAWAY on request stream", now)
+            self._quic.close_app(H3_FRAME_UNEXPECTED, "SETTINGS/GOAWAY on request stream", now)
         # else: unknown, ignore

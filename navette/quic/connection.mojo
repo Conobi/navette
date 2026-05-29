@@ -2806,8 +2806,33 @@ struct QuicConnection(Movable):
             return ev^
         return None
 
-    def close(mut self, error_code: UInt64, reason: String, now: UInt64):
-        """Initiate a graceful connection close."""
+    def close_transport(mut self, error_code: UInt64, reason: String, now: UInt64):
+        """Initiate a graceful CONNECTION_CLOSE (RFC 9000 §19.19 frame type 0x1c).
+
+        Use this for transport-layer error codes per RFC 9000 §20.1.
+        Application-namespace errors must use `close_app` instead so that
+        the correct frame type and error-code namespace are emitted.
+        """
+        self._close_impl(error_code, reason, now, is_app=False)
+
+    def close_app(mut self, error_code: UInt64, reason: String, now: UInt64):
+        """Initiate a graceful CONNECTION_CLOSE_APP (RFC 9000 §19.19 frame type 0x1d).
+
+        Use this for application-layer error codes — for navette today
+        that means the HTTP/3 codes in RFC 9114 §8.1 and the QPACK codes
+        in RFC 9204 §7. Transport-namespace errors must use
+        `close_transport` instead.
+        """
+        self._close_impl(error_code, reason, now, is_app=True)
+
+    def _close_impl(mut self, error_code: UInt64, reason: String, now: UInt64, is_app: Bool):
+        """Shared implementation for `close_transport` and `close_app`.
+
+        Idempotent: subsequent calls after CLOSING/DRAINING/CLOSED is set
+        are no-ops. Builds the appropriate `ConnectionCloseFrame` (transport
+        or application) and queues it as `pending_close`; arms the 3*PTO
+        close timer so the loss recovery layer can finalize teardown.
+        """
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         self.state = self.state | CONN_CLOSING
@@ -2820,7 +2845,7 @@ struct QuicConnection(Movable):
         for i in range(len(reason_str_bytes)):
             reason_bytes.append(reason_str_bytes[i])
         var cc = ConnectionCloseFrame()
-        cc.is_transport = True
+        cc.is_transport = not is_app
         cc.error_code = error_code
         cc.frame_type = UInt64(0)
         cc.reason = reason_bytes^
