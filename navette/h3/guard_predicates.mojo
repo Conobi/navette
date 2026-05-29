@@ -149,7 +149,7 @@ def predicate_f35_second_settings(frame_type: UInt64, ctx: H3StreamCtx) -> Optio
 
 def predicate_f36_cancel_push_on_request(frame_type: UInt64, ctx: H3StreamCtx) -> Optional[GuardVerdict]:
     """Return Some(H3_FRAME_UNEXPECTED + tag) when a CANCEL_PUSH frame
-    arrives on a request-bidi stream (RFC 9114 §7.2.5)."""
+    arrives on a request-bidi stream (RFC 9114 §7.2.3)."""
     if ctx.kind != UInt8(0):  # request-bidi only
         return Optional[GuardVerdict]()
     if frame_type != UInt64(0x03):  # 0x03 = CANCEL_PUSH
