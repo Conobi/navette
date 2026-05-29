@@ -8,6 +8,20 @@
 #   2 — environment / setup failure
 set -euo pipefail
 
+# Prepend ~/.local/bin so `uv` (installed via the standalone installer) is
+# discoverable when this script runs under `env -i PATH=/usr/bin:/bin bash …`
+# from the reproducibility checklist. The rebuild path inside
+# ensure_server_fresh() shells out to `uv sync` / `uv build`, which live there
+# on the maintainer host. Append a colon only if PATH is non-empty so we don't
+# emit a stray leading separator.
+if [[ -d "$HOME/.local/bin" ]]; then
+    case ":${PATH:-}:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;
+    esac
+    export PATH
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFORMANCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$CONFORMANCE_DIR/.." && pwd)"

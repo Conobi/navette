@@ -1,0 +1,21 @@
+[package]
+name = "fixture-scenarios"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sanity_get"
+path = "src/bin/sanity_get.rs"
+
+[[bin]]
+name = "s_fixture_a"
+path = "src/bin/s_fixture_a.rs"
+
+[[bin]]
+name = "s_fixture_b"
+path = "src/bin/s_fixture_b.rs"
+
+[[bin]]
+name = "c_fixture_c"
+path = "src/bin/c_fixture_c.rs"
