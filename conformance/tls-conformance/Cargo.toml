@@ -17,3 +17,35 @@ path = "src/lib.rs"
 [[bin]]
 name = "tls_sanity_handshake"
 path = "src/bin/tls_sanity_handshake.rs"
+
+[[bin]]
+name = "f02_initial_scid_missing"
+path = "src/bin/f02_initial_scid_missing.rs"
+
+[[bin]]
+name = "f03_original_dcid_forbidden"
+path = "src/bin/f03_original_dcid_forbidden.rs"
+
+[[bin]]
+name = "f04_preferred_addr_forbidden"
+path = "src/bin/f04_preferred_addr_forbidden.rs"
+
+[[bin]]
+name = "f05_retry_scid_forbidden"
+path = "src/bin/f05_retry_scid_forbidden.rs"
+
+[[bin]]
+name = "f06_stateless_reset_forbidden"
+path = "src/bin/f06_stateless_reset_forbidden.rs"
+
+[[bin]]
+name = "f07_max_udp_payload_range"
+path = "src/bin/f07_max_udp_payload_range.rs"
+
+[[bin]]
+name = "f08_ack_delay_exp_range"
+path = "src/bin/f08_ack_delay_exp_range.rs"
+
+[[bin]]
+name = "f09_max_ack_delay_range"
+path = "src/bin/f09_max_ack_delay_range.rs"
