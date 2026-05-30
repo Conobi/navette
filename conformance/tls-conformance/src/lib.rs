@@ -283,10 +283,11 @@ pub fn drive_handshake_initial(
         ));
     }
 
-    // Decrypt with SERVER-role initial keys (we are the client; server's
-    // packets use the server-derived initial secret over the *same* DCID).
-    let server_keys = initial_keys(Role::Server, &dcid)
-        .map_err(|e| format!("server initial_keys failed: rc={}", e.code))?;
+    // Decrypt the server's Initial reply using client_keys.remote_*.
+    // The harness is the client: on a Client-role keys handle, `remote`
+    // holds the server's derived secrets (the "other side" from the
+    // client's perspective).  A Role::Server handle would place the
+    // client's secrets in `remote`, which is the wrong direction.
     let pn_offset = header.payload_offset;
     let sample_off = pn_offset + 4;
     if reply.len() < sample_off + 16 {
@@ -300,7 +301,7 @@ pub fn drive_handshake_initial(
         .try_into()
         .expect("16-byte HP sample");
     let (head, rest) = reply.split_at_mut(pn_offset);
-    remote_header_unprotect(&server_keys, &sample, &mut head[0], &mut rest[..4])
+    remote_header_unprotect(&client_keys, &sample, &mut head[0], &mut rest[..4])
         .map_err(|e| format!("HP unprotect failed: rc={}", e.code))?;
     let first_byte = head[0];
     let pn_length = ((first_byte & 0x03) + 1) as usize;
@@ -318,7 +319,7 @@ pub fn drive_handshake_initial(
             reply.len(),
         ));
     }
-    let pt_len = remote_decrypt(&server_keys, pn, &header_bytes, &mut reply[header_len..end])
+    let pt_len = remote_decrypt(&client_keys, pn, &header_bytes, &mut reply[header_len..end])
         .map_err(|e| format!("AEAD decrypt failed: rc={}", e.code))?;
     let plaintext = &reply[header_len..header_len + pt_len];
 
