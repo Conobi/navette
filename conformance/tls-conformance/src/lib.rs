@@ -322,9 +322,20 @@ pub fn drive_handshake_initial(
         .map_err(|e| format!("AEAD decrypt failed: rc={}", e.code))?;
     let plaintext = &reply[header_len..header_len + pt_len];
 
-    // Scan the plaintext for a CONNECTION_CLOSE frame (0x1c or 0x1d). Skip
-    // PADDING (0x00) and ACK frames (0x02 / 0x03) inline; bail on the first
-    // non-recognised byte returning Ok(None) — well-formed handshake.
+    // Scan the plaintext for a CONNECTION_CLOSE frame (0x1c or 0x1d).
+    // Only PADDING (0x00) is explicitly consumed; any other frame type —
+    // including ACK (0x02/0x03), CRYPTO (0x06), PING (0x01), etc. — hits
+    // `_ => break` and the loop exits, returning Ok(None).  For the current
+    // sanity-PASS scenarios this is correct: a real server's first Initial
+    // reply starts with an ACK frame, so the scan bails immediately and
+    // returns Ok(None) = no CONNECTION_CLOSE found = success.
+    //
+    // NOTE (phase β): scenarios that need to detect a CONNECTION_CLOSE
+    // appearing *after* an ACK frame in the same Initial packet will require
+    // a varint-aware ACK-skip routine (type byte 0x02/0x03, then five
+    // consecutive varint fields: largest_acked, ack_delay, ack_range_count,
+    // first_ack_range, then 2×ack_range_count additional varints).
+    // That routine is not implemented here.
     let mut i = 0;
     while i < plaintext.len() {
         let ft = plaintext[i];
