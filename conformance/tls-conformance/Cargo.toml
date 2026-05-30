@@ -49,3 +49,19 @@ path = "src/bin/f08_ack_delay_exp_range.rs"
 [[bin]]
 name = "f09_max_ack_delay_range"
 path = "src/bin/f09_max_ack_delay_range.rs"
+
+[[bin]]
+name = "f25_keyupdate_in_handshake"
+path = "src/bin/f25_keyupdate_in_handshake.rs"
+
+[[bin]]
+name = "f26_keyupdate_in_1rtt"
+path = "src/bin/f26_keyupdate_in_1rtt.rs"
+
+[[bin]]
+name = "f27_no_alpn"
+path = "src/bin/f27_no_alpn.rs"
+
+[[bin]]
+name = "f29_end_of_early_data"
+path = "src/bin/f29_end_of_early_data.rs"
