@@ -75,3 +75,18 @@ def test_tag_proximity_fixtures():
         _run(["--verify-tag-proximity", "--connection-files", str(PROX_FIX / name)], expect_rc=0)
     for name in bad:
         _run(["--verify-tag-proximity", "--connection-files", str(PROX_FIX / name)], expect_rc=1)
+
+
+def test_triage_filter_c1_c6_yields_thirteen_rows():
+    """AC-4.tool: --triage-filter C1,C6 keeps exactly F02-F09 + F25-F29 (13 rows).
+
+    Column extraction must read the LAST `|`-delimited column and apply
+    `re.findall(r"\\bC\\d+\\b", cluster_cell)`, not column index 1.
+    """
+    from conformance.scripts.coverage_check import parse_triage_failure_ids
+    triage = Path(__file__).parents[2] / "research" / "h3spec-failure-triage.md"
+    ids = parse_triage_failure_ids(triage, cluster_filter={"C1", "C6"})
+    assert ids == {
+        "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
+        "F25", "F26", "F27", "F28", "F29",
+    }, f"got {sorted(ids)}"

@@ -36,6 +36,9 @@ from pathlib import Path
 
 TAG_DEF = re.compile(r'^\s*comptime\s+(GUARD_TAG_\w+)\s*=\s*"(\[[A-Z0-9\-]+\])"\s*$')
 TRIAGE_ROW = re.compile(r"^\|\s*(F\d{2})\s*\|")
+TRIAGE_ROW_CLUSTER = re.compile(
+    r"^\|\s*(F\d{2})\s*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*([^|]*)\s*\|\s*$"
+)
 COVERAGE_A_ROW = re.compile(
     r"^\|\s*(F\d{2})\s*\|[^|]*\|[^|]*\|\s*([a-zA-Z0-9:\-]+)\s*\|\s*([^\s|]+)\s*\|"
 )
@@ -78,13 +81,40 @@ def parse_tag_defs(paths):
     return tags
 
 
-def parse_triage_failure_ids(triage_path):
-    """Return the set of F-row ids declared in the triage document."""
+def parse_triage_failure_ids(triage_path, cluster_filter=None):
+    """Return the set of F-row ids declared in the triage document.
+
+    When ``cluster_filter`` is ``None`` or empty the function returns every
+    F-row id (default behaviour, preserves existing callers).
+
+    When ``cluster_filter`` is a non-empty set of cluster ids (e.g.
+    ``{"C1", "C6"}``), only rows whose last ``|``-delimited cell contains a
+    ``C\\d+`` token whose first occurrence is a member of ``cluster_filter``
+    are included.  The first token is the canonical cluster assignment for
+    the row; later tokens in the same cell are cross-references and are
+    intentionally ignored by the filter so that a row tagged ``C1: F03, ...``
+    is not spuriously pulled in by a filter on ``C3``.
+
+    The cluster cell is the LAST pipe-delimited column of the triage table row
+    (column 7 in the 7-column triage format).  The regex
+    ``TRIAGE_ROW_CLUSTER`` captures both the failure id and that cell in one
+    match so that neither a fixed column index nor string splitting is needed.
+    """
     ids = set()
+    use_filter = bool(cluster_filter)
     for line in Path(triage_path).read_text().splitlines():
-        match = TRIAGE_ROW.match(line)
-        if match:
-            ids.add(match.group(1))
+        if not use_filter:
+            match = TRIAGE_ROW.match(line)
+            if match:
+                ids.add(match.group(1))
+        else:
+            match = TRIAGE_ROW_CLUSTER.match(line)
+            if match:
+                failure_id = match.group(1)
+                cluster_cell = match.group(2)
+                tokens = re.findall(r"\bC\d+\b", cluster_cell)
+                if tokens and tokens[0] in cluster_filter:
+                    ids.add(failure_id)
     return ids
 
 

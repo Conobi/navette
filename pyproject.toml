@@ -118,6 +118,9 @@ native-libs = [
     "lib/libcompress_mojo.so",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [tool.uv]
 # 1.0.0b1 is a pre-release; allow uv to pick it up by default for this project.
 prerelease = "allow"
