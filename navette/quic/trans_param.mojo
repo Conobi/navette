@@ -9,6 +9,9 @@ from navette.quic.guard_tags import (
     GUARD_TAG_TP_PREFERRED_ADDR_FORBIDDEN,
     GUARD_TAG_TP_RETRY_SCID_FORBIDDEN,
     GUARD_TAG_TP_STATELESS_RESET_FORBIDDEN,
+    GUARD_TAG_TP_MAX_UDP_PAYLOAD_RANGE,
+    GUARD_TAG_TP_ACK_DELAY_EXP_RANGE,
+    GUARD_TAG_TP_MAX_ACK_DELAY_RANGE,
 )
 
 
@@ -311,11 +314,11 @@ def parse_transport_params[origin: Origin](
 
     # Validation (RFC 9000 §18.2).
     if params.max_udp_payload_size < 1200:
-        raise "max_udp_payload_size must be >= 1200"
+        raise String(GUARD_TAG_TP_MAX_UDP_PAYLOAD_RANGE) + ": max_udp_payload_size must be >= 1200"
     if params.ack_delay_exponent > 20:
-        raise "ack_delay_exponent must be <= 20"
+        raise String(GUARD_TAG_TP_ACK_DELAY_EXP_RANGE) + ": ack_delay_exponent must be <= 20"
     if params.max_ack_delay >= 16384:
-        raise "max_ack_delay must be < 16384"
+        raise String(GUARD_TAG_TP_MAX_ACK_DELAY_RANGE) + ": max_ack_delay must be < 2^14"
     if params.active_connection_id_limit < 2:
         raise "active_connection_id_limit must be >= 2"
 
