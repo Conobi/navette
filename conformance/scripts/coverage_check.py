@@ -218,7 +218,8 @@ def check_invariants(args):
     """Run Inv-1..5 against the resolved fixture set."""
     violations = []
 
-    triage_ids = parse_triage_failure_ids(args.triage)
+    cluster_filter = {c.strip() for c in args.triage_filter.split(",") if c.strip()}
+    triage_ids = parse_triage_failure_ids(args.triage, cluster_filter=cluster_filter or None)
     table_a, table_b = parse_coverage(args.coverage)
     a_ids = {row["id"] for row in table_a}
 
@@ -335,6 +336,10 @@ def main(argv=None):
     parser.add_argument("--threshold-file")
     parser.add_argument("--scenarios-dir")
     parser.add_argument("--connection-files", nargs="*", default=[])
+    parser.add_argument(
+        "--triage-filter", default="",
+        help="Comma-separated cluster filter, e.g., C1,C6 (default: all clusters)",
+    )
     parser.add_argument(
         "--verify-tag-proximity",
         action="store_true",

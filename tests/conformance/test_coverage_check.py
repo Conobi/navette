@@ -77,6 +77,23 @@ def test_tag_proximity_fixtures():
         _run(["--verify-tag-proximity", "--connection-files", str(PROX_FIX / name)], expect_rc=1)
 
 
+def test_cli_triage_filter_accepts_c1_c6():
+    """AC-4.tool: --triage-filter C1,C6 is a recognised flag (rc 0 or 1, not 2)."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT),
+         "--mode", "lenient",
+         "--triage", str(FIX / "good_triage.md"),
+         "--coverage", str(FIX / "good_coverage.md"),
+         "--tags", str(FIX / "good_tags_quic.mojo"), str(FIX / "good_tags_h3.mojo"),
+         "--threshold-file", str(FIX / "good_threshold.txt"),
+         "--scenarios-dir", str(FIX / "good_scenarios_dir"),
+         "--triage-filter", "C1,C6"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode in (0, 1), \
+        f"unrecognised flag (rc={result.returncode}); stderr={result.stderr}"
+
+
 def test_triage_filter_c1_c6_yields_thirteen_rows():
     """AC-4.tool: --triage-filter C1,C6 keeps exactly F02-F09 + F25-F29 (13 rows).
 
