@@ -1,0 +1,15 @@
+[package]
+name = "tls-conformance-scenarios"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "TLS-conformance harness driving navette through adversarial QUIC handshakes."
+
+[dependencies]
+librustls-mojo = { path = "../../crates/librustls-mojo" }
+rustls = { version = "=0.23.37", default-features = false, features = ["ring", "tls12"] }
+rand = "0.8"
+
+[lib]
+name = "tls_conformance_scenarios"
+path = "src/lib.rs"
