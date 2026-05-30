@@ -353,6 +353,110 @@ pub fn drive_handshake_initial(
     Ok(None)
 }
 
+/// Adversarial TP block builders for the C1 (transport-parameter validation)
+/// scenarios.
+///
+/// Each helper returns a raw RFC 9000 §18 wire-encoded TP block ready to feed
+/// into `drive_handshake_initial`. Layout per entry is
+/// `varint(id) || varint(len) || value_bytes`; multiple entries are simply
+/// concatenated. The IDs used here are drawn from the §18.2 registry — the
+/// values flagged "server-only" must NEVER appear in a client transport-params
+/// extension, which is precisely what F03/F04/F05/F06 verify.
+pub mod adversarial_tp {
+    use super::{encode_varint, server_tp_bytes_well_formed};
+
+    /// F02 — `initial_source_connection_id` (0x0f) absent.
+    ///
+    /// RFC 9000 §7.3 mandates this parameter on a client Initial; a fresh
+    /// connection that omits it must be rejected with TRANSPORT_PARAMETER_ERROR.
+    /// We build the block from scratch (rather than starting from the
+    /// well-formed baseline) so we can selectively drop entry 0x0f while
+    /// keeping the rest of the §18 minimums in place.
+    pub fn f02_missing_initial_scid() -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        // varint-valued params — same set as `server_tp_bytes_well_formed`,
+        // minus the deliberately-omitted 0x0f.
+        push_varint_tp(&mut out, 0x01, 30_000);        // max_idle_timeout
+        push_varint_tp(&mut out, 0x03, 1452);          // max_udp_payload_size
+        push_varint_tp(&mut out, 0x04, 1_048_576);     // initial_max_data
+        push_varint_tp(&mut out, 0x05, 65_536);        // initial_max_stream_data_bidi_local
+        push_varint_tp(&mut out, 0x06, 65_536);        // initial_max_stream_data_bidi_remote
+        push_varint_tp(&mut out, 0x07, 65_536);        // initial_max_stream_data_uni
+        push_varint_tp(&mut out, 0x08, 100);           // initial_max_streams_bidi
+        push_varint_tp(&mut out, 0x09, 100);           // initial_max_streams_uni
+        // initial_source_connection_id (0x0f) deliberately OMITTED.
+        out
+    }
+
+    /// F03 — well-formed block PLUS `original_destination_connection_id` (0x00).
+    ///
+    /// RFC 9000 §18.2: server-only. A client emitting this parameter is a
+    /// protocol violation; server must close with TRANSPORT_PARAMETER_ERROR.
+    /// Value is an 8-byte placeholder connection-ID (zeros).
+    pub fn f03_original_dcid_forbidden() -> Vec<u8> {
+        let mut out = server_tp_bytes_well_formed();
+        push_raw_tp(&mut out, 0x00, vec![0u8; 8]);
+        out
+    }
+
+    /// F04 — well-formed block PLUS `preferred_address` (0x0d).
+    ///
+    /// RFC 9000 §18.2: server-only. Wire layout (§18.2):
+    ///   4-byte IPv4 address || 2-byte IPv4 port ||
+    ///   16-byte IPv6 address || 2-byte IPv6 port ||
+    ///   1-byte Connection ID length || N-byte Connection ID ||
+    ///   16-byte stateless reset token
+    /// We use a zero-length CID (the §18.2 minimum) → 41-byte value.
+    pub fn f04_preferred_addr_forbidden() -> Vec<u8> {
+        let mut out = server_tp_bytes_well_formed();
+        let mut val: Vec<u8> = Vec::with_capacity(41);
+        val.extend_from_slice(&[127, 0, 0, 1]);   // IPv4
+        val.extend_from_slice(&[0x10, 0xbb]);     // IPv4 port (4283)
+        val.extend_from_slice(&[0u8; 16]);        // IPv6 (zeros)
+        val.extend_from_slice(&[0x10, 0xbb]);     // IPv6 port
+        val.push(0);                              // CID length = 0
+        val.extend_from_slice(&[0u8; 16]);        // stateless reset token
+        debug_assert_eq!(val.len(), 41, "preferred_address minimum value size");
+        push_raw_tp(&mut out, 0x0d, val);
+        out
+    }
+
+    /// F05 — well-formed block PLUS `retry_source_connection_id` (0x10).
+    ///
+    /// RFC 9000 §18.2: server-only (set only when the server sent a Retry).
+    /// 8-byte placeholder value.
+    pub fn f05_retry_scid_forbidden() -> Vec<u8> {
+        let mut out = server_tp_bytes_well_formed();
+        push_raw_tp(&mut out, 0x10, vec![0u8; 8]);
+        out
+    }
+
+    /// F06 — well-formed block PLUS `stateless_reset_token` (0x02).
+    ///
+    /// RFC 9000 §18.2: server-only, paired with a server-issued connection ID.
+    /// Fixed 16-byte length per §10.3.
+    pub fn f06_stateless_reset_forbidden() -> Vec<u8> {
+        let mut out = server_tp_bytes_well_formed();
+        push_raw_tp(&mut out, 0x02, vec![0u8; 16]);
+        out
+    }
+
+    /// Append a TP entry whose value is itself a varint (covers the integer-
+    /// valued params in §18.2).
+    fn push_varint_tp(out: &mut Vec<u8>, id: u64, value: u64) {
+        let mut value_bytes: Vec<u8> = Vec::new();
+        encode_varint(value, &mut value_bytes);
+        push_raw_tp(out, id, value_bytes);
+    }
+
+    /// Append a TP entry with a raw (opaque) byte value.
+    fn push_raw_tp(out: &mut Vec<u8>, id: u64, value: Vec<u8>) {
+        encode_varint(id, out);
+        encode_varint(value.len() as u64, out);
+        out.extend_from_slice(&value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +487,83 @@ mod tests {
         }
         assert_eq!(i, tp.len(), "TP block walked exactly");
         assert!(seen_initial_scid, "initial_source_connection_id (0x0f) present");
+    }
+
+    /// Walk a TP block and return the set of parameter IDs it contains plus
+    /// total bytes consumed (must equal `tp.len()`). Used by the adversarial
+    /// helpers' tests below.
+    fn collect_tp_ids(tp: &[u8]) -> (Vec<u64>, usize) {
+        let mut ids: Vec<u64> = Vec::new();
+        let mut i = 0;
+        while i < tp.len() {
+            let (id, c) = decode_varint(&tp[i..]).expect("id varint");
+            i += c;
+            let (len, c) = decode_varint(&tp[i..]).expect("len varint");
+            i += c;
+            assert!(i + len as usize <= tp.len(), "value bounds for id 0x{:x}", id);
+            ids.push(id);
+            i += len as usize;
+        }
+        (ids, i)
+    }
+
+    #[test]
+    fn f02_omits_initial_scid_only() {
+        let tp = super::adversarial_tp::f02_missing_initial_scid();
+        let (ids, consumed) = collect_tp_ids(&tp);
+        assert_eq!(consumed, tp.len(), "F02 TP block walks cleanly");
+        assert!(!ids.contains(&0x0f), "F02 must omit initial_source_connection_id");
+        // Every other §18 minimum still present so the rejection is unambiguous.
+        for required in [0x01u64, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09] {
+            assert!(ids.contains(&required), "F02 keeps id 0x{:x}", required);
+        }
+    }
+
+    #[test]
+    fn f03_appends_original_dcid() {
+        let tp = super::adversarial_tp::f03_original_dcid_forbidden();
+        let (ids, consumed) = collect_tp_ids(&tp);
+        assert_eq!(consumed, tp.len(), "F03 TP block walks cleanly");
+        assert!(ids.contains(&0x0f), "F03 keeps initial_source_connection_id");
+        assert!(ids.contains(&0x00), "F03 must include original_destination_connection_id");
+    }
+
+    #[test]
+    fn f04_appends_preferred_address_with_41_byte_value() {
+        let tp = super::adversarial_tp::f04_preferred_addr_forbidden();
+        let (ids, consumed) = collect_tp_ids(&tp);
+        assert_eq!(consumed, tp.len(), "F04 TP block walks cleanly");
+        assert!(ids.contains(&0x0d), "F04 must include preferred_address");
+        // Re-walk to locate the 0x0d entry and confirm its value length.
+        let mut i = 0;
+        while i < tp.len() {
+            let (id, c) = decode_varint(&tp[i..]).unwrap();
+            i += c;
+            let (len, c) = decode_varint(&tp[i..]).unwrap();
+            i += c;
+            if id == 0x0d {
+                assert_eq!(len, 41, "preferred_address minimum value size");
+                break;
+            }
+            i += len as usize;
+        }
+    }
+
+    #[test]
+    fn f05_appends_retry_scid() {
+        let tp = super::adversarial_tp::f05_retry_scid_forbidden();
+        let (ids, consumed) = collect_tp_ids(&tp);
+        assert_eq!(consumed, tp.len(), "F05 TP block walks cleanly");
+        assert!(ids.contains(&0x0f), "F05 keeps initial_source_connection_id");
+        assert!(ids.contains(&0x10), "F05 must include retry_source_connection_id");
+    }
+
+    #[test]
+    fn f06_appends_stateless_reset_token() {
+        let tp = super::adversarial_tp::f06_stateless_reset_forbidden();
+        let (ids, consumed) = collect_tp_ids(&tp);
+        assert_eq!(consumed, tp.len(), "F06 TP block walks cleanly");
+        assert!(ids.contains(&0x0f), "F06 keeps initial_source_connection_id");
+        assert!(ids.contains(&0x02), "F06 must include stateless_reset_token");
     }
 }
