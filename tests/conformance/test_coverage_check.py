@@ -107,3 +107,11 @@ def test_triage_filter_c1_c6_yields_thirteen_rows():
         "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
         "F25", "F26", "F27", "F28", "F29",
     }, f"got {sorted(ids)}"
+
+
+def test_strict_accepts_deferred_status():
+    """AC-4.deferred: status starting with 'deferred:' is non-red, non-gated."""
+    argv = _common(coverage=FIX / "good_deferred_coverage.md")
+    strict = argv.copy()
+    strict[strict.index("lenient")] = "strict"
+    _run(strict, expect_rc=0)
