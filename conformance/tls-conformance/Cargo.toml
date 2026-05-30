@@ -13,3 +13,7 @@ rand = "0.8"
 [lib]
 name = "tls_conformance_scenarios"
 path = "src/lib.rs"
+
+[[bin]]
+name = "tls_sanity_handshake"
+path = "src/bin/tls_sanity_handshake.rs"

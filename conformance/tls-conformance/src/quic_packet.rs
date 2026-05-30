@@ -108,8 +108,13 @@ fn local_header_protect(
     if rc == 0 { Ok(()) } else { Err(FfiError { code: rc }) }
 }
 
-#[cfg(test)]
-fn remote_decrypt(
+/// AEAD-decrypt `payload` in place with `header` as AAD. Returns plaintext
+/// length (ciphertext_len − tag_len).
+///
+/// Lifted from `#[cfg(test)]` so `drive_handshake_initial` can decrypt the
+/// server's Initial reply. `remote_*` keys are the peer's role (server-side
+/// when this client is decoding server packets).
+pub fn remote_decrypt(
     keys: &KeysHandle, pn: u64, header: &[u8], payload: &mut [u8],
 ) -> Result<usize, FfiError> {
     let hl = i32::try_from(header.len()).map_err(|_| err())?;
@@ -120,8 +125,12 @@ fn remote_decrypt(
     if rc < 0 { Err(FfiError { code: rc }) } else { Ok(rc as usize) }
 }
 
-#[cfg(test)]
-fn remote_header_unprotect(
+/// Remove header protection in place using the peer's HP keys (sample = 16
+/// bytes starting at `pn_offset + 4` per RFC 9001 §5.4.2).
+///
+/// Lifted from `#[cfg(test)]` so `drive_handshake_initial` can unprotect
+/// server replies.
+pub fn remote_header_unprotect(
     keys: &KeysHandle, sample: &[u8], first_byte: &mut u8, pn_bytes: &mut [u8],
 ) -> Result<(), FfiError> {
     let sl = i32::try_from(sample.len()).map_err(|_| err())?;
