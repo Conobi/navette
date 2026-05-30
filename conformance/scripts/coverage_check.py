@@ -234,9 +234,6 @@ def check_invariants(args):
     gated_b = 0
     for row in table_a:
         status = row["status"]
-        # deferred:<reason> rows are out-of-cycle: neither red nor gated.
-        if status.startswith("deferred:"):
-            continue
         if status == "red" and args.mode == "strict":
             violations.append(f"Inv-3: row {row['id']} has status 'red' (strict mode)")
         if status == "gated":
