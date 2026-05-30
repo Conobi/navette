@@ -3,6 +3,13 @@
 
 from std.collections import Dict, Optional
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.quic.guard_tags import (
+    GUARD_TAG_TP_INITIAL_SCID_MISSING,
+    GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
+    GUARD_TAG_TP_PREFERRED_ADDR_FORBIDDEN,
+    GUARD_TAG_TP_RETRY_SCID_FORBIDDEN,
+    GUARD_TAG_TP_STATELESS_RESET_FORBIDDEN,
+)
 
 
 # ── Transport parameter IDs (RFC 9000 §18.2) ────────────────────────
@@ -410,3 +417,45 @@ def serialize_transport_params(
         varint_encode(writer, UInt64(entry.key))
         varint_encode(writer, UInt64(len(entry.value)))
         writer.write_bytes(Span(entry.value))
+
+
+# ── Server-side client TP validator ──────────────────────────────────────────
+
+def validate_client_transport_params(params: TransportParams) raises:
+    """RFC 9000 §7.3 + §18.2 — server-side validation of client-supplied transport params.
+
+    Invoked AFTER parse_transport_params succeeds, on the server side, to
+    assert presence of the required initial_source_connection_id (F02) and
+    absence of server-only fields (F03-F06):
+      - original_destination_connection_id  (F03)
+      - preferred_address                   (F04)
+      - retry_source_connection_id          (F05)
+      - stateless_reset_token               (F06)
+
+    Range checks for max_udp_payload_size, ack_delay_exponent, and
+    max_ack_delay (F07/F08/F09) are intentionally left in the parse path
+    so legacy callers do not regress; they will receive their GUARD_TAG
+    annotations in a sibling task.
+
+    Exception strings carry the matching GUARD_TAG_TP_* bracketed token so
+    the Phase β.6 wiring can route them through close_transport while
+    preserving the reason-substring assertion in conformance scenarios.
+
+    Args:
+        params: The decoded TransportParams from a peer (typically the
+            client) after parse_transport_params returned successfully.
+
+    Raises:
+        String exception containing the matching GUARD_TAG_TP_* token on
+        the first detected violation. Subsequent fields are not checked.
+    """
+    if not Bool(params.initial_scid):
+        raise String(GUARD_TAG_TP_INITIAL_SCID_MISSING) + ": initial_source_connection_id missing from client TP"
+    if Bool(params.original_dcid):
+        raise String(GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN) + ": original_destination_connection_id is server-only"
+    if Bool(params.preferred_address):
+        raise String(GUARD_TAG_TP_PREFERRED_ADDR_FORBIDDEN) + ": preferred_address is server-only"
+    if Bool(params.retry_scid):
+        raise String(GUARD_TAG_TP_RETRY_SCID_FORBIDDEN) + ": retry_source_connection_id is server-only"
+    if Bool(params.stateless_reset_token):
+        raise String(GUARD_TAG_TP_STATELESS_RESET_FORBIDDEN) + ": stateless_reset_token is server-only"
