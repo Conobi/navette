@@ -92,3 +92,27 @@ done
 
 echo ""
 echo "All $PASSED/$TOTAL src tests passed."
+
+# TLS-conformance gate — opt-in via TLS=1 to keep the inner-loop dev run fast.
+# CI sets TLS=1; the local run defaults to off.
+# Mirrors the H3I=1 block in conformance/scripts/run_tests.sh.
+#
+# Runs the Rust scenario harness against examples/hello_h3_server, then
+# validates COVERAGE.md invariants.  COVERAGE_CHECK_MODE defaults to strict;
+# set COVERAGE_CHECK_MODE=lenient to suppress Inv-4 failures while the pass
+# threshold is still at 0 (pre-γ.3).
+if [[ "${TLS:-0}" == "1" ]]; then
+    echo "Running TLS conformance gate..."
+    "$SCRIPT_DIR/../conformance/scripts/run_tls_conformance.sh"
+
+    echo "Running coverage_check.py for TLS conformance (${COVERAGE_CHECK_MODE:-strict} mode)..."
+    python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
+        --mode "${COVERAGE_CHECK_MODE:-strict}" \
+        --triage "$REPO_ROOT/research/h3spec-failure-triage.md" \
+        --triage-filter C1,C6 \
+        --coverage "$REPO_ROOT/conformance/tls-conformance/COVERAGE.md" \
+        --threshold-file "$REPO_ROOT/conformance/tls_conformance_min_pass.txt" \
+        --scenarios-dir "$REPO_ROOT/conformance/tls-conformance" \
+        --tags "$REPO_ROOT/navette/quic/guard_tags.mojo" \
+               "$REPO_ROOT/navette/tls/guard_tags.mojo"
+fi
