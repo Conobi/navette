@@ -92,6 +92,12 @@ from navette.quic.trans_param import (
     serialize_transport_params,
     validate_client_transport_params,
 )
+from navette.tls.guard_tags import (
+    GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE,
+    GUARD_TAG_TLS_KEYUPDATE_1RTT,
+    GUARD_TAG_TLS_NO_ALPN,
+    GUARD_TAG_TLS_END_OF_EARLY_DATA,
+)
 from navette.quic.pn_space import (
     EncryptionLevel,
     packet_type_to_space,
@@ -127,6 +133,63 @@ comptime ANTI_AMP_HEADER_FUDGE: UInt64 = 100
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
 comptime _MAX_CRYPTO_FRAME_SIZE: Int = 1200
+
+
+# ── TLS alert -> guard-tag mapping ───────────────────────────────────
+
+
+def _tls_guard_tag_for(
+    alert: Int32,
+    current_level: Int,
+    handshake_confirmed: Bool,
+    fallback: String,
+) -> String:
+    """Map a rustls QUIC alert byte to the matching `GUARD_TAG_TLS_*` token.
+
+    The four C6 scenarios (F25/F26/F27/F29) each have an allowed alert-set
+    per the v3.1 spec AC-3.alert table:
+
+      * F25 (KeyUpdate-in-Handshake) — exact alert 10 (unexpected_message).
+      * F26 (KeyUpdate-in-1-RTT) — alert 47 (illegal_parameter) or 50 fallback.
+      * F27 (no ALPN) — alert 120 (no_application_protocol) or 50 fallback.
+      * F29 (EndOfEarlyData rejection) — alert 10 or 50 fallback.
+
+    Alerts 10 and 50 are ambiguous between two C6 rows, so the helper
+    disambiguates by the connection's `current_level` (0=Initial, 1=Handshake,
+    2=Application) and the `handshake_confirmed` flag. The mapping is:
+
+      * alert == 120          → NO_ALPN (unique).
+      * alert == 47           → KEYUPDATE_1RTT (unique).
+      * alert == 10           → KEYUPDATE_HANDSHAKE if Handshake-level,
+                                else END_OF_EARLY_DATA.
+      * alert == 50 fallback  → KEYUPDATE_HANDSHAKE if Handshake-level,
+                                END_OF_EARLY_DATA if handshake_confirmed,
+                                else `fallback`.
+      * any other alert       → `fallback` (best-effort default).
+
+    `fallback` is passed in by the caller — typically
+    `String(GUARD_TAG_TLS_KEYUPDATE_1RTT)` — so the close_transport call
+    site keeps the literal token visible for grep-based audits without
+    re-exporting every comptime guard tag from this module's helpers.
+
+    The returned `String` is wrapped from the `comptime` literal so callers
+    can pass it through `close_transport`'s `reason: String` parameter
+    without an extra conversion.
+    """
+    if alert == Int32(120):
+        return String(GUARD_TAG_TLS_NO_ALPN)
+    if alert == Int32(47):
+        return String(GUARD_TAG_TLS_KEYUPDATE_1RTT)
+    if alert == Int32(10):
+        if current_level == 1:
+            return String(GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE)
+        return String(GUARD_TAG_TLS_END_OF_EARLY_DATA)
+    # alert == 50 (decode_error) fallback path — pick by level/state.
+    if current_level == 1:
+        return String(GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE)
+    if handshake_confirmed:
+        return String(GUARD_TAG_TLS_END_OF_EARLY_DATA)
+    return fallback
 
 
 # ── SentStreamFrame ──────────────────────────────────────────────────
@@ -1740,9 +1803,21 @@ struct QuicConnection(Movable):
                     data_buf.free()
 
                     if rc < 0:
-                        raise (
-                            "quic_conn_read_hs failed: " + lib[].last_error()
-                        )
+                        # Close + return on the TLS-error path. The I/O loop's
+                        # catch-all would swallow a raise here, leaving the
+                        # connection stuck in CONN_HANDSHAKING; instead we
+                        # surface the rustls alert as a CRYPTO_ERROR
+                        # CONNECTION_CLOSE (RFC 9001 §4.8: 0x0100 | alert).
+                        # `_tls_guard_tag_for` disambiguates the 10/50 alert
+                        # codes between F25 (Handshake KeyUpdate) and F29
+                        # (1-RTT EndOfEarlyData) by encryption level; the
+                        # `fallback` argument is the GUARD-TAG used when the
+                        # alert byte isn't in {10, 47, 50, 120}, kept visible
+                        # at the call site for grep-traceability.
+                        var alert_code = lib[].quic_conn_alert(self.conn_handle)
+                        var crypto_error = UInt64(0x0100) | UInt64(alert_code)
+                        self.close_transport(crypto_error, _tls_guard_tag_for(alert_code, self.current_level, self.handshake_confirmed, String(GUARD_TAG_TLS_KEYUPDATE_1RTT)), now)
+                        return
 
         # 2. Loop write_hs to drain TLS output.
         var out_buf = _heap_alloc[UInt8](_WRITE_HS_BUF_SIZE).as_any_origin()

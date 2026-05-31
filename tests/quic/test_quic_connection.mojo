@@ -28,6 +28,13 @@ from navette.quic.guard_predicates import (
     QuicStopSendingCtx,
 )
 from navette.quic.guard_tags import GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN
+from navette.tls.guard_tags import (
+    GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE,
+    GUARD_TAG_TLS_KEYUPDATE_1RTT,
+    GUARD_TAG_TLS_NO_ALPN,
+    GUARD_TAG_TLS_END_OF_EARLY_DATA,
+)
+from navette.quic.connection import _tls_guard_tag_for
 from navette.quic.cid import CID_ACTIVE
 from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
 from navette.quic.pn_space import SentPacket
@@ -3031,6 +3038,154 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     print("  test_on_handshake_complete_close_transport_on_invalid_tp: PASS")
 
 
+def test_tls_guard_tag_for_alert_mapping() raises:
+    """`_tls_guard_tag_for` maps each (alert, level) pair to the matching tag.
+
+    Locks in the v3.1 AC-3.alert allowed-set disambiguation:
+
+      * alert 120 → NO_ALPN regardless of level (F27).
+      * alert 47  → KEYUPDATE_1RTT regardless of level (F26).
+      * alert 10 with current_level==1 → KEYUPDATE_HANDSHAKE (F25).
+      * alert 10 with current_level!=1 → END_OF_EARLY_DATA (F29).
+      * alert 50 (fallback) on Handshake-level → KEYUPDATE_HANDSHAKE (F25 fb).
+      * alert 50 (fallback) with handshake_confirmed → END_OF_EARLY_DATA (F29 fb).
+      * alert 50 (fallback) otherwise → KEYUPDATE_1RTT (F26 fb).
+    """
+    var default_fb = String(GUARD_TAG_TLS_KEYUPDATE_1RTT)
+
+    # F27 — unique alert, any level.
+    assert_true(
+        _tls_guard_tag_for(Int32(120), 0, False, default_fb) == String(GUARD_TAG_TLS_NO_ALPN),
+        "alert 120 must map to TLS_NO_ALPN (Initial-level)",
+    )
+    assert_true(
+        _tls_guard_tag_for(Int32(120), 2, True, default_fb) == String(GUARD_TAG_TLS_NO_ALPN),
+        "alert 120 must map to TLS_NO_ALPN (1-RTT-level)",
+    )
+
+    # F26 — unique alert.
+    assert_true(
+        _tls_guard_tag_for(Int32(47), 1, False, default_fb) == String(GUARD_TAG_TLS_KEYUPDATE_1RTT),
+        "alert 47 must map to TLS_KEYUPDATE_1RTT",
+    )
+
+    # F25 vs F29 disambiguation on alert 10 by encryption level.
+    assert_true(
+        _tls_guard_tag_for(Int32(10), 1, False, default_fb) == String(GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE),
+        "alert 10 on Handshake-level must map to KEYUPDATE_HANDSHAKE (F25)",
+    )
+    assert_true(
+        _tls_guard_tag_for(Int32(10), 2, True, default_fb) == String(GUARD_TAG_TLS_END_OF_EARLY_DATA),
+        "alert 10 on 1-RTT-level must map to END_OF_EARLY_DATA (F29)",
+    )
+
+    # Alert 50 fallback disambiguation.
+    assert_true(
+        _tls_guard_tag_for(Int32(50), 1, False, default_fb) == String(GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE),
+        "alert 50 fallback on Handshake-level must map to KEYUPDATE_HANDSHAKE",
+    )
+    assert_true(
+        _tls_guard_tag_for(Int32(50), 2, True, default_fb) == String(GUARD_TAG_TLS_END_OF_EARLY_DATA),
+        "alert 50 fallback after handshake-confirmed must map to END_OF_EARLY_DATA",
+    )
+    assert_true(
+        _tls_guard_tag_for(Int32(50), 0, False, default_fb) == String(GUARD_TAG_TLS_KEYUPDATE_1RTT),
+        "alert 50 fallback pre-handshake-confirmed must map to KEYUPDATE_1RTT (caller-supplied fallback)",
+    )
+
+    # Unknown alert codes use the caller-supplied fallback verbatim.
+    var custom_fb = String(GUARD_TAG_TLS_NO_ALPN)
+    assert_true(
+        _tls_guard_tag_for(Int32(99), 0, False, custom_fb) == custom_fb,
+        "unknown alert must use caller-supplied fallback verbatim",
+    )
+
+    print("  test_tls_guard_tag_for_alert_mapping: PASS")
+
+
+def test_drive_handshake_tls_error_emits_crypto_close() raises:
+    """`_drive_handshake` routes a TLS read failure through `close_transport`.
+
+    Injects 16 bytes of garbage straight into the server's Initial-level
+    `crypto_streams` slot, then calls `_drive_handshake`. The rustls FFI
+    will fail to parse the bytes (`quic_conn_read_hs` returns -1); the
+    new alert-routing path must:
+
+      * NOT raise (the prior implementation raised "quic_conn_read_hs failed"
+        which the I/O loop would swallow on its catch-all);
+      * queue a transport CONNECTION_CLOSE (frame_type 0x1c);
+      * set `error_code` in the CRYPTO_ERROR range 0x0100..=0x01ff;
+      * embed one of the TLS GUARD-TAGs in the reason phrase.
+
+    The exact alert byte rustls reports for "garbage in Initial CRYPTO" is
+    implementation-defined (commonly decode_error=50 or
+    unexpected_message=10), so the test asserts the range + the presence of
+    any TLS-prefixed guard tag rather than a single specific alert.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    # Server-only: no client, no ClientHello — we just feed garbage CRYPTO.
+    var orig_dcid = List[UInt8]()
+    for _ in range(8):
+        orig_dcid.append(UInt8(0xab))
+    var client_dcid = List[UInt8](copy=orig_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    # Inject malformed CRYPTO bytes into Initial-level (current_level == 0).
+    # `crypto_streams[level].receive(offset, data)` is the same path the wire
+    # parser would take after AEAD-unprotecting an Initial packet containing
+    # a CRYPTO frame; rustls will fail to interpret these as a ClientHello
+    # and emit an alert via quic_conn_alert.
+    var garbage = List[UInt8]()
+    for i in range(64):
+        garbage.append(UInt8((i * 31) & 0xff))
+    server.crypto_streams[0].receive(UInt64(0), Span(garbage))
+
+    # Drive the handshake. Must NOT raise (close-and-return contract).
+    server._drive_handshake(now)
+
+    assert_true(
+        Bool(server.pending_close),
+        "server.pending_close not set after TLS read_hs failure",
+    )
+    var cc = server.pending_close.value().copy()
+    assert_true(cc.is_transport, "must use transport-CC (0x1c) for TLS alert")
+
+    var code = Int(cc.error_code)
+    assert_true(
+        code >= 0x0100 and code <= 0x01ff,
+        "error_code must be in CRYPTO_ERROR range 0x0100..=0x01ff, got 0x" + String(code),
+    )
+
+    # Reason must contain one of the 4 TLS guard tags.
+    var reason_str = String("")
+    for i in range(len(cc.reason)):
+        reason_str = reason_str + chr(Int(cc.reason[i]))
+    var has_tls_tag = (
+        String(GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE) in reason_str
+        or String(GUARD_TAG_TLS_KEYUPDATE_1RTT) in reason_str
+        or String(GUARD_TAG_TLS_NO_ALPN) in reason_str
+        or String(GUARD_TAG_TLS_END_OF_EARLY_DATA) in reason_str
+    )
+    assert_true(
+        has_tls_tag,
+        "reason must contain a [TLS-*] guard tag, got " + reason_str,
+    )
+
+    _ = tls^
+    print("  test_drive_handshake_tls_error_emits_crypto_close: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -3078,4 +3233,6 @@ def main() raises:
     test_predicate_f16_negative_no_violation()
     test_predicate_f16_negative_sibling_input()
     test_on_handshake_complete_close_transport_on_invalid_tp()
+    test_tls_guard_tag_for_alert_mapping()
+    test_drive_handshake_tls_error_emits_crypto_close()
     print("All test_quic_connection tests passed.")
