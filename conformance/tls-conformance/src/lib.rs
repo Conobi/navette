@@ -10,7 +10,7 @@ pub mod quic_packet;
 
 use std::net::{SocketAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 pub use quic_packet::{
     ConnectionClose, KeysHandle, LongHeader, PacketBuilder, Role, ShortHeader,
     decode_varint, encode_varint, initial_keys, parse_connection_close,
@@ -429,6 +429,621 @@ fn drive_handshake_initial_inner(
     Ok(None)
 }
 
+/// Encryption epoch for the multi-epoch `drive_handshake_full` driver.
+///
+/// Only Handshake and 1-RTT need the rustls-derived keys path; Initial uses
+/// the dedicated `KeysHandle` from `librustls-mojo` already exercised by
+/// `drive_handshake_initial`. The `OneRtt` variant is reserved for future
+/// short-header debug logging — not yet plumbed through the receive loop
+/// because the 1-RTT drain returns the CC directly without classifying it.
+#[derive(Copy, Clone, Debug)]
+#[allow(dead_code)]
+enum Epoch { Initial, Handshake, OneRtt }
+
+/// Outcome of feeding a decrypted QUIC plaintext payload to rustls and
+/// scanning it for CONNECTION_CLOSE.
+///
+/// `cc` is `Some(_)` when a 0x1c/0x1d frame is seen in the plaintext. Even
+/// when a CC is observed we still drain the remaining frames into rustls so
+/// that the FSM remains consistent (mostly defensive; the harness exits
+/// shortly after).
+struct PlaintextScan {
+    cc: Option<ConnectionClose>,
+}
+
+/// Encode + send a Handshake-space (long header, type=2) packet whose only
+/// payload is a CRYPTO frame at offset 0 carrying `crypto_payload`.
+///
+/// `pn` is the application-supplied packet number (caller manages the per-
+/// epoch counter). HP + AEAD use the rustls `local` keys for the current
+/// epoch. The function intentionally does NOT pad the payload — Handshake
+/// packets are not subject to the §14.1 1200-byte anti-amplification rule;
+/// the server-side accepts shorter Handshakes.
+fn build_handshake_packet(
+    dcid: &[u8],
+    scid: &[u8],
+    pn: u64,
+    crypto_payload: &[u8],
+    local_keys: &rustls::quic::DirectionalKeys,
+) -> Result<Vec<u8>, String> {
+    let pn_length: usize = 4;
+    let tag_len = local_keys.packet.tag_len();
+
+    // QUIC payload: one CRYPTO frame (type=0x06, offset=0, len, data).
+    let mut qp: Vec<u8> = Vec::new();
+    qp.push(0x06);
+    encode_varint(0, &mut qp);
+    encode_varint(crypto_payload.len() as u64, &mut qp);
+    qp.extend_from_slice(crypto_payload);
+
+    // Long header up to (not including) Length field.
+    let mut hdr: Vec<u8> = Vec::new();
+    hdr.push(0b1100_0000 | (0b10 << 4) | ((pn_length as u8) - 1)); // type=Handshake
+    hdr.extend_from_slice(&1u32.to_be_bytes()); // QUIC v1
+    hdr.push(dcid.len() as u8); hdr.extend_from_slice(dcid);
+    hdr.push(scid.len() as u8); hdr.extend_from_slice(scid);
+    // Length = PN + payload + tag.
+    let length = pn_length + qp.len() + tag_len;
+    encode_varint(length as u64, &mut hdr);
+    let pn_offset = hdr.len();
+    hdr.extend_from_slice(&(pn as u32).to_be_bytes());
+
+    let header_len = hdr.len();
+    let mut pkt: Vec<u8> = Vec::with_capacity(header_len + qp.len() + tag_len);
+    pkt.extend_from_slice(&hdr);
+    pkt.extend_from_slice(&qp);
+    // Reserve tag tail (filled by encrypt_in_place's returned Tag).
+    let plaintext_end = header_len + qp.len();
+
+    let header_bytes = pkt[..header_len].to_vec();
+    let tag = local_keys.packet.encrypt_in_place(
+        pn, &header_bytes, &mut pkt[header_len..plaintext_end],
+    ).map_err(|e| format!("rustls encrypt_in_place (Handshake): {e:?}"))?;
+    pkt.extend_from_slice(tag.as_ref());
+
+    // HP — sample is 16 bytes starting pn_offset + 4 (per RFC 9001 §5.4.2).
+    let so = pn_offset + 4;
+    if pkt.len() < so + 16 {
+        return Err("Handshake packet too short for HP sample".into());
+    }
+    let sample: [u8; 16] = pkt[so..so + 16].try_into().expect("HP sample 16B");
+    let (head, rest) = pkt.split_at_mut(pn_offset);
+    local_keys.header
+        .encrypt_in_place(&sample, &mut head[0], &mut rest[..pn_length])
+        .map_err(|e| format!("rustls HP encrypt (Handshake): {e:?}"))?;
+    Ok(pkt)
+}
+
+/// Decrypt a single Handshake-space (long header, type=2) packet whose bytes
+/// occupy `buf[..pkt_len]`, returning the plaintext payload as a freshly-
+/// allocated `Vec`.
+///
+/// `header` is the parsed long header for this packet (so the caller can
+/// reuse the already-walked layout). `remote_keys` are the rustls `remote`
+/// keys for the matching epoch. The function performs HP-unprotect then
+/// AEAD-decrypt; both operations are done in place on a local copy of the
+/// packet so the caller's buffer is left untouched for the next iteration.
+fn decrypt_long_with_rustls(
+    pkt: &[u8],
+    header: &LongHeader,
+    remote_keys: &rustls::quic::DirectionalKeys,
+) -> Result<Vec<u8>, String> {
+    let mut buf = pkt.to_vec();
+    let pn_offset = header.payload_offset;
+    let so = pn_offset + 4;
+    if buf.len() < so + 16 {
+        return Err(format!(
+            "packet too short for HP sample: need {}, got {}",
+            so + 16, buf.len(),
+        ));
+    }
+    let sample: [u8; 16] = buf[so..so + 16].try_into().expect("HP sample 16B");
+    let (head, rest) = buf.split_at_mut(pn_offset);
+    remote_keys.header
+        .decrypt_in_place(&sample, &mut head[0], &mut rest[..4])
+        .map_err(|e| format!("rustls HP decrypt: {e:?}"))?;
+    let pn_length = ((head[0] & 0x03) + 1) as usize;
+    let header_len = pn_offset + pn_length;
+    let mut pn: u64 = 0;
+    for i in 0..pn_length {
+        pn = (pn << 8) | buf[pn_offset + i] as u64;
+    }
+    let header_bytes = buf[..header_len].to_vec();
+    let end = pn_offset + header.length;
+    if buf.len() < end {
+        return Err(format!(
+            "packet truncated: payload end {} > buf len {}", end, buf.len(),
+        ));
+    }
+    let pt = remote_keys.packet
+        .decrypt_in_place(pn, &header_bytes, &mut buf[header_len..end])
+        .map_err(|e| format!("rustls AEAD decrypt: {e:?}"))?;
+    Ok(pt.to_vec())
+}
+
+/// Decrypt a short-header (1-RTT) packet whose bytes occupy `buf[..pkt_len]`.
+///
+/// `dcid_len` MUST match the local CID length advertised at handshake time —
+/// short headers do not encode the DCID length on the wire (RFC 9000 §17.3.1).
+/// For this harness the navette server uses 8-byte CIDs and the client picks
+/// the SCID, so we know dcid_len up front from `builder.scid.len()`.
+fn decrypt_short_with_rustls(
+    pkt: &[u8],
+    dcid_len: usize,
+    remote_keys: &rustls::quic::DirectionalKeys,
+) -> Result<Vec<u8>, String> {
+    if pkt.is_empty() || pkt[0] & 0x80 != 0 {
+        return Err("not a short-header packet".into());
+    }
+    let pn_offset = 1 + dcid_len;
+    let so = pn_offset + 4;
+    if pkt.len() < so + 16 {
+        return Err(format!(
+            "1-RTT packet too short for HP sample: need {}, got {}",
+            so + 16, pkt.len(),
+        ));
+    }
+    let mut buf = pkt.to_vec();
+    let sample: [u8; 16] = buf[so..so + 16].try_into().expect("HP sample 16B");
+    let (head, rest) = buf.split_at_mut(pn_offset);
+    remote_keys.header
+        .decrypt_in_place(&sample, &mut head[0], &mut rest[..4])
+        .map_err(|e| format!("rustls HP decrypt (1-RTT): {e:?}"))?;
+    let pn_length = ((head[0] & 0x03) + 1) as usize;
+    let header_len = pn_offset + pn_length;
+    let mut pn: u64 = 0;
+    for i in 0..pn_length {
+        pn = (pn << 8) | buf[pn_offset + i] as u64;
+    }
+    let header_bytes = buf[..header_len].to_vec();
+    let pt = remote_keys.packet
+        .decrypt_in_place(pn, &header_bytes, &mut buf[header_len..])
+        .map_err(|e| format!("rustls AEAD decrypt (1-RTT): {e:?}"))?;
+    Ok(pt.to_vec())
+}
+
+/// Walk a decrypted QUIC plaintext payload, feeding any CRYPTO frames to
+/// `conn.read_hs` and returning the first CONNECTION_CLOSE observed.
+///
+/// Recognised frame types (RFC 9000 §19):
+///   * 0x00 PADDING and 0x01 PING — single-byte, skipped.
+///   * 0x02/0x03 ACK / ACK_ECN — varint-walked per §19.3.
+///   * 0x06 CRYPTO — extracted, data fed to rustls.
+///   * 0x1c/0x1d CONNECTION_CLOSE — parsed and surfaced.
+///   * 0x18 NEW_CONNECTION_ID — varint-walked so we don't bail on the
+///     server's NCID emissions in 1-RTT. We don't need to apply them
+///     anywhere since the harness never migrates.
+///   * 0x1e HANDSHAKE_DONE — single byte; ignored.
+///
+/// Anything else terminates the walk early (no further frames inspected in
+/// this packet). That's intentional — the harness only needs to find the CC;
+/// unknown frames are not a hard error.
+fn scan_plaintext_into_rustls(
+    plaintext: &[u8],
+    conn: &mut rustls::quic::ClientConnection,
+) -> Result<PlaintextScan, String> {
+    let mut i = 0;
+    while i < plaintext.len() {
+        let ft = plaintext[i];
+        match ft {
+            0x00 | 0x01 => { i += 1; }
+            0x02 | 0x03 => {
+                let with_ecn = ft == 0x03;
+                let mut p = i + 1;
+                let (_largest, n1) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: largest_acked varint truncated".to_string())?;
+                p += n1;
+                let (_delay, n2) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: ack_delay varint truncated".to_string())?;
+                p += n2;
+                let (range_count, n3) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: range_count varint truncated".to_string())?;
+                p += n3;
+                let (_first, n4) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: first_range varint truncated".to_string())?;
+                p += n4;
+                for _ in 0..range_count {
+                    let (_gap, ng) = decode_varint(&plaintext[p..])
+                        .ok_or_else(|| "ACK: gap varint truncated".to_string())?;
+                    p += ng;
+                    let (_len, nl) = decode_varint(&plaintext[p..])
+                        .ok_or_else(|| "ACK: range_len varint truncated".to_string())?;
+                    p += nl;
+                }
+                if with_ecn {
+                    for _ in 0..3 {
+                        let (_v, nv) = decode_varint(&plaintext[p..])
+                            .ok_or_else(|| "ACK_ECN: count varint truncated".to_string())?;
+                        p += nv;
+                    }
+                }
+                i = p;
+            }
+            0x06 => {
+                let mut p = i + 1;
+                let (_off, n_off) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "CRYPTO: offset varint truncated".to_string())?;
+                p += n_off;
+                let (len, n_len) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "CRYPTO: length varint truncated".to_string())?;
+                p += n_len;
+                let len = len as usize;
+                if plaintext.len() < p + len {
+                    return Err("CRYPTO: data slice truncated".to_string());
+                }
+                // Feed the TLS plaintext to rustls for this epoch.
+                conn.read_hs(&plaintext[p..p + len])
+                    .map_err(|e| format!("rustls read_hs failed: {e:?}"))?;
+                i = p + len;
+            }
+            0x18 => {
+                // NEW_CONNECTION_ID: seq, retire_prior_to, len, cid[len], reset_token[16].
+                let mut p = i + 1;
+                let (_seq, na) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "NCID: seq truncated".to_string())?;
+                p += na;
+                let (_rpt, nb) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "NCID: retire_prior_to truncated".to_string())?;
+                p += nb;
+                let cid_len = *plaintext.get(p)
+                    .ok_or_else(|| "NCID: cid len byte missing".to_string())? as usize;
+                p += 1;
+                if plaintext.len() < p + cid_len + 16 {
+                    return Err("NCID: cid+token tail truncated".to_string());
+                }
+                i = p + cid_len + 16;
+            }
+            0x1c | 0x1d => {
+                let cc = parse_connection_close(&plaintext[i..])
+                    .ok_or_else(|| "CONNECTION_CLOSE parse failed".to_string())?;
+                return Ok(PlaintextScan { cc: Some(cc) });
+            }
+            0x1e => { i += 1; } // HANDSHAKE_DONE
+            _ => break,
+        }
+    }
+    Ok(PlaintextScan { cc: None })
+}
+
+/// Drain rustls's pending `write_hs` output, sending each batch over UDP in
+/// the correct epoch and materialising any `KeyChange` events.
+///
+/// Per rustls 0.23 docs, a single `write_hs` call emits bytes for at most one
+/// epoch and may EITHER produce only bytes OR produce a `KeyChange` (after
+/// which the NEXT `write_hs` call uses the new epoch's keys). The outer
+/// `loop` drains until `write_hs` returns no bytes and no KeyChange.
+///
+/// We pick the send-side epoch from the materialised key cache: no Handshake
+/// keys yet → still on Initial; Handshake keys present but no 1-RTT yet →
+/// Handshake (client Finished); 1-RTT present → post-handshake (rustls may
+/// produce NewSessionTicket but the harness has no business with that).
+fn pump_rustls_write_hs(
+    conn: &mut rustls::quic::ClientConnection,
+    socket: &UdpSocket,
+    server: &SocketAddr,
+    builder: &mut PacketBuilder,
+    dcid: &[u8],
+    scid: &[u8],
+    initial_keys_h: &KeysHandle,
+    handshake_keys: &mut Option<rustls::quic::Keys>,
+    one_rtt_keys: &mut Option<rustls::quic::Keys>,
+    hs_send_pn: &mut u64,
+) -> Result<(), String> {
+    loop {
+        let mut out = Vec::new();
+        let kc = conn.write_hs(&mut out);
+        if out.is_empty() && kc.is_none() { return Ok(()); }
+
+        if !out.is_empty() {
+            if handshake_keys.is_none() {
+                // Initial-write epoch.
+                let pkt = builder.encode_initial(&out, initial_keys_h);
+                socket.send_to(&pkt, server)
+                    .map_err(|e| format!("send Initial (pump): {e}"))?;
+            } else if one_rtt_keys.is_none() {
+                // Handshake-write epoch: client Finished.
+                let hs = handshake_keys.as_ref().unwrap();
+                let pkt = build_handshake_packet(
+                    dcid, scid, *hs_send_pn, &out, &hs.local,
+                )?;
+                socket.send_to(&pkt, server)
+                    .map_err(|e| format!("send Handshake: {e}"))?;
+                *hs_send_pn = hs_send_pn.wrapping_add(1);
+            }
+            // 1-RTT post-handshake bytes (e.g. NewSessionTicket): dropped.
+        }
+
+        match kc {
+            Some(rustls::quic::KeyChange::Handshake { keys }) => {
+                *handshake_keys = Some(keys);
+            }
+            Some(rustls::quic::KeyChange::OneRtt { keys, next: _ }) => {
+                *one_rtt_keys = Some(keys);
+            }
+            None => {}
+        }
+    }
+}
+
+/// Drive a multi-epoch QUIC handshake (Initial + Handshake [+ 1-RTT scan])
+/// against the navette server, surfacing the first CONNECTION_CLOSE observed.
+///
+/// Unlike `drive_handshake_initial`, this driver advances rustls's QUIC TLS
+/// state machine through Handshake-epoch CRYPTO so the server reaches
+/// `_on_handshake_complete` (where navette validates the client's transport
+/// parameters). That is where C1 scenarios (F02-F09) expect to receive a
+/// `TRANSPORT_PARAMETER_ERROR` CONNECTION_CLOSE. After handshake completes
+/// successfully the driver also drains 1-RTT for ~250 ms to catch any late
+/// validation-emitted CC that lands after the Handshake-space flight.
+///
+/// Public API contract — identical shape to `drive_handshake_initial`:
+///   * `Ok(None)` — handshake completed (no CC observed in any epoch).
+///   * `Ok(Some(cc))` — a CC frame was parsed in Initial / Handshake / 1-RTT.
+///   * `Err(msg)` — UDP / parse / decrypt error.
+///
+/// Implementation notes:
+///   * Initial-space keys come from `librustls-mojo` (`KeysHandle`) and use
+///     the existing `PacketBuilder::encode_initial` path — preserves the
+///     same wire layout `drive_handshake_initial` already exercises.
+///   * Handshake-space and 1-RTT keys come from rustls's `KeyChange` events
+///     surfaced by `write_hs`. We never hand these to `librustls-mojo` —
+///     the rustls `Keys::local.{header,packet}` traits are used directly to
+///     encrypt outbound Handshake CRYPTO and to decrypt server replies in
+///     both Handshake and 1-RTT space.
+///   * UDP datagrams may coalesce multiple QUIC packets (RFC 9000 §12.2);
+///     the receive loop walks the buffer header-by-header until exhausted.
+pub fn drive_handshake_full(
+    mut builder: PacketBuilder,
+    tp_bytes: &[u8],
+) -> Result<Option<ConnectionClose>, String> {
+    let config = build_quic_client_config_with_alpn(&[b"h3"]);
+    drive_handshake_full_inner(&mut builder, tp_bytes, config)
+}
+
+/// Internal shared body so future scenarios with non-h3 ALPN can reuse the
+/// multi-epoch flow without re-deriving it. Mirrors the
+/// `drive_handshake_initial_inner` factoring.
+fn drive_handshake_full_inner(
+    builder: &mut PacketBuilder,
+    tp_bytes: &[u8],
+    config: Arc<rustls::ClientConfig>,
+) -> Result<Option<ConnectionClose>, String> {
+    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+        .map_err(|e| format!("invalid server name: {e}"))?;
+    let mut conn = rustls::quic::ClientConnection::new(
+        config, rustls::quic::Version::V1, server_name, tp_bytes.to_vec(),
+    ).map_err(|e| format!("ClientConnection::new failed: {e}"))?;
+
+    let dcid = builder.dcid.clone();
+    let scid = builder.scid.clone();
+    let initial_keys_h = initial_keys(Role::Client, &dcid)
+        .map_err(|e| format!("client initial_keys failed: rc={}", e.code))?;
+
+    // Bind + connect a UDP socket.
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .map_err(|e| format!("bind UDP: {e}"))?;
+    let timeout_ms = parse_env_or("TLS_HANDSHAKE_TIMEOUT_MS", 500);
+    let read_to = Duration::from_millis(timeout_ms);
+    socket.set_read_timeout(Some(read_to))
+        .map_err(|e| format!("set_read_timeout: {e}"))?;
+    let server = server_addr();
+
+    // === Step 1: send Initial flight (ClientHello). ===
+    let mut crypto_buf: Vec<u8> = Vec::new();
+    let kc = conn.write_hs(&mut crypto_buf);
+    if crypto_buf.is_empty() {
+        return Err("rustls produced no ClientHello bytes".to_string());
+    }
+    if kc.is_some() {
+        return Err("unexpected KeyChange before sending ClientHello".to_string());
+    }
+    let pkt = builder.encode_initial(&crypto_buf, &initial_keys_h);
+    socket.send_to(&pkt, server)
+        .map_err(|e| format!("send Initial: {e}"))?;
+
+    // Per-epoch outgoing PNs for the rustls-key paths. Initial-space PNs are
+    // managed inside `PacketBuilder`.
+    let mut hs_send_pn: u64 = 0;
+
+    // Rustls-derived keys, materialised on KeyChange events.
+    let mut handshake_keys: Option<rustls::quic::Keys> = None;
+    let mut one_rtt_keys: Option<rustls::quic::Keys> = None;
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms * 4);
+    let mut buf = vec![0u8; 4096];
+
+    // === Step 2: drive the handshake until completion OR CC OR timeout. ===
+    loop {
+        if Instant::now() >= deadline { break; }
+        if !conn.is_handshaking() { break; }
+
+        let n = match socket.recv_from(&mut buf) {
+            Ok((n, _)) => n,
+            Err(e) if matches!(e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+            Err(e) => return Err(format!("recv_from: {e}")),
+        };
+        let datagram = &buf[..n];
+
+        // A datagram may carry coalesced QUIC packets (RFC 9000 §12.2).
+        // Walk header-by-header until the bytes are consumed.
+        let mut offset = 0;
+        while offset < datagram.len() {
+            let rest = &datagram[offset..];
+            if rest.is_empty() { break; }
+            let is_long = rest[0] & 0x80 != 0;
+            if !is_long {
+                // 1-RTT in mid-flight is unexpected during handshake; bail
+                // on this datagram (server should never emit 1-RTT before
+                // we've sent our Finished). Surface as Ok(None) progression
+                // rather than a hard error so the outer loop can re-poll.
+                break;
+            }
+            let header = parse_long_header(rest)
+                .ok_or_else(|| "malformed long header".to_string())?;
+            let pkt_len = header.payload_offset + header.length;
+            if rest.len() < pkt_len {
+                return Err(format!(
+                    "coalesced packet truncated: need {} bytes, have {}",
+                    pkt_len, rest.len(),
+                ));
+            }
+            let pkt = &rest[..pkt_len];
+
+            let (epoch, plaintext) = match header.packet_type {
+                0 => {
+                    // Initial — decrypt with librustls-mojo client_keys.remote.
+                    let plaintext = decrypt_initial_inplace(pkt, &header, &initial_keys_h)?;
+                    (Epoch::Initial, plaintext)
+                }
+                2 => {
+                    // Coalesced Initial→Handshake: the Initial packet just
+                    // walked may have surfaced a KeyChange::Handshake via
+                    // write_hs that we haven't drained yet. Pump now so the
+                    // Handshake-epoch keys are materialised before we try
+                    // to decrypt this packet.
+                    if handshake_keys.is_none() {
+                        pump_rustls_write_hs(
+                            &mut conn, &socket, &server,
+                            builder, &dcid, &scid, &initial_keys_h,
+                            &mut handshake_keys, &mut one_rtt_keys,
+                            &mut hs_send_pn,
+                        )?;
+                    }
+                    let keys = handshake_keys.as_ref().ok_or_else(||
+                        "server sent Handshake before we received KeyChange::Handshake".to_string()
+                    )?;
+                    let plaintext = decrypt_long_with_rustls(pkt, &header, &keys.remote)?;
+                    (Epoch::Handshake, plaintext)
+                }
+                _ => {
+                    // Retry (3) / 0-RTT (1): not exercised by these scenarios.
+                    offset += pkt_len;
+                    continue;
+                }
+            };
+            // Feed into rustls + scan for CC.
+            let scan = scan_plaintext_into_rustls(&plaintext, &mut conn)?;
+            if let Some(cc) = scan.cc { return Ok(Some(cc)); }
+            let _ = epoch; // currently informational only.
+
+            offset += pkt_len;
+        }
+
+        // Pump rustls: write_hs may produce client bytes for the current
+        // write epoch AND/OR a KeyChange event signalling that future
+        // writes/reads use the new epoch's keys. Drain until quiescent.
+        pump_rustls_write_hs(
+            &mut conn, &socket, &server,
+            builder, &dcid, &scid, &initial_keys_h,
+            &mut handshake_keys, &mut one_rtt_keys,
+            &mut hs_send_pn,
+        )?;
+    }
+
+    // === Step 3: post-handshake 1-RTT drain for late-arriving CC. ===
+    //
+    // navette validates client transport parameters inside
+    // `_on_handshake_complete`, which runs on the server right after it
+    // ingests the client's Finished. The resulting CC may surface in
+    // Handshake or 1-RTT space depending on flush timing. We've already
+    // scanned every Handshake-space packet we saw above; drain 1-RTT for
+    // ~250 ms here in case the CC trails the Handshake-space flight.
+    let drain_deadline = Instant::now() + Duration::from_millis(
+        parse_env_or("TLS_ONERTT_DRAIN_MS", 250)
+    );
+    socket.set_read_timeout(Some(Duration::from_millis(50))).ok();
+    while Instant::now() < drain_deadline {
+        let n = match socket.recv_from(&mut buf) {
+            Ok((n, _)) => n,
+            Err(e) if matches!(e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+            Err(_) => break,
+        };
+        let datagram = &buf[..n];
+        let mut offset = 0;
+        while offset < datagram.len() {
+            let rest = &datagram[offset..];
+            if rest.is_empty() { break; }
+            let is_long = rest[0] & 0x80 != 0;
+            if !is_long {
+                // 1-RTT short header. Need 1-RTT keys to decrypt.
+                let Some(keys) = one_rtt_keys.as_ref() else { break; };
+                let plaintext = match decrypt_short_with_rustls(rest, scid.len(), &keys.remote) {
+                    Ok(p) => p,
+                    Err(_) => break, // wrong PN length / bad sample — give up on this datagram
+                };
+                let scan = scan_plaintext_into_rustls(&plaintext, &mut conn)?;
+                if let Some(cc) = scan.cc { return Ok(Some(cc)); }
+                // Short header has no Length field — assume one packet per datagram.
+                break;
+            }
+            let header = parse_long_header(rest)
+                .ok_or_else(|| "malformed long header in 1-RTT drain".to_string())?;
+            let pkt_len = header.payload_offset + header.length;
+            if rest.len() < pkt_len { break; }
+            let pkt = &rest[..pkt_len];
+            let plaintext_res = match header.packet_type {
+                0 => decrypt_initial_inplace(pkt, &header, &initial_keys_h),
+                2 => {
+                    if let Some(hk) = handshake_keys.as_ref() {
+                        decrypt_long_with_rustls(pkt, &header, &hk.remote)
+                    } else {
+                        Err("late Handshake but no handshake keys".to_string())
+                    }
+                }
+                _ => { offset += pkt_len; continue; }
+            };
+            if let Ok(plaintext) = plaintext_res {
+                let scan = scan_plaintext_into_rustls(&plaintext, &mut conn)?;
+                if let Some(cc) = scan.cc { return Ok(Some(cc)); }
+            }
+            offset += pkt_len;
+        }
+    }
+    Ok(None)
+}
+
+/// Decrypt an Initial-space packet with the harness's `KeysHandle` (the
+/// librustls-mojo Initial keys derived off the client-chosen DCID). Mirrors
+/// the inlined block at the bottom of `drive_handshake_initial_inner` but
+/// returns the plaintext as a `Vec` so it composes with `scan_plaintext_into_rustls`.
+fn decrypt_initial_inplace(
+    pkt: &[u8],
+    header: &LongHeader,
+    keys: &KeysHandle,
+) -> Result<Vec<u8>, String> {
+    let mut reply = pkt.to_vec();
+    let pn_offset = header.payload_offset;
+    let sample_off = pn_offset + 4;
+    if reply.len() < sample_off + 16 {
+        return Err(format!(
+            "Initial reply too short for HP sample: need {}, got {}",
+            sample_off + 16, reply.len(),
+        ));
+    }
+    let sample: [u8; 16] = reply[sample_off..sample_off + 16]
+        .try_into().expect("16-byte HP sample");
+    let (head, rest) = reply.split_at_mut(pn_offset);
+    remote_header_unprotect(keys, &sample, &mut head[0], &mut rest[..4])
+        .map_err(|e| format!("Initial HP unprotect failed: rc={}", e.code))?;
+    let first_byte = head[0];
+    let pn_length = ((first_byte & 0x03) + 1) as usize;
+    let mut pn: u64 = 0;
+    for i in 0..pn_length { pn = (pn << 8) | rest[i] as u64; }
+    let header_len = pn_offset + pn_length;
+    let header_bytes = reply[..header_len].to_vec();
+    let end = pn_offset + header.length;
+    if reply.len() < end {
+        return Err(format!(
+            "Initial reply truncated: payload end {} > len {}", end, reply.len(),
+        ));
+    }
+    let pt_len = remote_decrypt(keys, pn, &header_bytes, &mut reply[header_len..end])
+        .map_err(|e| format!("Initial AEAD decrypt failed: rc={}", e.code))?;
+    Ok(reply[header_len..header_len + pt_len].to_vec())
+}
+
 /// Adversarial TP block builders for the C1 (transport-parameter validation)
 /// scenarios.
 ///
@@ -482,17 +1097,25 @@ pub mod adversarial_tp {
     ///   16-byte IPv6 address || 2-byte IPv6 port ||
     ///   1-byte Connection ID length || N-byte Connection ID ||
     ///   16-byte stateless reset token
-    /// We use a zero-length CID (the §18.2 minimum) → 41-byte value.
+    ///
+    /// We use a 1-byte CID (the smallest length navette's parser accepts —
+    /// RFC 9000 §17.2 limits CIDs to 1..=20 bytes in v1 long headers, and
+    /// navette's `_parse_preferred_address` enforces that lower bound while
+    /// walking the sub-structure). A 0-byte CID would surface a different
+    /// error ("CID length must be 1..20, got 0") before reaching the
+    /// `validate_client_transport_params` step that flags the server-only
+    /// parameter — which is what this scenario is designed to exercise.
     pub fn f04_preferred_addr_forbidden() -> Vec<u8> {
         let mut out = server_tp_bytes_well_formed();
-        let mut val: Vec<u8> = Vec::with_capacity(41);
+        let mut val: Vec<u8> = Vec::with_capacity(42);
         val.extend_from_slice(&[127, 0, 0, 1]);   // IPv4
         val.extend_from_slice(&[0x10, 0xbb]);     // IPv4 port (4283)
         val.extend_from_slice(&[0u8; 16]);        // IPv6 (zeros)
         val.extend_from_slice(&[0x10, 0xbb]);     // IPv6 port
-        val.push(0);                              // CID length = 0
+        val.push(1);                              // CID length = 1
+        val.push(0);                              // CID bytes (1 byte)
         val.extend_from_slice(&[0u8; 16]);        // stateless reset token
-        debug_assert_eq!(val.len(), 41, "preferred_address minimum value size");
+        debug_assert_eq!(val.len(), 42, "preferred_address with 1-byte CID");
         push_tp(&mut out, 0x0d, val);
         out
     }
@@ -652,12 +1275,13 @@ mod tests {
     }
 
     #[test]
-    fn f04_appends_preferred_address_with_41_byte_value() {
+    fn f04_appends_preferred_address_with_42_byte_value() {
         let tp = super::adversarial_tp::f04_preferred_addr_forbidden();
         let (ids, consumed) = collect_tp_ids(&tp);
         assert_eq!(consumed, tp.len(), "F04 TP block walks cleanly");
         assert!(ids.contains(&0x0d), "F04 must include preferred_address");
         // Re-walk to locate the 0x0d entry and confirm its value length.
+        // 42 bytes = 24 (IPv4+port+IPv6+port) + 1 (CID len) + 1 (CID bytes) + 16 (reset token).
         let mut i = 0;
         while i < tp.len() {
             let (id, c) = decode_varint(&tp[i..]).unwrap();
@@ -665,7 +1289,7 @@ mod tests {
             let (len, c) = decode_varint(&tp[i..]).unwrap();
             i += c;
             if id == 0x0d {
-                assert_eq!(len, 41, "preferred_address minimum value size");
+                assert_eq!(len, 42, "preferred_address with 1-byte CID");
                 break;
             }
             i += len as usize;

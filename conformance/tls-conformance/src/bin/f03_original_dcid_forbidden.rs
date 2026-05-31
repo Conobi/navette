@@ -10,7 +10,7 @@ use rand::RngCore;
 use tls_conformance_scenarios::{
     adversarial_tp::f03_original_dcid_forbidden,
     assert_transport_param_error_with_tag,
-    drive_handshake_initial,
+    drive_handshake_full,
     PacketBuilder,
 };
 
@@ -21,7 +21,7 @@ fn main() {
     let builder = PacketBuilder::new(dcid.to_vec(), scid.to_vec());
     let tp = f03_original_dcid_forbidden();
 
-    match drive_handshake_initial(builder, &tp) {
+    match drive_handshake_full(builder, &tp) {
         Ok(Some(cc)) => {
             match assert_transport_param_error_with_tag(&cc, "[QUIC-TP-ORIGINAL-DCID-FORBIDDEN]") {
                 Ok(()) => std::process::exit(0),
