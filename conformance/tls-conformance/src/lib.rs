@@ -356,24 +356,68 @@ fn drive_handshake_initial_inner(
     let plaintext = &reply[header_len..header_len + pt_len];
 
     // Scan the plaintext for a CONNECTION_CLOSE frame (0x1c or 0x1d).
-    // Only PADDING (0x00) is explicitly consumed; any other frame type —
-    // including ACK (0x02/0x03), CRYPTO (0x06), PING (0x01), etc. — hits
-    // `_ => break` and the loop exits, returning Ok(None).  For the current
-    // sanity-PASS scenarios this is correct: a real server's first Initial
-    // reply starts with an ACK frame, so the scan bails immediately and
-    // returns Ok(None) = no CONNECTION_CLOSE found = success.
     //
-    // NOTE (phase β): scenarios that need to detect a CONNECTION_CLOSE
-    // appearing *after* an ACK frame in the same Initial packet will require
-    // a varint-aware ACK-skip routine (type byte 0x02/0x03, then five
-    // consecutive varint fields: largest_acked, ack_delay, ack_range_count,
-    // first_ack_range, then 2×ack_range_count additional varints).
-    // That routine is not implemented here.
+    // A real navette server's first Initial reply typically leads with an
+    // ACK (0x02/0x03) before the CONNECTION_CLOSE frame, so the scanner has
+    // to varint-skip ACK frames per RFC 9000 §19.3:
+    //
+    //   ACK Frame {
+    //     Type (i) = 0x02..0x03,
+    //     Largest Acknowledged (i),
+    //     ACK Delay (i),
+    //     ACK Range Count (i) = N,
+    //     First ACK Range (i),
+    //     ACK Range (..) ...,  -- N pairs of (Gap, ACK Range Length)
+    //     [ECN Counts (..)],   -- 3 varints only when Type = 0x03
+    //   }
+    //
+    // PADDING (0x00) and PING (0x01) are also consumed (single byte each
+    // per §19.1 / §19.2). Any other frame type (CRYPTO, NEW_CONNECTION_ID,
+    // HANDSHAKE_DONE, etc.) is non-fatal but unparsable here — we bail and
+    // return Ok(None) so the caller can decide.
     let mut i = 0;
     while i < plaintext.len() {
         let ft = plaintext[i];
         match ft {
-            0x00 => { i += 1; }
+            // PADDING / PING — single byte, no payload.
+            0x00 | 0x01 => { i += 1; }
+            // ACK / ACK_ECN — varint-skip per RFC 9000 §19.3.
+            0x02 | 0x03 => {
+                let with_ecn = ft == 0x03;
+                let mut p = i + 1; // past type byte
+                // Largest Acknowledged, ACK Delay.
+                let (_largest, n1) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: largest_acked varint truncated".to_string())?;
+                p += n1;
+                let (_delay, n2) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: ack_delay varint truncated".to_string())?;
+                p += n2;
+                // ACK Range Count, First ACK Range.
+                let (range_count, n3) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: range_count varint truncated".to_string())?;
+                p += n3;
+                let (_first, n4) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: first_range varint truncated".to_string())?;
+                p += n4;
+                // Each ACK Range is two varints: Gap, ACK Range Length.
+                for _ in 0..range_count {
+                    let (_gap, ng) = decode_varint(&plaintext[p..])
+                        .ok_or_else(|| "ACK: gap varint truncated".to_string())?;
+                    p += ng;
+                    let (_len, nl) = decode_varint(&plaintext[p..])
+                        .ok_or_else(|| "ACK: range_len varint truncated".to_string())?;
+                    p += nl;
+                }
+                if with_ecn {
+                    // ECT0, ECT1, CE counts.
+                    for _ in 0..3 {
+                        let (_v, nv) = decode_varint(&plaintext[p..])
+                            .ok_or_else(|| "ACK_ECN: count varint truncated".to_string())?;
+                        p += nv;
+                    }
+                }
+                i = p;
+            }
             0x1c | 0x1d => {
                 let cc = parse_connection_close(&plaintext[i..])
                     .ok_or_else(|| "CONNECTION_CLOSE parse failed".to_string())?;
