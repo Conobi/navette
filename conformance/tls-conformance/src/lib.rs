@@ -441,12 +441,65 @@ pub mod adversarial_tp {
         out
     }
 
+    /// F07 — well-formed TP block but with max_udp_payload_size = 1100 (below
+    /// RFC 9000 §7.4 minimum 1200).
+    ///
+    /// Rebuilt from scratch (cannot reuse `server_tp_bytes_well_formed` because
+    /// that emits 0x03 = 1452); we keep every other §18 minimum in place so the
+    /// only violation is the out-of-range max_udp_payload_size.
+    pub fn f07_max_udp_payload_below_min() -> Vec<u8> {
+        let mut out = Vec::new();
+        push_tp(&mut out, 0x01, varint_value(30_000));       // max_idle_timeout
+        push_tp(&mut out, 0x03, varint_value(1100));         // max_udp_payload_size (ADVERSARIAL: < 1200)
+        push_tp(&mut out, 0x04, varint_value(1_048_576));    // initial_max_data
+        push_tp(&mut out, 0x05, varint_value(65_536));       // initial_max_stream_data_bidi_local
+        push_tp(&mut out, 0x06, varint_value(65_536));       // initial_max_stream_data_bidi_remote
+        push_tp(&mut out, 0x07, varint_value(65_536));       // initial_max_stream_data_uni
+        push_tp(&mut out, 0x08, varint_value(100));          // initial_max_streams_bidi
+        push_tp(&mut out, 0x09, varint_value(100));          // initial_max_streams_uni
+        push_tp(&mut out, 0x0f, Vec::new());                 // initial_source_connection_id (empty, valid)
+        out
+    }
+
+    /// F08 — well-formed TP block PLUS `ack_delay_exponent` = 21 (above RFC 9000
+    /// §7.4 maximum of 20).
+    pub fn f08_ack_delay_exponent_above_max() -> Vec<u8> {
+        let mut out = server_tp_bytes_well_formed();
+        push_tp(&mut out, 0x0a, varint_value(21));
+        out
+    }
+
+    /// F09 — well-formed TP block PLUS `max_ack_delay` = 16384 (must be strictly
+    /// less than 2^14 = 16384 per RFC 9000 §18.2; 16384 itself fails the check).
+    pub fn f09_max_ack_delay_above_threshold() -> Vec<u8> {
+        let mut out = server_tp_bytes_well_formed();
+        push_tp(&mut out, 0x0b, varint_value(16384));
+        out
+    }
+
     /// Append a TP entry whose value is itself a varint (covers the integer-
     /// valued params in §18.2).
     fn push_varint_tp(out: &mut Vec<u8>, id: u64, value: u64) {
         let mut value_bytes: Vec<u8> = Vec::new();
         encode_varint(value, &mut value_bytes);
         push_raw_tp(out, id, value_bytes);
+    }
+
+    /// Append a TP entry with an arbitrary pre-encoded byte value.
+    ///
+    /// Used by F07/F08/F09 where the value encoding is performed by the caller
+    /// via `varint_value` (pre-encoded) or with an explicit `Vec<u8>`.
+    fn push_tp(out: &mut Vec<u8>, id: u64, value: Vec<u8>) {
+        encode_varint(id, out);
+        encode_varint(value.len() as u64, out);
+        out.extend_from_slice(&value);
+    }
+
+    /// Encode a u64 as a QUIC variable-length integer and return the bytes.
+    fn varint_value(v: u64) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        encode_varint(v, &mut buf);
+        buf
     }
 
     /// Append a TP entry with a raw (opaque) byte value.
@@ -565,5 +618,68 @@ mod tests {
         assert_eq!(consumed, tp.len(), "F06 TP block walks cleanly");
         assert!(ids.contains(&0x0f), "F06 keeps initial_source_connection_id");
         assert!(ids.contains(&0x02), "F06 must include stateless_reset_token");
+    }
+
+    /// Walk a TP block, calling the closure with (id, len, value_slice) for
+    /// each entry. Used by F07/F08/F09 helper tests to inspect individual
+    /// parameter values.
+    fn walk_tp<F: FnMut(u64, usize, &[u8])>(tp: &[u8], mut f: F) {
+        let mut i = 0;
+        while i < tp.len() {
+            let (id, c) = decode_varint(&tp[i..]).expect("id varint");
+            i += c;
+            let (len, c) = decode_varint(&tp[i..]).expect("len varint");
+            i += c;
+            let len = len as usize;
+            assert!(i + len <= tp.len(), "value bounds for id 0x{:x}", id);
+            f(id, len, &tp[i..i + len]);
+            i += len;
+        }
+    }
+
+    #[test]
+    fn f07_emits_max_udp_payload_1100() {
+        let tp = super::adversarial_tp::f07_max_udp_payload_below_min();
+        let mut found = false;
+        walk_tp(&tp, |id, len, value| {
+            if id == 0x03 {
+                // 1100 as 2-byte QUIC varint: top 2 bits = 01 → 0x4000 | 1100 = 0x444C
+                assert_eq!(len, 2, "max_udp_payload_size 1100 encodes as 2-byte varint");
+                assert_eq!(value, &[0x44, 0x4c], "1100 big-endian 2-byte varint");
+                found = true;
+            }
+        });
+        assert!(found, "TP id 0x03 missing");
+    }
+
+    #[test]
+    fn f08_appends_ack_delay_exp_21() {
+        let base = server_tp_bytes_well_formed();
+        let tp = super::adversarial_tp::f08_ack_delay_exponent_above_max();
+        // 21 fits in a 1-byte varint; entry = 1 (id 0x0a) + 1 (len=1) + 1 (value) = 3 bytes
+        assert_eq!(tp.len(), base.len() + 3, "one appended 0x0a entry = 3 bytes");
+        let mut found = false;
+        walk_tp(&tp, |id, _len, value| {
+            if id == 0x0a {
+                assert_eq!(value, &[21], "ack_delay_exponent value is 21");
+                found = true;
+            }
+        });
+        assert!(found, "appended 0x0a not found");
+    }
+
+    #[test]
+    fn f09_appends_max_ack_delay_16384() {
+        let tp = super::adversarial_tp::f09_max_ack_delay_above_threshold();
+        let mut found = false;
+        walk_tp(&tp, |id, len, value| {
+            if id == 0x0b {
+                // 16384 as 4-byte QUIC varint: top 2 bits = 10 → 0x80000000 | 0x00004000
+                assert_eq!(len, 4, "max_ack_delay 16384 encodes as 4-byte varint");
+                assert_eq!(value, &[0x80, 0x00, 0x40, 0x00], "16384 big-endian 4-byte varint");
+                found = true;
+            }
+        });
+        assert!(found, "appended 0x0b not found");
     }
 }
