@@ -192,12 +192,17 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
     }
 }
 
-/// Build the conformance-only rustls QUIC client config.
+/// Build the conformance-only rustls QUIC client config with a caller-supplied
+/// ALPN list.
 ///
-/// TLS 1.3-only, ALPN = `["h3"]`, no client auth, accepts any server cert.
+/// TLS 1.3-only, no client auth, accepts any server cert. Each entry in `alpn`
+/// is copied into `ClientConfig::alpn_protocols`. Pass `&[b"h3"]` for the
+/// normal handshake path or `&[]` to drive F27 (empty ALPN → server emits
+/// `no_application_protocol` alert 120).
+///
 /// Returns an `Arc` because `rustls::quic::ClientConnection::new` consumes
 /// `Arc<ClientConfig>`.
-fn build_quic_client_config() -> Arc<rustls::ClientConfig> {
+pub fn build_quic_client_config_with_alpn(alpn: &[&[u8]]) -> Arc<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(AcceptAnyServerCert { provider: Arc::clone(&provider) });
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
@@ -206,7 +211,7 @@ fn build_quic_client_config() -> Arc<rustls::ClientConfig> {
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"h3".to_vec()];
+    config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Arc::new(config)
 }
 
@@ -216,6 +221,9 @@ fn build_quic_client_config() -> Arc<rustls::ClientConfig> {
 /// `write_hs`, wraps it in an Initial packet with `builder.encode_initial`,
 /// sends it over UDP to `server_addr()`, and waits up to `TLS_HANDSHAKE_TIMEOUT_MS`
 /// (default 500 ms) for a reply.
+///
+/// Uses ALPN = `["h3"]`. For F27 (empty ALPN) use
+/// `drive_handshake_initial_no_alpn`.
 ///
 /// Returns:
 ///   * `Ok(None)` — server replied with a non-CONNECTION_CLOSE Initial that
@@ -227,10 +235,34 @@ fn build_quic_client_config() -> Arc<rustls::ClientConfig> {
 /// Phase α sanity contract: only `Ok(None)` counts as PASS. Phase β scenario
 /// binaries flip this expectation per-row.
 pub fn drive_handshake_initial(
-    mut builder: PacketBuilder,
+    builder: PacketBuilder,
     tp_bytes: &[u8],
 ) -> Result<Option<ConnectionClose>, String> {
-    let config = build_quic_client_config();
+    let config = build_quic_client_config_with_alpn(&[b"h3"]);
+    drive_handshake_initial_inner(builder, tp_bytes, config)
+}
+
+/// F27 variant of `drive_handshake_initial` that supplies a `ClientConfig`
+/// with an empty `alpn_protocols`. The navette server's QUIC config requires
+/// `h3`; the TLS layer must emit `no_application_protocol` (alert 120) which
+/// surfaces as a CRYPTO_ERROR CONNECTION_CLOSE with low byte 120 (or 50 if
+/// rustls couldn't extract a specific alert).
+pub fn drive_handshake_initial_no_alpn(
+    builder: PacketBuilder,
+    tp_bytes: &[u8],
+) -> Result<Option<ConnectionClose>, String> {
+    let config = build_quic_client_config_with_alpn(&[]);
+    drive_handshake_initial_inner(builder, tp_bytes, config)
+}
+
+/// Shared body for the Initial-flight drivers. Caller picks the ALPN by
+/// supplying a fully-built `ClientConfig`; everything downstream (UDP send,
+/// reply decrypt, CONNECTION_CLOSE scan) is identical across variants.
+fn drive_handshake_initial_inner(
+    mut builder: PacketBuilder,
+    tp_bytes: &[u8],
+    config: Arc<rustls::ClientConfig>,
+) -> Result<Option<ConnectionClose>, String> {
     let server_name = rustls::pki_types::ServerName::try_from("localhost")
         .map_err(|e| format!("invalid server name: {e}"))?;
     let mut conn = rustls::quic::ClientConnection::new(
@@ -395,7 +427,7 @@ pub mod adversarial_tp {
     /// Value is an 8-byte placeholder connection-ID (zeros).
     pub fn f03_original_dcid_forbidden() -> Vec<u8> {
         let mut out = server_tp_bytes_well_formed();
-        push_raw_tp(&mut out, 0x00, vec![0u8; 8]);
+        push_tp(&mut out, 0x00, vec![0u8; 8]);
         out
     }
 
@@ -417,7 +449,7 @@ pub mod adversarial_tp {
         val.push(0);                              // CID length = 0
         val.extend_from_slice(&[0u8; 16]);        // stateless reset token
         debug_assert_eq!(val.len(), 41, "preferred_address minimum value size");
-        push_raw_tp(&mut out, 0x0d, val);
+        push_tp(&mut out, 0x0d, val);
         out
     }
 
@@ -427,7 +459,7 @@ pub mod adversarial_tp {
     /// 8-byte placeholder value.
     pub fn f05_retry_scid_forbidden() -> Vec<u8> {
         let mut out = server_tp_bytes_well_formed();
-        push_raw_tp(&mut out, 0x10, vec![0u8; 8]);
+        push_tp(&mut out, 0x10, vec![0u8; 8]);
         out
     }
 
@@ -437,7 +469,7 @@ pub mod adversarial_tp {
     /// Fixed 16-byte length per §10.3.
     pub fn f06_stateless_reset_forbidden() -> Vec<u8> {
         let mut out = server_tp_bytes_well_formed();
-        push_raw_tp(&mut out, 0x02, vec![0u8; 16]);
+        push_tp(&mut out, 0x02, vec![0u8; 16]);
         out
     }
 
@@ -482,13 +514,14 @@ pub mod adversarial_tp {
     fn push_varint_tp(out: &mut Vec<u8>, id: u64, value: u64) {
         let mut value_bytes: Vec<u8> = Vec::new();
         encode_varint(value, &mut value_bytes);
-        push_raw_tp(out, id, value_bytes);
+        push_tp(out, id, value_bytes);
     }
 
-    /// Append a TP entry with an arbitrary pre-encoded byte value.
+    /// Append a TP entry as `varint(id) || varint(len) || value`.
     ///
-    /// Used by F07/F08/F09 where the value encoding is performed by the caller
-    /// via `varint_value` (pre-encoded) or with an explicit `Vec<u8>`.
+    /// Single helper used by every adversarial builder. `value` is an opaque
+    /// byte vector; callers that need varint-encoded values pre-encode via
+    /// `varint_value` or use `push_varint_tp`.
     fn push_tp(out: &mut Vec<u8>, id: u64, value: Vec<u8>) {
         encode_varint(id, out);
         encode_varint(value.len() as u64, out);
@@ -500,13 +533,6 @@ pub mod adversarial_tp {
         let mut buf: Vec<u8> = Vec::new();
         encode_varint(v, &mut buf);
         buf
-    }
-
-    /// Append a TP entry with a raw (opaque) byte value.
-    fn push_raw_tp(out: &mut Vec<u8>, id: u64, value: Vec<u8>) {
-        encode_varint(id, out);
-        encode_varint(value.len() as u64, out);
-        out.extend_from_slice(&value);
     }
 }
 
@@ -666,6 +692,21 @@ mod tests {
             }
         });
         assert!(found, "appended 0x0a not found");
+    }
+
+    #[test]
+    fn build_quic_client_config_with_alpn_propagates_list() {
+        let cfg = build_quic_client_config_with_alpn(&[b"h3"]);
+        assert_eq!(cfg.alpn_protocols, vec![b"h3".to_vec()]);
+
+        let empty = build_quic_client_config_with_alpn(&[]);
+        assert!(
+            empty.alpn_protocols.is_empty(),
+            "F27 driver must produce a config with zero ALPN entries",
+        );
+
+        let multi = build_quic_client_config_with_alpn(&[b"h3", b"h2"]);
+        assert_eq!(multi.alpn_protocols, vec![b"h3".to_vec(), b"h2".to_vec()]);
     }
 
     #[test]
