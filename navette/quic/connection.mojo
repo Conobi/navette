@@ -90,6 +90,7 @@ from navette.quic.trans_param import (
     TransportParams,
     parse_transport_params,
     serialize_transport_params,
+    validate_client_transport_params,
 )
 from navette.quic.pn_space import (
     EncryptionLevel,
@@ -1937,7 +1938,37 @@ struct QuicConnection(Movable):
             for i in range(tp_len):
                 tp_bytes.append(tp_buf[i])
 
-            var peer_tp = parse_transport_params(Span(tp_bytes))
+            # Parse the peer's transport parameters. The parser raises with a
+            # GUARD_TAG_TP_* bracketed prefix on §18.2 range violations
+            # (F07/F08/F09); any other parse error here is still a
+            # TRANSPORT_PARAMETER_ERROR per RFC 9000 §20.1. We follow the
+            # "close + return" model: queue a transport CONNECTION_CLOSE
+            # (0x1c) with error_code 0x08 and the raised string as the
+            # reason, then return without raising so the I/O loop does not
+            # swallow this on its catch-all path.
+            var peer_tp = TransportParams()
+            try:
+                peer_tp = parse_transport_params(Span(tp_bytes))
+            except e:
+                tp_buf.free()
+                tp_written.free()
+                self.close_transport(UInt64(0x08), String(e), now)
+                return
+
+            # Server-side §7.3 + §18.2 validation: required ISCID (F02) and
+            # forbidden server-only fields (F03-F06). Each violation raises
+            # with the matching GUARD_TAG_TP_* prefix, which we propagate
+            # verbatim through close_transport so the out-of-process
+            # scenarios can grep the reason phrase.
+            if self.is_server:
+                try:
+                    validate_client_transport_params(peer_tp)
+                except e:
+                    tp_buf.free()
+                    tp_written.free()
+                    self.close_transport(UInt64(0x08), String(e), now)
+                    return
+
             self.peer_params = TransportParams(other=peer_tp)
             self.events.append(QuicEvent.peer_transport_params(peer_tp))
 

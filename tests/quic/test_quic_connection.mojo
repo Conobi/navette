@@ -27,6 +27,7 @@ from navette.quic.guard_predicates import (
     QuicResetCtx,
     QuicStopSendingCtx,
 )
+from navette.quic.guard_tags import GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN
 from navette.quic.cid import CID_ACTIVE
 from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
 from navette.quic.pn_space import SentPacket
@@ -2940,6 +2941,96 @@ def test_predicate_f16_negative_sibling_input() raises:
     print("  test_predicate_f16_negative_sibling_input: PASS")
 
 
+def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
+    """Server routes a client TP violation through close_transport rather than raising.
+
+    Builds a client whose `local_params` carry the server-only
+    `original_destination_connection_id` (RFC 9000 §18.2 — F03 violation).
+    After driving the handshake, the server must:
+
+      * NOT raise an exception out of `_on_handshake_complete` (close + return
+        contract: errors on the TLS-error path must surface as a queued
+        CONNECTION_CLOSE, not a raise that the I/O loop would swallow).
+      * Set `pending_close` with `error_code == 0x08`
+        (TRANSPORT_PARAMETER_ERROR, RFC 9000 §20.1).
+      * Embed `[QUIC-TP-ORIGINAL-DCID-FORBIDDEN]` in the reason so the
+        out-of-process scenario binary can grep for it as proof the violation
+        was detected for the right reason.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+
+    # Build adversarial client TPs: a well-formed baseline plus the
+    # server-only `original_destination_connection_id` (8 zero bytes is enough
+    # to fail the presence check; the value is irrelevant).
+    var bad_params = _default_params()
+    var orig_dcid_payload = List[UInt8]()
+    for _ in range(8):
+        orig_dcid_payload.append(UInt8(0))
+    bad_params.original_dcid = orig_dcid_payload^
+
+    var good_params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", bad_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, good_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+
+    # Drive the handshake. The server should reach _on_handshake_complete,
+    # decode the peer TPs, detect F03, and queue a CONNECTION_CLOSE.
+    for _ in range(20):
+        now += UInt64(10_000)
+        var c_dg = client.send(now)
+        for i in range(len(c_dg)):
+            try:
+                server.recv(Span(c_dg[i]), now)
+            except:
+                pass
+        var s_dg = server.send(now)
+        for i in range(len(s_dg)):
+            try:
+                client.recv(Span(s_dg[i]), now)
+            except:
+                pass
+        if server.pending_close:
+            break
+
+    assert_true(
+        Bool(server.pending_close),
+        "server.pending_close not set after F03 violation",
+    )
+    var cc = server.pending_close.value().copy()
+    assert_equal_int(
+        Int(cc.error_code), 0x08,
+        "server CONNECTION_CLOSE error_code must be TRANSPORT_PARAMETER_ERROR",
+    )
+    assert_true(cc.is_transport, "server must use transport-CC (0x1c) for TP violation")
+
+    # Reason carries the GUARD-TAG bracketed marker.
+    var tag = String(GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN)
+    var reason_str = String("")
+    for i in range(len(cc.reason)):
+        reason_str = reason_str + chr(Int(cc.reason[i]))
+    assert_true(
+        tag in reason_str,
+        "reason must contain " + tag + ", got " + reason_str,
+    )
+
+    _ = tls^
+    print("  test_on_handshake_complete_close_transport_on_invalid_tp: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -2986,4 +3077,5 @@ def main() raises:
     test_predicate_f16_positive()
     test_predicate_f16_negative_no_violation()
     test_predicate_f16_negative_sibling_input()
+    test_on_handshake_complete_close_transport_on_invalid_tp()
     print("All test_quic_connection tests passed.")
