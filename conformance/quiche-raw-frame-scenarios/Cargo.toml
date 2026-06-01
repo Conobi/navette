@@ -25,3 +25,7 @@ path = "src/bin/s_f01_stream_large_offset.rs"
 [[bin]]
 name = "s_f10_unknown_frame"
 path = "src/bin/s_f10_unknown_frame.rs"
+
+[[bin]]
+name = "s_f11_no_frames"
+path = "src/bin/s_f11_no_frames.rs"
