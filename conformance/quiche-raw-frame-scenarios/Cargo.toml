@@ -37,3 +37,7 @@ path = "src/bin/s_f12_reserved_bits_hs.rs"
 [[bin]]
 name = "s_f13_path_challenge_hs"
 path = "src/bin/s_f13_path_challenge_hs.rs"
+
+[[bin]]
+name = "s_f14_reserved_bits_short"
+path = "src/bin/s_f14_reserved_bits_short.rs"
