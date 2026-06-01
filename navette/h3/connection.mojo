@@ -29,6 +29,7 @@ from navette.h3.frame import (
     H3_FRAME_GOAWAY,
     SETTINGS_QPACK_MAX_TABLE_CAPACITY,
     SETTINGS_MAX_FIELD_SECTION_SIZE,
+    SETTINGS_H3_DATAGRAM,
     parse_h3_frame,
 )
 from navette.h3.error import (
@@ -69,6 +70,10 @@ struct H3Event(Copyable, Movable):
     comptime STREAM_RESET:       UInt8 = 6
     comptime GOAWAY_RECEIVED:    UInt8 = 7
     comptime CONNECTION_CLOSED:  UInt8 = 8
+    # RFC 9297 §2 — an H3-framed datagram has been received. `stream_id`
+    # carries the associated request stream id (quarter_id * 4); `data`
+    # holds the payload bytes following the quarter-stream-ID varint.
+    comptime DATAGRAM_RECEIVED:  UInt8 = 9
 
     var kind:          UInt8
     var stream_id:     UInt64
@@ -162,6 +167,14 @@ struct H3Connection(Movable):
     # Per-request-stream HEADERS-seen flag, feeding the F31 (DATA-before-
     # HEADERS) and F36 (CANCEL_PUSH-on-request) predicate inputs.
     var _request_headers_seen:       Dict[Int, Bool]
+    # RFC 9297 §2.2 — both endpoints MUST advertise SETTINGS_H3_DATAGRAM=1
+    # before H3 datagrams may flow. `_local_h3_datagram_enabled` controls
+    # what THIS connection emits in its own SETTINGS frame; the field
+    # defaults False so existing tests/examples stay byte-for-byte
+    # compatible. `_peer_h3_datagram_enabled` is set when the peer's
+    # SETTINGS frame is received with H3_DATAGRAM=1.
+    var _local_h3_datagram_enabled:  Bool
+    var _peer_h3_datagram_enabled:   Bool
     var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
@@ -183,6 +196,8 @@ struct H3Connection(Movable):
         self._enc = QpackEncoder(False)
         self._dec = QpackDecoder()
         self._request_headers_seen = Dict[Int, Bool]()
+        self._local_h3_datagram_enabled = False
+        self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
 
     def __init__(out self, *, deinit take: Self):
@@ -204,6 +219,8 @@ struct H3Connection(Movable):
         self._enc = take._enc^
         self._dec = take._dec^
         self._request_headers_seen = take._request_headers_seen^
+        self._local_h3_datagram_enabled = take._local_h3_datagram_enabled
+        self._peer_h3_datagram_enabled = take._peer_h3_datagram_enabled
         self.profile_ptr = take.profile_ptr
 
     @staticmethod
@@ -218,6 +235,27 @@ struct H3Connection(Movable):
 
     def is_established(self) -> Bool:
         return self._quic.is_established()
+
+    def enable_h3_datagrams(mut self):
+        """RFC 9297 §2.2 — opt this connection into emitting H3 datagrams.
+
+        MUST be called BEFORE the handshake completes (i.e. before
+        `_bootstrap_local_streams` writes the local SETTINGS frame).
+        Toggles SETTINGS_H3_DATAGRAM=1 in the local advertisement;
+        sending H3 datagrams additionally requires the peer's SETTINGS
+        to carry the same flag and the QUIC layer to have negotiated
+        max_datagram_frame_size > 0 via RFC 9221.
+        """
+        self._local_h3_datagram_enabled = True
+
+    def peer_h3_datagrams_enabled(self) -> Bool:
+        """True iff the peer advertised SETTINGS_H3_DATAGRAM=1.
+
+        Returns the cached flag set during the peer-SETTINGS handler;
+        before peer SETTINGS arrival the value is False (matching the
+        "datagrams refused" semantic).
+        """
+        return self._peer_h3_datagram_enabled
 
     def is_closed(self) -> Bool:
         return self._quic.is_closed()
@@ -319,6 +357,8 @@ struct H3Connection(Movable):
                 h3ev.error_code = ev.error_code
                 h3ev.reason = ev.reason
                 self._h3_events.append(h3ev^)
+            elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
+                self._dispatch_quic_datagram(ev.datagram_payload)
 
     def feed_datagram_from_buffer(
         mut self,
@@ -373,6 +413,8 @@ struct H3Connection(Movable):
                 h3ev.error_code = ev.error_code
                 h3ev.reason = ev.reason
                 self._h3_events.append(h3ev^)
+            elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
+                self._dispatch_quic_datagram(ev.datagram_payload)
 
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
@@ -433,7 +475,82 @@ struct H3Connection(Movable):
         self._stream_bufs[Int(sid)] = sbuf^
         return sid
 
+    def send_datagram(
+        mut self, stream_id: UInt64, payload: Span[UInt8, _]
+    ) raises -> Bool:
+        """RFC 9297 §2.1 — send an H3 datagram associated with `stream_id`.
+
+        Encodes `quarter_stream_id (= stream_id / 4)` as a varint prefix
+        followed by the application payload, then hands the combined bytes
+        to `QuicConnection.send_datagram`. Returns False if H3 datagrams
+        are not negotiated (peer SETTINGS missing H3_DATAGRAM=1) OR the
+        underlying QUIC layer refuses (peer max_datagram_frame_size = 0,
+        cap exceeded, connection closing/draining).
+
+        Raises only on the structural precondition that `stream_id` MUST
+        be client-initiated bidirectional (i.e. `stream_id % 4 == 0`).
+        Per RFC 9297 §2.1, H3 datagrams associate to client-initiated
+        bidi streams; any other id is a usage error rather than a
+        wire-protocol violation, so it surfaces as a Mojo raise.
+        """
+        if not self._peer_h3_datagram_enabled:
+            return False
+        if stream_id & UInt64(3) != UInt64(0):
+            raise "H3 datagrams: stream_id must be client-initiated bidi (% 4 == 0)"
+        var quarter_id = stream_id / UInt64(4)
+        var w = ByteWriter()
+        varint_encode(w, quarter_id)
+        var prefix = w.finish()
+        # Coalesce the quarter-id prefix and the application payload into
+        # a single buffer so the QUIC layer sees one DATAGRAM frame.
+        var buf = List[UInt8]()
+        for i in range(len(prefix)):
+            buf.append(prefix[i])
+        for i in range(len(payload)):
+            buf.append(payload[i])
+        return self._quic.send_datagram(Span(buf))
+
     # --- Internal: bootstrap -------------------------------------------------
+
+    def _dispatch_quic_datagram(mut self, payload: List[UInt8]):
+        """RFC 9297 §2.1 — decode an H3 datagram from a QUIC DATAGRAM payload.
+
+        Each inbound QUIC DATAGRAM carries `varint(quarter_stream_id) + bytes`.
+        We decode the prefix, expand it to the associated request stream id
+        (`quarter_id * 4` per §2.1), and emit an H3Event so the caller can
+        demux. Malformed varints (truncated, or with a value that overflows
+        the stream-id space) are silently dropped — H3 datagrams are an
+        application-controlled side channel and dropping mirrors the loss
+        semantics of the underlying QUIC layer (RFC 9221 §5.4).
+
+        We do NOT gate on `_local_h3_datagram_enabled` here: by the time
+        the peer's DATAGRAM reached us the QUIC layer already accepted it,
+        and per §2.2 the local endpoint MAY choose to dispatch even if it
+        did not advertise H3_DATAGRAM (the negotiated property is a SHOULD
+        for sending, not for receiving).
+        """
+        # Empty payload cannot carry a quarter-stream-ID; silently drop.
+        if len(payload) == 0:
+            return
+        var r = ByteReader(Span(payload))
+        var quarter_id: UInt64
+        try:
+            quarter_id = varint_decode(r)
+        except:
+            return
+        # Saturating multiply check: stream-id space is 62-bit (RFC 9000
+        # §2.1). quarter_id * 4 cannot overflow 64 bits in any plausible
+        # sender, but be defensive.
+        if quarter_id > UInt64(0x3FFFFFFFFFFFFFFF):
+            return
+        var stream_id = quarter_id * UInt64(4)
+        var rest = List[UInt8]()
+        for i in range(r.pos, len(payload)):
+            rest.append(payload[i])
+        var h3ev = H3Event(H3Event.DATAGRAM_RECEIVED)
+        h3ev.stream_id = stream_id
+        h3ev.data = rest^
+        self._h3_events.append(h3ev^)
 
     def _bootstrap_local_streams(mut self, now: UInt64) raises:
         """Open 3 uni streams, write type varints, send SETTINGS. Guarded by _init_done."""
@@ -459,6 +576,11 @@ struct H3Connection(Movable):
         var pairs = List[SettingsPair]()
         pairs.append(SettingsPair(SETTINGS_QPACK_MAX_TABLE_CAPACITY, UInt64(0)))
         pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, UInt64(0x7FFFFFFF)))
+        # RFC 9297 §2.2 — only advertise H3_DATAGRAM if the caller opted in
+        # via `enable_h3_datagrams()`. Default-off keeps SETTINGS wire-byte
+        # compatibility with non-MASQUE/WebTransport tests.
+        if self._local_h3_datagram_enabled:
+            pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
         var sf = SettingsFrame(pairs)
         var settings_wire = sf.encode()
         self._quic.send_stream_data(ctrl_sid, Span(settings_wire), False)
@@ -716,7 +838,15 @@ struct H3Connection(Movable):
                 self._quic.close_app(v.error_code, v.tag, now)
                 return
             self._peer_ctrl_settings = True
-            _ = SettingsFrame.decode(frame.payload)
+            var peer_settings = SettingsFrame.decode(frame.payload)
+            # RFC 9297 §2.2: detect H3_DATAGRAM=1 in the peer's SETTINGS
+            # so subsequent send_datagram calls can gate on the negotiated
+            # flag. Values other than 0/1 are reserved but the only
+            # observable semantic is "non-zero == enabled"; we mirror that.
+            var peer_h3d = peer_settings.get(SETTINGS_H3_DATAGRAM)
+            if peer_h3d:
+                if peer_h3d.value() != UInt64(0):
+                    self._peer_h3_datagram_enabled = True
             var h3ev = H3Event(H3Event.SETTINGS_RECEIVED)
             self._h3_events.append(h3ev^)
 

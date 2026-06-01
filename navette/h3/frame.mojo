@@ -10,6 +10,11 @@ comptime H3_FRAME_GOAWAY:   UInt64 = 0x07
 comptime SETTINGS_QPACK_MAX_TABLE_CAPACITY: UInt64 = 0x01
 comptime SETTINGS_MAX_FIELD_SECTION_SIZE:   UInt64 = 0x06
 comptime SETTINGS_QPACK_BLOCKED_STREAMS:    UInt64 = 0x07
+# RFC 9297 §2.2 — H3_DATAGRAM SETTINGS identifier. Both peers MUST
+# advertise this (value = 1) before either side may send H3-framed
+# datagrams; absence or 0 means H3-layer datagrams are unsupported even
+# if the underlying QUIC layer negotiated DATAGRAM via RFC 9221.
+comptime SETTINGS_H3_DATAGRAM: UInt64 = 0x33
 
 
 struct H3RawFrame(Copyable, Movable):

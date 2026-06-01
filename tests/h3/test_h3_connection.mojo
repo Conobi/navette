@@ -100,6 +100,217 @@ def _pump_h3(
     return now
 
 
+# ── RFC 9297 — HTTP/3 datagram helpers ───────────────────────────────
+
+
+def _h3_datagram_params() -> TransportParams:
+    """Variant of `_h3_default_params` with RFC 9221 DATAGRAM advertised.
+
+    Both endpoints share these TPs so the QUIC layer negotiates DATAGRAM
+    support; H3 layer opt-in is done separately via `enable_h3_datagrams`.
+    """
+    var p = default_transport_params()
+    p.max_idle_timeout = UInt64(30_000)
+    p.initial_max_data = UInt64(1_048_576)
+    p.initial_max_stream_data_bidi_local = UInt64(65_536)
+    p.initial_max_stream_data_bidi_remote = UInt64(65_536)
+    p.initial_max_streams_bidi = UInt64(100)
+    p.initial_max_streams_uni = UInt64(100)
+    p.max_datagram_frame_size = UInt64(1500)
+    return p^
+
+
+def _h3_dgram_pump_until_negotiated(
+    mut client: H3Connection, mut server: H3Connection, mut now: UInt64
+) raises -> UInt64:
+    """Pump until both sides have observed each other's SETTINGS frame.
+
+    Drains H3 events on both sides as it goes so the caller's subsequent
+    poll_event() sees only fresh events triggered by its own actions.
+    Returns the advanced `now`.
+    """
+    for _ in range(60):
+        now = _pump_h3(server, client, now, 1)
+        while True:
+            var ev = client.poll_event()
+            if not ev:
+                break
+        while True:
+            var ev = server.poll_event()
+            if not ev:
+                break
+        if (client.peer_h3_datagrams_enabled()
+                and server.peer_h3_datagrams_enabled()):
+            return now
+    return now
+
+
+def test_h3_send_datagram_refused_when_peer_disabled() raises:
+    """RFC 9297 §2.2: send_datagram returns False when peer SETTINGS lacks H3_DATAGRAM.
+
+    Server enables H3_DATAGRAM=1 locally; client does NOT enable it. The
+    server still advertises but never sees H3_DATAGRAM in the peer's
+    SETTINGS, so `send_datagram` from the server side must refuse.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _h3_datagram_params()
+    var now = UInt64(1_000_000)
+    var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server_h3 = H3Connection.server(server_quic^)
+    var client_h3 = H3Connection.client(client_quic^)
+    # Server opts in; client does NOT.
+    server_h3.enable_h3_datagrams()
+
+    # Pump a fixed number of rounds; client will never set peer flag.
+    for _ in range(40):
+        now = _pump_h3(server_h3, client_h3, now, 1)
+        while True:
+            var ev = client_h3.poll_event()
+            if not ev:
+                break
+        while True:
+            var ev = server_h3.poll_event()
+            if not ev:
+                break
+        if client_h3.is_established() and server_h3.is_established():
+            break
+
+    assert_true(server_h3.is_established(), "server handshake failed")
+    assert_false(
+        server_h3.peer_h3_datagrams_enabled(),
+        "server must NOT see peer H3_DATAGRAM (client did not enable)",
+    )
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x42))
+    var ok = server_h3.send_datagram(UInt64(0), Span(payload))
+    assert_false(ok, "server send_datagram must refuse when peer disabled")
+    _ = tls^
+    print("  test_h3_send_datagram_refused_when_peer_disabled: PASS")
+
+
+def test_h3_send_datagram_rejects_non_bidi_stream_id() raises:
+    """RFC 9297 §2.1: stream_id MUST be client-initiated bidi (% 4 == 0).
+
+    Both sides enable H3_DATAGRAM so the negotiation succeeds; we then
+    call send_datagram with a server-initiated bidi id (1 % 4 = 1) and
+    expect the structural-precondition raise.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _h3_datagram_params()
+    var now = UInt64(1_000_000)
+    var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server_h3 = H3Connection.server(server_quic^)
+    var client_h3 = H3Connection.client(client_quic^)
+    client_h3.enable_h3_datagrams()
+    server_h3.enable_h3_datagrams()
+    now = _h3_dgram_pump_until_negotiated(client_h3, server_h3, now)
+    assert_true(client_h3.peer_h3_datagrams_enabled(), "negotiation precondition failed")
+
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x01))
+    var caught = False
+    try:
+        _ = client_h3.send_datagram(UInt64(1), Span(payload))
+    except e:
+        caught = True
+        var msg = String(e)
+        assert_true(
+            "client-initiated bidi" in msg,
+            "raise must explain the bidi requirement, got: " + msg,
+        )
+    assert_true(caught, "send_datagram(stream_id=1) must raise")
+    _ = tls^
+    print("  test_h3_send_datagram_rejects_non_bidi_stream_id: PASS")
+
+
+def test_h3_datagram_round_trip() raises:
+    """RFC 9297 §2: client→server H3 datagram with stream-id association.
+
+    Both endpoints enable H3_DATAGRAM, the client opens a bidi stream
+    (id = 0), sends an H3 datagram on it, and the server emits an
+    H3Event.DATAGRAM_RECEIVED with the matching stream_id + payload.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _h3_datagram_params()
+    var now = UInt64(1_000_000)
+    var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server_h3 = H3Connection.server(server_quic^)
+    var client_h3 = H3Connection.client(client_quic^)
+    client_h3.enable_h3_datagrams()
+    server_h3.enable_h3_datagrams()
+    now = _h3_dgram_pump_until_negotiated(client_h3, server_h3, now)
+
+    assert_true(client_h3.peer_h3_datagrams_enabled(), "client peer flag")
+    assert_true(server_h3.peer_h3_datagrams_enabled(), "server peer flag")
+
+    var sid = client_h3.open_bidi_stream()
+    assert_equal_int(Int(sid), 0, "expected stream id 0 (quarter id = 0)")
+    var payload = List[UInt8]()
+    payload.append(UInt8(ord("p")))
+    payload.append(UInt8(ord("o")))
+    payload.append(UInt8(ord("n")))
+    payload.append(UInt8(ord("g")))
+    var ok = client_h3.send_datagram(sid, Span(payload))
+    assert_true(ok, "send_datagram failed despite negotiation")
+
+    now = _pump_h3(server_h3, client_h3, now, 3)
+
+    var got_dg = False
+    var matched_id = False
+    var matched_data = False
+    while True:
+        var evo = server_h3.poll_event()
+        if not evo:
+            break
+        var ev = evo.value().copy()
+        if ev.kind == H3Event.DATAGRAM_RECEIVED:
+            got_dg = True
+            if ev.stream_id == sid:
+                matched_id = True
+            if len(ev.data) == 4:
+                if (ev.data[0] == UInt8(ord("p")) and ev.data[1] == UInt8(ord("o"))
+                        and ev.data[2] == UInt8(ord("n")) and ev.data[3] == UInt8(ord("g"))):
+                    matched_data = True
+    assert_true(got_dg, "server missed DATAGRAM_RECEIVED")
+    assert_true(matched_id, "server reported wrong stream_id")
+    assert_true(matched_data, "server payload bytes mismatch")
+    _ = tls^
+    print("  test_h3_datagram_round_trip: PASS")
+
+
 def test_h3_control_stream_setup() raises:
     """After 50 pump rounds, client must receive SETTINGS_RECEIVED."""
     var tls = TlsBackend("lib/librustls_mojo.so")
@@ -497,4 +708,7 @@ def main() raises:
     test_predicate_f36_negative_sibling_input()
     test_h3_request_stream_cohort_exclusivity()
     test_h3_control_stream_cohort_exclusivity()
+    test_h3_send_datagram_refused_when_peer_disabled()
+    test_h3_send_datagram_rejects_non_bidi_stream_id()
+    test_h3_datagram_round_trip()
     print("All H3Connection tests passed.")
