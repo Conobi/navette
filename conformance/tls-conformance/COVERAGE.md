@@ -9,20 +9,21 @@ F-rows F02–F09 (transport-parameter validation, RFC 9000 §7/§18) and F25–F
 - **8 transport-parameter rows gated (F02–F09):** all transport-parameter
   guard scenarios pass; navette rejects forbidden/out-of-range TP values
   with a tagged `TRANSPORT_PARAMETER_ERROR`.
-- **4 alert-routing rows gated (F25, F26, F27, F29):** navette rejects a
+- **5 alert-routing rows gated (F25, F26, F27, F28, F29):** navette rejects a
   QUIC handshake that omits the ALPN extension (F27, `TLS_HANDSHAKE_FAILED`)
-  and surfaces a CRYPTO_ERROR CONNECTION_CLOSE when the harness injects a
+  or the `quic_transport_parameters` extension (F28, RFC 9001 §8.2 —
+  surfaced as a CRYPTO_ERROR with low byte 109 `missing_extension`), and
+  surfaces a CRYPTO_ERROR CONNECTION_CLOSE when the harness injects a
   KeyUpdate TLS handshake message in the Handshake epoch (F25) or 1-RTT
   epoch (F26), or an EndOfEarlyData message in the Handshake epoch (F29).
 - **1 alert-routing row gated (Table B / SY01):** baseline TLS handshake
   completes successfully, confirming harness runner and navette TLS stack
   are wired.
 
-## What's deferred
-
-- **F28 — `deferred:f28`:** rustls 0.23.37 does not expose an API to omit the
-  QUIC transport-parameters extension; no scenario binary can exercise that
-  rejection path in this harness cycle.
+The F28 scenario hand-assembles its ClientHello (see
+`src/raw_client_hello.rs`) because rustls 0.23.37's `ClientConnection::new`
+always wraps the supplied QUIC transport parameters in `Some(...)`; the
+missing-extension path is unreachable through its public API.
 
 ## Table A — h3spec triage rows
 
@@ -39,7 +40,7 @@ F-rows F02–F09 (transport-parameter validation, RFC 9000 §7/§18) and F25–F
 | F25 | RFC 9001 §6 | gated | f25_keyupdate_in_handshake |
 | F26 | RFC 9001 §6 | gated | f26_keyupdate_in_1rtt |
 | F27 | RFC 9001 §8.1 | gated | f27_no_alpn |
-| F28 | RFC 9001 §8.2 | deferred:f28 | - |
+| F28 | RFC 9001 §8.2 | gated | f28_missing_tp_extension |
 | F29 | RFC 9001 §8.3 | gated | f29_end_of_early_data |
 
 ## Table B — synthetic gated scenarios
