@@ -30,6 +30,8 @@ from navette.quic.guard_predicates import (
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
     predicate_f16_stop_sending_local_not_created,
+    predicate_f18_f19_max_stream_data,
+    MaxStreamDataCtx,
     QuicResetCtx,
     QuicStopSendingCtx,
 )
@@ -3069,6 +3071,36 @@ def test_is_client_only_frame_on_server_negative() raises:
     print("  test_is_client_only_frame_on_server_negative: PASS")
 
 
+def test_predicate_f18_max_stream_data_nonexist() raises:
+    """F18 fires for an MSD on a stream the local map does not know about."""
+    var ctx = MaxStreamDataCtx(stream_id=UInt64(99999), exists=False, has_send_side=False)
+    var v = predicate_f18_f19_max_stream_data(ctx)
+    assert_true(v.__bool__(), "F18 (nonexist) returns Some")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x05, "F18 STREAM_STATE_ERROR")
+    assert_true(verdict.tag == "[QUIC-MAX-STREAM-DATA-NONEXIST]", "F18 tag matches")
+    print("  test_predicate_f18_max_stream_data_nonexist: PASS")
+
+
+def test_predicate_f19_max_stream_data_recv_only() raises:
+    """F19 fires for an MSD on a known recv-only stream (peer is sender)."""
+    var ctx = MaxStreamDataCtx(stream_id=UInt64(2), exists=True, has_send_side=False)
+    var v = predicate_f18_f19_max_stream_data(ctx)
+    assert_true(v.__bool__(), "F19 (recv-only) returns Some")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x05, "F19 STREAM_STATE_ERROR")
+    assert_true(verdict.tag == "[QUIC-MAX-STREAM-DATA-RECV-ONLY]", "F19 tag matches")
+    print("  test_predicate_f19_max_stream_data_recv_only: PASS")
+
+
+def test_predicate_f18_f19_max_stream_data_negative() raises:
+    """Legal MSD on a known send-side stream returns None."""
+    var ctx = MaxStreamDataCtx(stream_id=UInt64(0), exists=True, has_send_side=True)
+    var v = predicate_f18_f19_max_stream_data(ctx)
+    assert_false(v.__bool__(), "legal MSD returns None")
+    print("  test_predicate_f18_f19_max_stream_data_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3367,6 +3399,9 @@ def main() raises:
     test_is_path_challenge_in_handshake_negative()
     test_is_client_only_frame_on_server_positive()
     test_is_client_only_frame_on_server_negative()
+    test_predicate_f18_max_stream_data_nonexist()
+    test_predicate_f19_max_stream_data_recv_only()
+    test_predicate_f18_f19_max_stream_data_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

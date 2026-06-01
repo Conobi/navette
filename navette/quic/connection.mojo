@@ -69,6 +69,8 @@ from navette.quic.guard_predicates import (
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
     predicate_f16_stop_sending_local_not_created,
+    predicate_f18_f19_max_stream_data,
+    MaxStreamDataCtx,
     QuicResetCtx,
     QuicStopSendingCtx,
 )
@@ -1433,19 +1435,36 @@ struct QuicConnection(Movable):
             if frame._max_stream_data:
                 var msd = frame._max_stream_data.value().copy()
                 var key = Int(msd.stream_id)
-                if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
-                    if stream.fc_send:
-                        var fc = stream.fc_send.value().copy()
-                        var old_limit = fc.limit
-                        fc.ensure_limit(msd.maximum)
-                        var grew = fc.limit > old_limit
-                        if grew:
-                            fc.blocked_at = UInt64(0)   # allow re-emission at new limit
-                        stream.fc_send = fc^
-                        self.stream_map.set_stream(key, stream^)
-                        if grew:
-                            self.events.append(QuicEvent.stream_writable(msd.stream_id))
+                # F18 / F19 — RFC 9000 §19.10: MAX_STREAM_DATA must target a
+                # stream the recipient sends on. Unknown stream id → F18;
+                # known but recv-only stream → F19. Both are
+                # STREAM_STATE_ERROR. Computed before any state mutation.
+                var _exists = key in self.stream_map.streams
+                var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
+                    msd.stream_id, self.is_server
+                )
+                var _ctx_msd = MaxStreamDataCtx(
+                    stream_id=msd.stream_id,
+                    exists=_exists,
+                    has_send_side=_has_send,
+                )
+                var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
+                if _verdict_msd:
+                    var _v_msd = _verdict_msd.value().copy()
+                    self.close_transport(_v_msd.error_code, _v_msd.tag, now)
+                    return
+                var stream = self.stream_map.get_stream(key)
+                if stream.fc_send:
+                    var fc = stream.fc_send.value().copy()
+                    var old_limit = fc.limit
+                    fc.ensure_limit(msd.maximum)
+                    var grew = fc.limit > old_limit
+                    if grew:
+                        fc.blocked_at = UInt64(0)   # allow re-emission at new limit
+                    stream.fc_send = fc^
+                    self.stream_map.set_stream(key, stream^)
+                    if grew:
+                        self.events.append(QuicEvent.stream_writable(msd.stream_id))
             return
 
         if tid == FRAME_MAX_STREAMS_BIDI:

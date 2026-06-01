@@ -10,6 +10,8 @@ from navette.quic.guard_tags import (
     GUARD_TAG_PATH_CHALLENGE_HS,
     GUARD_TAG_NEW_TOKEN_SERVER,
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
+    GUARD_TAG_MAX_STREAM_DATA_NONEXIST,
+    GUARD_TAG_MAX_STREAM_DATA_RECV_ONLY,
 )
 
 
@@ -127,6 +129,64 @@ def check_short_reserved_bits(first_byte: UInt8) -> Optional[GuardVerdict]:
             tag=String(GUARD_TAG_RESERVED_BITS_SHORT),
         )
     )
+
+
+struct MaxStreamDataCtx(Copyable, Movable):
+    """Inputs to the F18 / F19 MAX_STREAM_DATA guard.
+
+    `exists` reflects whether the local stream map knows about
+    `stream_id`; `has_send_side` reflects whether this endpoint sends on
+    the stream (RFC 9000 §3 — only the sender of a stream can be the
+    recipient of MAX_STREAM_DATA). A False/False pair indicates a stream
+    the peer never created; True/False is a recv-only stream where the
+    peer is the sender.
+    """
+
+    var stream_id: UInt64
+    var exists: Bool
+    var has_send_side: Bool
+
+    def __init__(out self, *, stream_id: UInt64, exists: Bool, has_send_side: Bool):
+        self.stream_id = stream_id
+        self.exists = exists
+        self.has_send_side = has_send_side
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.exists = other.exists
+        self.has_send_side = other.has_send_side
+
+    def __init__(out self, *, deinit take: Self):
+        self.stream_id = take.stream_id
+        self.exists = take.exists
+        self.has_send_side = take.has_send_side
+
+
+def predicate_f18_f19_max_stream_data(
+    ctx: MaxStreamDataCtx,
+) -> Optional[GuardVerdict]:
+    """RFC 9000 §19.10: MAX_STREAM_DATA on a stream that does not exist
+    (F18) or on a recv-only stream where the peer is the sender (F19)
+    are both STREAM_STATE_ERROR.
+
+    Per RFC 9000 §19.10 the error namespace is STREAM_STATE_ERROR (0x05)
+    regardless of whether the offence is non-existence or wrong-side.
+    """
+    if not ctx.exists:
+        return Optional[GuardVerdict](
+            GuardVerdict(
+                error_code=UInt64(0x05),  # STREAM_STATE_ERROR
+                tag=String(GUARD_TAG_MAX_STREAM_DATA_NONEXIST),
+            )
+        )
+    if not ctx.has_send_side:
+        return Optional[GuardVerdict](
+            GuardVerdict(
+                error_code=UInt64(0x05),  # STREAM_STATE_ERROR
+                tag=String(GUARD_TAG_MAX_STREAM_DATA_RECV_ONLY),
+            )
+        )
+    return Optional[GuardVerdict]()
 
 
 def is_client_only_frame_on_server(type_id: UInt64, is_server: Bool) -> Bool:
