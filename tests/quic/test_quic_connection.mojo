@@ -3170,7 +3170,7 @@ def test_check_new_connection_id_retire_prior_positive() raises:
 
 
 def test_check_new_connection_id_retire_prior_negative() raises:
-    """retire_prior_to <= sequence is legal."""
+    """Retire_prior_to <= sequence is legal."""
     var v_eq = check_new_connection_id_retire_prior(UInt64(7), UInt64(7))
     assert_false(v_eq.__bool__(), "rpt == seq is legal (boundary)")
     var v_lt = check_new_connection_id_retire_prior(UInt64(10), UInt64(0))
@@ -3192,7 +3192,7 @@ def test_check_new_connection_id_length_positive() raises:
 
 
 def test_check_new_connection_id_length_negative() raises:
-    """cid_length in 1..20 inclusive is legal."""
+    """CID length in 1..20 inclusive is legal."""
     var v_lo = check_new_connection_id_length(UInt64(1))
     assert_false(v_lo.__bool__(), "cid_length == 1 is legal (lower boundary)")
     var v_hi = check_new_connection_id_length(UInt64(20))
