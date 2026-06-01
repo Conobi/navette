@@ -53,3 +53,7 @@ path = "src/bin/s_f16_stop_sending_local_not_created.rs"
 [[bin]]
 name = "s_f17_new_token_server"
 path = "src/bin/s_f17_new_token_server.rs"
+
+[[bin]]
+name = "s_f18_max_stream_data_nonexist"
+path = "src/bin/s_f18_max_stream_data_nonexist.rs"
