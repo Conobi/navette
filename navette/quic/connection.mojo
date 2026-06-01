@@ -61,6 +61,8 @@ from navette.quic.frame import (
 )
 from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
+    check_long_reserved_bits,
+    check_short_reserved_bits,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -910,6 +912,24 @@ struct QuicConnection(Movable):
                         ph_hp_us = monotonic_us() - ph_hp_us
                 var first_byte = hp_result[0]
                 var pn_length = hp_result[1]
+
+                # F12 / F14 — RFC 9000 §17.2 / §17.3.1: header reserved
+                # bits MUST be 0 after header protection is removed. Long
+                # headers use mask 0x0C; 1-RTT (short) headers use mask
+                # 0x18. Close with PROTOCOL_VIOLATION on any set bit; the
+                # outer try/except would otherwise swallow a raise.
+                if header.is_long_header:
+                    var _f12_verdict = check_long_reserved_bits(first_byte)
+                    if _f12_verdict:
+                        var _v12 = _f12_verdict.value().copy()
+                        self.close_transport(_v12.error_code, _v12.tag, now)
+                        return
+                else:
+                    var _f14_verdict = check_short_reserved_bits(first_byte)
+                    if _f14_verdict:
+                        var _v14 = _f14_verdict.value().copy()
+                        self.close_transport(_v14.error_code, _v14.tag, now)
+                        return
 
                 # 7. Decode packet number.
                 var truncated_pn = UInt64(0)

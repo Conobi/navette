@@ -22,6 +22,8 @@ from navette.quic.connection import (
     CONN_ADDR_VALIDATED,
 )
 from navette.quic.guard_predicates import (
+    check_long_reserved_bits,
+    check_short_reserved_bits,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -2987,6 +2989,54 @@ def test_is_unknown_frame_type_negative() raises:
     print("  test_is_unknown_frame_type_negative: PASS")
 
 
+def test_check_long_reserved_bits_positive() raises:
+    """F12 fires when long-header mask 0x0C is non-zero."""
+    var v = check_long_reserved_bits(UInt8(0x0C))
+    assert_true(v.__bool__(), "F12 positive (mask 0x0C set) must return Some")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x0A, "F12 error_code is PROTOCOL_VIOLATION")
+    assert_true(verdict.tag == "[QUIC-RESERVED-BITS-HS]", "F12 tag matches")
+    print("  test_check_long_reserved_bits_positive: PASS")
+
+
+def test_check_long_reserved_bits_negative_no_violation() raises:
+    """F12 stays silent when mask 0x0C is zero."""
+    var v = check_long_reserved_bits(UInt8(0xC3))  # bits 0x0C are zero; others ignored
+    assert_false(v.__bool__(), "F12 negative (mask 0x0C clear) returns None")
+    print("  test_check_long_reserved_bits_negative_no_violation: PASS")
+
+
+def test_check_long_reserved_bits_negative_sibling_input() raises:
+    """Long-mask check ignores 0x10 (bit 4 only — short reserved, no long overlap)."""
+    var v = check_long_reserved_bits(UInt8(0x10))
+    assert_false(v.__bool__(), "F12 sibling (only bit 4 set) returns None")
+    print("  test_check_long_reserved_bits_negative_sibling_input: PASS")
+
+
+def test_check_short_reserved_bits_positive() raises:
+    """F14 fires when 1-RTT mask 0x18 is non-zero."""
+    var v = check_short_reserved_bits(UInt8(0x18))
+    assert_true(v.__bool__(), "F14 positive (mask 0x18 set) must return Some")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x0A, "F14 error_code is PROTOCOL_VIOLATION")
+    assert_true(verdict.tag == "[QUIC-RESERVED-BITS-SHORT]", "F14 tag matches")
+    print("  test_check_short_reserved_bits_positive: PASS")
+
+
+def test_check_short_reserved_bits_negative_no_violation() raises:
+    """F14 stays silent when mask 0x18 is zero; Key Phase (0x04) is NOT reserved."""
+    var v = check_short_reserved_bits(UInt8(0x47))  # 0x40 + key phase 0x04 + pn-len 0x03
+    assert_false(v.__bool__(), "F14 negative (mask 0x18 clear) returns None")
+    print("  test_check_short_reserved_bits_negative_no_violation: PASS")
+
+
+def test_check_short_reserved_bits_negative_sibling_input() raises:
+    """Short-mask check ignores 0x04 (bit 2 only — long reserved, no overlap with 0x18)."""
+    var v = check_short_reserved_bits(UInt8(0x04))
+    assert_false(v.__bool__(), "F14 sibling (only bit 2 set) returns None")
+    print("  test_check_short_reserved_bits_negative_sibling_input: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3275,6 +3325,12 @@ def main() raises:
     test_predicate_f11_negative_no_violation()
     test_is_unknown_frame_type_positive()
     test_is_unknown_frame_type_negative()
+    test_check_long_reserved_bits_positive()
+    test_check_long_reserved_bits_negative_no_violation()
+    test_check_long_reserved_bits_negative_sibling_input()
+    test_check_short_reserved_bits_positive()
+    test_check_short_reserved_bits_negative_no_violation()
+    test_check_short_reserved_bits_negative_sibling_input()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

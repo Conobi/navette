@@ -32,7 +32,7 @@ encoding), and C7 (RFC 9001 §8.3 0-RTT / N/A for this cycle) from
 | F11 | C2 | RFC 9000 §12.4 | gated | s_f11_no_frames |
 | F12 | C2 | RFC 9000 §17.2 | red | s_f12_reserved_bits_hs |
 | F13 | C2 | RFC 9000 §17.2.4 | red | s_f13_path_challenge_hs |
-| F14 | C2 | RFC 9000 §17.2 | red | s_f14_reserved_bits_short |
+| F14 | C2 | RFC 9000 §17.2 | gated | s_f14_reserved_bits_short |
 | F15 | C4 | RFC 9000 §19.4 | red | s_f15_reset_on_server_uni |
 | F16 | C4 | RFC 9000 §19.5 | red | s_f16_stop_sending_local_not_created |
 | F17 | C3 | RFC 9000 §19.7 | red | s_f17_new_token_server |

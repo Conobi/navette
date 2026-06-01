@@ -5,6 +5,8 @@ from navette.quic.guard_tags import (
     GUARD_TAG_STOP_LOCAL_NOT_CREATED,
     GUARD_TAG_NO_FRAMES,
     GUARD_TAG_UNKNOWN_FRAME,
+    GUARD_TAG_RESERVED_BITS_HS,
+    GUARD_TAG_RESERVED_BITS_SHORT,
 )
 
 
@@ -88,6 +90,38 @@ def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdic
         GuardVerdict(
             error_code=UInt64(0x05),  # STREAM_STATE_ERROR
             tag=String(GUARD_TAG_RESET_SEND_ONLY),
+        )
+    )
+
+
+def check_long_reserved_bits(first_byte: UInt8) -> Optional[GuardVerdict]:
+    """RFC 9000 §17.2 — long-header reserved bits (mask 0x0C) MUST be 0.
+
+    Receivers MUST treat receipt of a long-header packet with any
+    reserved bit set as a connection error of type PROTOCOL_VIOLATION.
+    """
+    if (first_byte & UInt8(0x0C)) == UInt8(0):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x0A),  # PROTOCOL_VIOLATION
+            tag=String(GUARD_TAG_RESERVED_BITS_HS),
+        )
+    )
+
+
+def check_short_reserved_bits(first_byte: UInt8) -> Optional[GuardVerdict]:
+    """RFC 9000 §17.3.1 — 1-RTT (short) header reserved bits (mask 0x18)
+    MUST be 0. Key Phase (0x04) and PN length (0x03) are NOT reserved; only
+    bits 3 and 4 are. Receivers MUST close with PROTOCOL_VIOLATION on a
+    set bit.
+    """
+    if (first_byte & UInt8(0x18)) == UInt8(0):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x0A),  # PROTOCOL_VIOLATION
+            tag=String(GUARD_TAG_RESERVED_BITS_SHORT),
         )
     )
 
