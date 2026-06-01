@@ -49,3 +49,7 @@ path = "src/bin/s_f15_reset_on_server_uni.rs"
 [[bin]]
 name = "s_f16_stop_sending_local_not_created"
 path = "src/bin/s_f16_stop_sending_local_not_created.rs"
+
+[[bin]]
+name = "s_f17_new_token_server"
+path = "src/bin/s_f17_new_token_server.rs"
