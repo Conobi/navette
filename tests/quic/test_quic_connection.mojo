@@ -50,6 +50,7 @@ from navette.tls.guard_tags import (
 from navette.quic.connection import _tls_guard_tag_for
 from navette.quic.cid import CID_ACTIVE
 from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
+from navette.quic.path_validator import PathKey
 from navette.quic.pn_space import SentPacket
 from navette.quic.cc.cc_trait import AckedPacket, LostPacket
 from navette.quic.stream import SEND_RESET_SENT
@@ -3566,6 +3567,75 @@ def test_path_response_handler_no_op_without_pending_challenge() raises:
     print("  test_path_response_handler_no_op_without_pending_challenge: PASS")
 
 
+def test_emit_path_response_drains_pending() raises:
+    """C3: after on_path_challenge_received, emit drains the queue into a frame."""
+    var conn = _build_server_for_rx_test()
+    var data = List[UInt8](capacity=8)
+    for i in range(8):
+        data.append(UInt8(0x55))
+    conn.on_path_challenge_received(Span(data), UInt64(1000))
+    assert_equal_int(
+        len(conn.pending_path_responses),
+        1,
+        "expected one pending PATH_RESPONSE after challenge RX",
+    )
+    var frames = conn.emit_path_response_frames()
+    assert_equal_int(len(frames), 1, "emit must produce one PATH_RESPONSE frame")
+    assert_true(
+        frames[0].is_path_response(),
+        "emitted frame must be PATH_RESPONSE",
+    )
+    assert_equal_int(
+        len(conn.pending_path_responses),
+        0,
+        "pending_path_responses must be drained after emit",
+    )
+    print("  test_emit_path_response_drains_pending: PASS")
+
+
+def test_start_path_challenge_queues_emission() raises:
+    """C3: start_path_challenge queues a PATH_CHALLENGE for emission."""
+    var conn = _build_server_for_rx_test()
+    var target = PathKey.from_v4(
+        UInt8(127), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    conn.start_path_challenge(target^, UInt64(1000))
+    assert_equal_int(
+        len(conn.path_validator.pending),
+        1,
+        "expected one pending challenge after start_path_challenge",
+    )
+    var frames = conn.emit_path_challenge_frames(UInt64(1001))
+    assert_equal_int(len(frames), 1, "emit must produce one PATH_CHALLENGE frame")
+    assert_true(
+        frames[0].is_path_challenge(),
+        "emitted frame must be PATH_CHALLENGE",
+    )
+    print("  test_start_path_challenge_queues_emission: PASS")
+
+
+def test_path_response_emission_preserves_data() raises:
+    """C3: echoed PATH_RESPONSE data matches incoming PATH_CHALLENGE byte-for-byte."""
+    var conn = _build_server_for_rx_test()
+    var data = List[UInt8](capacity=8)
+    for i in range(8):
+        data.append(UInt8(0xA0 + i))
+    conn.on_path_challenge_received(Span(data), UInt64(1000))
+    var frames = conn.emit_path_response_frames()
+    assert_equal_int(len(frames), 1, "emit must produce one PATH_RESPONSE frame")
+    ref payload = frames[0].as_path_data()
+    assert_equal_int(
+        len(payload), 8, "PATH_RESPONSE payload must be exactly 8 bytes"
+    )
+    for i in range(8):
+        assert_equal_int(
+            Int(payload[i]),
+            Int(UInt8(0xA0 + i)),
+            "echoed byte mismatch at index " + String(i),
+        )
+    print("  test_path_response_emission_preserves_data: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -3644,4 +3714,7 @@ def main() raises:
     test_drive_handshake_tls_error_emits_crypto_close()
     test_path_challenge_recorded_for_response()
     test_path_response_handler_no_op_without_pending_challenge()
+    test_emit_path_response_drains_pending()
+    test_start_path_challenge_queues_emission()
+    test_path_response_emission_preserves_data()
     print("All test_quic_connection tests passed.")

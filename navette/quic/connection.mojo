@@ -1370,6 +1370,55 @@ struct QuicConnection(Movable):
         # from the receive site and calls `self.path_validator.on_response`.
         pass
 
+    # ── Path validation TX (emission) ────────────────────────────────
+
+    def emit_path_response_frames(mut self) raises -> List[Frame]:
+        """Drain `pending_path_responses` into PATH_RESPONSE frames.
+
+        RFC 9000 §8.2: a PATH_RESPONSE MUST be sent on the same path the
+        PATH_CHALLENGE was received with the same 8-byte data. Called by
+        the 1-RTT frame builder; one frame per pending response. The
+        queue is fully drained on each call — the caller is responsible
+        for queueing for retransmission if loss is detected (PATH_RESPONSE
+        is not ack-eliciting per §13.2.1 footnote but practical stacks
+        re-emit on no-progress).
+        """
+        var out = List[Frame]()
+        for i in range(len(self.pending_path_responses)):
+            var data = List[UInt8](copy=self.pending_path_responses[i])
+            out.append(Frame.path_response(data^))
+        # Drain the queue: every pending response was just turned into a
+        # frame, so the queue is empty until the next inbound challenge.
+        self.pending_path_responses = List[List[UInt8]]()
+        return out^
+
+    def emit_path_challenge_frames(mut self, now: UInt64) raises -> List[Frame]:
+        """Build PATH_CHALLENGE frames for every pending challenge.
+
+        For C3 we emit one frame per pending challenge per flush,
+        regardless of `attempts`; retransmission timing + the §8.2 cap
+        of 3 attempts land in C5 alongside the loss-detector wiring.
+        The caller is expected to have just appended a fresh challenge
+        via `start_path_challenge` (or the future address-change site).
+        """
+        var out = List[Frame]()
+        for i in range(len(self.path_validator.pending)):
+            var token = List[UInt8](copy=self.path_validator.pending[i].token)
+            out.append(Frame.path_challenge(token^))
+        return out^
+
+    def start_path_challenge(
+        mut self, var target: PathKey, now: UInt64
+    ) raises:
+        """Begin path validation for `target`.
+
+        Generates an 8-byte token via `PathValidator.start_challenge`; the
+        next 1-RTT flush emits a PATH_CHALLENGE frame with that token.
+        Exercised by unit tests here; C5 wires the bench receive site to
+        call this on detected address-change.
+        """
+        _ = self.path_validator.start_challenge(target^, now)
+
     # ── Frame dispatch ───────────────────────────────────────────────
 
     def _dispatch_frame(
@@ -2541,6 +2590,18 @@ struct QuicConnection(Movable):
         # Application-space stream-layer frames (M3c).
         if space_idx == 2:
             self._build_app_frames(frames, sent_records)
+
+            # RFC 9000 §8.2 / §17.2.4: PATH_RESPONSE and PATH_CHALLENGE are
+            # 1-RTT-only (F13 already closes Initial/Handshake at RX). Drain
+            # any pending echoes first, then any freshly-queued challenges.
+            var path_responses = self.emit_path_response_frames()
+            for i in range(len(path_responses)):
+                ref pr = path_responses[i]
+                frames.append(pr.copy())
+            var path_challenges = self.emit_path_challenge_frames(now)
+            for i in range(len(path_challenges)):
+                ref pc = path_challenges[i]
+                frames.append(pc.copy())
 
         return frames^
 
