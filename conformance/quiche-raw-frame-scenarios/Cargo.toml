@@ -21,3 +21,7 @@ path = "src/bin/sanity_get.rs"
 [[bin]]
 name = "s_f01_stream_large_offset"
 path = "src/bin/s_f01_stream_large_offset.rs"
+
+[[bin]]
+name = "s_f10_unknown_frame"
+path = "src/bin/s_f10_unknown_frame.rs"
