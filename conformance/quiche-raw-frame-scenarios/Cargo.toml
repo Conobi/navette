@@ -1,0 +1,15 @@
+[package]
+name = "quiche-raw-frame-scenarios"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Raw-frame QUIC conformance scenarios for navette."
+
+[dependencies]
+quiche = { path = "../vendor/quiche-raw-frame", default-features = false, features = ["boringssl-vendored"] }
+serde_json = "1"
+ring = "0.17"
+
+[lib]
+name = "quiche_raw_frame_scenarios"
+path = "src/lib.rs"

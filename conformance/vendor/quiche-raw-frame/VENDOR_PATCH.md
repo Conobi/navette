@@ -3,7 +3,7 @@
 quiche-commit: bbfe6205b8af2e6fadbb6d7818de463fbe123342
 vendor-target: conformance/vendor/quiche-raw-frame/
 
-This vendored quiche tree carries three changes from upstream needed for the
+This vendored quiche tree carries four changes from upstream needed for the
 raw-frame conformance harness. The harness needs to inject hand-crafted QUIC
 frames at the wire level — quiche's public API does not expose this. The
 following patches expose the required internals.
@@ -50,3 +50,18 @@ exact modified reserved-bits value navette's QUIC parser validates (RFC 9000
 §17.2 for long headers, §17.3.1 for short headers). This means the
 implementation is a single `buf[0] ^= reserved_mask` after calling `encode_pkt`,
 with no need to re-derive the HP mask. The function body is 3 effective lines.
+
+## Patch 4 — `encode_pkt_with_payload` helper
+
+In `src/test_utils.rs`, immediately after `encode_pkt_reserved_bits`, add a
+helper that mirrors `encode_pkt` but takes the QUIC payload as a raw byte
+slice. The harness needs this for scenario F10
+(`s_f10_unknown_frame`) — an unknown frame type byte (e.g. `0xFE`) has no
+matching `frame::Frame` variant, so the standard `encode_pkt` path cannot
+inject it. The helper uses the same packet-number / header-construction /
+AEAD / header-protection routines as `encode_pkt`; only the payload-writing
+step differs (`b.put_bytes(payload)` instead of `frame.to_bytes(&mut b)`).
+
+The function body is ~40 lines. Wire-level behaviour is identical to
+`encode_pkt` for the subset of frames expressible via `Frame`; the helper
+is strictly additive — it does not alter `encode_pkt`.
