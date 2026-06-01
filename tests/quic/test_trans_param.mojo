@@ -14,7 +14,12 @@ from navette.quic.trans_param import (
     PreferredAddress,
     validate_client_transport_params,
     parse_transport_params,
+    serialize_transport_params,
+    TP_MAX_DATAGRAM_FRAME_SIZE,
+    MAX_DATAGRAM_FRAME_SIZE_DISABLED,
+    MAX_DATAGRAM_FRAME_SIZE_CAP,
 )
+from navette.quic.codec import ByteWriter
 from navette.quic.guard_tags import (
     GUARD_TAG_TP_INITIAL_SCID_MISSING,
     GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
@@ -276,6 +281,115 @@ def test_f09_max_ack_delay_above_threshold_raises() raises:
     print("PASS test_f09_max_ack_delay_above_threshold_raises")
 
 
+# ── RFC 9221 §3 — max_datagram_frame_size transport parameter ─────────
+
+
+def test_max_datagram_frame_size_default_disabled() raises:
+    """A default-constructed TransportParams must have DATAGRAM disabled.
+
+    RFC 9221 §3: absent or 0 means the endpoint cannot receive DATAGRAM
+    frames; the local side MUST NOT send any. The constructor MUST NOT
+    accidentally opt the connection in.
+    """
+    var p = TransportParams()
+    assert_true(
+        p.max_datagram_frame_size == MAX_DATAGRAM_FRAME_SIZE_DISABLED,
+        "default max_datagram_frame_size must be DISABLED (0)",
+    )
+    print("PASS test_max_datagram_frame_size_default_disabled")
+
+
+def test_max_datagram_frame_size_roundtrip() raises:
+    """Encode + parse round-trip for a typical 1200-byte cap.
+
+    RFC 9221 §3: max_datagram_frame_size is a varint TP keyed by 0x20.
+    A non-zero value MUST survive the serialize → parse cycle so the
+    handshake-event path can route it to the peer-params snapshot.
+    """
+    var p = TransportParams()
+    var scid = List[UInt8]()
+    for _ in range(8):
+        scid.append(UInt8(0xAA))
+    p.initial_scid = scid^
+    p.max_datagram_frame_size = UInt64(1200)
+    var w = ByteWriter()
+    serialize_transport_params(p, w)
+    var wire = w.finish()
+    var parsed = parse_transport_params(Span(wire))
+    assert_true(
+        parsed.max_datagram_frame_size == UInt64(1200),
+        "round-trip preserves max_datagram_frame_size=1200",
+    )
+    print("PASS test_max_datagram_frame_size_roundtrip")
+
+
+def test_max_datagram_frame_size_zero_omitted_on_serialize() raises:
+    """Default-value (0) MUST be omitted from the wire.
+
+    RFC 9221 §3 makes absence and explicit-0 semantically identical. The
+    serializer drops the parameter to keep the TP block compact for the
+    common "DATAGRAM disabled" case; parse_transport_params then leaves
+    the field at its default. Test asserts both: wire ID 0x20 absent,
+    and the parsed value matches the default.
+    """
+    var p = TransportParams()
+    var scid = List[UInt8]()
+    for _ in range(8):
+        scid.append(UInt8(0xBB))
+    p.initial_scid = scid^
+    # max_datagram_frame_size stays at default (0 == disabled).
+    var w = ByteWriter()
+    serialize_transport_params(p, w)
+    var wire = w.finish()
+    # ID 0x20 fits in a single varint byte. Confirm the wire does NOT
+    # contain it by scanning for the literal byte; this is sufficient
+    # because all other TP IDs that appear are < 0x20 in single-byte form.
+    var found = False
+    for i in range(len(wire)):
+        if wire[i] == UInt8(0x20):
+            found = True
+            break
+    assert_true(not found, "0x20 byte must not appear when value is default")
+    var parsed = parse_transport_params(Span(wire))
+    assert_true(
+        parsed.max_datagram_frame_size == MAX_DATAGRAM_FRAME_SIZE_DISABLED,
+        "parsed default is DISABLED",
+    )
+    print("PASS test_max_datagram_frame_size_zero_omitted_on_serialize")
+
+
+def test_max_datagram_frame_size_overflow_rejected() raises:
+    """Values above 65535 (RFC 9221 §3 cap) must raise at parse time.
+
+    Wire form for value 65536 (= 2^16, requires 4-byte varint):
+      ID 0x20, length 0x04, value 0x80 0x01 0x00 0x00.
+    """
+    var buf = List[UInt8]()
+    buf.append(0x20)  # ID: max_datagram_frame_size
+    buf.append(0x04)  # length: 4 bytes
+    buf.append(0x80)  # varint 4-byte prefix
+    buf.append(0x01)  # 65536 high byte
+    buf.append(0x00)
+    buf.append(0x00)
+    var caught = False
+    try:
+        _ = parse_transport_params(Span(buf))
+    except e:
+        caught = True
+        var msg = String(e)
+        assert_true(
+            "max_datagram_frame_size" in msg,
+            "overflow raised wrong message: " + msg,
+        )
+    assert_true(caught, "max_datagram_frame_size > 65535 must raise")
+    # Also lock in the symbolic cap.
+    assert_true(
+        MAX_DATAGRAM_FRAME_SIZE_CAP == UInt64(65535),
+        "MAX_DATAGRAM_FRAME_SIZE_CAP must equal 65535",
+    )
+    print("PASS test_max_datagram_frame_size_overflow_rejected")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -289,4 +403,8 @@ def main() raises:
     test_f07_max_udp_payload_below_1200_raises()
     test_f08_ack_delay_exponent_above_20_raises()
     test_f09_max_ack_delay_above_threshold_raises()
+    test_max_datagram_frame_size_default_disabled()
+    test_max_datagram_frame_size_roundtrip()
+    test_max_datagram_frame_size_zero_omitted_on_serialize()
+    test_max_datagram_frame_size_overflow_rejected()
     print("All trans-param validator tests passed.")

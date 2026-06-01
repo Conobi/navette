@@ -34,6 +34,18 @@ comptime TP_PREFERRED_ADDRESS: UInt64 = 0x0D
 comptime TP_ACTIVE_CONNECTION_ID_LIMIT: UInt64 = 0x0E
 comptime TP_INITIAL_SCID: UInt64 = 0x0F
 comptime TP_RETRY_SCID: UInt64 = 0x10
+# RFC 9221 §3 — peer advertises its maximum-acceptable DATAGRAM frame
+# size. 0 (or absent) means the peer does NOT support QUIC DATAGRAMs and
+# the local side MUST NOT send any. The RFC permits any value up to 65535;
+# §5 caps the effective wire size further at the QUIC packet level.
+comptime TP_MAX_DATAGRAM_FRAME_SIZE: UInt64 = 0x20
+# RFC 9221 §3 — explicit "disabled" sentinel for max_datagram_frame_size.
+# Surfaces in both the local-default and the "peer omitted the TP" path.
+comptime MAX_DATAGRAM_FRAME_SIZE_DISABLED: UInt64 = 0
+# RFC 9221 §3 — absolute hard cap; values above this MUST be rejected as
+# a TRANSPORT_PARAMETER_ERROR. The dispatch site (parse_transport_params)
+# enforces the cap before populating the TransportParams struct.
+comptime MAX_DATAGRAM_FRAME_SIZE_CAP: UInt64 = 65535
 
 
 # ── PreferredAddress ─────────────────────────────────────────────────
@@ -99,6 +111,11 @@ struct TransportParams(Copyable, Movable):
     var active_connection_id_limit: UInt64
     var initial_scid: Optional[List[UInt8]]
     var retry_scid: Optional[List[UInt8]]
+    # RFC 9221 §3 — peer's maximum acceptable DATAGRAM frame size. 0 means
+    # the peer did not advertise the parameter (disabled). The local side
+    # MUST NOT send DATAGRAM frames when the peer's value is 0; the gate
+    # lives in QuicConnection.send_datagram, not here.
+    var max_datagram_frame_size: UInt64
     var unknown: Dict[Int, List[UInt8]]
 
     def __init__(out self):
@@ -119,6 +136,9 @@ struct TransportParams(Copyable, Movable):
         self.active_connection_id_limit = 2
         self.initial_scid = None
         self.retry_scid = None
+        # Default off (RFC 9221 §3): "if this parameter is absent or 0,
+        # the endpoint that omits it cannot receive DATAGRAM frames."
+        self.max_datagram_frame_size = MAX_DATAGRAM_FRAME_SIZE_DISABLED
         self.unknown = Dict[Int, List[UInt8]]()
 
     def __init__(out self, *, other: Self):
@@ -139,6 +159,7 @@ struct TransportParams(Copyable, Movable):
         self.active_connection_id_limit = other.active_connection_id_limit
         self.initial_scid = other.initial_scid.copy()
         self.retry_scid = other.retry_scid.copy()
+        self.max_datagram_frame_size = other.max_datagram_frame_size
         self.unknown = other.unknown.copy()
 
     def __init__(out self, *, deinit take: Self):
@@ -159,6 +180,7 @@ struct TransportParams(Copyable, Movable):
         self.active_connection_id_limit = take.active_connection_id_limit
         self.initial_scid = take.initial_scid^
         self.retry_scid = take.retry_scid^
+        self.max_datagram_frame_size = take.max_datagram_frame_size
         self.unknown = take.unknown^
 
 
@@ -308,6 +330,17 @@ def parse_transport_params[origin: Origin](
         elif param_id == TP_RETRY_SCID:
             params.retry_scid = value_bytes^
 
+        elif param_id == TP_MAX_DATAGRAM_FRAME_SIZE:
+            # RFC 9221 §3 — varint, MUST NOT exceed 65535. Surfaces a
+            # malformed value as TRANSPORT_PARAMETER_ERROR so the handshake
+            # path can route the close via close_transport. The dispatch
+            # site (QuicConnection.send_datagram) honours the post-parse
+            # value as the per-frame size cap.
+            var v = _decode_varint_from_bytes(value_bytes)
+            if v > MAX_DATAGRAM_FRAME_SIZE_CAP:
+                raise "max_datagram_frame_size must be <= 65535 (RFC 9221 §3)"
+            params.max_datagram_frame_size = v
+
         else:
             # Unknown parameter — store for forward compatibility.
             params.unknown[id_int] = value_bytes^
@@ -398,6 +431,14 @@ def serialize_transport_params(
     if params.active_connection_id_limit != 2:
         _encode_varint_param(
             writer, TP_ACTIVE_CONNECTION_ID_LIMIT, params.active_connection_id_limit,
+        )
+
+    # RFC 9221 §3 — emit max_datagram_frame_size only when non-default.
+    # Omission and value 0 are equivalent per spec; we choose omission to
+    # keep the wire compact for the common "no DATAGRAM support" case.
+    if params.max_datagram_frame_size != MAX_DATAGRAM_FRAME_SIZE_DISABLED:
+        _encode_varint_param(
+            writer, TP_MAX_DATAGRAM_FRAME_SIZE, params.max_datagram_frame_size,
         )
 
     # Zero-length boolean param.
