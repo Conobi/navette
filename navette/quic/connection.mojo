@@ -71,6 +71,7 @@ from navette.quic.guard_predicates import (
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
     is_datagram_in_handshake,
+    is_crypto_in_zero_rtt,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -79,6 +80,7 @@ from navette.quic.guard_predicates import (
     MaxStreamDataCtx,
     QuicResetCtx,
     QuicStopSendingCtx,
+    ZERO_RTT_SPACE_IDX,
 )
 from navette.quic.guard_tags import (
     GUARD_TAG_UNKNOWN_FRAME,
@@ -88,6 +90,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_NEW_TOKEN_SERVER,
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
     GUARD_TAG_STREAM_LARGE_OFFSET,
+    GUARD_TAG_CRYPTO_IN_ZERO_RTT,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.path_validator import PathValidator, PathKey
@@ -963,6 +966,22 @@ struct QuicConnection(Movable):
                 if header.packet_type == PacketType.initial():
                     self.peer_cid = List[UInt8](copy=header.scid)
 
+            # 2c. 0-RTT rejection (RFC 9001 §4.2 / §5.5). Navette ships in
+            # rejection-mode: `max_early_data_size` defaults to 0, so the
+            # server holds no 0-RTT keys. The server MAY drop 0-RTT
+            # packets without attempting decryption. Skip past the packet
+            # boundary explicitly so subsequent coalesced packets in the
+            # same datagram (e.g. Initial → 0-RTT) are still processed.
+            # The full acceptance path (F30: CRYPTO-in-0-RTT →
+            # PROTOCOL_VIOLATION) routes through `_dispatch_frame` with
+            # `ZERO_RTT_SPACE_IDX` once 0-RTT keys are wired.
+            if header.is_long_header and header.packet_type == PacketType.zero_rtt():
+                var skip = header.pn_offset + Int(header.payload_length)
+                if skip > remaining_len:
+                    break  # Truncated
+                offset += skip
+                continue
+
             # 3. Map to PN space.
             var space_idx = packet_type_to_space(header.packet_type)
             if space_idx < 0:
@@ -1680,6 +1699,18 @@ struct QuicConnection(Movable):
         if is_datagram_in_handshake(tid, space_idx):
             self.close_transport(
                 UInt64(0x0A), String(GUARD_TAG_DATAGRAM_HS), now
+            )
+            return
+
+        # F30 — RFC 9001 §8.3: CRYPTO frames MUST NOT be sent in 0-RTT.
+        # The shared Application PN space (RFC 9000 §12.3) means the 0-RTT
+        # epoch is signalled to dispatch via the `ZERO_RTT_SPACE_IDX`
+        # sentinel rather than the regular 0/1/2 space index — see
+        # `guard_predicates.is_crypto_in_zero_rtt`. CRYPTO frames in
+        # 1-RTT (space 2) remain legal (e.g. NewSessionTicket).
+        if is_crypto_in_zero_rtt(tid, space_idx):
+            self.close_transport(
+                UInt64(0x0A), String(GUARD_TAG_CRYPTO_IN_ZERO_RTT), now
             )
             return
 

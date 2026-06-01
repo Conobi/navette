@@ -1,5 +1,5 @@
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
-from navette.quic.packet import is_long_header_initial
+from navette.quic.packet import is_long_header_initial, is_long_header_zero_rtt
 
 
 def test_varint_roundtrip() raises:
@@ -144,6 +144,51 @@ def test_is_long_header_initial_5_cases() raises:
     print("PASS: test_is_long_header_initial_5_cases")
 
 
+def test_is_long_header_zero_rtt_5_cases() raises:
+    """RFC 9000 §17.2 / §17.2.3 — long-header 0-RTT first-byte detection.
+
+    Mirrors `test_is_long_header_initial_5_cases`: enumerates the four
+    long-header packet types plus the short-header form, asserting the
+    helper fires iff the first byte's top bit is set AND bits 5-4 == 0b01.
+    """
+    def one_byte(b: UInt8) -> List[UInt8]:
+        var out = List[UInt8]()
+        out.append(b)
+        return out^
+
+    # Initial: 1100_0000 — long bit + type 0b00.
+    var initial = one_byte(UInt8(0xC0))
+    if is_long_header_zero_rtt(Span(initial)):
+        raise "expected Initial to be NOT long-header-0RTT"
+    # 0-RTT: 1101_0000 — long bit + type 0b01.
+    var zerort = one_byte(UInt8(0xD0))
+    if not is_long_header_zero_rtt(Span(zerort)):
+        raise "expected 0-RTT to be long-header-0RTT"
+    # Handshake: 1110_0000.
+    var hs = one_byte(UInt8(0xE0))
+    if is_long_header_zero_rtt(Span(hs)):
+        raise "expected Handshake to be NOT long-header-0RTT"
+    # Retry: 1111_0000.
+    var retry = one_byte(UInt8(0xF0))
+    if is_long_header_zero_rtt(Span(retry)):
+        raise "expected Retry to be NOT long-header-0RTT"
+    # Short header: 0100_0000 (high bit clear) — never 0-RTT.
+    var shrt = one_byte(UInt8(0x40))
+    if is_long_header_zero_rtt(Span(shrt)):
+        raise "expected short-header to be NOT long-header-0RTT"
+    # Empty payload: defensive — must be False.
+    var empty = List[UInt8]()
+    if is_long_header_zero_rtt(Span(empty)):
+        raise "expected empty payload to be NOT long-header-0RTT"
+    # 0-RTT with reserved bits set (lower nibble varies): 1101_1111.
+    # The helper inspects only the form bit (0x80) and the type field
+    # (0x30); reserved bits MUST NOT alter classification.
+    var zerort_rsv = one_byte(UInt8(0xDF))
+    if not is_long_header_zero_rtt(Span(zerort_rsv)):
+        raise "expected 0-RTT with set reserved bits to still classify as 0-RTT"
+    print("PASS: test_is_long_header_zero_rtt_5_cases")
+
+
 def main() raises:
     print("test_quic_codec:")
     test_varint_roundtrip()
@@ -154,4 +199,5 @@ def main() raises:
     test_byte_reader_underflow()
     test_byte_writer_bytes()
     test_is_long_header_initial_5_cases()
+    test_is_long_header_zero_rtt_5_cases()
     print("All test_quic_codec tests passed.")

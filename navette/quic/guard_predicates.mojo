@@ -19,7 +19,20 @@ from navette.quic.guard_tags import (
     GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ,
     GUARD_TAG_CID_ZERO_LENGTH,
     GUARD_TAG_STREAM_LARGE_OFFSET,
+    GUARD_TAG_CRYPTO_IN_ZERO_RTT,
 )
+
+
+# Frame-dispatch epoch sentinel for 0-RTT.
+#
+# RFC 9000 §12.3 places 0-RTT and 1-RTT in a shared "Application" packet
+# number space (`packet_type_to_space` maps both to 2). The space index
+# alone therefore cannot disambiguate the frame's encryption epoch at
+# dispatch time. `_dispatch_frame` accepts this dedicated sentinel for
+# the 0-RTT epoch so the F30 guard (RFC 9001 §8.3 — CRYPTO frames MUST
+# NOT be sent in 0-RTT) can fire without colliding with legitimate
+# CRYPTO frames in the 1-RTT space (e.g. NewSessionTicket).
+comptime ZERO_RTT_SPACE_IDX: Int = 3
 
 
 struct GuardVerdict(Copyable, Movable):
@@ -306,6 +319,41 @@ def is_datagram_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
     """
     var is_dgram = type_id == UInt64(0x30) or type_id == UInt64(0x31)
     return is_dgram and space_idx < 2
+
+
+def is_crypto_in_zero_rtt(type_id: UInt64, space_idx: Int) -> Bool:
+    """RFC 9001 §8.3 — CRYPTO frames (0x06) MUST NOT be sent in 0-RTT.
+
+    Returns True iff `type_id` is CRYPTO and `space_idx` equals the
+    dedicated 0-RTT sentinel (`ZERO_RTT_SPACE_IDX`). The dispatch site
+    closes the connection with PROTOCOL_VIOLATION (0x0A) and the
+    `[QUIC-CRYPTO-IN-0RTT]` tag (F30).
+
+    A bare space_idx==2 (1-RTT) is intentionally NOT flagged: CRYPTO
+    frames are legal in 1-RTT to carry post-handshake messages such as
+    NewSessionTicket (RFC 9001 §4.1.2 / §4.6.1).
+    """
+    if type_id != UInt64(0x06):
+        return False
+    return space_idx == ZERO_RTT_SPACE_IDX
+
+
+def predicate_crypto_in_zero_rtt(
+    type_id: UInt64, space_idx: Int
+) -> Optional[GuardVerdict]:
+    """Return Some(PROTOCOL_VIOLATION + tag) when `is_crypto_in_zero_rtt`
+    fires; otherwise None. Companion to the cheap-bool gate so call sites
+    that already carry a `GuardVerdict`-shaped pattern (close_transport)
+    can use a uniform interface (F30, RFC 9001 §8.3).
+    """
+    if not is_crypto_in_zero_rtt(type_id, space_idx):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x0A),  # PROTOCOL_VIOLATION
+            tag=String(GUARD_TAG_CRYPTO_IN_ZERO_RTT),
+        )
+    )
 
 
 def is_unknown_frame_type(type_id: UInt64) -> Bool:

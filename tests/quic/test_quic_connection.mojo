@@ -30,8 +30,10 @@ from navette.quic.guard_predicates import (
     check_short_reserved_bits,
     stream_offset_exceeds_fc,
     is_client_only_frame_on_server,
+    is_crypto_in_zero_rtt,
     is_path_challenge_in_handshake,
     is_unknown_frame_type,
+    predicate_crypto_in_zero_rtt,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
     predicate_f16_stop_sending_local_not_created,
@@ -39,10 +41,12 @@ from navette.quic.guard_predicates import (
     MaxStreamDataCtx,
     QuicResetCtx,
     QuicStopSendingCtx,
+    ZERO_RTT_SPACE_IDX,
 )
 from navette.quic.guard_tags import (
     GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
     GUARD_TAG_MIGRATION_DISABLED,
+    GUARD_TAG_CRYPTO_IN_ZERO_RTT,
 )
 from navette.tls.guard_tags import (
     GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE,
@@ -3080,6 +3084,52 @@ def test_is_path_challenge_in_handshake_negative() raises:
     print("  test_is_path_challenge_in_handshake_negative: PASS")
 
 
+def test_is_crypto_in_zero_rtt_positive() raises:
+    """F30: CRYPTO frames in 0-RTT trip the gate (RFC 9001 §8.3)."""
+    assert_true(
+        is_crypto_in_zero_rtt(UInt64(0x06), ZERO_RTT_SPACE_IDX),
+        "CRYPTO in 0-RTT sentinel must trip",
+    )
+    print("  test_is_crypto_in_zero_rtt_positive: PASS")
+
+
+def test_is_crypto_in_zero_rtt_negative() raises:
+    """F30: CRYPTO in 1-RTT (e.g. NewSessionTicket) and non-CRYPTO frames are legal."""
+    assert_false(
+        is_crypto_in_zero_rtt(UInt64(0x06), 2),
+        "CRYPTO in 1-RTT is legal (NewSessionTicket per RFC 9001 §4.6.1)",
+    )
+    assert_false(
+        is_crypto_in_zero_rtt(UInt64(0x06), 0),
+        "CRYPTO in Initial is legal",
+    )
+    assert_false(
+        is_crypto_in_zero_rtt(UInt64(0x06), 1),
+        "CRYPTO in Handshake is legal",
+    )
+    assert_false(
+        is_crypto_in_zero_rtt(UInt64(0x08), ZERO_RTT_SPACE_IDX),
+        "STREAM (type 0x08) in 0-RTT is legal — not a CRYPTO frame",
+    )
+    print("  test_is_crypto_in_zero_rtt_negative: PASS")
+
+
+def test_predicate_crypto_in_zero_rtt_verdict() raises:
+    """F30 predicate returns PROTOCOL_VIOLATION + the correct tag string."""
+    var verdict = predicate_crypto_in_zero_rtt(UInt64(0x06), ZERO_RTT_SPACE_IDX)
+    assert_true(verdict.__bool__(), "predicate must fire for CRYPTO in 0-RTT")
+    var v = verdict.value().copy()
+    assert_equal_int(Int(v.error_code), 0x0A, "F30 maps to PROTOCOL_VIOLATION (0x0A)")
+    assert_true(
+        v.tag == String(GUARD_TAG_CRYPTO_IN_ZERO_RTT),
+        "F30 verdict carries the [QUIC-CRYPTO-IN-0RTT] tag",
+    )
+
+    var clean = predicate_crypto_in_zero_rtt(UInt64(0x06), 2)
+    assert_false(clean.__bool__(), "CRYPTO in 1-RTT must NOT trip the predicate")
+    print("  test_predicate_crypto_in_zero_rtt_verdict: PASS")
+
+
 def test_is_client_only_frame_on_server_positive() raises:
     """F17 / F24: NEW_TOKEN and HANDSHAKE_DONE received on a server are illegal."""
     assert_true(is_client_only_frame_on_server(UInt64(0x07), True), "NEW_TOKEN on server")
@@ -4388,6 +4438,9 @@ def main() raises:
     test_check_short_reserved_bits_negative_sibling_input()
     test_is_path_challenge_in_handshake_positive()
     test_is_path_challenge_in_handshake_negative()
+    test_is_crypto_in_zero_rtt_positive()
+    test_is_crypto_in_zero_rtt_negative()
+    test_predicate_crypto_in_zero_rtt_verdict()
     test_is_client_only_frame_on_server_positive()
     test_is_client_only_frame_on_server_negative()
     test_predicate_f18_max_stream_data_nonexist()

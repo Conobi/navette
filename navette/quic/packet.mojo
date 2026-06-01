@@ -149,6 +149,28 @@ def is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
     return (first & 0x30) == 0x00
 
 
+def is_long_header_zero_rtt(payload: Span[UInt8, _]) -> Bool:
+    """True iff the QUIC packet's first byte indicates a long-header 0-RTT.
+
+    Uses the same v1 layout as `is_long_header_initial` (RFC 9000 §17.2 +
+    §17.2.3): long-header form bit set (0x80) and packet-type field
+    (bits 5-4, mask 0x30) equal to 0b01 (0x10).
+
+    Empty `payload` returns False (defensive). QUIC v1 only.
+
+    Per RFC 9001 §5.5, a server that has not enabled 0-RTT
+    (`max_early_data_size = 0`) holds no 0-RTT keys and MUST drop the
+    packet silently; this helper lets the receive loop short-circuit
+    before invoking the AEAD path against keys that do not exist.
+    """
+    if len(payload) == 0:
+        return False
+    var first = payload[0]
+    if (first & 0x80) == 0:
+        return False  # short header
+    return (first & 0x30) == 0x10
+
+
 def extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
     """Extract the DCID from an incoming QUIC packet.
 
