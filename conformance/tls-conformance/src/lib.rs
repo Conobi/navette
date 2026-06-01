@@ -430,6 +430,192 @@ fn drive_handshake_initial_inner(
     Ok(None)
 }
 
+/// Drive ONE Initial-space handshake exchange whose ClientHello is supplied
+/// as raw pre-serialised bytes instead of being built by rustls.
+///
+/// This bypasses `rustls::quic::ClientConnection` entirely so the caller can
+/// inject ClientHellos that the rustls API refuses to construct — most
+/// notably one that OMITS the `quic_transport_parameters` extension (RFC
+/// 9001 §8.2 / F28). `ch_bytes` must be a complete TLS 1.3 ClientHello
+/// handshake message (handshake-type 0x01 byte + uint24 length + body), as
+/// produced by `raw_client_hello::ClientHelloOmittingQuicTp::build()`. The
+/// driver wraps `ch_bytes` in a single CRYPTO frame at Initial-epoch offset
+/// 0, encodes the Initial packet via `builder.encode_initial`, ships it to
+/// `server_addr()`, and waits for a single Initial-space reply.
+///
+/// Return contract mirrors `drive_handshake_initial`:
+///   * `Ok(None)` — server replied with a non-CONNECTION_CLOSE Initial that
+///     decrypted cleanly (handshake progressed, e.g. ServerHello/Encrypted
+///     Extensions). For F28 this indicates the server failed to reject the
+///     malformed CH.
+///   * `Ok(Some(cc))` — server replied with a CONNECTION_CLOSE frame.
+///   * `Err(msg)` — UDP / parse / decrypt failure (timeout, malformed
+///     packet, AEAD mismatch).
+///
+/// Unlike `drive_handshake_initial_inner`, there is no `rustls::quic::ClientConnection`
+/// to feed plaintext into; we scan the reply directly for ACK / CC frames.
+pub fn drive_handshake_with_raw_clienthello(
+    mut builder: PacketBuilder,
+    ch_bytes: &[u8],
+) -> Result<Option<ConnectionClose>, String> {
+    if ch_bytes.is_empty() {
+        return Err("ch_bytes must be non-empty".into());
+    }
+
+    let dcid = builder.dcid.clone();
+    let client_keys = initial_keys(Role::Client, &dcid)
+        .map_err(|e| format!("client initial_keys failed: rc={}", e.code))?;
+    let pkt = builder.encode_initial(ch_bytes, &client_keys);
+
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .map_err(|e| format!("bind UDP: {e}"))?;
+    let timeout_ms = parse_env_or("TLS_HANDSHAKE_TIMEOUT_MS", 500);
+    socket
+        .set_read_timeout(Some(Duration::from_millis(timeout_ms)))
+        .map_err(|e| format!("set_read_timeout: {e}"))?;
+    socket
+        .send_to(&pkt, server_addr())
+        .map_err(|e| format!("send_to {}: {e}", server_addr()))?;
+
+    // The server reply may be a single Initial datagram or a coalesced
+    // burst (Initial + Handshake). We only have Initial keys, so we walk
+    // every long-header packet and decrypt the ones with packet_type=0.
+    // Any CONNECTION_CLOSE for F28 arrives in the Initial reply because
+    // the server detects the missing TP before deriving Handshake keys.
+    let mut reply = vec![0u8; 4096];
+    let n = match socket.recv_from(&mut reply) {
+        Ok((n, _)) => n,
+        Err(e) => return Err(format!("recv_from timed out or failed: {e}")),
+    };
+    reply.truncate(n);
+
+    let mut offset = 0;
+    while offset < reply.len() {
+        let rest = &reply[offset..];
+        if rest.is_empty() { break; }
+        let is_long = rest[0] & 0x80 != 0;
+        if !is_long {
+            // 1-RTT short header is impossible at this stage (no keys
+            // derived), so stop walking.
+            break;
+        }
+        let header = parse_long_header(rest)
+            .ok_or_else(|| "server reply did not parse as a long-header packet".to_string())?;
+        let pkt_len = header.payload_offset + header.length;
+        if rest.len() < pkt_len {
+            return Err(format!(
+                "coalesced packet truncated: need {} bytes, have {}",
+                pkt_len, rest.len(),
+            ));
+        }
+
+        if header.packet_type != 0 {
+            // Only Initial space is decryptable here; skip Handshake / 0-RTT
+            // / Retry packets in any coalesced burst.
+            offset += pkt_len;
+            continue;
+        }
+
+        // Decrypt this Initial packet in place on a private copy so the
+        // offset arithmetic for the next coalesced packet stays valid.
+        let pkt = &reply[offset..offset + pkt_len];
+        let plaintext = decrypt_initial_inplace(pkt, &header, &client_keys)?;
+
+        // Scan plaintext for CC. We reuse the same ACK/PADDING/PING walker
+        // as `drive_handshake_initial_inner` so the harness handles a
+        // server reply that leads with an ACK before the CONNECTION_CLOSE.
+        // CRYPTO frames (0x06) are ignored here — without a rustls FSM we
+        // have nothing useful to do with the ServerHello bytes, and F28's
+        // success case never produces a ServerHello anyway.
+        if let Some(cc) = scan_initial_plaintext_for_cc(&plaintext)? {
+            return Ok(Some(cc));
+        }
+
+        offset += pkt_len;
+    }
+    Ok(None)
+}
+
+/// Walk a decrypted Initial-space plaintext payload looking for a
+/// CONNECTION_CLOSE frame. Returns `Ok(Some(cc))` on the first CC found,
+/// `Ok(None)` if the payload ends without one, or `Err(msg)` on a
+/// truncated/malformed varint.
+///
+/// Recognised frame types (RFC 9000 §19):
+///   * 0x00 PADDING and 0x01 PING — single-byte, skipped.
+///   * 0x02/0x03 ACK / ACK_ECN — varint-walked per §19.3.
+///   * 0x06 CRYPTO — varint-walked (offset, length, data) and ignored;
+///     this harness has no TLS state machine to feed.
+///   * 0x1c/0x1d CONNECTION_CLOSE — parsed and surfaced.
+///
+/// Anything else terminates the walk early.
+fn scan_initial_plaintext_for_cc(
+    plaintext: &[u8],
+) -> Result<Option<ConnectionClose>, String> {
+    let mut i = 0;
+    while i < plaintext.len() {
+        let ft = plaintext[i];
+        match ft {
+            0x00 | 0x01 => { i += 1; }
+            0x02 | 0x03 => {
+                let with_ecn = ft == 0x03;
+                let mut p = i + 1;
+                let (_largest, n1) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: largest_acked varint truncated".to_string())?;
+                p += n1;
+                let (_delay, n2) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: ack_delay varint truncated".to_string())?;
+                p += n2;
+                let (range_count, n3) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: range_count varint truncated".to_string())?;
+                p += n3;
+                let (_first, n4) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "ACK: first_range varint truncated".to_string())?;
+                p += n4;
+                for _ in 0..range_count {
+                    let (_gap, ng) = decode_varint(&plaintext[p..])
+                        .ok_or_else(|| "ACK: gap varint truncated".to_string())?;
+                    p += ng;
+                    let (_len, nl) = decode_varint(&plaintext[p..])
+                        .ok_or_else(|| "ACK: range_len varint truncated".to_string())?;
+                    p += nl;
+                }
+                if with_ecn {
+                    for _ in 0..3 {
+                        let (_v, nv) = decode_varint(&plaintext[p..])
+                            .ok_or_else(|| "ACK_ECN: count varint truncated".to_string())?;
+                        p += nv;
+                    }
+                }
+                i = p;
+            }
+            0x06 => {
+                // CRYPTO: skip (offset, length, data). We have no TLS state
+                // machine in this driver — the harness only cares about CC.
+                let mut p = i + 1;
+                let (_off, n_off) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "CRYPTO: offset varint truncated".to_string())?;
+                p += n_off;
+                let (len, n_len) = decode_varint(&plaintext[p..])
+                    .ok_or_else(|| "CRYPTO: length varint truncated".to_string())?;
+                p += n_len;
+                let len = len as usize;
+                if plaintext.len() < p + len {
+                    return Err("CRYPTO: data slice truncated".to_string());
+                }
+                i = p + len;
+            }
+            0x1c | 0x1d => {
+                let cc = parse_connection_close(&plaintext[i..])
+                    .ok_or_else(|| "CONNECTION_CLOSE parse failed".to_string())?;
+                return Ok(Some(cc));
+            }
+            _ => break,
+        }
+    }
+    Ok(None)
+}
+
 /// Encryption epoch for the multi-epoch `drive_handshake_full` driver.
 ///
 /// Only Handshake and 1-RTT need the rustls-derived keys path; Initial uses
