@@ -11,32 +11,26 @@
 //!
 //! # Setup observability
 //!
-//! The harness has no introspection into navette's `stream_map`. To
-//! confirm the server has processed the initial STREAM frame for id 2
-//! (so the stream is registered), we poll UDP traffic with three exits:
-//!
-//! 1. **Server-emitted frame for stream 2** — strong signal.
-//! 2. **250 ms quiet-period heuristic** — no packet from the server for
-//!    250 ms after the last received one (loopback latency is sub-ms;
-//!    250 ms of silence implies steady state).
-//! 3. **500 ms hard cap from initial `stream_send`** — treated as a
-//!    setup failure, exit code 2 (distinct from guard-assertion exit 1).
+//! No introspection into navette's `stream_map` is needed: we rely on
+//! UDP send order being preserved end-to-end on loopback. After
+//! `drain_outgoing` flushes the opening STREAM frame, we immediately
+//! emit the raw `MAX_STREAM_DATA` packet. The kernel delivers them to
+//! the server in send order; the server's io_uring h3 handler is
+//! single-threaded, so the STREAM is registered before the
+//! MAX_STREAM_DATA arrives and the guard fires deterministically.
 //!
 //! # Exit codes
 //!
 //! * 0 — guard fired with the expected code + tag.
 //! * 1 — guard fired with the wrong code/tag, no close, or any I/O error.
-//! * 2 — setup failure (hard-cap timeout reached without observable
-//!       signal that the server processed the stream).
 
 use std::env;
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::UdpSocket;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
 use quiche::frame::Frame;
-use quiche::{Connection, RecvInfo};
+use quiche::Connection;
 use quiche_raw_frame_scenarios::{
     assert_close, navette_connect, send_raw_1rtt, wait_connection_close,
     CLOSE_DEADLINE_MS, MAX_DATAGRAM_SIZE,
@@ -45,17 +39,9 @@ use quiche_raw_frame_scenarios::{
 const FAILURE_ID: &str = "F19";
 const GUARD_TAG: &str = "[QUIC-MAX-STREAM-DATA-RECV-ONLY]";
 const EXPECTED_CODE: u64 = 0x05; // STREAM_STATE_ERROR
-const SETUP_FAIL_EXIT: u8 = 2;
 
 /// Client-uni stream id 2: bits `(id & 3) == 2` per RFC 9000 §2.1.
 const STREAM_ID_CLIENT_UNI: u64 = 2;
-
-/// 250 ms of silence after the last server packet — heuristic for
-/// "server has finished processing".
-const QUIET_PERIOD_MS: u64 = 250;
-
-/// Hard cap from the initial `stream_send` call — setup failure budget.
-const HARD_CAP_MS: u64 = 500;
 
 fn main() -> ExitCode {
     let port: u16 = env::var("QRF_SERVER_PORT")
@@ -84,18 +70,11 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    // Wait for an observable signal that the server has processed the STREAM
-    // frame (250 ms quiet period after a server packet) or hit the 500 ms
-    // hard cap (setup failure).
-    if !wait_for_server_quiet(&mut conn, &socket, server) {
-        eprintln!(
-            "FAIL {FAILURE_ID}: server did not reach steady state within {HARD_CAP_MS} ms; \
-             marking as setup failure",
-        );
-        return ExitCode::from(SETUP_FAIL_EXIT);
-    }
-
-    // Inject the offending MAX_STREAM_DATA against the recv-only stream.
+    // UDP loopback preserves send order; the server's io_uring h3
+    // handler is single-threaded. Send the MAX_STREAM_DATA immediately
+    // — the server processes the opening STREAM frame first (registers
+    // stream 2 as recv-only), then the MAX_STREAM_DATA (which closes
+    // the connection with STREAM_STATE_ERROR).
     let frame = Frame::MaxStreamData {
         stream_id: STREAM_ID_CLIENT_UNI,
         max: 0x10000,
@@ -128,47 +107,4 @@ fn drain_outgoing(conn: &mut Connection, socket: &UdpSocket) -> io::Result<()> {
             Err(e) => return Err(io::Error::other(format!("conn.send: {e:?}"))),
         }
     }
-}
-
-/// Poll the server until 250 ms of silence pass, or the 500 ms hard cap
-/// is reached. Returns `true` on quiet-period success, `false` on hard
-/// cap.
-fn wait_for_server_quiet(
-    conn: &mut Connection,
-    socket: &UdpSocket,
-    server: SocketAddr,
-) -> bool {
-    let local = socket.local_addr().expect("local_addr");
-    let mut buf = [0u8; 65_535];
-    let start = Instant::now();
-    let mut last_recv = Instant::now();
-    let mut received_any = false;
-
-    while start.elapsed() < Duration::from_millis(HARD_CAP_MS) {
-        if received_any && last_recv.elapsed() >= Duration::from_millis(QUIET_PERIOD_MS) {
-            return true;
-        }
-        match socket.recv_from(&mut buf) {
-            Ok((len, from)) => {
-                last_recv = Instant::now();
-                received_any = true;
-                let info = RecvInfo { to: local, from };
-                let _ = conn.recv(&mut buf[..len], info);
-                let _ = drain_outgoing(conn, socket);
-            }
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                conn.on_timeout();
-                let _ = drain_outgoing(conn, socket);
-            }
-            Err(_) => return false,
-        }
-        let _ = server;
-    }
-    // Hard cap reached. If we never received a server packet, the server is
-    // either dead-silent (no PING/ACK) or the STREAM never got through —
-    // treat as setup failure.
-    received_any && last_recv.elapsed() >= Duration::from_millis(QUIET_PERIOD_MS)
 }
