@@ -149,6 +149,150 @@ pub fn navette_connect(port: u16) -> (Connection, UdpSocket, SocketAddr) {
     (conn, socket, server)
 }
 
+/// Drive a navette handshake until the client's Handshake-epoch encrypt
+/// keys are LIVE but BEFORE the client's Finished is sent (so quiche has
+/// not yet retired the keys per RFC 9001 §4.9.1).
+///
+/// Detection mechanism: probe `quiche::test_utils::encode_pkt` with
+/// `Type::Handshake` and an empty frame slice, wrapped in
+/// `panic::catch_unwind`. The vendored `encode_pkt` for long-header types
+/// calls `crypto_ctx.crypto_overhead().unwrap()` BEFORE checking
+/// `crypto_seal` for `None`, so a missing seal surfaces as a panic
+/// (`Option::unwrap() on None`) rather than `Err(InvalidState)`. Once
+/// `crypto_seal` is `Some`, `crypto_overhead` returns `Some(tag_len)`,
+/// the seal check passes, and the probe returns `Ok(_)`. We probe AFTER
+/// each `conn.recv()` round and BEFORE the next `flush_send()` — the
+/// latter would send the client's Finished and trigger `HANDSHAKE_DONE`
+/// on the server, retiring the keys.
+///
+/// Per RFC 9001 §4.9.1, the client retires its Handshake-epoch keys on
+/// `HANDSHAKE_DONE`. We return BEFORE that point.
+///
+/// # Probe side-effects
+///
+/// On success, `encode_pkt` increments `conn.next_pkt_num`. On the
+/// missing-seal panic path the increment lives below the panic site, so
+/// PN state is unchanged. Either way the probe encodes into a stack
+/// buffer that is then discarded — the bytes never reach the wire.
+/// Quiche tolerates gaps in the send-side packet-number space, so the
+/// natural client Finished (or the scenario's own raw-injection
+/// `encode_pkt_reserved_bits` call) simply uses the next PN.
+///
+/// # Panics
+///
+/// Same conditions as [`navette_connect`] (socket bind / handshake
+/// deadline). If `HANDSHAKE_DEADLINE_MS` elapses before Handshake-epoch
+/// encrypt keys materialise, panics with the same message shape.
+pub fn navette_connect_until_handshake_keys(
+    port: u16,
+) -> (Connection, UdpSocket, SocketAddr) {
+    let server = server_addr_with_port(port);
+
+    // Bind an ephemeral UDP port on loopback, set a short read timeout so
+    // the recv loop stays responsive.
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind UDP");
+    socket
+        .set_read_timeout(Some(Duration::from_millis(25)))
+        .expect("set_read_timeout");
+
+    let local = socket.local_addr().expect("local_addr");
+
+    // Random 16-byte source connection ID (matches quiche example client).
+    let mut scid_bytes = [0u8; quiche::MAX_CONN_ID_LEN];
+    SystemRandom::new()
+        .fill(&mut scid_bytes[..])
+        .expect("random scid");
+    let scid = ConnectionId::from_ref(&scid_bytes);
+
+    let mut config = build_client_config();
+    let mut conn = quiche::connect(Some("localhost"), &scid, local, server, &mut config)
+        .expect("quiche::connect");
+
+    let deadline = Instant::now() + Duration::from_millis(HANDSHAKE_DEADLINE_MS);
+
+    let mut out = [0u8; MAX_DATAGRAM_SIZE];
+    let mut buf = [0u8; 65_535];
+
+    // === Send loop: flush any pending Initial packets. ===
+    flush_send(&mut conn, &socket, &mut out);
+
+    // Suppress the panic backtrace printed by the default hook while we
+    // poll `encode_pkt` for key-liveness — the missing-seal panic is the
+    // expected "keys not yet live" signal, not a real failure.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    // === Drive handshake until Handshake-epoch encrypt keys go live. ===
+    //
+    // We do NOT loop on `is_established()` — that's reached only after
+    // the client's Finished has been sent, by which point quiche has
+    // already retired the Handshake-epoch crypto_seal.
+    let result = loop {
+        // Probe BEFORE blocking on recv so we exit as soon as the last
+        // `conn.recv()` materialised the keys.
+        //
+        // `encode_pkt(Handshake, &[], buf)` panics inside
+        // `crypto_overhead().unwrap()` when the seal is `None`; we catch
+        // the panic and treat it as "keys not yet live". Once the seal
+        // is `Some`, the call returns `Ok(_)` and we exit.
+        let mut probe_buf = [0u8; MAX_DATAGRAM_SIZE];
+        let probed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            quiche::test_utils::encode_pkt(
+                &mut conn,
+                quiche::Type::Handshake,
+                &[],
+                &mut probe_buf,
+            )
+        }));
+        match probed {
+            Ok(Ok(_)) => break Ok(()),
+            Ok(Err(quiche::Error::InvalidState)) | Err(_) => {
+                // Keys not live yet — continue handshake.
+            }
+            Ok(Err(e)) => {
+                break Err(format!("probe failed: {e:?}"));
+            }
+        }
+
+        if Instant::now() >= deadline {
+            break Err(format!(
+                "handshake-epoch keys did not materialise within {} ms",
+                HANDSHAKE_DEADLINE_MS,
+            ));
+        }
+
+        match socket.recv_from(&mut buf) {
+            Ok((len, from)) => {
+                let recv_info = RecvInfo { to: local, from };
+                if let Err(e) = conn.recv(&mut buf[..len], recv_info) {
+                    break Err(format!("conn.recv failed: {e:?}"));
+                }
+                // Loop back to probe — if the server's Handshake CRYPTO
+                // just arrived, the keys are now live and we exit before
+                // flush_send would emit the client Finished.
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock
+                || e.kind() == io::ErrorKind::TimedOut => {
+                // Timer tick — drive on_timeout so loss detection fires,
+                // then flush any retransmissions so the handshake makes
+                // progress.
+                conn.on_timeout();
+                flush_send(&mut conn, &socket, &mut out);
+            }
+            Err(e) => {
+                break Err(format!("recv_from failed: {e:?}"));
+            }
+        }
+    };
+
+    std::panic::set_hook(prev_hook);
+
+    match result {
+        Ok(()) => (conn, socket, server),
+        Err(msg) => panic!("navette_connect_until_handshake_keys: {msg}"),
+    }
+}
+
 /// Drain quiche's outgoing packet queue and send each batch to the server.
 ///
 /// Loops `conn.send(&mut out)` until quiche reports `Done`. Any I/O error
