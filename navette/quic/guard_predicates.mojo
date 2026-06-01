@@ -1,6 +1,10 @@
 """Pure-predicate guards for QUIC conformance (no I/O, no connection refs)."""
 
-from navette.quic.guard_tags import GUARD_TAG_RESET_SEND_ONLY, GUARD_TAG_STOP_LOCAL_NOT_CREATED
+from navette.quic.guard_tags import (
+    GUARD_TAG_RESET_SEND_ONLY,
+    GUARD_TAG_STOP_LOCAL_NOT_CREATED,
+    GUARD_TAG_NO_FRAMES,
+)
 
 
 struct GuardVerdict(Copyable, Movable):
@@ -83,6 +87,21 @@ def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdic
         GuardVerdict(
             error_code=UInt64(0x05),  # STREAM_STATE_ERROR
             tag=String(GUARD_TAG_RESET_SEND_ONLY),
+        )
+    )
+
+
+def predicate_f11_no_frames(frame_count: Int) -> Optional[GuardVerdict]:
+    """Return Some(PROTOCOL_VIOLATION + tag) when a QUIC packet carries no
+    frames (RFC 9000 §12.4 — "An endpoint MUST treat receipt of a packet
+    containing no frames as a connection error of type PROTOCOL_VIOLATION").
+    """
+    if frame_count != 0:
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x0A),  # PROTOCOL_VIOLATION
+            tag=String(GUARD_TAG_NO_FRAMES),
         )
     )
 

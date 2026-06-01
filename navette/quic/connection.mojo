@@ -61,6 +61,7 @@ from navette.quic.frame import (
 )
 from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
+    predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
     predicate_f16_stop_sending_local_not_created,
     QuicResetCtx,
@@ -948,6 +949,16 @@ struct QuicConnection(Movable):
                     Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len)
                 )
                 var frames = parse_frames(reader)
+                # F11 — RFC 9000 §12.4: a packet containing no frames is a
+                # PROTOCOL_VIOLATION. Use close_transport instead of raising
+                # so the connection-level CONNECTION_CLOSE is queued; the
+                # outer for-loop over coalesced packets is aborted via the
+                # existing `decrypt_ok = False` short-circuit at line ~1005.
+                var _f11_verdict = predicate_f11_no_frames(len(frames))
+                if _f11_verdict:
+                    var _v11 = _f11_verdict.value().copy()
+                    self.close_transport(_v11.error_code, _v11.tag, now)
+                    return
                 var ack_eliciting = False
                 for i in range(len(frames)):
                     if frames[i].is_ack_eliciting():
