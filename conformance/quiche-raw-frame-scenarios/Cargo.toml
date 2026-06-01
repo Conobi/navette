@@ -65,3 +65,7 @@ path = "src/bin/s_f19_max_stream_data_recv_only.rs"
 [[bin]]
 name = "s_f20_max_streams_overflow"
 path = "src/bin/s_f20_max_streams_overflow.rs"
+
+[[bin]]
+name = "s_f21_streams_blocked_overflow"
+path = "src/bin/s_f21_streams_blocked_overflow.rs"
