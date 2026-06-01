@@ -14,6 +14,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_MAX_STREAM_DATA_RECV_ONLY,
     GUARD_TAG_MAX_STREAMS_OVERFLOW,
     GUARD_TAG_STREAMS_BLOCKED_OVERFLOW,
+    GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ,
 )
 
 
@@ -218,6 +219,24 @@ def check_streams_blocked_value(v: UInt64) -> Optional[GuardVerdict]:
         GuardVerdict(
             error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
             tag=String(GUARD_TAG_STREAMS_BLOCKED_OVERFLOW),
+        )
+    )
+
+
+def check_new_connection_id_retire_prior(
+    seq_num: UInt64, retire_prior_to: UInt64
+) -> Optional[GuardVerdict]:
+    """RFC 9000 §19.15: in a NEW_CONNECTION_ID frame, `Retire Prior To`
+    MUST be less than or equal to `Sequence Number`. A frame with
+    `retire_prior_to > seq_num` is malformed and MUST close the
+    connection with FRAME_ENCODING_ERROR (0x07). Used for F22.
+    """
+    if retire_prior_to <= seq_num:
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
+            tag=String(GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ),
         )
     )
 

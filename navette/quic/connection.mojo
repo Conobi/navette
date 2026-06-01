@@ -63,6 +63,7 @@ from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_max_streams_value,
+    check_new_connection_id_retire_prior,
     check_streams_blocked_value,
     check_short_reserved_bits,
     is_client_only_frame_on_server,
@@ -1389,10 +1390,19 @@ struct QuicConnection(Movable):
                 return
             return
 
-        # NEW_CONNECTION_ID: hand off to CidManager.
+        # NEW_CONNECTION_ID: validate encoding, then hand off to CidManager.
         if tid == FRAME_NEW_CONNECTION_ID:
             if frame._new_cid:
                 var nc = frame._new_cid.value().copy()
+                # F22 — RFC 9000 §19.15: `retire_prior_to` MUST NOT exceed
+                # `sequence`. Close with FRAME_ENCODING_ERROR (0x07).
+                var _v_cid_rpt = check_new_connection_id_retire_prior(
+                    nc.sequence, nc.retire_prior_to
+                )
+                if _v_cid_rpt:
+                    var _vv = _v_cid_rpt.value().copy()
+                    self.close_transport(_vv.error_code, _vv.tag, now)
+                    return
                 self.cid_mgr.on_new_connection_id(
                     nc.sequence,
                     nc.retire_prior_to,

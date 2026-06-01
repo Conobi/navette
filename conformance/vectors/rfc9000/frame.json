@@ -386,9 +386,15 @@
   {
     "id": "new-connection-id-retire-exceeds-seq",
     "frame_type": "NEW_CONNECTION_ID",
-    "description": "retire_prior_to (10) > sequence_number (5) — FRAME_ENCODING_ERROR",
+    "description": "retire_prior_to (10) > sequence_number (5): parser accepts; dispatch closes with FRAME_ENCODING_ERROR (F22).",
     "wire_hex": "18050a08010203040506070800112233445566778899aabbccddeeff",
-    "expect": "error"
+    "expected": {
+      "sequence_number": 5,
+      "retire_prior_to": 10,
+      "connection_id_length": 8,
+      "connection_id_hex": "0102030405060708",
+      "stateless_reset_token_hex": "00112233445566778899aabbccddeeff"
+    }
   },
   {
     "id": "crypto-truncated",

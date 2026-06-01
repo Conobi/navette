@@ -955,8 +955,13 @@ def test_error_new_cid_length_zero() raises:
     print("  error_new_cid_length_zero: PASS")
 
 
-def test_error_new_cid_retire_exceeds_seq() raises:
-    """NEW_CONNECTION_ID with retire_prior_to > sequence should raise."""
+def test_parse_new_cid_retire_exceeds_seq_accepted() raises:
+    """NEW_CONNECTION_ID with retire_prior_to > sequence parses successfully.
+
+    The wire-encoding check (RFC 9000 §19.15) is enforced at dispatch via
+    the F22 guard (`check_new_connection_id_retire_prior`) so the parser
+    surfaces the malformed frame to the caller rather than raising.
+    """
     var w = ByteWriter()
     varint_encode(w, FRAME_NEW_CONNECTION_ID)
     varint_encode(w, UInt64(5))   # sequence
@@ -968,13 +973,12 @@ def test_error_new_cid_retire_exceeds_seq() raises:
         w.write_u8(UInt8(0x00))
     var wire = w.finish()
     var r = ByteReader(Span(wire))
-    var caught = False
-    try:
-        _ = parse_frame(r)
-    except:
-        caught = True
-    _assert_true(caught, "NEW_CONNECTION_ID with retire > seq should raise")
-    print("  error_new_cid_retire_exceeds_seq: PASS")
+    var frame = parse_frame(r)
+    _assert_true(frame.is_new_connection_id(), "should parse as NEW_CONNECTION_ID")
+    ref nc = frame.as_new_connection_id()
+    _assert_eq(nc.sequence, UInt64(5), "sequence preserved")
+    _assert_eq(nc.retire_prior_to, UInt64(10), "retire_prior_to preserved")
+    print("  parse_new_cid_retire_exceeds_seq_accepted: PASS")
 
 
 # ── 4. frame_allowed_in_packet_type spot-checks ─────────────────────────
@@ -1093,7 +1097,7 @@ def main() raises:
     test_error_truncated_ack()
     test_error_ack_first_range_exceeds_largest()
     test_error_new_cid_length_zero()
-    test_error_new_cid_retire_exceeds_seq()
+    test_parse_new_cid_retire_exceeds_seq_accepted()
 
     # 4. Packet-type permission checks
     print("  -- Packet-type permission checks --")

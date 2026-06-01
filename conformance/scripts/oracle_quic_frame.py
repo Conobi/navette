@@ -662,9 +662,15 @@ wire = (
 add_vector(
     "new-connection-id-retire-exceeds-seq",
     "NEW_CONNECTION_ID",
-    "retire_prior_to (10) > sequence_number (5) — FRAME_ENCODING_ERROR",
+    "retire_prior_to (10) > sequence_number (5): parser accepts; dispatch closes with FRAME_ENCODING_ERROR (F22).",
     wire,
-    "error",
+    {
+        "sequence_number": 5,
+        "retire_prior_to": 10,
+        "connection_id_length": 8,
+        "connection_id_hex": cid_bytes.hex(),
+        "stateless_reset_token_hex": reset_token.hex(),
+    },
 )
 
 # Truncated CRYPTO frame: length says 10 but only 2 bytes of data

@@ -24,6 +24,7 @@ from navette.quic.connection import (
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_max_streams_value,
+    check_new_connection_id_retire_prior,
     check_streams_blocked_value,
     check_short_reserved_bits,
     is_client_only_frame_on_server,
@@ -3141,6 +3142,25 @@ def test_check_streams_blocked_value_negative() raises:
     print("  test_check_streams_blocked_value_negative: PASS")
 
 
+def test_check_new_connection_id_retire_prior_positive() raises:
+    """F22 fires when retire_prior_to > sequence (RFC 9000 §19.15)."""
+    var v = check_new_connection_id_retire_prior(UInt64(5), UInt64(10))
+    assert_true(v.__bool__(), "retire_prior_to > seq must trip")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x07, "FRAME_ENCODING_ERROR")
+    assert_true(verdict.tag == "[QUIC-CID-RETIRE-PRIOR-GT-SEQ]", "F22 tag matches")
+    print("  test_check_new_connection_id_retire_prior_positive: PASS")
+
+
+def test_check_new_connection_id_retire_prior_negative() raises:
+    """retire_prior_to <= sequence is legal."""
+    var v_eq = check_new_connection_id_retire_prior(UInt64(7), UInt64(7))
+    assert_false(v_eq.__bool__(), "rpt == seq is legal (boundary)")
+    var v_lt = check_new_connection_id_retire_prior(UInt64(10), UInt64(0))
+    assert_false(v_lt.__bool__(), "rpt < seq is legal")
+    print("  test_check_new_connection_id_retire_prior_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3446,6 +3466,8 @@ def main() raises:
     test_check_max_streams_value_negative()
     test_check_streams_blocked_value_positive()
     test_check_streams_blocked_value_negative()
+    test_check_new_connection_id_retire_prior_positive()
+    test_check_new_connection_id_retire_prior_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()
