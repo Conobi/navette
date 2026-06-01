@@ -13,3 +13,7 @@ ring = "0.17"
 [lib]
 name = "quiche_raw_frame_scenarios"
 path = "src/lib.rs"
+
+[[bin]]
+name = "sanity_get"
+path = "src/bin/sanity_get.rs"
