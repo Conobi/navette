@@ -39,7 +39,7 @@ encoding), and C7 (RFC 9001 §8.3 0-RTT / N/A for this cycle) from
 | F18 | C4 | RFC 9000 §19.10 | gated | s_f18_max_stream_data_nonexist |
 | F19 | C4 | RFC 9000 §19.10 | red | s_f19_max_stream_data_recv_only |
 | F20 | C4 | RFC 9000 §19.11 | red | s_f20_max_streams_overflow |
-| F21 | C4 | RFC 9000 §19.14 | red | s_f21_streams_blocked_overflow |
+| F21 | C4 | RFC 9000 §19.14 | gated | s_f21_streams_blocked_overflow |
 | F22 | C5 | RFC 9000 §19.15 | red | s_f22_cid_retire_prior_gt_seq |
 | F23 | C5 | RFC 9000 §19.15 | red | s_f23_cid_zero_length |
 | F24 | C3 | RFC 9000 §19.20 | gated | s_f24_handshake_done_server |

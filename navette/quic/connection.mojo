@@ -63,6 +63,7 @@ from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_max_streams_value,
+    check_streams_blocked_value,
     check_short_reserved_bits,
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
@@ -1499,11 +1500,23 @@ struct QuicConnection(Movable):
                     self.stream_map.streams_blocked_at_uni = UInt64(0)
             return
 
-        # *_BLOCKED frames: informational only for M3c.
-        if (tid == FRAME_DATA_BLOCKED
-                or tid == FRAME_STREAM_DATA_BLOCKED
-                or tid == FRAME_STREAMS_BLOCKED_BIDI
+        # *_BLOCKED frames: informational only for M3c. STREAMS_BLOCKED
+        # carries a stream-count field with the same 2^60 cap as
+        # MAX_STREAMS (RFC 9000 §19.14). F21 — close with
+        # FRAME_ENCODING_ERROR on overflow before treating the frame as
+        # informational.
+        if (tid == FRAME_STREAMS_BLOCKED_BIDI
                 or tid == FRAME_STREAMS_BLOCKED_UNI):
+            if frame._max_streams:
+                var sb = frame._max_streams.value().copy()
+                var _v_sb = check_streams_blocked_value(sb.maximum)
+                if _v_sb:
+                    var _vv = _v_sb.value().copy()
+                    self.close_transport(_vv.error_code, _vv.tag, now)
+                    return
+            return
+        if (tid == FRAME_DATA_BLOCKED
+                or tid == FRAME_STREAM_DATA_BLOCKED):
             return
 
         # F10 — RFC 9000 §12.4: unknown frame type. Close with

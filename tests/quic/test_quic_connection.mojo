@@ -24,6 +24,7 @@ from navette.quic.connection import (
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_max_streams_value,
+    check_streams_blocked_value,
     check_short_reserved_bits,
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
@@ -3121,6 +3122,25 @@ def test_check_max_streams_value_negative() raises:
     print("  test_check_max_streams_value_negative: PASS")
 
 
+def test_check_streams_blocked_value_positive() raises:
+    """F21 fires when STREAMS_BLOCKED carries a limit > 2^60."""
+    var v = check_streams_blocked_value((UInt64(1) << 60) + UInt64(1))
+    assert_true(v.__bool__(), "2^60 + 1 must trip")
+    var verdict = v.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x07, "FRAME_ENCODING_ERROR")
+    assert_true(verdict.tag == "[QUIC-STREAMS-BLOCKED-OVERFLOW]", "F21 tag matches")
+    print("  test_check_streams_blocked_value_positive: PASS")
+
+
+def test_check_streams_blocked_value_negative() raises:
+    """Values up to and including 2^60 are legal for STREAMS_BLOCKED."""
+    var v_eq = check_streams_blocked_value(UInt64(1) << 60)
+    assert_false(v_eq.__bool__(), "2^60 is legal (boundary)")
+    var v_low = check_streams_blocked_value(UInt64(100))
+    assert_false(v_low.__bool__(), "low value is legal")
+    print("  test_check_streams_blocked_value_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3424,6 +3444,8 @@ def main() raises:
     test_predicate_f18_f19_max_stream_data_negative()
     test_check_max_streams_value_positive()
     test_check_max_streams_value_negative()
+    test_check_streams_blocked_value_positive()
+    test_check_streams_blocked_value_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

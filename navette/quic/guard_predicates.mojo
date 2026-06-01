@@ -13,6 +13,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_MAX_STREAM_DATA_NONEXIST,
     GUARD_TAG_MAX_STREAM_DATA_RECV_ONLY,
     GUARD_TAG_MAX_STREAMS_OVERFLOW,
+    GUARD_TAG_STREAMS_BLOCKED_OVERFLOW,
 )
 
 
@@ -201,6 +202,22 @@ def check_max_streams_value(v: UInt64) -> Optional[GuardVerdict]:
         GuardVerdict(
             error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
             tag=String(GUARD_TAG_MAX_STREAMS_OVERFLOW),
+        )
+    )
+
+
+def check_streams_blocked_value(v: UInt64) -> Optional[GuardVerdict]:
+    """RFC 9000 §19.14: STREAMS_BLOCKED carries the same stream-count
+    field as MAX_STREAMS and is subject to the identical 2^60 cap. A
+    limit > 2^60 cannot describe a valid stream id and MUST close the
+    connection with FRAME_ENCODING_ERROR. Used for F21.
+    """
+    if v <= (UInt64(1) << 60):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
+            tag=String(GUARD_TAG_STREAMS_BLOCKED_OVERFLOW),
         )
     )
 
