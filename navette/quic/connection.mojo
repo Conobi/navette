@@ -63,6 +63,7 @@ from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_short_reserved_bits,
+    is_path_challenge_in_handshake,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -70,7 +71,10 @@ from navette.quic.guard_predicates import (
     QuicResetCtx,
     QuicStopSendingCtx,
 )
-from navette.quic.guard_tags import GUARD_TAG_UNKNOWN_FRAME
+from navette.quic.guard_tags import (
+    GUARD_TAG_UNKNOWN_FRAME,
+    GUARD_TAG_PATH_CHALLENGE_HS,
+)
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
@@ -1297,6 +1301,17 @@ struct QuicConnection(Movable):
     ) raises:
         """Route a parsed frame to its handler."""
         var tid = frame.type_id
+
+        # F13 — RFC 9000 §17.2.4: PATH_CHALLENGE / PATH_RESPONSE are only
+        # permitted in 1-RTT (space 2). In Initial/Handshake epochs the
+        # peer MUST not send them; close with PROTOCOL_VIOLATION. This is
+        # placed before the per-frame dispatch arms because PATH_CHALLENGE
+        # currently falls through to the trailing silent-drop.
+        if is_path_challenge_in_handshake(tid, space_idx):
+            self.close_transport(
+                UInt64(0x0A), String(GUARD_TAG_PATH_CHALLENGE_HS), now
+            )
+            return
 
         # PADDING: no-op
         if tid == FRAME_PADDING:

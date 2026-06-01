@@ -24,6 +24,7 @@ from navette.quic.connection import (
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_short_reserved_bits,
+    is_path_challenge_in_handshake,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -3037,6 +3038,21 @@ def test_check_short_reserved_bits_negative_sibling_input() raises:
     print("  test_check_short_reserved_bits_negative_sibling_input: PASS")
 
 
+def test_is_path_challenge_in_handshake_positive() raises:
+    """F13 fires when PATH_CHALLENGE / PATH_RESPONSE arrives pre-1-RTT."""
+    assert_true(is_path_challenge_in_handshake(UInt64(0x1A), 1), "PATH_CHALLENGE in Handshake")
+    assert_true(is_path_challenge_in_handshake(UInt64(0x1A), 0), "PATH_CHALLENGE in Initial")
+    assert_true(is_path_challenge_in_handshake(UInt64(0x1B), 1), "PATH_RESPONSE in Handshake")
+    print("  test_is_path_challenge_in_handshake_positive: PASS")
+
+
+def test_is_path_challenge_in_handshake_negative() raises:
+    """F13 stays silent in 1-RTT (space 2) and on non-path frames."""
+    assert_false(is_path_challenge_in_handshake(UInt64(0x1A), 2), "PATH_CHALLENGE in 1-RTT is legal")
+    assert_false(is_path_challenge_in_handshake(UInt64(0x06), 1), "CRYPTO in Handshake is legal")
+    print("  test_is_path_challenge_in_handshake_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3331,6 +3347,8 @@ def main() raises:
     test_check_short_reserved_bits_positive()
     test_check_short_reserved_bits_negative_no_violation()
     test_check_short_reserved_bits_negative_sibling_input()
+    test_is_path_challenge_in_handshake_positive()
+    test_is_path_challenge_in_handshake_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

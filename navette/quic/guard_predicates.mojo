@@ -7,6 +7,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_UNKNOWN_FRAME,
     GUARD_TAG_RESERVED_BITS_HS,
     GUARD_TAG_RESERVED_BITS_SHORT,
+    GUARD_TAG_PATH_CHALLENGE_HS,
 )
 
 
@@ -124,6 +125,15 @@ def check_short_reserved_bits(first_byte: UInt8) -> Optional[GuardVerdict]:
             tag=String(GUARD_TAG_RESERVED_BITS_SHORT),
         )
     )
+
+
+def is_path_challenge_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
+    """RFC 9000 §17.2.4: PATH_CHALLENGE / PATH_RESPONSE (0x1A / 0x1B) are
+    allowed only in 1-RTT packets (space_idx == 2). Receipt in Initial
+    (0) or Handshake (1) is a PROTOCOL_VIOLATION.
+    """
+    var is_path = type_id == UInt64(0x1A) or type_id == UInt64(0x1B)
+    return is_path and space_idx < 2
 
 
 def is_unknown_frame_type(type_id: UInt64) -> Bool:
