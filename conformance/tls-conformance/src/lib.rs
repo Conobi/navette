@@ -451,6 +451,19 @@ struct PlaintextScan {
     cc: Option<ConnectionClose>,
 }
 
+/// Encode a single QUIC CRYPTO frame per RFC 9000 §19.6.
+///
+/// Wire layout: type byte (0x06) + varint(offset) + varint(length) + bytes.
+/// The function is pure — no I/O, no global state. Suitable for unit tests.
+fn encode_crypto_frame(offset: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 8 + 8 + bytes.len());
+    out.push(0x06);
+    encode_varint(offset, &mut out);
+    encode_varint(bytes.len() as u64, &mut out);
+    out.extend_from_slice(bytes);
+    out
+}
+
 /// Encode + send a Handshake-space (long header, type=2) packet whose only
 /// payload is a CRYPTO frame at offset 0 carrying `crypto_payload`.
 ///
@@ -1390,5 +1403,19 @@ mod tests {
             }
         });
         assert!(found, "appended 0x0b not found");
+    }
+
+    #[test]
+    fn encode_crypto_frame_offset_zero() {
+        // type=0x06, offset=0 (1-byte varint), length=5 (1-byte varint), bytes
+        let out = encode_crypto_frame(0, &[0x18, 0x00, 0x00, 0x01, 0x00]);
+        assert_eq!(out, vec![0x06, 0x00, 0x05, 0x18, 0x00, 0x00, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn encode_crypto_frame_offset_large() {
+        // offset=200 → 2-byte varint 0x40c8; length=4 → 1-byte 0x04
+        let out = encode_crypto_frame(200, &[0x05, 0x00, 0x00, 0x00]);
+        assert_eq!(out, vec![0x06, 0x40, 0xc8, 0x04, 0x05, 0x00, 0x00, 0x00]);
     }
 }
