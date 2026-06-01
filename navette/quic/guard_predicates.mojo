@@ -295,6 +295,18 @@ def is_path_challenge_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
     return is_path and space_idx < 2
 
 
+def is_datagram_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
+    """RFC 9221 §5: DATAGRAM (0x30) and DATAGRAM_LEN (0x31) are 1-RTT only.
+
+    Receipt in Initial (0) or Handshake (1) MUST be treated as a
+    PROTOCOL_VIOLATION; the dispatch site closes with error 0x0A.
+    Mirrors the shape of `is_path_challenge_in_handshake` so the gate
+    composes the same way at the top of `_dispatch_frame`.
+    """
+    var is_dgram = type_id == UInt64(0x30) or type_id == UInt64(0x31)
+    return is_dgram and space_idx < 2
+
+
 def is_unknown_frame_type(type_id: UInt64) -> Bool:
     """Return True iff `type_id` is outside the recognized frame-type set.
 

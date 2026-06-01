@@ -70,6 +70,7 @@ from navette.quic.guard_predicates import (
     stream_offset_exceeds_fc,
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
+    is_datagram_in_handshake,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -82,6 +83,7 @@ from navette.quic.guard_predicates import (
 from navette.quic.guard_tags import (
     GUARD_TAG_UNKNOWN_FRAME,
     GUARD_TAG_PATH_CHALLENGE_HS,
+    GUARD_TAG_DATAGRAM_HS,
     GUARD_TAG_MIGRATION_DISABLED,
     GUARD_TAG_NEW_TOKEN_SERVER,
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
@@ -284,6 +286,10 @@ struct QuicEvent(Copyable, Movable):
     comptime STREAM_RESET: UInt8 = 7
     comptime STREAM_STOPPED: UInt8 = 8
     comptime STREAM_OPENED: UInt8 = 9
+    # RFC 9221 §5: a QUIC DATAGRAM frame was received and decoded. The
+    # payload bytes are owned by the event (in `datagram_payload`) so the
+    # caller can drain QuicEvent without re-borrowing into the connection.
+    comptime DATAGRAM_RECEIVED: UInt8 = 10
 
     var type_id: UInt8
     var error_code: UInt64
@@ -291,6 +297,11 @@ struct QuicEvent(Copyable, Movable):
     var transport_params: Optional[TransportParams]
     var stream_id: UInt64
     var final_size: UInt64
+    # Owned DATAGRAM payload (RFC 9221 §5 received-frame path). Only
+    # populated when type_id == DATAGRAM_RECEIVED; the field stays an empty
+    # List for every other event kind to keep the struct copyable without
+    # an Optional branch in the hot path.
+    var datagram_payload: List[UInt8]
 
     def __init__(out self, type_id: UInt8):
         self.type_id = type_id
@@ -299,6 +310,7 @@ struct QuicEvent(Copyable, Movable):
         self.transport_params = None
         self.stream_id = UInt64(0)
         self.final_size = UInt64(0)
+        self.datagram_payload = List[UInt8]()
 
     def __init__(out self, *, other: Self):
         self.type_id = other.type_id
@@ -307,6 +319,7 @@ struct QuicEvent(Copyable, Movable):
         self.transport_params = other.transport_params.copy()
         self.stream_id = other.stream_id
         self.final_size = other.final_size
+        self.datagram_payload = List[UInt8](copy=other.datagram_payload)
 
     def __init__(out self, *, deinit take: Self):
         self.type_id = take.type_id
@@ -315,6 +328,7 @@ struct QuicEvent(Copyable, Movable):
         self.transport_params = take.transport_params^
         self.stream_id = take.stream_id
         self.final_size = take.final_size
+        self.datagram_payload = take.datagram_payload^
 
     @staticmethod
     def handshake_complete() -> QuicEvent:
@@ -366,6 +380,19 @@ struct QuicEvent(Copyable, Movable):
         ev.stream_id = stream_id
         return ev^
 
+    @staticmethod
+    def datagram_received(payload: List[UInt8]) -> QuicEvent:
+        """RFC 9221 §5 — a peer-sent QUIC DATAGRAM has been parsed.
+
+        `payload` carries the inner bytes of the DATAGRAM frame (no length
+        prefix). The event owns its copy of the payload so the caller can
+        drain QuicEvent independently from the QuicConnection's frame
+        ownership lifetime.
+        """
+        var ev = QuicEvent(QuicEvent.DATAGRAM_RECEIVED)
+        ev.datagram_payload = List[UInt8](copy=payload)
+        return ev^
+
 
 # ── QuicConnection ───────────────────────────────────────────────────
 
@@ -412,6 +439,14 @@ struct QuicConnection(Movable):
     # entry is the 8-byte data field copied verbatim from the incoming
     # PATH_CHALLENGE; emission + drain happens in `emit_path_response_frames`.
     var pending_path_responses: List[List[UInt8]]
+    # RFC 9221 §5 — outbound DATAGRAM frame queue. Each entry is one
+    # complete payload (no header bytes). Drained in the 1-RTT branch of
+    # `_build_frames_for_space` into DATAGRAM_LEN (0x31) frames so each
+    # entry composes cleanly with ACK/STREAM/etc. Per RFC §5.4 entries are
+    # NOT retransmitted on loss — once a packet carrying a DATAGRAM is
+    # declared lost, the payload is gone (callers MUST handle reliability
+    # themselves if they need it).
+    var pending_outbound_datagrams: List[List[UInt8]]
     # Current validated peer 4-tuple (RFC 9000 §9). Updated ONLY inside
     # `on_path_response_received` after a verified PATH_RESPONSE token+addr
     # match (per AC17). The bench-server receive site MUST NOT mutate it
@@ -512,6 +547,7 @@ struct QuicConnection(Movable):
         self.cid_mgr = take.cid_mgr^
         self.path_validator = take.path_validator^
         self.pending_path_responses = take.pending_path_responses^
+        self.pending_outbound_datagrams = take.pending_outbound_datagrams^
         self.peer_addr = take.peer_addr^
         self._current_recv_addr = take._current_recv_addr^
         self.initial_cids_emitted = take.initial_cids_emitted
@@ -614,6 +650,7 @@ struct QuicConnection(Movable):
         )
         self.path_validator = PathValidator()
         self.pending_path_responses = List[List[UInt8]]()
+        self.pending_outbound_datagrams = List[List[UInt8]]()
         # Sentinel zero PathKey — overwritten by the bench server on the
         # first ingress datagram (and on every PATH_RESPONSE-validated
         # migration). family=0 never matches AF_INET (2) or AF_INET6 (10),
@@ -1636,6 +1673,16 @@ struct QuicConnection(Movable):
             )
             return
 
+        # RFC 9221 §5: DATAGRAM (0x30) / DATAGRAM_LEN (0x31) are 1-RTT only.
+        # Receipt in Initial (0) or Handshake (1) is PROTOCOL_VIOLATION.
+        # Placed alongside the path-challenge gate because the DATAGRAM
+        # parse arms below assume 1-RTT space.
+        if is_datagram_in_handshake(tid, space_idx):
+            self.close_transport(
+                UInt64(0x0A), String(GUARD_TAG_DATAGRAM_HS), now
+            )
+            return
+
         # PADDING: no-op
         if tid == FRAME_PADDING:
             return
@@ -1871,6 +1918,18 @@ struct QuicConnection(Movable):
             ref data = frame.as_path_data()
             var from_addr = PathKey(other=self._current_recv_addr)
             self.on_path_response_received(Span(data), from_addr^, now)
+            return
+
+        # DATAGRAM / DATAGRAM_LEN (RFC 9221 §5) — 1-RTT only, gated above.
+        # Surface the payload to the application via QuicEvent so H3 (or
+        # raw MASQUE/CONNECT-UDP callers) can demux. Frames carry no
+        # reliability state (RFC 9221 §5.4) so we do not record them in
+        # `app_frames_sent` or otherwise track for retransmission.
+        if frame.is_datagram():
+            ref payload = frame.as_datagram_payload()
+            self.events.append(
+                QuicEvent.datagram_received(List[UInt8](copy=payload))
+            )
             return
 
         # F10 — RFC 9000 §12.4: unknown frame type. Close with
@@ -2823,6 +2882,23 @@ struct QuicConnection(Movable):
                 ref pc = path_challenges[i]
                 frames.append(pc.copy())
 
+            # RFC 9221 §5: drain outbound DATAGRAM payloads into 1-RTT
+            # DATAGRAM_LEN (0x31) frames so they compose with stream/ACK
+            # frames in the same packet. The Mojo `List` has no pop_front,
+            # so we rebuild the queue from index 1 — acceptable because
+            # the queue is short-lived (drained every flush) and each
+            # element is itself a small List[UInt8]. Crucially, we do NOT
+            # append entries to `sent_records`: DATAGRAMs are not retransmitted
+            # on loss (RFC 9221 §5.4), so loss-recovery must treat the
+            # carrying packet's DATAGRAMs as discarded rather than queued.
+            while len(self.pending_outbound_datagrams) > 0:
+                var head = List[UInt8](copy=self.pending_outbound_datagrams[0])
+                var rest = List[List[UInt8]]()
+                for i in range(1, len(self.pending_outbound_datagrams)):
+                    rest.append(List[UInt8](copy=self.pending_outbound_datagrams[i]))
+                self.pending_outbound_datagrams = rest^
+                frames.append(Frame.datagram_with_len(head^))
+
         return frames^
 
     def _build_app_frames(
@@ -3660,6 +3736,49 @@ struct QuicConnection(Movable):
         stream.reset_stream_final_size = final_size
         self.stream_map.remove_sendable(key)
         self.stream_map.set_stream(key, stream^)
+
+    def send_datagram(mut self, payload: Span[UInt8, _]) raises -> Bool:
+        """RFC 9221 §5 — enqueue a QUIC DATAGRAM frame for the next 1-RTT flush.
+
+        Returns True on enqueue success; False if any of the following hold:
+          * the peer omitted `max_datagram_frame_size` from its transport
+            parameters or advertised 0 — meaning it cannot receive DATAGRAMs,
+          * the payload exceeds the peer-advertised cap (RFC 9221 §3),
+          * the connection is closing/draining (no 1-RTT flush will occur).
+
+        On True, the payload is copied onto `pending_outbound_datagrams`
+        and drained by the 1-RTT branch of `_build_frames_for_space` as
+        DATAGRAM_LEN (0x31). False is a non-fatal signal — the caller is
+        expected to surface a "cannot send" status to its own consumer.
+
+        DATAGRAMs are NOT subject to congestion control, flow control, or
+        retransmission (RFC 9221 §5.4): if the packet carrying this
+        DATAGRAM is lost, the payload is gone. Callers that need
+        reliability MUST use STREAM frames.
+        """
+        # Closing/draining ⇒ no flush will happen; refuse early so the
+        # caller learns the queue is closed.
+        if (self.state & CONN_CLOSING) != 0 or (self.state & CONN_CLOSED) != 0:
+            return False
+        if (self.state & CONN_DRAINING) != 0:
+            return False
+        # Pre-handshake the peer's transport parameters are not yet known.
+        # Per RFC 9221 §5 a DATAGRAM may only ride in 1-RTT, so refuse
+        # until the peer's TPs are in hand.
+        if not Bool(self.peer_params):
+            return False
+        var peer_max = self.peer_params.value().max_datagram_frame_size
+        if peer_max == UInt64(0):
+            return False
+        if UInt64(len(payload)) > peer_max:
+            return False
+        # Copy the payload so the caller's Span lifetime does not constrain
+        # ours — outbound queues survive across `send()` boundaries.
+        var copy = List[UInt8]()
+        for i in range(len(payload)):
+            copy.append(payload[i])
+        self.pending_outbound_datagrams.append(copy^)
+        return True
 
     def stop_sending(mut self, stream_id: UInt64, error_code: UInt64) raises:
         """Request the peer to stop sending on a stream."""

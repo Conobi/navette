@@ -4144,6 +4144,192 @@ def test_anti_amp_per_path_in_flusher() raises:
     print("  test_anti_amp_per_path_in_flusher: PASS")
 
 
+# ── RFC 9221 — QUIC DATAGRAM frames ──────────────────────────────────────
+
+
+def _datagram_params(cap: UInt64) -> TransportParams:
+    """Like `_default_params` but with DATAGRAM support advertised.
+
+    `cap` is the local max_datagram_frame_size; both sides typically share
+    the same params struct so both gain the ability to send + receive.
+    """
+    var p = default_transport_params()
+    p.max_idle_timeout = UInt64(30_000)
+    p.initial_max_data = UInt64(1_048_576)
+    p.initial_max_stream_data_bidi_local = UInt64(65_536)
+    p.initial_max_stream_data_bidi_remote = UInt64(65_536)
+    p.initial_max_streams_bidi = UInt64(100)
+    p.max_datagram_frame_size = cap
+    return p^
+
+
+def test_send_datagram_refused_when_peer_disabled() raises:
+    """RFC 9221 §3: when peer advertises 0 (or absent), send_datagram returns False.
+
+    Set up a handshake where the SERVER advertises 0 but the CLIENT
+    advertises >0 — verifies that the client cannot send despite its own
+    willingness, because the peer cannot receive.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+
+    var client_params = _datagram_params(UInt64(1200))   # local enabled
+    var server_params = _datagram_params(UInt64(0))      # peer disabled (default)
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", client_params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, server_params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var payload = _to_bytes("hello-datagram")
+    var ok = client.send_datagram(Span(payload))
+    assert_false(ok, "send_datagram must refuse when peer max=0")
+    assert_equal_int(
+        len(client.pending_outbound_datagrams),
+        0,
+        "no datagram should be queued",
+    )
+    _ = tls^
+    print("  test_send_datagram_refused_when_peer_disabled: PASS")
+
+
+def test_send_datagram_refused_when_oversize() raises:
+    """RFC 9221 §3: payload above peer cap is refused at send time.
+
+    Peer advertises 1200 — the local side rejects a 2000-byte payload
+    without queueing it, returning False so the caller surfaces the limit
+    to its own consumer.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+
+    var params = _datagram_params(UInt64(1200))
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var oversize = List[UInt8]()
+    for _ in range(2000):
+        oversize.append(UInt8(0xAB))
+    var ok = client.send_datagram(Span(oversize))
+    assert_false(ok, "send_datagram must refuse oversize payload")
+    assert_equal_int(
+        len(client.pending_outbound_datagrams),
+        0,
+        "oversize payload must not be queued",
+    )
+
+    # Sanity: a within-cap payload IS queued.
+    var small = _to_bytes("ok")
+    var ok2 = client.send_datagram(Span(small))
+    assert_true(ok2, "within-cap payload must enqueue")
+    assert_equal_int(
+        len(client.pending_outbound_datagrams),
+        1,
+        "one queued datagram after enqueue",
+    )
+    _ = tls^
+    print("  test_send_datagram_refused_when_oversize: PASS")
+
+
+def test_datagram_round_trip_client_to_server() raises:
+    """RFC 9221 §5: client-sent DATAGRAM arrives as a server-side QuicEvent.
+
+    Wires the full QUIC layer (handshake → enqueue → flush → recv →
+    dispatch) end-to-end. The payload bytes MUST come out byte-identical
+    on the server side via QuicEvent.datagram_received, with the queue
+    drained after the flush.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+
+    var params = _datagram_params(UInt64(1200))
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var payload = _to_bytes("hello-datagram")
+    var ok = client.send_datagram(Span(payload))
+    assert_true(ok, "send_datagram must succeed once handshake done")
+    assert_equal_int(
+        len(client.pending_outbound_datagrams),
+        1,
+        "queue holds one datagram pre-flush",
+    )
+
+    now = _pump(client, server, now, 3)
+
+    # The queue must be drained on the client after a flush.
+    assert_equal_int(
+        len(client.pending_outbound_datagrams),
+        0,
+        "queue drained after flush",
+    )
+
+    # The server must surface a DATAGRAM_RECEIVED event with the same bytes.
+    var got_event = False
+    var got_bytes_match = False
+    while True:
+        var ev = server.poll()
+        if not ev:
+            break
+        var e = ev.value().copy()
+        if e.type_id == QuicEvent.DATAGRAM_RECEIVED:
+            got_event = True
+            if _bytes_equal(e.datagram_payload, "hello-datagram"):
+                got_bytes_match = True
+    assert_true(got_event, "server must emit DATAGRAM_RECEIVED")
+    assert_true(got_bytes_match, "server datagram payload must match sender's bytes")
+    _ = tls^
+    print("  test_datagram_round_trip_client_to_server: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -4234,4 +4420,7 @@ def main() raises:
     test_path_validation_defers_without_spare_cid()
     test_disable_active_migration_triggers_close()
     test_anti_amp_per_path_in_flusher()
+    test_send_datagram_refused_when_peer_disabled()
+    test_send_datagram_refused_when_oversize()
+    test_datagram_round_trip_client_to_server()
     print("All test_quic_connection tests passed.")
