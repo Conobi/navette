@@ -15,6 +15,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_MAX_STREAMS_OVERFLOW,
     GUARD_TAG_STREAMS_BLOCKED_OVERFLOW,
     GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ,
+    GUARD_TAG_CID_ZERO_LENGTH,
 )
 
 
@@ -237,6 +238,22 @@ def check_new_connection_id_retire_prior(
         GuardVerdict(
             error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
             tag=String(GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ),
+        )
+    )
+
+
+def check_new_connection_id_length(cid_len: UInt64) -> Optional[GuardVerdict]:
+    """RFC 9000 §19.15: the `Length` field of a NEW_CONNECTION_ID frame
+    MUST be in the range 1..20 inclusive. A frame whose connection id
+    length falls outside that range is a wire-encoding error and MUST
+    close the connection with FRAME_ENCODING_ERROR (0x07). Used for F23.
+    """
+    if cid_len >= UInt64(1) and cid_len <= UInt64(20):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
+            tag=String(GUARD_TAG_CID_ZERO_LENGTH),
         )
     )
 

@@ -643,9 +643,15 @@ wire = (
 add_vector(
     "new-connection-id-cid-len-0",
     "NEW_CONNECTION_ID",
-    "NEW_CONNECTION_ID with CID length 0 (must be 1-20)",
+    "NEW_CONNECTION_ID with CID length 0: parser accepts; dispatch closes with FRAME_ENCODING_ERROR (F23).",
     wire,
-    "error",
+    {
+        "sequence_number": 1,
+        "retire_prior_to": 0,
+        "connection_id_length": 0,
+        "connection_id_hex": "",
+        "stateless_reset_token_hex": bytes(16).hex(),
+    },
 )
 
 # NEW_CONNECTION_ID with retire_prior_to > sequence_number

@@ -24,6 +24,7 @@ from navette.quic.connection import (
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_max_streams_value,
+    check_new_connection_id_length,
     check_new_connection_id_retire_prior,
     check_streams_blocked_value,
     check_short_reserved_bits,
@@ -3161,6 +3162,30 @@ def test_check_new_connection_id_retire_prior_negative() raises:
     print("  test_check_new_connection_id_retire_prior_negative: PASS")
 
 
+def test_check_new_connection_id_length_positive() raises:
+    """F23 fires when NEW_CONNECTION_ID carries a zero-length CID."""
+    var v_zero = check_new_connection_id_length(UInt64(0))
+    assert_true(v_zero.__bool__(), "cid_length == 0 must trip")
+    var verdict = v_zero.value().copy()
+    assert_equal_int(Int(verdict.error_code), 0x07, "FRAME_ENCODING_ERROR")
+    assert_true(verdict.tag == "[QUIC-CID-ZERO-LENGTH]", "F23 tag matches")
+    # Over-length is also FRAME_ENCODING_ERROR for the same RFC clause.
+    var v_huge = check_new_connection_id_length(UInt64(21))
+    assert_true(v_huge.__bool__(), "cid_length == 21 must trip")
+    print("  test_check_new_connection_id_length_positive: PASS")
+
+
+def test_check_new_connection_id_length_negative() raises:
+    """cid_length in 1..20 inclusive is legal."""
+    var v_lo = check_new_connection_id_length(UInt64(1))
+    assert_false(v_lo.__bool__(), "cid_length == 1 is legal (lower boundary)")
+    var v_hi = check_new_connection_id_length(UInt64(20))
+    assert_false(v_hi.__bool__(), "cid_length == 20 is legal (upper boundary)")
+    var v_mid = check_new_connection_id_length(UInt64(8))
+    assert_false(v_mid.__bool__(), "cid_length == 8 is legal")
+    print("  test_check_new_connection_id_length_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3468,6 +3493,8 @@ def main() raises:
     test_check_streams_blocked_value_negative()
     test_check_new_connection_id_retire_prior_positive()
     test_check_new_connection_id_retire_prior_negative()
+    test_check_new_connection_id_length_positive()
+    test_check_new_connection_id_length_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

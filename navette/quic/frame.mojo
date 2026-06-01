@@ -879,18 +879,20 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
 
     # NEW_CONNECTION_ID (0x18)
     if frame_type == FRAME_NEW_CONNECTION_ID:
-        # The parser surfaces `retire_prior_to > sequence` (RFC 9000
-        # §19.15) up to the dispatch site via the parsed struct rather
-        # than raising; the F22 guard at
-        # connection.mojo:FRAME_NEW_CONNECTION_ID closes the connection
-        # with FRAME_ENCODING_ERROR. `cid_length` outside 1..20 remains
-        # a hard parse error until the F23 cycle relaxes it as well.
+        # The parser surfaces RFC 9000 §19.15 wire-encoding violations
+        # (`retire_prior_to > sequence` and `cid_length` outside 1..20)
+        # to the dispatch site via the parsed struct rather than raising.
+        # The F22 and F23 guards at connection.mojo:FRAME_NEW_CONNECTION_ID
+        # close the connection with FRAME_ENCODING_ERROR. A `cid_length`
+        # above 20 still raises because the read would consume more
+        # bytes than RFC 9000 allows; the dispatch-level guard is what
+        # surfaces the F23 reason on a zero-length CID.
         var ncid = NewConnectionIdFrame()
         ncid.sequence = varint_decode(reader)
         ncid.retire_prior_to = varint_decode(reader)
         var cid_length = Int(reader.read_u8())
-        if cid_length < 1 or cid_length > 20:
-            raise "NEW_CONNECTION_ID: cid_length must be 1-20"
+        if cid_length > 20:
+            raise "NEW_CONNECTION_ID: cid_length must be <= 20"
         ncid.cid = reader.read_bytes(cid_length)
         ncid.stateless_reset_token = reader.read_bytes(16)
         return Frame._new_cid_move(ncid)

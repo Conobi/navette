@@ -63,6 +63,7 @@ from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_max_streams_value,
+    check_new_connection_id_length,
     check_new_connection_id_retire_prior,
     check_streams_blocked_value,
     check_short_reserved_bits,
@@ -1402,6 +1403,15 @@ struct QuicConnection(Movable):
                 if _v_cid_rpt:
                     var _vv = _v_cid_rpt.value().copy()
                     self.close_transport(_vv.error_code, _vv.tag, now)
+                    return
+                # F23 — RFC 9000 §19.15: connection id `Length` MUST be in
+                # 1..20. A zero-length CID is FRAME_ENCODING_ERROR (0x07).
+                var _v_cid_len = check_new_connection_id_length(
+                    UInt64(len(nc.cid))
+                )
+                if _v_cid_len:
+                    var _vv2 = _v_cid_len.value().copy()
+                    self.close_transport(_vv2.error_code, _vv2.tag, now)
                     return
                 self.cid_mgr.on_new_connection_id(
                     nc.sequence,

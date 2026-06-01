@@ -934,14 +934,42 @@ def test_error_ack_first_range_exceeds_largest() raises:
     print("  error_ack_first_range_exceeds_largest: PASS")
 
 
-def test_error_new_cid_length_zero() raises:
-    """NEW_CONNECTION_ID with CID length 0 should raise."""
+def test_parse_new_cid_length_zero_accepted() raises:
+    """NEW_CONNECTION_ID with CID length 0 parses successfully.
+
+    The encoding-level check (RFC 9000 §19.15) is enforced at dispatch
+    via the F23 guard (`check_new_connection_id_length`) so the parser
+    surfaces the malformed frame to the caller rather than raising.
+    Over-length (>20) inputs continue to raise because the read would
+    over-consume bytes the RFC does not allow.
+    """
     var w = ByteWriter()
     varint_encode(w, FRAME_NEW_CONNECTION_ID)
     varint_encode(w, UInt64(1))  # sequence
     varint_encode(w, UInt64(0))  # retire_prior_to
-    w.write_u8(UInt8(0))         # cid_length = 0 (invalid)
-    # Add padding so it doesn't fail on truncation first
+    w.write_u8(UInt8(0))         # cid_length = 0
+    # 16 bytes of stateless_reset_token follow.
+    for _ in range(16):
+        w.write_u8(UInt8(0))
+    var wire = w.finish()
+    var r = ByteReader(Span(wire))
+    var frame = parse_frame(r)
+    _assert_true(frame.is_new_connection_id(), "should parse as NEW_CONNECTION_ID")
+    ref nc = frame.as_new_connection_id()
+    _assert_eq_int(len(nc.cid), 0, "cid is zero-length")
+    _assert_eq_int(len(nc.stateless_reset_token), 16, "token preserved")
+    print("  parse_new_cid_length_zero_accepted: PASS")
+
+
+def test_error_new_cid_length_over_max() raises:
+    """NEW_CONNECTION_ID with cid_length > 20 still raises at parse time."""
+    var w = ByteWriter()
+    varint_encode(w, FRAME_NEW_CONNECTION_ID)
+    varint_encode(w, UInt64(1))  # sequence
+    varint_encode(w, UInt64(0))  # retire_prior_to
+    w.write_u8(UInt8(21))        # cid_length = 21 (over RFC max of 20)
+    for _ in range(21):
+        w.write_u8(UInt8(0xAA))
     for _ in range(16):
         w.write_u8(UInt8(0))
     var wire = w.finish()
@@ -951,8 +979,8 @@ def test_error_new_cid_length_zero() raises:
         _ = parse_frame(r)
     except:
         caught = True
-    _assert_true(caught, "NEW_CONNECTION_ID with CID length 0 should raise")
-    print("  error_new_cid_length_zero: PASS")
+    _assert_true(caught, "cid_length == 21 should raise")
+    print("  error_new_cid_length_over_max: PASS")
 
 
 def test_parse_new_cid_retire_exceeds_seq_accepted() raises:
@@ -1096,7 +1124,8 @@ def main() raises:
     test_error_unknown_frame_type()
     test_error_truncated_ack()
     test_error_ack_first_range_exceeds_largest()
-    test_error_new_cid_length_zero()
+    test_parse_new_cid_length_zero_accepted()
+    test_error_new_cid_length_over_max()
     test_parse_new_cid_retire_exceeds_seq_accepted()
 
     # 4. Packet-type permission checks
