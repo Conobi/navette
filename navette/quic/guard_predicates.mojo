@@ -296,17 +296,23 @@ def is_path_challenge_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
 
 
 def is_unknown_frame_type(type_id: UInt64) -> Bool:
-    """Return True iff `type_id` is outside RFC 9000 §19's closed set
-    of frame type ids. STREAM frames live in 0x08..0x0F (the low three bits
-    encode OFF/LEN/FIN flags); MAX_*/CONNECTION_CLOSE/HANDSHAKE_DONE etc.
-    live in 0x10..0x1E. Everything else MUST be treated as unknown and
-    closed with FRAME_ENCODING_ERROR (RFC 9000 §12.4).
+    """Return True iff `type_id` is outside the recognized frame-type set.
+
+    RFC 9000 §19 baseline: PADDING..NEW_TOKEN (0x00..0x07); STREAM
+    (0x08..0x0F, low 3 bits encode OFF/LEN/FIN flags); MAX_DATA..HANDSHAKE_DONE
+    (0x10..0x1E). RFC 9221 extension: DATAGRAM (0x30) and DATAGRAM_LEN (0x31).
+    Everything else MUST be treated as unknown and closed with
+    FRAME_ENCODING_ERROR (RFC 9000 §12.4). Note that this predicate is
+    permission-blind — `frame_allowed_in_packet_type` is the authority for
+    "is this frame legal in this packet epoch" (DATAGRAMs are 1-RTT-only).
     """
     if type_id <= UInt64(0x07):
         return False
     if type_id >= UInt64(0x08) and type_id <= UInt64(0x0F):
         return False
     if type_id >= UInt64(0x10) and type_id <= UInt64(0x1E):
+        return False
+    if type_id == UInt64(0x30) or type_id == UInt64(0x31):
         return False
     return True
 

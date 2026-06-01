@@ -30,6 +30,14 @@ comptime FRAME_PATH_RESPONSE: UInt64 = 0x1B
 comptime FRAME_CONNECTION_CLOSE_TRANSPORT: UInt64 = 0x1C
 comptime FRAME_CONNECTION_CLOSE_APP: UInt64 = 0x1D
 comptime FRAME_HANDSHAKE_DONE: UInt64 = 0x1E
+# DATAGRAM extension frame types (RFC 9221 §4).
+# 0x30 — DATAGRAM (no length, payload extends to end of packet).
+# 0x31 — DATAGRAM_LEN (varint length-prefixed payload).
+# Only legal in 1-RTT packets (RFC 9221 §5); the dispatch site is the
+# authority for that — `frame_allowed_in_packet_type` returns False for any
+# other packet type so the dispatch site can close with PROTOCOL_VIOLATION.
+comptime FRAME_DATAGRAM: UInt64 = 0x30
+comptime FRAME_DATAGRAM_LEN: UInt64 = 0x31
 comptime MAX_ACK_RANGES: Int = 256
 
 
@@ -320,6 +328,11 @@ struct Frame(Copyable, Movable):
     var _conn_close: Optional[ConnectionCloseFrame]
     var _new_token: Optional[List[UInt8]]
     var _path_data: Optional[List[UInt8]]
+    # DATAGRAM payload (RFC 9221 §4). Storage shared by both the length-less
+    # (0x30) and length-prefixed (0x31) variants; the active type_id remembers
+    # which wire form to emit. Independent slot from _path_data so the F13-style
+    # "is the payload a path token" predicate stays unambiguous.
+    var _datagram: Optional[List[UInt8]]
 
     def __init__(out self, type_id: UInt64):
         self.type_id = type_id
@@ -336,6 +349,7 @@ struct Frame(Copyable, Movable):
         self._conn_close = None
         self._new_token = None
         self._path_data = None
+        self._datagram = None
 
     def __init__(out self, *, other: Self):
         self.type_id = other.type_id
@@ -352,6 +366,7 @@ struct Frame(Copyable, Movable):
         self._conn_close = Optional[ConnectionCloseFrame](copy=other._conn_close)
         self._new_token = Optional[List[UInt8]](copy=other._new_token)
         self._path_data = Optional[List[UInt8]](copy=other._path_data)
+        self._datagram = Optional[List[UInt8]](copy=other._datagram)
 
     def __init__(out self, *, deinit take: Self):
         self.type_id = take.type_id
@@ -368,6 +383,7 @@ struct Frame(Copyable, Movable):
         self._conn_close = take._conn_close^
         self._new_token = take._new_token^
         self._path_data = take._path_data^
+        self._datagram = take._datagram^
 
     # ── Factory methods ───────────────────────────────────────────────
 
@@ -487,6 +503,42 @@ struct Frame(Copyable, Movable):
     @staticmethod
     def handshake_done() -> Frame:
         return Frame(FRAME_HANDSHAKE_DONE)
+
+    @staticmethod
+    def datagram(payload: List[UInt8]) -> Frame:
+        """RFC 9221 §4 — build a DATAGRAM frame (type 0x30, no length prefix).
+
+        The wire form is `type(0x30) + payload`; the payload extends to the
+        end of the QUIC packet. Use this variant when the DATAGRAM is the
+        last frame in the packet (or the only frame). The parser-side rule
+        in `parse_frame` honours the contract by consuming all remaining
+        bytes of the reader as the payload.
+
+        Note that DATAGRAM frames are NOT subject to congestion control,
+        flow control, or retransmission (RFC 9221 §5.4); a lost frame is
+        lost permanently. Callers requiring delivery semantics should use
+        STREAM frames instead.
+        """
+        var frame = Frame(FRAME_DATAGRAM)
+        frame._datagram = List[UInt8](copy=payload)
+        return frame^
+
+    @staticmethod
+    def datagram_with_len(payload: List[UInt8]) -> Frame:
+        """RFC 9221 §4 — build a DATAGRAM_LEN frame (type 0x31, varint length).
+
+        Wire form: `type(0x31) + length(varint) + payload`. Use this variant
+        when the DATAGRAM is multiplexed with other frames in the same packet
+        (the length field lets the parser stop at the right byte). This is
+        the default outbound form chosen by `QuicConnection.send_datagram`
+        because it composes cleanly with ACKs/PING/etc. in the same flush.
+
+        Same loss/FC semantics as `datagram` (RFC 9221 §5.4 — DATAGRAMs are
+        NOT subject to congestion control, flow control, or retransmission).
+        """
+        var frame = Frame(FRAME_DATAGRAM_LEN)
+        frame._datagram = List[UInt8](copy=payload)
+        return frame^
 
     @staticmethod
     def unknown(type_id: UInt64) -> Frame:
@@ -648,6 +700,10 @@ struct Frame(Copyable, Movable):
     def is_handshake_done(self) -> Bool:
         return self.type_id == FRAME_HANDSHAKE_DONE
 
+    def is_datagram(self) -> Bool:
+        """True for either RFC 9221 §4 DATAGRAM variant (0x30 or 0x31)."""
+        return self.type_id == FRAME_DATAGRAM or self.type_id == FRAME_DATAGRAM_LEN
+
     def is_unknown(self) -> Bool:
         """True if `type_id` does not match any RFC 9000 §19 frame type.
 
@@ -662,6 +718,10 @@ struct Frame(Copyable, Movable):
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
             return False
         if tid >= UInt64(0x10) and tid <= UInt64(0x1E):  # MAX_DATA..HANDSHAKE_DONE
+            return False
+        # DATAGRAM / DATAGRAM_LEN (RFC 9221 §4) — extension frames; not
+        # part of RFC 9000 §19's closed set but recognized by this stack.
+        if tid == FRAME_DATAGRAM or tid == FRAME_DATAGRAM_LEN:
             return False
         return True
 
@@ -741,6 +801,17 @@ struct Frame(Copyable, Movable):
         if not self._path_data:
             raise "Frame is not a PATH_CHALLENGE/PATH_RESPONSE frame"
         return self._path_data.value()
+
+    def as_datagram_payload(self) raises -> ref [self._datagram._value] List[UInt8]:
+        """RFC 9221 §4 — return the carried DATAGRAM payload by reference.
+
+        Both wire variants (0x30 no-length, 0x31 length-prefixed) store their
+        bytes in `_datagram`; this accessor is variant-agnostic. Raises if
+        the frame is not a DATAGRAM — `is_datagram()` is the predicate.
+        """
+        if not self._datagram:
+            raise "Frame is not a DATAGRAM frame"
+        return self._datagram.value()
 
 
 # ── Parse functions ───────────────────────────────────────────────────
@@ -926,6 +997,27 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
     # HANDSHAKE_DONE (0x1E)
     if frame_type == FRAME_HANDSHAKE_DONE:
         return Frame.handshake_done()
+
+    # DATAGRAM (0x30) — RFC 9221 §4. No length prefix; the payload extends
+    # to the end of the QUIC packet. The dispatch-site permission check
+    # (`frame_allowed_in_packet_type`) restricts this to 1-RTT packets;
+    # at the parse layer we trust the caller to have framed the reader to
+    # the packet boundary, so consuming all remaining bytes is correct.
+    if frame_type == FRAME_DATAGRAM:
+        var data = reader.read_bytes(reader.remaining())
+        var frame = Frame(FRAME_DATAGRAM)
+        frame._datagram = data^
+        return frame^
+
+    # DATAGRAM_LEN (0x31) — RFC 9221 §4. Length-prefixed variant; reads
+    # exactly `length` bytes. Allows multiplexing with other frames in the
+    # same packet.
+    if frame_type == FRAME_DATAGRAM_LEN:
+        var length = varint_decode(reader)
+        var data = reader.read_bytes(Int(length))
+        var frame = Frame(FRAME_DATAGRAM_LEN)
+        frame._datagram = data^
+        return frame^
 
     # F10 — RFC 9000 §12.4: unknown frame type. Surface the unknown type
     # back to the caller via the `Frame.unknown` sentinel so the dispatch
@@ -1115,6 +1207,21 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         varint_encode(writer, FRAME_HANDSHAKE_DONE)
         return
 
+    # DATAGRAM (0x30) — RFC 9221 §4. No length prefix; payload to end of packet.
+    if tid == FRAME_DATAGRAM:
+        ref data = frame.as_datagram_payload()
+        varint_encode(writer, FRAME_DATAGRAM)
+        writer.write_bytes(Span[UInt8, origin_of(data)](data))
+        return
+
+    # DATAGRAM_LEN (0x31) — RFC 9221 §4. Length-prefixed payload.
+    if tid == FRAME_DATAGRAM_LEN:
+        ref data = frame.as_datagram_payload()
+        varint_encode(writer, FRAME_DATAGRAM_LEN)
+        varint_encode(writer, UInt64(len(data)))
+        writer.write_bytes(Span[UInt8, origin_of(data)](data))
+        return
+
     raise "serialize_frame: unknown frame type: " + String(Int(tid))
 
 
@@ -1190,6 +1297,13 @@ def frame_allowed_in_packet_type(frame_type: UInt64, packet_type_value: UInt8) -
 
     # HANDSHAKE_DONE: 1-RTT only
     if frame_type == FRAME_HANDSHAKE_DONE:
+        return one_rtt
+
+    # DATAGRAM / DATAGRAM_LEN: 1-RTT only (RFC 9221 §5 — DATAGRAMs MUST NOT
+    # appear in Initial or Handshake packets; 0-RTT carries app data that is
+    # forward-secured separately and is out of scope for this server-only
+    # implementation, so deny it here as well).
+    if frame_type == FRAME_DATAGRAM or frame_type == FRAME_DATAGRAM_LEN:
         return one_rtt
 
     return False

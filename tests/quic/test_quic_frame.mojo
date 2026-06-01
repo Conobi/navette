@@ -40,6 +40,8 @@ from navette.quic.frame import (
     FRAME_CONNECTION_CLOSE_TRANSPORT,
     FRAME_CONNECTION_CLOSE_APP,
     FRAME_HANDSHAKE_DONE,
+    FRAME_DATAGRAM,
+    FRAME_DATAGRAM_LEN,
 )
 
 
@@ -519,6 +521,76 @@ def test_roundtrip_streams_blocked_uni() raises:
     _assert_eq(rm.maximum, UInt64(50), "maximum")
     _assert_false(rm.bidi, "should be uni")
     print("  roundtrip_streams_blocked_uni: PASS")
+
+
+def test_roundtrip_datagram_with_len() raises:
+    """RFC 9221 §4 — DATAGRAM_LEN (0x31) round-trip with a 7-byte payload."""
+    var payload = List[UInt8]()
+    for i in range(7):
+        payload.append(UInt8(i + 1))
+    var frame = Frame.datagram_with_len(payload)
+    _assert_true(frame.is_datagram(), "factory: should be DATAGRAM")
+    _assert_eq(frame.type_id, FRAME_DATAGRAM_LEN, "factory: type_id DATAGRAM_LEN")
+    var rt = _serialize_and_parse_back(frame)
+    _assert_true(rt.is_datagram(), "rt: should be DATAGRAM")
+    _assert_eq(rt.type_id, FRAME_DATAGRAM_LEN, "rt: type_id DATAGRAM_LEN")
+    _assert_false(rt.is_unknown(), "DATAGRAM_LEN must not be classified unknown")
+    ref data = rt.as_datagram_payload()
+    _assert_eq_int(len(data), 7, "payload length")
+    _assert_bytes_eq(data, payload, "payload bytes")
+    print("  roundtrip_datagram_with_len: PASS")
+
+
+def test_roundtrip_datagram_no_length() raises:
+    """RFC 9221 §4 — DATAGRAM (0x30) round-trip; payload extends to end of packet."""
+    var payload = List[UInt8]()
+    for i in range(11):
+        payload.append(UInt8(0xA0 + i))
+    var frame = Frame.datagram(payload)
+    _assert_true(frame.is_datagram(), "factory: should be DATAGRAM")
+    _assert_eq(frame.type_id, FRAME_DATAGRAM, "factory: type_id DATAGRAM")
+    var rt = _serialize_and_parse_back(frame)
+    _assert_true(rt.is_datagram(), "rt: should be DATAGRAM")
+    _assert_eq(rt.type_id, FRAME_DATAGRAM, "rt: type_id DATAGRAM")
+    _assert_false(rt.is_unknown(), "DATAGRAM must not be classified unknown")
+    ref data = rt.as_datagram_payload()
+    _assert_eq_int(len(data), 11, "payload length")
+    _assert_bytes_eq(data, payload, "payload bytes")
+    print("  roundtrip_datagram_no_length: PASS")
+
+
+def test_datagram_packet_type_permissions() raises:
+    """RFC 9221 §5 — DATAGRAM/DATAGRAM_LEN are 1-RTT only.
+
+    Per the dispatch contract in `frame_allowed_in_packet_type`, the
+    extension frames must be permitted in 1-RTT (packet type 4) and
+    refused in Initial (0), 0-RTT (1), and Handshake (2).
+    """
+    _assert_true(
+        frame_allowed_in_packet_type(FRAME_DATAGRAM, UInt8(4)),
+        "DATAGRAM allowed in 1-RTT",
+    )
+    _assert_true(
+        frame_allowed_in_packet_type(FRAME_DATAGRAM_LEN, UInt8(4)),
+        "DATAGRAM_LEN allowed in 1-RTT",
+    )
+    _assert_false(
+        frame_allowed_in_packet_type(FRAME_DATAGRAM, UInt8(0)),
+        "DATAGRAM forbidden in Initial",
+    )
+    _assert_false(
+        frame_allowed_in_packet_type(FRAME_DATAGRAM, UInt8(1)),
+        "DATAGRAM forbidden in 0-RTT",
+    )
+    _assert_false(
+        frame_allowed_in_packet_type(FRAME_DATAGRAM, UInt8(2)),
+        "DATAGRAM forbidden in Handshake",
+    )
+    _assert_false(
+        frame_allowed_in_packet_type(FRAME_DATAGRAM_LEN, UInt8(2)),
+        "DATAGRAM_LEN forbidden in Handshake",
+    )
+    print("  datagram_packet_type_permissions: PASS")
 
 
 # ── 2. Vector tests ─────────────────────────────────────────────────────
@@ -1114,6 +1186,9 @@ def main() raises:
     test_roundtrip_stream_data_blocked()
     test_roundtrip_streams_blocked_bidi()
     test_roundtrip_streams_blocked_uni()
+    test_roundtrip_datagram_with_len()
+    test_roundtrip_datagram_no_length()
+    test_datagram_packet_type_permissions()
 
     # 2. Vector tests
     print("  -- Vector tests --")
