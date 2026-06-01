@@ -33,3 +33,7 @@ path = "src/bin/s_f11_no_frames.rs"
 [[bin]]
 name = "s_f12_reserved_bits_hs"
 path = "src/bin/s_f12_reserved_bits_hs.rs"
+
+[[bin]]
+name = "s_f13_path_challenge_hs"
+path = "src/bin/s_f13_path_challenge_hs.rs"
