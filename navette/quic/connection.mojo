@@ -412,6 +412,12 @@ struct QuicConnection(Movable):
     # entry is the 8-byte data field copied verbatim from the incoming
     # PATH_CHALLENGE; emission + drain happen in a later commit.
     var pending_path_responses: List[List[UInt8]]
+    # One-shot guard for the initial NEW_CONNECTION_ID burst (RFC 9000
+    # §5.1.1): on the first 1-RTT _build_frames_for_space call after the
+    # connection becomes CONN_ESTABLISHED, fill `cid_mgr.local_cids` up
+    # to `peer_active_limit`. Subsequent flushes drain
+    # `pending_new_cid_entries` normally without re-issuing.
+    var initial_cids_emitted: Bool
     # Maps Application-space packet number -> list of stream-layer frames
     # sent in that packet, for ACK/loss processing (M3c).
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
@@ -493,6 +499,7 @@ struct QuicConnection(Movable):
         self.cid_mgr = take.cid_mgr^
         self.path_validator = take.path_validator^
         self.pending_path_responses = take.pending_path_responses^
+        self.initial_cids_emitted = take.initial_cids_emitted
         self.app_frames_sent = take.app_frames_sent^
         self.ecn_state = take.ecn_state
         self.ecn_probe_pkts_needed = take.ecn_probe_pkts_needed
@@ -592,6 +599,7 @@ struct QuicConnection(Movable):
         )
         self.path_validator = PathValidator()
         self.pending_path_responses = List[List[UInt8]]()
+        self.initial_cids_emitted = False
         self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
 
     # ── Destructor ───────────────────────────────────────────────────
@@ -2589,6 +2597,25 @@ struct QuicConnection(Movable):
 
         # Application-space stream-layer frames (M3c).
         if space_idx == 2:
+            # RFC 9000 §5.1.1: initial NEW_CONNECTION_ID burst. On the first
+            # 1-RTT flush after CONN_ESTABLISHED, fill `local_cids` up to
+            # `peer_active_limit` so the peer has spare CIDs for migration.
+            # `_build_app_frames` below drains the resulting unadvertised
+            # entries into NEW_CONNECTION_ID frames in this same flight —
+            # alongside HANDSHAKE_DONE on the server's very first 1-RTT
+            # packet (per RFC 9000 §5.1.1 SHOULD).
+            if (
+                self.is_server
+                and not self.initial_cids_emitted
+                and (self.state & CONN_ESTABLISHED) != 0
+            ):
+                var limit = Int(self.cid_mgr.peer_active_limit)
+                while self.cid_mgr.active_local_count() < limit:
+                    var issued = self.cid_mgr.issue_new_cid()
+                    if not Bool(issued):
+                        break
+                self.initial_cids_emitted = True
+
             self._build_app_frames(frames, sent_records)
 
             # RFC 9000 §8.2 / §17.2.4: PATH_RESPONSE and PATH_CHALLENGE are

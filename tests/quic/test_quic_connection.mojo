@@ -19,7 +19,7 @@ from navette.quic.packet_protect import PacketProtect
 from navette.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
-    CONN_ADDR_VALIDATED,
+    CONN_ADDR_VALIDATED, CONN_ESTABLISHED,
 )
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
@@ -3636,6 +3636,169 @@ def test_path_response_emission_preserves_data() raises:
     print("  test_path_response_emission_preserves_data: PASS")
 
 
+def test_initial_new_cid_burst_after_handshake_complete() raises:
+    """C4: first 1-RTT flush after CONN_ESTABLISHED fills local_cids to
+    `peer_active_limit` and drains NEW_CONNECTION_ID frames in the same
+    flight (RFC 9000 §5.1.1)."""
+    var server = _build_server_for_rx_test()
+    # Crank the peer's CID limit up so the burst issues more than the
+    # constructor's default. We use 4 so the burst must issue at least 3
+    # additional CIDs (seq=0 is already advertised at construction).
+    server.cid_mgr.peer_active_limit = UInt64(4)
+    server.cid_mgr.retire_queue_cap = Int(server.cid_mgr.peer_active_limit) * 8
+
+    # Pre-conditions: only the initial CID (seq=0) exists and is advertised;
+    # the initial-burst guard has not yet fired.
+    assert_equal_int(
+        len(server.cid_mgr.local_cids), 1, "fresh server has only seq=0"
+    )
+    assert_true(
+        server.cid_mgr.local_cids[0].advertised,
+        "initial CID is advertised at construction",
+    )
+    assert_false(
+        server.initial_cids_emitted,
+        "burst guard starts False",
+    )
+
+    # Force ESTABLISHED so _build_frames_for_space takes the initial-burst
+    # branch on its first 1-RTT call.
+    server.state = server.state | CONN_ESTABLISHED
+
+    var sent_records = List[SentStreamFrame]()
+    var frames = server._build_frames_for_space(2, UInt64(1_000_000), sent_records)
+
+    var n_new_cid = 0
+    for i in range(len(frames)):
+        if frames[i].is_new_connection_id():
+            n_new_cid += 1
+    # peer_active_limit=4, seq=0 already advertised → expect 3 NEW_CID frames.
+    assert_equal_int(
+        n_new_cid, 3, "burst emits peer_active_limit-1 NEW_CID frames"
+    )
+    assert_true(
+        server.initial_cids_emitted,
+        "burst guard set after first 1-RTT flush",
+    )
+    # `local_cids` is now filled to peer_active_limit.
+    assert_equal_int(
+        len(server.cid_mgr.local_cids), 4, "local_cids filled to limit"
+    )
+
+    # A second 1-RTT flush MUST NOT re-issue: pending_new_cid_entries is
+    # drained (everything marked advertised) and the guard stays set.
+    var sent_records2 = List[SentStreamFrame]()
+    var frames2 = server._build_frames_for_space(2, UInt64(1_000_001), sent_records2)
+    var n_new_cid2 = 0
+    for i in range(len(frames2)):
+        if frames2[i].is_new_connection_id():
+            n_new_cid2 += 1
+    assert_equal_int(
+        n_new_cid2, 0, "second flush does not re-emit"
+    )
+    assert_equal_int(
+        len(server.cid_mgr.local_cids), 4, "local_cids unchanged on second flush"
+    )
+    print("  test_initial_new_cid_burst_after_handshake_complete: PASS")
+
+
+def test_initial_new_cid_burst_default_limit() raises:
+    """C4: with the default peer_active_limit=2, the initial burst emits
+    exactly one NEW_CID (seq=1) — seq=0 was advertised in the handshake."""
+    var server = _build_server_for_rx_test()
+    assert_equal_int(
+        Int(server.cid_mgr.peer_active_limit), 2, "default peer_active_limit is 2"
+    )
+    assert_false(
+        server.initial_cids_emitted, "burst guard starts False"
+    )
+
+    server.state = server.state | CONN_ESTABLISHED
+    var sent_records = List[SentStreamFrame]()
+    var frames = server._build_frames_for_space(2, UInt64(1_000_000), sent_records)
+
+    var n_new_cid = 0
+    for i in range(len(frames)):
+        if frames[i].is_new_connection_id():
+            n_new_cid += 1
+    assert_equal_int(
+        n_new_cid, 1, "default-limit burst emits exactly one NEW_CID"
+    )
+    assert_true(
+        server.initial_cids_emitted, "guard flipped after burst"
+    )
+    assert_equal_int(
+        len(server.cid_mgr.local_cids), 2, "local_cids filled to 2"
+    )
+    print("  test_initial_new_cid_burst_default_limit: PASS")
+
+
+def test_initial_burst_skipped_before_handshake_complete() raises:
+    """C4: the burst guard is gated on CONN_ESTABLISHED. A 1-RTT build
+    before the handshake completes must not issue CIDs."""
+    var server = _build_server_for_rx_test()
+    assert_false(
+        server.initial_cids_emitted, "guard starts False"
+    )
+    assert_equal_int(
+        len(server.cid_mgr.local_cids), 1, "only seq=0 pre-handshake"
+    )
+
+    var sent_records = List[SentStreamFrame]()
+    var frames = server._build_frames_for_space(2, UInt64(1_000_000), sent_records)
+
+    var n_new_cid = 0
+    for i in range(len(frames)):
+        if frames[i].is_new_connection_id():
+            n_new_cid += 1
+    assert_equal_int(
+        n_new_cid, 0, "no NEW_CID emitted before CONN_ESTABLISHED"
+    )
+    # Guard stayed False; no new local CIDs issued.
+    assert_false(
+        server.initial_cids_emitted, "guard stays False before establishment"
+    )
+    assert_equal_int(
+        len(server.cid_mgr.local_cids), 1, "no CIDs issued pre-handshake"
+    )
+    print("  test_initial_burst_skipped_before_handshake_complete: PASS")
+
+
+def test_initial_burst_server_only() raises:
+    """C4: the initial NEW_CID burst is a server responsibility. Clients
+    must not issue local CIDs in the 1-RTT builder (RFC 9000 §5.1.1 — only
+    the server emits NEW_CID before the client has issued any)."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ca_bytes = load_test_ca()
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    client.state = client.state | CONN_ESTABLISHED
+    var initial_count = len(client.cid_mgr.local_cids)
+
+    var sent_records = List[SentStreamFrame]()
+    var frames = client._build_frames_for_space(2, now, sent_records)
+    var n_new_cid = 0
+    for i in range(len(frames)):
+        if frames[i].is_new_connection_id():
+            n_new_cid += 1
+    # Client side: no burst, guard stays False.
+    assert_equal_int(
+        n_new_cid, 0, "client emits no NEW_CID in burst"
+    )
+    assert_false(
+        client.initial_cids_emitted, "client guard stays False"
+    )
+    assert_equal_int(
+        len(client.cid_mgr.local_cids), initial_count, "client local_cids unchanged"
+    )
+    _ = tls^
+    print("  test_initial_burst_server_only: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -3717,4 +3880,8 @@ def main() raises:
     test_emit_path_response_drains_pending()
     test_start_path_challenge_queues_emission()
     test_path_response_emission_preserves_data()
+    test_initial_new_cid_burst_after_handshake_complete()
+    test_initial_new_cid_burst_default_limit()
+    test_initial_burst_skipped_before_handshake_complete()
+    test_initial_burst_server_only()
     print("All test_quic_connection tests passed.")
