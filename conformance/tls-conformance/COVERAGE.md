@@ -1,19 +1,19 @@
 # TLS-Conformance Coverage Index
 
 This file is the coverage index for the TLS-conformance harness, scoped to
-clusters C1 (QUIC transport-parameter validation, RFC 9000 §7/§18) and C6
-(QUIC-side TLS-alert plumbing, RFC 9001 §6/§8) from
-`research/h3spec-failure-triage.md`.
+F-rows F02–F09 (transport-parameter validation, RFC 9000 §7/§18) and F25–F29
+(QUIC-side TLS-alert plumbing, RFC 9001 §6/§8).
 
 ## What's covered
 
-- **8 C1 rows gated (F02–F09):** all transport-parameter guard scenarios pass;
-  navette rejects forbidden/out-of-range TP values with a tagged
-  `TRANSPORT_PARAMETER_ERROR`.
-- **1 C6 row gated (F27):** navette rejects a QUIC handshake that omits the
-  ALPN extension with a tagged `TLS_HANDSHAKE_FAILED`.
-- **1 C6 row gated (Table B / SY01):** baseline TLS handshake completes
-  successfully, confirming harness runner and navette TLS stack are wired.
+- **8 transport-parameter rows gated (F02–F09):** all transport-parameter
+  guard scenarios pass; navette rejects forbidden/out-of-range TP values
+  with a tagged `TRANSPORT_PARAMETER_ERROR`.
+- **1 alert-routing row gated (F27):** navette rejects a QUIC handshake
+  that omits the ALPN extension with a tagged `TLS_HANDSHAKE_FAILED`.
+- **1 alert-routing row gated (Table B / SY01):** baseline TLS handshake
+  completes successfully, confirming harness runner and navette TLS stack
+  are wired.
 
 ## What's deferred
 

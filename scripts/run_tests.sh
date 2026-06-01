@@ -113,6 +113,10 @@ if [[ "${TLS:-0}" == "1" ]]; then
     TLS_TAG_SCOPE=$(grep -oE '^\| F[0-9]{2}\b' \
         "$REPO_ROOT/conformance/tls-conformance/COVERAGE.md" \
         | tr -d '| ' | paste -sd,)
+    if [[ -z "$TLS_TAG_SCOPE" ]]; then
+        echo "ERROR: TLS_TAG_SCOPE derivation returned empty — COVERAGE.md schema drift?" >&2
+        exit 1
+    fi
 
     echo "Running coverage_check.py for TLS conformance (${COVERAGE_CHECK_MODE:-strict} mode)..."
     python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
@@ -151,6 +155,10 @@ if [[ "${QUICHE_RAW:-0}" == "1" ]]; then
     QUICHE_TAG_SCOPE=$(grep -oE '^\| F[0-9]{2}\b' \
         "$REPO_ROOT/conformance/quiche-raw-frame-scenarios/COVERAGE.md" \
         | tr -d '| ' | paste -sd,)
+    if [[ -z "$QUICHE_TAG_SCOPE" ]]; then
+        echo "ERROR: QUICHE_TAG_SCOPE derivation returned empty — COVERAGE.md schema drift?" >&2
+        exit 1
+    fi
 
     echo "Running coverage_check.py for quiche-raw-frame (${COVERAGE_CHECK_MODE:-lenient} mode)..."
     python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \

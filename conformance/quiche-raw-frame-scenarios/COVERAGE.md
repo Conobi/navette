@@ -1,11 +1,11 @@
 # Quiche-Raw-Frame Coverage Index
 
 This file is the coverage index for the quiche-raw-frame harness, scoped to
-clusters C2 (RFC 9000 §12.4 / §17.x packet-layer guards), C3 (RFC 9000 §19.x
-client-only frames received by server), C4 (RFC 9000 §19.x stream-id /
-flow-control / encoding limits), C5 (RFC 9000 §19.15 NEW_CONNECTION_ID
-encoding), and C7 (RFC 9001 §8.3 0-RTT / N/A for this cycle) from
-`research/h3spec-failure-triage.md`.
+F-rows F01 + F10–F24 + F30 — covering packet-layer guards (RFC 9000 §12.4 /
+§17.x), server-illegal frame dispatch (RFC 9000 §19.x client-only frames),
+stream-state and limit checks (RFC 9000 §19.x stream-id / flow-control /
+encoding), NEW_CONNECTION_ID encoding (RFC 9000 §19.15), and the 0-RTT
+CRYPTO row (RFC 9001 §8.3, currently `not-applicable` until 0-RTT lands).
 
 ## What's covered
 
