@@ -69,3 +69,15 @@ path = "src/bin/s_f20_max_streams_overflow.rs"
 [[bin]]
 name = "s_f21_streams_blocked_overflow"
 path = "src/bin/s_f21_streams_blocked_overflow.rs"
+
+[[bin]]
+name = "s_f22_cid_retire_prior_gt_seq"
+path = "src/bin/s_f22_cid_retire_prior_gt_seq.rs"
+
+[[bin]]
+name = "s_f23_cid_zero_length"
+path = "src/bin/s_f23_cid_zero_length.rs"
+
+[[bin]]
+name = "s_f24_handshake_done_server"
+path = "src/bin/s_f24_handshake_done_server.rs"
