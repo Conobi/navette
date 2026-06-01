@@ -7,6 +7,7 @@
 //! semantics).
 
 pub mod quic_packet;
+pub mod raw_client_hello;
 
 use std::net::{SocketAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;

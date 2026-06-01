@@ -9,6 +9,11 @@ description = "TLS-conformance harness driving navette through adversarial QUIC 
 librustls-mojo = { path = "../../crates/librustls-mojo" }
 rustls = { version = "=0.23.37", default-features = false, features = ["ring", "tls12"] }
 rand = "0.8"
+# tls_codec underpins the hand-assembled ClientHello used by F28
+# (raw_client_hello.rs). rustls 0.23.37's ClientConnection::new always
+# wraps the QUIC TP bytes in Some(...), so we bypass it for the
+# missing-extension scenario and serialize the CH ourselves.
+tls_codec = { version = "0.4", features = ["std"] }
 
 [lib]
 name = "tls_conformance_scenarios"
