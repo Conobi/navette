@@ -11,22 +11,21 @@
 //!
 //! # Timing window
 //!
-//! The vendored `encode_pkt_reserved_bits` needs live Handshake-epoch
-//! keys (`crypto_ctx[Epoch::Handshake].crypto_seal`). The quiche client
-//! drops those when it receives HANDSHAKE_DONE (vendored
-//! `src/lib.rs:8195`). `navette_connect` exits as soon as
-//! `is_established()` returns true; on local loopback that window is
-//! tight but well-defined. If the scenario hits `InvalidState` here it
-//! falls through to a `FAIL F12: setup` line — the gate treats this
-//! as a regular RED row (no special exit code).
+//! `encode_pkt_reserved_bits` needs live Handshake-epoch keys
+//! (`crypto_ctx[Epoch::Handshake].crypto_seal`). The quiche client
+//! retires those keys when it receives `HANDSHAKE_DONE` (RFC 9001
+//! §4.9.1). `navette_connect_until_handshake_keys` returns BEFORE the
+//! client's Finished is sent, so the server has not yet emitted
+//! `HANDSHAKE_DONE` and the seal is still live — the injection window
+//! is now deterministic instead of racing the `is_established()` exit.
 
 use std::env;
 use std::process::ExitCode;
 
 use quiche::frame::Frame;
 use quiche_raw_frame_scenarios::{
-    assert_close, navette_connect, wait_connection_close, CLOSE_DEADLINE_MS,
-    MAX_DATAGRAM_SIZE,
+    assert_close, navette_connect_until_handshake_keys, wait_connection_close,
+    CLOSE_DEADLINE_MS, MAX_DATAGRAM_SIZE,
 };
 
 const FAILURE_ID: &str = "F12";
@@ -40,14 +39,7 @@ fn main() -> ExitCode {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4433);
 
-    let panic_result = std::panic::catch_unwind(|| navette_connect(port));
-    let (mut conn, socket, server) = match panic_result {
-        Ok(triple) => triple,
-        Err(_) => {
-            eprintln!("FAIL {FAILURE_ID}: handshake did not establish");
-            return ExitCode::from(1);
-        }
-    };
+    let (mut conn, socket, server) = navette_connect_until_handshake_keys(port);
 
     // PING is the smallest ack-eliciting frame; the server still has to
     // walk the header before it processes any frames, so the reserved-bit

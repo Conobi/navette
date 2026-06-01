@@ -12,28 +12,23 @@
 //! # Timing window
 //!
 //! Like F12, this scenario needs live Handshake-epoch keys for
-//! `encode_pkt`. The quiche client discards them upon receiving
-//! HANDSHAKE_DONE (vendored `src/lib.rs:8195`). `navette_connect`
-//! exits the handshake loop the moment `is_established()` returns true,
-//! leaving a short window before HANDSHAKE_DONE is processed. On
-//! loopback that's enough; if `crypto_seal` is absent for the
-//! Handshake epoch we surface `Error::InvalidState` and exit code 2 to
-//! flag setup failure (so the gate can distinguish it from a missed
-//! assertion).
+//! `encode_pkt`. The quiche client retires them on `HANDSHAKE_DONE`
+//! (RFC 9001 §4.9.1). `navette_connect_until_handshake_keys` returns
+//! BEFORE the client's Finished is sent, so the seal is still live and
+//! the injection window is deterministic.
 
 use std::env;
 use std::process::ExitCode;
 
 use quiche::frame::Frame;
 use quiche_raw_frame_scenarios::{
-    assert_close, navette_connect, wait_connection_close, CLOSE_DEADLINE_MS,
-    MAX_DATAGRAM_SIZE,
+    assert_close, navette_connect_until_handshake_keys, wait_connection_close,
+    CLOSE_DEADLINE_MS, MAX_DATAGRAM_SIZE,
 };
 
 const FAILURE_ID: &str = "F13";
 const GUARD_TAG: &str = "[QUIC-PATH-CHALLENGE-HS]";
 const EXPECTED_CODE: u64 = 0x0A; // PROTOCOL_VIOLATION
-const SETUP_FAIL_EXIT: u8 = 2;
 
 fn main() -> ExitCode {
     let port: u16 = env::var("QRF_SERVER_PORT")
@@ -41,14 +36,7 @@ fn main() -> ExitCode {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4433);
 
-    let panic_result = std::panic::catch_unwind(|| navette_connect(port));
-    let (mut conn, socket, server) = match panic_result {
-        Ok(triple) => triple,
-        Err(_) => {
-            eprintln!("FAIL {FAILURE_ID}: handshake did not establish");
-            return ExitCode::from(1);
-        }
-    };
+    let (mut conn, socket, server) = navette_connect_until_handshake_keys(port);
 
     let frames = [Frame::PathChallenge { data: [0u8; 8] }];
     let mut buf = [0u8; MAX_DATAGRAM_SIZE];
@@ -59,13 +47,6 @@ fn main() -> ExitCode {
         &mut buf,
     ) {
         Ok(n) => n,
-        Err(quiche::Error::InvalidState) => {
-            eprintln!(
-                "FAIL {FAILURE_ID}: Handshake-epoch keys already discarded \
-                 (raw-encrypt window missed); marking as setup failure",
-            );
-            return ExitCode::from(SETUP_FAIL_EXIT);
-        }
         Err(e) => {
             eprintln!("FAIL {FAILURE_ID}: encode_pkt failed: {e:?}");
             return ExitCode::from(1);
