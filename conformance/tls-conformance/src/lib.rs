@@ -1070,6 +1070,391 @@ fn drive_handshake_full_inner(
     Ok(None)
 }
 
+/// Identifies the QUIC encryption epoch a CRYPTO frame is encrypted at.
+///
+/// Distinguishes the two injection sites the F25/F26/F29 scenarios need.
+/// `Handshake` substitutes for the client's natural Finished (the Finished
+/// bytes rustls would emit are drained but not sent). `OneRtt` is appended
+/// after the handshake completes normally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InjectionEpoch {
+    /// Handshake epoch (long-header packet type 2). Used by F25, F29.
+    /// SUBSTITUTES for the client's Finished — natural Finished is NOT sent.
+    Handshake,
+    /// 1-RTT epoch (short header). Used by F26.
+    /// APPENDED after handshake completion — natural Finished IS sent first.
+    OneRtt,
+}
+
+/// Adversarial TLS record bytes to inject as the payload of a single CRYPTO
+/// frame at `epoch`. The bytes are written verbatim — the helper does not
+/// validate or wrap them. Callers prepare the record body (e.g. the 5-byte
+/// `18 00 00 01 00` KeyUpdate record).
+pub struct Injection {
+    pub epoch: InjectionEpoch,
+    pub bytes: Vec<u8>,
+}
+
+/// Drive a multi-epoch handshake and inject an adversarial CRYPTO frame at
+/// the specified epoch. Returns the first CONNECTION_CLOSE observed.
+///
+/// `Handshake` mode: pumps Initial → drains write_hs until handshake_keys
+/// materialise, DISCARDING any Finished bytes rustls emits; sends a single
+/// Handshake-epoch packet at CRYPTO offset 0 carrying `inj.bytes`; drains
+/// for CC.
+///
+/// `OneRtt` mode: drives full handshake (natural Finished sent), waits for
+/// 1-RTT keys; sends an additional short-header packet at 1-RTT CRYPTO
+/// offset 0; drains for CC within the post-completion window.
+///
+/// Returns `Err` if `inj.bytes.len() > 1100` (RFC 9000 §14.1 budget).
+pub fn drive_handshake_with_injection(
+    builder: PacketBuilder,
+    tp_bytes: &[u8],
+    inj: Injection,
+) -> Result<Option<ConnectionClose>, String> {
+    if inj.bytes.len() > 1100 {
+        return Err(format!(
+            "injection bytes exceed Handshake MTU; got {} bytes",
+            inj.bytes.len(),
+        ));
+    }
+    let config = build_quic_client_config_with_alpn(&[b"h3"]);
+    drive_handshake_with_injection_inner(builder, tp_bytes, inj, config)
+}
+
+/// Drain rustls's pending `write_hs` output but do NOT send any
+/// Handshake-epoch bytes (the client Finished is discarded). Initial-epoch
+/// bytes are still sent so rustls's state machine stays consistent with the
+/// server's view of the Initial flight.
+///
+/// Used by the `Handshake` injection mode: we need the handshake_keys to be
+/// materialised on the client side (so rustls treats the handshake as
+/// progressed), but the server must NEVER see the natural Finished — instead
+/// it sees our adversarial CRYPTO frame at Handshake-epoch offset 0.
+fn pump_rustls_write_hs_discarding_finished(
+    conn: &mut rustls::quic::ClientConnection,
+    socket: &UdpSocket,
+    server: &SocketAddr,
+    builder: &mut PacketBuilder,
+    initial_keys_h: &KeysHandle,
+    handshake_keys: &mut Option<rustls::quic::Keys>,
+    one_rtt_keys: &mut Option<rustls::quic::Keys>,
+) -> Result<(), String> {
+    loop {
+        let mut out = Vec::new();
+        let kc = conn.write_hs(&mut out);
+        if out.is_empty() && kc.is_none() { return Ok(()); }
+
+        if !out.is_empty() {
+            if handshake_keys.is_none() {
+                // Initial-write epoch: ClientHello fragments / retransmissions.
+                let pkt = builder.encode_initial(&out, initial_keys_h);
+                socket.send_to(&pkt, server)
+                    .map_err(|e| format!("send Initial (pump-discarding): {e}"))?;
+            }
+            // Handshake-epoch bytes (Finished) and any 1-RTT post-handshake
+            // bytes: DROPPED. The whole point of the substitution mode is
+            // that the server must not see the natural Finished.
+        }
+
+        match kc {
+            Some(rustls::quic::KeyChange::Handshake { keys }) => {
+                *handshake_keys = Some(keys);
+            }
+            Some(rustls::quic::KeyChange::OneRtt { keys, next: _ }) => {
+                *one_rtt_keys = Some(keys);
+            }
+            None => {}
+        }
+    }
+}
+
+/// Internal shared body for `drive_handshake_with_injection`.
+///
+/// Mirrors `drive_handshake_full_inner` but with two behavioural differences:
+///   * In `Handshake` mode, when the server's Initial reply lands and rustls
+///     surfaces `KeyChange::Handshake`, we use the discarding pump so the
+///     natural Finished is never sent. We then build a single Handshake-epoch
+///     packet whose CRYPTO frame at offset 0 carries `inj.bytes` instead.
+///   * In `OneRtt` mode, we drive the handshake to natural completion (the
+///     real pump emits the real Finished); once `one_rtt_keys` materialise we
+///     send an additional short-header packet whose payload is a 1-RTT CRYPTO
+///     frame at offset 0 carrying `inj.bytes`.
+fn drive_handshake_with_injection_inner(
+    mut builder: PacketBuilder,
+    tp_bytes: &[u8],
+    inj: Injection,
+    config: Arc<rustls::ClientConfig>,
+) -> Result<Option<ConnectionClose>, String> {
+    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+        .map_err(|e| format!("invalid server name: {e}"))?;
+    let mut conn = rustls::quic::ClientConnection::new(
+        config, rustls::quic::Version::V1, server_name, tp_bytes.to_vec(),
+    ).map_err(|e| format!("ClientConnection::new failed: {e}"))?;
+
+    let dcid = builder.dcid.clone();
+    let scid = builder.scid.clone();
+    let initial_keys_h = initial_keys(Role::Client, &dcid)
+        .map_err(|e| format!("client initial_keys failed: rc={}", e.code))?;
+
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .map_err(|e| format!("bind UDP: {e}"))?;
+    let timeout_ms = parse_env_or("TLS_HANDSHAKE_TIMEOUT_MS", 500);
+    let read_to = Duration::from_millis(timeout_ms);
+    socket.set_read_timeout(Some(read_to))
+        .map_err(|e| format!("set_read_timeout: {e}"))?;
+    let server = server_addr();
+
+    // === Step 1: send Initial flight (ClientHello). ===
+    let mut crypto_buf: Vec<u8> = Vec::new();
+    let kc = conn.write_hs(&mut crypto_buf);
+    if crypto_buf.is_empty() {
+        return Err("rustls produced no ClientHello bytes".to_string());
+    }
+    if kc.is_some() {
+        return Err("unexpected KeyChange before sending ClientHello".to_string());
+    }
+    let pkt = builder.encode_initial(&crypto_buf, &initial_keys_h);
+    socket.send_to(&pkt, server)
+        .map_err(|e| format!("send Initial: {e}"))?;
+
+    let mut hs_send_pn: u64 = 0;
+    let mut one_rtt_send_pn: u64 = 0;
+    let mut handshake_keys: Option<rustls::quic::Keys> = None;
+    let mut one_rtt_keys: Option<rustls::quic::Keys> = None;
+    // Set to true once we have injected our adversarial packet at the
+    // requested epoch; subsequent loop iterations only drain for CC.
+    let mut injected = false;
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms * 4);
+    let mut buf = vec![0u8; 4096];
+
+    // === Step 2: drive handshake while watching for injection trigger. ===
+    loop {
+        if Instant::now() >= deadline { break; }
+        // The connection may report `is_handshaking()` == false either
+        // because it completed naturally (OneRtt mode) or because we
+        // already injected and rustls considers itself done. In either
+        // case we break only after we've actually injected.
+        if !conn.is_handshaking() && injected { break; }
+
+        let n = match socket.recv_from(&mut buf) {
+            Ok((n, _)) => n,
+            Err(e) if matches!(e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                // No traffic in this window. If we have what we need to
+                // inject, push the adversarial record now and proceed to
+                // drain. Otherwise the deadline above will fire.
+                if !injected && handshake_keys.is_some() {
+                    inject_now(
+                        &inj,
+                        &socket, &server,
+                        &dcid, &scid,
+                        &mut hs_send_pn, &mut one_rtt_send_pn,
+                        handshake_keys.as_ref(),
+                        one_rtt_keys.as_ref(),
+                    )?;
+                    injected = true;
+                }
+                continue;
+            }
+            Err(e) => return Err(format!("recv_from: {e}")),
+        };
+        let datagram = &buf[..n];
+
+        let mut offset = 0;
+        while offset < datagram.len() {
+            let rest = &datagram[offset..];
+            if rest.is_empty() { break; }
+            let is_long = rest[0] & 0x80 != 0;
+            if !is_long { break; }
+            let header = parse_long_header(rest)
+                .ok_or_else(|| "malformed long header".to_string())?;
+            let pkt_len = header.payload_offset + header.length;
+            if rest.len() < pkt_len {
+                return Err(format!(
+                    "coalesced packet truncated: need {} bytes, have {}",
+                    pkt_len, rest.len(),
+                ));
+            }
+            let pkt = &rest[..pkt_len];
+
+            let plaintext = match header.packet_type {
+                0 => decrypt_initial_inplace(pkt, &header, &initial_keys_h)?,
+                2 => {
+                    if handshake_keys.is_none() {
+                        // Drain write_hs to materialise the handshake keys
+                        // before attempting to decrypt this Handshake packet.
+                        match inj.epoch {
+                            InjectionEpoch::Handshake => {
+                                pump_rustls_write_hs_discarding_finished(
+                                    &mut conn, &socket, &server,
+                                    &mut builder, &initial_keys_h,
+                                    &mut handshake_keys, &mut one_rtt_keys,
+                                )?;
+                            }
+                            InjectionEpoch::OneRtt => {
+                                pump_rustls_write_hs(
+                                    &mut conn, &socket, &server,
+                                    &mut builder, &dcid, &scid, &initial_keys_h,
+                                    &mut handshake_keys, &mut one_rtt_keys,
+                                    &mut hs_send_pn,
+                                )?;
+                            }
+                        }
+                    }
+                    let keys = handshake_keys.as_ref().ok_or_else(||
+                        "server sent Handshake before we received KeyChange::Handshake".to_string()
+                    )?;
+                    decrypt_long_with_rustls(pkt, &header, &keys.remote)?
+                }
+                _ => { offset += pkt_len; continue; }
+            };
+            let scan = scan_plaintext_into_rustls(&plaintext, &mut conn)?;
+            if let Some(cc) = scan.cc { return Ok(Some(cc)); }
+
+            offset += pkt_len;
+        }
+
+        // Pump rustls per the requested mode.
+        match inj.epoch {
+            InjectionEpoch::Handshake => {
+                pump_rustls_write_hs_discarding_finished(
+                    &mut conn, &socket, &server,
+                    &mut builder, &initial_keys_h,
+                    &mut handshake_keys, &mut one_rtt_keys,
+                )?;
+            }
+            InjectionEpoch::OneRtt => {
+                pump_rustls_write_hs(
+                    &mut conn, &socket, &server,
+                    &mut builder, &dcid, &scid, &initial_keys_h,
+                    &mut handshake_keys, &mut one_rtt_keys,
+                    &mut hs_send_pn,
+                )?;
+            }
+        }
+
+        // Inject as soon as the relevant epoch keys are available.
+        if !injected {
+            let ready = match inj.epoch {
+                InjectionEpoch::Handshake => handshake_keys.is_some(),
+                InjectionEpoch::OneRtt => one_rtt_keys.is_some(),
+            };
+            if ready {
+                inject_now(
+                    &inj,
+                    &socket, &server,
+                    &dcid, &scid,
+                    &mut hs_send_pn, &mut one_rtt_send_pn,
+                    handshake_keys.as_ref(),
+                    one_rtt_keys.as_ref(),
+                )?;
+                injected = true;
+            }
+        }
+    }
+
+    // === Step 3: post-injection drain for CC (Handshake + 1-RTT). ===
+    let drain_deadline = Instant::now() + Duration::from_millis(
+        parse_env_or("TLS_ONERTT_DRAIN_MS", 250)
+    );
+    socket.set_read_timeout(Some(Duration::from_millis(50))).ok();
+    while Instant::now() < drain_deadline {
+        let n = match socket.recv_from(&mut buf) {
+            Ok((n, _)) => n,
+            Err(e) if matches!(e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+            Err(_) => break,
+        };
+        let datagram = &buf[..n];
+        let mut offset = 0;
+        while offset < datagram.len() {
+            let rest = &datagram[offset..];
+            if rest.is_empty() { break; }
+            let is_long = rest[0] & 0x80 != 0;
+            if !is_long {
+                let Some(keys) = one_rtt_keys.as_ref() else { break; };
+                let plaintext = match decrypt_short_with_rustls(rest, scid.len(), &keys.remote) {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                let scan = scan_plaintext_into_rustls(&plaintext, &mut conn)?;
+                if let Some(cc) = scan.cc { return Ok(Some(cc)); }
+                break;
+            }
+            let header = parse_long_header(rest)
+                .ok_or_else(|| "malformed long header in drain".to_string())?;
+            let pkt_len = header.payload_offset + header.length;
+            if rest.len() < pkt_len { break; }
+            let pkt = &rest[..pkt_len];
+            let plaintext_res = match header.packet_type {
+                0 => decrypt_initial_inplace(pkt, &header, &initial_keys_h),
+                2 => {
+                    if let Some(hk) = handshake_keys.as_ref() {
+                        decrypt_long_with_rustls(pkt, &header, &hk.remote)
+                    } else {
+                        Err("late Handshake but no handshake keys".to_string())
+                    }
+                }
+                _ => { offset += pkt_len; continue; }
+            };
+            if let Ok(plaintext) = plaintext_res {
+                let scan = scan_plaintext_into_rustls(&plaintext, &mut conn)?;
+                if let Some(cc) = scan.cc { return Ok(Some(cc)); }
+            }
+            offset += pkt_len;
+        }
+    }
+    Ok(None)
+}
+
+/// Build and send the adversarial CRYPTO frame at the requested epoch.
+///
+/// Handshake mode uses `build_handshake_packet` with `crypto_payload` set to
+/// the adversarial TLS record (it embeds a CRYPTO frame at offset 0 by
+/// construction). 1-RTT mode wraps the bytes in `encode_crypto_frame` and
+/// hands them to `build_short_header_crypto_packet`.
+fn inject_now(
+    inj: &Injection,
+    socket: &UdpSocket,
+    server: &SocketAddr,
+    dcid: &[u8],
+    scid: &[u8],
+    hs_send_pn: &mut u64,
+    one_rtt_send_pn: &mut u64,
+    handshake_keys: Option<&rustls::quic::Keys>,
+    one_rtt_keys: Option<&rustls::quic::Keys>,
+) -> Result<(), String> {
+    match inj.epoch {
+        InjectionEpoch::Handshake => {
+            let hs = handshake_keys.ok_or_else(||
+                "Handshake injection requested before Handshake keys materialised".to_string()
+            )?;
+            let pkt = build_handshake_packet(
+                dcid, scid, *hs_send_pn, &inj.bytes, &hs.local,
+            )?;
+            socket.send_to(&pkt, server)
+                .map_err(|e| format!("send Handshake injection: {e}"))?;
+            *hs_send_pn = hs_send_pn.wrapping_add(1);
+        }
+        InjectionEpoch::OneRtt => {
+            let or = one_rtt_keys.ok_or_else(||
+                "1-RTT injection requested before 1-RTT keys materialised".to_string()
+            )?;
+            let frame = encode_crypto_frame(0, &inj.bytes);
+            let pkt = build_short_header_crypto_packet(
+                dcid, *one_rtt_send_pn, &frame, &or.local,
+            )?;
+            socket.send_to(&pkt, server)
+                .map_err(|e| format!("send 1-RTT injection: {e}"))?;
+            *one_rtt_send_pn = one_rtt_send_pn.wrapping_add(1);
+        }
+    }
+    Ok(())
+}
+
 /// Decrypt an Initial-space packet with the harness's `KeysHandle` (the
 /// librustls-mojo Initial keys derived off the client-chosen DCID). Mirrors
 /// the inlined block at the bottom of `drive_handshake_initial_inner` but
@@ -1470,5 +1855,16 @@ mod tests {
         // offset=200 → 2-byte varint 0x40c8; length=4 → 1-byte 0x04
         let out = encode_crypto_frame(200, &[0x05, 0x00, 0x00, 0x00]);
         assert_eq!(out, vec![0x06, 0x40, 0xc8, 0x04, 0x05, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn injection_size_check_rejects_oversize() {
+        let builder = PacketBuilder::new(vec![1; 8], vec![2; 8]);
+        let big = vec![0u8; 1200];
+        let inj = Injection { epoch: InjectionEpoch::Handshake, bytes: big };
+        let res = drive_handshake_with_injection(builder, &server_tp_bytes_well_formed(), inj);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(err.contains("MTU"), "expected MTU error, got: {}", err);
     }
 }
