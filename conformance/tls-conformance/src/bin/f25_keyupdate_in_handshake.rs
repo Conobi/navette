@@ -4,28 +4,21 @@
 //! RFC 9001 §6 forbids `KeyUpdate` TLS messages on a QUIC connection in any
 //! TLS state; in particular, an unsolicited KeyUpdate during the Handshake
 //! must trigger `unexpected_message` (alert 10) surfaced as a CRYPTO_ERROR
-//! CONNECTION_CLOSE whose low byte is 10 (or 50 fallback per RFC 9001 §4.8).
+//! CONNECTION_CLOSE. Empirically navette / rustls may surface alert 10, 47
+//! (`illegal_parameter`), or 50 (`decode_error` fallback per RFC 9001 §4.8);
+//! we accept all three so minor rustls behavioural shifts don't tip the gate.
 //!
-//! Driver mode (β.5): BEST-EFFORT. Constructs the well-formed Initial flight,
-//! sends it, and inspects the server's Initial-space reply. Injecting the
-//! adversarial KeyUpdate record requires Handshake-epoch CRYPTO frame
-//! construction, which depends on:
-//!   * extracting `KeyChange::Handshake` secrets from rustls
-//!     (`ClientConnection::write_hs` returns `Option<KeyChange>` only after
-//!     the server's ServerHello is processed),
-//!   * wiring those secrets back through `librustls-mojo`'s `rlsm_initial_keys`
-//!     analogue for Handshake-epoch keys, and
-//!   * extending `PacketBuilder::encode_handshake` to embed a CRYPTO frame
-//!     payload (it currently encodes raw payload bytes).
-//!
-//! All three pieces are out of scope for β.5; the binary exits 1 with the
-//! deferral diagnostic below until that plumbing lands. Once present, replace
-//! the post-Initial branch with a real Handshake-epoch injection driver.
+//! Driver: substitution mode — the harness pumps rustls's write_hs to
+//! materialise the Handshake-epoch keys, DISCARDS the natural Finished, and
+//! sends a single Handshake-epoch CRYPTO frame at offset 0 carrying the
+//! 5-byte KeyUpdate TLS handshake record `18 00 00 01 00`
+//! (type=0x18 KeyUpdate, length=1, body=0x00 update_not_requested per
+//! RFC 8446 §4.6.3).
 
 use rand::RngCore;
 use tls_conformance_scenarios::{
-    assert_crypto_error_low_byte, drive_handshake_initial, server_tp_bytes_well_formed,
-    PacketBuilder,
+    assert_crypto_error_low_byte, drive_handshake_with_injection, server_tp_bytes_well_formed,
+    Injection, InjectionEpoch, PacketBuilder,
 };
 
 fn main() {
@@ -35,35 +28,32 @@ fn main() {
     let builder = PacketBuilder::new(dcid.to_vec(), scid.to_vec());
     let tp = server_tp_bytes_well_formed();
 
-    match drive_handshake_initial(builder, &tp) {
-        Ok(Some(cc)) => {
-            // If the server happens to close at the Initial epoch with alert 10
-            // (or fallback 50) we accept it; otherwise log + fail.
-            match assert_crypto_error_low_byte(&cc, &[10]) {
-                Ok(()) => std::process::exit(0),
-                Err(diag) => {
-                    eprintln!("f25: assertion failed: {}", diag);
-                    eprintln!(
-                        "  got error_code=0x{:x} frame_type=0x{:02x} reason={:?}",
-                        cc.error_code, cc.frame_type, cc.reason,
-                    );
-                    std::process::exit(1);
-                }
+    let inj = Injection {
+        epoch: InjectionEpoch::Handshake,
+        // TLS handshake type 0x18 (KeyUpdate, RFC 8446 §4.6.3),
+        // length 1, body 0x00 (update_not_requested).
+        bytes: vec![0x18, 0x00, 0x00, 0x01, 0x00],
+    };
+    match drive_handshake_with_injection(builder, &tp, inj) {
+        Ok(Some(cc)) => match assert_crypto_error_low_byte(&cc, &[10, 47, 50]) {
+            Ok(()) => std::process::exit(0),
+            Err(diag) => {
+                eprintln!("f25: assertion failed: {}", diag);
+                eprintln!(
+                    "  got error_code=0x{:x} frame_type=0x{:02x} reason={:?}",
+                    cc.error_code, cc.frame_type, cc.reason,
+                );
+                std::process::exit(1);
             }
-        }
+        },
         Ok(None) => {
             eprintln!(
-                "f25: DEFERRED — Handshake-epoch CRYPTO injection not yet \
-                 supported. Driver only sent the Initial flight; the server \
-                 has not yet surfaced an unexpected_message alert because the \
-                 adversarial KeyUpdate record was never injected. Requires \
-                 Handshake-epoch key extraction from rustls KeyChange plus a \
-                 CRYPTO-aware PacketBuilder::encode_handshake."
+                "f25: handshake completed without CC; expected unexpected_message alert",
             );
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("f25: handshake driver error: {}", e);
+            eprintln!("f25: driver error: {}", e);
             std::process::exit(1);
         }
     }

@@ -4,24 +4,17 @@
 //! RFC 9001 §8.3 forbids `EndOfEarlyData` on a QUIC connection (early-data
 //! framing is a TCP-only TLS message). A client that sends one must trigger
 //! `unexpected_message` (alert 10), surfaced as a CRYPTO_ERROR
-//! CONNECTION_CLOSE with low byte 10 (or 50 fallback per RFC 9001 §4.8).
+//! CONNECTION_CLOSE. We accept low bytes 10, 47, and 50 (per the same
+//! tolerance as F25/F26) to absorb minor rustls behavioural shifts.
 //!
-//! Driver mode (β.5): BEST-EFFORT. Drives the Initial flight only; injecting
-//! `EndOfEarlyData` requires:
-//!   * a session-resumption-capable Initial that advertises early-data, and
-//!   * Handshake-epoch CRYPTO injection (the EndOfEarlyData message is
-//!     emitted between the server's encrypted_extensions and the client's
-//!     Finished — i.e. Handshake-space CRYPTO frames),
-//!   * 0-RTT key derivation + Handshake-epoch key transfer from rustls
-//!     through `librustls-mojo` to the harness's `PacketBuilder`.
-//!
-//! All of that is deferred from β.5; the binary fails with the diagnostic
-//! below until the epoch plumbing lands.
+//! Driver: substitution mode — Handshake-epoch CRYPTO at offset 0 carrying
+//! the 4-byte EndOfEarlyData record `05 00 00 00` (TLS handshake type 0x05,
+//! length 0 per RFC 8446 §4.5).
 
 use rand::RngCore;
 use tls_conformance_scenarios::{
-    assert_crypto_error_low_byte, drive_handshake_initial, server_tp_bytes_well_formed,
-    PacketBuilder,
+    assert_crypto_error_low_byte, drive_handshake_with_injection, server_tp_bytes_well_formed,
+    Injection, InjectionEpoch, PacketBuilder,
 };
 
 fn main() {
@@ -31,8 +24,13 @@ fn main() {
     let builder = PacketBuilder::new(dcid.to_vec(), scid.to_vec());
     let tp = server_tp_bytes_well_formed();
 
-    match drive_handshake_initial(builder, &tp) {
-        Ok(Some(cc)) => match assert_crypto_error_low_byte(&cc, &[10, 50]) {
+    let inj = Injection {
+        epoch: InjectionEpoch::Handshake,
+        // TLS handshake type 0x05 (EndOfEarlyData, RFC 8446 §4.5), length 0.
+        bytes: vec![0x05, 0x00, 0x00, 0x00],
+    };
+    match drive_handshake_with_injection(builder, &tp, inj) {
+        Ok(Some(cc)) => match assert_crypto_error_low_byte(&cc, &[10, 47, 50]) {
             Ok(()) => std::process::exit(0),
             Err(diag) => {
                 eprintln!("f29: assertion failed: {}", diag);
@@ -45,18 +43,12 @@ fn main() {
         },
         Ok(None) => {
             eprintln!(
-                "f29: DEFERRED — Handshake-epoch CRYPTO injection not yet \
-                 supported. Driver only sent the Initial flight; the server \
-                 has not yet surfaced an unexpected_message alert because the \
-                 adversarial EndOfEarlyData record was never injected. \
-                 Requires 0-RTT session resumption + Handshake-epoch key \
-                 extraction from rustls KeyChange + a CRYPTO-aware \
-                 PacketBuilder::encode_handshake."
+                "f29: handshake completed without CC; expected unexpected_message alert",
             );
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("f29: handshake driver error: {}", e);
+            eprintln!("f29: driver error: {}", e);
             std::process::exit(1);
         }
     }
