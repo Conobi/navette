@@ -9,11 +9,12 @@ CRYPTO row (RFC 9001 §8.3, currently `not-applicable` until 0-RTT lands).
 
 ## What's covered
 
-- **Phase β complete:** 13 Table A rows + 1 Table B row are GREEN and
-  status `gated`. The companion `sanity_get` baseline is enumerated as
-  Table B / SY01 (mirrors the TLS-conformance pattern);
-  `coverage_check.py` is invoked with `--always-on-count 0` so the
-  sanity baseline is counted exactly once.
+- **13 Table A rows + 1 Table B row gated:** all packet-layer,
+  server-illegal-frame, and stream-state guard scenarios pass.
+  The companion `sanity_get` baseline is enumerated as Table B / SY01
+  (mirrors the TLS-conformance pattern); `coverage_check.py` is invoked
+  with `--always-on-count 0` so the sanity baseline is counted exactly
+  once.
 
 ## What's deferred
 
