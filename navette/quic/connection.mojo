@@ -62,6 +62,7 @@ from navette.quic.frame import (
 from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
+    check_max_streams_value,
     check_short_reserved_bits,
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
@@ -1470,6 +1471,13 @@ struct QuicConnection(Movable):
         if tid == FRAME_MAX_STREAMS_BIDI:
             if frame._max_streams:
                 var ms = frame._max_streams.value().copy()
+                # F20 — RFC 9000 §19.11: a MAX_STREAMS value > 2^60 cannot
+                # encode a valid stream id. Close with FRAME_ENCODING_ERROR.
+                var _v_ms_bidi = check_max_streams_value(ms.maximum)
+                if _v_ms_bidi:
+                    var _vv = _v_ms_bidi.value().copy()
+                    self.close_transport(_vv.error_code, _vv.tag, now)
+                    return
                 if ms.maximum > self.stream_map.peer_max_streams_bidi:
                     self.stream_map.peer_max_streams_bidi = ms.maximum
                     # Peer granted more streams; reset dedup so we re-notify if we hit the new limit.
@@ -1480,6 +1488,11 @@ struct QuicConnection(Movable):
         if tid == FRAME_MAX_STREAMS_UNI:
             if frame._max_streams:
                 var ms = frame._max_streams.value().copy()
+                var _v_ms_uni = check_max_streams_value(ms.maximum)
+                if _v_ms_uni:
+                    var _vv = _v_ms_uni.value().copy()
+                    self.close_transport(_vv.error_code, _vv.tag, now)
+                    return
                 if ms.maximum > self.stream_map.peer_max_streams_uni:
                     self.stream_map.peer_max_streams_uni = ms.maximum
                     self.stream_map.needs_streams_blocked_uni = False

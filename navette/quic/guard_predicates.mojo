@@ -12,6 +12,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
     GUARD_TAG_MAX_STREAM_DATA_NONEXIST,
     GUARD_TAG_MAX_STREAM_DATA_RECV_ONLY,
+    GUARD_TAG_MAX_STREAMS_OVERFLOW,
 )
 
 
@@ -187,6 +188,21 @@ def predicate_f18_f19_max_stream_data(
             )
         )
     return Optional[GuardVerdict]()
+
+
+def check_max_streams_value(v: UInt64) -> Optional[GuardVerdict]:
+    """RFC 9000 §19.11: MAX_STREAMS carries a stream-count limit that MUST
+    NOT exceed 2^60 (the wire format cannot represent a valid stream id
+    beyond that). A value > 2^60 is FRAME_ENCODING_ERROR. Used for F20.
+    """
+    if v <= (UInt64(1) << 60):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x07),  # FRAME_ENCODING_ERROR
+            tag=String(GUARD_TAG_MAX_STREAMS_OVERFLOW),
+        )
+    )
 
 
 def is_client_only_frame_on_server(type_id: UInt64, is_server: Bool) -> Bool:
