@@ -1,7 +1,15 @@
 # Vendor Patch — quiche 0.24.9 (raw-frame conformance)
 
-quiche-commit: bbfe6205b8af2e6fadbb6d7818de463fbe123342
-vendor-target: conformance/vendor/quiche-raw-frame/
+upstream-commit:   bbfe6205b8af2e6fadbb6d7818de463fbe123342 (cloudflare/quiche@0.24.9)
+fork-branch:       https://github.com/Conobi/quiche/tree/navette-patches-0.24
+fork-branch-tip:   6d15774b (post-Patch-4)
+vendor-target:     conformance/vendor/quiche-raw-frame/
+
+The fork-branch is the canonical source of truth for the patches: each commit
+on `navette-patches-0.24` corresponds to one of the patches below, in order.
+When adding a fifth patch, commit it to the fork branch FIRST (and open an
+upstream PR for the change if appropriate per the hard-cap policy), then
+re-sync the vendored tree below from that branch.
 
 This vendored quiche tree carries four changes from upstream needed for the
 raw-frame conformance harness. The harness needs to inject hand-crafted QUIC

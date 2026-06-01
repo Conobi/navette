@@ -24,10 +24,17 @@ grep -qE '^pub mod range_buf;' "$LIB" || fail "Patch 2 not applied: 'pub mod ran
 awk '/^pub fn encode_pkt[(]/ { seen=1 } seen && /^pub fn encode_pkt_reserved_bits[(]/ { ok=1; exit } END { exit ok ? 0 : 1 }' "$TUL" \
     || fail "Patch 3 not applied: encode_pkt_reserved_bits missing after encode_pkt"
 
-# VENDOR_PATCH.md must list 3 numbered changes + a quiche-commit: SHA line
+# Patch 4: encode_pkt_with_payload helper after encode_pkt_reserved_bits
+awk '/^pub fn encode_pkt_reserved_bits[(]/ { seen=1 } seen && /^pub fn encode_pkt_with_payload[(]/ { ok=1; exit } END { exit ok ? 0 : 1 }' "$TUL" \
+    || fail "Patch 4 not applied: encode_pkt_with_payload missing after encode_pkt_reserved_bits"
+
+# VENDOR_PATCH.md must list 4 numbered changes + an upstream-commit/quiche-commit SHA line + fork-branch references
 grep -qE '^(1\.|## (Patch|Change) 1\b)' "$PATCHMD" || fail "VENDOR_PATCH.md missing change 1 header"
 grep -qE '^(2\.|## (Patch|Change) 2\b)' "$PATCHMD" || fail "VENDOR_PATCH.md missing change 2 header"
 grep -qE '^(3\.|## (Patch|Change) 3\b)' "$PATCHMD" || fail "VENDOR_PATCH.md missing change 3 header"
-grep -qE '^quiche-commit:[[:space:]]+[0-9a-f]{7,40}' "$PATCHMD" || fail "VENDOR_PATCH.md missing 'quiche-commit:' SHA line"
+grep -qE '^(4\.|## (Patch|Change) 4\b)' "$PATCHMD" || fail "VENDOR_PATCH.md missing change 4 header"
+grep -qE '^(upstream-commit|quiche-commit):[[:space:]]+[0-9a-f]{7,40}' "$PATCHMD" || fail "VENDOR_PATCH.md missing 'upstream-commit:' SHA line"
+grep -qE '^fork-branch:[[:space:]]+https://github.com/' "$PATCHMD" || fail "VENDOR_PATCH.md missing 'fork-branch:' URL"
+grep -qE '^fork-branch-tip:[[:space:]]+[0-9a-f]{7,40}' "$PATCHMD" || fail "VENDOR_PATCH.md missing 'fork-branch-tip:' SHA line"
 
 echo "vendor patch integrity check: OK"
