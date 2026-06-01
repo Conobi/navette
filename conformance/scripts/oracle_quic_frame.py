@@ -60,17 +60,36 @@ def add_vector(
     frame_type: str,
     description: str,
     wire: bytes,
-    expected: dict | str,
+    expected: dict,
+    expect: str | None = None,
 ):
+    """Append a vector to the module-level `vectors` list.
+
+    `expected` is the structured expectation dict serialised under the
+    ``"expected"`` JSON key. `expect`, when supplied, is serialised under
+    the separate ``"expect"`` JSON key — both top-level keys can coexist
+    (e.g. for the unknown-frame sentinel pattern). Stale callers passing
+    the literal string ``"error"`` as the 5th positional are rejected
+    by the runtime ``assert isinstance(expected, dict)``.
+    """
     v: dict = {
         "id": id,
         "frame_type": frame_type,
         "description": description,
         "wire_hex": wire.hex(),
     }
-    if isinstance(expected, str) and expected == "error":
-        v["expect"] = "error"
-    else:
+    assert isinstance(expected, dict), (
+        f"add_vector: `expected` must be dict, got {type(expected).__name__}; "
+        "stale callers passing string \"error\" must migrate to "
+        "expected=<dict>, expect=<str>"
+    )
+    if expect is not None:
+        assert isinstance(expect, str) and expect, (
+            f"add_vector: `expect` must be a non-empty str when supplied, "
+            f"got {expect!r}"
+        )
+        v["expect"] = expect
+    if expected:
         v["expected"] = expected
     vectors.append(v)
 
@@ -202,7 +221,8 @@ add_vector(
     "ACK",
     "first_ack_range > largest_ack (underflow)",
     wire,
-    "error",
+    expected={},
+    expect="error",
 )
 
 
@@ -269,13 +289,13 @@ add_vector(
     },
 )
 
-# STREAM (0x0A): OFF bit set (offset present), no LEN, no FIN
-# 0x0A = 0b00001010 → OFF=1, LEN=0, FIN=0
-wire = ByteWriter().varint(0x0A).varint(stream_id).varint(100).raw(stream_data).bytes()
+# STREAM (0x0C): OFF bit set (offset present), no LEN, no FIN
+# 0x0C = 0b00001100 → OFF=1, LEN=0, FIN=0 (RFC 9000 §19.8: OFF=0x04, LEN=0x02, FIN=0x01)
+wire = ByteWriter().varint(0x0C).varint(stream_id).varint(100).raw(stream_data).bytes()
 add_vector(
     "stream-off",
     "STREAM",
-    "STREAM (0x0A): OFF bit set (offset=100), data to end of frame",
+    "STREAM (0x0C): OFF bit set (offset=100), data to end of frame",
     wire,
     {
         "stream_id": stream_id,
@@ -288,13 +308,13 @@ add_vector(
     },
 )
 
-# STREAM (0x0B): OFF+FIN bits set
-# 0x0B = 0b00001011 → OFF=1, LEN=0, FIN=1
-wire = ByteWriter().varint(0x0B).varint(stream_id).varint(200).raw(stream_data).bytes()
+# STREAM (0x0D): OFF+FIN bits set
+# 0x0D = 0b00001101 → OFF=1, LEN=0, FIN=1 (RFC 9000 §19.8 bit math)
+wire = ByteWriter().varint(0x0D).varint(stream_id).varint(200).raw(stream_data).bytes()
 add_vector(
     "stream-off-fin",
     "STREAM",
-    "STREAM (0x0B): OFF+FIN bits set (offset=200), data to end of frame",
+    "STREAM (0x0D): OFF+FIN bits set (offset=200), data to end of frame",
     wire,
     {
         "stream_id": stream_id,
@@ -362,8 +382,8 @@ add_vector(
 )
 
 # STREAM with empty data + FIN (legal)
-# 0x0B = OFF+FIN, no LEN
-wire = ByteWriter().varint(0x0B).varint(stream_id).varint(500).bytes()
+# 0x0D = OFF+FIN, no LEN (RFC 9000 §19.8 bit math)
+wire = ByteWriter().varint(0x0D).varint(stream_id).varint(500).bytes()
 add_vector(
     "stream-empty-fin",
     "STREAM",
@@ -623,9 +643,10 @@ wire = ByteWriter().varint(0xFF).bytes()
 add_vector(
     "unknown-frame-type",
     "UNKNOWN",
-    "Unknown frame type 0xFF",
+    "Unknown frame type 0xFF — parser returns the Frame.unknown sentinel; dispatch closes with FRAME_ENCODING_ERROR (RFC 9000 §12.4)",
     wire,
-    "error",
+    expected={"frame_type_value": 255},
+    expect="unknown_sentinel",
 )
 
 # NEW_CONNECTION_ID with CID length 0 — error case
@@ -693,7 +714,8 @@ add_vector(
     "CRYPTO",
     "Truncated CRYPTO: length says 10 but only 2 bytes present",
     wire,
-    "error",
+    expected={},
+    expect="error",
 )
 
 
