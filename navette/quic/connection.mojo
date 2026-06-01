@@ -82,6 +82,7 @@ from navette.quic.guard_predicates import (
 from navette.quic.guard_tags import (
     GUARD_TAG_UNKNOWN_FRAME,
     GUARD_TAG_PATH_CHALLENGE_HS,
+    GUARD_TAG_MIGRATION_DISABLED,
     GUARD_TAG_NEW_TOKEN_SERVER,
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
     GUARD_TAG_STREAM_LARGE_OFFSET,
@@ -404,14 +405,26 @@ struct QuicConnection(Movable):
     var stream_map: StreamMap
     var cid_mgr: CidManager
     # RFC 9000 §8/§9 path validation state. Holds in-flight PATH_CHALLENGE
-    # tokens + the currently validated path. RX-only wiring at this commit;
-    # emission + addr-change detection land in later commits.
+    # tokens + the currently validated path.
     var path_validator: PathValidator
     # Pending PATH_CHALLENGE tokens received from the peer that we still
     # need to echo back as PATH_RESPONSE in the next 1-RTT flush. Each
     # entry is the 8-byte data field copied verbatim from the incoming
-    # PATH_CHALLENGE; emission + drain happen in a later commit.
+    # PATH_CHALLENGE; emission + drain happens in `emit_path_response_frames`.
     var pending_path_responses: List[List[UInt8]]
+    # Current validated peer 4-tuple (RFC 9000 §9). Updated ONLY inside
+    # `on_path_response_received` after a verified PATH_RESPONSE token+addr
+    # match (per AC17). The bench-server receive site MUST NOT mutate it
+    # directly; all outbound traffic targets this address unless an active
+    # validation is rerouting via `path_validator.pending`.
+    var peer_addr: PathKey
+    # Per-receive cursor: the bench server stamps this with the source
+    # address of the datagram currently being fed into `recv_from_buffer`,
+    # so `_dispatch_frame` can pass `from_addr` to `on_path_response_received`
+    # without changing the recv ABI. Reset semantics are intentionally
+    # absent — the value is overwritten on every datagram and read only
+    # during PATH_RESPONSE handling.
+    var _current_recv_addr: PathKey
     # One-shot guard for the initial NEW_CONNECTION_ID burst (RFC 9000
     # §5.1.1): on the first 1-RTT _build_frames_for_space call after the
     # connection becomes CONN_ESTABLISHED, fill `cid_mgr.local_cids` up
@@ -499,6 +512,8 @@ struct QuicConnection(Movable):
         self.cid_mgr = take.cid_mgr^
         self.path_validator = take.path_validator^
         self.pending_path_responses = take.pending_path_responses^
+        self.peer_addr = take.peer_addr^
+        self._current_recv_addr = take._current_recv_addr^
         self.initial_cids_emitted = take.initial_cids_emitted
         self.app_frames_sent = take.app_frames_sent^
         self.ecn_state = take.ecn_state
@@ -599,6 +614,14 @@ struct QuicConnection(Movable):
         )
         self.path_validator = PathValidator()
         self.pending_path_responses = List[List[UInt8]]()
+        # Sentinel zero PathKey — overwritten by the bench server on the
+        # first ingress datagram (and on every PATH_RESPONSE-validated
+        # migration). family=0 never matches AF_INET (2) or AF_INET6 (10),
+        # so the first observed source addr always lights up the
+        # address-change branch in the receive site (which then promotes
+        # `peer_addr` via the validation path, not direct mutation).
+        self.peer_addr = PathKey.zero()
+        self._current_recv_addr = PathKey.zero()
         self.initial_cids_emitted = False
         self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
 
@@ -1355,28 +1378,63 @@ struct QuicConnection(Movable):
         self.pending_path_responses.append(copy^)
 
     def on_path_response_received(
-        mut self, data: Span[UInt8, _], now: UInt64
-    ):
-        """RX hook for PATH_RESPONSE; meaningful work lands once challenges fly.
+        mut self, data: Span[UInt8, _], var from_addr: PathKey, now: UInt64
+    ) raises:
+        """Validate a PATH_RESPONSE and, on match, swap the validated path.
 
-        Real validation requires (a) a pending challenge started by the
-        server and (b) the source address the response arrived from so it
-        can be matched against the challenge's target. Neither is
-        available in this RX-only commit:
+        RFC 9000 §8.2: the 8-byte data MUST match a pending challenge AND
+        the response MUST arrive from the address the challenge targeted.
+        Non-matches are silently dropped (no error, no state change).
 
-          * No code path yet calls `path_validator.start_challenge` — that
-            wiring lives at the receive site, added when address-change
-            detection is hooked up.
-          * `from_addr` would have to be forwarded by the receive site.
-
-        Per the spec edge case "PATH_RESPONSE arrives from a different
-        addr than the challenge target — silently drop", a no-op when no
-        challenge is pending is safe. The handler stub exists so
-        `_dispatch_frame` can call it now; later commits extend the body.
+        On a successful match `path_validator.on_response` removes the
+        challenge from the pending list and records the new `current`
+        ValidatedPath. RFC 9000 §9.5 then MANDATES that the server switch
+        to a fresh DCID on the new path — reusing the same DCID across
+        paths makes the connection trivially linkable. We therefore call
+        `_rotate_to_spare_remote_cid` to advance `cid_mgr.remote_active_cid_seq`
+        to an unused Active remote CID (queuing RETIRE_CONNECTION_ID for
+        the previous sequence). If no spare exists, the validation result
+        is deferred per AC15: `peer_addr` does NOT swap, and the client
+        must issue a NEW_CONNECTION_ID before the migration can complete.
         """
-        # TODO: a follow-up commit wires `from_addr` (PathKey) through
-        # from the receive site and calls `self.path_validator.on_response`.
-        pass
+        var maybe = self.path_validator.on_response(
+            data, PathKey(other=from_addr), now
+        )
+        if not Bool(maybe):
+            return  # silent drop — RFC 9000 §8.2 token/addr mismatch.
+
+        # CID rotation per RFC 9000 §9.5 (MUST NOT reuse DCID on different
+        # paths). Failure to find a spare defers the validation: the new
+        # path is held back until the peer supplies a fresh NEW_CID.
+        var rotated = self._rotate_to_spare_remote_cid(now)
+        if not rotated:
+            return
+
+        # Promotion: the validated path is now the active peer addr. This
+        # is the ONLY site that mutates `peer_addr` (AC17).
+        self.peer_addr = from_addr^
+
+    def _rotate_to_spare_remote_cid(mut self, now: UInt64) raises -> Bool:
+        """Switch to a spare Active remote CID and queue RETIRE_CID for the old one.
+
+        Walks `cid_mgr.remote_cids` for an Active entry whose sequence
+        differs from the currently-active one. On success, updates
+        `remote_active_cid_seq` and re-queues the previous sequence via
+        `requeue_retire` (which respects `retire_queue_cap`). Returns
+        True iff a spare was found.
+
+        Caller: `on_path_response_received` after a verified match.
+        """
+        var current_seq = self.cid_mgr.remote_active_cid_seq
+        for i in range(len(self.cid_mgr.remote_cids)):
+            ref entry = self.cid_mgr.remote_cids[i]
+            if entry.state == CID_ACTIVE and entry.sequence != current_seq:
+                self.cid_mgr.remote_active_cid_seq = entry.sequence
+                # Queue RETIRE_CONNECTION_ID for the OLD seq so the peer
+                # can free the slot. requeue_retire respects the cap.
+                self.cid_mgr.requeue_retire(current_seq)
+                return True
+        return False
 
     # ── Path validation TX (emission) ────────────────────────────────
 
@@ -1422,10 +1480,142 @@ struct QuicConnection(Movable):
 
         Generates an 8-byte token via `PathValidator.start_challenge`; the
         next 1-RTT flush emits a PATH_CHALLENGE frame with that token.
-        Exercised by unit tests here; C5 wires the bench receive site to
-        call this on detected address-change.
+        The bench receive site calls this on detected address-change for
+        any source addr that does not already have a pending challenge.
         """
         _ = self.path_validator.start_challenge(target^, now)
+
+    def has_pending_path_challenge(self, target: PathKey) -> Bool:
+        """True iff a PathChallenge with `target == target` is in `pending`.
+
+        Used by the bench receive site to suppress duplicate challenges
+        on rapid-fire packets from the same unvalidated address.
+        """
+        for i in range(len(self.path_validator.pending)):
+            var t = PathKey(other=self.path_validator.pending[i].target)
+            if t == target:
+                return True
+        return False
+
+    def set_current_recv_addr(mut self, var addr: PathKey):
+        """Stamp the per-receive source-address cursor before feeding a datagram.
+
+        The bench server's UDP receive site calls this immediately before
+        `feed_datagram_from_buffer`, so the connection's PATH_RESPONSE
+        handler (invoked from `_dispatch_frame`) can match the response
+        token against the address that carried the response. Decoupled
+        from the recv ABI to avoid threading PathKey through every layer
+        of `recv_from_buffer` -> `_dispatch_frame`.
+        """
+        self._current_recv_addr = addr^
+
+    def on_ingress_from(
+        mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
+    ) raises:
+        """Handle the per-datagram address-change + anti-amp bookkeeping.
+
+        Called by the bench receive site BEFORE feeding the datagram into
+        `recv_from_buffer`. Three responsibilities:
+
+          1. **Path-change detection** (RFC 9000 §9). If the source addr
+             differs from the currently validated `peer_addr` AND the
+             server advertised `disable_active_migration=True`, close
+             with PROTOCOL_VIOLATION per §9 ¶last (no silent drop — that
+             strands the connection on a dead path).
+
+          2. **Path-challenge initiation**. If migration is allowed and
+             no challenge is already pending for this addr, generate one;
+             the next 1-RTT flush emits the PATH_CHALLENGE.
+
+          3. **Per-path anti-amp accounting** (RFC 9000 §8.1). If this
+             addr has a pending challenge, credit the received bytes to
+             its `bytes_received` so subsequent sends can stay within the
+             3× budget. (The validated path has no per-path counter.)
+
+        `set_current_recv_addr` must be called separately so the inner
+        `_dispatch_frame` can match PATH_RESPONSE arrivals; this method
+        focuses on the ingress-side bookkeeping that runs before recv.
+
+        Returns immediately if the connection is already closing /
+        draining / closed (no point starting a new challenge on a dying
+        conn).
+        """
+        if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return
+
+        # 1. Address change vs the currently validated path. The sentinel
+        # zero PathKey (family=0) never matches a real peer (family=2 or
+        # 10), so the very first ingress from a fresh server connection
+        # looks like an address change. To avoid spurious challenges
+        # mid-handshake, we only honour migration after CONN_ESTABLISHED
+        # (per spec non-goal: mid-handshake migration drops to current
+        # behaviour). Before establishment the bench server stamps the
+        # peer addr directly via `bootstrap_peer_addr` instead.
+        if not (from_addr == self.peer_addr):
+            if (self.state & CONN_ESTABLISHED) == 0:
+                # Pre-handshake: silently track the addr via the cursor
+                # only. `bootstrap_peer_addr` is what promotes it.
+                pass
+            elif self.local_params.disable_active_migration:
+                # RFC 9000 §9 ¶last: any address change on a connection
+                # that advertised `disable_active_migration=True` is a
+                # PROTOCOL_VIOLATION (0x0A). Close instead of silently
+                # dropping (which would strand the connection on a dead
+                # path).
+                self.close_transport(
+                    UInt64(0x0A),
+                    String(GUARD_TAG_MIGRATION_DISABLED),
+                    now,
+                )
+                return
+            else:
+                # Active migration allowed: initiate path validation for
+                # the new addr unless we already have a challenge in
+                # flight for it.
+                var probe = PathKey(other=from_addr)
+                if not self.has_pending_path_challenge(probe):
+                    self.start_path_challenge(probe^, now)
+
+        # 2. Per-path anti-amp credit. record_received_bytes is a no-op
+        # if `from_addr` has no pending challenge (i.e. it IS the
+        # validated path); the validated path is not anti-amp constrained.
+        self.path_validator.record_received_bytes(from_addr, datagram_len)
+
+    def bootstrap_peer_addr(mut self, var addr: PathKey):
+        """Seed `peer_addr` to the first observed source address.
+
+        Called by the bench server exactly once per connection — when a
+        new conn slot is allocated for an incoming Initial — so the
+        sentinel `PathKey.zero()` is replaced with a real 4-tuple before
+        any address-change check runs. This is the ONLY caller path that
+        sets `peer_addr` outside of `on_path_response_received`; AC17
+        permits it because the "validated path" at handshake start is
+        defined as the address that carried the client's Initial (the
+        connection IS that path until migration begins).
+        """
+        self.peer_addr = addr^
+
+    def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
+        """Anti-amp gate (RFC 9000 §8.1) for outbound traffic to `target`.
+
+        Returns True if the connection may emit `n_bytes` more on the
+        path to `target`. Delegates to `PathValidator.can_send_bytes`:
+
+          * Pending (unvalidated) paths use the per-path 3× budget.
+          * The validated path (and any addr unknown to the validator)
+            returns True — no anti-amp gate.
+
+        Caller (the bench flusher) MUST follow a successful send with
+        `record_send_to` so the per-path counter advances.
+        """
+        return self.path_validator.can_send_bytes(target, n_bytes)
+
+    def record_send_to(mut self, target: PathKey, n_bytes: Int):
+        """Credit `n_bytes` to the per-path `bytes_sent` counter for `target`.
+
+        See `can_send_to`. No-op if `target` has no pending challenge.
+        """
+        self.path_validator.record_sent_bytes(target, n_bytes)
 
     # ── Frame dispatch ───────────────────────────────────────────────
 
@@ -1671,13 +1861,16 @@ struct QuicConnection(Movable):
             self.on_path_challenge_received(Span(data), now)
             return
 
-        # PATH_RESPONSE (0x1B) — RFC 9000 §8.2. Stub no-op until
-        # `start_challenge` is wired at the receive site; the handler is
-        # in place so dispatch can route here without falling through to
-        # the F10 unknown-frame guard.
+        # PATH_RESPONSE (0x1B) — RFC 9000 §8.2. The token-vs-addr match
+        # requires the source addr of the carrying datagram, which the
+        # bench receive site stamps into `_current_recv_addr` before
+        # feeding the buffer; using a per-conn cursor keeps the `recv`
+        # ABI unchanged. Non-matches are silently dropped inside
+        # `on_path_response_received` per the §8.2 edge case.
         if frame.is_path_response():
             ref data = frame.as_path_data()
-            self.on_path_response_received(Span(data), now)
+            var from_addr = PathKey(other=self._current_recv_addr)
+            self.on_path_response_received(Span(data), from_addr^, now)
             return
 
         # F10 — RFC 9000 §12.4: unknown frame type. Close with

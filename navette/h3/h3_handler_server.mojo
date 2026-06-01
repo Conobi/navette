@@ -9,6 +9,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
+from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.qpack import QpackHeaderField
@@ -152,6 +153,34 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     def send_goaway(mut self, last_stream_id: UInt64) raises:
         """Send GOAWAY via the underlying H3Connection."""
         self._h3.send_goaway(last_stream_id)
+
+    # --- Path-validation pass-through (RFC 9000 §8 + §9) ---------------------
+
+    def on_ingress_from(
+        mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
+    ) raises:
+        """Forward per-datagram path-change + anti-amp credit to the H3 layer."""
+        self._h3.on_ingress_from(from_addr^, datagram_len, now)
+
+    def set_current_recv_addr(mut self, var addr: PathKey):
+        """Stamp the per-receive source-addr cursor on the QUIC layer."""
+        self._h3.set_current_recv_addr(addr^)
+
+    def bootstrap_peer_addr(mut self, var addr: PathKey):
+        """Seed `peer_addr` on a freshly-accepted connection."""
+        self._h3.bootstrap_peer_addr(addr^)
+
+    def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
+        """Anti-amp gate (RFC 9000 §8.1) for outbound bytes to `target`."""
+        return self._h3.can_send_to(target, n_bytes)
+
+    def record_send_to(mut self, target: PathKey, n_bytes: Int):
+        """Credit `n_bytes` to the per-path bytes_sent counter."""
+        self._h3.record_send_to(target, n_bytes)
+
+    def peer_addr_copy(self) -> PathKey:
+        """Return a copy of the currently-validated peer 4-tuple."""
+        return self._h3.peer_addr_copy()
 
     # --- Internal: event dispatch --------------------------------------------
 

@@ -15,6 +15,7 @@ from navette.quic.connection import (
     CONN_CLOSED,
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
+from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.frame import (
     H3RawFrame,
@@ -220,6 +221,45 @@ struct H3Connection(Movable):
 
     def is_closed(self) -> Bool:
         return self._quic.is_closed()
+
+    # --- Path-validation pass-through (RFC 9000 §8 + §9) ---------------------
+
+    def on_ingress_from(
+        mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
+    ) raises:
+        """Forward per-datagram path-change + anti-amp credit to the QUIC layer.
+
+        See `QuicConnection.on_ingress_from` for the contract. Exposed at
+        the H3 boundary so the UDP server can drive it without depending
+        on the inner QuicConnection field. Called BEFORE `feed_datagram*`.
+        """
+        self._quic.on_ingress_from(from_addr^, datagram_len, now)
+
+    def set_current_recv_addr(mut self, var addr: PathKey):
+        """Stamp the per-receive source-addr cursor on the QUIC layer."""
+        self._quic.set_current_recv_addr(addr^)
+
+    def bootstrap_peer_addr(mut self, var addr: PathKey):
+        """Seed `peer_addr` on a freshly-accepted connection."""
+        self._quic.bootstrap_peer_addr(addr^)
+
+    def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
+        """Anti-amp gate (RFC 9000 §8.1) for outbound bytes to `target`."""
+        return self._quic.can_send_to(target, n_bytes)
+
+    def record_send_to(mut self, target: PathKey, n_bytes: Int):
+        """Credit `n_bytes` to the per-path bytes_sent counter."""
+        self._quic.record_send_to(target, n_bytes)
+
+    def peer_addr_copy(self) -> PathKey:
+        """Return a copy of the currently-validated peer 4-tuple.
+
+        Read-only — the bench server uses this to route validated-path
+        outbound traffic. Mutation goes through `bootstrap_peer_addr`
+        (handshake seeding) or `on_path_response_received` (post-migration
+        promotion); both live on the QUIC layer.
+        """
+        return PathKey(other=self._quic.peer_addr)
 
     def _is_peer_initiated(self, stream_id: UInt64) -> Bool:
         if self._is_server:

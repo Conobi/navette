@@ -73,6 +73,22 @@ struct PathKey(Copyable, Movable):
         return True
 
     @staticmethod
+    def zero() -> Self:
+        """Build a sentinel PathKey with family=0 and zero address+port.
+
+        Used as the initial value for `QuicConnection.peer_addr` /
+        `_current_recv_addr` before the bench server has observed any
+        traffic; equality against any real peer 4-tuple (family=AF_INET
+        or AF_INET6 — both nonzero) is always False, so the first packet
+        seen always triggers the address-change branch unless the caller
+        has already promoted the validated path.
+        """
+        var bytes = List[UInt8](capacity=16)
+        for _ in range(16):
+            bytes.append(UInt8(0))
+        return Self(Int32(0), bytes^, UInt16(0))
+
+    @staticmethod
     def from_v4(a: UInt8, b: UInt8, c: UInt8, d: UInt8, port: UInt16) -> Self:
         """Build a PathKey from a 4-octet IPv4 address + port.
 

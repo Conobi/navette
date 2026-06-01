@@ -19,7 +19,7 @@ from navette.quic.packet_protect import PacketProtect
 from navette.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
-    CONN_ADDR_VALIDATED, CONN_ESTABLISHED,
+    CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING,
 )
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
@@ -40,7 +40,10 @@ from navette.quic.guard_predicates import (
     QuicResetCtx,
     QuicStopSendingCtx,
 )
-from navette.quic.guard_tags import GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN
+from navette.quic.guard_tags import (
+    GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
+    GUARD_TAG_MIGRATION_DISABLED,
+)
 from navette.tls.guard_tags import (
     GUARD_TAG_TLS_KEYUPDATE_HANDSHAKE,
     GUARD_TAG_TLS_KEYUPDATE_1RTT,
@@ -3552,8 +3555,14 @@ def test_path_response_handler_no_op_without_pending_challenge() raises:
     var data = List[UInt8](capacity=8)
     for i in range(8):
         data.append(UInt8(0xAB))
-    # Should neither raise nor mutate `path_validator.pending`.
-    conn.on_path_response_received(Span(data), UInt64(2000))
+    var from_addr = PathKey.from_v4(
+        UInt8(127), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    # Should neither raise nor mutate `path_validator.pending`. The C5
+    # signature added `from_addr` for the §8.2 addr+token match; with no
+    # pending challenges the inner `on_response` returns None and the
+    # handler is a pure no-op.
+    conn.on_path_response_received(Span(data), from_addr^, UInt64(2000))
     assert_equal_int(
         len(conn.path_validator.pending),
         0,
@@ -3799,6 +3808,342 @@ def test_initial_burst_server_only() raises:
     print("  test_initial_burst_server_only: PASS")
 
 
+# ── C5 — path validation full round trip + CID rotation + anti-amp + ───────
+#       disable_active_migration enforcement ─────────────────────────────────
+
+
+def _seed_spare_remote_cid(mut conn: QuicConnection, seq: UInt64) raises:
+    """Inject an Active remote CID at `seq` so CID rotation can succeed.
+
+    The rotation lever in `on_path_response_received` requires at least
+    one spare remote CID with a sequence different from the currently
+    Active one. Tests don't drive a real NEW_CID handshake; this helper
+    short-circuits via `cid_mgr.on_new_connection_id`, the same code
+    path the live RX handler uses (so the invariants stay aligned).
+    """
+    var cid = List[UInt8](capacity=8)
+    for i in range(8):
+        cid.append(UInt8(0xC0 + i + Int(seq)))
+    var tok = List[UInt8](capacity=16)
+    for i in range(16):
+        tok.append(UInt8(0xD0 + i))
+    conn.cid_mgr.on_new_connection_id(
+        seq, UInt64(0), cid^, tok^
+    )
+
+
+def test_path_validation_full_round_trip() raises:
+    """AC8/AC15: a matching PATH_RESPONSE promotes peer_addr AND rotates DCID.
+
+    Server starts a challenge to addr_b; the response carrying the same
+    8-byte token arrives FROM addr_b; the connection swaps `peer_addr`
+    and `cid_mgr.remote_active_cid_seq` advances to the spare CID we
+    seeded. A RETIRE_CONNECTION_ID for the old sequence is queued.
+    """
+    var conn = _build_server_for_rx_test()
+
+    # Seed a spare remote CID so the §9.5 MUST-rotate succeeds.
+    _seed_spare_remote_cid(conn, UInt64(1))
+    assert_equal_int(
+        Int(conn.cid_mgr.remote_active_cid_seq), 0,
+        "fresh server starts on remote_active_cid_seq=0",
+    )
+    assert_equal_int(
+        len(conn.cid_mgr.remote_cids), 2,
+        "two remote CIDs after seeding spare",
+    )
+
+    var addr_a = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    var addr_b = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
+    )
+    conn.bootstrap_peer_addr(addr_a^)
+
+    # Start path validation against addr_b.
+    conn.start_path_challenge(PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
+    ), UInt64(1000))
+    assert_equal_int(
+        len(conn.path_validator.pending), 1,
+        "challenge queued before response arrives",
+    )
+    var token = List[UInt8](copy=conn.path_validator.pending[0].token)
+
+    # PATH_RESPONSE with the matching token, arriving from addr_b.
+    conn.on_path_response_received(
+        Span(token), PathKey(other=addr_b), UInt64(2000)
+    )
+
+    # peer_addr swapped to addr_b.
+    var current_peer = PathKey(other=conn.peer_addr)
+    assert_true(
+        current_peer == addr_b,
+        "peer_addr promoted to validated path",
+    )
+    # Validator's pending list drained, current set.
+    assert_equal_int(
+        len(conn.path_validator.pending), 0,
+        "matched challenge removed from pending",
+    )
+    assert_true(
+        Bool(conn.path_validator.current),
+        "path_validator.current populated post-match",
+    )
+    # CID rotation per RFC 9000 §9.5 MUST.
+    assert_equal_int(
+        Int(conn.cid_mgr.remote_active_cid_seq), 1,
+        "remote_active_cid_seq advanced to spare after validation",
+    )
+    # RETIRE_CONNECTION_ID for the old seq is queued for emission.
+    var retire_drain = conn.cid_mgr.pending_retire_frames()
+    assert_equal_int(
+        len(retire_drain), 1,
+        "one RETIRE_CONNECTION_ID queued for the rotated-out sequence",
+    )
+    assert_equal_int(
+        Int(retire_drain[0]), 0,
+        "RETIRE_CID targets the previously-active sequence (0)",
+    )
+    print("  test_path_validation_full_round_trip: PASS")
+
+
+def test_path_validation_rejects_wrong_addr() raises:
+    """AC7+§8.2 edge case: PATH_RESPONSE from a different addr is silently dropped.
+
+    Token matches but `from_addr` does not equal the challenge's target;
+    `on_response` returns None, peer_addr is unchanged, no CID rotation
+    fires.
+    """
+    var conn = _build_server_for_rx_test()
+    _seed_spare_remote_cid(conn, UInt64(1))
+
+    var addr_a = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    var addr_b = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
+    )
+    var addr_c = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(3), UInt16(7000)
+    )
+    conn.bootstrap_peer_addr(addr_a^)
+
+    conn.start_path_challenge(PathKey(other=addr_b), UInt64(1000))
+    var token = List[UInt8](copy=conn.path_validator.pending[0].token)
+
+    # Response carries the matching token but arrives from a third addr.
+    conn.on_path_response_received(
+        Span(token), PathKey(other=addr_c), UInt64(2000)
+    )
+
+    # peer_addr UNCHANGED — addr_a still the validated path.
+    var peer_now = PathKey(other=conn.peer_addr)
+    var addr_a_cmp = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    assert_true(
+        peer_now == addr_a_cmp,
+        "peer_addr unchanged on mismatched response addr",
+    )
+    # Pending challenge still in flight.
+    assert_equal_int(
+        len(conn.path_validator.pending), 1,
+        "challenge still pending — mismatched response is a silent no-op",
+    )
+    # No CID rotation, no retire queued.
+    assert_equal_int(
+        Int(conn.cid_mgr.remote_active_cid_seq), 0,
+        "remote_active_cid_seq unchanged on mismatch",
+    )
+    print("  test_path_validation_rejects_wrong_addr: PASS")
+
+
+def test_path_validation_defers_without_spare_cid() raises:
+    """AC15: PATH_RESPONSE match WITHOUT a spare remote CID defers promotion.
+
+    RFC 9000 §9.5 MUST: a different DCID is required on a new path.
+    With no spare, the connection cannot rotate, and the validated path
+    must NOT take effect — peer_addr stays put. Validation completes
+    once the client issues a fresh NEW_CONNECTION_ID.
+    """
+    var conn = _build_server_for_rx_test()
+    # NO spare remote CID seeded; only seq=0 exists.
+    assert_equal_int(
+        len(conn.cid_mgr.remote_cids), 1,
+        "only the initial remote CID exists",
+    )
+
+    var addr_a = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    var addr_b = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
+    )
+    conn.bootstrap_peer_addr(addr_a^)
+
+    conn.start_path_challenge(PathKey(other=addr_b), UInt64(1000))
+    var token = List[UInt8](copy=conn.path_validator.pending[0].token)
+
+    conn.on_path_response_received(
+        Span(token), PathKey(other=addr_b), UInt64(2000)
+    )
+
+    # The matched challenge is REMOVED (validator's on_response is the
+    # one that pops + marks `current`); CID rotation fails → peer_addr
+    # does NOT swap.
+    var peer_now = PathKey(other=conn.peer_addr)
+    var addr_a_cmp = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    assert_true(
+        peer_now == addr_a_cmp,
+        "peer_addr stays on the old path when no spare DCID is available",
+    )
+    assert_equal_int(
+        Int(conn.cid_mgr.remote_active_cid_seq), 0,
+        "remote_active_cid_seq unchanged — no rotation occurred",
+    )
+    # Validator did record the validated path internally (the response
+    # was a real match); the deferral is at the connection layer.
+    assert_true(
+        Bool(conn.path_validator.current),
+        "validator marks the path validated even when conn defers promotion",
+    )
+    print("  test_path_validation_defers_without_spare_cid: PASS")
+
+
+def test_disable_active_migration_triggers_close() raises:
+    """AC9: `disable_active_migration=True` + addr change → close_transport(0x0A).
+
+    Per RFC 9000 §9 ¶last, when the server advertised
+    `disable_active_migration`, any client-side 4-tuple change is a
+    PROTOCOL_VIOLATION. Asserts the reason tag is
+    `GUARD_TAG_MIGRATION_DISABLED` so log scrapers / coverage tools
+    can identify the close cause.
+    """
+    var conn = _build_server_for_rx_test()
+    # Flip the TP and re-bootstrap the addr so the addr-change branch
+    # has something concrete to diverge from.
+    conn.local_params.disable_active_migration = True
+    var addr_a = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    var addr_b = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
+    )
+    conn.bootstrap_peer_addr(addr_a^)
+    # Force ESTABLISHED so the post-handshake migration check runs.
+    conn.state = conn.state | CONN_ESTABLISHED
+
+    # Pre-condition: not closing yet.
+    assert_equal_int(
+        Int(conn.state & CONN_CLOSING), 0,
+        "connection not closing before the ingress arrives",
+    )
+
+    conn.on_ingress_from(PathKey(other=addr_b), 1200, UInt64(2000))
+
+    # Post-condition: CLOSING set, pending_close holds the right tag.
+    assert_true(
+        (conn.state & CONN_CLOSING) != 0,
+        "CONN_CLOSING set after migration-disabled violation",
+    )
+    assert_true(
+        Bool(conn.pending_close),
+        "pending CONNECTION_CLOSE frame queued",
+    )
+    var cc = conn.pending_close.value().copy()
+    assert_true(
+        cc.is_transport,
+        "close uses transport namespace (PROTOCOL_VIOLATION)",
+    )
+    assert_equal_int(
+        Int(cc.error_code), 0x0A,
+        "error_code == PROTOCOL_VIOLATION (0x0A)",
+    )
+    # Reason tag check — bytes carry the exact GUARD_TAG_MIGRATION_DISABLED.
+    var expected_tag = String(GUARD_TAG_MIGRATION_DISABLED)
+    var expected_bytes = expected_tag.as_bytes()
+    assert_equal_int(
+        len(cc.reason), len(expected_bytes),
+        "reason length matches GUARD_TAG_MIGRATION_DISABLED",
+    )
+    for i in range(len(expected_bytes)):
+        assert_equal_int(
+            Int(cc.reason[i]), Int(expected_bytes[i]),
+            "reason byte mismatch at index " + String(i),
+        )
+
+    # No PATH_CHALLENGE was queued on the disabled connection — the
+    # close pre-empts validation entirely.
+    assert_equal_int(
+        len(conn.path_validator.pending), 0,
+        "no PATH_CHALLENGE emitted when migration is disabled",
+    )
+    print("  test_disable_active_migration_triggers_close: PASS")
+
+
+def test_anti_amp_per_path_in_flusher() raises:
+    """AC16: the per-path 3× budget gates `can_send_to` until validation lifts it.
+
+    Models the bench flusher's contract: outbound emission is allowed
+    iff `can_send_to(target, n_bytes)` returns True; on send, the
+    caller credits `record_send_to`. With no received bytes credited,
+    `can_send_to` rejects any positive `n` on a pending-challenge path.
+    After 1000 received bytes, the gate admits ≤3000 bytes; after a
+    3000-byte send, further emission is blocked until more arrives.
+    """
+    var conn = _build_server_for_rx_test()
+    var addr_a = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    var addr_b = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
+    )
+    conn.bootstrap_peer_addr(addr_a^)
+    conn.start_path_challenge(PathKey(other=addr_b), UInt64(1000))
+
+    # Cold gate: 0 received → no budget. The validator's contract is to
+    # refuse `n > 0` when bytes_received == 0 (budget = 3*0 - 0 = 0).
+    assert_false(
+        conn.can_send_to(addr_b, 1),
+        "cold path rejects any outbound bytes",
+    )
+
+    # Credit 1000 received bytes; budget = 3 * 1000 - 0 = 3000.
+    conn.path_validator.record_received_bytes(
+        PathKey(other=addr_b), 1000
+    )
+    assert_true(
+        conn.can_send_to(addr_b, 3000),
+        "3000-byte send fits in the 3× budget after 1000 RX bytes",
+    )
+    assert_false(
+        conn.can_send_to(addr_b, 3001),
+        "3001-byte send exceeds the 3× budget",
+    )
+
+    # Spend the budget; remaining should be 0.
+    conn.record_send_to(addr_b, 3000)
+    assert_false(
+        conn.can_send_to(addr_b, 1),
+        "budget exhausted after a full 3× send",
+    )
+
+    # The VALIDATED path (peer_addr / addr_a) has no per-path
+    # constraint — `can_send_to` returns True regardless of `n`.
+    var addr_a_view = PathKey.from_v4(
+        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
+    )
+    assert_true(
+        conn.can_send_to(addr_a_view, 65536),
+        "validated path is not anti-amp gated",
+    )
+    print("  test_anti_amp_per_path_in_flusher: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -3884,4 +4229,9 @@ def main() raises:
     test_initial_new_cid_burst_default_limit()
     test_initial_burst_skipped_before_handshake_complete()
     test_initial_burst_server_only()
+    test_path_validation_full_round_trip()
+    test_path_validation_rejects_wrong_addr()
+    test_path_validation_defers_without_spare_cid()
+    test_disable_active_migration_triggers_close()
+    test_anti_amp_per_path_in_flusher()
     print("All test_quic_connection tests passed.")

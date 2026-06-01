@@ -66,6 +66,7 @@ from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
 from navette.quic.connection import QuicConnection
 from navette.quic.packet import is_long_header_initial, extract_dcid
+from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
 
@@ -105,6 +106,69 @@ def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
         | (UInt32(ptr[2]) << 16)
         | (UInt32(ptr[3]) << 24)
     )
+
+
+def _sockaddr_to_path_key(
+    buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+    addr_offset: Int,
+    addr_len: Int,
+) -> PathKey:
+    """Decode a Linux sockaddr_in / sockaddr_in6 blob into a `PathKey`.
+
+    Layouts (host = little-endian for x86_64; family stored LE):
+
+      sockaddr_in (16 B):
+        [0..2)  sa_family (LE)         = AF_INET (2)
+        [2..4)  sin_port  (BE)
+        [4..8)  sin_addr  (network-order = BE)
+        [8..16) zero pad
+
+      sockaddr_in6 (28 B):
+        [0..2)  sa_family (LE)         = AF_INET6 (10)
+        [2..4)  sin6_port (BE)
+        [4..8)  sin6_flowinfo          (ignored)
+        [8..24) sin6_addr (16 B, BE)
+        [24..28) sin6_scope_id         (ignored)
+
+    The returned `PathKey.addr` is always 16 bytes. IPv4 zero-pads the
+    high 12 bytes (matches `PathKey.from_v4`). Unknown family / short
+    blobs yield `PathKey.zero()` — equality against any real peer is
+    False, so the address-change branch will start a fresh challenge
+    rather than spuriously trusting an empty addr.
+    """
+    if addr_len < 4:
+        return PathKey.zero()
+
+    # sa_family is little-endian on Linux x86_64.
+    var family = Int32(
+        Int(buf_ptr[addr_offset]) | (Int(buf_ptr[addr_offset + 1]) << 8)
+    )
+    # Port is network-order (big-endian).
+    var port_hi = UInt16(buf_ptr[addr_offset + 2])
+    var port_lo = UInt16(buf_ptr[addr_offset + 3])
+    var port = (port_hi << 8) | port_lo
+
+    if family == Int32(2):
+        # AF_INET — 4-octet address at offset+4.
+        if addr_len < 8:
+            return PathKey.zero()
+        return PathKey.from_v4(
+            buf_ptr[addr_offset + 4],
+            buf_ptr[addr_offset + 5],
+            buf_ptr[addr_offset + 6],
+            buf_ptr[addr_offset + 7],
+            port,
+        )
+    elif family == Int32(10):
+        # AF_INET6 — 16-octet address at offset+8.
+        if addr_len < 24:
+            return PathKey.zero()
+        var bytes = List[UInt8](capacity=16)
+        for i in range(16):
+            bytes.append(buf_ptr[addr_offset + 8 + i])
+        return PathKey(Int32(10), bytes^, port)
+    else:
+        return PathKey.zero()
 
 
 # ── Pending datagram (ingress queue) ──────────────────────────────────────────
@@ -714,7 +778,11 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 h3_ptr.init_pointee_move(h3^)
 
                 # Build peer address from the provided buffer for sendmsg
-                # routing.
+                # routing. Stored as a raw sockaddr blob (16 or 28 bytes)
+                # — UdpTxSlot consumes the same layout. The structured
+                # `PathKey` lives on the QuicConnection (peer_addr +
+                # path_validator); the bench server keeps the raw blob
+                # only for sendmsg msg_name.
                 var addr = List[UInt8](capacity=pd.addr_len)
                 for j in range(pd.addr_len):
                     addr.append(pd.buf_ptr[pd.addr_offset + j])
@@ -734,6 +802,47 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                     ConnSlot[Self.H](h3_ptr, addr^, dcids^, gen)
                 )
 
+                # AC17: seed `peer_addr` exactly once at conn creation so
+                # the sentinel zero PathKey is replaced. From this point
+                # forward, `peer_addr` only mutates inside
+                # `on_path_response_received` after a verified match.
+                var bootstrap_key = _sockaddr_to_path_key(
+                    pd.buf_ptr, pd.addr_offset, pd.addr_len
+                )
+                self.conn_slots[conn_idx].h3[].bootstrap_peer_addr(
+                    bootstrap_key^
+                )
+
+            # Build a structured PathKey for path-validation bookkeeping
+            # — used for address-change detection (AC7/AC9), anti-amp
+            # accounting (AC16), and the per-datagram RECV-addr cursor
+            # (AC17) consumed by `_dispatch_frame` when a PATH_RESPONSE
+            # arrives in this same datagram.
+            var from_path = _sockaddr_to_path_key(
+                pd.buf_ptr, pd.addr_offset, pd.addr_len
+            )
+
+            # AC7/AC9/AC16: detect path change vs the validated peer_addr.
+            # On migration-disabled, close_transport(0x0A) — the
+            # connection-close frame goes out in the next flush. On
+            # migration-allowed mismatch, kick off PATH_CHALLENGE. Always
+            # credits per-path bytes_received for the unvalidated case.
+            try:
+                self.conn_slots[conn_idx].h3[].on_ingress_from(
+                    PathKey(other=from_path), pd.payload_len, now
+                )
+            except e:
+                print("H3UdpServer: on_ingress_from error:", e)
+
+            # AC17: stamp the receive-addr cursor so the inner
+            # _dispatch_frame can match an incoming PATH_RESPONSE against
+            # the address that carried it. Set BEFORE feed_datagram so
+            # the coalesced packets in this datagram all see the same
+            # cursor.
+            self.conn_slots[conn_idx].h3[].set_current_recv_addr(
+                PathKey(other=from_path)
+            )
+
             # Feed datagram into the QuicConnection.
             try:
                 self.conn_slots[conn_idx].h3[].feed_datagram_from_buffer(
@@ -742,9 +851,14 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             except e:
                 print("H3UdpServer: feed_datagram error:", e)
 
-            # Update peer address (datagrams may arrive from new ports
-            # post-handshake; RFC 9000 §9 allows path migration but bench
-            # tracks the latest seen address regardless).
+            # Refresh the raw sockaddr blob used by sendmsg routing. The
+            # `conn_slots[i].addr` blob targets the most-recent observed
+            # source addr regardless of validation state — sendmsg uses
+            # it as the destination of every outbound datagram. Path
+            # validation gates whether OUTBOUND traffic is allowed
+            # (anti-amp + close on migration-disabled); it does NOT
+            # influence where the datagram is delivered (the peer
+            # decides where to listen).
             var addr_update = List[UInt8](capacity=pd.addr_len)
             for j in range(pd.addr_len):
                 addr_update.append(pd.buf_ptr[pd.addr_offset + j])
@@ -765,11 +879,47 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
         """Drain outgoing datagrams from a connection and queue sendmsg
         submissions for the outer driver to issue post-tick.
+
+        RFC 9000 §8.1 anti-amplification: for each datagram the server
+        intends to send to the current peer addr, gate via
+        `can_send_to(target, n)`. If the peer's address has a pending
+        PATH_CHALLENGE, the per-path 3× budget caps the bytes we may
+        emit until validation completes. Datagrams refused by the gate
+        are dropped; they'll be regenerated on the next flush after
+        more bytes arrive from the peer (or after validation lifts the
+        gate entirely). On a successful submit we credit the per-path
+        bytes_sent so subsequent emissions stay within budget.
         """
         var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
+
+        # Resolve the structured peer key once per flush. The bench
+        # tracks the latest sockaddr blob in `conn_slots[i].addr`, which
+        # was just refreshed in `_flush_impl` to match the source addr
+        # of the datagram that triggered this flush — i.e. the same
+        # address sendmsg will route to.
+        var target_key = _sockaddr_to_path_key(
+            self.conn_slots[conn_idx].addr.unsafe_ptr(),
+            0,
+            len(self.conn_slots[conn_idx].addr),
+        )
+
         for i in range(len(datagrams)):
             var pkt = List[UInt8](copy=datagrams[i])
             if len(pkt) == 0:
+                continue
+
+            # AC16: per-path anti-amp gate. No-op when `target_key` has
+            # no pending challenge (validated path → returns True). The
+            # validator's `can_send_bytes` includes the QUIC header +
+            # AEAD ciphertext (i.e. the full UDP payload), matching RFC
+            # 9000 §8.1's measurement convention.
+            if not self.conn_slots[conn_idx].h3[].can_send_to(
+                target_key, len(pkt)
+            ):
+                # Budget exhausted on the unvalidated path. Drop the
+                # datagram; loss recovery will regenerate the contents
+                # once the peer credits more bytes or validation lifts
+                # the gate. NOT a fatal error.
                 continue
 
             var tx_id = self.next_tx_id
@@ -777,6 +927,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             var token = _encode_token(tx_id, OP_SENDMSG)
 
             var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
+            var pkt_len = len(pkt)
 
             var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
             tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
@@ -788,6 +939,11 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
             self.pending_submits.append(
                 PendingSubmit(kind=OP_SENDMSG, slot_idx=tx_id)
+            )
+
+            # Credit per-path bytes_sent. No-op on validated paths.
+            self.conn_slots[conn_idx].h3[].record_send_to(
+                target_key, pkt_len
             )
 
     def _handle_timeout(mut self, result: Int32) raises:
