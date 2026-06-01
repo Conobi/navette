@@ -67,6 +67,7 @@ from navette.quic.guard_predicates import (
     check_new_connection_id_retire_prior,
     check_streams_blocked_value,
     check_short_reserved_bits,
+    stream_offset_exceeds_fc,
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
     is_unknown_frame_type,
@@ -83,6 +84,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_PATH_CHALLENGE_HS,
     GUARD_TAG_NEW_TOKEN_SERVER,
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
+    GUARD_TAG_STREAM_LARGE_OFFSET,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.stream import (
@@ -1133,8 +1135,18 @@ struct QuicConnection(Movable):
         if not stream.fc_recv:
             raise "internal: missing fc_recv"
         var fc_r = stream.fc_recv.value().copy()
-        if offset + data_len > fc_r.limit:
-            raise "FLOW_CONTROL_ERROR: stream FC exceeded"
+        # F01 — RFC 9000 §4.1: a STREAM frame whose offset+data_len
+        # exceeds the per-stream flow-control window MUST close the
+        # connection with FLOW_CONTROL_ERROR. Saturating-overflow inputs
+        # (`offset + data_len < offset`) are also covered by the
+        # predicate.
+        if stream_offset_exceeds_fc(offset, data_len, fc_r.limit):
+            self.close_transport(
+                UInt64(0x03),  # FLOW_CONTROL_ERROR
+                String(GUARD_TAG_STREAM_LARGE_OFFSET),
+                monotonic_us(),
+            )
+            return
 
         # 6. Write to the receive buffer (may update stream.fin_offset).
         if not stream.recv_buf:

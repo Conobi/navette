@@ -16,6 +16,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_STREAMS_BLOCKED_OVERFLOW,
     GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ,
     GUARD_TAG_CID_ZERO_LENGTH,
+    GUARD_TAG_STREAM_LARGE_OFFSET,
 )
 
 
@@ -240,6 +241,22 @@ def check_new_connection_id_retire_prior(
             tag=String(GUARD_TAG_CID_RETIRE_PRIOR_GT_SEQ),
         )
     )
+
+
+def stream_offset_exceeds_fc(
+    offset: UInt64, data_len: UInt64, fc_limit: UInt64
+) -> Bool:
+    """RFC 9000 §4.1: a STREAM frame whose `offset + data_len` exceeds
+    the receiver's per-stream flow-control limit MUST close the
+    connection with FLOW_CONTROL_ERROR. Returns True when the frame is
+    out of bounds; also returns True on UInt64 overflow (`offset +
+    data_len < offset`), which is impossible to express within a valid
+    flow-control window. Used for F01.
+    """
+    var sum = offset + data_len
+    if sum < offset:
+        return True  # arithmetic overflow — far beyond any legal window
+    return sum > fc_limit
 
 
 def check_new_connection_id_length(cid_len: UInt64) -> Optional[GuardVerdict]:

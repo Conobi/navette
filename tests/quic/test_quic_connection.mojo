@@ -28,6 +28,7 @@ from navette.quic.guard_predicates import (
     check_new_connection_id_retire_prior,
     check_streams_blocked_value,
     check_short_reserved_bits,
+    stream_offset_exceeds_fc,
     is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
     is_unknown_frame_type,
@@ -1185,7 +1186,13 @@ def test_cid_issuance() raises:
 
 
 def test_flow_control_error_on_overflow() raises:
-    """Sender exceeds peer's stream FC limit → FLOW_CONTROL_ERROR (0x03)."""
+    """Sender exceeds peer's stream FC limit → FLOW_CONTROL_ERROR (0x03)
+    surfaced via close_transport with the F01 guard tag.
+
+    The legacy raise path was rewritten into a queued CONNECTION_CLOSE
+    so the outer try/except at recv_from_buffer no longer swallows the
+    violation. Verified via `server.pending_close`.
+    """
     var tls = TlsBackend("lib/librustls_mojo.so")
     var ck = generate_ephemeral_cert()
     var cert_bytes = ck[0].copy()
@@ -1221,14 +1228,23 @@ def test_flow_control_error_on_overflow() raises:
         data.append(UInt8(0x41))
 
     var sf = StreamFrame(sid, UInt64(0), data, False)
-    var raised_fc = False
-    try:
-        server._handle_stream_frame(sf)
-    except e:
-        var emsg = String(e)
-        if emsg.find("FLOW_CONTROL") >= 0:
-            raised_fc = True
-    assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on stream FC overflow")
+    server._handle_stream_frame(sf)
+    assert_true(
+        Bool(server.pending_close),
+        "server.pending_close not set after stream FC overflow",
+    )
+    var cc = server.pending_close.value().copy()
+    assert_equal_int(
+        Int(cc.error_code), 0x03, "FLOW_CONTROL_ERROR code on stream FC overflow"
+    )
+    assert_true(cc.is_transport, "must be a transport-CC frame")
+    var reason_str = String("")
+    for i in range(len(cc.reason)):
+        reason_str = reason_str + chr(Int(cc.reason[i]))
+    assert_true(
+        "[QUIC-STREAM-LARGE-OFFSET]" in reason_str,
+        "F01 guard tag present in CC reason, got " + reason_str,
+    )
 
     _ = tls^
     print("  test_flow_control_error_on_overflow: PASS")
@@ -3186,6 +3202,51 @@ def test_check_new_connection_id_length_negative() raises:
     print("  test_check_new_connection_id_length_negative: PASS")
 
 
+def test_stream_offset_exceeds_fc_positive() raises:
+    """F01 fires when offset+data_len > stream FC limit."""
+    # Offset alone larger than window.
+    assert_true(
+        stream_offset_exceeds_fc(UInt64(1 << 20), UInt64(0), UInt64(1 << 19)),
+        "offset alone exceeding window",
+    )
+    # offset+data_len just over.
+    assert_true(
+        stream_offset_exceeds_fc(UInt64(100), UInt64(50), UInt64(149)),
+        "boundary +1 trips",
+    )
+    # Saturating-overflow input — offset near UInt64 max plus any data trips.
+    var huge = ~UInt64(0)  # UInt64::MAX
+    assert_true(
+        stream_offset_exceeds_fc(huge, UInt64(1), UInt64(1 << 60)),
+        "UInt64 overflow detected as out-of-bounds",
+    )
+    # Realistic scenario: F01 wire offset.
+    assert_true(
+        stream_offset_exceeds_fc(
+            UInt64(0x3FFF_FFFF_FFFF_FFFF), UInt64(0), UInt64(1 << 20)
+        ),
+        "2^62-1 offset trips against 1 MiB window",
+    )
+    print("  test_stream_offset_exceeds_fc_positive: PASS")
+
+
+def test_stream_offset_exceeds_fc_negative() raises:
+    """Legal stream offsets within the FC window do not trip."""
+    assert_false(
+        stream_offset_exceeds_fc(UInt64(0), UInt64(0), UInt64(1 << 20)),
+        "empty frame at offset 0 is legal",
+    )
+    assert_false(
+        stream_offset_exceeds_fc(UInt64(100), UInt64(50), UInt64(150)),
+        "offset+len == limit is legal (boundary)",
+    )
+    assert_false(
+        stream_offset_exceeds_fc(UInt64(10), UInt64(40), UInt64(1024)),
+        "well-within window is legal",
+    )
+    print("  test_stream_offset_exceeds_fc_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3495,6 +3556,8 @@ def main() raises:
     test_check_new_connection_id_retire_prior_negative()
     test_check_new_connection_id_length_positive()
     test_check_new_connection_id_length_negative()
+    test_stream_offset_exceeds_fc_positive()
+    test_stream_offset_exceeds_fc_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()
