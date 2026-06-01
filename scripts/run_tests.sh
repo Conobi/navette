@@ -117,3 +117,32 @@ if [[ "${TLS:-0}" == "1" ]]; then
                "$REPO_ROOT/navette/tls/guard_tags.mojo" \
         --always-on-count 0
 fi
+
+# Quiche-raw-frame conformance gate — opt-in via QUICHE_RAW=1 to keep the
+# inner-loop dev run fast. CI sets QUICHE_RAW=1; the local loop defaults
+# to off. Mirrors the TLS=1 block above.
+#
+# Runs the Rust scenario harness against examples/hello_h3_server, then
+# validates the cycle-local COVERAGE.md against Inv-1..4. Inv-5 (tag
+# uniqueness) is intentionally NOT wired here at Phase α: no new tags
+# exist yet, and the existing navette/quic/guard_tags.mojo entries are
+# scoped to the TLS C1 + h3i F15/F16 cycles. Inv-5 wires in at Phase γ
+# once cycle-scoped tag references land alongside the new guards.
+# The new COVERAGE.md enumerates sanity_get as SY01 in Table B, so
+# --always-on-count 0 keeps the baseline counted exactly once.
+# COVERAGE_CHECK_MODE defaults to lenient at Phase α (red rows expected);
+# tightened to strict at Phase γ once the gate is fully green.
+if [[ "${QUICHE_RAW:-0}" == "1" ]]; then
+    echo "Running quiche-raw-frame conformance gate..."
+    "$SCRIPT_DIR/../conformance/scripts/run_quiche_raw_frame.sh"
+
+    echo "Running coverage_check.py for quiche-raw-frame (${COVERAGE_CHECK_MODE:-lenient} mode)..."
+    python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
+        --mode "${COVERAGE_CHECK_MODE:-lenient}" \
+        --triage "$REPO_ROOT/research/h3spec-failure-triage.md" \
+        --triage-filter C2,C3,C4,C5,C7 \
+        --coverage "$REPO_ROOT/conformance/quiche-raw-frame-scenarios/COVERAGE.md" \
+        --threshold-file "$REPO_ROOT/conformance/quiche_raw_frame_min_pass.txt" \
+        --scenarios-dir "$REPO_ROOT/conformance/quiche-raw-frame-scenarios" \
+        --always-on-count 0
+fi
