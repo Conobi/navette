@@ -1,0 +1,2 @@
+# Cargo build artifacts — excluded from vendor commit
+target/
