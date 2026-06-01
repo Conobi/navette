@@ -369,9 +369,12 @@
   {
     "id": "unknown-frame-type",
     "frame_type": "UNKNOWN",
-    "description": "Unknown frame type 0xFF",
+    "description": "Unknown frame type 0xFF — parser returns the Frame.unknown sentinel; dispatch closes with FRAME_ENCODING_ERROR (RFC 9000 §12.4)",
     "wire_hex": "40ff",
-    "expect": "error"
+    "expect": "unknown_sentinel",
+    "expected": {
+      "frame_type_value": 255
+    }
   },
   {
     "id": "new-connection-id-cid-len-0",

@@ -22,6 +22,7 @@ from navette.quic.connection import (
     CONN_ADDR_VALIDATED,
 )
 from navette.quic.guard_predicates import (
+    is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
     predicate_f16_stop_sending_local_not_created,
@@ -2966,6 +2967,26 @@ def test_predicate_f11_negative_no_violation() raises:
     print("  test_predicate_f11_negative_no_violation: PASS")
 
 
+def test_is_unknown_frame_type_positive() raises:
+    """F10 predicate identifies type ids outside RFC 9000 §19."""
+    # 0xFE is a single-byte varint encoded as 0x40, 0xFE — but type_id
+    # itself decoded to UInt64(0xFE) lives well outside the §19 closed set.
+    assert_true(is_unknown_frame_type(UInt64(0xFE)), "0xFE must be unknown")
+    assert_true(is_unknown_frame_type(UInt64(0x1F)), "0x1F is one past HANDSHAKE_DONE")
+    assert_true(is_unknown_frame_type(UInt64(0xFF)), "0xFF must be unknown")
+    print("  test_is_unknown_frame_type_positive: PASS")
+
+
+def test_is_unknown_frame_type_negative() raises:
+    """Every RFC 9000 §19 frame type id is known."""
+    assert_false(is_unknown_frame_type(UInt64(0x00)), "PADDING is known")
+    assert_false(is_unknown_frame_type(UInt64(0x08)), "STREAM base is known")
+    assert_false(is_unknown_frame_type(UInt64(0x0F)), "STREAM with FIN+LEN+OFF is known")
+    assert_false(is_unknown_frame_type(UInt64(0x10)), "MAX_DATA is known")
+    assert_false(is_unknown_frame_type(UInt64(0x1E)), "HANDSHAKE_DONE is known")
+    print("  test_is_unknown_frame_type_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3252,6 +3273,8 @@ def main() raises:
     test_predicate_f16_negative_sibling_input()
     test_predicate_f11_positive()
     test_predicate_f11_negative_no_violation()
+    test_is_unknown_frame_type_positive()
+    test_is_unknown_frame_type_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

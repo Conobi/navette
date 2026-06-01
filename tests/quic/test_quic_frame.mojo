@@ -542,12 +542,19 @@ def test_vectors() raises:
         var wire_hex = String(vec["wire_hex"])
         var wire_bytes = _hex_decode(wire_hex)
 
-        # Check if this is an error vector
+        # Check if this is an error vector or an unknown-sentinel vector.
+        # Pre-F10 (RFC 9000 §12.4) the parser raised on unknown types; the
+        # F10 cycle replaced that with the `Frame.unknown` sentinel so the
+        # dispatch site can close with FRAME_ENCODING_ERROR. Vectors keep
+        # the explicit distinction via `expect: "unknown_sentinel"`.
         var expect_error = False
+        var expect_unknown = False
         try:
             var expect_val = vec["expect"]
             if String(expect_val) == "error":
                 expect_error = True
+            elif String(expect_val) == "unknown_sentinel":
+                expect_unknown = True
         except:
             pass
 
@@ -561,6 +568,14 @@ def test_vectors() raises:
                 caught = True
             if not caught:
                 raise "vector " + vec_id + ": expected parse error but succeeded"
+            pass_count += 1
+            continue
+
+        if expect_unknown:
+            var r = ByteReader(Span(wire_bytes))
+            var frame = parse_frame(r)
+            if not frame.is_unknown():
+                raise "vector " + vec_id + ": expected Frame.unknown sentinel"
             pass_count += 1
             continue
 
@@ -869,15 +884,20 @@ def test_vectors() raises:
 
 
 def test_error_unknown_frame_type() raises:
-    """Unknown frame type 0xFF (varint-encoded as 2-byte 0x40FF) raises."""
+    """Unknown frame type 0xFF (varint-encoded as 2-byte 0x40FF) returns
+    the `Frame.unknown` sentinel so the dispatch site can close with
+    FRAME_ENCODING_ERROR (RFC 9000 §12.4)."""
     var wire = _hex_decode("40ff")
     var r = ByteReader(Span(wire))
-    var caught = False
-    try:
-        _ = parse_frame(r)
-    except:
-        caught = True
-    _assert_true(caught, "unknown frame type 0xFF should raise")
+    var frame = parse_frame(r)
+    _assert_true(
+        frame.is_unknown(),
+        "unknown frame type 0xFF must return an unknown sentinel"
+    )
+    _assert_true(
+        frame.type_id == UInt64(0xFF),
+        "sentinel preserves the wire type_id"
+    )
     print("  error_unknown_frame_type: PASS")
 
 

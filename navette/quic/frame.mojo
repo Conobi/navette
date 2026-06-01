@@ -488,6 +488,18 @@ struct Frame(Copyable, Movable):
     def handshake_done() -> Frame:
         return Frame(FRAME_HANDSHAKE_DONE)
 
+    @staticmethod
+    def unknown(type_id: UInt64) -> Frame:
+        """Sentinel factory for unknown QUIC frame types (RFC 9000 §12.4).
+
+        Preserves the unknown wire `type_id` so the dispatch site can close
+        the connection with FRAME_ENCODING_ERROR (0x07). The returned Frame
+        carries no payload — `parse_frame` falls into this branch only when
+        no other FRAME_* arm matched, so subsequent frame bytes (if any) are
+        intentionally not decoded; the connection is fatally terminated.
+        """
+        return Frame(type_id)
+
     # ── Internal factory (takes ownership via mut) ────────────────────
 
     @staticmethod
@@ -635,6 +647,23 @@ struct Frame(Copyable, Movable):
 
     def is_handshake_done(self) -> Bool:
         return self.type_id == FRAME_HANDSHAKE_DONE
+
+    def is_unknown(self) -> Bool:
+        """True if `type_id` does not match any RFC 9000 §19 frame type.
+
+        Mirrors the dispatch fall-through in `_dispatch_frame`: returns True
+        for everything outside the closed set 0x00..0x1E (with STREAM 0x08-0x0F
+        encoded via the FRAME_STREAM_BASE mask). Used by the dispatch site
+        to gate the F10 close-transport guard.
+        """
+        var tid = self.type_id
+        if tid <= UInt64(0x07):  # PADDING..NEW_TOKEN (covers ACK/ACK_ECN/RESET/STOP/CRYPTO)
+            return False
+        if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
+            return False
+        if tid >= UInt64(0x10) and tid <= UInt64(0x1E):  # MAX_DATA..HANDSHAKE_DONE
+            return False
+        return True
 
     def is_ack_eliciting(self) -> Bool:
         # ACK-eliciting: everything EXCEPT PADDING, ACK/ACK_ECN, CONNECTION_CLOSE
@@ -892,7 +921,12 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
     if frame_type == FRAME_HANDSHAKE_DONE:
         return Frame.handshake_done()
 
-    raise "unknown frame type: " + String(Int(frame_type))
+    # F10 — RFC 9000 §12.4: unknown frame type. Surface the unknown type
+    # back to the caller via the `Frame.unknown` sentinel so the dispatch
+    # site can close with FRAME_ENCODING_ERROR (0x07) without aborting
+    # parse_frames mid-packet. Returning instead of raising preserves the
+    # coalesced-packet decode invariants in connection.recv_from_buffer.
+    return Frame.unknown(frame_type)
 
 
 def parse_frames[origin: Origin](mut reader: ByteReader[origin]) raises -> List[Frame]:

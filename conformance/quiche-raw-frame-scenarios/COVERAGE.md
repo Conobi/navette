@@ -28,7 +28,7 @@ encoding), and C7 (RFC 9001 §8.3 0-RTT / N/A for this cycle) from
 | failure_id | cluster | rfc_clause | status | scenario_binary |
 |---|---|---|---|---|
 | F01 | C4 | RFC 9000 §4.1 | red | s_f01_stream_large_offset |
-| F10 | C3 | RFC 9000 §12.4 | red | s_f10_unknown_frame |
+| F10 | C3 | RFC 9000 §12.4 | gated | s_f10_unknown_frame |
 | F11 | C2 | RFC 9000 §12.4 | gated | s_f11_no_frames |
 | F12 | C2 | RFC 9000 §17.2 | red | s_f12_reserved_bits_hs |
 | F13 | C2 | RFC 9000 §17.2.4 | red | s_f13_path_challenge_hs |

@@ -61,12 +61,14 @@ from navette.quic.frame import (
 )
 from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
+    is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
     predicate_f16_stop_sending_local_not_created,
     QuicResetCtx,
     QuicStopSendingCtx,
 )
+from navette.quic.guard_tags import GUARD_TAG_UNKNOWN_FRAME
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
@@ -948,7 +950,22 @@ struct QuicConnection(Movable):
                 var reader = ByteReader(
                     Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len)
                 )
-                var frames = parse_frames(reader)
+                # F10 — RFC 9000 §12.4: any parse failure inside a packet
+                # already authenticated by AEAD is FRAME_ENCODING_ERROR.
+                # Without this inner try/except, the outer catch swallows
+                # the raise and the server silently drops the packet; the
+                # peer keeps the connection alive expecting a CC.
+                var frames = List[Frame]()
+                var _f10_parse_failed = False
+                try:
+                    frames = parse_frames(reader)
+                except:
+                    _f10_parse_failed = True
+                if _f10_parse_failed:
+                    self.close_transport(
+                        UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
+                    )
+                    return
                 # F11 — RFC 9000 §12.4: a packet containing no frames is a
                 # PROTOCOL_VIOLATION. Use close_transport instead of raising
                 # so the connection-level CONNECTION_CLOSE is queued; the
@@ -1406,8 +1423,15 @@ struct QuicConnection(Movable):
                 or tid == FRAME_STREAMS_BLOCKED_UNI):
             return
 
-        # Unknown frame type: ignore.
-        return
+        # F10 — RFC 9000 §12.4: unknown frame type. Close with
+        # FRAME_ENCODING_ERROR (0x07). `parse_frame` returns the
+        # `Frame.unknown(type_id)` sentinel for any out-of-range type id;
+        # the predicate keeps the closed-set definition single-source.
+        if is_unknown_frame_type(tid):
+            self.close_transport(
+                UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
+            )
+            return
 
     # ── ACK handling ─────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_RESET_SEND_ONLY,
     GUARD_TAG_STOP_LOCAL_NOT_CREATED,
     GUARD_TAG_NO_FRAMES,
+    GUARD_TAG_UNKNOWN_FRAME,
 )
 
 
@@ -89,6 +90,22 @@ def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdic
             tag=String(GUARD_TAG_RESET_SEND_ONLY),
         )
     )
+
+
+def is_unknown_frame_type(type_id: UInt64) -> Bool:
+    """Return True iff `type_id` is outside RFC 9000 §19's closed set
+    of frame type ids. STREAM frames live in 0x08..0x0F (the low three bits
+    encode OFF/LEN/FIN flags); MAX_*/CONNECTION_CLOSE/HANDSHAKE_DONE etc.
+    live in 0x10..0x1E. Everything else MUST be treated as unknown and
+    closed with FRAME_ENCODING_ERROR (RFC 9000 §12.4).
+    """
+    if type_id <= UInt64(0x07):
+        return False
+    if type_id >= UInt64(0x08) and type_id <= UInt64(0x0F):
+        return False
+    if type_id >= UInt64(0x10) and type_id <= UInt64(0x1E):
+        return False
+    return True
 
 
 def predicate_f11_no_frames(frame_count: Int) -> Optional[GuardVerdict]:

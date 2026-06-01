@@ -14,6 +14,7 @@ convention — package `__init__.mojo` does not re-export it.
 comptime GUARD_TAG_RESET_SEND_ONLY = "[QUIC-RESET-SEND-ONLY]"
 comptime GUARD_TAG_STOP_LOCAL_NOT_CREATED = "[QUIC-STOP-LOCAL-NOT-CREATED]"
 comptime GUARD_TAG_NO_FRAMES = "[QUIC-NO-FRAMES]"
+comptime GUARD_TAG_UNKNOWN_FRAME = "[QUIC-UNKNOWN-FRAME]"
 
 # C1 — transport parameter validation (RFC 9000 §7 / §18)
 comptime GUARD_TAG_TP_INITIAL_SCID_MISSING      = "[QUIC-TP-INITIAL-SCID-MISSING]"
