@@ -9,19 +9,17 @@ F-rows F02–F09 (transport-parameter validation, RFC 9000 §7/§18) and F25–F
 - **8 transport-parameter rows gated (F02–F09):** all transport-parameter
   guard scenarios pass; navette rejects forbidden/out-of-range TP values
   with a tagged `TRANSPORT_PARAMETER_ERROR`.
-- **1 alert-routing row gated (F27):** navette rejects a QUIC handshake
-  that omits the ALPN extension with a tagged `TLS_HANDSHAKE_FAILED`.
+- **4 alert-routing rows gated (F25, F26, F27, F29):** navette rejects a
+  QUIC handshake that omits the ALPN extension (F27, `TLS_HANDSHAKE_FAILED`)
+  and surfaces a CRYPTO_ERROR CONNECTION_CLOSE when the harness injects a
+  KeyUpdate TLS handshake message in the Handshake epoch (F25) or 1-RTT
+  epoch (F26), or an EndOfEarlyData message in the Handshake epoch (F29).
 - **1 alert-routing row gated (Table B / SY01):** baseline TLS handshake
   completes successfully, confirming harness runner and navette TLS stack
   are wired.
 
 ## What's deferred
 
-- **F25, F26, F29 — `deferred:epoch-injection`:** these rows require the
-  harness driver to inject CRYPTO frames into Handshake or 1-RTT epochs.
-  `quiche`'s public API does not expose raw CRYPTO-frame injection for
-  post-Initial epochs; a follow-up sub-cycle must add a lower-level injection
-  path (or a dedicated raw-frame harness) before these can be scenarised.
 - **F28 — `deferred:f28`:** rustls 0.23.37 does not expose an API to omit the
   QUIC transport-parameters extension; no scenario binary can exercise that
   rejection path in this harness cycle.
@@ -38,11 +36,11 @@ F-rows F02–F09 (transport-parameter validation, RFC 9000 §7/§18) and F25–F
 | F07 | RFC 9000 §7.4 | gated | f07_max_udp_payload_range |
 | F08 | RFC 9000 §7.4 | gated | f08_ack_delay_exp_range |
 | F09 | RFC 9000 §7.4 | gated | f09_max_ack_delay_range |
-| F25 | RFC 9001 §6 | deferred:epoch-injection | f25_keyupdate_in_handshake |
-| F26 | RFC 9001 §6 | deferred:epoch-injection | f26_keyupdate_in_1rtt |
+| F25 | RFC 9001 §6 | gated | f25_keyupdate_in_handshake |
+| F26 | RFC 9001 §6 | gated | f26_keyupdate_in_1rtt |
 | F27 | RFC 9001 §8.1 | gated | f27_no_alpn |
 | F28 | RFC 9001 §8.2 | deferred:f28 | - |
-| F29 | RFC 9001 §8.3 | deferred:epoch-injection | f29_end_of_early_data |
+| F29 | RFC 9001 §8.3 | gated | f29_end_of_early_data |
 
 ## Table B — synthetic gated scenarios
 
