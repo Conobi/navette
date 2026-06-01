@@ -115,3 +115,18 @@ def test_strict_accepts_deferred_status():
     strict = argv.copy()
     strict[strict.index("lenient")] = "strict"
     _run(strict, expect_rc=0)
+
+
+def test_always_on_count_zero():
+    """--always-on-count 0: sanity row already in Table B; no implicit +1."""
+    # good_coverage.md has gated(A)=2, gated(B)=1 → default expects 4.
+    # With --always-on-count 0 the formula is 2+1+0=3 so threshold=3 passes
+    # and threshold=4 (default good_threshold.txt) fails.
+    argv_zero = _common(threshold=FIX / "good_threshold_no_implicit.txt") + [
+        "--always-on-count", "0"
+    ]
+    _run(argv_zero, expect_rc=0)
+    # Sanity: the same threshold=3 file fails with default always-on-count=1
+    # (formula expects 4).
+    argv_default = _common(threshold=FIX / "good_threshold_no_implicit.txt")
+    _run(argv_default, expect_rc=1)

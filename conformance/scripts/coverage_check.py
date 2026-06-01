@@ -9,8 +9,11 @@ Invariants enforced:
   is declared as a ``[[bin]]`` in ``--scenarios-dir/Cargo.toml``.
 - Inv-3 (``--mode strict``): no row carries the literal status ``red``.
 - Inv-4: ``int(open(threshold_file).read())`` equals
-  ``count(gated, A) + count(gated, B) + 1`` — the ``+1`` budgets the
-  always-on ``sanity_get`` scenario.
+  ``count(gated, A) + count(gated, B) + always_on_count`` — the
+  ``always_on_count`` (default 1) budgets an implicit always-on scenario
+  such as h3i's ``sanity_get`` that is not listed in any COVERAGE.md table.
+  Pass ``--always-on-count 0`` when the always-on baseline is already
+  enumerated as a Table B gated row (e.g. the TLS-conformance harness).
 - Inv-5: every ``comptime GUARD_TAG_<NAME> = "[<BRACKETED>]"`` declaration in
   ``--tags`` files appears exactly once across all tag files, AND every
   bracketed tag is referenced at least once from either a COVERAGE.md row,
@@ -253,7 +256,14 @@ def check_invariants(args):
                 f"{row['scenario_binary']!r} but no matching [[bin]] in Cargo.toml"
             )
 
-    # Inv-4: threshold == gated(A) + gated(B) + 1 (for sanity_get).
+    # Inv-4: threshold == gated(A) + gated(B) + always_on_count.
+    # The always_on_count (default 1) budgets an implicit "always-on" sanity
+    # scenario (e.g. h3i's sanity_get) that is not listed in any COVERAGE.md
+    # table. Pass --always-on-count 0 when the always-on baseline is explicitly
+    # enumerated as a Table B gated row (as in the TLS-conformance harness,
+    # where tls_sanity_handshake appears as SY01 and is already counted in
+    # gated_b).
+    always_on = args.always_on_count
     raw_threshold = Path(args.threshold_file).read_text().strip()
     try:
         threshold = int(raw_threshold)
@@ -261,11 +271,11 @@ def check_invariants(args):
         violations.append(f"Inv-4: threshold file does not contain an integer: {raw_threshold!r}")
         threshold = None
     if threshold is not None:
-        expected = gated_a + gated_b + 1
+        expected = gated_a + gated_b + always_on
         if threshold != expected:
             violations.append(
                 f"Inv-4: threshold {threshold} != gated(A)={gated_a} + "
-                f"gated(B)={gated_b} + 1 = {expected}"
+                f"gated(B)={gated_b} + always_on={always_on} = {expected}"
             )
 
     # Inv-5
@@ -339,6 +349,15 @@ def main(argv=None):
     parser.add_argument(
         "--triage-filter", default="",
         help="Comma-separated cluster filter, e.g., C1,C6 (default: all clusters)",
+    )
+    parser.add_argument(
+        "--always-on-count", type=int, default=1, metavar="N",
+        help=(
+            "Number of implicit always-on scenarios not listed in any COVERAGE.md "
+            "table (default: 1, budgeting a sanity scenario such as h3i's "
+            "sanity_get). Pass 0 when the always-on baseline is explicitly "
+            "enumerated as a Table B gated row so it is not double-counted."
+        ),
     )
     parser.add_argument(
         "--verify-tag-proximity",
