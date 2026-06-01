@@ -68,5 +68,9 @@ name = "f27_no_alpn"
 path = "src/bin/f27_no_alpn.rs"
 
 [[bin]]
+name = "f28_missing_tp_extension"
+path = "src/bin/f28_missing_tp_extension.rs"
+
+[[bin]]
 name = "f29_end_of_early_data"
 path = "src/bin/f29_end_of_early_data.rs"
