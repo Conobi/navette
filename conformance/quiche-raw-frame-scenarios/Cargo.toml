@@ -57,3 +57,7 @@ path = "src/bin/s_f17_new_token_server.rs"
 [[bin]]
 name = "s_f18_max_stream_data_nonexist"
 path = "src/bin/s_f18_max_stream_data_nonexist.rs"
+
+[[bin]]
+name = "s_f19_max_stream_data_recv_only"
+path = "src/bin/s_f19_max_stream_data_recv_only.rs"
