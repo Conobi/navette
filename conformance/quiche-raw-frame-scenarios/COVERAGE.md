@@ -41,25 +41,25 @@ encoding), and C7 (RFC 9001 §8.3 0-RTT / N/A for this cycle) from
 
 ## Table A — h3spec triage rows
 
-| failure_id | cluster | rfc_clause | status | scenario_binary |
-|---|---|---|---|---|
-| F01 | C4 | RFC 9000 §4.1 | gated | s_f01_stream_large_offset |
-| F10 | C3 | RFC 9000 §12.4 | gated | s_f10_unknown_frame |
-| F11 | C2 | RFC 9000 §12.4 | gated | s_f11_no_frames |
-| F12 | C2 | RFC 9000 §17.2 | deferred:scenario-timing | s_f12_reserved_bits_hs |
-| F13 | C2 | RFC 9000 §17.2.4 | deferred:scenario-timing | s_f13_path_challenge_hs |
-| F14 | C2 | RFC 9000 §17.2 | gated | s_f14_reserved_bits_short |
-| F15 | C4 | RFC 9000 §19.4 | gated | s_f15_reset_on_server_uni |
-| F16 | C4 | RFC 9000 §19.5 | gated | s_f16_stop_sending_local_not_created |
-| F17 | C3 | RFC 9000 §19.7 | gated | s_f17_new_token_server |
-| F18 | C4 | RFC 9000 §19.10 | gated | s_f18_max_stream_data_nonexist |
-| F19 | C4 | RFC 9000 §19.10 | deferred:scenario-timing | s_f19_max_stream_data_recv_only |
-| F20 | C4 | RFC 9000 §19.11 | gated | s_f20_max_streams_overflow |
-| F21 | C4 | RFC 9000 §19.14 | gated | s_f21_streams_blocked_overflow |
-| F22 | C5 | RFC 9000 §19.15 | gated | s_f22_cid_retire_prior_gt_seq |
-| F23 | C5 | RFC 9000 §19.15 | gated | s_f23_cid_zero_length |
-| F24 | C3 | RFC 9000 §19.20 | gated | s_f24_handshake_done_server |
-| F30 | C7 | RFC 9001 §8.3 | not-applicable | — |
+| failure_id | rfc_clause | status | scenario_binary |
+|---|---|---|---|
+| F01 | RFC 9000 §4.1 | gated | s_f01_stream_large_offset |
+| F10 | RFC 9000 §12.4 | gated | s_f10_unknown_frame |
+| F11 | RFC 9000 §12.4 | gated | s_f11_no_frames |
+| F12 | RFC 9000 §17.2 | deferred:scenario-timing | s_f12_reserved_bits_hs |
+| F13 | RFC 9000 §17.2.4 | deferred:scenario-timing | s_f13_path_challenge_hs |
+| F14 | RFC 9000 §17.2 | gated | s_f14_reserved_bits_short |
+| F15 | RFC 9000 §19.4 | gated | s_f15_reset_on_server_uni |
+| F16 | RFC 9000 §19.5 | gated | s_f16_stop_sending_local_not_created |
+| F17 | RFC 9000 §19.7 | gated | s_f17_new_token_server |
+| F18 | RFC 9000 §19.10 | gated | s_f18_max_stream_data_nonexist |
+| F19 | RFC 9000 §19.10 | deferred:scenario-timing | s_f19_max_stream_data_recv_only |
+| F20 | RFC 9000 §19.11 | gated | s_f20_max_streams_overflow |
+| F21 | RFC 9000 §19.14 | gated | s_f21_streams_blocked_overflow |
+| F22 | RFC 9000 §19.15 | gated | s_f22_cid_retire_prior_gt_seq |
+| F23 | RFC 9000 §19.15 | gated | s_f23_cid_zero_length |
+| F24 | RFC 9000 §19.20 | gated | s_f24_handshake_done_server |
+| F30 | RFC 9001 §8.3 | not-applicable | — |
 
 ## Table B — synthetic gated scenarios
 

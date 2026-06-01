@@ -28,21 +28,21 @@ clusters C1 (QUIC transport-parameter validation, RFC 9000 §7/§18) and C6
 
 ## Table A — h3spec triage rows
 
-| failure_id | cluster | rfc_clause | status | scenario_binary |
-|---|---|---|---|---|
-| F02 | C1 | RFC 9000 §7.3 | gated | f02_initial_scid_missing |
-| F03 | C1 | RFC 9000 §18.2 | gated | f03_original_dcid_forbidden |
-| F04 | C1 | RFC 9000 §18.2 | gated | f04_preferred_addr_forbidden |
-| F05 | C1 | RFC 9000 §18.2 | gated | f05_retry_scid_forbidden |
-| F06 | C1 | RFC 9000 §18.2 | gated | f06_stateless_reset_forbidden |
-| F07 | C1 | RFC 9000 §7.4 | gated | f07_max_udp_payload_range |
-| F08 | C1 | RFC 9000 §7.4 | gated | f08_ack_delay_exp_range |
-| F09 | C1 | RFC 9000 §7.4 | gated | f09_max_ack_delay_range |
-| F25 | C6 | RFC 9001 §6 | deferred:epoch-injection | f25_keyupdate_in_handshake |
-| F26 | C6 | RFC 9001 §6 | deferred:epoch-injection | f26_keyupdate_in_1rtt |
-| F27 | C6 | RFC 9001 §8.1 | gated | f27_no_alpn |
-| F28 | C6 | RFC 9001 §8.2 | deferred:f28 | - |
-| F29 | C6 | RFC 9001 §8.3 | deferred:epoch-injection | f29_end_of_early_data |
+| failure_id | rfc_clause | status | scenario_binary |
+|---|---|---|---|
+| F02 | RFC 9000 §7.3 | gated | f02_initial_scid_missing |
+| F03 | RFC 9000 §18.2 | gated | f03_original_dcid_forbidden |
+| F04 | RFC 9000 §18.2 | gated | f04_preferred_addr_forbidden |
+| F05 | RFC 9000 §18.2 | gated | f05_retry_scid_forbidden |
+| F06 | RFC 9000 §18.2 | gated | f06_stateless_reset_forbidden |
+| F07 | RFC 9000 §7.4 | gated | f07_max_udp_payload_range |
+| F08 | RFC 9000 §7.4 | gated | f08_ack_delay_exp_range |
+| F09 | RFC 9000 §7.4 | gated | f09_max_ack_delay_range |
+| F25 | RFC 9001 §6 | deferred:epoch-injection | f25_keyupdate_in_handshake |
+| F26 | RFC 9001 §6 | deferred:epoch-injection | f26_keyupdate_in_1rtt |
+| F27 | RFC 9001 §8.1 | gated | f27_no_alpn |
+| F28 | RFC 9001 §8.2 | deferred:f28 | - |
+| F29 | RFC 9001 §8.3 | deferred:epoch-injection | f29_end_of_early_data |
 
 ## Table B — synthetic gated scenarios
 

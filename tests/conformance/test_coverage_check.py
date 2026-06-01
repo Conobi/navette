@@ -6,8 +6,10 @@ import sys
 from pathlib import Path
 
 FIX = Path(__file__).parent / "fixtures" / "coverage_check"
+FIXTURES = FIX  # alias used by tag-scope tests
 PROX_FIX = Path(__file__).parents[1] / "fixtures" / "tag_proximity"
-SCRIPT = Path(__file__).parents[2] / "conformance" / "scripts" / "coverage_check.py"
+REPO_ROOT = Path(__file__).parents[2]
+SCRIPT = REPO_ROOT / "conformance" / "scripts" / "coverage_check.py"
 
 
 def _common(coverage=None, tags=None, threshold=None):
@@ -77,36 +79,41 @@ def test_tag_proximity_fixtures():
         _run(["--verify-tag-proximity", "--connection-files", str(PROX_FIX / name)], expect_rc=1)
 
 
-def test_cli_triage_filter_accepts_c1_c6():
-    """AC-4.tool: --triage-filter C1,C6 is a recognised flag (rc 0 or 1, not 2)."""
+def test_cli_tag_scope_accepts_explicit_ids():
+    """--tag-scope F02,F03 is a recognised flag (rc 0 or 1, not 2)."""
+    triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
+    coverage = FIXTURES / "good_coverage.md"
+    threshold = FIXTURES / "good_threshold.txt"
+    scenarios = FIXTURES / "good_scenarios_dir"
+    spec = FIXTURES / "good_spec.md"
+    tags = FIXTURES / "good_tags_quic.mojo"
     result = subprocess.run(
         [sys.executable, str(SCRIPT),
-         "--mode", "lenient",
-         "--triage", str(FIX / "good_triage.md"),
-         "--coverage", str(FIX / "good_coverage.md"),
-         "--tags", str(FIX / "good_tags_quic.mojo"), str(FIX / "good_tags_h3.mojo"),
-         "--threshold-file", str(FIX / "good_threshold.txt"),
-         "--scenarios-dir", str(FIX / "good_scenarios_dir"),
-         "--triage-filter", "C1,C6"],
+         "--spec", str(spec),
+         "--triage", str(triage),
+         "--coverage", str(coverage),
+         "--tags", str(tags),
+         "--threshold-file", str(threshold),
+         "--scenarios-dir", str(scenarios),
+         "--tag-scope", "F02,F03"],
         capture_output=True, text=True,
     )
-    assert result.returncode in (0, 1), \
-        f"unrecognised flag (rc={result.returncode}); stderr={result.stderr}"
+    assert result.returncode in (0, 1), (
+        f"argparse rejected --tag-scope (rc={result.returncode}); "
+        f"stderr={result.stderr}"
+    )
 
 
-def test_triage_filter_c1_c6_yields_thirteen_rows():
-    """AC-4.tool: --triage-filter C1,C6 keeps exactly F02-F09 + F25-F29 (13 rows).
-
-    Column extraction must read the LAST `|`-delimited column and apply
-    `re.findall(r"\\bC\\d+\\b", cluster_cell)`, not column index 1.
-    """
+def test_tag_scope_yields_explicit_subset():
+    """--tag-scope F02..F09+F25..F29 returns exactly 13 ids."""
     from conformance.scripts.coverage_check import parse_triage_failure_ids
-    triage = Path(__file__).parents[2] / "research" / "h3spec-failure-triage.md"
-    ids = parse_triage_failure_ids(triage, cluster_filter={"C1", "C6"})
-    assert ids == {
+    triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
+    scope = {
         "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
         "F25", "F26", "F27", "F28", "F29",
-    }, f"got {sorted(ids)}"
+    }
+    ids = parse_triage_failure_ids(triage, tag_scope=scope)
+    assert ids == scope, f"expected {sorted(scope)}, got {sorted(ids)}"
 
 
 def test_strict_accepts_deferred_status():
@@ -130,3 +137,72 @@ def test_always_on_count_zero():
     # (formula expects 4).
     argv_default = _common(threshold=FIX / "good_threshold_no_implicit.txt")
     _run(argv_default, expect_rc=1)
+
+
+def test_tag_scope_rejects_malformed_token():
+    """Argparse rejects tokens that don't match ^F\\d{2}$."""
+    triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
+    coverage = FIXTURES / "good_coverage.md"
+    threshold = FIXTURES / "good_threshold.txt"
+    scenarios = FIXTURES / "good_scenarios_dir"
+    spec = FIXTURES / "good_spec.md"
+    tags = FIXTURES / "good_tags_quic.mojo"
+    for bad in ("F2", "F100", "f02", "FOO"):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT),
+             "--spec", str(spec),
+             "--triage", str(triage),
+             "--coverage", str(coverage),
+             "--tags", str(tags),
+             "--threshold-file", str(threshold),
+             "--scenarios-dir", str(scenarios),
+             "--tag-scope", bad],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 2, (
+            f"--tag-scope {bad!r} should argparse-error (rc=2), got rc={result.returncode}"
+        )
+
+
+def test_tag_scope_inv6_catches_typo():
+    """--tag-scope F02,F99 raises Inv-6 (F99 not in triage)."""
+    triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
+    coverage = FIXTURES / "good_coverage.md"
+    threshold = FIXTURES / "good_threshold.txt"
+    scenarios = FIXTURES / "good_scenarios_dir"
+    spec = FIXTURES / "good_spec.md"
+    tags = FIXTURES / "good_tags_quic.mojo"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT),
+         "--spec", str(spec),
+         "--triage", str(triage),
+         "--coverage", str(coverage),
+         "--tags", str(tags),
+         "--threshold-file", str(threshold),
+         "--scenarios-dir", str(scenarios),
+         "--tag-scope", "F02,F99"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1, f"expected Inv-6 rc=1, got rc={result.returncode}"
+    assert "Inv-6" in result.stderr and "F99" in result.stderr, (
+        f"expected Inv-6 + F99 in stderr, got: {result.stderr}"
+    )
+
+
+def test_tag_scope_empty_returns_all_rows():
+    """Empty --tag-scope returns the full triage set (default semantics)."""
+    from conformance.scripts.coverage_check import parse_triage_failure_ids
+    triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
+    all_ids = parse_triage_failure_ids(triage, tag_scope=None)
+    none_ids = parse_triage_failure_ids(triage, tag_scope=set())
+    assert all_ids == none_ids
+    assert len(all_ids) >= 30, f"expected ≥30 F-rows, got {len(all_ids)}"
+
+
+def test_tag_scope_coalesces_duplicates():
+    """F02,F02,F02 is accepted; duplicates coalesce via set semantics."""
+    from conformance.scripts.coverage_check import parse_triage_failure_ids
+    triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
+    ids = parse_triage_failure_ids(triage, tag_scope={"F02"})
+    ids_dup = parse_triage_failure_ids(triage, tag_scope={"F02", "F02"})  # noqa: B033
+    assert ids == ids_dup == {"F02"}

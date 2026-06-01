@@ -109,7 +109,7 @@ if [[ "${TLS:-0}" == "1" ]]; then
     python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
         --mode "${COVERAGE_CHECK_MODE:-strict}" \
         --triage "$REPO_ROOT/research/h3spec-failure-triage.md" \
-        --triage-filter C1,C6 \
+        --tag-scope F02,F03,F04,F05,F06,F07,F08,F09,F25,F26,F27,F28,F29 \
         --coverage "$REPO_ROOT/conformance/tls-conformance/COVERAGE.md" \
         --threshold-file "$REPO_ROOT/conformance/tls_conformance_min_pass.txt" \
         --scenarios-dir "$REPO_ROOT/conformance/tls-conformance" \
@@ -140,7 +140,7 @@ if [[ "${QUICHE_RAW:-0}" == "1" ]]; then
     python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
         --mode "${COVERAGE_CHECK_MODE:-lenient}" \
         --triage "$REPO_ROOT/research/h3spec-failure-triage.md" \
-        --triage-filter C2,C3,C4,C5,C7 \
+        --tag-scope F01,F10,F11,F12,F13,F14,F15,F16,F17,F18,F19,F20,F21,F22,F23,F24,F30 \
         --coverage "$REPO_ROOT/conformance/quiche-raw-frame-scenarios/COVERAGE.md" \
         --threshold-file "$REPO_ROOT/conformance/quiche_raw_frame_min_pass.txt" \
         --scenarios-dir "$REPO_ROOT/conformance/quiche-raw-frame-scenarios" \

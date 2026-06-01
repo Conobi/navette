@@ -39,15 +39,13 @@ from pathlib import Path
 
 TAG_DEF = re.compile(r'^\s*comptime\s+(GUARD_TAG_\w+)\s*=\s*"(\[[A-Z0-9\-]+\])"\s*$')
 TRIAGE_ROW = re.compile(r"^\|\s*(F\d{2})\s*\|")
-TRIAGE_ROW_CLUSTER = re.compile(
-    r"^\|\s*(F\d{2})\s*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*([^|]*)\s*\|\s*$"
-)
 COVERAGE_A_ROW = re.compile(
-    r"^\|\s*(F\d{2})\s*\|[^|]*\|[^|]*\|\s*([a-zA-Z0-9:\-]+)\s*\|\s*([^\s|]+)\s*\|"
+    r"^\|\s*(F\d{2})\s*\|[^|]*\|\s*([a-zA-Z0-9:\-]+)\s*\|\s*([^\s|]+)\s*\|"
 )
 COVERAGE_B_ROW = re.compile(
     r"^\|\s*(SY\d{2})\s*\|[^|]*\|\s*([^\s|]+)\s*\|"
 )
+TAG_SCOPE_TOKEN = re.compile(r"^F\d{2}$")
 CARGO_BIN_NAME = re.compile(r'^\s*name\s*=\s*"([^"]+)"\s*$')
 TAG_LITERAL = re.compile(r"\[[A-Z0-9\-]+\]")
 GUARD_TAG_REF = re.compile(r"\bGUARD_TAG_\w+\b")
@@ -84,40 +82,28 @@ def parse_tag_defs(paths):
     return tags
 
 
-def parse_triage_failure_ids(triage_path, cluster_filter=None):
+def parse_triage_failure_ids(triage_path, tag_scope=None):
     """Return the set of F-row ids declared in the triage document.
 
-    When ``cluster_filter`` is ``None`` or empty the function returns every
-    F-row id (default behaviour, preserves existing callers).
+    When ``tag_scope`` is ``None`` or empty the function returns every
+    F-row id (default behaviour).
 
-    When ``cluster_filter`` is a non-empty set of cluster ids (e.g.
-    ``{"C1", "C6"}``), only rows whose last ``|``-delimited cell contains a
-    ``C\\d+`` token whose first occurrence is a member of ``cluster_filter``
-    are included.  The first token is the canonical cluster assignment for
-    the row; later tokens in the same cell are cross-references and are
-    intentionally ignored by the filter so that a row tagged ``C1: F03, ...``
-    is not spuriously pulled in by a filter on ``C3``.
-
-    The cluster cell is the LAST pipe-delimited column of the triage table row
-    (column 7 in the 7-column triage format).  The regex
-    ``TRIAGE_ROW_CLUSTER`` captures both the failure id and that cell in one
-    match so that neither a fixed column index nor string splitting is needed.
+    When ``tag_scope`` is a non-empty set of F-row ids (e.g.
+    ``{"F02", "F03"}``), only rows whose id is in that set are returned.
+    The semantic check that every id in ``tag_scope`` exists in the
+    triage doc (Inv-6) is performed by the caller against the unfiltered
+    triage set.
     """
     ids = set()
-    use_filter = bool(cluster_filter)
+    use_filter = bool(tag_scope)
     for line in Path(triage_path).read_text().splitlines():
-        if not use_filter:
-            match = TRIAGE_ROW.match(line)
-            if match:
-                ids.add(match.group(1))
-        else:
-            match = TRIAGE_ROW_CLUSTER.match(line)
-            if match:
-                failure_id = match.group(1)
-                cluster_cell = match.group(2)
-                tokens = re.findall(r"\bC\d+\b", cluster_cell)
-                if tokens and tokens[0] in cluster_filter:
-                    ids.add(failure_id)
+        match = TRIAGE_ROW.match(line)
+        if not match:
+            continue
+        fid = match.group(1)
+        if use_filter and fid not in tag_scope:
+            continue
+        ids.add(fid)
     return ids
 
 
@@ -221,8 +207,14 @@ def check_invariants(args):
     """Run Inv-1..5 against the resolved fixture set."""
     violations = []
 
-    cluster_filter = {c.strip() for c in args.triage_filter.split(",") if c.strip()}
-    triage_ids = parse_triage_failure_ids(args.triage, cluster_filter=cluster_filter or None)
+    tag_scope = {t.strip() for t in args.tag_scope.split(",") if t.strip()}
+    triage_all = parse_triage_failure_ids(args.triage, tag_scope=None)
+    triage_ids = parse_triage_failure_ids(args.triage, tag_scope=tag_scope or None)
+    # Inv-6: every F-row in the scope must exist in the triage doc.
+    for fid in sorted(tag_scope - triage_all):
+        violations.append(
+            f"Inv-6: --tag-scope contains F-row {fid} not in triage doc"
+        )
     table_a, table_b = parse_coverage(args.coverage)
     a_ids = {row["id"] for row in table_a}
 
@@ -346,9 +338,27 @@ def main(argv=None):
     parser.add_argument("--threshold-file")
     parser.add_argument("--scenarios-dir")
     parser.add_argument("--connection-files", nargs="*", default=[])
+    def _tag_scope_value(raw: str) -> str:
+        """Argparse validator for --tag-scope tokens."""
+        for token in raw.split(","):
+            tok = token.strip()
+            if not tok:
+                continue
+            if not TAG_SCOPE_TOKEN.match(tok):
+                import argparse as _ap
+                raise _ap.ArgumentTypeError(
+                    f"--tag-scope token {tok!r} does not match ^F\\d{{2}}$ "
+                    f"(must be uppercase F followed by exactly two digits)"
+                )
+        return raw
+
     parser.add_argument(
-        "--triage-filter", default="",
-        help="Comma-separated cluster filter, e.g., C1,C6 (default: all clusters)",
+        "--tag-scope", default="", type=_tag_scope_value,
+        help=(
+            "Comma-separated F-row ids to scope Inv-1 against, e.g. "
+            "F02,F03,F04. Empty (default) means all triage rows. "
+            "Canonical token shape: ^F\\d{2}$."
+        ),
     )
     parser.add_argument(
         "--always-on-count", type=int, default=1, metavar="N",
