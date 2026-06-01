@@ -11,6 +11,15 @@ PROX_FIX = Path(__file__).parents[1] / "fixtures" / "tag_proximity"
 REPO_ROOT = Path(__file__).parents[2]
 SCRIPT = REPO_ROOT / "conformance" / "scripts" / "coverage_check.py"
 
+# pytest's pythonpath=["."] in pyproject.toml makes the `conformance` package
+# importable at runtime; Pyright doesn't read that key, so we inject explicitly
+# and import once at module level (instead of per-test) to keep the type
+# checker happy without scattering `# type: ignore` markers.
+sys.path.insert(0, str(REPO_ROOT))
+from conformance.scripts.coverage_check import (  # noqa: E402 # pyright: ignore[reportMissingImports]
+    parse_triage_failure_ids,
+)
+
 
 def _common(coverage=None, tags=None, threshold=None):
     """Build the canonical-good argv, allowing per-test overrides."""
@@ -106,7 +115,6 @@ def test_cli_tag_scope_accepts_explicit_ids():
 
 def test_tag_scope_yields_explicit_subset():
     """--tag-scope F02..F09+F25..F29 returns exactly 13 ids."""
-    from conformance.scripts.coverage_check import parse_triage_failure_ids
     triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
     scope = {
         "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
@@ -191,7 +199,6 @@ def test_tag_scope_inv6_catches_typo():
 
 def test_tag_scope_empty_returns_all_rows():
     """Empty --tag-scope returns the full triage set (default semantics)."""
-    from conformance.scripts.coverage_check import parse_triage_failure_ids
     triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
     all_ids = parse_triage_failure_ids(triage, tag_scope=None)
     none_ids = parse_triage_failure_ids(triage, tag_scope=set())
@@ -201,7 +208,6 @@ def test_tag_scope_empty_returns_all_rows():
 
 def test_tag_scope_coalesces_duplicates():
     """F02,F02,F02 is accepted; duplicates coalesce via set semantics."""
-    from conformance.scripts.coverage_check import parse_triage_failure_ids
     triage = REPO_ROOT / "research" / "h3spec-failure-triage.md"
     ids = parse_triage_failure_ids(triage, tag_scope={"F02"})
     ids_dup = parse_triage_failure_ids(triage, tag_scope={"F02", "F02"})  # noqa: B033
