@@ -3485,6 +3485,87 @@ def test_drive_handshake_tls_error_emits_crypto_close() raises:
     print("  test_drive_handshake_tls_error_emits_crypto_close: PASS")
 
 
+def _build_server_for_rx_test() raises -> QuicConnection:
+    """Build a freshly-constructed server connection for RX-only tests.
+
+    Reuses the same factory path the established tests rely on, but does
+    not drive a handshake — the RX handlers exercised here only touch
+    `pending_path_responses` and `path_validator`, so the handshake state
+    is irrelevant.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var server_config = QuicServerConfig(
+        tls.shared(), Span(cert_bytes), Span(key_bytes)
+    )
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    # Build a client just to mint a random initial DCID for the server.
+    var ca_bytes = load_test_ca()
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    _ = tls^
+    return server^
+
+
+def test_path_challenge_recorded_for_response() raises:
+    """RX-side: incoming PATH_CHALLENGE is stashed for later echo."""
+    var conn = _build_server_for_rx_test()
+    var data = List[UInt8](capacity=8)
+    for i in range(8):
+        data.append(UInt8(0x10 + i))
+    conn.on_path_challenge_received(Span(data), UInt64(1000))
+    assert_equal_int(
+        len(conn.pending_path_responses),
+        1,
+        "expected exactly one pending PATH_RESPONSE",
+    )
+    assert_equal_int(
+        len(conn.pending_path_responses[0]),
+        8,
+        "expected pending PATH_RESPONSE token to be 8 bytes",
+    )
+    # Verify exact bytes preserved.
+    for i in range(8):
+        assert_equal_int(
+            Int(conn.pending_path_responses[0][i]),
+            Int(UInt8(0x10 + i)),
+            "PATH_RESPONSE token byte mismatch at index " + String(i),
+        )
+    print("  test_path_challenge_recorded_for_response: PASS")
+
+
+def test_path_response_handler_no_op_without_pending_challenge() raises:
+    """RX-side: PATH_RESPONSE with no pending challenges is a safe no-op."""
+    var conn = _build_server_for_rx_test()
+    var data = List[UInt8](capacity=8)
+    for i in range(8):
+        data.append(UInt8(0xAB))
+    # Should neither raise nor mutate `path_validator.pending`.
+    conn.on_path_response_received(Span(data), UInt64(2000))
+    assert_equal_int(
+        len(conn.path_validator.pending),
+        0,
+        "path_validator.pending must stay empty (no challenges started yet)",
+    )
+    assert_equal_int(
+        len(conn.pending_path_responses),
+        0,
+        "pending_path_responses must stay empty when handling a response",
+    )
+    print("  test_path_response_handler_no_op_without_pending_challenge: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -3561,4 +3642,6 @@ def main() raises:
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()
+    test_path_challenge_recorded_for_response()
+    test_path_response_handler_no_op_without_pending_challenge()
     print("All test_quic_connection tests passed.")

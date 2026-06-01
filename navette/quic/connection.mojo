@@ -87,6 +87,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_STREAM_LARGE_OFFSET,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
+from navette.quic.path_validator import PathValidator, PathKey
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
     SEND_READY, SEND_SEND, SEND_DATA_SENT, SEND_DATA_RECVD, SEND_RESET_SENT, SEND_RESET_RECVD,
@@ -402,6 +403,15 @@ struct QuicConnection(Movable):
     var last_ack_eliciting_send_time: UInt64
     var stream_map: StreamMap
     var cid_mgr: CidManager
+    # RFC 9000 §8/§9 path validation state. Holds in-flight PATH_CHALLENGE
+    # tokens + the currently validated path. RX-only wiring at this commit;
+    # emission + addr-change detection land in later commits.
+    var path_validator: PathValidator
+    # Pending PATH_CHALLENGE tokens received from the peer that we still
+    # need to echo back as PATH_RESPONSE in the next 1-RTT flush. Each
+    # entry is the 8-byte data field copied verbatim from the incoming
+    # PATH_CHALLENGE; emission + drain happen in a later commit.
+    var pending_path_responses: List[List[UInt8]]
     # Maps Application-space packet number -> list of stream-layer frames
     # sent in that packet, for ACK/loss processing (M3c).
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
@@ -481,6 +491,8 @@ struct QuicConnection(Movable):
         self.last_ack_eliciting_send_time = take.last_ack_eliciting_send_time
         self.stream_map = take.stream_map^
         self.cid_mgr = take.cid_mgr^
+        self.path_validator = take.path_validator^
+        self.pending_path_responses = take.pending_path_responses^
         self.app_frames_sent = take.app_frames_sent^
         self.ecn_state = take.ecn_state
         self.ecn_probe_pkts_needed = take.ecn_probe_pkts_needed
@@ -578,6 +590,8 @@ struct QuicConnection(Movable):
             local_active_limit=UInt64(2),
             peer_active_limit=UInt64(2),
         )
+        self.path_validator = PathValidator()
+        self.pending_path_responses = List[List[UInt8]]()
         self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
 
     # ── Destructor ───────────────────────────────────────────────────
@@ -1315,6 +1329,47 @@ struct QuicConnection(Movable):
         self.stream_map.set_stream(key, stream^)
         _ = self.stream_map.maybe_cleanup(key)
 
+    # ── Path validation RX handlers ──────────────────────────────────
+
+    def on_path_challenge_received(
+        mut self, data: Span[UInt8, _], now: UInt64
+    ):
+        """Stash the 8-byte challenge to echo back as PATH_RESPONSE next flush.
+
+        RFC 9000 §8.2: a PATH_RESPONSE MUST be sent on the same path the
+        PATH_CHALLENGE was received, with the same 8-byte data. A later
+        commit drains `pending_path_responses` during 1-RTT emission;
+        this RX-only commit just records the pending response.
+        """
+        var copy = List[UInt8](capacity=len(data))
+        for i in range(len(data)):
+            copy.append(data[i])
+        self.pending_path_responses.append(copy^)
+
+    def on_path_response_received(
+        mut self, data: Span[UInt8, _], now: UInt64
+    ):
+        """RX hook for PATH_RESPONSE; meaningful work lands once challenges fly.
+
+        Real validation requires (a) a pending challenge started by the
+        server and (b) the source address the response arrived from so it
+        can be matched against the challenge's target. Neither is
+        available in this RX-only commit:
+
+          * No code path yet calls `path_validator.start_challenge` — that
+            wiring lives at the receive site, added when address-change
+            detection is hooked up.
+          * `from_addr` would have to be forwarded by the receive site.
+
+        Per the spec edge case "PATH_RESPONSE arrives from a different
+        addr than the challenge target — silently drop", a no-op when no
+        challenge is pending is safe. The handler stub exists so
+        `_dispatch_frame` can call it now; later commits extend the body.
+        """
+        # TODO: a follow-up commit wires `from_addr` (PathKey) through
+        # from the receive site and calls `self.path_validator.on_response`.
+        pass
+
     # ── Frame dispatch ───────────────────────────────────────────────
 
     def _dispatch_frame(
@@ -1549,6 +1604,23 @@ struct QuicConnection(Movable):
             return
         if (tid == FRAME_DATA_BLOCKED
                 or tid == FRAME_STREAM_DATA_BLOCKED):
+            return
+
+        # PATH_CHALLENGE (0x1A) — RFC 9000 §8.2. Reaches this point only
+        # in 1-RTT (F13 closes earlier epochs above). Stash the 8-byte
+        # token so the next 1-RTT flush emits the matching PATH_RESPONSE.
+        if frame.is_path_challenge():
+            ref data = frame.as_path_data()
+            self.on_path_challenge_received(Span(data), now)
+            return
+
+        # PATH_RESPONSE (0x1B) — RFC 9000 §8.2. Stub no-op until
+        # `start_challenge` is wired at the receive site; the handler is
+        # in place so dispatch can route here without falling through to
+        # the F10 unknown-frame guard.
+        if frame.is_path_response():
+            ref data = frame.as_path_data()
+            self.on_path_response_received(Span(data), now)
             return
 
         # F10 — RFC 9000 §12.4: unknown frame type. Close with
