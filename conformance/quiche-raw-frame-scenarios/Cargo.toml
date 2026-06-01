@@ -29,3 +29,7 @@ path = "src/bin/s_f10_unknown_frame.rs"
 [[bin]]
 name = "s_f11_no_frames"
 path = "src/bin/s_f11_no_frames.rs"
+
+[[bin]]
+name = "s_f12_reserved_bits_hs"
+path = "src/bin/s_f12_reserved_bits_hs.rs"
