@@ -105,11 +105,20 @@ if [[ "${TLS:-0}" == "1" ]]; then
     echo "Running TLS conformance gate..."
     "$SCRIPT_DIR/../conformance/scripts/run_tls_conformance.sh"
 
+    # Derive the per-harness F-row scope from COVERAGE.md (Table A rows).
+    # Eliminates drift between the gate scope and the coverage index — a row
+    # added to Table A is automatically in scope; Inv-6 catches typos.
+    # Fallback (verify against Table A if grep ever stops matching):
+    # F02,F03,F04,F05,F06,F07,F08,F09,F25,F26,F27,F28,F29
+    TLS_TAG_SCOPE=$(grep -oE '^\| F[0-9]{2}\b' \
+        "$REPO_ROOT/conformance/tls-conformance/COVERAGE.md" \
+        | tr -d '| ' | paste -sd,)
+
     echo "Running coverage_check.py for TLS conformance (${COVERAGE_CHECK_MODE:-strict} mode)..."
     python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
         --mode "${COVERAGE_CHECK_MODE:-strict}" \
         --triage "$REPO_ROOT/research/h3spec-failure-triage.md" \
-        --tag-scope F02,F03,F04,F05,F06,F07,F08,F09,F25,F26,F27,F28,F29 \
+        --tag-scope "$TLS_TAG_SCOPE" \
         --coverage "$REPO_ROOT/conformance/tls-conformance/COVERAGE.md" \
         --threshold-file "$REPO_ROOT/conformance/tls_conformance_min_pass.txt" \
         --scenarios-dir "$REPO_ROOT/conformance/tls-conformance" \
@@ -136,11 +145,18 @@ if [[ "${QUICHE_RAW:-0}" == "1" ]]; then
     echo "Running quiche-raw-frame conformance gate..."
     "$SCRIPT_DIR/../conformance/scripts/run_quiche_raw_frame.sh"
 
+    # Derive the per-harness F-row scope from COVERAGE.md (Table A rows).
+    # Fallback (verify against Table A if grep ever stops matching):
+    # F01,F10,F11,F12,F13,F14,F15,F16,F17,F18,F19,F20,F21,F22,F23,F24,F30
+    QUICHE_TAG_SCOPE=$(grep -oE '^\| F[0-9]{2}\b' \
+        "$REPO_ROOT/conformance/quiche-raw-frame-scenarios/COVERAGE.md" \
+        | tr -d '| ' | paste -sd,)
+
     echo "Running coverage_check.py for quiche-raw-frame (${COVERAGE_CHECK_MODE:-lenient} mode)..."
     python3 "$SCRIPT_DIR/../conformance/scripts/coverage_check.py" \
         --mode "${COVERAGE_CHECK_MODE:-lenient}" \
         --triage "$REPO_ROOT/research/h3spec-failure-triage.md" \
-        --tag-scope F01,F10,F11,F12,F13,F14,F15,F16,F17,F18,F19,F20,F21,F22,F23,F24,F30 \
+        --tag-scope "$QUICHE_TAG_SCOPE" \
         --coverage "$REPO_ROOT/conformance/quiche-raw-frame-scenarios/COVERAGE.md" \
         --threshold-file "$REPO_ROOT/conformance/quiche_raw_frame_min_pass.txt" \
         --scenarios-dir "$REPO_ROOT/conformance/quiche-raw-frame-scenarios" \
