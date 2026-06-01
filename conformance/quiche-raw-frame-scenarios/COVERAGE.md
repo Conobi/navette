@@ -35,14 +35,14 @@ encoding), and C7 (RFC 9001 §8.3 0-RTT / N/A for this cycle) from
 | F14 | C2 | RFC 9000 §17.2 | gated | s_f14_reserved_bits_short |
 | F15 | C4 | RFC 9000 §19.4 | red | s_f15_reset_on_server_uni |
 | F16 | C4 | RFC 9000 §19.5 | red | s_f16_stop_sending_local_not_created |
-| F17 | C3 | RFC 9000 §19.7 | red | s_f17_new_token_server |
+| F17 | C3 | RFC 9000 §19.7 | gated | s_f17_new_token_server |
 | F18 | C4 | RFC 9000 §19.10 | red | s_f18_max_stream_data_nonexist |
 | F19 | C4 | RFC 9000 §19.10 | red | s_f19_max_stream_data_recv_only |
 | F20 | C4 | RFC 9000 §19.11 | red | s_f20_max_streams_overflow |
 | F21 | C4 | RFC 9000 §19.14 | red | s_f21_streams_blocked_overflow |
 | F22 | C5 | RFC 9000 §19.15 | red | s_f22_cid_retire_prior_gt_seq |
 | F23 | C5 | RFC 9000 §19.15 | red | s_f23_cid_zero_length |
-| F24 | C3 | RFC 9000 §19.20 | red | s_f24_handshake_done_server |
+| F24 | C3 | RFC 9000 §19.20 | gated | s_f24_handshake_done_server |
 | F30 | C7 | RFC 9001 §8.3 | not-applicable | — |
 
 ## Table B — synthetic gated scenarios

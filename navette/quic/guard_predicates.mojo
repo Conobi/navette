@@ -8,6 +8,8 @@ from navette.quic.guard_tags import (
     GUARD_TAG_RESERVED_BITS_HS,
     GUARD_TAG_RESERVED_BITS_SHORT,
     GUARD_TAG_PATH_CHALLENGE_HS,
+    GUARD_TAG_NEW_TOKEN_SERVER,
+    GUARD_TAG_HANDSHAKE_DONE_SERVER,
 )
 
 
@@ -125,6 +127,16 @@ def check_short_reserved_bits(first_byte: UInt8) -> Optional[GuardVerdict]:
             tag=String(GUARD_TAG_RESERVED_BITS_SHORT),
         )
     )
+
+
+def is_client_only_frame_on_server(type_id: UInt64, is_server: Bool) -> Bool:
+    """RFC 9000 §19.7 (NEW_TOKEN, 0x07) and §19.20 (HANDSHAKE_DONE, 0x1E)
+    are server-to-client only. If a server receives either, the peer is
+    misbehaving and the connection MUST close with PROTOCOL_VIOLATION.
+    """
+    if not is_server:
+        return False
+    return type_id == UInt64(0x07) or type_id == UInt64(0x1E)
 
 
 def is_path_challenge_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:

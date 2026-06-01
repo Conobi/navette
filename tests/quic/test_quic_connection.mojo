@@ -24,6 +24,7 @@ from navette.quic.connection import (
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_short_reserved_bits,
+    is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
     is_unknown_frame_type,
     predicate_f11_no_frames,
@@ -3053,6 +3054,21 @@ def test_is_path_challenge_in_handshake_negative() raises:
     print("  test_is_path_challenge_in_handshake_negative: PASS")
 
 
+def test_is_client_only_frame_on_server_positive() raises:
+    """F17 / F24: NEW_TOKEN and HANDSHAKE_DONE received on a server are illegal."""
+    assert_true(is_client_only_frame_on_server(UInt64(0x07), True), "NEW_TOKEN on server")
+    assert_true(is_client_only_frame_on_server(UInt64(0x1E), True), "HANDSHAKE_DONE on server")
+    print("  test_is_client_only_frame_on_server_positive: PASS")
+
+
+def test_is_client_only_frame_on_server_negative() raises:
+    """Client receiving NEW_TOKEN / HANDSHAKE_DONE is legal; other ids never trip."""
+    assert_false(is_client_only_frame_on_server(UInt64(0x07), False), "NEW_TOKEN on client OK")
+    assert_false(is_client_only_frame_on_server(UInt64(0x1E), False), "HANDSHAKE_DONE on client OK")
+    assert_false(is_client_only_frame_on_server(UInt64(0x06), True), "CRYPTO on server OK")
+    print("  test_is_client_only_frame_on_server_negative: PASS")
+
+
 def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     """Server routes a client TP violation through close_transport rather than raising.
 
@@ -3349,6 +3365,8 @@ def main() raises:
     test_check_short_reserved_bits_negative_sibling_input()
     test_is_path_challenge_in_handshake_positive()
     test_is_path_challenge_in_handshake_negative()
+    test_is_client_only_frame_on_server_positive()
+    test_is_client_only_frame_on_server_negative()
     test_on_handshake_complete_close_transport_on_invalid_tp()
     test_tls_guard_tag_for_alert_mapping()
     test_drive_handshake_tls_error_emits_crypto_close()

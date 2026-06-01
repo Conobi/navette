@@ -63,6 +63,7 @@ from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,
     check_short_reserved_bits,
+    is_client_only_frame_on_server,
     is_path_challenge_in_handshake,
     is_unknown_frame_type,
     predicate_f11_no_frames,
@@ -74,6 +75,8 @@ from navette.quic.guard_predicates import (
 from navette.quic.guard_tags import (
     GUARD_TAG_UNKNOWN_FRAME,
     GUARD_TAG_PATH_CHALLENGE_HS,
+    GUARD_TAG_NEW_TOKEN_SERVER,
+    GUARD_TAG_HANDSHAKE_DONE_SERVER,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.stream import (
@@ -1357,16 +1360,29 @@ struct QuicConnection(Movable):
             return
 
         # HANDSHAKE_DONE (client receives from server)
+        # F24 — RFC 9000 §19.20: HANDSHAKE_DONE is server-to-client only.
+        # A server receiving it MUST close with PROTOCOL_VIOLATION.
         if tid == FRAME_HANDSHAKE_DONE:
-            if not self.is_server:
-                self.handshake_confirmed = True
-                self.state = self.state | CONN_ESTABLISHED
-                self._discard_handshake_space()
-                self.events.append(QuicEvent.handshake_complete())
+            if self.is_server:
+                self.close_transport(
+                    UInt64(0x0A), String(GUARD_TAG_HANDSHAKE_DONE_SERVER), now
+                )
+                return
+            self.handshake_confirmed = True
+            self.state = self.state | CONN_ESTABLISHED
+            self._discard_handshake_space()
+            self.events.append(QuicEvent.handshake_complete())
             return
 
-        # NEW_TOKEN: minimal handling (client-only; ignored for M3c).
+        # NEW_TOKEN: minimal handling on client (ignored for M3c).
+        # F17 — RFC 9000 §19.7: NEW_TOKEN is server-to-client only. A server
+        # receiving NEW_TOKEN MUST close with PROTOCOL_VIOLATION.
         if tid == FRAME_NEW_TOKEN:
+            if self.is_server:
+                self.close_transport(
+                    UInt64(0x0A), String(GUARD_TAG_NEW_TOKEN_SERVER), now
+                )
+                return
             return
 
         # NEW_CONNECTION_ID: hand off to CidManager.
