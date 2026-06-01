@@ -527,6 +527,59 @@ fn build_handshake_packet(
     Ok(pkt)
 }
 
+/// Build a 1-RTT short-header packet carrying a single CRYPTO frame at the
+/// given offset. Uses rustls's 1-RTT local keys (`one_rtt.local.packet` for
+/// AEAD, `one_rtt.local.header` for HP).
+///
+/// Short-header layout (RFC 9000 §17.3): first byte `0b0100_00xx` where xx is
+/// pn_length - 1 = 3 (we always use 4-byte PNs to match `build_handshake_packet`).
+/// Then DCID (no SCID, no length, no version, no token in short-header). Then
+/// pn_length-byte PN. Then encrypted payload. Then 16-byte tag.
+fn build_short_header_crypto_packet(
+    dcid: &[u8],
+    pn: u64,
+    crypto_frame_bytes: &[u8],
+    one_rtt_local: &rustls::quic::DirectionalKeys,
+) -> Result<Vec<u8>, String> {
+    let pn_length: usize = 4;
+    let tag_len = one_rtt_local.packet.tag_len();
+
+    // First byte: 0b0100_0011 → fixed bits 0/1 set, type=Short(0), spin=0,
+    // reserved=00, key_phase=0, pn_len = 4-1 = 3 (bits 0-1).
+    let first_byte: u8 = 0b0100_0000 | ((pn_length as u8) - 1);
+
+    let mut hdr: Vec<u8> = Vec::with_capacity(1 + dcid.len() + pn_length);
+    hdr.push(first_byte);
+    hdr.extend_from_slice(dcid);
+    let pn_offset = hdr.len();
+    hdr.extend_from_slice(&(pn as u32).to_be_bytes());
+
+    let header_len = hdr.len();
+    let mut pkt: Vec<u8> = Vec::with_capacity(header_len + crypto_frame_bytes.len() + tag_len);
+    pkt.extend_from_slice(&hdr);
+    pkt.extend_from_slice(crypto_frame_bytes);
+    let plaintext_end = header_len + crypto_frame_bytes.len();
+
+    let header_bytes = pkt[..header_len].to_vec();
+    let tag = one_rtt_local.packet.encrypt_in_place(
+        pn, &header_bytes, &mut pkt[header_len..plaintext_end],
+    ).map_err(|e| format!("rustls encrypt_in_place (1-RTT): {e:?}"))?;
+    pkt.extend_from_slice(tag.as_ref());
+
+    // HP — sample is 16 bytes starting pn_offset + 4 (matches Handshake).
+    let so = pn_offset + 4;
+    if pkt.len() < so + 16 {
+        return Err("1-RTT packet too short for HP sample".into());
+    }
+    let sample: [u8; 16] = pkt[so..so + 16].try_into().expect("HP sample 16B");
+    let (head, rest) = pkt.split_at_mut(pn_offset);
+    one_rtt_local.header
+        .encrypt_in_place(&sample, &mut head[0], &mut rest[..pn_length])
+        .map_err(|e| format!("rustls HP encrypt_in_place (1-RTT): {e:?}"))?;
+
+    Ok(pkt)
+}
+
 /// Decrypt a single Handshake-space (long header, type=2) packet whose bytes
 /// occupy `buf[..pkt_len]`, returning the plaintext payload as a freshly-
 /// allocated `Vec`.
