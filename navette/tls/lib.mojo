@@ -34,6 +34,8 @@ from navette.tls._rlsm_bindings import (
     load_rlsm_keys_batch_header_protect,
     load_rlsm_keys_batch_header_unprotect,
     load_rlsm_keys_free,
+    load_rlsm_test_keys_free_count,
+    load_rlsm_test_keys_free_reset,
     load_rlsm_keys_local_encrypt,
     load_rlsm_keys_local_header_protect,
     load_rlsm_keys_remote_decrypt,
@@ -494,6 +496,25 @@ struct RustlsLibrary(Movable):
     def keys_free(self, keys_handle: Int32) -> Int32:
         """Free keys. Returns 0 on success, -1 if handle not found."""
         return load_rlsm_keys_free(self._handle)(keys_handle)
+
+    @always_inline
+    def test_keys_free_count(self) -> UInt64:
+        """[test-only] Read the number of successful keys_free calls.
+
+        Only meaningful when librustls_mojo.so was built with
+        --features test-instrumentation. Calling against a default build
+        will fail at dlsym time (the symbol is gated on that feature).
+        """
+        return load_rlsm_test_keys_free_count(self._handle)()
+
+    @always_inline
+    def test_keys_free_reset(self) -> Int32:
+        """[test-only] Reset the keys-free counter to zero. Returns 0.
+
+        Only meaningful when librustls_mojo.so was built with
+        --features test-instrumentation.
+        """
+        return load_rlsm_test_keys_free_reset(self._handle)()
 
     # -- QUIC Wave 2: handshake ------------------------------------------------
 

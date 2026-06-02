@@ -302,6 +302,24 @@ mojo_args = ["Int32"]
 mojo_ret  = "Int32"
 
 [[symbol]]
+name = "rlsm_test_keys_free_count"
+description = "[test-only] Read the number of successful keys_free calls."
+rust_args = []
+rust_args_names = []
+rust_ret  = "u64"
+mojo_args = []
+mojo_ret  = "UInt64"
+
+[[symbol]]
+name = "rlsm_test_keys_free_reset"
+description = "[test-only] Reset the keys-free counter to zero. Returns 0."
+rust_args = []
+rust_args_names = []
+rust_ret  = "i32"
+mojo_args = []
+mojo_ret  = "Int32"
+
+[[symbol]]
 name = "rlsm_aes_gcm_128_seal"
 description = "Encrypt with raw AES-128-GCM. Output is ciphertext || 16-byte tag."
 rust_args = ["*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "*mut u8", "*mut i32"]

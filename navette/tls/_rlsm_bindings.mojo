@@ -36,6 +36,8 @@ comptime rlsm_keys_batch_header_protect_fn = def(Int32, Int32, UnsafePointer[Uns
 comptime rlsm_keys_batch_encrypt_fn = def(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_keys_tag_len_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_keys_free_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_test_keys_free_count_fn = def() abi("C") thin -> UInt64
+comptime rlsm_test_keys_free_reset_fn = def() abi("C") thin -> Int32
 comptime rlsm_aes_gcm_128_seal_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_aes_gcm_128_open_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_hmac_sha256_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
@@ -172,6 +174,14 @@ def load_rlsm_keys_tag_len(ref handle: OwnedDLHandle) -> rlsm_keys_tag_len_fn:
 # Free a keys handle.
 def load_rlsm_keys_free(ref handle: OwnedDLHandle) -> rlsm_keys_free_fn:
     return handle.get_function[rlsm_keys_free_fn]("rlsm_keys_free")
+
+# [test-only] Read the number of successful keys_free calls.
+def load_rlsm_test_keys_free_count(ref handle: OwnedDLHandle) -> rlsm_test_keys_free_count_fn:
+    return handle.get_function[rlsm_test_keys_free_count_fn]("rlsm_test_keys_free_count")
+
+# [test-only] Reset the keys-free counter to zero. Returns 0.
+def load_rlsm_test_keys_free_reset(ref handle: OwnedDLHandle) -> rlsm_test_keys_free_reset_fn:
+    return handle.get_function[rlsm_test_keys_free_reset_fn]("rlsm_test_keys_free_reset")
 
 # Encrypt with raw AES-128-GCM. Output is ciphertext || 16-byte tag.
 def load_rlsm_aes_gcm_128_seal(ref handle: OwnedDLHandle) -> rlsm_aes_gcm_128_seal_fn:

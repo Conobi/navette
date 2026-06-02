@@ -32,6 +32,19 @@ from navette.quic.guard_tags import (
 # the 0-RTT epoch so the F30 guard (RFC 9001 §8.3 — CRYPTO frames MUST
 # NOT be sent in 0-RTT) can fire without colliding with legitimate
 # CRYPTO frames in the 1-RTT space (e.g. NewSessionTicket).
+#
+# COINCIDENCE NOTE (paired with `ZERO_RTT_KEY_SLOT_IDX` in packet_protect.mojo):
+# Both constants share the value 3, but they are *independent* — each is
+# the next free integer in its own monotonic sequence.
+#
+#   - `ZERO_RTT_SPACE_IDX = 3` (here) is a frame-dispatch sentinel ABOVE
+#     the valid PN-space range (0=Initial, 1=Handshake, 2=Application).
+#     It is NOT a valid `Connection.spaces[]` index.
+#
+#   - `ZERO_RTT_KEY_SLOT_IDX = 3` (in packet_protect.mojo) IS a valid
+#     `PacketProtect.keys[]` index.
+#
+# If one moves, REVIEW the other but the linkage is not required.
 comptime ZERO_RTT_SPACE_IDX: Int = 3
 
 

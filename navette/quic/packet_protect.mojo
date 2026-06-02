@@ -3,13 +3,16 @@
 # PacketProtect — QUIC header protection and AEAD encrypt/decrypt.
 #
 # Wraps librustls-mojo FFI (Wave 1 KEYS_TABLE) for packet-level crypto.
-# Each PacketProtect holds up to three keys handles (initial, handshake,
-# application) and delegates all crypto operations to the Rust library.
+# Each PacketProtect holds up to FOUR keys handles (initial, handshake,
+# application, 0-RTT decrypt) and delegates all crypto operations to the
+# Rust library.
 #
 # Encryption levels:
-#   0 = Initial
-#   1 = Handshake
-#   2 = Application (1-RTT)
+#   0 = Initial         (both directions; discarded at handshake-complete)
+#   1 = Handshake       (both directions; discarded at handshake-complete)
+#   2 = Application     (both directions; discarded at connection-close)
+#   3 = 0-RTT (server-side decrypt only; discarded at handshake-complete
+#       OR connection-close, whichever first — RFC 9001 §4.1.3)
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
@@ -19,13 +22,29 @@ comptime _AEAD_TAG_LEN: Int = 16
 comptime _HP_SAMPLE_LEN: Int = 16
 comptime _MAX_PN_LEN: Int = 4
 
+# 0-RTT decrypt key slot index.
+#
+# COINCIDENCE NOTE (paired with `ZERO_RTT_SPACE_IDX` in guard_predicates.mojo):
+# Both constants share the value 3, but they are *independent* — each is
+# the next free integer in its own monotonic sequence.
+#
+#   - `ZERO_RTT_SPACE_IDX = 3` is a frame-dispatch sentinel above the
+#     valid PN-space range (0=Initial, 1=Handshake, 2=Application). It
+#     is NOT a valid `Connection.spaces[]` index. See guard_predicates.mojo.
+#
+#   - `ZERO_RTT_KEY_SLOT_IDX = 3` IS a valid `PacketProtect.keys[]` index.
+#
+# If one moves, REVIEW the other but the linkage is not required.
+comptime ZERO_RTT_KEY_SLOT_IDX: Int = 3
+
 
 struct PacketProtect(Movable):
     """QUIC packet protection: header protection and AEAD encrypt/decrypt.
 
-    Holds keys handles for up to three encryption levels (initial=0,
-    handshake=1, application=2). Keys handles are indices into the Rust-side
-    KEYS_TABLE and are freed via `keys_free` on discard or destruction.
+    Holds keys handles for up to four encryption levels (initial=0,
+    handshake=1, application=2, 0-RTT-decrypt=3). Keys handles are
+    indices into the Rust-side KEYS_TABLE and are freed via `keys_free`
+    on discard or destruction.
     """
 
     var keys: List[Int32]
@@ -35,7 +54,8 @@ struct PacketProtect(Movable):
 
     def __init__(out self, lib: SharedLibrary):
         """Create a PacketProtect with no keys installed."""
-        self.keys = List[Int32](capacity=3)
+        self.keys = List[Int32](capacity=4)
+        self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
@@ -53,8 +73,8 @@ struct PacketProtect(Movable):
     # -- Key management --------------------------------------------------------
 
     def _check_level(self, level: Int) raises:
-        if level < 0 or level >= 3:
-            raise "PacketProtect: level out of range (0-2)"
+        if level < 0 or level >= 4:
+            raise "PacketProtect: level out of range (0-3)"
 
     def set_keys(mut self, level: Int, handle: Int32) raises:
         """Install a keys handle at the given encryption level."""
@@ -66,17 +86,68 @@ struct PacketProtect(Movable):
 
     def has_keys(self, level: Int) -> Bool:
         """True if keys are present for the given encryption level."""
-        if level < 0 or level >= 3:
+        if level < 0 or level >= 4:
             return False
         return self.keys[level] != Int32(-1)
 
     def discard_keys(mut self, level: Int):
         """Free and remove keys at the given encryption level."""
-        if level < 0 or level >= 3:
+        if level < 0 or level >= 4:
             return
         if self.keys[level] != Int32(-1):
             _ = self._lib.inner_ptr()[].keys_free(self.keys[level])
             self.keys[level] = Int32(-1)
+
+    def install_zero_rtt_read_keys(mut self, conn_handle: Int32) raises -> Bool:
+        """Fetch 0-RTT decrypt keys from rustls (server side) and install at slot 3.
+
+        Semantics are *free-first-then-install*:
+
+        1. If slot 3 is currently populated, free the existing handle BEFORE
+           invoking the FFI, regardless of what the FFI subsequently returns.
+        2. Call `rlsm_quic_server_conn_zero_rtt_keys`.
+        3. On rc=0 (success): install the new handle at slot 3, return True.
+        4. On rc=1 (unavailable): slot 3 ends empty, return False.
+        5. On rc=-1 (error): slot 3 ends empty, raise with the FFI's
+           last_error message.
+
+        The free-first ordering makes a second install replace the first
+        without leak, and makes failure cases (1 / -1) leave slot 3 empty
+        even if it was populated before the call. Callers wanting to
+        preserve a prior key across an install attempt must check
+        has_keys(ZERO_RTT_KEY_SLOT_IDX) first.
+
+        Preconditions: self is a server-side PacketProtect (caller's
+        responsibility); the corresponding QuicConn handle is in the
+        pre-KeyChange::OneRtt window (caller's responsibility — the FFI
+        is direction-stateless).
+
+        Args:
+            conn_handle: The server-side QuicConn FFI handle.
+
+        Returns:
+            True if rustls produced 0-RTT decrypt keys and slot 3 was
+            populated; False if the keys were not available (rc=1).
+        """
+        self.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
+
+        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        out_handle[0] = Int32(-1)
+        var rlib = self._lib.inner_ptr()
+        var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, out_handle)
+
+        if rc == Int32(0):
+            var kh = out_handle[0]
+            out_handle.free()
+            self.keys[ZERO_RTT_KEY_SLOT_IDX] = kh
+            return True
+        elif rc == Int32(1):
+            out_handle.free()
+            return False
+        else:
+            out_handle.free()
+            var err = rlib[].last_error()
+            raise "install_zero_rtt_read_keys failed: " + err
 
     def derive_initial_keys(mut self, dcid: Span[UInt8, _], is_client: Bool) raises:
         """Derive QUIC v1 Initial keys from a destination connection ID.

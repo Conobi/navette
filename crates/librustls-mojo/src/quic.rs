@@ -842,8 +842,9 @@ pub extern "C" fn rlsm_test_keys_free_count() -> u64 {
 
 #[cfg(any(test, feature = "test-instrumentation"))]
 #[no_mangle]
-pub extern "C" fn rlsm_test_keys_free_reset() {
+pub extern "C" fn rlsm_test_keys_free_reset() -> i32 {
     KEYS_FREE_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+    0
 }
 
 /// Free the keys identified by `keys_handle`.

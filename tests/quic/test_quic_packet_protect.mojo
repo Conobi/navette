@@ -1,0 +1,202 @@
+# tests/quic/test_quic_packet_protect.mojo
+#
+# PacketProtect lifecycle tests for the 4th key slot (0-RTT decrypt).
+#
+# Properties proven here:
+#   - install-then-has-keys: after install returns False (fresh conn),
+#     has_keys(3) is False. (The success path needs a forced-resumption
+#     fixture and is covered separately.)
+#   - set-keys-replaces-without-leak: set_keys(3, h1); set_keys(3, h2)
+#     frees h1 exactly once (via the keys-free counter probe).
+#   - install-is-free-first: install_zero_rtt_read_keys with slot 3
+#     populated frees the prior handle before invoking FFI, regardless
+#     of FFI return code.
+
+from std.memory import UnsafePointer, Span
+from std.memory.unsafe_pointer import alloc as _heap_alloc
+
+from navette.tls.lib import TlsBackend, SharedLibrary
+from navette.tls.config import QuicServerConfig
+from navette.quic.connection import QuicConnection
+from navette.quic.packet_protect import PacketProtect, ZERO_RTT_KEY_SLOT_IDX
+from navette.quic.trans_param import default_transport_params
+from tests._test_util import (
+    assert_true, assert_equal_int, load_test_cert,
+)
+
+
+def _synth_dcid() -> List[UInt8]:
+    """Return the canonical RFC 9001 §A test DCID for synthetic key derivation.
+
+    Returns:
+        An 8-byte List with the canonical sample DCID.
+    """
+    var dcid: List[UInt8] = [
+        UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
+        UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
+    ]
+    return dcid^
+
+
+def _reset_keys_free_counter(lib: SharedLibrary) raises:
+    """Reset the test-only keys-free counter to zero."""
+    var rlib = lib.inner_ptr()
+    _ = rlib[].test_keys_free_reset()
+
+
+def _read_keys_free_counter(lib: SharedLibrary) raises -> UInt64:
+    """Read the current keys-free counter value."""
+    var rlib = lib.inner_ptr()
+    return rlib[].test_keys_free_count()
+
+
+def test_install_zero_rtt_read_keys_returns_false_on_fresh_conn() raises:
+    """A fresh server conn (no resumption, max_early_data=0) yields rc=1
+    from the FFI, so install returns False and slot 3 stays empty."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
+    var tp = default_transport_params()
+    var dcid_a = _synth_dcid()
+    var dcid_b = _synth_dcid()
+    var now = UInt64(1_000_000)
+    var conn = QuicConnection.server(
+        tls.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
+    )
+    var protect = PacketProtect(tls.shared())
+
+    assert_true(
+        not protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must start empty",
+    )
+
+    # Mojo ASAP-destruction gotcha: extracting conn.conn_handle as the last
+    # use of `conn` would let Mojo run conn.__del__ (which calls
+    # quic_conn_free on the FFI handle) BEFORE the install call enters the
+    # method body — making the FFI report "invalid conn handle". Keep
+    # `conn` live across the call by reading a field after the call site.
+    var ch = conn.conn_handle
+    var installed = protect.install_zero_rtt_read_keys(ch)
+    _ = conn.is_server  # extend conn's lifetime past install
+    _ = protect.has_keys(0)  # extend protect's lifetime past install
+    assert_true(
+        not installed,
+        "install must return False on a fresh non-resumed server conn",
+    )
+    assert_true(
+        not protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must remain empty when install returns False",
+    )
+    print("  test_install_zero_rtt_read_keys_returns_false_on_fresh_conn: PASS")
+
+
+def test_set_keys_replaces_without_leak_at_slot_3() raises:
+    """Replacing keys at slot 3 must free the prior handle exactly once.
+
+    set_keys(3, h1); set_keys(3, h2) frees h1 exactly once (counter
+    delta = 1) and leaves slot 3 holding h2.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var protect = PacketProtect(tls.shared())
+
+    _reset_keys_free_counter(tls.shared())
+
+    var dcid = _synth_dcid()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    for i in range(len(dcid)):
+        dcid_ptr[i] = dcid[i]
+
+    var rlib = tls.shared().inner_ptr()
+    var h1 = rlib[].initial_keys(
+        Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
+    )
+    var h2 = rlib[].initial_keys(
+        Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
+    )
+    dcid_ptr.free()
+    assert_true(h1 > Int32(0) and h2 > Int32(0), "synth handles must be positive")
+    assert_true(h1 != h2, "synth handles must be distinct")
+
+    protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h1)
+    var c1 = _read_keys_free_counter(tls.shared())
+    assert_equal_int(Int(c1), 0, "no free should occur on first set_keys")
+
+    protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h2)
+    var c2 = _read_keys_free_counter(tls.shared())
+    assert_equal_int(Int(c2), 1, "h1 must be freed exactly once on replace")
+    assert_true(
+        protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must still hold h2 after replace",
+    )
+    print("  test_set_keys_replaces_without_leak_at_slot_3: PASS")
+
+
+def test_install_is_free_first_when_slot_3_populated() raises:
+    """If slot 3 is populated when install is called, the prior handle
+    is freed BEFORE the FFI runs, regardless of FFI return code."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
+    var tp = default_transport_params()
+    var dcid_a = _synth_dcid()
+    var dcid_b = _synth_dcid()
+    var now = UInt64(1_000_000)
+    var conn = QuicConnection.server(
+        tls.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
+    )
+    var protect = PacketProtect(tls.shared())
+
+    var dcid = _synth_dcid()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    for i in range(len(dcid)):
+        dcid_ptr[i] = dcid[i]
+    var rlib = tls.shared().inner_ptr()
+    var h_pre = rlib[].initial_keys(
+        Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
+    )
+    dcid_ptr.free()
+    assert_true(h_pre > Int32(0), "pre-populate handle must be positive")
+    protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h_pre)
+    assert_true(protect.has_keys(ZERO_RTT_KEY_SLOT_IDX), "slot 3 populated")
+
+    # Inline reset (helper invocation perturbs Mojo lifetimes — see note
+    # below). Calling `_reset_keys_free_counter` via `def` here would
+    # double-count h_pre's free by destroying a temp SharedLibrary copy
+    # that aliases protect's inner; inlining keeps the lifetime stable.
+    var rlib_pre = tls.shared().inner_ptr()
+    _ = rlib_pre[].test_keys_free_reset()
+
+    # See ASAP-destruction note in test 1. Both `conn` and `protect` must
+    # live past install — Mojo's ASAP destructor for `protect` would
+    # otherwise re-free slot 3 (set to -1 by discard) on some code paths
+    # and double-count, masking the once-only invariant we're proving.
+    var ch = conn.conn_handle
+    var installed = protect.install_zero_rtt_read_keys(ch)
+    _ = conn.is_server  # extend conn's lifetime past install
+    _ = protect.has_keys(0)  # extend protect's lifetime past install
+    assert_true(
+        not installed,
+        "install must return False on a fresh non-resumed conn",
+    )
+
+    var rlib_post = tls.shared().inner_ptr()
+    var c = rlib_post[].test_keys_free_count()
+    assert_equal_int(
+        Int(c), 1,
+        "h_pre must be freed exactly once before FFI is invoked",
+    )
+    assert_true(
+        not protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must end empty when FFI returns 1 (unavailable)",
+    )
+    print("  test_install_is_free_first_when_slot_3_populated: PASS")
+
+
+def main() raises:
+    test_install_zero_rtt_read_keys_returns_false_on_fresh_conn()
+    test_set_keys_replaces_without_leak_at_slot_3()
+    test_install_is_free_first_when_slot_3_populated()
