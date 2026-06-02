@@ -196,7 +196,34 @@ def test_install_is_free_first_when_slot_3_populated() raises:
     print("  test_install_is_free_first_when_slot_3_populated: PASS")
 
 
+def test_discard_keys_at_slot_3_is_noop_when_empty() raises:
+    """Calling discard_keys(3) on an empty slot must be a no-op:
+    no crash, no error, no spurious free-counter increment."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var protect = PacketProtect(tls.shared())
+    _reset_keys_free_counter(tls.shared())
+
+    assert_true(
+        not protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 starts empty",
+    )
+
+    # Multiple discards on an empty slot are all no-ops.
+    protect.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
+    protect.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
+    protect.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
+
+    var c = _read_keys_free_counter(tls.shared())
+    assert_equal_int(Int(c), 0, "empty-slot discard must not increment the counter")
+    assert_true(
+        not protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must remain empty after no-op discards",
+    )
+    print("  test_discard_keys_at_slot_3_is_noop_when_empty: PASS")
+
+
 def main() raises:
     test_install_zero_rtt_read_keys_returns_false_on_fresh_conn()
     test_set_keys_replaces_without_leak_at_slot_3()
     test_install_is_free_first_when_slot_3_populated()
+    test_discard_keys_at_slot_3_is_noop_when_empty()

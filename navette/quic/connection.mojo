@@ -2657,6 +2657,11 @@ struct QuicConnection(Movable):
             self.handshake_confirmed = True
             self._discard_initial_space()
             self._discard_handshake_space()
+            # RFC 9001 §4.1.3 — discard 0-RTT decrypt keys at handshake-complete.
+            # Placed AFTER CONN_ESTABLISHED is set so re-entry is blocked by the
+            # early-return; BEFORE any subsequent control flow that could exit
+            # without firing the discard.
+            self._discard_zero_rtt_keys()
             self.send_handshake_done = True
             self.events.append(QuicEvent.handshake_complete())
         else:
@@ -2666,6 +2671,11 @@ struct QuicConnection(Movable):
             if self.handshake_confirmed:
                 self.state = self.state | CONN_ESTABLISHED
                 self._discard_handshake_space()
+                # RFC 9001 §4.1.3 — discard 0-RTT keys at handshake-complete.
+                # No-op on the client side because slot 3 is unpopulated on
+                # clients in this cycle; wired here for symmetry so a future
+                # client-side install (if one is ever added) is also covered.
+                self._discard_zero_rtt_keys()
                 self.events.append(QuicEvent.handshake_complete())
 
     # ── Space discard helpers ────────────────────────────────────────
@@ -2695,6 +2705,23 @@ struct QuicConnection(Movable):
             )
 
         self.protect.discard_keys(1)
+
+    def _discard_zero_rtt_keys(mut self):
+        """RFC 9001 §4.1.3 — discard server-side 0-RTT decrypt keys at
+        handshake-complete.
+
+        Idempotent by construction:
+          (a) `_on_handshake_complete` early-returns when CONN_ESTABLISHED is
+              already set, so this helper cannot be called twice per connection
+              from the handshake-complete path.
+          (b) `PacketProtect.discard_keys(level)` is itself a no-op on an
+              empty slot.
+
+        Dead in production today (no install call site outside tests).
+        Wired now so the decrypt-path change is purely additive;
+        forgetting it later would be a CVE.
+        """
+        self.protect.discard_keys(3)
 
     # ── Send path ────────────────────────────────────────────────────
 
