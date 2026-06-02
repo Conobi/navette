@@ -245,6 +245,14 @@ struct AcceptProfile(Copyable, Movable):
     var egress_pool_hits_total: UInt64
     var egress_pool_misses_total: UInt64
 
+    # 0-RTT key install lifecycle counters. Split attempts vs successes so
+    # the lazy-install test can distinguish "called many times during
+    # buffer-fill before rustls produced the early-data secret" from
+    # "actually populated slot 3 once". RFC 9001 §4.1.1 — only one install
+    # per QuicConnection should ever succeed.
+    var zero_rtt_install_attempts: Int64
+    var zero_rtt_install_successes: Int64
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -367,6 +375,8 @@ struct AcceptProfile(Copyable, Movable):
         self.flush_feed_datagram_us_total = UInt64(0)
         self.egress_pool_hits_total = UInt64(0)
         self.egress_pool_misses_total = UInt64(0)
+        self.zero_rtt_install_attempts = Int64(0)
+        self.zero_rtt_install_successes = Int64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -734,6 +744,17 @@ struct AcceptProfile(Copyable, Movable):
         """
         self.egress_pool_misses_total += UInt64(1)
 
+    def record_zero_rtt_install(mut self, success: Bool):
+        """Bump the install-lifecycle counters. SUCCESS increments
+        zero_rtt_install_successes; FAILURE increments
+        zero_rtt_install_attempts. Together they let the lazy-install
+        test distinguish 'called many times during buffer-fill' from
+        'actually installed slot 3 once'."""
+        if success:
+            self.zero_rtt_install_successes += 1
+        else:
+            self.zero_rtt_install_attempts += 1
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -820,6 +841,11 @@ struct AcceptProfile(Copyable, Movable):
         s += "egress_pool:\n"
         s += "  hits_total:   " + _fmt_count(self.egress_pool_hits_total) + "\n"
         s += "  misses_total: " + _fmt_count(self.egress_pool_misses_total) + "\n\n"
+
+        # 0-RTT install lifecycle counters.
+        s += "zero_rtt_install:\n"
+        s += "  attempts:  " + _fmt_count(UInt64(self.zero_rtt_install_attempts)) + "\n"
+        s += "  successes: " + _fmt_count(UInt64(self.zero_rtt_install_successes)) + "\n\n"
 
         # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
@@ -1085,6 +1111,12 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "egress_pool": {\n'
         s += '    "hits_total": ' + String(self.egress_pool_hits_total) + ',\n'
         s += '    "misses_total": ' + String(self.egress_pool_misses_total) + '\n'
+        s += "  },\n"
+
+        # 0-RTT install lifecycle counters.
+        s += '  "zero_rtt_install": {\n'
+        s += '    "attempts": ' + String(self.zero_rtt_install_attempts) + ',\n'
+        s += '    "successes": ' + String(self.zero_rtt_install_successes) + '\n'
         s += "  },\n"
 
         # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).

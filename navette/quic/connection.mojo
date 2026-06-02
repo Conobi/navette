@@ -161,6 +161,12 @@ comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
 comptime _MAX_CRYPTO_FRAME_SIZE: Int = 1200
 
+# RFC 9001 §5.7 buffer caps. Per-connection. If a 0-RTT packet would
+# exceed either cap, the packet is dropped (§5.7 allows the server
+# to discard; no protocol violation).
+comptime ZERO_RTT_BUFFER_MAX_PKTS: Int = 16
+comptime ZERO_RTT_BUFFER_MAX_BYTES: Int = 32 * 1024  # 32 KiB
+
 
 # ── TLS alert -> guard-tag mapping ───────────────────────────────────
 
@@ -519,6 +525,25 @@ struct QuicConnection(Movable):
     var hs_cpu_us_total: UInt64   # sum of _drive_handshake body µs across conn lifetime
     var hs_wait_us_total: UInt64  # computed once at _on_handshake_complete
 
+    # 0-RTT cached opt-in signal — set once in QuicConnection.server(...)
+    # from QuicServerConfig.max_early_data(). False = rejection-mode
+    # (Path C in the coalesce loop). Per-packet check reads this Bool
+    # instead of crossing the FFI.
+    var zero_rtt_enabled: Bool
+
+    # RFC 9001 §5.7 reorder buffer for 0-RTT packets that arrive ahead
+    # of the Initial that derives their keys. Bounded by
+    # ZERO_RTT_BUFFER_MAX_PKTS (16) AND ZERO_RTT_BUFFER_MAX_BYTES
+    # (32 KiB), whichever fills first. Per-connection, not global.
+    var zero_rtt_buffer: List[List[UInt8]]
+    var zero_rtt_buffer_bytes: Int
+
+    # Set True for the duration of _drain_zero_rtt_buffer. While True,
+    # the decrypt-path's Path B fail branch DROPS instead of re-buffering,
+    # to prevent unbounded re-entry through the same fail path when rustls
+    # still has no early-data secret.
+    var _draining_zero_rtt: Bool
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit take: Self):
@@ -572,6 +597,10 @@ struct QuicConnection(Movable):
         self.accept_us = take.accept_us
         self.hs_cpu_us_total = take.hs_cpu_us_total
         self.hs_wait_us_total = take.hs_wait_us_total
+        self.zero_rtt_enabled = take.zero_rtt_enabled
+        self.zero_rtt_buffer = take.zero_rtt_buffer^
+        self.zero_rtt_buffer_bytes = take.zero_rtt_buffer_bytes
+        self._draining_zero_rtt = take._draining_zero_rtt
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -633,6 +662,13 @@ struct QuicConnection(Movable):
         self.accept_us = UInt64(0)
         self.hs_cpu_us_total = UInt64(0)
         self.hs_wait_us_total = UInt64(0)
+        # 0-RTT defaults: rejection-mode (False) until the server factory
+        # promotes via QuicServerConfig.max_early_data(). Clients never
+        # enable today. Buffer is empty; not draining.
+        self.zero_rtt_enabled = False
+        self.zero_rtt_buffer = List[List[UInt8]]()
+        self.zero_rtt_buffer_bytes = 0
+        self._draining_zero_rtt = False
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -863,6 +899,12 @@ struct QuicConnection(Movable):
         conn.profile_ptr = profile_ptr
         conn.profile_first_initial_us = profile_arrival_us
         conn.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
+
+        # Cache the server config's 0-RTT opt-in signal once. The per-packet
+        # decrypt path reads `conn.zero_rtt_enabled` instead of re-crossing
+        # the FFI on every datagram. rustls QUIC constrains the value to
+        # {0, 0xFFFFFFFF}; any non-zero value means "0-RTT opt-in".
+        conn.zero_rtt_enabled = (config.max_early_data() != UInt32(0))
 
         comptime if PROFILE_ACCEPT:
             if profile_ptr is not None:
@@ -2724,12 +2766,71 @@ struct QuicConnection(Movable):
               from the handshake-complete path.
           (b) `PacketProtect.discard_keys(level)` is itself a no-op on an
               empty slot.
+          (c) Clearing the reorder buffer is a no-op on an already-empty list,
+              so repeated calls from handshake-complete + HANDSHAKE_DONE
+              never double-free.
 
         Dead in production today (no install call site outside tests).
         Wired now so the decrypt-path change is purely additive;
         forgetting it later would be a CVE.
         """
         self.protect.discard_keys(3)
+        # RFC 9001 §5.7 reorder buffer is meaningful only while 0-RTT keys
+        # exist; once they're gone the buffered ciphertext is undecryptable
+        # forever, so free it eagerly. Helper stays non-raising — replacing
+        # a Mojo List does not throw.
+        self.zero_rtt_buffer = List[List[UInt8]]()
+        self.zero_rtt_buffer_bytes = 0
+
+    def _zero_rtt_enabled(self) -> Bool:
+        """True if the server config opted into 0-RTT (max_early_data != 0).
+        Reads the cached field — no FFI crossing per packet."""
+        return self.zero_rtt_enabled
+
+    def _buffer_zero_rtt_or_drop(mut self, packet: Span[UInt8, _]) -> Bool:
+        """Buffer a 0-RTT packet for later retry after rustls derives the
+        early-data secret. Returns True if buffered, False if dropped
+        (cap exceeded — RFC 9001 §5.7 allows discard).
+
+        Bounded by ZERO_RTT_BUFFER_MAX_PKTS AND ZERO_RTT_BUFFER_MAX_BYTES;
+        whichever cap a new packet would exceed first, drops it.
+        """
+        if len(self.zero_rtt_buffer) >= ZERO_RTT_BUFFER_MAX_PKTS:
+            return False
+        if self.zero_rtt_buffer_bytes + len(packet) > ZERO_RTT_BUFFER_MAX_BYTES:
+            return False
+        var copy = List[UInt8](capacity=len(packet))
+        for b in packet:
+            copy.append(b)
+        self.zero_rtt_buffer.append(copy^)
+        self.zero_rtt_buffer_bytes += len(packet)
+        return True
+
+    def _drain_zero_rtt_buffer(mut self, now: UInt64, ecn_mark: UInt8) raises:
+        """Replay buffered 0-RTT packets through the production coalesce
+        path now that rustls has had a chance to derive the early-data
+        secret. Idempotent (empty-buffer no-op). Re-entry into
+        recv_from_buffer is guarded by self._draining_zero_rtt = True,
+        which makes the decrypt-path's Path B fail branch drop instead
+        of re-buffer (preventing unbounded re-entry).
+        """
+        if len(self.zero_rtt_buffer) == 0:
+            return
+        var pending = self.zero_rtt_buffer^
+        self.zero_rtt_buffer = List[List[UInt8]]()
+        self.zero_rtt_buffer_bytes = 0
+        self._draining_zero_rtt = True
+        try:
+            for pkt in pending:
+                var buf_ptr = _heap_alloc[UInt8](len(pkt)).as_any_origin()
+                for i in range(len(pkt)):
+                    buf_ptr[i] = pkt[i]
+                try:
+                    self.recv_from_buffer(buf_ptr, len(pkt), now, ecn_mark)
+                finally:
+                    buf_ptr.free()
+        finally:
+            self._draining_zero_rtt = False
 
     # ── Send path ────────────────────────────────────────────────────
 
