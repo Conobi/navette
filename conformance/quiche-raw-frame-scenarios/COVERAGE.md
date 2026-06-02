@@ -5,34 +5,19 @@ F-rows F01 + F10–F24 + F30 — covering packet-layer guards (RFC 9000 §12.4 /
 §17.x), server-illegal frame dispatch (RFC 9000 §19.x client-only frames),
 stream-state and limit checks (RFC 9000 §19.x stream-id / flow-control /
 encoding), NEW_CONNECTION_ID encoding (RFC 9000 §19.15), and the 0-RTT
-CRYPTO row (RFC 9001 §8.3, `deferred:0rtt-scenario` — Mojo-side guard
-shipped, scenario binary pending server-side 0-RTT key plumbing).
+CRYPTO row (RFC 9001 §8.3 — server-side decrypt path landed; the scenario
+binary drives ticket issuance → resumed-connect → 0-RTT CRYPTO injection
+against a navette server with `HELLO_H3_MAX_EARLY_DATA=max` enabled).
 
 ## What's covered
 
-- **16 Table A rows + 1 Table B row gated:** all packet-layer,
+- **17 Table A rows + 1 Table B row gated:** all packet-layer,
   server-illegal-frame, stream-state, and Handshake-epoch
-  reserved-bit / PATH_CHALLENGE guard scenarios pass. The companion
-  `sanity_get` baseline is enumerated as Table B / SY01 (mirrors the
-  TLS-conformance pattern); `coverage_check.py` is invoked with
-  `--always-on-count 0` so the sanity baseline is counted exactly
-  once.
-
-## What's deferred
-
-- **F30 — `deferred:0rtt-scenario`:** the Mojo-side guard now ships
-  (RFC 9001 §8.3 — `[QUIC-CRYPTO-IN-0RTT]`, referenced from
-  `navette/quic/guard_predicates.is_crypto_in_zero_rtt`) and the
-  server runs in rejection-mode (`max_early_data_size = 0`,
-  RFC 9001 §4.2 / §5.5: 0-RTT packets are dropped silently because
-  no 0-RTT keys are installed). What is deferred is the
-  scenario binary: driving the resumption flow end-to-end requires
-  server-side 0-RTT key derivation through librustls-mojo, which is
-  not currently exposed in the FFI (`rlsm_quic_conn_zero_rtt_keys`
-  rejects server connections), plus a fourth `PacketProtect` key
-  slot to hold the 0-RTT key alongside 1-RTT. Both land in the
-  acceptance-mode follow-up tracked in the post-v1 backlog. Until
-  then the row stays out of the gated count.
+  reserved-bit / PATH_CHALLENGE guard scenarios pass, plus F30's
+  0-RTT CRYPTO injection. The companion `sanity_get` baseline is
+  enumerated as Table B / SY01 (mirrors the TLS-conformance pattern);
+  `coverage_check.py` is invoked with `--always-on-count 0` so the
+  sanity baseline is counted exactly once.
 
 ## Table A — h3spec triage rows
 
@@ -54,7 +39,7 @@ shipped, scenario binary pending server-side 0-RTT key plumbing).
 | F22 | RFC 9000 §19.15 | gated | s_f22_cid_retire_prior_gt_seq |
 | F23 | RFC 9000 §19.15 | gated | s_f23_cid_zero_length |
 | F24 | RFC 9000 §19.20 | gated | s_f24_handshake_done_server |
-| F30 | RFC 9001 §8.3 | deferred:0rtt-scenario | — |
+| F30 | RFC 9001 §8.3 | gated:green | s_f30_crypto_in_zero_rtt |
 
 ## Table B — synthetic gated scenarios
 
