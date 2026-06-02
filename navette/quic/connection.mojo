@@ -1126,14 +1126,20 @@ struct QuicConnection(Movable):
                         return
 
                 # 7. Decode packet number.
+                # `space_idx` is the DISPATCH sentinel (3 for 0-RTT). RFC
+                # 9000 §12.3 places 0-RTT and 1-RTT in the same Application
+                # PN space, so the PN bookkeeping uses index 2 for both.
+                # `pn_space_idx` is the valid `self.spaces[]` index; only
+                # the F30-dispatch code path keeps `space_idx == 3`.
+                var pn_space_idx = space_idx if space_idx < 3 else 2
                 var truncated_pn = UInt64(0)
                 for i in range(pn_length):
                     truncated_pn = (truncated_pn << 8) | UInt64(
                         pkt_ptr[header.pn_offset + i]
                     )
                 var largest = UInt64(0)
-                if self.spaces[space_idx].largest_recv_pn >= 0:
-                    largest = UInt64(self.spaces[space_idx].largest_recv_pn)
+                if self.spaces[pn_space_idx].largest_recv_pn >= 0:
+                    largest = UInt64(self.spaces[pn_space_idx].largest_recv_pn)
                 var full_pn = pn_decode(truncated_pn, pn_length, largest)
 
                 # 8. Decrypt payload in-place (zero-copy).
@@ -1199,21 +1205,25 @@ struct QuicConnection(Movable):
                     if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
 
-                # 11. Update PN space.
-                self.spaces[space_idx].on_packet_received(full_pn, ack_eliciting)
+                # 11. Update PN space — `pn_space_idx` collapses the 0-RTT
+                # dispatch sentinel (3) onto the Application PN space (2)
+                # per RFC 9000 §12.3.
+                self.spaces[pn_space_idx].on_packet_received(full_pn, ack_eliciting)
 
                 # ECN accounting: count marks seen on received packets.
                 if self.ecn_state != ECN_STATE_DISABLED:
                     if ecn_mark == ECN_CE:
-                        self.spaces[space_idx].recv_ecn.ce += UInt64(1)
+                        self.spaces[pn_space_idx].recv_ecn.ce += UInt64(1)
                     elif ecn_mark == ECN_ECT0:
-                        self.spaces[space_idx].recv_ecn.ect0 += UInt64(1)
+                        self.spaces[pn_space_idx].recv_ecn.ect0 += UInt64(1)
                     elif ecn_mark == ECN_ECT1:
-                        self.spaces[space_idx].recv_ecn.ect1 += UInt64(1)
+                        self.spaces[pn_space_idx].recv_ecn.ect1 += UInt64(1)
 
                 # Track lowest processed space for retransmission logic.
-                if space_idx < lowest_recv_space:
-                    lowest_recv_space = space_idx
+                # Use `pn_space_idx` so 0-RTT (sentinel 3) doesn't widen
+                # the tracker beyond the valid Application PN space.
+                if pn_space_idx < lowest_recv_space:
+                    lowest_recv_space = pn_space_idx
             except e:
                 # Decryption or frame processing failed for this packet.
                 # Per RFC 9000 §12.2, stop processing remaining coalesced
