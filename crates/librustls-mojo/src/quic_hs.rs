@@ -1571,7 +1571,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Spec 2026-06-02 — config validation widens to u32 with rustls constraint
+    // max_early_data validation: rustls QUIC accepts only {0, u32::MAX}
     // =======================================================================
 
     #[test]
