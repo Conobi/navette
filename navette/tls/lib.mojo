@@ -55,6 +55,7 @@ from navette.tls._rlsm_bindings import (
     load_rlsm_quic_conn_write_hs,
     load_rlsm_quic_server_config_new,
     load_rlsm_quic_server_conn_new,
+    load_rlsm_quic_server_conn_zero_rtt_keys,
     load_rlsm_server_config_new,
     load_rlsm_tls_client_new,
     load_rlsm_tls_conn_alpn,
@@ -661,6 +662,27 @@ struct RustlsLibrary(Movable):
     def quic_conn_alert(self, conn_handle: Int32) -> Int32:
         """Read cached TLS alert code. Returns alert number, or -1 if no alert."""
         return load_rlsm_quic_conn_alert(self._handle)(conn_handle)
+
+    @always_inline
+    def quic_server_conn_zero_rtt_keys(
+        self,
+        conn_handle: Int32,
+        out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
+    ) -> Int32:
+        """Fetch server-side 0-RTT decrypt keys into KEYS_TABLE.
+
+        Returns 0 on success (`*out_keys_handle` is a valid keys index),
+        1 if unavailable (no resumption / ticket rejected / max_early_data=0;
+        `*out_keys_handle` is -1, NOT an error), or -1 on error (null out
+        param, invalid handle, client variant, table exhausted; `last_error`
+        populated). Direction-stateless and idempotent; RFC 9001 §4.1.3
+        compliance (discard 0-RTT keys at handshake-complete) is enforced
+        Mojo-side via PacketProtect. A successful return does NOT mean the
+        eventual 0-RTT data is replay-safe.
+        """
+        return load_rlsm_quic_server_conn_zero_rtt_keys(self._handle)(
+            conn_handle, out_keys_handle,
+        )
 
     # -- Raw AES-GCM-128 -------------------------------------------------------
 

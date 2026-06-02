@@ -56,6 +56,7 @@ comptime rlsm_quic_conn_handshake_kind_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_quic_conn_transport_params_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_alpn_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_is_early_data_accepted_fn = def(Int32) abi("C") thin -> Int32
 
 # -- Loader helpers --------------------------------------------------------
@@ -251,6 +252,10 @@ def load_rlsm_quic_conn_alpn(ref handle: OwnedDLHandle) -> rlsm_quic_conn_alpn_f
 # Write client-side 0-RTT DirectionalKeys into KEYS_TABLE if available.
 def load_rlsm_quic_conn_zero_rtt_keys(ref handle: OwnedDLHandle) -> rlsm_quic_conn_zero_rtt_keys_fn:
     return handle.get_function[rlsm_quic_conn_zero_rtt_keys_fn]("rlsm_quic_conn_zero_rtt_keys")
+
+# Write server-side 0-RTT decrypt DirectionalKeys into KEYS_TABLE if available. Direction-stateless; RFC 9001 §4.1.3 discard is Mojo-side. Returns 0/1/-1 = success/unavailable/error.
+def load_rlsm_quic_server_conn_zero_rtt_keys(ref handle: OwnedDLHandle) -> rlsm_quic_server_conn_zero_rtt_keys_fn:
+    return handle.get_function[rlsm_quic_server_conn_zero_rtt_keys_fn]("rlsm_quic_server_conn_zero_rtt_keys")
 
 # Returns 1 if server accepted early data (0-RTT), 0 otherwise, -1 on error.
 def load_rlsm_quic_conn_is_early_data_accepted(ref handle: OwnedDLHandle) -> rlsm_quic_conn_is_early_data_accepted_fn:

@@ -66,6 +66,7 @@ pub use quic_hs::{
     rlsm_quic_conn_transport_params,
     rlsm_quic_conn_alpn,
     rlsm_quic_conn_zero_rtt_keys,
+    rlsm_quic_server_conn_zero_rtt_keys,
     rlsm_quic_conn_is_early_data_accepted,
 };
 
