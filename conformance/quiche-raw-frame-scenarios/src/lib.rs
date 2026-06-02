@@ -11,6 +11,8 @@
 //! `encode_pkt` / `encode_pkt_reserved_bits` helpers, which share the
 //! live connection crypto context.
 
+pub mod resumption;
+
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
