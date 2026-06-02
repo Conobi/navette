@@ -1016,7 +1016,10 @@ struct QuicConnection(Movable):
             #
             # Three paths (RFC 9001 §4.2, §4.6, §5.5, §5.7):
             #   A. Slot 3 keys already installed — fall through to the
-            #      standard decrypt continuation with space_idx = 2.
+            #      standard decrypt continuation with space_idx =
+            #      ZERO_RTT_SPACE_IDX (3, NOT the Application PN space 2;
+            #      the dispatch sentinel is what makes the F30 guard fire
+            #      on CRYPTO frames in 0-RTT).
             #   B. Slot 3 empty AND 0-RTT enabled by config — lazy-install
             #      via the server FFI. On success: fall through. On
             #      failure: buffer the packet (unless we are already
