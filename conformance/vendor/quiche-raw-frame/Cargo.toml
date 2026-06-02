@@ -73,6 +73,7 @@ gcongestion = []
 internal = []
 openssl = ["pkg-config"]
 pkg-config-meta = []
+raw-frame-fixtures = []
 
 [lib]
 name = "quiche"

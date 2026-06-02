@@ -3,10 +3,10 @@
 //! Phase 1 (`drive_to_session_ticket`): connect to a navette server,
 //! complete a handshake, capture the issued NewSessionTicket.
 //!
-//! Phase 2 (`drive_to_zero_rtt_seal` — added in the next commit)
-//! reconnects with the cached blob, drives until quiche's
-//! `crypto_seal[Application]` is populated, returns the connection in a
-//! state where `encode_pkt(Type::ZeroRTT, ...)` is valid.
+//! Phase 2 (`drive_to_zero_rtt_seal`) reconnects with the cached blob,
+//! drives until quiche's `crypto_seal[Application]` is populated, and
+//! returns the connection in a state where
+//! `encode_pkt(Type::ZeroRTT, ...)` is valid.
 //!
 //! NOT thread-safe. Single connection per call. Caller owns the
 //! returned blob's lifetime; pass it as `&[u8]` to Phase 2.
@@ -32,6 +32,14 @@ pub type SessionTicketBlob = Vec<u8>;
 /// `HANDSHAKE_DEADLINE_MS` in `lib.rs` and is well above the observed
 /// per-host noise floor.
 const PHASE1_DEADLINE_MS: u64 = 2_000;
+
+/// Wall-clock deadline for Phase 2 (resumed-handshake drive until the
+/// Application `crypto_seal` is populated).
+///
+/// Same budget as Phase 1; aborting after 2 s catches the case where the
+/// server rejected the ticket (handshake degrades to a full 1-RTT
+/// handshake and the early-data keys never install).
+const PHASE2_DEADLINE_MS: u64 = 2_000;
 
 /// Drive a fresh QUIC + HTTP/3 connection to navette and return the
 /// issued NewSessionTicket blob.
@@ -171,6 +179,135 @@ pub fn drive_to_session_ticket(server_addr: SocketAddr) -> io::Result<SessionTic
     let _ = flush(&mut conn, &socket, &mut out);
 
     Ok(blob)
+}
+
+/// A resumed quiche client connection driven up to the point where 0-RTT
+/// packets can be encoded against it.
+///
+/// `conn` holds the live `quiche::Connection`; `socket` is the bound UDP
+/// socket peer-connected to `server_addr` for ongoing send/recv. Callers
+/// own the lifetimes of all three fields; nothing inside attempts a
+/// close on drop.
+pub struct ResumedConn {
+    /// The resumed quiche client connection. `has_application_crypto_seal()`
+    /// returns true when this struct is returned from
+    /// `drive_to_zero_rtt_seal`.
+    pub conn: quiche::Connection,
+    /// UDP socket bound to a loopback ephemeral port. Read-timeout is
+    /// preserved from the helper's drive loop; callers may reset it.
+    pub socket: UdpSocket,
+    /// Server address the connection targets. Re-exposed so the caller
+    /// can build follow-up `RecvInfo` and `send_to` calls without
+    /// re-resolving.
+    pub server_addr: SocketAddr,
+}
+
+/// Reconnect with a cached NewSessionTicket blob and drive the resumed
+/// handshake until quiche's Application `crypto_seal` is populated.
+///
+/// Returned in this state, the connection accepts
+/// `quiche::test_utils::encode_pkt(quiche::packet::Type::ZeroRTT, ...)`
+/// — the precondition the F30 scenario binary needs to inject a 0-RTT
+/// CRYPTO frame at the navette server.
+///
+/// Steps, in order:
+///
+/// 1. Build a quiche client `Config` with `enable_early_data()` and the
+///    same transport parameters as Phase 1.
+/// 2. Bind an ephemeral UDP socket on loopback.
+/// 3. Generate a fresh random 16-byte source CID.
+/// 4. `quiche::connect(Some("localhost"), ...)`.
+/// 5. `conn.set_session(session_blob)` — primes the resumed handshake.
+/// 6. Flush any pending Initial packets, then loop the standard
+///    recv/on_timeout/flush pump while
+///    `!conn.has_application_crypto_seal()` and
+///    `Instant::now() < deadline`.
+/// 7. Return `ResumedConn { conn, socket, server_addr }` once the seal
+///    is installed; surface `io::ErrorKind::TimedOut` on deadline.
+///
+/// # Errors
+///
+/// * `io::ErrorKind::TimedOut` — the deadline elapsed before the
+///   Application `crypto_seal` was installed. Usually means navette
+///   rejected the resumption ticket and the connection degraded to a
+///   full 1-RTT handshake.
+/// * `io::ErrorKind::Other` — wraps any quiche or socket error
+///   encountered on the way (config build, `set_session`, recv/send).
+pub fn drive_to_zero_rtt_seal(
+    server_addr: SocketAddr,
+    session_blob: &[u8],
+) -> io::Result<ResumedConn> {
+    // === 1. Config — same shape as Phase 1. ===
+    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)
+        .map_err(|e| io::Error::other(format!("Config::new: {e:?}")))?;
+    config.verify_peer(false);
+    config
+        .set_application_protos(&[b"h3"])
+        .map_err(|e| io::Error::other(format!("set_application_protos: {e:?}")))?;
+    config.enable_early_data();
+    config.set_max_idle_timeout(5_000);
+    config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config.set_initial_max_data(10_000_000);
+    config.set_initial_max_stream_data_bidi_local(1_000_000);
+    config.set_initial_max_stream_data_bidi_remote(1_000_000);
+    config.set_initial_max_stream_data_uni(1_000_000);
+    config.set_initial_max_streams_bidi(100);
+    config.set_initial_max_streams_uni(100);
+    config.set_disable_active_migration(true);
+
+    // === 2. Socket. ===
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.set_read_timeout(Some(Duration::from_millis(25)))?;
+    let local = socket.local_addr()?;
+
+    // === 3. Source CID. ===
+    let mut scid_bytes = [0u8; quiche::MAX_CONN_ID_LEN];
+    SystemRandom::new()
+        .fill(&mut scid_bytes[..])
+        .map_err(|_| io::Error::other("random scid"))?;
+    let scid = ConnectionId::from_ref(&scid_bytes);
+
+    // === 4. Connect. ===
+    let mut conn = quiche::connect(Some("localhost"), &scid, local, server_addr, &mut config)
+        .map_err(|e| io::Error::other(format!("quiche::connect: {e:?}")))?;
+
+    // === 5. Prime the resumed handshake with the cached ticket. ===
+    //
+    // After this call, the next outgoing Initial flight carries the
+    // pre_shared_key extension; if navette accepts, the Application
+    // (1-RTT) keys derive directly from the early-data secret without
+    // waiting for the server Finished message.
+    conn.set_session(session_blob)
+        .map_err(|e| io::Error::other(format!("conn.set_session: {e:?}")))?;
+
+    let deadline = Instant::now() + Duration::from_millis(PHASE2_DEADLINE_MS);
+    let mut out = [0u8; MAX_DATAGRAM_SIZE];
+    let mut buf = [0u8; 65_535];
+
+    // === 6. Flush the resumed Initial flight, then pump. ===
+    flush(&mut conn, &socket, &mut out)?;
+
+    while !conn.has_application_crypto_seal() && Instant::now() < deadline {
+        pump_once(&mut conn, &socket, local, &mut buf, &mut out)?;
+    }
+
+    if !conn.has_application_crypto_seal() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "Application crypto_seal not installed within {PHASE2_DEADLINE_MS} ms \
+                 (resumption likely rejected by server)"
+            ),
+        ));
+    }
+
+    // === 7. Hand the connection back to the caller. ===
+    Ok(ResumedConn {
+        conn,
+        socket,
+        server_addr,
+    })
 }
 
 /// Run one iteration of the recv -> on_timeout -> flush pump.

@@ -7134,6 +7134,23 @@ impl<F: BufFactory> Connection<F> {
         self.handshake.is_in_early_data()
     }
 
+    /// Returns true when the Application (1-RTT) `crypto_seal` has been
+    /// installed on this connection — i.e. when 0-RTT or 1-RTT packets
+    /// can be encoded via `test_utils::encode_pkt(Type::ZeroRTT, ...)` or
+    /// `test_utils::encode_pkt(Type::Short, ...)`.
+    ///
+    /// Exposed for raw-frame fixtures that need to wait until quiche has
+    /// derived the early-data / application keys before injecting a
+    /// hand-built packet at the Application epoch. Has no stability
+    /// guarantee outside the `raw-frame-fixtures` feature.
+    #[cfg(any(test, feature = "raw-frame-fixtures"))]
+    #[inline]
+    pub fn has_application_crypto_seal(&self) -> bool {
+        self.crypto_ctx[packet::Epoch::Application]
+            .crypto_seal
+            .is_some()
+    }
+
     /// Returns the early data reason for the connection.
     ///
     /// This status can be useful for logging and debugging. See [BoringSSL]

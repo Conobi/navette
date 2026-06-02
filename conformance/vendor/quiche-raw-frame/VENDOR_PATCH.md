@@ -11,7 +11,7 @@ When adding a fifth patch, commit it to the fork branch FIRST (and open an
 upstream PR for the change if appropriate per the hard-cap policy), then
 re-sync the vendored tree below from that branch.
 
-This vendored quiche tree carries four changes from upstream needed for the
+This vendored quiche tree carries five changes from upstream needed for the
 raw-frame conformance harness. The harness needs to inject hand-crafted QUIC
 frames at the wire level — quiche's public API does not expose this. The
 following patches expose the required internals.
@@ -73,3 +73,36 @@ step differs (`b.put_bytes(payload)` instead of `frame.to_bytes(&mut b)`).
 The function body is ~40 lines. Wire-level behaviour is identical to
 `encode_pkt` for the subset of frames expressible via `Frame`; the helper
 is strictly additive — it does not alter `encode_pkt`.
+
+## Patch 5 — `Connection::has_application_crypto_seal` accessor
+
+In `src/lib.rs`, on the public `impl<F: BufFactory> Connection<F>` block,
+add a cfg-gated read-only accessor that returns whether the Application
+(1-RTT) `crypto_seal` slot is populated:
+
+  ```rust
+  #[cfg(any(test, feature = "raw-frame-fixtures"))]
+  #[inline]
+  pub fn has_application_crypto_seal(&self) -> bool {
+      self.crypto_ctx[packet::Epoch::Application]
+          .crypto_seal
+          .is_some()
+  }
+  ```
+
+A new feature `raw-frame-fixtures` is declared in `Cargo.toml` (and the
+sibling `Cargo.toml.orig`) to gate the accessor. The scenarios crate
+enables this feature unconditionally; downstream consumers of the
+vendored crate do not pick it up.
+
+The 0-RTT scenario harness (`s_f30_zero_rtt_crypto`) needs this signal
+to detect when quiche has derived the early-data keys after
+`set_session()`, which is the precondition for invoking
+`test_utils::encode_pkt(Type::ZeroRTT, ...)`. quiche's public surface
+exposes `is_in_early_data()` only after the *client* writes its first
+0-RTT byte; the harness drives the keys-only handshake without writing
+any 0-RTT application data, so it needs a key-state predicate that does
+not depend on the Boring SSL early-data writer state.
+
+The accessor is read-only and borrows `&self`; no mutation, no panic
+paths, no AEAD material exposed.

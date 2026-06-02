@@ -6,7 +6,7 @@ publish = false
 description = "Raw-frame QUIC conformance scenarios for navette."
 
 [dependencies]
-quiche = { path = "../vendor/quiche-raw-frame", default-features = false, features = ["boringssl-vendored"] }
+quiche = { path = "../vendor/quiche-raw-frame", default-features = false, features = ["boringssl-vendored", "raw-frame-fixtures"] }
 serde_json = "1"
 ring = "0.17"
 

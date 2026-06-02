@@ -55,6 +55,12 @@ ffi = ["dep:cdylib-link-lines"]
 # Exposes internal APIs that have no stability guarantees across versions.
 internal = []
 
+# Expose accessors required by navette's raw-frame conformance scenarios
+# (e.g. `Connection::has_application_crypto_seal`). Off by default; gated
+# behind a feature flag so the surface stays opt-in for downstream
+# consumers of the vendored crate.
+raw-frame-fixtures = []
+
 [package.metadata.release]
 tag-prefix = ""
 
