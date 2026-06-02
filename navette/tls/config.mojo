@@ -170,6 +170,7 @@ struct QuicServerConfig(Movable):
 
     var _lib: SharedLibrary
     var _handle: Int32
+    var _max_early_data: UInt32
 
     def __init__(
         out self,
@@ -217,13 +218,16 @@ struct QuicServerConfig(Movable):
             var err = rlib[].last_error()
             out_handle.free()
             self._handle = Int32(-1)
+            self._max_early_data = UInt32(0)
             raise "quic_server_config_new failed: " + err
         self._handle = out_handle[0]
         out_handle.free()
+        self._max_early_data = max_early_data
 
     def __init__(out self, *, deinit take: Self):
         self._lib = take._lib^
         self._handle = take._handle
+        self._max_early_data = take._max_early_data
 
     def __del__(deinit self):
         if self._handle > 0:
@@ -232,6 +236,13 @@ struct QuicServerConfig(Movable):
     @always_inline
     def handle(self) -> Int32:
         return self._handle
+
+    @always_inline
+    def max_early_data(self) -> UInt32:
+        """Return the max_early_data value set at construction. UInt32(0)
+        means 0-RTT is disabled (rejection mode); UInt32::MAX means
+        0-RTT decrypt is enabled (rustls QUIC constraint, RFC 9001 §4.6.1)."""
+        return self._max_early_data
 
 
 struct QuicClientConfig(Movable):
