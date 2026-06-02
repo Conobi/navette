@@ -133,7 +133,7 @@ from navette.quic.pn_space import (
 )
 from navette.quic.recovery import Recovery, K_GRANULARITY
 from navette.quic.crypto_stream import CryptoStream
-from navette.quic.packet_protect import PacketProtect
+from navette.quic.packet_protect import PacketProtect, ZERO_RTT_KEY_SLOT_IDX
 from navette.quic.cc.cc_trait import AckedPacket, LostPacket, PERSISTENT_CONG_THRESHOLD
 from navette.quic.ecn import (
     EcnCounts, ECN_NOT_ECT, ECN_ECT0, ECN_ECT1, ECN_CE,
@@ -1008,24 +1008,57 @@ struct QuicConnection(Movable):
                 if header.packet_type == PacketType.initial():
                     self.peer_cid = List[UInt8](copy=header.scid)
 
-            # 2c. 0-RTT rejection (RFC 9001 §4.2 / §5.5). Navette ships in
-            # rejection-mode: `max_early_data_size` defaults to 0, so the
-            # server holds no 0-RTT keys. The server MAY drop 0-RTT
-            # packets without attempting decryption. Skip past the packet
-            # boundary explicitly so subsequent coalesced packets in the
-            # same datagram (e.g. Initial → 0-RTT) are still processed.
-            # The full acceptance path (F30: CRYPTO-in-0-RTT →
-            # PROTOCOL_VIOLATION) routes through `_dispatch_frame` with
-            # `ZERO_RTT_SPACE_IDX` once 0-RTT keys are wired.
+            # 2c. 0-RTT detection — runs BEFORE packet_type_to_space() so
+            # we can override space_idx with ZERO_RTT_SPACE_IDX on every
+            # 0-RTT path. The F30 guard (CRYPTO-in-0-RTT →
+            # PROTOCOL_VIOLATION) fires off space_idx regardless of
+            # whether the decrypt itself succeeded.
+            #
+            # Three paths (RFC 9001 §4.2, §4.6, §5.5, §5.7):
+            #   A. Slot 3 keys already installed — fall through to the
+            #      standard decrypt continuation with space_idx = 2.
+            #   B. Slot 3 empty AND 0-RTT enabled by config — lazy-install
+            #      via the server FFI. On success: fall through. On
+            #      failure: buffer the packet (unless we are already
+            #      draining, in which case silent-drop) and skip ahead.
+            #   C. 0-RTT disabled by config (max_early_data == 0) —
+            #      rejection mode: skip past the packet boundary so
+            #      coalesced packets after it are still processed.
+            var space_idx: Int = -1
             if header.is_long_header and header.packet_type == PacketType.zero_rtt():
                 var skip = header.pn_offset + Int(header.payload_length)
                 if skip > remaining_len:
                     break  # Truncated
-                offset += skip
-                continue
 
-            # 3. Map to PN space.
-            var space_idx = packet_type_to_space(header.packet_type)
+                if self.protect.has_keys(ZERO_RTT_KEY_SLOT_IDX):
+                    # Path A — keys installed; decrypt through slot 3.
+                    space_idx = ZERO_RTT_SPACE_IDX
+                elif self._zero_rtt_enabled():
+                    # Path B — lazy install. Buffer-or-drop on fail.
+                    var ok = self.protect.install_zero_rtt_read_keys(self.conn_handle)
+                    comptime if PROFILE_ACCEPT:
+                        if self.profile_ptr is not None:
+                            self.profile_ptr.value()[].record_zero_rtt_install(ok)
+                    if ok:
+                        space_idx = ZERO_RTT_SPACE_IDX
+                    else:
+                        if not self._draining_zero_rtt:
+                            var pkt_bytes = Span[UInt8, MutAnyOrigin](
+                                ptr=remaining_ptr,
+                                length=skip,
+                            )
+                            _ = self._buffer_zero_rtt_or_drop(pkt_bytes)
+                        # drain-mode: silent drop.
+                        offset += skip
+                        continue
+                else:
+                    # Path C — 0-RTT disabled. Preserve rejection-mode skip.
+                    offset += skip
+                    continue
+            else:
+                # 3. Map to PN space (non-0-RTT path).
+                space_idx = packet_type_to_space(header.packet_type)
+
             if space_idx < 0:
                 break  # VN, Retry — skip for M3b
 
