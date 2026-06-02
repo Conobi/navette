@@ -1091,12 +1091,15 @@ pub extern "C" fn rlsm_quic_conn_is_early_data_accepted(conn_handle: i32) -> i32
 }
 
 #[cfg(test)]
+mod tests_resumption_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     /// Generate a self-signed cert for "localhost" using rcgen.
     /// Returns (cert_pem_bytes, key_pem_bytes, cert_der_bytes).
-    fn gen_test_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    pub(super) fn gen_test_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let cert_pem = cert.serialize_pem().unwrap().into_bytes();
         let key_pem  = cert.serialize_private_key_pem().into_bytes();
@@ -1607,6 +1610,23 @@ mod tests {
         let mut keys_h: i32 = 0;
         let rc = rlsm_quic_server_conn_zero_rtt_keys(-99, &mut keys_h);
         assert_eq!(rc, -1, "invalid conn handle must return -1");
+    }
+
+    #[test]
+    fn test_server_0rtt_keys_returns_success_on_resumed_conn() {
+        let (server_h, _client_h) =
+            super::tests_resumption_fixture::drive_full_handshake_with_resumption();
+        let mut keys_h: i32 = -1;
+        let rc = rlsm_quic_server_conn_zero_rtt_keys(server_h, &mut keys_h);
+        assert_eq!(rc, 0, "resumed server conn must yield 0-RTT keys (got rc={rc})");
+        assert!(keys_h > 0, "keys handle must be positive on success");
+        // NOTE: We deliberately do NOT call `rlsm_keys_free(keys_h)` here.
+        // `rlsm_keys_free` increments the test-only `KEYS_FREE_COUNT` atomic
+        // that `test_keys_free_counter_increments_and_resets` asserts on
+        // exactly; calling it in parallel races that test. Keys handles
+        // are process-lifetime in the test binary, so leaking one is safe.
+        let _ = rlsm_quic_conn_free(server_h);
+        let _ = rlsm_quic_conn_free(_client_h);
     }
 
     // -----------------------------------------------------------------------
