@@ -334,11 +334,11 @@ mojo_ret  = "Int32"
 
 [[symbol]]
 name = "rlsm_quic_server_config_new"
-description = "Create a QUIC server TLS config (TLS 1.3 only) with cert + key + ALPN."
-rust_args = ["*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "i32", "*mut i32"]
+description = "Create a QUIC server TLS config (TLS 1.3 only) with cert + key + ALPN. max_early_data ∈ {0, 0xFFFFFFFF} (rustls QUIC constraint); any other value is rejected at the FFI boundary."
+rust_args = ["*const u8", "i32", "*const u8", "i32", "*const u8", "i32", "u32", "*mut i32"]
 rust_args_names = ["cert_pem", "cert_len", "key_pem", "key_len", "alpn_ptr", "alpn_len", "max_early_data", "out_handle"]
 rust_ret  = "i32"
-mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "Int32", "UnsafePointer[Int32]"]
+mojo_args = ["UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[UInt8]", "Int32", "UInt32", "UnsafePointer[Int32]"]
 mojo_ret  = "Int32"
 
 [[symbol]]

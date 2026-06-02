@@ -144,12 +144,13 @@ struct RustlsLibrary(Movable):
         key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
         alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
         out_handle: UnsafePointer[Int32, MutAnyOrigin],
-        max_early_data: Int32 = 0,
+        max_early_data: UInt32 = UInt32(0),
     ) -> Int32:
         """Create QUIC server TLS config. Returns 0 on success.
 
-        max_early_data: 0 disables 0-RTT (default). Set to a positive value
-        to enable rustls's session-resumption 0-RTT acceptance up to that byte budget.
+        max_early_data: 0 disables 0-RTT (default); UInt32(0xFFFFFFFF) enables
+        0-RTT (rustls QUIC accepts only those two values per RFC 9001 §4.6.1).
+        Any other value is rejected at the FFI boundary with rc=-1.
         """
         return self._handle.call["rlsm_quic_server_config_new", Int32](
             cert_pem, cert_len, key_pem, key_len, alpn_ptr, alpn_len,

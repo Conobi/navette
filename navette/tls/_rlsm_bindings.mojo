@@ -39,7 +39,7 @@ comptime rlsm_keys_free_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_aes_gcm_128_seal_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_aes_gcm_128_open_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_hmac_sha256_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_server_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UInt32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_client_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_client_config_new_insecure_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_client_config_with_ca_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
@@ -184,7 +184,7 @@ def load_rlsm_aes_gcm_128_open(ref handle: OwnedDLHandle) -> rlsm_aes_gcm_128_op
 def load_rlsm_hmac_sha256(ref handle: OwnedDLHandle) -> rlsm_hmac_sha256_fn:
     return handle.get_function[rlsm_hmac_sha256_fn]("rlsm_hmac_sha256")
 
-# Create a QUIC server TLS config (TLS 1.3 only) with cert + key + ALPN.
+# Create a QUIC server TLS config (TLS 1.3 only) with cert + key + ALPN. max_early_data ∈ {0, 0xFFFFFFFF} (rustls QUIC constraint); any other value is rejected at the FFI boundary.
 def load_rlsm_quic_server_config_new(ref handle: OwnedDLHandle) -> rlsm_quic_server_config_new_fn:
     return handle.get_function[rlsm_quic_server_config_new_fn]("rlsm_quic_server_config_new")
 

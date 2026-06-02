@@ -177,7 +177,7 @@ struct QuicServerConfig(Movable):
         cert_pem: Span[UInt8, _],
         key_pem: Span[UInt8, _],
         alpn: String = "h3",
-        max_early_data: Int32 = 0,
+        max_early_data: UInt32 = UInt32(0),
     ) raises:
         self._lib = SharedLibrary(other=lib)
 

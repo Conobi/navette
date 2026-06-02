@@ -86,7 +86,7 @@ pub extern "C" fn rlsm_quic_server_config_new(
     cert_pem:       *const u8, cert_len:  i32,
     key_pem:        *const u8, key_len:   i32,
     alpn_ptr:       *const u8, alpn_len:  i32,
-    max_early_data: i32,
+    max_early_data: u32,
     out_handle:     *mut i32,
 ) -> i32 {
     clear_last_error();
@@ -98,7 +98,18 @@ pub extern "C" fn rlsm_quic_server_config_new(
     if cert_len < 0 { rlsm_err!("rlsm_quic_server_config_new: negative cert_len"; return -1); }
     if key_len  < 0 { rlsm_err!("rlsm_quic_server_config_new: negative key_len";  return -1); }
     if alpn_len < 0 { rlsm_err!("rlsm_quic_server_config_new: negative alpn_len"; return -1); }
-    if max_early_data < 0 { rlsm_err!("rlsm_quic_server_config_new: negative max_early_data"; return -1); }
+
+    // RFC 9001 §4.6.1 + rustls-0.23.37/src/quic.rs:283 — for QUIC, rustls
+    // accepts only {0, u32::MAX} for max_early_data_size. Any other value
+    // makes ServerConnection::new fail; we fail-fast at the FFI boundary
+    // so the caller's diagnostic points at THIS function, not a downstream
+    // generic error.
+    if max_early_data != 0 && max_early_data != u32::MAX {
+        rlsm_err!(
+            "rlsm_quic_server_config_new: rustls QUIC requires max_early_data ∈ {{0, 0xFFFFFFFF}}";
+            return -1
+        );
+    }
 
     let cert_bytes = unsafe { std::slice::from_raw_parts(cert_pem, cert_len as usize) };
     let key_bytes  = unsafe { std::slice::from_raw_parts(key_pem,  key_len  as usize) };
@@ -151,9 +162,9 @@ pub extern "C" fn rlsm_quic_server_config_new(
         }
     };
 
-    // max_early_data_size: 0 = 0-RTT disabled (default until P3). Cast i32→u32
-    // is safe for non-negative input (validated above).
-    config.max_early_data_size = max_early_data as u32;
+    // max_early_data_size: 0 = 0-RTT disabled (default); u32::MAX = enabled.
+    // Other values were rejected at the FFI boundary above (rustls QUIC constraint).
+    config.max_early_data_size = max_early_data;
 
     match quic_server_cfg_table().insert(Arc::new(config)) {
         Some(h) => { unsafe { *out_handle = h; } 0 }
@@ -1556,6 +1567,62 @@ mod tests {
         // round to 0; the sentinel-overwrite check above covers the contract.
 
         let _ = rlsm_quic_conn_free(client_h);
+        let _ = rlsm_quic_conn_free(server_h);
+    }
+
+    // =======================================================================
+    // Spec 2026-06-02 — config validation widens to u32 with rustls constraint
+    // =======================================================================
+
+    #[test]
+    fn test_server_config_new_rejects_illegal_max_early_data() {
+        // rustls 0.23.37 QUIC requires max_early_data_size ∈ {0, 0xFFFFFFFF}.
+        // The FFI must reject any other value at the boundary, never propagating
+        // to rustls (where it would surface as a confusing handshake-time error).
+        let (cert_pem, key_pem, _) = gen_test_cert();
+        let alpn = b"h3";
+        for illegal in &[1u32, 100, 0x7FFF_FFFF, 0xFFFF_FFFE] {
+            let mut handle_out: i32 = -1;
+            let rc = rlsm_quic_server_config_new(
+                cert_pem.as_ptr(), cert_pem.len() as i32,
+                key_pem.as_ptr(),  key_pem.len()  as i32,
+                alpn.as_ptr(),     alpn.len()      as i32,
+                *illegal,
+                &mut handle_out,
+            );
+            assert_eq!(rc, -1, "illegal max_early_data={illegal:#x} must be rejected at FFI boundary");
+            assert_eq!(handle_out, -1, "handle untouched on rejection");
+        }
+    }
+
+    #[test]
+    fn test_server_config_new_accepts_u32_max() {
+        // max_early_data = u32::MAX enables 0-RTT in rustls's QUIC mode (no
+        // byte ceiling at the TLS layer; QUIC handles flow control).
+        let (cert_pem, key_pem, _) = gen_test_cert();
+        let alpn = b"h3";
+        let mut handle_out: i32 = -1;
+        let rc = rlsm_quic_server_config_new(
+            cert_pem.as_ptr(), cert_pem.len() as i32,
+            key_pem.as_ptr(),  key_pem.len()  as i32,
+            alpn.as_ptr(),     alpn.len()      as i32,
+            u32::MAX,
+            &mut handle_out,
+        );
+        assert_eq!(rc, 0, "max_early_data=u32::MAX must succeed");
+        assert!(handle_out > 0, "handle must be positive on success");
+
+        // The returned config must be usable to construct a ServerConnection
+        // — proves the rustls accept-path doesn't reject u32::MAX downstream.
+        let tp: &[u8] = &[];
+        let mut server_h: i32 = -1;
+        let rc2 = rlsm_quic_server_conn_new(
+            handle_out, 1,
+            tp.as_ptr(), 0,
+            &mut server_h,
+        );
+        assert_eq!(rc2, 0, "ServerConnection::new must accept the u32::MAX config");
+        assert!(server_h > 0);
         let _ = rlsm_quic_conn_free(server_h);
     }
 }
