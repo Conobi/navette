@@ -121,8 +121,19 @@ def main() raises:
     var cert = open_file(cert_path, "r").read_bytes()
     var key = open_file(key_path, "r").read_bytes()
 
+    # HELLO_H3_MAX_EARLY_DATA=max enables 0-RTT acceptance on the rustls
+    # side (max_early_data_size = u32::MAX, per RFC 9001 §4.6.1 the only
+    # non-zero value rustls QUIC accepts). Default is 0 (rejection mode)
+    # — used by all in-tree tests and the post-v1 production posture.
+    # The conformance F30 scenario (CRYPTO-in-0-RTT protocol violation)
+    # sets this env so the server actually decrypts the adversarial
+    # 0-RTT packet and the F30 guard can fire.
+    var max_early_env = getenv("HELLO_H3_MAX_EARLY_DATA", "0")
+    var max_early = UInt32(0xFFFFFFFF) if max_early_env == "max" else UInt32(0)
     var tls = TlsBackend()
-    var config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
+    var config = QuicServerConfig(
+        tls.shared(), Span(cert), Span(key), max_early_data=max_early
+    )
 
     var sock = udp_listener(port)
     print("hello_h3_server: listening (fd=" + String(Int(sock.raw())) + ")")

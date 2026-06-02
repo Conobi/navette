@@ -151,6 +151,13 @@ fi
 (
     cd "$SERVER_DIR"
     export LD_LIBRARY_PATH="$MODULAR_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # Enable 0-RTT acceptance on the test server. The F30 scenario
+    # injects a 0-RTT packet carrying a CRYPTO frame; without this
+    # env the server runs in rejection mode (max_early_data = 0) and
+    # silently drops 0-RTT, so the F30 guard cannot fire. All other
+    # scenarios are unaffected (they never present a resumed PSK so
+    # the early-data permit is never invoked).
+    export HELLO_H3_MAX_EARLY_DATA=max
     exec ./hello_h3_server
 ) > "$SERVER_OUT" 2> "$SERVER_ERR" &
 SERVER_PID=$!
