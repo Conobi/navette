@@ -822,6 +822,30 @@ pub extern "C" fn rlsm_keys_tag_len(keys_handle: i32) -> i32 {
     }
 }
 
+// =========================================================================
+// Test-only keys-free observability probe.
+// Gated behind #[cfg(any(test, feature = "test-instrumentation"))] so the
+// counter never lives in production builds. The Mojo lifecycle tests use
+// the getter to assert exact free counts and falsify double-free / leak
+// bugs without ASan.
+// =========================================================================
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+static KEYS_FREE_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[no_mangle]
+pub extern "C" fn rlsm_test_keys_free_count() -> u64 {
+    KEYS_FREE_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[no_mangle]
+pub extern "C" fn rlsm_test_keys_free_reset() {
+    KEYS_FREE_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Free the keys identified by `keys_handle`.
 ///
 /// Returns 0 on success, -1 if the handle was not found.
@@ -830,7 +854,11 @@ pub extern "C" fn rlsm_keys_free(keys_handle: i32) -> i32 {
     clear_last_error();
 
     match keys_table().remove(keys_handle) {
-        Some(_) => 0,
+        Some(_) => {
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            KEYS_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            0
+        }
         None => {
             rlsm_err!("rlsm_keys_free: invalid keys handle"; return -1);
         }
@@ -1331,5 +1359,45 @@ mod tests {
 
         rlsm_keys_free(client_h);
         rlsm_keys_free(server_h);
+    }
+
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[test]
+    fn test_keys_free_counter_increments_and_resets() {
+        // Counter starts at 0 (reset for a clean slate).
+        rlsm_test_keys_free_reset();
+        assert_eq!(rlsm_test_keys_free_count(), 0, "counter must reset to 0");
+
+        // Free an invalid handle — counter must NOT increment when the lookup
+        // fails (we only count successful frees, to match "key actually
+        // released" semantics; double-free shows up as remove() returning None).
+        let rc = rlsm_keys_free(-99);
+        assert_eq!(rc, -1, "freeing invalid handle must return -1");
+        assert_eq!(
+            rlsm_test_keys_free_count(),
+            0,
+            "counter must not increment on failed free"
+        );
+
+        // Insert a synthetic keys entry, then free it — counter must reach 1.
+        // Use the canonical RFC 9001 §A test DCID so we don't need cert/key plumbing.
+        let dcid: &[u8] = &[
+            0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08,
+        ];
+        let kh = rlsm_initial_keys(
+            1, dcid.as_ptr(), dcid.len() as i32, 1,
+        );
+        assert!(kh > 0, "initial_keys must produce a positive handle");
+
+        let rc = rlsm_keys_free(kh);
+        assert_eq!(rc, 0, "freeing a valid handle must succeed");
+        assert_eq!(
+            rlsm_test_keys_free_count(),
+            1,
+            "counter must increment on successful free"
+        );
+
+        rlsm_test_keys_free_reset();
+        assert_eq!(rlsm_test_keys_free_count(), 0, "reset must zero the counter");
     }
 }

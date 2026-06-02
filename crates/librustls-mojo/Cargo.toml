@@ -22,6 +22,7 @@ rcgen = "0.12"
 default = []
 skip-locks = []
 insecure = []
+test-instrumentation = []
 
 [profile.release]
 panic = "abort"

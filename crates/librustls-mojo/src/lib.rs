@@ -30,6 +30,8 @@ pub use quic::{
     rlsm_aes_gcm_128_open,
     rlsm_hmac_sha256,
 };
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use quic::{rlsm_test_keys_free_count, rlsm_test_keys_free_reset};
 pub use config::{
     rlsm_client_config_new,
     rlsm_server_config_new,
