@@ -152,15 +152,25 @@ pub extern "C" fn rlsm_quic_server_config_new(
     config.key_log = Arc::new(KeyLogFile::new());
     config.alpn_protocols = vec![alpn_bytes.to_vec()];
 
-    // Always-on TLS 1.3 session resumption: enable rotating-AES ticketer.
-    // Plan: 2026-05-03-short-conn-resumption.
-    config.ticketer = match rustls::crypto::aws_lc_rs::Ticketer::new() {
-        Ok(t) => t,
-        Err(e) => {
-            set_last_error(format!("rlsm_quic_server_config_new: ticketer build error: {e}"));
-            return -1;
-        }
-    };
+    // Session resumption. rustls 0.23 gates 0-RTT acceptance on
+    // `!config.ticketer.enabled()` — see decide_if_early_data_allowed in
+    // rustls server/tls13.rs. Setting the stateless AES ticketer would
+    // silently disable 0-RTT. When the caller opts into 0-RTT
+    // (max_early_data != 0) we leave the ticketer at its default
+    // (NeverProducesTickets) and rely on the default session_storage
+    // (in-memory ServerSessionMemoryCache, 256 entries) for stateful
+    // resumption. Production rejection-mode callers keep the rotating
+    // AES Ticketer so stateless tickets remain available across multi-
+    // worker / multi-process deployments.
+    if max_early_data == 0 {
+        config.ticketer = match rustls::crypto::aws_lc_rs::Ticketer::new() {
+            Ok(t) => t,
+            Err(e) => {
+                set_last_error(format!("rlsm_quic_server_config_new: ticketer build error: {e}"));
+                return -1;
+            }
+        };
+    }
 
     // max_early_data_size: 0 = 0-RTT disabled (default); u32::MAX = enabled.
     // Other values were rejected at the FFI boundary above (rustls QUIC constraint).
