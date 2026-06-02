@@ -70,11 +70,15 @@ ensure_server_fresh() {
         echo "[run_qrf] $SERVER_BIN not built; rebuilding" >&2
     else
         local newest_src
-        newest_src="$(find "$REPO_ROOT/navette" -name '*.mojo' -newer "$SERVER_BIN" -print -quit 2>/dev/null)"
+        # Watch both the navette package AND the example's own main.mojo;
+        # without the example check, edits to hello_h3_server's entry
+        # point silently won't take effect across QRF re-runs.
+        newest_src="$(find "$REPO_ROOT/navette" "$REPO_ROOT/examples/hello_h3_server" \
+            -name '*.mojo' -newer "$SERVER_BIN" -print -quit 2>/dev/null)"
         if [[ -z "$newest_src" ]]; then
             return 0
         fi
-        echo "[run_qrf] navette source newer than $SERVER_BIN; rebuilding" >&2
+        echo "[run_qrf] source newer than $SERVER_BIN ($newest_src); rebuilding" >&2
     fi
 
     local example_dir="$REPO_ROOT/examples/hello_h3_server"
