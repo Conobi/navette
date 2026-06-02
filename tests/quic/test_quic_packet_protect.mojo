@@ -222,8 +222,96 @@ def test_discard_keys_at_slot_3_is_noop_when_empty() raises:
     print("  test_discard_keys_at_slot_3_is_noop_when_empty: PASS")
 
 
+def test_discard_clears_slot_3_and_frees_handle() raises:
+    """discard_keys(3) on a populated slot frees the handle exactly once
+    (counter delta = 1) and leaves the slot empty. No error from the FFI
+    (last_error not set)."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var protect = PacketProtect(tls.shared())
+
+    var dcid: List[UInt8] = [
+        UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
+        UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
+    ]
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    for i in range(len(dcid)):
+        dcid_ptr[i] = dcid[i]
+    var rlib = tls.shared().inner_ptr()
+    var h = rlib[].initial_keys(
+        Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
+    )
+    dcid_ptr.free()
+    assert_true(h > Int32(0), "synth handle must be positive")
+    protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h)
+
+    _reset_keys_free_counter(tls.shared())
+
+    protect.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
+
+    var c = _read_keys_free_counter(tls.shared())
+    assert_equal_int(Int(c), 1, "discard must free the handle exactly once")
+    assert_true(
+        not protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must be empty after discard",
+    )
+
+    var err = rlib[].last_error()
+    assert_true(
+        len(err) == 0,
+        "last_error must be empty on successful discard",
+    )
+    # Extend protect lifetime past the assertion section so ASAP-destruction
+    # doesn't fire __del__ during the counter read and inflate the count.
+    _ = protect.has_keys(0)
+    print("  test_discard_clears_slot_3_and_frees_handle: PASS")
+
+
+def test_del_frees_slot_3_handle_exactly_once() raises:
+    """When a PacketProtect with slot 3 populated goes out of scope,
+    __del__ frees the slot-3 handle exactly once (counter delta = 1)."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+
+    var dcid: List[UInt8] = [
+        UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
+        UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
+    ]
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    for i in range(len(dcid)):
+        dcid_ptr[i] = dcid[i]
+    var rlib = tls.shared().inner_ptr()
+    var h = rlib[].initial_keys(
+        Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
+    )
+    dcid_ptr.free()
+    assert_true(h > Int32(0), "synth handle must be positive")
+
+    _reset_keys_free_counter(tls.shared())
+
+    # Scope-bounded PacketProtect: __del__ fires at block exit.
+    if True:
+        var protect = PacketProtect(tls.shared())
+        protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h)
+        # Mid-scope: no free yet (set_keys with empty prior slot does not free).
+        var c_mid = _read_keys_free_counter(tls.shared())
+        assert_equal_int(Int(c_mid), 0, "no free yet — slot was empty before set_keys")
+        # Extend protect lifetime so the counter read above doesn't trigger
+        # premature destruction.
+        _ = protect.has_keys(0)
+    # End of scope — protect.__del__ fires. Slot 3 holds h, so the loop
+    # over self.keys frees it.
+
+    var c_end = _read_keys_free_counter(tls.shared())
+    assert_equal_int(
+        Int(c_end), 1,
+        "__del__ must free slot-3 handle exactly once",
+    )
+    print("  test_del_frees_slot_3_handle_exactly_once: PASS")
+
+
 def main() raises:
     test_install_zero_rtt_read_keys_returns_false_on_fresh_conn()
     test_set_keys_replaces_without_leak_at_slot_3()
     test_install_is_free_first_when_slot_3_populated()
     test_discard_keys_at_slot_3_is_noop_when_empty()
+    test_discard_clears_slot_3_and_frees_handle()
+    test_del_frees_slot_3_handle_exactly_once()
