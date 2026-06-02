@@ -222,6 +222,69 @@ def test_discard_keys_at_slot_3_is_noop_when_empty() raises:
     print("  test_discard_keys_at_slot_3_is_noop_when_empty: PASS")
 
 
+def test_discard_zero_rtt_keys_helper_targets_slot_3() raises:
+    """The `_discard_zero_rtt_keys` helper on QuicConnection MUST target
+    slot 3 specifically. Pre-populate slot 3 on a real connection's
+    `protect`, call the helper, and assert the counter increments by
+    exactly one and slot 3 ends empty. A future renaming or wrong-slot
+    bug in the helper body would fail this test."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
+    var tp = default_transport_params()
+    var dcid_a = _synth_dcid()
+    var dcid_b = _synth_dcid()
+    var now = UInt64(1_000_000)
+    var conn = QuicConnection.server(
+        tls.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
+    )
+
+    # Synthesize a slot-3 handle and install it on the connection's
+    # PacketProtect directly (the helper reaches the real field, not a
+    # detached test fixture).
+    var dcid = _synth_dcid()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    for i in range(len(dcid)):
+        dcid_ptr[i] = dcid[i]
+    var rlib = tls.shared().inner_ptr()
+    var h_pre = rlib[].initial_keys(
+        Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
+    )
+    dcid_ptr.free()
+    assert_true(h_pre > Int32(0), "synth handle must be positive")
+
+    conn.protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h_pre)
+    assert_true(
+        conn.protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 populated before helper call",
+    )
+
+    _reset_keys_free_counter(tls.shared())
+
+    # Invoke the helper directly. This is the unit-level lock on the
+    # wiring: if a future implementer renamed _discard_zero_rtt_keys to
+    # call discard_keys(2) or some other slot, the counter would not
+    # tick (because slot 3 still holds h_pre) and the post-state assert
+    # would fail.
+    conn._discard_zero_rtt_keys()
+
+    var c = _read_keys_free_counter(tls.shared())
+    assert_equal_int(
+        Int(c), 1,
+        "_discard_zero_rtt_keys must free the slot-3 handle exactly once",
+    )
+    assert_true(
+        not conn.protect.has_keys(ZERO_RTT_KEY_SLOT_IDX),
+        "slot 3 must be empty after _discard_zero_rtt_keys",
+    )
+    # Extend conn lifetime past the assertions per
+    # feedback_mojo_asap_destruction_in_ffi_tests.
+    _ = conn.is_server
+    print("  test_discard_zero_rtt_keys_helper_targets_slot_3: PASS")
+
+
 def test_discard_clears_slot_3_and_frees_handle() raises:
     """discard_keys(3) on a populated slot frees the handle exactly once
     (counter delta = 1) and leaves the slot empty. No error from the FFI
@@ -313,5 +376,6 @@ def main() raises:
     test_set_keys_replaces_without_leak_at_slot_3()
     test_install_is_free_first_when_slot_3_populated()
     test_discard_keys_at_slot_3_is_noop_when_empty()
+    test_discard_zero_rtt_keys_helper_targets_slot_3()
     test_discard_clears_slot_3_and_frees_handle()
     test_del_frees_slot_3_handle_exactly_once()

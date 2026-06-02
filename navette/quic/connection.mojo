@@ -1769,6 +1769,14 @@ struct QuicConnection(Movable):
             self.handshake_confirmed = True
             self.state = self.state | CONN_ESTABLISHED
             self._discard_handshake_space()
+            # RFC 9001 §4.1.2 / §4.1.3 — HANDSHAKE_DONE confirms the handshake
+            # on the client side WITHOUT going through _on_handshake_complete,
+            # so the client-arm discard hook there is unreachable on this
+            # (primary) client trajectory. Wire the discard here too. No-op
+            # on the client today because slot 3 is unpopulated on clients;
+            # required for symmetry with the decrypt-path discard if a
+            # future client-side install ever lands.
+            self._discard_zero_rtt_keys()
             self.events.append(QuicEvent.handshake_complete())
             return
 
@@ -2673,7 +2681,7 @@ struct QuicConnection(Movable):
                 self._discard_handshake_space()
                 # RFC 9001 §4.1.3 — discard 0-RTT keys at handshake-complete.
                 # No-op on the client side because slot 3 is unpopulated on
-                # clients in this cycle; wired here for symmetry so a future
+                # clients today; wired here for symmetry so a future
                 # client-side install (if one is ever added) is also covered.
                 self._discard_zero_rtt_keys()
                 self.events.append(QuicEvent.handshake_complete())
