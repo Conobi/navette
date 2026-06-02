@@ -1228,6 +1228,12 @@ struct QuicConnection(Movable):
                     if self.profile_ptr is not None:
                         ph_sm_us = monotonic_us()
                 self._drive_handshake(now)
+                # RFC 9001 §5.7 — replay any 0-RTT packets that arrived
+                # ahead of the Initial that derives their keys.
+                # Idempotent (empty-buffer no-op); the re-entry guard
+                # inside the drain prevents Path B from re-buffering its
+                # own drained packets.
+                self._drain_zero_rtt_buffer(now, ecn_mark)
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
                         ph_sm_us = monotonic_us() - ph_sm_us
