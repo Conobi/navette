@@ -253,6 +253,19 @@ struct AcceptProfile(Copyable, Movable):
     var zero_rtt_install_attempts: Int64
     var zero_rtt_install_successes: Int64
 
+    # 0-RTT anti-replay outcome counters. Five buckets corresponding
+    # to the 4 ReplayDecision variants + a fifth bucket for anomaly
+    # paths (FFI rc != 0; store.check_and_record raises) that never
+    # produce a ReplayDecision but still close the connection in
+    # silent-drop mode. Operator-disambiguation rationale: real
+    # wire-level replay shows reject_duplicate; anomaly shows
+    # reject_no_authenticator.
+    var zero_rtt_replay_accept: Int64
+    var zero_rtt_replay_reject_duplicate: Int64
+    var zero_rtt_replay_reject_per_key_quota: Int64
+    var zero_rtt_replay_reject_global_ceiling: Int64
+    var zero_rtt_replay_reject_no_authenticator: Int64
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -377,6 +390,11 @@ struct AcceptProfile(Copyable, Movable):
         self.egress_pool_misses_total = UInt64(0)
         self.zero_rtt_install_attempts = Int64(0)
         self.zero_rtt_install_successes = Int64(0)
+        self.zero_rtt_replay_accept = Int64(0)
+        self.zero_rtt_replay_reject_duplicate = Int64(0)
+        self.zero_rtt_replay_reject_per_key_quota = Int64(0)
+        self.zero_rtt_replay_reject_global_ceiling = Int64(0)
+        self.zero_rtt_replay_reject_no_authenticator = Int64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -755,6 +773,31 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.zero_rtt_install_attempts += 1
 
+    def record_zero_rtt_replay_accept(mut self):
+        """Bump zero_rtt_replay_accept (ReplayDecision.accept path)."""
+        self.zero_rtt_replay_accept += 1
+
+    def record_zero_rtt_replay_reject_duplicate(mut self):
+        """Bump zero_rtt_replay_reject_duplicate (ReplayDecision.duplicate)."""
+        self.zero_rtt_replay_reject_duplicate += 1
+
+    def record_zero_rtt_replay_reject_per_key_quota(mut self):
+        """Bump zero_rtt_replay_reject_per_key_quota
+        (ReplayDecision.per_key_quota_exhausted)."""
+        self.zero_rtt_replay_reject_per_key_quota += 1
+
+    def record_zero_rtt_replay_reject_global_ceiling(mut self):
+        """Bump zero_rtt_replay_reject_global_ceiling
+        (ReplayDecision.global_ceiling_exhausted)."""
+        self.zero_rtt_replay_reject_global_ceiling += 1
+
+    def record_zero_rtt_replay_reject_no_authenticator(mut self):
+        """Bump zero_rtt_replay_reject_no_authenticator (FFI rc != 0,
+        store.check_and_record raises — paths that do NOT produce a
+        ReplayDecision). Distinct bucket so operators can
+        disambiguate a real wire-level replay from an anomaly."""
+        self.zero_rtt_replay_reject_no_authenticator += 1
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -846,6 +889,14 @@ struct AcceptProfile(Copyable, Movable):
         s += "zero_rtt_install:\n"
         s += "  attempts:  " + _fmt_count(UInt64(self.zero_rtt_install_attempts)) + "\n"
         s += "  successes: " + _fmt_count(UInt64(self.zero_rtt_install_successes)) + "\n\n"
+
+        # 0-RTT anti-replay outcome counters.
+        s += "zero_rtt_replay:\n"
+        s += "  accept:                 " + _fmt_count(UInt64(self.zero_rtt_replay_accept)) + "\n"
+        s += "  reject_duplicate:       " + _fmt_count(UInt64(self.zero_rtt_replay_reject_duplicate)) + "\n"
+        s += "  reject_per_key_quota:   " + _fmt_count(UInt64(self.zero_rtt_replay_reject_per_key_quota)) + "\n"
+        s += "  reject_global_ceiling:  " + _fmt_count(UInt64(self.zero_rtt_replay_reject_global_ceiling)) + "\n"
+        s += "  reject_no_authenticator:" + _fmt_count(UInt64(self.zero_rtt_replay_reject_no_authenticator)) + "\n\n"
 
         # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
@@ -1117,6 +1168,15 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "zero_rtt_install": {\n'
         s += '    "attempts": ' + String(self.zero_rtt_install_attempts) + ',\n'
         s += '    "successes": ' + String(self.zero_rtt_install_successes) + '\n'
+        s += "  },\n"
+
+        # 0-RTT anti-replay outcome counters.
+        s += '  "zero_rtt_replay": {\n'
+        s += '    "accept": ' + String(self.zero_rtt_replay_accept) + ',\n'
+        s += '    "reject_duplicate": ' + String(self.zero_rtt_replay_reject_duplicate) + ',\n'
+        s += '    "reject_per_key_quota": ' + String(self.zero_rtt_replay_reject_per_key_quota) + ',\n'
+        s += '    "reject_global_ceiling": ' + String(self.zero_rtt_replay_reject_global_ceiling) + ',\n'
+        s += '    "reject_no_authenticator": ' + String(self.zero_rtt_replay_reject_no_authenticator) + '\n'
         s += "  },\n"
 
         # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).

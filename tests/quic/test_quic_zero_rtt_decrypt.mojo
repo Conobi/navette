@@ -394,6 +394,49 @@ def test_zero_rtt_buffer_cleared_at_connection_destroy() raises:
     print("  test_zero_rtt_buffer_cleared_at_connection_destroy: PASS")
 
 
+def test_accept_profile_replay_counters_increment_independently() raises:
+    """5 replay counters initialise to 0 and each record_* method
+    increments only its bucket. Establishes the AcceptProfile contract
+    that QuicConnection._record_replay_* wrappers will consume."""
+    var prof = AcceptProfile()
+    assert_equal_int(Int(prof.zero_rtt_replay_accept), 0, "accept starts 0")
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_duplicate), 0, "dup starts 0"
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_per_key_quota), 0, "per_key starts 0"
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_global_ceiling), 0, "ceiling starts 0"
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_no_authenticator), 0, "no_auth starts 0"
+    )
+
+    prof.record_zero_rtt_replay_accept()
+    prof.record_zero_rtt_replay_accept()
+    prof.record_zero_rtt_replay_reject_duplicate()
+    prof.record_zero_rtt_replay_reject_per_key_quota()
+    prof.record_zero_rtt_replay_reject_global_ceiling()
+    prof.record_zero_rtt_replay_reject_no_authenticator()
+    prof.record_zero_rtt_replay_reject_no_authenticator()
+
+    assert_equal_int(Int(prof.zero_rtt_replay_accept), 2, "accept +2")
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_duplicate), 1, "dup +1"
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_per_key_quota), 1, "per_key +1"
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_global_ceiling), 1, "ceiling +1"
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_replay_reject_no_authenticator), 2, "no_auth +2"
+    )
+    print("  test_accept_profile_replay_counters_increment_independently: PASS")
+
+
 def main() raises:
     test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer()
     test_decrypt_zero_rtt_crypto_trips_f30_guard()
@@ -403,3 +446,4 @@ def main() raises:
     test_zero_rtt_buffer_drains_idempotently()
     test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys()
     test_zero_rtt_buffer_cleared_at_connection_destroy()
+    test_accept_profile_replay_counters_increment_independently()
