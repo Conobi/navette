@@ -226,6 +226,13 @@ struct H3CoroServer(Movable):
     var _early_data_filter_ptr: Optional[
         UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
+    var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
+    """User-supplied 0-RTT predicate fn, propagated from
+    `QuicServerConfig._early_data_predicate_fn` via `H3UdpServer`'s
+    per-connection construction. Populated only when the policy is
+    Predicate. The dispatch helper consults this field in preference
+    to `_early_data_filter_ptr` per the truth-table for the predicate
+    variant of the 0-RTT policy."""
 
     # --- Constructors -------------------------------------------------------
 
@@ -240,6 +247,7 @@ struct H3CoroServer(Movable):
         early_data_filter_ptr: Optional[
             UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
+        predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
         """Create with a server-side QuicConnection."""
         _check_stream_ctx_size()
@@ -250,6 +258,7 @@ struct H3CoroServer(Movable):
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._early_data_filter_ptr = early_data_filter_ptr
+        self._early_data_predicate_fn = predicate_fn
 
     def __init__(out self, *, deinit take: Self):
         self._h3 = take._h3^
@@ -259,6 +268,7 @@ struct H3CoroServer(Movable):
         self._streams = take._streams^
         self._ctx_pool = take._ctx_pool^
         self._early_data_filter_ptr = take._early_data_filter_ptr
+        self._early_data_predicate_fn = take._early_data_predicate_fn
 
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
@@ -435,7 +445,7 @@ struct H3CoroServer(Movable):
             path_str,
             stream_is_zr,
             self._early_data_filter_ptr,
-            Optional[EarlyDataPredicateFn](None),
+            self._early_data_predicate_fn,
             req_headers,
             _no_profile,
         )

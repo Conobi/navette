@@ -356,6 +356,13 @@ struct H3StreamingServer(Movable):
     var _early_data_filter_ptr: Optional[
         UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
+    var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
+    """User-supplied 0-RTT predicate fn, propagated from
+    `QuicServerConfig._early_data_predicate_fn` via `H3UdpServer`'s
+    per-connection construction. Populated only when the policy is
+    Predicate. The dispatch helper consults this field in preference
+    to `_early_data_filter_ptr` per the truth-table for the predicate
+    variant of the 0-RTT policy."""
 
     # --- Constructors -------------------------------------------------------
 
@@ -370,6 +377,7 @@ struct H3StreamingServer(Movable):
         early_data_filter_ptr: Optional[
             UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
+        predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
         """Create with a server-side QuicConnection."""
         _check_streaming_ctx_size()
@@ -381,6 +389,7 @@ struct H3StreamingServer(Movable):
         self._ctx_pool = H3StreamingCtxPool(capacity=4)
         self._coro_pool = CoroutinePool(capacity=4)
         self._early_data_filter_ptr = early_data_filter_ptr
+        self._early_data_predicate_fn = predicate_fn
 
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts and coroutines."""
@@ -590,7 +599,7 @@ struct H3StreamingServer(Movable):
             path_str,
             stream_is_zr,
             self._early_data_filter_ptr,
-            Optional[EarlyDataPredicateFn](None),
+            self._early_data_predicate_fn,
             req_headers,
             _no_profile,
         )

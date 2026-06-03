@@ -62,7 +62,7 @@ from boucle.ctypes import c_void
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
-from navette.tls.early_data_filter import IdempotentOnlyFilter
+from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFilter
 from navette.http.handler import StreamHandler
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
@@ -784,12 +784,20 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                     early_data_filter_ptr_opt = Optional[
                         UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
                     ](filter_ptr)
+                # Thread the policy's predicate-fn (if any) into the
+                # per-connection adapter ctor. The fn-pointer is
+                # Optional[EarlyDataPredicateFn] — trivially copyable
+                # in Mojo 1.0.0b1 — so no pointer-lifetime threading
+                # is needed (unlike the IdempotentOnlyFilter struct
+                # above).
+                var predicate_fn_opt = self.server_config._early_data_predicate_fn
                 var h3: H3HandlerServer[Self.H]
                 try:
                     h3 = H3HandlerServer[Self.H](
                         quic=quic^,
                         handler=handler^,
                         early_data_filter_ptr=early_data_filter_ptr_opt,
+                        predicate_fn=predicate_fn_opt,
                     )
                 except e:
                     print("H3UdpServer: H3HandlerServer init error:", e)

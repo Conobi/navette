@@ -88,6 +88,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _early_data_filter_ptr: Optional[
         UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
+    var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
+    """User-supplied 0-RTT predicate fn, propagated from
+    `QuicServerConfig._early_data_predicate_fn` via `H3UdpServer`'s
+    per-connection construction. Populated only when the policy is
+    Predicate. The dispatch helper consults this field in preference
+    to `_early_data_filter_ptr` per the truth-table for the predicate
+    variant of the 0-RTT policy."""
 
     def __init__(
         out self,
@@ -98,6 +105,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         early_data_filter_ptr: Optional[
             UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
+        predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
         self._h3 = H3Connection.server(quic^)
         self.handler = handler^
@@ -108,6 +116,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # rather than threading it through 15 call sites.
         self._h3.profile_ptr = profile_ptr
         self._early_data_filter_ptr = early_data_filter_ptr
+        self._early_data_predicate_fn = predicate_fn
 
     def __init__(out self, *, deinit take: Self):
         self._h3 = take._h3^
@@ -115,6 +124,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._streams = take._streams^
         self.profile_ptr = take.profile_ptr
         self._early_data_filter_ptr = take._early_data_filter_ptr
+        self._early_data_predicate_fn = take._early_data_predicate_fn
 
     def __del__(deinit self):
         var keys = List[Int]()
@@ -259,7 +269,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             path_str,
             stream_is_zr,
             self._early_data_filter_ptr,
-            Optional[EarlyDataPredicateFn](None),
+            self._early_data_predicate_fn,
             req_headers,
             self.profile_ptr,
         )
