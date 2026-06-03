@@ -249,6 +249,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §3.9 — navette.tls.early_data_filter has zero third-party type leakage
+# ---------------------------------------------------------------------------
+echo '§3.9 early_data_filter module has no third-party type references'
+if [ -f navette/tls/early_data_filter.mojo ]; then
+    if rgrep -E "$leak_pattern" navette/tls/early_data_filter.mojo > /dev/null; then
+        fail 'navette/tls/early_data_filter.mojo references a third-party type'
+    else
+        pass 'navette/tls/early_data_filter.mojo free of third-party type names'
+    fi
+else
+    fail 'navette/tls/early_data_filter.mojo missing'
+fi
+
+# ---------------------------------------------------------------------------
+# §3.10 — navette.h3.early_data_filter_dispatch has zero third-party type leakage
+# ---------------------------------------------------------------------------
+echo '§3.10 early_data_filter_dispatch module has no third-party type references'
+if [ -f navette/h3/early_data_filter_dispatch.mojo ]; then
+    if rgrep -E "$leak_pattern" navette/h3/early_data_filter_dispatch.mojo > /dev/null; then
+        fail 'navette/h3/early_data_filter_dispatch.mojo references a third-party type'
+    else
+        pass 'navette/h3/early_data_filter_dispatch.mojo free of third-party type names'
+    fi
+else
+    fail 'navette/h3/early_data_filter_dispatch.mojo missing'
+fi
+
+# ---------------------------------------------------------------------------
+# §3.11 — every H3 server adapter calls apply_early_data_filter exactly once
+# ---------------------------------------------------------------------------
+echo '§3.11 all three H3 adapters call apply_early_data_filter'
+adapter_files='navette/h3/h3_handler_server.mojo navette/h3/h3_sync_server.mojo navette/h3/h3_streaming_server.mojo'
+missing=''
+for f in $adapter_files; do
+    if [ ! -f "$f" ]; then
+        missing="$missing $f(absent)"
+        continue
+    fi
+    count=$(grep -cE 'apply_early_data_filter\(' "$f" 2>/dev/null || true)
+    if [ "$count" -ne 1 ]; then
+        missing="$missing $f(matches=$count)"
+    fi
+done
+if [ -n "$missing" ]; then
+    fail "apply_early_data_filter call-site drift in:$missing"
+else
+    pass 'apply_early_data_filter present exactly once in all three H3 adapter sites'
+fi
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$failed" -eq 0 ]; then
     echo 'all integration invariants ok'
