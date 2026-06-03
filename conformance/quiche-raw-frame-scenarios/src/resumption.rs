@@ -15,6 +15,7 @@ use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use quiche::h3::NameValue;
 use quiche::{ConnectionId, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 
@@ -571,4 +572,171 @@ pub fn replay_datagrams_verbatim(
     // Tail wait so the server's AcceptProfile commits the counter.
     std::thread::sleep(Duration::from_millis(settle_ms));
     Ok(())
+}
+
+/// Drive a resumed handshake with one H3 request riding 0-RTT.
+///
+/// Used by the R03 (`s_zero_rtt_http_get_accepted`) and R04
+/// (`s_zero_rtt_http_post_rejected`) scenario binaries. Both share
+/// the same Phase 2 driver and differ only in the method + path +
+/// body and the expected response status code.
+///
+/// Returns the connected `ResumedConn` and the first H3 response
+/// status code observed via `h3::Connection::poll`. Status 200
+/// means navette's filter accepted; status 425 means the filter
+/// rejected per RFC 8470 §5.2.
+///
+/// # Errors
+///
+/// * `io::ErrorKind::TimedOut` — the deadline elapsed before either
+///   `crypto_seal` was installed OR before an `Headers` event was
+///   observed on the request stream.
+/// * `io::ErrorKind::Other` — wraps any quiche / socket error
+///   encountered on the way.
+pub fn drive_to_zero_rtt_with_h3_request(
+    server_addr: SocketAddr,
+    session_blob: &[u8],
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> io::Result<(ResumedConn, u16)> {
+    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)
+        .map_err(|e| io::Error::other(format!("Config::new: {e:?}")))?;
+    config.verify_peer(false);
+    config
+        .set_application_protos(&[b"h3"])
+        .map_err(|e| io::Error::other(format!("set_application_protos: {e:?}")))?;
+    config.enable_early_data();
+    config.set_max_idle_timeout(5_000);
+    config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config.set_initial_max_data(10_000_000);
+    config.set_initial_max_stream_data_bidi_local(1_000_000);
+    config.set_initial_max_stream_data_bidi_remote(1_000_000);
+    config.set_initial_max_stream_data_uni(1_000_000);
+    config.set_initial_max_streams_bidi(100);
+    config.set_initial_max_streams_uni(100);
+    config.set_disable_active_migration(true);
+
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.set_read_timeout(Some(Duration::from_millis(25)))?;
+    let local = socket.local_addr()?;
+
+    let mut scid_bytes = [0u8; quiche::MAX_CONN_ID_LEN];
+    SystemRandom::new()
+        .fill(&mut scid_bytes[..])
+        .map_err(|_| io::Error::other("random scid"))?;
+    let scid = ConnectionId::from_ref(&scid_bytes);
+
+    let mut conn = quiche::connect(Some("localhost"), &scid, local, server_addr, &mut config)
+        .map_err(|e| io::Error::other(format!("quiche::connect: {e:?}")))?;
+
+    conn.set_session(session_blob)
+        .map_err(|e| io::Error::other(format!("conn.set_session: {e:?}")))?;
+
+    let deadline = Instant::now() + Duration::from_millis(2_500);
+    let mut out = [0u8; MAX_DATAGRAM_SIZE];
+    let mut buf = [0u8; 65_535];
+
+    // Flush the resumed Initial flight before queueing the H3 request.
+    flush(&mut conn, &socket, &mut out)?;
+
+    let h3_config = quiche::h3::Config::new()
+        .map_err(|e| io::Error::other(format!("h3::Config::new: {e:?}")))?;
+
+    let mut h3_state: Option<quiche::h3::Connection> = None;
+    let mut request_sent = false;
+    let mut request_stream_id: Option<u64> = None;
+    let mut observed_status: Option<u16> = None;
+
+    let method_bytes = method.as_bytes().to_vec();
+    let path_bytes = path.as_bytes().to_vec();
+
+    while Instant::now() < deadline && observed_status.is_none() {
+        if !request_sent && conn.has_application_crypto_seal() {
+            let mut h3 = quiche::h3::Connection::with_transport(&mut conn, &h3_config)
+                .map_err(|e| io::Error::other(format!("h3::with_transport: {e:?}")))?;
+            let req = [
+                quiche::h3::Header::new(b":method", &method_bytes),
+                quiche::h3::Header::new(b":scheme", b"https"),
+                quiche::h3::Header::new(b":authority", b"localhost"),
+                quiche::h3::Header::new(b":path", &path_bytes),
+                quiche::h3::Header::new(b"user-agent", b"navette-zero-rtt-http"),
+            ];
+            // For POST/PUT/PATCH we send body + FIN; for GET we send FIN immediately.
+            let fin = body.is_none();
+            let sid = h3
+                .send_request(&mut conn, &req, fin)
+                .map_err(|e| io::Error::other(format!("h3::send_request: {e:?}")))?;
+            request_stream_id = Some(sid);
+            if let Some(b) = body {
+                h3.send_body(&mut conn, sid, b, true)
+                    .map_err(|e| io::Error::other(format!("h3::send_body: {e:?}")))?;
+            }
+            h3_state = Some(h3);
+            request_sent = true;
+        }
+
+        flush(&mut conn, &socket, &mut out)?;
+
+        match socket.recv_from(&mut buf) {
+            Ok((len, from)) => {
+                let recv_info = RecvInfo { to: local, from };
+                conn.recv(&mut buf[..len], recv_info)
+                    .map_err(|e| io::Error::other(format!("conn.recv: {e:?}")))?;
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                conn.on_timeout();
+            }
+            Err(e) => return Err(e),
+        }
+
+        if let Some(ref mut h3) = h3_state {
+            loop {
+                match h3.poll(&mut conn) {
+                    Ok((sid, quiche::h3::Event::Headers { list, .. })) => {
+                        if Some(sid) == request_stream_id {
+                            for hdr in &list {
+                                if hdr.name() == b":status" {
+                                    if let Ok(s) = std::str::from_utf8(hdr.value()) {
+                                        if let Ok(v) = s.parse::<u16>() {
+                                            observed_status = Some(v);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(quiche::h3::Error::Done) => break,
+                    Err(e) => {
+                        return Err(io::Error::other(format!("h3::poll: {e:?}")));
+                    }
+                }
+            }
+        }
+    }
+
+    let status = observed_status.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "drive_to_zero_rtt_with_h3_request: no :status header observed",
+        )
+    })?;
+
+    // Tail-wait window so the server can commit any AcceptProfile counters
+    // before the caller asserts on them.
+    std::thread::sleep(Duration::from_millis(100));
+
+    Ok((
+        ResumedConn {
+            conn,
+            socket,
+            server_addr,
+        },
+        status,
+    ))
 }
