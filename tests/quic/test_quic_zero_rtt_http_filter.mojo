@@ -33,7 +33,10 @@ from navette.quic.profile import AcceptProfile
 from navette.quic.stream import Stream
 from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig
-from navette.tls.early_data_filter import IdempotentOnlyFilter
+from navette.tls.early_data_filter import (
+    EarlyDataPredicateFn,
+    IdempotentOnlyFilter,
+)
 from navette.tls.lib import TlsBackend
 from tests._test_util import (
     assert_true,
@@ -445,7 +448,9 @@ def test_filter_helper_1rtt_proceeds_no_injection() raises:
     var headers = Headers()
 
     var outcome = apply_early_data_filter(
-        String("POST"), False, fp, headers, pp,
+        String("POST"), String("/"), False, fp,
+        Optional[EarlyDataPredicateFn](None),
+        headers, pp,
     )
     assert_true(outcome.should_proceed(), String("1-RTT must proceed"))
     assert_false(
@@ -481,7 +486,9 @@ def test_filter_helper_0rtt_get_injects_and_proceeds() raises:
     var headers = Headers()
 
     var outcome = apply_early_data_filter(
-        String("GET"), True, fp, headers, pp,
+        String("GET"), String("/"), True, fp,
+        Optional[EarlyDataPredicateFn](None),
+        headers, pp,
     )
     assert_true(outcome.should_proceed(), String("0-RTT GET must proceed"))
     assert_true(
@@ -522,7 +529,9 @@ def test_filter_helper_0rtt_post_emits_425() raises:
     var headers = Headers()
 
     var outcome = apply_early_data_filter(
-        String("POST"), True, fp, headers, pp,
+        String("POST"), String("/"), True, fp,
+        Optional[EarlyDataPredicateFn](None),
+        headers, pp,
     )
     assert_true(
         outcome.should_send_425(), String("0-RTT POST must reject"),
@@ -563,7 +572,9 @@ def test_filter_helper_0rtt_filter_none_fails_closed() raises:
     ] = None
 
     var outcome = apply_early_data_filter(
-        String("GET"), True, none_ptr, headers, pp,
+        String("GET"), String("/"), True, none_ptr,
+        Optional[EarlyDataPredicateFn](None),
+        headers, pp,
     )
     assert_true(
         outcome.should_send_425(),
@@ -623,9 +634,15 @@ def test_filter_helper_counter_mutual_exclusion() raises:
             var none_ptr: Optional[
                 UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
             ] = None
-            _ = apply_early_data_filter(method, is_zr, none_ptr, headers, pp)
+            _ = apply_early_data_filter(
+                method, String("/"), is_zr, none_ptr,
+                Optional[EarlyDataPredicateFn](None), headers, pp,
+            )
         else:
-            _ = apply_early_data_filter(method, is_zr, fp, headers, pp)
+            _ = apply_early_data_filter(
+                method, String("/"), is_zr, fp,
+                Optional[EarlyDataPredicateFn](None), headers, pp,
+            )
 
     var total = (
         Int(prof.zero_rtt_http_filter_accept)

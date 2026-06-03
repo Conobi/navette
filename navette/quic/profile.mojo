@@ -279,6 +279,7 @@ struct AcceptProfile(Copyable, Movable):
     var zero_rtt_http_filter_reject_425: Int64
     var zero_rtt_http_filter_misconfig_fail_closed: Int64
     var zero_rtt_http_filter_1rtt_bypassed: Int64
+    var zero_rtt_http_filter_user_raised: Int64
 
     def __init__(out self):
         self.run_start_us = monotonic_us()
@@ -413,6 +414,7 @@ struct AcceptProfile(Copyable, Movable):
         self.zero_rtt_http_filter_reject_425 = Int64(0)
         self.zero_rtt_http_filter_misconfig_fail_closed = Int64(0)
         self.zero_rtt_http_filter_1rtt_bypassed = Int64(0)
+        self.zero_rtt_http_filter_user_raised = Int64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -843,6 +845,23 @@ struct AcceptProfile(Copyable, Movable):
         (request rode 1-RTT) — filter is NOT consulted and handler
         is dispatched normally. Tracks the 0-RTT-vs-1-RTT mix."""
         self.zero_rtt_http_filter_1rtt_bypassed += 1
+
+    def record_zero_rtt_http_filter_user_raised(mut self):
+        """Bump zero_rtt_http_filter_user_raised. Called when the
+        user-supplied predicate (Predicate variant) raises during
+        `apply_early_data_filter`. The dispatch helper catches the
+        raise, emits 425, and skips the handler — this counter makes
+        the operator-facing distinction between "user predicate
+        raised (operator bug)" and "filter rejected (working as
+        designed)" observable.
+
+        Note: the dispatch helper's truth-table also catches raises
+        from the filter-pointer path defensively, so a future user-
+        supplied filter variant routes through this same counter.
+        The bundled `IdempotentOnlyFilter` cannot actually raise; the
+        `user_` qualifier reflects design intent rather than a
+        runtime-verifiable property."""
+        self.zero_rtt_http_filter_user_raised += 1
 
     def report_text(self) raises -> String:
         var now = monotonic_us()

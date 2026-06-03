@@ -29,7 +29,10 @@ from navette.http.headers import Headers
 from navette.http.method import Method
 from navette.http.version import Version
 from navette.http.body import BodyFrame
-from navette.tls.early_data_filter import IdempotentOnlyFilter
+from navette.tls.early_data_filter import (
+    EarlyDataPredicateFn,
+    IdempotentOnlyFilter,
+)
 from navette.util.ptrbox import PtrBox
 
 
@@ -253,8 +256,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
         var outcome = apply_early_data_filter(
             method_str,
+            path_str,
             stream_is_zr,
             self._early_data_filter_ptr,
+            Optional[EarlyDataPredicateFn](None),
             req_headers,
             self.profile_ptr,
         )

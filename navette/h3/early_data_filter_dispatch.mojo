@@ -11,11 +11,15 @@ header that will reach the handler is the one mutated), but BEFORE
 `Method.custom(method_str)` normalisation and BEFORE
 `handler.on_request(...)`.
 
-Decision tree:
-  1. is_zero_rtt == False                        -> proceed; bump 1rtt_bypassed.
-  2. is_zero_rtt == True, filter_ptr is None    -> send_425; bump misconfig_fail_closed (defensive fail-closed).
-  3. is_zero_rtt == True, filter accepts        -> proceed; inject Early-Data: 1; bump accept.
-  4. is_zero_rtt == True, filter rejects        -> send_425; bump reject_425.
+Decision tree (§3.5 truth-table, first match wins):
+  1. is_zero_rtt == False                          -> proceed; bump 1rtt_bypassed.
+  2. is_zero_rtt == True, both None                -> send_425; bump misconfig_fail_closed.
+  3. is_zero_rtt == True, predicate_fn Some        -> call predicate; route on outcome.
+  4. is_zero_rtt == True, filter_ptr Some          -> call filter; route on outcome.
+
+Both call paths catch raises through `zero_rtt_http_filter_user_raised`
++ send_425, so user-supplied predicate failures fail closed without
+surfacing exceptions to the H3 adapter.
 
 The fail-closed posture on (2) enforces the safe-by-default-when-on
 goal: a connection that opted into 0-RTT must NEVER see non-idempotent
@@ -41,6 +45,7 @@ from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
 from navette.quic.profile import AcceptProfile
 from navette.tls.early_data_filter import (
+    EarlyDataPredicateFn,
     FilterDecision,
     IdempotentOnlyFilter,
 )
@@ -119,81 +124,90 @@ struct FilterDispatchOutcome(Copyable, Movable, Equatable):
 
 def apply_early_data_filter(
     method_str: String,
+    path_str: String,
     is_zero_rtt: Bool,
     filter_ptr: Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]],
+    predicate_fn: Optional[EarlyDataPredicateFn],
     mut headers: Headers,
     profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]],
-) -> FilterDispatchOutcome:
-    """Consult the early-data filter for a request that may have
-    arrived via 0-RTT.
+) raises -> FilterDispatchOutcome:
+    """Consult the early-data filter or predicate for a request that
+    may have arrived via 0-RTT.
+
+    The §3.5 dispatch truth-table (first-match wins):
+
+    | is_zero_rtt | predicate_fn | filter_ptr | action |
+    |---|---|---|---|
+    | False       | *            | *          | proceed; bump 1rtt_bypassed |
+    | True        | None         | None       | send_425; bump misconfig_fail_closed |
+    | True        | Some(pred)   | *          | call pred; route on outcome |
+    | True        | None         | Some(ptr)  | call ptr; route on outcome |
+
+    The `(predicate_fn=Some, filter_ptr=Some)` row resolves to the
+    predicate path (defensive AC `dispatch-helper-predicate-takes-
+    precedence`). The §3.4 population invariant in `QuicServerConfig`
+    ensures this row cannot arise in production.
 
     Args:
-      method_str: The `:method` pseudo-header value (the original wire
-        bytes, pre-`Method.custom()` normalisation).
-      is_zero_rtt: True iff the request's first STREAM frame arrived
-        inside a 0-RTT-decrypted packet (sourced from
-        `Stream.is_zero_rtt`).
-      filter_ptr: Optional pointer to the connection's filter
-        instance. Populated when the server config has 0-RTT enabled;
-        None when 0-RTT is disabled OR if wiring is broken
-        (fail-closed branch).
-      headers: The post-QPACK-walk Headers that will be threaded into
-        Request. On accept, `Early-Data: 1` is injected via
-        `Headers.set` (overwrites any client-supplied early-data).
-      profile_ptr: Optional pointer to the connection's AcceptProfile.
-        Used to bump exactly one of the four outcome counters.
+        method_str: The `:method` pseudo-header value verbatim.
+        path_str: The `:path` pseudo-header value verbatim.
+        is_zero_rtt: True iff the request's first STREAM frame
+          arrived inside a 0-RTT-decrypted packet.
+        filter_ptr: Optional pointer to the connection's struct-
+          based filter. Populated when the server config has 0-RTT
+          enabled via Off / IdempotentOnly / Tuned.
+        predicate_fn: Optional user-supplied predicate function.
+          Populated when the server config has 0-RTT enabled via
+          Predicate.
+        headers: The post-QPACK-walk Headers. On accept,
+          `Early-Data: 1` is injected via `Headers.set`.
+        profile_ptr: Optional pointer to the connection's AcceptProfile.
 
     Returns:
-      `FilterDispatchOutcome.proceed` if the handler should be
-      invoked, or `FilterDispatchOutcome.send_425` if the caller must
-      synthesise a 425 Too Early response and skip the handler.
+        `FilterDispatchOutcome.proceed` if the handler should be
+        invoked, or `FilterDispatchOutcome.send_425` otherwise.
     """
     if not is_zero_rtt:
-        # Path 1: 1-RTT request. Filter is NOT consulted (the filter
-        # has no business deciding 1-RTT requests). Bump the
-        # 1rtt_bypassed counter so operators see the 0-RTT-vs-1-RTT
-        # mix. Headers are NOT mutated — any client-supplied
-        # `early-data` field flows untouched to the handler;
-        # handlers MUST consult `caps.is_early_data` as the
-        # authoritative signal rather than trust the header.
         if profile_ptr is not None:
             profile_ptr.value()[].record_zero_rtt_http_filter_1rtt_bypassed()
         return FilterDispatchOutcome.proceed()
 
-    if filter_ptr is None:
-        # Path 2: defensive fail-closed. Stream is tagged 0-RTT but
-        # the adapter never received a filter pointer (config
-        # invariant violation). Emit 425 + bump the dedicated
-        # misconfig counter so this is distinguishable from real
-        # wire-level rejections.
+    if predicate_fn is None and filter_ptr is None:
+        # Both None: defensive fail-closed.
         if profile_ptr is not None:
             profile_ptr.value()[].record_zero_rtt_http_filter_misconfig_fail_closed()
         return FilterDispatchOutcome.send_425()
 
     var decision: FilterDecision
-    try:
-        decision = filter_ptr.value()[].should_accept_for_0rtt(
-            method_str, String(""), headers
-        )
-    except:
-        # Temporary Task-2 shape: `IdempotentOnlyFilter` cannot raise,
-        # but the widened trait method gained `raises`. Route any raise
-        # through reject_425 until Task 5 introduces the dedicated
-        # `record_zero_rtt_http_filter_user_raised` counter.
-        if profile_ptr is not None:
-            profile_ptr.value()[].record_zero_rtt_http_filter_reject_425()
-        return FilterDispatchOutcome.send_425()
+    if predicate_fn is not None:
+        # Predicate path takes precedence (defensive invariant on the
+        # both-Some row; §3.4 guarantees mutual exclusion).
+        try:
+            decision = predicate_fn.value()(method_str, path_str, headers)
+        except:
+            if profile_ptr is not None:
+                profile_ptr.value()[].record_zero_rtt_http_filter_user_raised()
+            return FilterDispatchOutcome.send_425()
+    else:
+        # Filter-ptr path (filter_ptr is Some).
+        try:
+            decision = filter_ptr.value()[].should_accept_for_0rtt(
+                method_str, path_str, headers
+            )
+        except:
+            # IdempotentOnlyFilter does not raise today; the defensive
+            # catch routes through user_raised for future user-supplied
+            # filter variants.
+            if profile_ptr is not None:
+                profile_ptr.value()[].record_zero_rtt_http_filter_user_raised()
+            return FilterDispatchOutcome.send_425()
+
     if decision.is_accept():
-        # Path 3: 0-RTT accepted. Inject `Early-Data: 1` per RFC 8470
-        # §3 so upstream backends know the request rode 0-RTT.
-        # `Headers.set` overwrites any client-supplied `early-data`
-        # — the server's authoritative "1" wins.
         headers.set(String("early-data"), String("1"))
         if profile_ptr is not None:
             profile_ptr.value()[].record_zero_rtt_http_filter_accept()
         return FilterDispatchOutcome.proceed()
 
-    # Path 4: 0-RTT rejected. Bump reject counter; caller emits 425.
     if profile_ptr is not None:
         profile_ptr.value()[].record_zero_rtt_http_filter_reject_425()
     return FilterDispatchOutcome.send_425()

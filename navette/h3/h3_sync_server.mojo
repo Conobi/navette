@@ -37,7 +37,10 @@ from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
 from navette.quic.profile import AcceptProfile
-from navette.tls.early_data_filter import IdempotentOnlyFilter
+from navette.tls.early_data_filter import (
+    EarlyDataPredicateFn,
+    IdempotentOnlyFilter,
+)
 from navette.util.ptrbox import PtrBox
 
 
@@ -429,8 +432,10 @@ struct H3CoroServer(Movable):
         ](None)
         var outcome = apply_early_data_filter(
             method_str,
+            path_str,
             stream_is_zr,
             self._early_data_filter_ptr,
+            Optional[EarlyDataPredicateFn](None),
             req_headers,
             _no_profile,
         )
