@@ -44,7 +44,7 @@ from boucle.stackful import (
 from navette.quic.connection import QuicConnection
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
-    apply_early_data_filter, send_425_response,
+    apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
 from navette.h3.error import H3_REQUEST_CANCELLED
 from navette.h3.qpack import QpackHeaderField
@@ -444,21 +444,6 @@ struct H3StreamingServer(Movable):
     def _has_stream(self, sid: Int) -> Bool:
         return sid in self._streams
 
-    def _stream_is_zero_rtt(self, stream_id: UInt64) raises -> Bool:
-        """Return True iff the underlying QUIC stream was tagged
-        `is_zero_rtt` at creation time.
-
-        Reads `Stream.is_zero_rtt` from the QUIC connection's stream
-        map. Returns False if the stream is absent from the map
-        (defensive; should not happen on the `_on_request` path
-        because the stream was just created by the inbound HEADERS
-        event). Marked `raises` because `Dict.__getitem__` is `raises`
-        even though the `not in` guard makes the subscript safe."""
-        var key = Int(stream_id)
-        if key not in self._h3._quic.stream_map.streams:
-            return False
-        return self._h3._quic.stream_map.streams[key].is_zero_rtt
-
     def _free_streaming_stream(
         mut self, ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin]
     ):
@@ -593,7 +578,7 @@ struct H3StreamingServer(Movable):
         # req_headers. The streaming adapter has no profile_ptr field
         # (counter routing is owned by H3HandlerServer), so the helper
         # is called with `profile_ptr=None`.
-        var stream_is_zr = self._stream_is_zero_rtt(ev.stream_id)
+        var stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
         var _no_profile = Optional[
             UnsafePointer[AcceptProfile, MutAnyOrigin]
         ](None)

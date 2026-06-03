@@ -13,7 +13,7 @@ from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
-    apply_early_data_filter, send_425_response,
+    apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
 from navette.h3.qpack import QpackHeaderField
 from navette.http.handler import (
@@ -201,21 +201,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         """Return a copy of the currently-validated peer 4-tuple."""
         return self._h3.peer_addr_copy()
 
-    def _stream_is_zero_rtt(self, stream_id: UInt64) raises -> Bool:
-        """Return True iff the underlying QUIC stream was tagged
-        `is_zero_rtt` at creation time.
-
-        Reads `Stream.is_zero_rtt` from the QUIC connection's stream
-        map. Returns False if the stream is absent from the map
-        (defensive; should not happen on the `_on_request` path
-        because the stream was just created by the inbound HEADERS
-        event). Marked `raises` because `Dict.__getitem__` is `raises`
-        even though the `not in` guard makes the subscript safe."""
-        var key = Int(stream_id)
-        if key not in self._h3._quic.stream_map.streams:
-            return False
-        return self._h3._quic.stream_map.streams[key].is_zero_rtt
-
     # --- Internal: event dispatch --------------------------------------------
 
     def _dispatch_h3_events(mut self, now: UInt64) raises:
@@ -265,7 +250,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # synthesise a 425 Too Early and skip the handler. On accept,
         # the helper has already injected `Early-Data: 1` into
         # req_headers.
-        var stream_is_zr = self._stream_is_zero_rtt(ev.stream_id)
+        var stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
         var outcome = apply_early_data_filter(
             method_str,
             stream_is_zr,

@@ -37,11 +37,40 @@ from std.memory import UnsafePointer
 from navette.h3.connection import H3Connection
 from navette.h3.qpack import QpackHeaderField
 from navette.http.headers import Headers
+from navette.quic.connection import QuicConnection
 from navette.quic.profile import AcceptProfile
 from navette.tls.early_data_filter import (
     FilterDecision,
     IdempotentOnlyFilter,
 )
+
+
+def stream_is_zero_rtt(
+    ref quic: QuicConnection, stream_id: UInt64
+) raises -> Bool:
+    """Return True iff the given stream was tagged as 0-RTT-arrived
+    during its creation in `QuicConnection._handle_stream_frame`.
+
+    Reads `Stream.is_zero_rtt` from the QUIC connection's stream map.
+    Stream IDs are monotonic per RFC 9000 §2.1; absent streams (rarely
+    possible if dispatch fires twice on the same id) return False as a
+    defensive fallback so the dispatch path stays fail-safe.
+
+    Marked `raises` because `Dict.__getitem__` is `raises` even though
+    the `not in` guard makes the subscript safe.
+
+    Args:
+      quic: The QUIC connection whose `stream_map` is consulted.
+      stream_id: The peer-initiated stream id reported by the inbound
+        H3 HEADERS event.
+
+    Returns:
+      True iff `Stream.is_zero_rtt` is set on the matching stream.
+    """
+    var key = Int(stream_id)
+    if key not in quic.stream_map.streams:
+        return False
+    return quic.stream_map.streams[key].is_zero_rtt
 
 
 @fieldwise_init
