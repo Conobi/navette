@@ -15,9 +15,26 @@ This file is the Capabilities.is_early_data field + for_h3 kwarg
 surface; the remaining test groups land alongside their integration.
 """
 
+from std.memory import Span
+
 from navette.http.handler import Capabilities
 from navette.quic.profile import AcceptProfile
-from tests._test_util import assert_true, assert_false, assert_equal_int
+from navette.tls.config import QuicServerConfig
+from navette.tls.lib import TlsBackend
+from tests._test_util import (
+    assert_true,
+    assert_false,
+    assert_equal_int,
+    load_test_cert,
+)
+
+
+# PEM bytes are loaded inline per test (var cert_pem / var key_pem) rather
+# than via a shared helper because returning a Tuple[List, List] and then
+# constructing two `Span` views into the same tuple trips the Mojo borrow
+# checker ("memory location previously writable through another aliased
+# argument"). Splitting into independent List vars keeps each Span's
+# origin distinct. Same pattern as tests/quic/test_early_data_store.mojo.
 
 
 def test_capabilities_is_early_data_defaults_false() raises:
@@ -120,6 +137,96 @@ def test_zero_rtt_http_filter_json_reporter_emits_object() raises:
     assert_true('"1rtt_bypassed"' in j, String("1rtt_bypassed key present"))
 
 
+def test_filter_field_populated_when_zero_rtt_enabled() raises:
+    """AC filter-field-populated-when-zero-rtt-enabled.
+
+    A `QuicServerConfig` constructed with `max_early_data > 0` MUST
+    populate `_early_data_filter` so the H3-layer dispatch helper has
+    a non-None filter to consult on 0-RTT-tagged requests."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    assert_true(
+        cfg._early_data_filter is not None,
+        String("0-RTT enabled must populate _early_data_filter"),
+    )
+    _ = cfg._handle
+
+
+def test_no_filter_field_when_zero_rtt_disabled() raises:
+    """AC no-filter-field-when-zero-rtt-disabled.
+
+    A `QuicServerConfig` constructed with `max_early_data == 0` MUST
+    leave `_early_data_filter` None so the dispatch helper recognises
+    the rejection-mode configuration (no 0-RTT keys derived)."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0),
+    )
+    assert_true(
+        cfg._early_data_filter is None,
+        String("0-RTT disabled must leave _early_data_filter None"),
+    )
+    _ = cfg._handle
+
+
+def test_store_and_filter_synchronized_when_enabled() raises:
+    """AC store-and-filter-synchronized (enabled half).
+
+    The invariant is `_early_data_store.is_some() == _early_data_filter.is_some()`:
+    when `max_early_data > 0`, both Optionals are populated."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    assert_true(
+        cfg._early_data_store is not None,
+        String("store must be Some when enabled"),
+    )
+    assert_true(
+        cfg._early_data_filter is not None,
+        String("filter must be Some when enabled"),
+    )
+    _ = cfg._handle
+
+
+def test_store_and_filter_synchronized_when_disabled() raises:
+    """AC store-and-filter-synchronized (disabled half).
+
+    When `max_early_data == 0`, both Optionals MUST be None — the H3
+    dispatch helper relies on this synchronised-population invariant."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0),
+    )
+    assert_true(
+        cfg._early_data_store is None,
+        String("store must be None when disabled"),
+    )
+    assert_true(
+        cfg._early_data_filter is None,
+        String("filter must be None when disabled"),
+    )
+    _ = cfg._handle
+
+
 def main() raises:
     """Driver for `scripts/run_tests.sh`: each test must be invoked here."""
     test_capabilities_is_early_data_defaults_false()
@@ -129,4 +236,8 @@ def main() raises:
     test_zero_rtt_http_filter_recorders_bump_correct_bucket()
     test_zero_rtt_http_filter_text_reporter_emits_block()
     test_zero_rtt_http_filter_json_reporter_emits_object()
+    test_filter_field_populated_when_zero_rtt_enabled()
+    test_no_filter_field_when_zero_rtt_disabled()
+    test_store_and_filter_synchronized_when_enabled()
+    test_store_and_filter_synchronized_when_disabled()
     print("test_quic_zero_rtt_http_filter: all tests passed")

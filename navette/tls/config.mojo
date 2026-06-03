@@ -13,6 +13,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.memory import Span
 
 from .lib import SharedLibrary
+from navette.tls.early_data_filter import IdempotentOnlyFilter
 from navette.tls.early_data_store import InMemoryEarlyDataStore
 
 
@@ -173,6 +174,12 @@ struct QuicServerConfig(Movable):
     var _handle: Int32
     var _max_early_data: UInt32
     var _early_data_store: Optional[InMemoryEarlyDataStore]
+    var _early_data_filter: Optional[IdempotentOnlyFilter]
+    """RFC 8470 HTTP early-data filter. Paired with `_early_data_store`:
+    both populated when `max_early_data > 0` (0-RTT accept mode); both
+    `None` when `max_early_data == 0` (rejection mode). The H3-layer
+    dispatch helper reads this field to decide whether to admit or
+    reject (425) a 0-RTT-tagged request."""
 
     def __init__(
         out self,
@@ -222,15 +229,24 @@ struct QuicServerConfig(Movable):
             self._handle = Int32(-1)
             self._max_early_data = UInt32(0)
             self._early_data_store = None
+            self._early_data_filter = None
             raise "quic_server_config_new failed: " + err
         self._handle = out_handle[0]
         out_handle.free()
         self._max_early_data = max_early_data
+        # Synchronised-population invariant: store and filter are both
+        # Some when 0-RTT is enabled, both None when disabled. The H3
+        # dispatch helper relies on this paired state — never set one
+        # without the other.
         if max_early_data == UInt32(0):
             self._early_data_store = None
+            self._early_data_filter = None
         else:
             self._early_data_store = Optional[InMemoryEarlyDataStore](
                 InMemoryEarlyDataStore()
+            )
+            self._early_data_filter = Optional[IdempotentOnlyFilter](
+                IdempotentOnlyFilter()
             )
 
     def __init__(out self, *, deinit take: Self):
@@ -238,6 +254,7 @@ struct QuicServerConfig(Movable):
         self._handle = take._handle
         self._max_early_data = take._max_early_data
         self._early_data_store = take._early_data_store^
+        self._early_data_filter = take._early_data_filter^
 
     def __del__(deinit self):
         if self._handle > 0:
