@@ -26,3 +26,11 @@ from .early_data_store import (
     ReplayDecision,
     default_early_data_store_config,
 )
+
+# 0-RTT predicate-variant support: the function-pointer alias type +
+# the two reference predicates that ship in v1.
+from .early_data_filter import EarlyDataPredicateFn
+from .filters import (
+    idempotency_key_predicate,
+    unauthenticated_only_predicate,
+)
