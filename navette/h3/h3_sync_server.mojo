@@ -19,6 +19,9 @@ from std.sys.info import size_of
 
 from navette.quic.connection import QuicConnection
 from navette.h3.connection import H3Connection, H3Event
+from navette.h3.early_data_filter_dispatch import (
+    apply_early_data_filter, send_425_response,
+)
 from navette.h3.error import H3_REQUEST_CANCELLED
 from navette.h3.qpack import QpackHeaderField
 from navette.http.handler import (
@@ -33,6 +36,8 @@ from navette.http.method import Method
 from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
+from navette.quic.profile import AcceptProfile
+from navette.tls.early_data_filter import IdempotentOnlyFilter
 from navette.util.ptrbox import PtrBox
 
 
@@ -209,6 +214,15 @@ struct H3CoroServer(Movable):
     var _outbuf: List[List[UInt8]]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
+    # Optional pointer to the RFC 8470 idempotent-only filter owned by
+    # the `QuicServerConfig` that birthed this connection. Populated
+    # only when 0-RTT is enabled in the config; None for rejection-mode
+    # servers (and any path that doesn't plumb it). When None, the
+    # filter dispatch helper takes the fail-closed branch for 0-RTT
+    # requests.
+    var _early_data_filter_ptr: Optional[
+        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+    ]
 
     # --- Constructors -------------------------------------------------------
 
@@ -220,6 +234,9 @@ struct H3CoroServer(Movable):
         extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
             NoneType, MutExternalOrigin
         ](unsafe_from_address=0),
+        early_data_filter_ptr: Optional[
+            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        ] = None,
     ) raises:
         """Create with a server-side QuicConnection."""
         _check_stream_ctx_size()
@@ -229,6 +246,7 @@ struct H3CoroServer(Movable):
         self._outbuf = List[List[UInt8]]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
+        self._early_data_filter_ptr = early_data_filter_ptr
 
     def __init__(out self, *, deinit take: Self):
         self._h3 = take._h3^
@@ -237,6 +255,7 @@ struct H3CoroServer(Movable):
         self._outbuf = take._outbuf^
         self._streams = take._streams^
         self._ctx_pool = take._ctx_pool^
+        self._early_data_filter_ptr = take._early_data_filter_ptr
 
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
@@ -293,6 +312,21 @@ struct H3CoroServer(Movable):
 
     def _has_stream(self, sid: Int) -> Bool:
         return sid in self._streams
+
+    def _stream_is_zero_rtt(self, stream_id: UInt64) raises -> Bool:
+        """Return True iff the underlying QUIC stream was tagged
+        `is_zero_rtt` at creation time.
+
+        Reads `Stream.is_zero_rtt` from the QUIC connection's stream
+        map. Returns False if the stream is absent from the map
+        (defensive; should not happen on the `_on_request` path
+        because the stream was just created by the inbound HEADERS
+        event). Marked `raises` because `Dict.__getitem__` is `raises`
+        even though the `not in` guard makes the subscript safe."""
+        var key = Int(stream_id)
+        if key not in self._h3._quic.stream_map.streams:
+            return False
+        return self._h3._quic.stream_map.streams[key].is_zero_rtt
 
     def _release_stream(
         mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
@@ -397,6 +431,28 @@ struct H3CoroServer(Movable):
         for i in range(len(user_headers)):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
+        # RFC 8470 0-RTT HTTP filter dispatch. On reject (0-RTT request
+        # whose method is non-idempotent OR fail-closed misconfig),
+        # synthesise a 425 Too Early and skip the handler. On accept,
+        # the helper has already injected `Early-Data: 1` into
+        # req_headers. The sync adapter has no profile_ptr field
+        # (counter routing is owned by H3HandlerServer), so the helper
+        # is called with `profile_ptr=None`.
+        var stream_is_zr = self._stream_is_zero_rtt(ev.stream_id)
+        var _no_profile = Optional[
+            UnsafePointer[AcceptProfile, MutAnyOrigin]
+        ](None)
+        var outcome = apply_early_data_filter(
+            method_str,
+            stream_is_zr,
+            self._early_data_filter_ptr,
+            req_headers,
+            _no_profile,
+        )
+        if outcome.should_send_425():
+            send_425_response(ev.stream_id, self._h3)
+            return
+
         var req = Request(
             method=Method.custom(method_str),
             target=path_str,
@@ -409,7 +465,7 @@ struct H3CoroServer(Movable):
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = CoroStreamCtx(
             request=req^,
-            caps=Capabilities.for_h3(),
+            caps=Capabilities.for_h3(is_early_data=stream_is_zr),
             stream_id=ev.stream_id,
             extra_data=self._extra_data,
         )

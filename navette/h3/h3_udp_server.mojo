@@ -45,6 +45,7 @@ the server's lifetime. The `TlsBackend` and `QuicServerConfig`
 are moved into the server and destroyed after all connections.
 """
 
+from std.collections import Optional
 from std.collections.dict import Dict
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
@@ -61,6 +62,7 @@ from boucle.ctypes import c_void
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
+from navette.tls.early_data_filter import IdempotentOnlyFilter
 from navette.http.handler import StreamHandler
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
@@ -763,11 +765,31 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 # factory. The factory's free to share state via captured
                 # module globals or external pointers.
                 var handler = self.make_handler()
+                # Promote QuicServerConfig._early_data_filter into a raw
+                # pointer the H3 adapter dispatches via on `_on_request`.
+                # Mirrors how `QuicConnection.server` promotes the
+                # `_early_data_store` reference — the pointer is valid
+                # for the connection's lifetime because
+                # `self.server_config` outlives every connection here.
+                # `rebind` lifts the inferred config-bound origin to
+                # `MutAnyOrigin` so the pointer can be stored alongside
+                # the existing `_early_data_store_ptr` shape.
+                var early_data_filter_ptr_opt = Optional[
+                    UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+                ](None)
+                if self.server_config._early_data_filter is not None:
+                    var filter_ptr = rebind[
+                        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+                    ](UnsafePointer(to=self.server_config._early_data_filter.value()))
+                    early_data_filter_ptr_opt = Optional[
+                        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+                    ](filter_ptr)
                 var h3: H3HandlerServer[Self.H]
                 try:
                     h3 = H3HandlerServer[Self.H](
                         quic=quic^,
                         handler=handler^,
+                        early_data_filter_ptr=early_data_filter_ptr_opt,
                     )
                 except e:
                     print("H3UdpServer: H3HandlerServer init error:", e)

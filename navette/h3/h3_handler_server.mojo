@@ -12,6 +12,9 @@ from navette.quic.connection import QuicConnection
 from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
+from navette.h3.early_data_filter_dispatch import (
+    apply_early_data_filter, send_425_response,
+)
 from navette.h3.qpack import QpackHeaderField
 from navette.http.handler import (
     StreamHandler,
@@ -26,6 +29,7 @@ from navette.http.headers import Headers
 from navette.http.method import Method
 from navette.http.version import Version
 from navette.http.body import BodyFrame
+from navette.tls.early_data_filter import IdempotentOnlyFilter
 from navette.util.ptrbox import PtrBox
 
 
@@ -71,6 +75,16 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var handler:  Self.H
     var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
     var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
+    # Optional pointer to the RFC 8470 idempotent-only filter owned by
+    # the `QuicServerConfig` that birthed this connection. Populated
+    # only when 0-RTT is enabled in the config (cycle 3 plumbing
+    # mirroring cycle 2's `_early_data_store_ptr`). When None, the
+    # filter dispatch helper takes the fail-closed branch for any
+    # request that arrives over 0-RTT (defensive: a 0-RTT stream with
+    # no filter wired is a config-invariant violation).
+    var _early_data_filter_ptr: Optional[
+        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+    ]
 
     def __init__(
         out self,
@@ -78,6 +92,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var quic: QuicConnection,
         var handler: Self.H,
         profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]] = None,
+        early_data_filter_ptr: Optional[
+            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        ] = None,
     ) raises:
         self._h3 = H3Connection.server(quic^)
         self.handler = handler^
@@ -87,12 +104,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # in src/h3/ and tests/; we set profile_ptr post-construction here
         # rather than threading it through 15 call sites.
         self._h3.profile_ptr = profile_ptr
+        self._early_data_filter_ptr = early_data_filter_ptr
 
     def __init__(out self, *, deinit take: Self):
         self._h3 = take._h3^
         self.handler = take.handler^
         self._streams = take._streams^
         self.profile_ptr = take.profile_ptr
+        self._early_data_filter_ptr = take._early_data_filter_ptr
 
     def __del__(deinit self):
         var keys = List[Int]()
@@ -182,6 +201,21 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         """Return a copy of the currently-validated peer 4-tuple."""
         return self._h3.peer_addr_copy()
 
+    def _stream_is_zero_rtt(self, stream_id: UInt64) raises -> Bool:
+        """Return True iff the underlying QUIC stream was tagged
+        `is_zero_rtt` at creation time.
+
+        Reads `Stream.is_zero_rtt` from the QUIC connection's stream
+        map. Returns False if the stream is absent from the map
+        (defensive; should not happen on the `_on_request` path
+        because the stream was just created by the inbound HEADERS
+        event). Marked `raises` because `Dict.__getitem__` is `raises`
+        even though the `not in` guard makes the subscript safe."""
+        var key = Int(stream_id)
+        if key not in self._h3._quic.stream_map.streams:
+            return False
+        return self._h3._quic.stream_map.streams[key].is_zero_rtt
+
     # --- Internal: event dispatch --------------------------------------------
 
     def _dispatch_h3_events(mut self, now: UInt64) raises:
@@ -226,6 +260,23 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         for i in range(len(user_headers)):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
+        # RFC 8470 0-RTT HTTP filter dispatch. On reject (0-RTT request
+        # whose method is non-idempotent OR fail-closed misconfig),
+        # synthesise a 425 Too Early and skip the handler. On accept,
+        # the helper has already injected `Early-Data: 1` into
+        # req_headers.
+        var stream_is_zr = self._stream_is_zero_rtt(ev.stream_id)
+        var outcome = apply_early_data_filter(
+            method_str,
+            stream_is_zr,
+            self._early_data_filter_ptr,
+            req_headers,
+            self.profile_ptr,
+        )
+        if outcome.should_send_425():
+            send_425_response(ev.stream_id, self._h3)
+            return
+
         var req = Request(
             method=Method.custom(method_str),
             target=path_str,
@@ -237,7 +288,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var resp = ResponseWriter()
 
         try:
-            self.handler.on_request(req^, body, resp, Capabilities.for_h3())
+            self.handler.on_request(req^, body, resp, Capabilities.for_h3(is_early_data=stream_is_zr))
         except:
             pass
 
