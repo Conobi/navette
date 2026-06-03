@@ -85,3 +85,11 @@ path = "src/bin/s_f24_handshake_done_server.rs"
 [[bin]]
 name = "s_f30_crypto_in_zero_rtt"
 path = "src/bin/s_f30_crypto_in_zero_rtt.rs"
+
+[[bin]]
+name = "s_zero_rtt_replay"
+path = "src/bin/s_zero_rtt_replay.rs"
+
+[[bin]]
+name = "s_zero_rtt_fresh_resumption"
+path = "src/bin/s_zero_rtt_fresh_resumption.rs"
