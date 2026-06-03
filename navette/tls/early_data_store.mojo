@@ -151,6 +151,34 @@ struct EarlyDataStoreConfig(Copyable, Movable):
     var global_window_ms: UInt64
     var global_window_max_accepts: UInt32
 
+    def validate(self) raises -> None:
+        """Raise if any tuning knob is zero.
+
+        Five-check value-type validator shared by the public
+        `EarlyDataPolicy.tuned(config)` static factory and the existing
+        `InMemoryEarlyDataStore.__init__(config=...)` ctor. Pure: no
+        allocation, no I/O, no state mutation.
+
+        Raises:
+            Error: when any field equals zero, with a message naming the
+                offending field. Callers receive the same error text
+                regardless of which call site invoked `validate()`.
+        """
+        if self.max_entries == UInt32(0):
+            raise Error("EarlyDataStoreConfig.max_entries must be >= 1")
+        if self.entry_ttl_ms == UInt64(0):
+            raise Error("EarlyDataStoreConfig.entry_ttl_ms must be >= 1")
+        if self.per_key_max_attempts == UInt32(0):
+            raise Error(
+                "EarlyDataStoreConfig.per_key_max_attempts must be >= 1"
+            )
+        if self.global_window_ms == UInt64(0):
+            raise Error("EarlyDataStoreConfig.global_window_ms must be >= 1")
+        if self.global_window_max_accepts == UInt32(0):
+            raise Error(
+                "EarlyDataStoreConfig.global_window_max_accepts must be >= 1"
+            )
+
 
 def default_early_data_store_config() -> EarlyDataStoreConfig:
     return EarlyDataStoreConfig(
@@ -238,20 +266,10 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
         self._config = config^
 
     def __init__(out self, *, config: EarlyDataStoreConfig) raises:
-        if config.max_entries == UInt32(0):
-            raise Error("EarlyDataStoreConfig.max_entries must be >= 1")
-        if config.entry_ttl_ms == UInt64(0):
-            raise Error("EarlyDataStoreConfig.entry_ttl_ms must be >= 1")
-        if config.per_key_max_attempts == UInt32(0):
-            raise Error(
-                "EarlyDataStoreConfig.per_key_max_attempts must be >= 1"
-            )
-        if config.global_window_ms == UInt64(0):
-            raise Error("EarlyDataStoreConfig.global_window_ms must be >= 1")
-        if config.global_window_max_accepts == UInt32(0):
-            raise Error(
-                "EarlyDataStoreConfig.global_window_max_accepts must be >= 1"
-            )
+        # Delegate the 5-check validation to the value-type method so the
+        # public `EarlyDataPolicy.tuned(config)` factory can run the same
+        # checks without allocating a store.
+        config.validate()
         self._entries = Dict[KeyTag, EarlyDataEntry]()
         self._lru = Deque[KeyTag]()
         self._global_window = Deque[UInt64]()
