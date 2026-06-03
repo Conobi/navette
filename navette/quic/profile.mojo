@@ -266,6 +266,20 @@ struct AcceptProfile(Copyable, Movable):
     var zero_rtt_replay_reject_global_ceiling: Int64
     var zero_rtt_replay_reject_no_authenticator: Int64
 
+    # RFC 8470 HTTP early-data filter outcomes. Counters answer:
+    #   - accept:                 0-RTT request whose method passed the filter
+    #   - reject_425:             0-RTT request whose method failed the filter
+    #                              (response was 425 Too Early)
+    #   - misconfig_fail_closed:  0-RTT request reached H3 dispatch but no
+    #                              filter was wired (config invariant
+    #                              violation); fail-closed 425 was emitted
+    #   - 1rtt_bypassed:          request rode 1-RTT (filter not consulted);
+    #                              tracks the 0-RTT-vs-1-RTT request mix
+    var zero_rtt_http_filter_accept: Int64
+    var zero_rtt_http_filter_reject_425: Int64
+    var zero_rtt_http_filter_misconfig_fail_closed: Int64
+    var zero_rtt_http_filter_1rtt_bypassed: Int64
+
     def __init__(out self):
         self.run_start_us = monotonic_us()
         self.idle_us_total = UInt64(0)
@@ -395,6 +409,10 @@ struct AcceptProfile(Copyable, Movable):
         self.zero_rtt_replay_reject_per_key_quota = Int64(0)
         self.zero_rtt_replay_reject_global_ceiling = Int64(0)
         self.zero_rtt_replay_reject_no_authenticator = Int64(0)
+        self.zero_rtt_http_filter_accept = Int64(0)
+        self.zero_rtt_http_filter_reject_425 = Int64(0)
+        self.zero_rtt_http_filter_misconfig_fail_closed = Int64(0)
+        self.zero_rtt_http_filter_1rtt_bypassed = Int64(0)
 
     def record_idle(mut self, idle_us: UInt64):
         self.idle_us_total += idle_us
@@ -798,6 +816,34 @@ struct AcceptProfile(Copyable, Movable):
         disambiguate a real wire-level replay from an anomaly."""
         self.zero_rtt_replay_reject_no_authenticator += 1
 
+    def record_zero_rtt_http_filter_accept(mut self):
+        """Bump zero_rtt_http_filter_accept. Called when the H3-layer
+        early-data filter decides ACCEPT on a 0-RTT-arrived request.
+        After this bump the handler is dispatched with `Early-Data: 1`
+        injected into request headers."""
+        self.zero_rtt_http_filter_accept += 1
+
+    def record_zero_rtt_http_filter_reject_425(mut self):
+        """Bump zero_rtt_http_filter_reject_425. Called when the filter
+        decides REJECT on a 0-RTT request; a `:status=425` HEADERS frame
+        is synthesised and the handler is NOT invoked."""
+        self.zero_rtt_http_filter_reject_425 += 1
+
+    def record_zero_rtt_http_filter_misconfig_fail_closed(mut self):
+        """Bump zero_rtt_http_filter_misconfig_fail_closed. Called on
+        the defensive fail-closed path: stream was tagged is_zero_rtt
+        but the adapter's filter pointer was None. Emits 425 + skips
+        handler. Distinct bucket so operators can disambiguate from
+        real wire-level filter rejections."""
+        self.zero_rtt_http_filter_misconfig_fail_closed += 1
+
+    def record_zero_rtt_http_filter_1rtt_bypassed(mut self):
+        """Bump zero_rtt_http_filter_1rtt_bypassed. Called when the
+        adapter reaches the filter site with is_zero_rtt=False
+        (request rode 1-RTT) — filter is NOT consulted and handler
+        is dispatched normally. Tracks the 0-RTT-vs-1-RTT mix."""
+        self.zero_rtt_http_filter_1rtt_bypassed += 1
+
     def report_text(self) raises -> String:
         var now = monotonic_us()
         var run_us = now - self.run_start_us
@@ -897,6 +943,13 @@ struct AcceptProfile(Copyable, Movable):
         s += "  reject_per_key_quota:   " + _fmt_count(UInt64(self.zero_rtt_replay_reject_per_key_quota)) + "\n"
         s += "  reject_global_ceiling:  " + _fmt_count(UInt64(self.zero_rtt_replay_reject_global_ceiling)) + "\n"
         s += "  reject_no_authenticator:" + _fmt_count(UInt64(self.zero_rtt_replay_reject_no_authenticator)) + "\n\n"
+
+        # RFC 8470 HTTP early-data filter outcome counters.
+        s += "zero_rtt_http_filter:\n"
+        s += "  accept:                " + _fmt_count(UInt64(self.zero_rtt_http_filter_accept)) + "\n"
+        s += "  reject_425:            " + _fmt_count(UInt64(self.zero_rtt_http_filter_reject_425)) + "\n"
+        s += "  misconfig_fail_closed: " + _fmt_count(UInt64(self.zero_rtt_http_filter_misconfig_fail_closed)) + "\n"
+        s += "  1rtt_bypassed:         " + _fmt_count(UInt64(self.zero_rtt_http_filter_1rtt_bypassed)) + "\n\n"
 
         # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
@@ -1177,6 +1230,14 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "reject_per_key_quota": ' + String(self.zero_rtt_replay_reject_per_key_quota) + ',\n'
         s += '    "reject_global_ceiling": ' + String(self.zero_rtt_replay_reject_global_ceiling) + ',\n'
         s += '    "reject_no_authenticator": ' + String(self.zero_rtt_replay_reject_no_authenticator) + '\n'
+        s += "  },\n"
+
+        # RFC 8470 HTTP early-data filter outcome counters.
+        s += '  "zero_rtt_http_filter": {\n'
+        s += '    "accept": ' + String(self.zero_rtt_http_filter_accept) + ',\n'
+        s += '    "reject_425": ' + String(self.zero_rtt_http_filter_reject_425) + ',\n'
+        s += '    "misconfig_fail_closed": ' + String(self.zero_rtt_http_filter_misconfig_fail_closed) + ',\n'
+        s += '    "1rtt_bypassed": ' + String(self.zero_rtt_http_filter_1rtt_bypassed) + '\n'
         s += "  },\n"
 
         # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
