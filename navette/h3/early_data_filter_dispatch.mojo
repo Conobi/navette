@@ -35,6 +35,7 @@ from std.collections import Optional
 from std.memory import UnsafePointer
 
 from navette.h3.connection import H3Connection
+from navette.h3.error import H3_REQUEST_CANCELLED
 from navette.h3.qpack import QpackHeaderField
 from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
@@ -191,7 +192,16 @@ def send_425_response(stream_id: UInt64, mut h3_conn: H3Connection) raises:
 
     Status-only response with no body; FIN closes the stream. Uses the
     real `H3Connection.send_headers(stream_id, fields, fin=True)` API.
+
+    After queuing the 425 response, emit a `STOP_SENDING`
+    (RFC 9000 §3.5) on the request stream with H3 error
+    `H3_REQUEST_CANCELLED` (0x010C per RFC 9114 §8.1) so the QUIC
+    recv buffer is reclaimed immediately. Without this, a 0-RTT POST
+    whose body is still in flight would continue to fill the
+    per-stream recv buffer up to `fc_recv_limit` (default 1 MiB) even
+    though those bytes are dropped at the H3 layer.
     """
     var fields = List[QpackHeaderField]()
     fields.append(QpackHeaderField(String(":status"), String("425")))
     h3_conn.send_headers(stream_id, fields, True)
+    h3_conn._quic.stop_sending(stream_id, H3_REQUEST_CANCELLED)

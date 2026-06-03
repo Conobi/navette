@@ -30,6 +30,7 @@ from std.collections import Optional
 from std.memory import Span, UnsafePointer
 
 from navette.h3.connection import H3Connection, H3Event
+from navette.h3.error import H3_REQUEST_CANCELLED
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.qpack import QpackHeaderField
 from navette.http.handler import (
@@ -288,6 +289,54 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     _ = cfg._handle
 
 
+def test_h3_handler_server_filter_reject_emits_stop_sending() raises:
+    """0-RTT POST reject MUST queue a STOP_SENDING with H3_REQUEST_CANCELLED.
+
+    The 425 short-circuits the handler at the H3 layer; without
+    STOP_SENDING the peer would keep filling the request stream's
+    recv buffer up to `fc_recv_limit` even though those bytes are
+    dropped. Verifying the stream-local flags
+    (`needs_stop_sending=True`, `stop_sending_error=0x010C`) is the
+    earliest observable proof that `_quic.stop_sending` has been
+    called — the frame is later marshalled into a STOP_SENDING frame
+    by `drain_datagrams`, but the synthetic-event drive does not pump
+    egress.
+    """
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var filter = IdempotentOnlyFilter()
+    var prof = AcceptProfile()
+    var server = _make_server(lib, cfg, filter, prof)
+
+    var stream_id: UInt64 = 0
+    _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
+    var ev = _build_h3_event(stream_id, String("POST"), False)
+    server._on_request(ev, UInt64(1_000_001))
+
+    var key = Int(stream_id)
+    assert_true(
+        key in server._h3._quic.stream_map.streams,
+        String("request stream must exist after 425 reject"),
+    )
+    var stream = server._h3._quic.stream_map.streams[key].copy()
+    assert_true(
+        stream.needs_stop_sending,
+        String("STOP_SENDING must be queued on the rejected stream"),
+    )
+    assert_equal_int(
+        Int(stream.stop_sending_error), Int(H3_REQUEST_CANCELLED),
+        String("STOP_SENDING error must be H3_REQUEST_CANCELLED (0x010C)"),
+    )
+    _ = server._h3._quic.conn_handle
+    _ = cfg._handle
+
+
 def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
     """AC `h3-handler-server-filter-accept-injects-early-data-header`.
 
@@ -388,6 +437,8 @@ def main() raises:
     print("=== test_h3_adapter_early_data_filter ===")
     test_h3_handler_server_filter_fires_on_0rtt_post()
     print("  test_h3_handler_server_filter_fires_on_0rtt_post: PASS")
+    test_h3_handler_server_filter_reject_emits_stop_sending()
+    print("  test_h3_handler_server_filter_reject_emits_stop_sending: PASS")
     test_h3_handler_server_filter_accept_injects_early_data_header()
     print("  test_h3_handler_server_filter_accept_injects_early_data_header: PASS")
     test_h3_handler_server_1rtt_request_bypasses_filter()
