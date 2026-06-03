@@ -21,6 +21,11 @@ By default binds `[::]:4433`. Override with HELLO_H3_PORT env var.
 Override cert paths with HELLO_H3_CERT / HELLO_H3_KEY (defaults
 `certs/server.crt` / `certs/server.key`).
 
+Set HELLO_H3_ENABLE_EARLY_DATA=1 (or "true") to opt into 0-RTT
+acceptance with the safe IdempotentOnly filter. The previous name
+HELLO_H3_MAX_EARLY_DATA=max is honored for one release with a stderr
+deprecation warning and will be removed in a follow-up.
+
 # Test the running server
 
 With `h2load` from nghttp2:
@@ -33,6 +38,7 @@ You should see 4× 200 responses with "Hello, H3!" payloads.
 from std.memory import Span
 from std.io.file import open as open_file
 from std.os.env import getenv
+from std.sys import stderr
 
 from navette.h3.h3_udp_server import H3UdpServer, serve_forever
 from navette.http.handler import (
@@ -48,7 +54,7 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
-from navette.tls import TlsBackend
+from navette.tls import EarlyDataPolicy, TlsBackend
 from navette.tls.config import QuicServerConfig
 
 
@@ -121,18 +127,32 @@ def main() raises:
     var cert = open_file(cert_path, "r").read_bytes()
     var key = open_file(key_path, "r").read_bytes()
 
-    # HELLO_H3_MAX_EARLY_DATA=max enables 0-RTT acceptance on the rustls
-    # side (max_early_data_size = u32::MAX, per RFC 9001 §4.6.1 the only
-    # non-zero value rustls QUIC accepts). Default is 0 (rejection mode)
-    # — used by all in-tree tests and the post-v1 production posture.
-    # The conformance F30 scenario (CRYPTO-in-0-RTT protocol violation)
-    # sets this env so the server actually decrypts the adversarial
-    # 0-RTT packet and the F30 guard can fire.
-    var max_early_env = getenv("HELLO_H3_MAX_EARLY_DATA", "0")
-    var max_early = UInt32(0xFFFFFFFF) if max_early_env == "max" else UInt32(0)
+    # HELLO_H3_ENABLE_EARLY_DATA=1 (or "true") opts the example into
+    # 0-RTT acceptance. The conformance F30 / R01 / R02 / R03 / R04
+    # scenarios depend on this — without it the server runs in
+    # rejection mode and the wire-level guards cannot fire.
+    #
+    # One-release deprecation overlap: the previous env name
+    # HELLO_H3_MAX_EARLY_DATA=max is still honored, with a stderr
+    # warning. The legacy name will be removed in a follow-up.
+    var enable_env = getenv("HELLO_H3_ENABLE_EARLY_DATA", "")
+    var legacy_env = getenv("HELLO_H3_MAX_EARLY_DATA", "")
+    if enable_env == "" and legacy_env == "max":
+        print(
+            "warning: HELLO_H3_MAX_EARLY_DATA=max is deprecated; "
+            "use HELLO_H3_ENABLE_EARLY_DATA=1 instead",
+            file=stderr,
+        )
+        enable_env = "1"
+    var policy: EarlyDataPolicy
+    if enable_env == "1" or enable_env == "true":
+        policy = EarlyDataPolicy.idempotent_only()
+    else:
+        policy = EarlyDataPolicy.off()
+
     var tls = TlsBackend()
     var config = QuicServerConfig(
-        tls.shared(), Span(cert), Span(key), max_early_data=max_early
+        tls.shared(), Span(cert), Span(key), policy=policy^
     )
 
     var sock = udp_listener(port)
