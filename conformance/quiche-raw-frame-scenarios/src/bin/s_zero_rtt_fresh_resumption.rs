@@ -5,6 +5,9 @@
 //! ticket with a freshly-generated quiche client_random, MUST both be
 //! accepted.
 //!
+//! Requires HELLO_H3_ENABLE_EARLY_DATA=1 on the navette server (the
+//! QRF runner exports this automatically).
+//!
 //! Phase ordering:
 //!   * Phase 1A — fresh handshake → SessionTicket T1.
 //!   * Phase 2  — resume against T1 (consumes T1 from server cache),

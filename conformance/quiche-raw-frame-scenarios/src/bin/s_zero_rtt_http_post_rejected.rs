@@ -1,7 +1,7 @@
 //! s_zero_rtt_http_post_rejected — R04.
 //!
 //! Phase 1: fresh handshake against navette's hello_h3_server
-//! (`HELLO_H3_MAX_EARLY_DATA=max` env) -> capture SessionTicket.
+//! (`HELLO_H3_ENABLE_EARLY_DATA=1` env) -> capture SessionTicket.
 //!
 //! Phase 2: resumed handshake with a 0-RTT-bearing POST /echo
 //! request carrying a small body. Navette's IdempotentOnly filter

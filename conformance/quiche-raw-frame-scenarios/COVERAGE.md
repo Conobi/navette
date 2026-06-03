@@ -8,7 +8,7 @@ checks (RFC 9000 §19.x stream-id / flow-control / encoding),
 NEW_CONNECTION_ID encoding (RFC 9000 §19.15), the 0-RTT CRYPTO row
 (RFC 9001 §8.3 — server-side decrypt path landed; the scenario binary
 drives ticket issuance → resumed-connect → 0-RTT CRYPTO injection
-against a navette server with `HELLO_H3_MAX_EARLY_DATA=max` enabled),
+against a navette server with `HELLO_H3_ENABLE_EARLY_DATA=1` enabled),
 the 0-RTT anti-replay layer (RFC 9001 §9.2), and the RFC 8470 §5.2
 HTTP early-data filter.
 

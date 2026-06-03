@@ -7,7 +7,7 @@
 //!
 //! Driver shape:
 //!   * Phase 1 — connect, complete a full handshake against
-//!     hello_h3_server (HELLO_H3_MAX_EARLY_DATA=max via the QRF runner),
+//!     hello_h3_server (HELLO_H3_ENABLE_EARLY_DATA=1 via the QRF runner),
 //!     capture the issued NewSessionTicket.
 //!   * Phase 2 — reconnect with the ticket, drive a resumed handshake
 //!     with 0-RTT-bearing application data, CAPTURE every client→server

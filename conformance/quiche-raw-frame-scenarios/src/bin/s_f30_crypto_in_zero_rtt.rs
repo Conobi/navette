@@ -6,6 +6,9 @@
 //! that observes a CRYPTO frame inside a 0-RTT packet MUST close the
 //! connection with PROTOCOL_VIOLATION (0x0a).
 //!
+//! Requires the navette server to run with HELLO_H3_ENABLE_EARLY_DATA=1
+//! (the QRF runner sets this automatically).
+//!
 //! Driver shape:
 //!   * Phase 1 — connect, complete a full handshake against
 //!     `hello_h3_server`, and capture the server-issued NewSessionTicket
