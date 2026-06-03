@@ -8,9 +8,9 @@
 # quotas unsaturated, MUST return ReplayDecision.accept().
 #
 # Authenticator opacity: the trait treats `authenticator: Span[UInt8]`
-# as a 32-byte opaque key. The cryptographic mixing
-# (server_nonce || client_random) happens upstream, in the FFI shim.
-# This module's only job is the dedup + rate-limit machinery.
+# as 32 opaque bytes. The capture from the encrypted CRYPTO bytes
+# happens upstream, in the FFI shim. This module's only job is the
+# dedup + rate-limit machinery.
 
 from std.collections.dict import Dict, KeyElement
 from std.collections.deque import Deque
@@ -73,9 +73,10 @@ struct KeyTag(KeyElement):
     """32-byte authenticator-as-dict-key.
 
     Bytewise equality; FNV-1a 64-bit hash for dict bucket distribution.
-    The hash is NOT cryptographic — collision resistance is upstream,
-    in the FFI shim's SHA-256(server_nonce || client_random) composition.
-    This struct's only job is to satisfy Mojo Dict's KeyElement traits
+    The hash is NOT cryptographic. Collision resistance is upstream —
+    the FFI captures a 32-byte ClientHello.random embedded in encrypted
+    CRYPTO bytes (RFC 8446 §4.1.2), which is CSPRNG-sourced. This
+    struct's only job is to satisfy Mojo Dict's KeyElement traits
     without pulling in a crypto dependency.
     """
     var bytes: InlineArray[UInt8, 32]

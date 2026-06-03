@@ -149,10 +149,13 @@ if [[ "${QUICHE_RAW:-0}" == "1" ]]; then
     echo "Running quiche-raw-frame conformance gate..."
     "$SCRIPT_DIR/../conformance/scripts/run_quiche_raw_frame.sh"
 
-    # Derive the per-harness F-row scope from COVERAGE.md (Table A rows).
+    # Derive the per-harness row scope from COVERAGE.md (Table A rows).
+    # Accepts the F-prefix (h3spec triage rows) and the R-prefix
+    # (RFC-clause rows authored directly in COVERAGE.md — e.g.
+    # RFC 9001 §9.2 0-RTT anti-replay).
     # Fallback (verify against Table A if grep ever stops matching):
-    # F01,F10,F11,F12,F13,F14,F15,F16,F17,F18,F19,F20,F21,F22,F23,F24,F30
-    QUICHE_TAG_SCOPE=$(grep -oE '^\| F[0-9]{2}\b' \
+    # F01,F10,F11,F12,F13,F14,F15,F16,F17,F18,F19,F20,F21,F22,F23,F24,F30,R01,R02
+    QUICHE_TAG_SCOPE=$(grep -oE '^\| [FR][0-9]{2}\b' \
         "$REPO_ROOT/conformance/quiche-raw-frame-scenarios/COVERAGE.md" \
         | tr -d '| ' | paste -sd,)
     if [[ -z "$QUICHE_TAG_SCOPE" ]]; then

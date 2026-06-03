@@ -40,12 +40,16 @@ from pathlib import Path
 TAG_DEF = re.compile(r'^\s*comptime\s+(GUARD_TAG_\w+)\s*=\s*"(\[[A-Z0-9\-]+\])"\s*$')
 TRIAGE_ROW = re.compile(r"^\|\s*(F\d{2})\s*\|")
 COVERAGE_A_ROW = re.compile(
-    r"^\|\s*(F\d{2})\s*\|[^|]*\|\s*([a-zA-Z0-9:\-]+)\s*\|\s*([^\s|]+)\s*\|"
+    r"^\|\s*([FR]\d{2})\s*\|[^|]*\|\s*([a-zA-Z0-9:\-]+)\s*\|\s*([^\s|]+)\s*\|"
 )
 COVERAGE_B_ROW = re.compile(
     r"^\|\s*(SY\d{2})\s*\|[^|]*\|\s*([^\s|]+)\s*\|"
 )
-TAG_SCOPE_TOKEN = re.compile(r"^F\d{2}$")
+# Tag-scope tokens accept the F-prefix (h3spec triage rows) or the
+# R-prefix (RFC-clause rows added outside the h3spec triage doc — e.g.
+# RFC 9001 §9.2 0-RTT anti-replay). R-rows are intentionally exempt
+# from the Inv-6 triage-membership check below.
+TAG_SCOPE_TOKEN = re.compile(r"^[FR]\d{2}$")
 CARGO_BIN_NAME = re.compile(r'^\s*name\s*=\s*"([^"]+)"\s*$')
 TAG_LITERAL = re.compile(r"\[[A-Z0-9\-]+\]")
 GUARD_TAG_REF = re.compile(r"\bGUARD_TAG_\w+\b")
@@ -208,10 +212,15 @@ def check_invariants(args):
     violations = []
 
     tag_scope = {t.strip() for t in args.tag_scope.split(",") if t.strip()}
+    # Split into F-scope (triage-doc rows) and R-scope (RFC-clause rows
+    # authored directly in COVERAGE.md). Inv-6 only constrains F-rows;
+    # R-rows are exempt because they are not derived from the h3spec
+    # triage document.
+    f_scope = {t for t in tag_scope if t.startswith("F")}
     triage_all = parse_triage_failure_ids(args.triage, tag_scope=None)
-    triage_ids = parse_triage_failure_ids(args.triage, tag_scope=tag_scope or None)
+    triage_ids = parse_triage_failure_ids(args.triage, tag_scope=f_scope or None)
     # Inv-6: every F-row in the scope must exist in the triage doc.
-    for fid in sorted(tag_scope - triage_all):
+    for fid in sorted(f_scope - triage_all):
         violations.append(
             f"Inv-6: --tag-scope contains F-row {fid} not in triage doc"
         )
@@ -231,7 +240,10 @@ def check_invariants(args):
         status = row["status"]
         if status == "red" and args.mode == "strict":
             violations.append(f"Inv-3: row {row['id']} has status 'red' (strict mode)")
-        if status == "gated":
+        # `gated` and `gated:green` both count toward the gated total.
+        # The `:green` suffix annotates a passing-end-to-end variant and
+        # carries the same accounting weight as bare `gated`.
+        if status == "gated" or status.startswith("gated:"):
             gated_a += 1
             if row["scenario_binary"] not in cargo_bins:
                 violations.append(
@@ -347,17 +359,20 @@ def main(argv=None):
             if not TAG_SCOPE_TOKEN.match(tok):
                 import argparse as _ap
                 raise _ap.ArgumentTypeError(
-                    f"--tag-scope token {tok!r} does not match ^F\\d{{2}}$ "
-                    f"(must be uppercase F followed by exactly two digits)"
+                    f"--tag-scope token {tok!r} does not match ^[FR]\\d{{2}}$ "
+                    f"(must be uppercase F or R followed by exactly two digits)"
                 )
         return raw
 
     parser.add_argument(
         "--tag-scope", default="", type=_tag_scope_value,
         help=(
-            "Comma-separated F-row ids to scope Inv-1 against, e.g. "
-            "F02,F03,F04. Empty (default) means all triage rows. "
-            "Canonical token shape: ^F\\d{2}$."
+            "Comma-separated row ids to scope Inv-1 against, e.g. "
+            "F02,F03,R01. Empty (default) means all triage rows. "
+            "Canonical token shape: ^[FR]\\d{2}$. F-prefix rows are "
+            "triage-doc rows (Inv-6 enforces membership); R-prefix "
+            "rows are RFC-clause rows authored directly in COVERAGE.md "
+            "and exempt from Inv-6."
         ),
     )
     parser.add_argument(

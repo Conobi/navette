@@ -192,6 +192,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §3.5 — navette.tls.early_data_store has zero third-party type leakage
+# ---------------------------------------------------------------------------
+echo '§3.5 early_data_store module has no third-party type references'
+# Symbol-only pattern: client_random / ClientHello.random are RFC
+# concepts that appear in module docstrings; they are not third-party
+# symbols and must NOT be screened here.
+leak_pattern='RustlsLibrary|rustls::|received_resumption_data|set_resumption_data|libcompress'
+if [ -f navette/tls/early_data_store.mojo ]; then
+    if rgrep -E "$leak_pattern" navette/tls/early_data_store.mojo > /dev/null; then
+        fail 'navette/tls/early_data_store.mojo references a third-party type'
+    else
+        pass 'navette/tls/early_data_store.mojo free of third-party type names'
+    fi
+else
+    fail 'navette/tls/early_data_store.mojo missing'
+fi
+
+# ---------------------------------------------------------------------------
+# §3.6 — BruteForceReplayStore lives only in tests/
+# ---------------------------------------------------------------------------
+echo '§3.6 BruteForceReplayStore is test-only'
+brute_hits=$(rgrep -l 'BruteForceReplayStore' navette/ examples/ 2>/dev/null || true)
+if [ -n "$brute_hits" ]; then
+    fail "BruteForceReplayStore referenced outside tests/: $brute_hits"
+else
+    pass 'BruteForceReplayStore confined to tests/'
+fi
+
+# ---------------------------------------------------------------------------
+# §3.7 — _zero_rtt_now_ms_override is assigned only from tests/
+# ---------------------------------------------------------------------------
+echo '§3.7 _zero_rtt_now_ms_override assignment is test-only'
+override_hits=$(rgrep -E '_zero_rtt_now_ms_override\s*=' navette/ examples/ 2>/dev/null \
+    | grep -v 'self._zero_rtt_now_ms_override = None' \
+    | grep -v 'self._zero_rtt_now_ms_override = take._zero_rtt_now_ms_override' \
+    || true)
+if [ -n "$override_hits" ]; then
+    fail "_zero_rtt_now_ms_override assigned outside tests/ (production callers must leave it None): $override_hits"
+else
+    pass '_zero_rtt_now_ms_override write-sites confined to ctor + tests/'
+fi
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$failed" -eq 0 ]; then
     echo 'all integration invariants ok'
