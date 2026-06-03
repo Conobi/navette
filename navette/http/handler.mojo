@@ -17,13 +17,22 @@ comptime ALPN_H3 = 2
 
 struct Capabilities(Copyable, Movable):
     """Per-stream protocol capability flags. Cheap to copy. Passed to handlers
-    on every lifecycle callback so they can branch on protocol features."""
+    on every lifecycle callback so they can branch on protocol features.
+
+    `is_early_data` follows RFC 8470 vocabulary: True iff the request's
+    first bytes arrived via TLS 1.3 0-RTT (QUIC 0-RTT keys, RFC 9001
+    §4.6) AND the H3-layer early-data filter accepted the request.
+    Handlers that need to distinguish replay-prone arrivals from
+    fresh-handshake ones MUST consult this flag rather than trusting a
+    client-supplied `Early-Data` header (which is unauthenticated on
+    1-RTT)."""
 
     var multiplexed: Bool
     var trailers: Bool
     var priority_hints: Bool
     var datagrams: Bool
     var alpn: Int
+    var is_early_data: Bool
 
     def __init__(
         out self,
@@ -33,12 +42,14 @@ struct Capabilities(Copyable, Movable):
         priority_hints: Bool,
         datagrams: Bool,
         alpn: Int,
+        is_early_data: Bool = False,
     ):
         self.multiplexed = multiplexed
         self.trailers = trailers
         self.priority_hints = priority_hints
         self.datagrams = datagrams
         self.alpn = alpn
+        self.is_early_data = is_early_data
 
     def __init__(out self, *, other: Self):
         self.multiplexed = other.multiplexed
@@ -46,6 +57,7 @@ struct Capabilities(Copyable, Movable):
         self.priority_hints = other.priority_hints
         self.datagrams = other.datagrams
         self.alpn = other.alpn
+        self.is_early_data = other.is_early_data
 
     def __init__(out self, *, deinit take: Self):
         self.multiplexed = take.multiplexed
@@ -53,26 +65,30 @@ struct Capabilities(Copyable, Movable):
         self.priority_hints = take.priority_hints
         self.datagrams = take.datagrams
         self.alpn = take.alpn
+        self.is_early_data = take.is_early_data
 
     @staticmethod
     def for_h1() -> Self:
         return Self(
             multiplexed=False, trailers=False, priority_hints=False,
-            datagrams=False, alpn=ALPN_H1,
+            datagrams=False, alpn=ALPN_H1, is_early_data=False,
         )
 
     @staticmethod
     def for_h2() -> Self:
         return Self(
             multiplexed=True, trailers=True, priority_hints=True,
-            datagrams=False, alpn=ALPN_H2,
+            datagrams=False, alpn=ALPN_H2, is_early_data=False,
         )
 
     @staticmethod
-    def for_h3() -> Self:
+    def for_h3(is_early_data: Bool = False) -> Self:
+        """H3 capability defaults. Pass `is_early_data=True` when a
+        0-RTT-arrived request has just been accepted by the early-data
+        filter; the handler will observe `caps.is_early_data == True`."""
         return Self(
             multiplexed=True, trailers=True, priority_hints=True,
-            datagrams=True, alpn=ALPN_H3,
+            datagrams=True, alpn=ALPN_H3, is_early_data=is_early_data,
         )
 
     def is_h1(self) -> Bool:
