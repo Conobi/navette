@@ -196,8 +196,15 @@ def _run_one_seed(seed: UInt64) raises:
 
 
 def test_property_lru_matches_brute_force_across_seeds() raises:
-    """Run the differential test against 8 distinct seeds. Each seed
-    drives 200 ops. Any pairwise divergence raises."""
+    """Run the differential test against 50 distinct seeds. Each seed
+    drives 200 ops, for 10000 pairwise comparisons total. Any pairwise
+    divergence raises.
+
+    The floor for must-prove differential properties is >=10^4 random
+    sequences; 50 x 200 = 10000 hits that floor exactly. Seeds
+    mix low-hamming-weight constants (0x1111..., 0xF0F0...) with
+    high-entropy values to exercise diverse SplitMix64 mixer state.
+    """
     var seeds: List[UInt64] = [
         UInt64(0xDEADBEEFCAFEBABE),
         UInt64(0x0123456789ABCDEF),
@@ -207,12 +214,54 @@ def test_property_lru_matches_brute_force_across_seeds() raises:
         UInt64(0x4444444444444444),
         UInt64(0x8888888888888888),
         UInt64(0xA5A5A5A5A5A5A5A5),
+        UInt64(0x3333333333333333),
+        UInt64(0x5555555555555555),
+        UInt64(0x6666666666666666),
+        UInt64(0x7777777777777777),
+        UInt64(0x9999999999999999),
+        UInt64(0xAAAAAAAAAAAAAAAA),
+        UInt64(0xBBBBBBBBBBBBBBBB),
+        UInt64(0xCCCCCCCCCCCCCCCC),
+        UInt64(0xDDDDDDDDDDDDDDDD),
+        UInt64(0xEEEEEEEEEEEEEEEE),
+        UInt64(0xCAFEF00DCAFEF00D),
+        UInt64(0xBADC0FFEEBADC0DE),
+        UInt64(0xDEADC0DE5BADBEEF),
+        UInt64(0xFACEFEEDC0FFEEEE),
+        UInt64(0xC001D00DC001D00D),
+        UInt64(0xFEEDFACEDEADBEEF),
+        UInt64(0xB16B00B5B16B00B5),
+        UInt64(0x8BADF00DBADC0FFE),
+        UInt64(0x0BADCAFE0BADCAFE),
+        UInt64(0xDEC0DEDDEC0DED01),
+        UInt64(0x1357246813572468),
+        UInt64(0x2468135724681357),
+        UInt64(0xABCDABCDABCDABCD),
+        UInt64(0xCDABCDABCDABCDAB),
+        UInt64(0x0F0F0F0F0F0F0F0F),
+        UInt64(0xF0F0F0F0F0F0F0F0),
+        UInt64(0x00FF00FF00FF00FF),
+        UInt64(0xFF00FF00FF00FF00),
+        UInt64(0x123456789ABCDEF0),
+        UInt64(0xFEDCBA0987654321),
+        UInt64(0xA1B2C3D4E5F60718),
+        UInt64(0x1807F6E5D4C3B2A1),
+        UInt64(0xC0FFEE0C0FFEE0C0),
+        UInt64(0xFEEDFEEDFEEDFEED),
+        UInt64(0x5A5A5A5A5A5A5A5A),
+        UInt64(0xA5A5A5A55A5A5A5A),
+        UInt64(0xDABBAD00DABBAD00),
+        UInt64(0x10101010F0F0F0F0),
+        UInt64(0xE7E7E7E7E7E7E7E7),
+        UInt64(0x9090909090909090),
+        UInt64(0x6969696969696969),
+        UInt64(0x42424242DEADBEEF),
     ]
     for s in seeds:
         _run_one_seed(s)
     print(
         "  test_property_lru_matches_brute_force_across_seeds:"
-        " PASS (8 seeds x 200 ops)"
+        " PASS (50 seeds × 200 ops)"
     )
 
 
