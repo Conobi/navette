@@ -11,6 +11,7 @@ from navette.quic.stream import (
     SEND_DATA_RECVD,
     RECV_DATA_READ,
     RECV_RECV,
+    Stream,
 )
 
 
@@ -223,6 +224,55 @@ def test_set_peer_limits_retro_bumps_zero_rtt_streams() raises:
     print("  test_set_peer_limits_retro_bumps_zero_rtt_streams: PASS")
 
 
+def test_set_peer_limits_does_not_lower_existing_fc_send() raises:
+    """`set_peer_limits` retroactive bump must be MONOTONIC.
+
+    `FlowControl.ensure_limit` raises a limit but never lowers it. If a
+    peer-initiated bidi stream has already had its `fc_send.limit`
+    elevated above the peer's advertised value (e.g. by a future
+    MAX_STREAM_DATA bump arriving out-of-band, or by a test fixture
+    pre-loading the limit), the post-handshake `set_peer_limits` retro
+    pass must NOT clobber that higher limit. This guards against a
+    regression where `fc.limit = target_limit` (unconditional assign)
+    would silently shrink a stream's send window during the 0-RTT →
+    1-RTT transition.
+    """
+    var sm = make_stream_map(True)  # server side
+
+    # Create peer-initiated bidi stream 0 before peer limits are set.
+    _ = sm.get_or_create_peer_stream(UInt64(0))
+    assert_true(0 in sm.streams, "stream 0 in map")
+
+    # Manually elevate fc_send.limit to 2 MiB — HIGHER than the 1 MiB
+    # `setup_peer_limits` will advertise as stream_fc_bidi_local.
+    var stream_boost = Stream(other=sm.streams[0])
+    assert_true(Bool(stream_boost.fc_send), "stream 0 has fc_send")
+    var fc_boost = stream_boost.fc_send.value().copy()
+    var ELEVATED: UInt64 = UInt64(2097152)  # 2 MiB
+    fc_boost.ensure_limit(ELEVATED)
+    assert_equal_int(
+        Int(fc_boost.limit), Int(ELEVATED),
+        "pre-handshake fc_send.limit elevated to 2 MiB",
+    )
+    stream_boost.fc_send = fc_boost^
+    sm.streams[0] = stream_boost^
+
+    # Apply peer limits (advertises 1 MiB stream_fc_bidi_local).
+    setup_peer_limits(sm)
+
+    # The 2 MiB elevated limit must survive — set_peer_limits MUST NOT
+    # lower it to the peer's 1 MiB advertisement.
+    var stream_post = sm.streams[0].copy()
+    assert_true(Bool(stream_post.fc_send), "stream 0 retains fc_send")
+    var fc_post = stream_post.fc_send.value().copy()
+    assert_equal_int(
+        Int(fc_post.limit),
+        Int(ELEVATED),
+        "fc_send.limit must NOT drop from 2 MiB to peer's 1 MiB",
+    )
+    print("  test_set_peer_limits_does_not_lower_existing_fc_send: PASS")
+
+
 def test_maybe_cleanup_bidi_both_terminal() raises:
     """Local bidi stream with both sides terminal → cleanup returns True, Dict empty."""
     var sm = make_stream_map(False)
@@ -388,6 +438,7 @@ def main() raises:
     test_peer_stream_limit_exceeded()
     test_peer_stream_already_exists()
     test_set_peer_limits_retro_bumps_zero_rtt_streams()
+    test_set_peer_limits_does_not_lower_existing_fc_send()
     test_maybe_cleanup_bidi_both_terminal()
     test_maybe_cleanup_bidi_one_terminal()
     test_maybe_cleanup_peer_bidi_increments_completed()

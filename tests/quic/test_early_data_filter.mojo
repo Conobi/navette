@@ -198,6 +198,42 @@ def test_idempotent_only_rejects_whitespace_padded() raises:
     print("  test_idempotent_only_rejects_whitespace_padded: PASS")
 
 
+def test_idempotent_only_rejects_embedded_nul() raises:
+    """Method-string boundary edge case: embedded NUL.
+
+    `"GET\\0"` is not bytewise-equal to `"GET"`, so the filter must
+    reject. This closes the structured-property generator's blind spot
+    for NUL bytes (the printable-ASCII random pool spans 0x20..0x7E and
+    never produces NUL).
+    """
+    var f = IdempotentOnlyFilter()
+    assert_true(
+        f.should_accept_for_0rtt(String("GET\0")).is_reject(),
+        String("embedded-NUL 'GET\\0' should reject"),
+    )
+    print("  test_idempotent_only_rejects_embedded_nul: PASS")
+
+
+def test_idempotent_only_rejects_non_ascii() raises:
+    """Method-string boundary edge case: multi-byte UTF-8.
+
+    Mojo `String` equality is byte-wise, so `"GÉT"` (UTF-8: 0x47 0xC3
+    0x89 0x54) is not equal to `"GET"` (0x47 0x45 0x54). The filter
+    must reject. Closes the structured-property generator's blind spot
+    for high-bit bytes (>0x7E).
+    """
+    var f = IdempotentOnlyFilter()
+    assert_true(
+        f.should_accept_for_0rtt(String("GÉT")).is_reject(),
+        String("multi-byte UTF-8 'GÉT' should reject"),
+    )
+    assert_true(
+        f.should_accept_for_0rtt(String("GETé")).is_reject(),
+        String("trailing multi-byte UTF-8 'GETé' should reject"),
+    )
+    print("  test_idempotent_only_rejects_non_ascii: PASS")
+
+
 def _splitmix64(mut state: UInt64) -> UInt64:
     """SplitMix64 PRNG (Vigna 2014); deterministic given a seed.
 
@@ -296,4 +332,6 @@ def main() raises:
     test_idempotent_only_rejects_empty_method()
     test_idempotent_only_case_sensitive()
     test_idempotent_only_rejects_whitespace_padded()
+    test_idempotent_only_rejects_embedded_nul()
+    test_idempotent_only_rejects_non_ascii()
     test_idempotent_only_structured_property()

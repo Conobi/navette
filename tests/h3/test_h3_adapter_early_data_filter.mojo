@@ -275,6 +275,15 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
         sb.fin,
         String("FIN must be queued on the response stream (425 closes it)"),
     )
+    # Reject path must NOT allocate a per-stream H3 context: the handler
+    # was skipped, so the adapter must not have called the
+    # `_streams[ev.stream_id] = _H3StreamCtx(...)` line that lives on the
+    # accept path. Guards against a regression where the 425 short-circuit
+    # is bolted on AFTER the per-stream-ctx allocation.
+    assert_false(
+        Int(ev.stream_id) in server._streams,
+        String("rejected stream must not allocate _H3StreamCtx (handler skip)"),
+    )
     _ = server._h3._quic.conn_handle
     _ = cfg._handle
 
