@@ -15,9 +15,17 @@ This file is the Capabilities.is_early_data field + for_h3 kwarg
 surface; the remaining test groups land alongside their integration.
 """
 
-from std.memory import Span
+from std.collections import Optional
+from std.memory import Span, UnsafePointer
 
+from navette.h3.connection import H3Connection
+from navette.h3.early_data_filter_dispatch import (
+    FilterDispatchOutcome,
+    apply_early_data_filter,
+    send_425_response,
+)
 from navette.http.handler import Capabilities
+from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
 from navette.quic.frame import StreamFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
@@ -25,6 +33,7 @@ from navette.quic.profile import AcceptProfile
 from navette.quic.stream import Stream
 from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig
+from navette.tls.early_data_filter import IdempotentOnlyFilter
 from navette.tls.lib import TlsBackend
 from tests._test_util import (
     assert_true,
@@ -32,6 +41,37 @@ from tests._test_util import (
     assert_equal_int,
     load_test_cert,
 )
+
+
+def _splitmix64(mut state: UInt64) -> UInt64:
+    """Inline SplitMix64 step. Mirrors `tests/fuzz/lib/prng.mojo` to
+    avoid pulling the full PRNG dependency into the http-filter test
+    file (`tests/fuzz/lib/` requires a Python import that this test
+    family does not need)."""
+    state = state + UInt64(0x9E3779B97F4A7C15)
+    var z = state
+    z = (z ^ (z >> UInt64(30))) * UInt64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> UInt64(27))) * UInt64(0x94D049BB133111EB)
+    return z ^ (z >> UInt64(31))
+
+
+def _make_filter_ptr_some(
+    mut filter: IdempotentOnlyFilter,
+) -> Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]]:
+    """Return Some(ptr) wrapping a stack-rooted filter. Caller MUST
+    keep `filter` alive past the helper call."""
+    return Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](
+        UnsafePointer(to=filter)
+    )
+
+
+def _make_profile_ptr_some(
+    mut prof: AcceptProfile,
+) -> Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]:
+    """Return Some(ptr) wrapping a stack-rooted AcceptProfile."""
+    return Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+        UnsafePointer(to=prof)
+    )
 
 
 def _make_server_conn_for_tagging(
@@ -396,6 +436,283 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     _ = cfg._handle
 
 
+def test_filter_helper_1rtt_proceeds_no_injection() raises:
+    """AC filter-helper-1rtt-proceeds-no-injection."""
+    var filter = IdempotentOnlyFilter()
+    var prof = AcceptProfile()
+    var fp = _make_filter_ptr_some(filter)
+    var pp = _make_profile_ptr_some(prof)
+    var headers = Headers()
+
+    var outcome = apply_early_data_filter(
+        String("POST"), False, fp, headers, pp,
+    )
+    assert_true(outcome.should_proceed(), String("1-RTT must proceed"))
+    assert_false(
+        headers.has(String("early-data")),
+        String("no Early-Data injection on 1-RTT"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 1,
+        String("1rtt_bypassed += 1"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_accept), 0,
+        String("accept untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        String("reject untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        String("misconfig untouched"),
+    )
+    _ = filter
+    _ = prof
+
+
+def test_filter_helper_0rtt_get_injects_and_proceeds() raises:
+    """AC filter-helper-0rtt-get-injects-and-proceeds."""
+    var filter = IdempotentOnlyFilter()
+    var prof = AcceptProfile()
+    var fp = _make_filter_ptr_some(filter)
+    var pp = _make_profile_ptr_some(prof)
+    var headers = Headers()
+
+    var outcome = apply_early_data_filter(
+        String("GET"), True, fp, headers, pp,
+    )
+    assert_true(outcome.should_proceed(), String("0-RTT GET must proceed"))
+    assert_true(
+        headers.has(String("early-data")),
+        String("Early-Data header injected"),
+    )
+    var got = headers.get(String("early-data"))
+    assert_true(
+        got == String("1"),
+        String("Early-Data value is '1'"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_accept), 1,
+        String("accept += 1"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        String("1rtt untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        String("reject untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        String("misconfig untouched"),
+    )
+    _ = filter
+    _ = prof
+
+
+def test_filter_helper_0rtt_post_emits_425() raises:
+    """AC filter-helper-0rtt-post-emits-425."""
+    var filter = IdempotentOnlyFilter()
+    var prof = AcceptProfile()
+    var fp = _make_filter_ptr_some(filter)
+    var pp = _make_profile_ptr_some(prof)
+    var headers = Headers()
+
+    var outcome = apply_early_data_filter(
+        String("POST"), True, fp, headers, pp,
+    )
+    assert_true(
+        outcome.should_send_425(), String("0-RTT POST must reject"),
+    )
+    assert_false(
+        headers.has(String("early-data")),
+        String("no header on reject"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_reject_425), 1,
+        String("reject_425 += 1"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_accept), 0,
+        String("accept untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        String("1rtt untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        String("misconfig untouched"),
+    )
+    _ = filter
+    _ = prof
+
+
+def test_filter_helper_0rtt_filter_none_fails_closed() raises:
+    """AC filter-helper-0rtt-filter-none-fails-closed.
+
+    Even GET fails-closed when filter_ptr is None on a 0-RTT request."""
+    var prof = AcceptProfile()
+    var pp = _make_profile_ptr_some(prof)
+    var headers = Headers()
+    var none_ptr: Optional[
+        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+    ] = None
+
+    var outcome = apply_early_data_filter(
+        String("GET"), True, none_ptr, headers, pp,
+    )
+    assert_true(
+        outcome.should_send_425(),
+        String("filter_ptr=None must fail-closed even on GET"),
+    )
+    assert_false(
+        headers.has(String("early-data")),
+        String("no header on fail-closed"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 1,
+        String("misconfig_fail_closed += 1"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_accept), 0,
+        String("accept untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        String("reject untouched"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        String("1rtt untouched"),
+    )
+    _ = prof
+
+
+def test_filter_helper_counter_mutual_exclusion() raises:
+    """AC filter-helper-counter-mutual-exclusion.
+
+    Across 100 deterministic random triples, each call bumps exactly
+    ONE counter; sum of deltas == call count."""
+    var filter = IdempotentOnlyFilter()
+    var prof = AcceptProfile()
+    var fp = _make_filter_ptr_some(filter)
+    var pp = _make_profile_ptr_some(prof)
+    var state = UInt64(0xCAFEBABEC0DEFEED)
+    var calls = 100
+    for _ in range(calls):
+        var headers = Headers()
+        var r = _splitmix64(state)
+        var is_zr = (r % UInt64(2)) == UInt64(1)
+        var method_pick = Int(_splitmix64(state) % UInt64(4))
+        var method: String
+        if method_pick == 0:
+            method = String("GET")
+        elif method_pick == 1:
+            method = String("POST")
+        elif method_pick == 2:
+            method = String("OPTIONS")
+        else:
+            method = String("PATCH")
+        var none_or_some = _splitmix64(state) % UInt64(10)
+        if none_or_some == UInt64(0) and is_zr:
+            # Mostly Some; rare None for fail-closed coverage when 0-RTT.
+            var none_ptr: Optional[
+                UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            ] = None
+            _ = apply_early_data_filter(method, is_zr, none_ptr, headers, pp)
+        else:
+            _ = apply_early_data_filter(method, is_zr, fp, headers, pp)
+
+    var total = (
+        Int(prof.zero_rtt_http_filter_accept)
+        + Int(prof.zero_rtt_http_filter_reject_425)
+        + Int(prof.zero_rtt_http_filter_misconfig_fail_closed)
+        + Int(prof.zero_rtt_http_filter_1rtt_bypassed)
+    )
+    assert_equal_int(
+        total, calls,
+        String("sum of bucket deltas equals call count"),
+    )
+    _ = filter
+    _ = prof
+
+
+def test_send_425_emits_status_only_fin() raises:
+    """AC send-425-emits-status-only-fin.
+
+    Drive send_425_response against a server-side H3Connection; assert
+    the response stream has FIN queued. (Wire-bytes decode is not
+    asserted here because QPACK-decode requires a paired decoder; the
+    HEADERS-frame-with-`:status=425` content is covered downstream
+    where a client-side connection is available.)"""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var quic = _make_server_conn_for_tagging(lib, cfg)
+    var h3 = H3Connection.server(quic^)
+
+    # Synthesise a peer-initiated request stream the same way the
+    # adapter would observe it. Set _current_space_idx so the stream
+    # tag matches a real 0-RTT-arrived request (the field is reset
+    # between packets by the dispatch loop in production).
+    h3._quic._current_space_idx = ZERO_RTT_SPACE_IDX
+    var probe = List[UInt8]()
+    probe.append(UInt8(0x00))  # arbitrary
+    var sf = StreamFrame(UInt64(0), UInt64(0), probe, False)
+    h3._quic._handle_stream_frame(sf)
+
+    send_425_response(UInt64(0), h3)
+
+    # The send_stream_data path appends to the outgoing buffer; we
+    # don't decode bytes here (QPACK-decode requires a paired
+    # decoder). Instead we assert the side-effects observable on the
+    # H3 layer: a buffer is queued with FIN set on stream 0.
+    # `SendBuf.fin` is the post-send_stream_data invariant — the
+    # `fin_offset` (frame-emission timestamp) is set only once
+    # `make_frame` actually slices the FIN onto the wire, which
+    # requires a flush pass that this test deliberately skips.
+    var s = Stream(other=h3._quic.stream_map.streams[Int(0)])
+    assert_true(
+        s.send_buf is not None,
+        String("send-side buffer must exist on the request stream"),
+    )
+    var sb = s.send_buf.value().copy()
+    assert_true(
+        sb.fin,
+        String("FIN must be queued on the response stream"),
+    )
+    assert_true(
+        len(sb.data) > 0,
+        String("HEADERS frame bytes must be queued"),
+    )
+    _ = h3._quic.conn_handle
+    _ = cfg._handle
+
+
+def test_filter_dispatch_outcome_equality_and_helpers() raises:
+    """The two FilterDispatchOutcome variants must satisfy variant
+    identity (proceed != send_425; proceed == proceed) so callers can
+    `==`-match without reaching into `kind`."""
+    var p1 = FilterDispatchOutcome.proceed()
+    var p2 = FilterDispatchOutcome.proceed()
+    var r1 = FilterDispatchOutcome.send_425()
+    assert_true(p1 == p2, String("proceed == proceed"))
+    assert_true(p1 != r1, String("proceed != send_425"))
+    assert_true(p1.should_proceed(), String("proceed.should_proceed"))
+    assert_false(p1.should_send_425(), String("proceed not send_425"))
+    assert_true(r1.should_send_425(), String("send_425.should_send_425"))
+    assert_false(r1.should_proceed(), String("send_425 not proceed"))
+
+
 def main() raises:
     """Driver for `scripts/run_tests.sh`: each test must be invoked here."""
     test_capabilities_is_early_data_defaults_false()
@@ -414,4 +731,11 @@ def main() raises:
     test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet()
     test_stream_is_zero_rtt_false_from_1rtt_packet()
     test_stream_is_zero_rtt_monotonic_after_handshake_complete()
+    test_filter_helper_1rtt_proceeds_no_injection()
+    test_filter_helper_0rtt_get_injects_and_proceeds()
+    test_filter_helper_0rtt_post_emits_425()
+    test_filter_helper_0rtt_filter_none_fails_closed()
+    test_filter_helper_counter_mutual_exclusion()
+    test_send_425_emits_status_only_fin()
+    test_filter_dispatch_outcome_equality_and_helpers()
     print("test_quic_zero_rtt_http_filter: all tests passed")
