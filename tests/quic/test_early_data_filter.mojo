@@ -198,6 +198,86 @@ def test_idempotent_only_rejects_whitespace_padded() raises:
     print("  test_idempotent_only_rejects_whitespace_padded: PASS")
 
 
+def _splitmix64(mut state: UInt64) -> UInt64:
+    """SplitMix64 PRNG (Vigna 2014); deterministic given a seed.
+
+    Mutates `state` in place; returns the next pseudo-random UInt64.
+    The plus-and-mix structure makes each call O(1) with no allocations.
+    """
+    state = state + UInt64(0x9E3779B97F4A7C15)
+    var z = state
+    z = (z ^ (z >> 30)) * UInt64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> 27)) * UInt64(0x94D049BB133111EB)
+    return z ^ (z >> 31)
+
+
+def _draw_method(mut state: UInt64) -> String:
+    """Draw one HTTP-method-shaped String for the property test.
+
+    70% chance: draw from a 13-element fixed pool that exercises both
+    accept paths (GET/HEAD/OPTIONS) and reject paths (other RFC 9110
+    methods, case variants, whitespace-padded, unknown extension).
+    30% chance: generate a random 1-20 byte ASCII printable string so
+    rare bytewise neighbours of accept tokens are reached.
+    """
+    var pool = List[String]()
+    pool.append(String("GET"))
+    pool.append(String("HEAD"))
+    pool.append(String("OPTIONS"))
+    pool.append(String("POST"))
+    pool.append(String("PUT"))
+    pool.append(String("DELETE"))
+    pool.append(String("PATCH"))
+    pool.append(String("CONNECT"))
+    pool.append(String("TRACE"))
+    pool.append(String("get"))
+    pool.append(String("Get"))
+    pool.append(String("GET "))
+    pool.append(String("FROBNICATE"))
+
+    var r = _splitmix64(state)
+    if (r % UInt64(100)) < UInt64(70):
+        var idx = Int((_splitmix64(state)) % UInt64(13))
+        return pool[idx]
+
+    # Random 1-20 byte ASCII printable string (bytes 0x20..0x7E).
+    var nlen = Int(((_splitmix64(state)) % UInt64(20)) + UInt64(1))
+    var buf = List[UInt8]()
+    for _ in range(nlen):
+        var byte = UInt8(((_splitmix64(state)) % UInt64(95)) + UInt64(32))
+        buf.append(byte)
+    return String(unsafe_from_utf8=buf)
+
+
+def test_idempotent_only_structured_property() raises:
+    """AC idempotent-only-structured-property.
+
+    10000 trials, SplitMix64-seeded (deterministic). Property: the
+    filter accepts iff the drawn method is exactly one of `GET`,
+    `HEAD`, `OPTIONS`. The 70/30 split between a structured pool and
+    a random byte generator covers both common reject neighbours and
+    rare bytewise drift.
+    """
+    var f = IdempotentOnlyFilter()
+    var state = UInt64(0xC0FFEE12345678)
+    var trials = 10000
+    for i in range(trials):
+        var m = _draw_method(state)
+        var d = f.should_accept_for_0rtt(m)
+        var expected_accept = (m == "GET") or (m == "HEAD") or (m == "OPTIONS")
+        if expected_accept:
+            assert_true(
+                d.is_accept(),
+                String("trial ") + String(i) + String(": expected accept for ") + m,
+            )
+        else:
+            assert_true(
+                d.is_reject(),
+                String("trial ") + String(i) + String(": expected reject for ") + m,
+            )
+    print("  test_idempotent_only_structured_property: PASS (10000 trials)")
+
+
 def main() raises:
     """Driver for `scripts/run_tests.sh`: each test must be invoked here."""
     test_filter_decision_accept_round_trip()
@@ -216,3 +296,4 @@ def main() raises:
     test_idempotent_only_rejects_empty_method()
     test_idempotent_only_case_sensitive()
     test_idempotent_only_rejects_whitespace_padded()
+    test_idempotent_only_structured_property()
