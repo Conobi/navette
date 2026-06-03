@@ -60,6 +60,7 @@ comptime rlsm_quic_conn_alpn_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin],
 comptime rlsm_quic_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_server_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_is_early_data_accepted_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_replay_authenticator_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt, MutAnyOrigin]) abi("C") thin -> Int32
 
 # -- Loader helpers --------------------------------------------------------
 
@@ -270,3 +271,7 @@ def load_rlsm_quic_server_conn_zero_rtt_keys(ref handle: OwnedDLHandle) -> rlsm_
 # Returns 1 if server accepted early data (0-RTT), 0 otherwise, -1 on error.
 def load_rlsm_quic_conn_is_early_data_accepted(ref handle: OwnedDLHandle) -> rlsm_quic_conn_is_early_data_accepted_fn:
     return handle.get_function[rlsm_quic_conn_is_early_data_accepted_fn]("rlsm_quic_conn_is_early_data_accepted")
+
+# Return the 32-byte ClientHello.random captured for this server connection (used as the 0-RTT anti-replay store's dedup key). 0=success, 1=no ClientHello prefix captured yet, -1=invalid handle or client-side connection.
+def load_rlsm_quic_server_conn_replay_authenticator(ref handle: OwnedDLHandle) -> rlsm_quic_server_conn_replay_authenticator_fn:
+    return handle.get_function[rlsm_quic_server_conn_replay_authenticator_fn]("rlsm_quic_server_conn_replay_authenticator")

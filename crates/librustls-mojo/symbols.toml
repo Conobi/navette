@@ -520,3 +520,12 @@ rust_args_names = ["conn_handle"]
 rust_ret  = "i32"
 mojo_args = ["Int32"]
 mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_quic_server_conn_replay_authenticator"
+description = "Return the 32-byte ClientHello.random captured for this server connection (used as the 0-RTT anti-replay store's dedup key). 0=success, 1=no ClientHello prefix captured yet, -1=invalid handle or client-side connection."
+rust_args = ["i32", "*mut u8", "*mut usize"]
+rust_args_names = ["conn_handle", "out_buf", "out_len"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "UnsafePointer[UInt]"]
+mojo_ret  = "Int32"

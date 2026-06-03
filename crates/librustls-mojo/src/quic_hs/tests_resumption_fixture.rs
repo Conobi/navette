@@ -214,11 +214,39 @@ pub(super) fn drive_full_handshake_with_resumption() -> (i32, i32) {
     // the early-data secret. Break the loop the moment `zero_rtt_keys()`
     // returns `Some(_)` — driving past `KeyChange::OneRtt` would discard
     // the early-data secret on the server side.
+    //
+    // The fixture also tracks the first ClientHello prefix as the client
+    // produces it, mirroring what the production ingress hook on
+    // `rlsm_quic_conn_read_hs` would do if the resumed handshake had been
+    // driven through the FFI. Bytes 6..38 of that prefix are the
+    // ClientHello.random per RFC 8446 §4.1.2 and form the replay
+    // authenticator the dedup store consumes.
+    let mut first_ch_prefix = [0u8; 38];
+    let mut first_ch_prefix_len: u8 = 0;
+    let mut client_random_captured = false;
+    let mut client_random = [0u8; 32];
+
     let mut got_zero_rtt = false;
     for _ in 0..16 {
         let mut buf: Vec<u8> = Vec::new();
         let _ = client_2.write_hs(&mut buf);
         if !buf.is_empty() {
+            // Accumulate the leading 38 bytes from the client→server flight
+            // into a sticky buffer. Mirrors the production ingress hook
+            // exactly, including tolerance of CRYPTO fragmentation.
+            if !client_random_captured {
+                let cur = first_ch_prefix_len as usize;
+                if cur < 38 {
+                    let want = 38 - cur;
+                    let take = std::cmp::min(want, buf.len());
+                    first_ch_prefix[cur..cur + take].copy_from_slice(&buf[..take]);
+                    first_ch_prefix_len = (cur + take) as u8;
+                    if first_ch_prefix_len == 38 && first_ch_prefix[0] == 0x01 {
+                        client_random.copy_from_slice(&first_ch_prefix[6..38]);
+                        client_random_captured = true;
+                    }
+                }
+            }
             server_2.read_hs(&buf).expect("server_2 read_hs");
         }
         if server_2.zero_rtt_keys().is_some() {
@@ -245,6 +273,11 @@ pub(super) fn drive_full_handshake_with_resumption() -> (i32, i32) {
         "resumed server never produced zero_rtt_keys = Some(_); \
          verify enable_early_data + max_early_data_size + ticket cache wiring",
     );
+    assert!(
+        client_random_captured,
+        "resumed handshake completed without observing a 38-byte ClientHello \
+         prefix; the fixture cannot pre-populate the authenticator",
+    );
 
     // ---- Insert into Wave 1's QUIC_CONN_TABLE. ----
     let server_entry = QuicConnEntry {
@@ -252,12 +285,20 @@ pub(super) fn drive_full_handshake_with_resumption() -> (i32, i32) {
         pending: None,
         next_secrets: None,
         alert_cache: None,
+        first_ch_prefix,
+        first_ch_prefix_len,
+        client_random_captured,
+        client_random,
     };
     let client_entry = QuicConnEntry {
         conn: QuicConn::Client(client_2),
         pending: None,
         next_secrets: None,
         alert_cache: None,
+        first_ch_prefix: [0u8; 38],
+        first_ch_prefix_len: 0,
+        client_random_captured: false,
+        client_random: [0u8; 32],
     };
 
     let server_h = quic_conn_table()

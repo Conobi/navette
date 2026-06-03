@@ -37,6 +37,25 @@ struct QuicConnEntry {
     pending: Option<(u8, Keys)>,        // (kind, keys) — None when no pending change
     next_secrets: Option<Secrets>,      // 1-RTT Secrets from OneRtt; used by take_next_keys
     alert_cache: Option<u8>,            // cached AlertDescription code; cleared on read
+
+    /// Sticky 38-byte ClientHello-prefix accumulator. Survives RFC 9000 §7.5
+    /// CRYPTO fragmentation: a client may split the initial CRYPTO message
+    /// across multiple Initial datagrams; the shim accumulates incoming
+    /// bytes here on every server read_hs until either 38 are collected
+    /// (at which point client_random is extracted from bytes 6..38 per
+    /// RFC 8446 §4.1.2) or the connection is closed.
+    first_ch_prefix: [u8; 38],
+    first_ch_prefix_len: u8,
+
+    /// True once client_random has been extracted from first_ch_prefix.
+    /// HRR scenario: a second ClientHello after HelloRetryRequest carries
+    /// the SAME random per RFC 8446 §4.1.4, but this flag short-circuits
+    /// the parse regardless — the random comes from the FIRST ClientHello.
+    client_random_captured: bool,
+
+    /// The captured ClientHello.random. Populated when
+    /// client_random_captured flips false → true.
+    client_random: [u8; 32],
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +440,10 @@ pub extern "C" fn rlsm_quic_client_conn_new(
         pending: None,
         next_secrets: None,
         alert_cache: None,
+        first_ch_prefix: [0u8; 38],
+        first_ch_prefix_len: 0,
+        client_random_captured: false,
+        client_random: [0u8; 32],
     };
 
     match quic_conn_table().insert(entry) {
@@ -476,6 +499,10 @@ pub extern "C" fn rlsm_quic_server_conn_new(
         pending: None,
         next_secrets: None,
         alert_cache: None,
+        first_ch_prefix: [0u8; 38],
+        first_ch_prefix_len: 0,
+        client_random_captured: false,
+        client_random: [0u8; 32],
     };
 
     match quic_conn_table().insert(entry) {
@@ -594,6 +621,37 @@ pub extern "C" fn rlsm_quic_conn_read_hs(
     quic_conn_table().with_mut(conn_handle, |entry| {
         let lookup_us = t_lookup.elapsed().as_micros() as u64;
         if !out_handle_lookup_us.is_null() { unsafe { *out_handle_lookup_us = lookup_us; } }
+
+        // Ingress hook (server-only): accumulate the leading 38 bytes of
+        // the very first server read_hs into entry.first_ch_prefix. When
+        // 38 bytes have been collected AND the first byte is 0x01
+        // (HandshakeType.client_hello), extract entry.client_random from
+        // bytes 6..38 per RFC 8446 §4.1.2. The capture is one-shot: the
+        // flag entry.client_random_captured short-circuits subsequent
+        // reads (HRR scenario; multiple read_hs calls for the same flight).
+        if matches!(entry.conn, QuicConn::Server(_))
+            && !entry.client_random_captured
+            && !slice.is_empty()
+        {
+            let cur = entry.first_ch_prefix_len as usize;
+            if cur < 38 {
+                let want = 38 - cur;
+                let take = std::cmp::min(want, slice.len());
+                entry.first_ch_prefix[cur..cur + take]
+                    .copy_from_slice(&slice[..take]);
+                entry.first_ch_prefix_len = (cur + take) as u8;
+                if entry.first_ch_prefix_len == 38 {
+                    if entry.first_ch_prefix[0] == 0x01 {
+                        entry.client_random
+                            .copy_from_slice(&entry.first_ch_prefix[6..38]);
+                        entry.client_random_captured = true;
+                    }
+                    // Else: defensive no-op. The pass-through to rustls
+                    // below will produce the correct protocol error if
+                    // the buffer is malformed.
+                }
+            }
+        }
 
         let t_sm = std::time::Instant::now();
         let result = match &mut entry.conn {
@@ -1100,8 +1158,84 @@ pub extern "C" fn rlsm_quic_conn_is_early_data_accepted(conn_handle: i32) -> i32
         })
 }
 
+/// Returns the 32-byte ClientHello.random captured for this server
+/// connection. The decrypt-path integration uses these 32 bytes
+/// directly as the dedup authenticator for the anti-replay store.
+///
+/// The captured random has these properties:
+///   - STABLE across verbatim replay (same client bytes → same captured
+///     random; the random is inside the encrypted Initial CRYPTO bytes,
+///     so an attacker can only resend it verbatim).
+///   - UNIQUE per attempt (CSPRNG; 2^-256 collision probability across
+///     legitimate clients).
+///   - UNFORGEABLE by off-path attackers (random is encrypted; modifying
+///     it requires the AEAD key the attacker doesn't have).
+///
+/// Out-params:
+///   out_buf: caller-provided 32-byte buffer.
+///   out_len: set to 32 on success, 0 otherwise.
+///
+/// Return codes:
+///   0 — success: 32 bytes written to out_buf.
+///   1 — client_random not yet captured (no full 38-byte ClientHello
+///       prefix has been observed on this server connection).
+///   -1 — invalid conn handle, or this is a client connection.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_server_conn_replay_authenticator(
+    conn_handle: i32,
+    out_buf: *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    clear_last_error();
+
+    if out_buf.is_null() {
+        rlsm_err!("rlsm_quic_server_conn_replay_authenticator: null out_buf"; return -1);
+    }
+    if out_len.is_null() {
+        rlsm_err!("rlsm_quic_server_conn_replay_authenticator: null out_len"; return -1);
+    }
+    unsafe { *out_len = 0; }
+
+    quic_conn_table()
+        .with(conn_handle, |entry: &QuicConnEntry| {
+            match &entry.conn {
+                QuicConn::Server(_) => {}
+                QuicConn::Client(_) => {
+                    set_last_error(
+                        "rlsm_quic_server_conn_replay_authenticator: \
+                         not applicable to client connections"
+                    );
+                    return -1;
+                }
+            }
+
+            if !entry.client_random_captured {
+                return 1;
+            }
+
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    entry.client_random.as_ptr(),
+                    out_buf,
+                    32,
+                );
+                *out_len = 32;
+            }
+            0
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!(
+                "rlsm_quic_server_conn_replay_authenticator: invalid conn handle";
+                return -1
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests_resumption_fixture;
+
+#[cfg(test)]
+mod tests_replay_authenticator;
 
 #[cfg(test)]
 mod tests {
