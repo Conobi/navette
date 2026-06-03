@@ -299,6 +299,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §3.12 — navette.tls.early_data_policy has zero third-party type leakage
+# ---------------------------------------------------------------------------
+echo '§3.12 early_data_policy module has no third-party type references'
+# Reuses the leak_pattern defined in §3.5. Module is pure value-type:
+# variant discriminant + EarlyDataStoreConfig payload + predicates.
+# No FFI, no rustls, no librustls-mojo, no libcompress — none of those
+# names should appear.
+if [ -f navette/tls/early_data_policy.mojo ]; then
+    if rgrep -E "$leak_pattern" navette/tls/early_data_policy.mojo > /dev/null; then
+        fail 'navette/tls/early_data_policy.mojo references a third-party type'
+    else
+        pass 'navette/tls/early_data_policy.mojo free of third-party type names'
+    fi
+else
+    fail 'navette/tls/early_data_policy.mojo missing'
+fi
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$failed" -eq 0 ]; then
     echo 'all integration invariants ok'
