@@ -13,6 +13,7 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.memory import Span
 
 from .lib import SharedLibrary
+from navette.tls.early_data_store import InMemoryEarlyDataStore
 
 
 struct TlsClientConfig(Movable):
@@ -171,6 +172,7 @@ struct QuicServerConfig(Movable):
     var _lib: SharedLibrary
     var _handle: Int32
     var _max_early_data: UInt32
+    var _early_data_store: Optional[InMemoryEarlyDataStore]
 
     def __init__(
         out self,
@@ -219,15 +221,23 @@ struct QuicServerConfig(Movable):
             out_handle.free()
             self._handle = Int32(-1)
             self._max_early_data = UInt32(0)
+            self._early_data_store = None
             raise "quic_server_config_new failed: " + err
         self._handle = out_handle[0]
         out_handle.free()
         self._max_early_data = max_early_data
+        if max_early_data == UInt32(0):
+            self._early_data_store = None
+        else:
+            self._early_data_store = Optional[InMemoryEarlyDataStore](
+                InMemoryEarlyDataStore()
+            )
 
     def __init__(out self, *, deinit take: Self):
         self._lib = take._lib^
         self._handle = take._handle
         self._max_early_data = take._max_early_data
+        self._early_data_store = take._early_data_store^
 
     def __del__(deinit self):
         if self._handle > 0:

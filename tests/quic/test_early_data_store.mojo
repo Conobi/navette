@@ -327,6 +327,50 @@ def test_lru_eviction_preserves_recently_touched() raises:
     print("  test_lru_eviction_preserves_recently_touched: PASS")
 
 
+def test_default_store_field_populated_when_zero_rtt_enabled() raises:
+    """AC default-store-field-populated-when-zero-rtt-enabled."""
+    from navette.tls.lib import TlsBackend
+    from navette.tls.config import QuicServerConfig
+    from tests._test_util import load_test_cert
+
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        tls.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    assert_true(
+        cfg._early_data_store is not None,
+        "max_early_data != 0 must populate _early_data_store",
+    )
+    _ = cfg._handle  # extend lifetime
+    print("  test_default_store_field_populated_when_zero_rtt_enabled: PASS")
+
+
+def test_no_store_field_when_zero_rtt_disabled() raises:
+    """AC no-store-field-when-zero-rtt-disabled."""
+    from navette.tls.lib import TlsBackend
+    from navette.tls.config import QuicServerConfig
+    from tests._test_util import load_test_cert
+
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        tls.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0),
+    )
+    assert_true(
+        cfg._early_data_store is None,
+        "max_early_data == 0 must leave _early_data_store None",
+    )
+    _ = cfg._handle
+    print("  test_no_store_field_when_zero_rtt_disabled: PASS")
+
+
 def main() raises:
     test_in_memory_lru_default_constructs()
     test_in_memory_lru_refuses_degenerate_config()
@@ -340,3 +384,5 @@ def main() raises:
     test_clock_regression_treats_old_entry_as_live()
     test_lru_eviction_bounds_memory()
     test_lru_eviction_preserves_recently_touched()
+    test_default_store_field_populated_when_zero_rtt_enabled()
+    test_no_store_field_when_zero_rtt_disabled()
