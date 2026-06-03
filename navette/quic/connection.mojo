@@ -18,6 +18,9 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.tls.lib import SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
+from navette.tls.early_data_store import (
+    InMemoryEarlyDataStore, ReplayDecision,
+)
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
@@ -544,6 +547,34 @@ struct QuicConnection(Movable):
     # still has no early-data secret.
     var _draining_zero_rtt: Bool
 
+    # Tristate that captures the once-per-connection replay decision.
+    #   0 = unchecked (initial state)
+    #   1 = accepted (allow 0-RTT data through dispatch)
+    #   2 = rejected (silent-drop all subsequent 0-RTT; conn stays alive)
+    # Production code transitions 0 -> 1 OR 0 -> 2 exactly once. 1 -> x
+    # and 2 -> x transitions never occur — committed state is sticky.
+    var _zero_rtt_replay_decision: UInt8
+
+    # Optional[UInt64] now-millis override for unit tests. Production
+    # callers leave this None; the integration site reads
+    # `monotonic_us() // 1000` inline when this field is None. Tests
+    # inject deterministic timestamps via direct assignment. A static
+    # check in `scripts/check_integrations.sh` asserts assignment to this
+    # field never appears outside `tests/`.
+    var _zero_rtt_now_ms_override: Optional[UInt64]
+
+    # Optional pointer to the InMemoryEarlyDataStore owned by the
+    # QuicServerConfig that birthed this connection. None for clients
+    # AND for rejection-mode servers. The pointer is valid for the
+    # connection's lifetime because the public surface (H3UdpHandler etc.)
+    # keeps the config alive across all conns that reference it. A
+    # follow-up change abstracts this via a trait object or
+    # tagged-variant wrapper when the public API exposes
+    # `EarlyDataPolicy::Custom(store)`.
+    var _early_data_store_ptr: Optional[
+        UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
+    ]
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit take: Self):
@@ -601,6 +632,9 @@ struct QuicConnection(Movable):
         self.zero_rtt_buffer = take.zero_rtt_buffer^
         self.zero_rtt_buffer_bytes = take.zero_rtt_buffer_bytes
         self._draining_zero_rtt = take._draining_zero_rtt
+        self._zero_rtt_replay_decision = take._zero_rtt_replay_decision
+        self._zero_rtt_now_ms_override = take._zero_rtt_now_ms_override^
+        self._early_data_store_ptr = take._early_data_store_ptr^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -669,6 +703,12 @@ struct QuicConnection(Movable):
         self.zero_rtt_buffer = List[List[UInt8]]()
         self.zero_rtt_buffer_bytes = 0
         self._draining_zero_rtt = False
+        # Anti-replay tristate defaults: 0 = unchecked. Time-override seam
+        # and store pointer default to None — the server factory promotes
+        # the store pointer when 0-RTT is opted-in.
+        self._zero_rtt_replay_decision = UInt8(0)
+        self._zero_rtt_now_ms_override = None
+        self._early_data_store_ptr = None
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -906,6 +946,22 @@ struct QuicConnection(Movable):
         # {0, 0xFFFFFFFF}; any non-zero value means "0-RTT opt-in".
         conn.zero_rtt_enabled = (config.max_early_data() != UInt32(0))
 
+        # Promote the QuicServerConfig._early_data_store handle into a raw
+        # pointer the decrypt path can call into without crossing the FFI.
+        # The pointer is valid for the connection's lifetime because
+        # QuicConnection.server(...) takes `ref config` and the public
+        # surface keeps the config alive across all connections that
+        # reference it. `rebind` lifts the inferred config-bound origin to
+        # `MutAnyOrigin` so the pointer can be stored in the connection's
+        # erased field (matches the existing `profile_ptr` shape).
+        if config._early_data_store is not None:
+            var store_ptr = rebind[
+                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
+            ](UnsafePointer(to=config._early_data_store.value()))
+            conn._early_data_store_ptr = Optional[
+                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
+            ](store_ptr)
+
         comptime if PROFILE_ACCEPT:
             if profile_ptr is not None:
                 profile_ptr.value()[].record_handshake_arrival()
@@ -1058,6 +1114,79 @@ struct QuicConnection(Movable):
                     # Path C — 0-RTT disabled. Preserve rejection-mode skip.
                     offset += skip
                     continue
+
+                # ──────────────────────────────────────────────────────
+                # Anti-replay check (RFC 9001 §9.2 + RFC 8446 §8).
+                # Fires AT MOST ONCE per connection; the tristate guards
+                # subsequent 0-RTT packets so each one inherits the
+                # decision without re-crossing the FFI or store.
+                # ──────────────────────────────────────────────────────
+                if self._zero_rtt_replay_decision == UInt8(0):
+                    var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
+                    var auth_len = UInt(0)
+                    var rc = self._invoke_replay_authenticator_ffi(
+                        auth_buf, auth_len,
+                    )
+
+                    if rc != Int32(0):
+                        # FFI anomaly: 0-RTT keys installed but no
+                        # authenticator reachable. Fail closed without
+                        # discarding the keys — subsequent 0-RTT packets
+                        # short-circuit through Path A.
+                        self._zero_rtt_replay_decision = UInt8(2)
+                        self._record_replay_reject_no_authenticator()
+                    elif self._early_data_store_ptr is None:
+                        # 0-RTT enabled at config level but the store
+                        # pointer never got promoted (defensive — should
+                        # not occur). Fail closed.
+                        self._zero_rtt_replay_decision = UInt8(2)
+                        self._record_replay_reject_no_authenticator()
+                    else:
+                        var auth_span = Span[UInt8, MutAnyOrigin](
+                            ptr=auth_buf.unsafe_ptr(), length=32,
+                        )
+                        var now_ms: UInt64
+                        if self._zero_rtt_now_ms_override is not None:
+                            now_ms = self._zero_rtt_now_ms_override.value()
+                        else:
+                            now_ms = monotonic_us() // UInt64(1_000)
+                        var raised = False
+                        var decision = ReplayDecision.accept()
+                        try:
+                            var store_ptr = self._early_data_store_ptr.value()
+                            decision = store_ptr[].check_and_record(
+                                auth_span, now_ms
+                            )
+                        except:
+                            raised = True
+                        if raised:
+                            self._zero_rtt_replay_decision = UInt8(2)
+                            self._record_replay_reject_no_authenticator()
+                        elif decision.is_accept():
+                            self._zero_rtt_replay_decision = UInt8(1)
+                            self._record_replay_accept()
+                        elif decision.is_duplicate():
+                            self._zero_rtt_replay_decision = UInt8(2)
+                            self._record_replay_reject_duplicate()
+                        elif decision.is_per_key_quota():
+                            self._zero_rtt_replay_decision = UInt8(2)
+                            self._record_replay_reject_per_key_quota()
+                        else:  # is_global_ceiling
+                            self._zero_rtt_replay_decision = UInt8(2)
+                            self._record_replay_reject_global_ceiling()
+
+                if self._zero_rtt_replay_decision == UInt8(2):
+                    # Silent-drop: advance past this 0-RTT packet, keep
+                    # the connection alive (RFC 9001 §4.1). We do NOT
+                    # call _discard_zero_rtt_keys here; the slot stays
+                    # populated so subsequent 0-RTT packets short-circuit
+                    # through Path A and never repopulate
+                    # `zero_rtt_install_successes`. HANDSHAKE_DONE clears
+                    # the slot via `_discard_zero_rtt_keys`.
+                    offset += skip
+                    continue
+                # else: tristate == 1 (accept) — fall through to the
+                # standard decrypt continuation below.
             else:
                 # 3. Map to PN space (non-0-RTT path).
                 space_idx = packet_type_to_space(header.packet_type)
@@ -2883,6 +3012,66 @@ struct QuicConnection(Movable):
                     buf_ptr.free()
         finally:
             self._draining_zero_rtt = False
+
+    # ── 0-RTT anti-replay recorder wrappers ──────────────────────────
+    #
+    # Five PROFILE_ACCEPT-gated thin wrappers that route the tristate
+    # decision to the matching `AcceptProfile.record_zero_rtt_replay_*`
+    # counter. Dead-stripped at off-profile builds. Each name mirrors
+    # the decision branch in the decrypt-path integration so a `grep
+    # _record_replay_` shows the full counter wiring at a glance.
+
+    def _record_replay_accept(mut self):
+        """Bump `zero_rtt_replay_accept` on the accept branch."""
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_zero_rtt_replay_accept()
+
+    def _record_replay_reject_duplicate(mut self):
+        """Bump `zero_rtt_replay_reject_duplicate` on the duplicate branch."""
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_zero_rtt_replay_reject_duplicate()
+
+    def _record_replay_reject_per_key_quota(mut self):
+        """Bump `zero_rtt_replay_reject_per_key_quota` on the
+        per-key-quota-exhausted branch."""
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_zero_rtt_replay_reject_per_key_quota()
+
+    def _record_replay_reject_global_ceiling(mut self):
+        """Bump `zero_rtt_replay_reject_global_ceiling` on the
+        global-ceiling-exhausted branch."""
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_zero_rtt_replay_reject_global_ceiling()
+
+    def _record_replay_reject_no_authenticator(mut self):
+        """Bump `zero_rtt_replay_reject_no_authenticator` on FFI anomaly
+        or store-raise — the two paths that do NOT produce a
+        `ReplayDecision`."""
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_zero_rtt_replay_reject_no_authenticator()
+
+    def _invoke_replay_authenticator_ffi(
+        mut self,
+        mut out_buf: InlineArray[UInt8, 32],
+        mut out_len: UInt,
+    ) -> Int32:
+        """Call `rlsm_quic_server_conn_replay_authenticator`. Returns the
+        FFI rc (0=success, 1=no random captured, -1=anomaly).
+
+        `out_len` is `*mut usize` on the Rust side; the wrapper passes
+        Mojo's `UInt` (which is `usize`-sized on all supported targets).
+        """
+        var rlib = self._lib.inner_ptr()
+        return rlib[].quic_server_conn_replay_authenticator(
+            self.conn_handle,
+            out_buf.unsafe_ptr(),
+            UnsafePointer(to=out_len),
+        )
 
     # ── Send path ────────────────────────────────────────────────────
 

@@ -58,6 +58,7 @@ from navette.tls._rlsm_bindings import (
     load_rlsm_quic_server_config_new,
     load_rlsm_quic_server_conn_new,
     load_rlsm_quic_server_conn_zero_rtt_keys,
+    load_rlsm_quic_server_conn_replay_authenticator,
     load_rlsm_server_config_new,
     load_rlsm_tls_client_new,
     load_rlsm_tls_conn_alpn,
@@ -703,6 +704,27 @@ struct RustlsLibrary(Movable):
         """
         return load_rlsm_quic_server_conn_zero_rtt_keys(self._handle)(
             conn_handle, out_keys_handle,
+        )
+
+    @always_inline
+    def quic_server_conn_replay_authenticator(
+        self,
+        conn_handle: Int32,
+        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_len: UnsafePointer[UInt, MutAnyOrigin],
+    ) -> Int32:
+        """Fetch the 32-byte 0-RTT replay authenticator (ClientHello.random)
+        captured by the shim on the first server-side `read_hs` call.
+
+        Returns 0 on success (`*out_len = 32`, `out_buf` holds 32 bytes),
+        1 when the random has not yet been captured (no ClientHello seen,
+        or fewer than 38 bytes accumulated; `*out_len = 0`), or -1 on
+        anomaly (invalid handle or client variant). RFC 8446 §8 anchors
+        the authenticator-as-replay-key invariant; the captured 32 bytes
+        are opaque to Mojo — bytewise equality is the dedup contract.
+        """
+        return load_rlsm_quic_server_conn_replay_authenticator(self._handle)(
+            conn_handle, out_buf, out_len,
         )
 
     # -- Raw AES-GCM-128 -------------------------------------------------------
