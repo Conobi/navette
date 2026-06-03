@@ -239,7 +239,7 @@ fi
 # §3.8 — _drive_replay_check_for_test is test-only
 # ---------------------------------------------------------------------------
 echo '§3.8 _drive_replay_check_for_test is test-only'
-drive_hits=$(rgrep -E '_drive_replay_check_for_test\s*\(' navette/ examples/ 2>/dev/null \
+drive_hits=$(rgrep -E '_drive_replay_check_for_test\s*\(' navette/ examples/ bench/ 2>/dev/null \
     | grep -v 'def _drive_replay_check_for_test' \
     || true)
 if [ -n "$drive_hits" ]; then

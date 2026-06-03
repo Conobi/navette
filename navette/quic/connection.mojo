@@ -3079,13 +3079,17 @@ struct QuicConnection(Movable):
         simulated_decision_kind: UInt8,
         simulated_raises: Bool,
     ) raises:
-        """Test-only entry point that replicates the integration block's
-        branching logic with injectable inputs. The production code path
-        (the integration block in the decrypt loop) is byte-for-byte
-        identical in its control flow; both call the same
-        `_record_replay_*` wrappers and set `_zero_rtt_replay_decision`
-        on the same conditions. This seam allows Mojo unit tests to
-        drive every branch without staging a real FFI + store fixture.
+        """Test-only entry point that mirrors the integration block's
+        EXTERNALLY-OBSERVABLE transitions (the resulting
+        `_zero_rtt_replay_decision` value + the recorded counter) for
+        every reachable branch. The production block has one additional
+        defensive `_early_data_store_ptr is None` fallback that the
+        helper does not model independently — it collapses onto the
+        same `no_authenticator` outcome as `simulated_rc != 0`, so the
+        observable behaviour is identical. Production refactors that
+        change observable transitions in the integration block MUST
+        update this helper too; the byte-for-byte branching is a
+        maintenance contract, not a structural invariant.
 
         A static check in `scripts/check_integrations.sh §3.8` enforces
         this method is callable only from `tests/` — production callers
