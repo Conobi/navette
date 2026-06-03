@@ -46,9 +46,9 @@ def test_policy_idempotent_only_static_factory() raises:
     assert_true(p.is_enabled(), String("idempotent_only() must be enabled"))
     var sc_opt = p.store_config()
     assert_true(sc_opt.__bool__(), String("idempotent_only() must expose Some(store_config)"))
-    # Per the round-3 minor: compare against
-    # `Optional[EarlyDataStoreConfig](default_early_data_store_config())`
-    # by unwrapping with .value() and comparing fields.
+    # Compare against `Optional[EarlyDataStoreConfig](default_early_data_store_config())`
+    # by unwrapping with .value() and comparing fields — Mojo's
+    # Optional has no direct == across stored values.
     var sc = sc_opt.value().copy()
     var default = default_early_data_store_config()
     assert_true(
@@ -63,8 +63,9 @@ def test_policy_idempotent_only_static_factory() raises:
 
 
 def test_policy_off_store_config_is_none() raises:
-    """`store_config()` on Off returns None — eliminates the
-    sentinel-default-value footgun called out by round-2 adversary."""
+    """`store_config()` on Off returns None — Off must not expose a
+    sentinel default value that callers could mistake for a real
+    tuning input."""
     var p = EarlyDataPolicy.off()
     var sc_opt = p.store_config()
     assert_false(sc_opt.__bool__(), String("off().store_config() must be None"))
