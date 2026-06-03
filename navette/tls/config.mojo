@@ -13,7 +13,10 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.memory import Span
 
 from .lib import SharedLibrary
-from navette.tls.early_data_filter import IdempotentOnlyFilter
+from navette.tls.early_data_filter import (
+    EarlyDataPredicateFn,
+    IdempotentOnlyFilter,
+)
 from navette.tls.early_data_policy import EarlyDataPolicy
 from navette.tls.early_data_store import InMemoryEarlyDataStore
 
@@ -181,6 +184,11 @@ struct QuicServerConfig(Movable):
     `None` when `max_early_data == 0` (rejection mode). The H3-layer
     dispatch helper reads this field to decide whether to admit or
     reject (425) a 0-RTT-tagged request."""
+    var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
+    """User-supplied 0-RTT predicate function from
+    `EarlyDataPolicy.predicate(...)`. Populated only when the policy
+    is the Predicate variant; mutually exclusive with
+    `_early_data_filter` (the synchronised-population invariant)."""
 
     def __init__(
         out self,
@@ -305,40 +313,54 @@ struct QuicServerConfig(Movable):
             self._max_early_data = UInt32(0)
             self._early_data_store = None
             self._early_data_filter = None
+            self._early_data_predicate_fn = None
             raise "quic_server_config_new failed: " + err
         self._handle = out_handle[0]
         out_handle.free()
         self._max_early_data = effective_max_early_data
-        # Synchronised-population invariant: store and filter are both
-        # Some when 0-RTT is enabled, both None when disabled. The H3
-        # dispatch helper relies on this paired state — never set one
-        # without the other.
+        # Synchronised-population invariant: when 0-RTT is enabled,
+        # exactly one of `_early_data_filter` / `_early_data_predicate_fn`
+        # is Some; the store is Some in both cases. When 0-RTT is
+        # disabled, all three are None.
         if effective_max_early_data == UInt32(0):
             self._early_data_store = None
             self._early_data_filter = None
-        else:
+            self._early_data_predicate_fn = None
+        elif policy is not None and policy.value().is_predicate():
+            # Predicate variant: default store, no struct filter,
+            # carry the fn-pointer.
+            self._early_data_store = Optional[InMemoryEarlyDataStore](
+                InMemoryEarlyDataStore()
+            )
+            self._early_data_filter = None
+            self._early_data_predicate_fn = policy.value().predicate_fn()
+        elif policy is not None and policy.value().is_tuned():
+            # Tuned: thread the caller's store config through to
+            # the in-memory store. `store_config()` returns Some
+            # by construction whenever `is_tuned()` is true, so
+            # the inner `.value()` is safe here.
+            self._early_data_store = Optional[InMemoryEarlyDataStore](
+                InMemoryEarlyDataStore(
+                    config=policy.value().store_config().value().copy()
+                )
+            )
             self._early_data_filter = Optional[IdempotentOnlyFilter](
                 IdempotentOnlyFilter()
             )
-            if policy is not None and policy.value().is_tuned():
-                # Tuned: thread the caller's store config through to
-                # the in-memory store. `store_config()` returns Some
-                # by construction whenever `is_tuned()` is true, so
-                # the inner `.value()` is safe here.
-                self._early_data_store = Optional[InMemoryEarlyDataStore](
-                    InMemoryEarlyDataStore(
-                        config=policy.value().store_config().value().copy()
-                    )
-                )
-            else:
-                # IdempotentOnly, or the omitted-policy legacy path
-                # (`max_early_data > 0` without `policy=`): install
-                # the default store config so the synchronised-
-                # population invariant holds for both enable
-                # surfaces.
-                self._early_data_store = Optional[InMemoryEarlyDataStore](
-                    InMemoryEarlyDataStore()
-                )
+            self._early_data_predicate_fn = None
+        else:
+            # IdempotentOnly, or the omitted-policy legacy path
+            # (`max_early_data > 0` without `policy=`): install
+            # the default store config so the synchronised-
+            # population invariant holds for both enable
+            # surfaces.
+            self._early_data_store = Optional[InMemoryEarlyDataStore](
+                InMemoryEarlyDataStore()
+            )
+            self._early_data_filter = Optional[IdempotentOnlyFilter](
+                IdempotentOnlyFilter()
+            )
+            self._early_data_predicate_fn = None
 
     def __init__(out self, *, deinit take: Self):
         self._lib = take._lib^
@@ -346,6 +368,7 @@ struct QuicServerConfig(Movable):
         self._max_early_data = take._max_early_data
         self._early_data_store = take._early_data_store^
         self._early_data_filter = take._early_data_filter^
+        self._early_data_predicate_fn = take._early_data_predicate_fn
 
     def __del__(deinit self):
         if self._handle > 0:
