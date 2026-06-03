@@ -611,6 +611,17 @@ struct Stream(Copyable, Movable):
     var stop_sending_error: UInt64
     var urgency: UInt8
     var incremental: Bool
+    # True iff the stream was FIRST created (key inserted into
+    # `StreamMap.streams`) while the connection was dispatching frames
+    # from a 0-RTT-decrypted packet. Tagged ONCE at insertion-time by
+    # `QuicConnection._handle_stream_frame` via the connection-level
+    # transient `_current_space_idx` (sentinel index 3 — see
+    # `feedback_zero_rtt_space_idx_vs_pn_space.md`). Never re-tagged on
+    # subsequent STREAM frames; the monotonic-once invariant lets the
+    # H3 layer route the stream's first request via the early-data
+    # filter even after the handshake completes and subsequent body
+    # bytes arrive in 1-RTT (RFC 9001 §4.6, RFC 8470).
+    var is_zero_rtt: Bool
 
     def __init__(out self, id: UInt64, is_bidi: Bool, is_local: Bool):
         """Base constructor — creates a skeleton Stream with no send/recv sides."""
@@ -636,6 +647,7 @@ struct Stream(Copyable, Movable):
         self.stop_sending_error = UInt64(0)
         self.urgency = UInt8(127)
         self.incremental = False
+        self.is_zero_rtt = False
 
     def __init__(out self, *, other: Self):
         self.id = other.id
@@ -660,6 +672,7 @@ struct Stream(Copyable, Movable):
         self.stop_sending_error = other.stop_sending_error
         self.urgency = other.urgency
         self.incremental = other.incremental
+        self.is_zero_rtt = other.is_zero_rtt
 
     def __init__(out self, *, deinit take: Self):
         self.id = take.id
@@ -684,6 +697,7 @@ struct Stream(Copyable, Movable):
         self.stop_sending_error = take.stop_sending_error
         self.urgency = take.urgency
         self.incremental = take.incremental
+        self.is_zero_rtt = take.is_zero_rtt
 
     # ── Factory methods ───────────────────────────────────────────────────────
 

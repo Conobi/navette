@@ -575,6 +575,18 @@ struct QuicConnection(Movable):
         UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
     ]
 
+    # Transient: the dispatch-loop space_idx of the packet currently
+    # being processed. Set by the per-packet frame-dispatch loop to one
+    # of {0=Initial, 1=Handshake, 2=Application/1-RTT, 3=0-RTT sentinel}
+    # BEFORE each `_dispatch_frame` call, then reset to -1 AFTER the
+    # per-packet frame loop completes. Consumed by `_handle_stream_frame`
+    # to tag freshly-created peer-initiated streams with `is_zero_rtt`.
+    # Resetting between packets guarantees no per-packet state leaks
+    # across packets. NOTE: value 3 is a dispatch sentinel only — do NOT
+    # use this field to index `self.spaces[]` (which has 3 entries; see
+    # `feedback_zero_rtt_space_idx_vs_pn_space.md`).
+    var _current_space_idx: Int
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit take: Self):
@@ -635,6 +647,7 @@ struct QuicConnection(Movable):
         self._zero_rtt_replay_decision = take._zero_rtt_replay_decision
         self._zero_rtt_now_ms_override = take._zero_rtt_now_ms_override^
         self._early_data_store_ptr = take._early_data_store_ptr^
+        self._current_space_idx = take._current_space_idx
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -709,6 +722,11 @@ struct QuicConnection(Movable):
         self._zero_rtt_replay_decision = UInt8(0)
         self._zero_rtt_now_ms_override = None
         self._early_data_store_ptr = None
+        # Transient packet-dispatch space index; -1 outside the
+        # frame-dispatch loop. Bookended by set/reset in the loop body
+        # so 0-RTT-origin tagging fires only for streams created from
+        # actual 0-RTT-decrypted packets (RFC 9001 §4.6).
+        self._current_space_idx = -1
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -1326,10 +1344,18 @@ struct QuicConnection(Movable):
                     self.close_transport(_v11.error_code, _v11.tag, now)
                     return
                 var ack_eliciting = False
+                # Bookend the per-packet space_idx around the per-frame
+                # loop. `_handle_stream_frame` (invoked deep inside
+                # `_dispatch_frame`) consumes this to tag newly-created
+                # peer-initiated streams at insertion-time. Resetting AFTER
+                # the loop guarantees no per-packet state leaks into the
+                # next packet's dispatch.
+                self._current_space_idx = space_idx
                 for i in range(len(frames)):
                     if frames[i].is_ack_eliciting():
                         ack_eliciting = True
                     self._dispatch_frame(frames[i], space_idx, now)
+                self._current_space_idx = -1
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
@@ -1437,8 +1463,22 @@ struct QuicConnection(Movable):
             if stream_is_local(stream_id, self.is_server):
                 raise "PROTOCOL_VIOLATION: frame for unknown locally-initiated stream"
             var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+            # Tag every freshly-created peer-initiated stream with the
+            # current packet's dispatch space_idx. `_current_space_idx`
+            # is bookended by the per-packet dispatch loop; this branch
+            # only runs the FIRST time a key appears in `streams`, so
+            # `is_zero_rtt` is set ONCE at insertion-time and the
+            # monotonic-once invariant holds for the stream's lifetime
+            # (existing streams skip this branch entirely on subsequent
+            # STREAM frames). RFC 9001 §4.6 / RFC 8470.
+            var is_zr = (self._current_space_idx == ZERO_RTT_SPACE_IDX)
             for i in range(len(new_ids)):
                 self.events.append(QuicEvent.stream_opened(new_ids[i]))
+                var nkey = Int(new_ids[i])
+                if nkey in self.stream_map.streams:
+                    var s = Stream(other=self.stream_map.streams[nkey])
+                    s.is_zero_rtt = is_zr
+                    self.stream_map.streams[nkey] = s^
 
         # 2. Get stream (returns a copy).
         var stream = self.stream_map.get_stream(key)

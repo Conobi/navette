@@ -18,7 +18,12 @@ surface; the remaining test groups land alongside their integration.
 from std.memory import Span
 
 from navette.http.handler import Capabilities
+from navette.quic.connection import QuicConnection
+from navette.quic.frame import StreamFrame
+from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.profile import AcceptProfile
+from navette.quic.stream import Stream
+from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig
 from navette.tls.lib import TlsBackend
 from tests._test_util import (
@@ -27,6 +32,24 @@ from tests._test_util import (
     assert_equal_int,
     load_test_cert,
 )
+
+
+def _make_server_conn_for_tagging(
+    lib: TlsBackend, ref cfg: QuicServerConfig
+) raises -> QuicConnection:
+    """Build a server QuicConnection skeleton suitable for direct
+    _handle_stream_frame drive. The handshake is NOT driven; tests set
+    `_current_space_idx` manually before calling the frame handler."""
+    var tp = default_transport_params()
+    var dcid_a = List[UInt8]()
+    var dcid_b = List[UInt8]()
+    for _ in range(8):
+        dcid_a.append(UInt8(0xab))
+        dcid_b.append(UInt8(0xcd))
+    var now = UInt64(1_000_000)
+    return QuicConnection.server(
+        lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
+    )
 
 
 # PEM bytes are loaded inline per test (var cert_pem / var key_pem) rather
@@ -227,6 +250,152 @@ def test_store_and_filter_synchronized_when_disabled() raises:
     _ = cfg._handle
 
 
+def test_stream_is_zero_rtt_false_at_default_construction() raises:
+    """AC stream-ctor-default-false. The three Stream ctors initialise
+    `is_zero_rtt` to False so the QUIC dispatch path is the SOLE place
+    that ever promotes the flag to True."""
+    var s = Stream(UInt64(0), True, False)
+    assert_false(s.is_zero_rtt, String("base ctor must init is_zero_rtt=False"))
+
+    var s2 = Stream(other=s)
+    assert_false(s2.is_zero_rtt, String("copy ctor preserves False default"))
+
+
+def test_quic_connection_current_space_idx_defaults_minus_one() raises:
+    """AC connection-current-space-idx-resets-between-packets (default
+    half). A freshly-constructed connection has _current_space_idx = -1
+    so the per-packet dispatch loop's set/reset bookend is the SOLE way
+    a stream can be tagged as 0-RTT-originated."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var conn = _make_server_conn_for_tagging(lib, cfg)
+    assert_equal_int(
+        conn._current_space_idx, -1,
+        String("default _current_space_idx must be -1"),
+    )
+    _ = conn.conn_handle
+    _ = cfg._handle
+
+
+def test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet() raises:
+    """AC stream-is-zero-rtt-set-on-creation-from-0rtt-packet.
+
+    Drive `_handle_stream_frame` for a new (peer-initiated) stream while
+    the connection's `_current_space_idx` is `ZERO_RTT_SPACE_IDX` (the
+    dispatch sentinel set by the per-packet loop in production). The
+    freshly-created Stream must carry `is_zero_rtt = True`."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var conn = _make_server_conn_for_tagging(lib, cfg)
+
+    # Mark the in-flight packet as 0-RTT (the dispatch loop does this in
+    # production; we set it manually here to bypass the cryptography).
+    conn._current_space_idx = ZERO_RTT_SPACE_IDX
+
+    # Client-initiated bidi stream id 0 (peer-initiated for a server).
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x41))
+    var sf = StreamFrame(UInt64(0), UInt64(0), payload, False)
+    conn._handle_stream_frame(sf)
+
+    var key = Int(0)
+    assert_true(key in conn.stream_map.streams, String("stream must be created"))
+    var s = Stream(other=conn.stream_map.streams[key])
+    assert_true(
+        s.is_zero_rtt,
+        String("new stream from 0-RTT packet must be tagged"),
+    )
+    _ = conn.conn_handle
+    _ = cfg._handle
+
+
+def test_stream_is_zero_rtt_false_from_1rtt_packet() raises:
+    """AC stream-is-zero-rtt-false-from-1rtt-packet.
+
+    Same drive as the 0-RTT test but with `_current_space_idx = 2`
+    (Application/1-RTT). The freshly-created Stream's `is_zero_rtt`
+    must be False."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var conn = _make_server_conn_for_tagging(lib, cfg)
+
+    conn._current_space_idx = 2  # APPLICATION_SPACE_IDX (1-RTT)
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x41))
+    var sf = StreamFrame(UInt64(4), UInt64(0), payload, False)
+    conn._handle_stream_frame(sf)
+
+    var key = Int(4)
+    assert_true(key in conn.stream_map.streams, String("stream must be created"))
+    var s = Stream(other=conn.stream_map.streams[key])
+    assert_false(
+        s.is_zero_rtt,
+        String("new stream from 1-RTT packet must not be tagged"),
+    )
+    _ = conn.conn_handle
+    _ = cfg._handle
+
+
+def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
+    """AC stream-is-zero-rtt-monotonic-after-handshake-complete.
+
+    A stream tagged True at creation (0-RTT HEADERS) retains
+    `is_zero_rtt=True` after subsequent 1-RTT body bytes arrive on the
+    SAME stream. The flag is set ONCE at stream insertion-time and is
+    NEVER cleared by subsequent STREAM frames on an existing stream."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var conn = _make_server_conn_for_tagging(lib, cfg)
+
+    # First frame in 0-RTT — tags the stream.
+    conn._current_space_idx = ZERO_RTT_SPACE_IDX
+    var p1 = List[UInt8]()
+    p1.append(UInt8(0x41))
+    var sf1 = StreamFrame(UInt64(8), UInt64(0), p1, False)
+    conn._handle_stream_frame(sf1)
+    var key = Int(8)
+    var s1 = Stream(other=conn.stream_map.streams[key])
+    assert_true(s1.is_zero_rtt, String("creation-time tag True"))
+
+    # Subsequent frame on the SAME stream in 1-RTT — must NOT clear.
+    conn._current_space_idx = 2  # APPLICATION_SPACE_IDX
+    var p2 = List[UInt8]()
+    p2.append(UInt8(0x42))
+    var sf2 = StreamFrame(UInt64(8), UInt64(1), p2, False)
+    conn._handle_stream_frame(sf2)
+    var s2 = Stream(other=conn.stream_map.streams[key])
+    assert_true(
+        s2.is_zero_rtt,
+        String("subsequent 1-RTT frame must not clear the tag"),
+    )
+    _ = conn.conn_handle
+    _ = cfg._handle
+
+
 def main() raises:
     """Driver for `scripts/run_tests.sh`: each test must be invoked here."""
     test_capabilities_is_early_data_defaults_false()
@@ -240,4 +409,9 @@ def main() raises:
     test_no_filter_field_when_zero_rtt_disabled()
     test_store_and_filter_synchronized_when_enabled()
     test_store_and_filter_synchronized_when_disabled()
+    test_stream_is_zero_rtt_false_at_default_construction()
+    test_quic_connection_current_space_idx_defaults_minus_one()
+    test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet()
+    test_stream_is_zero_rtt_false_from_1rtt_packet()
+    test_stream_is_zero_rtt_monotonic_after_handshake_complete()
     print("test_quic_zero_rtt_http_filter: all tests passed")
