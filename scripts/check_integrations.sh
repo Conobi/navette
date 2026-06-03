@@ -195,10 +195,11 @@ fi
 # §3.5 — navette.tls.early_data_store has zero third-party type leakage
 # ---------------------------------------------------------------------------
 echo '§3.5 early_data_store module has no third-party type references'
-# Symbol-only pattern: client_random / ClientHello.random are RFC
-# concepts that appear in module docstrings; they are not third-party
-# symbols and must NOT be screened here.
-leak_pattern='RustlsLibrary|rustls::|received_resumption_data|set_resumption_data|libcompress'
+# Strict pattern enforces no third-party type leakage on the public
+# API, including client_random / ClientHello.random. Module docstrings
+# cite the RFC 8446 §4.1.2 wire layout in generic terms rather than
+# naming the symbols, so this pattern stays clean.
+leak_pattern='RustlsLibrary|rustls::|received_resumption_data|set_resumption_data|client_random|ClientHello\.random|libcompress'
 if [ -f navette/tls/early_data_store.mojo ]; then
     if rgrep -E "$leak_pattern" navette/tls/early_data_store.mojo > /dev/null; then
         fail 'navette/tls/early_data_store.mojo references a third-party type'
@@ -232,6 +233,19 @@ if [ -n "$override_hits" ]; then
     fail "_zero_rtt_now_ms_override assigned outside tests/ (production callers must leave it None): $override_hits"
 else
     pass '_zero_rtt_now_ms_override write-sites confined to ctor + tests/'
+fi
+
+# ---------------------------------------------------------------------------
+# §3.8 — _drive_replay_check_for_test is test-only
+# ---------------------------------------------------------------------------
+echo '§3.8 _drive_replay_check_for_test is test-only'
+drive_hits=$(rgrep -E '_drive_replay_check_for_test\s*\(' navette/ examples/ 2>/dev/null \
+    | grep -v 'def _drive_replay_check_for_test' \
+    || true)
+if [ -n "$drive_hits" ]; then
+    fail "_drive_replay_check_for_test called outside tests/: $drive_hits"
+else
+    pass '_drive_replay_check_for_test confined to its definition + tests/'
 fi
 
 # ---------------------------------------------------------------------------

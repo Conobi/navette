@@ -3073,6 +3073,67 @@ struct QuicConnection(Movable):
             UnsafePointer(to=out_len),
         )
 
+    def _drive_replay_check_for_test(
+        mut self,
+        simulated_rc: Int32,
+        simulated_decision_kind: UInt8,
+        simulated_raises: Bool,
+    ) raises:
+        """Test-only entry point that replicates the integration block's
+        branching logic with injectable inputs. The production code path
+        (the integration block in the decrypt loop) is byte-for-byte
+        identical in its control flow; both call the same
+        `_record_replay_*` wrappers and set `_zero_rtt_replay_decision`
+        on the same conditions. This seam allows Mojo unit tests to
+        drive every branch without staging a real FFI + store fixture.
+
+        A static check in `scripts/check_integrations.sh §3.8` enforces
+        this method is callable only from `tests/` — production callers
+        must take the integration path.
+
+        Parameters:
+            simulated_rc: FFI return code to simulate (0=success,
+                1=no authenticator captured, -1=anomaly). rc != 0
+                takes the no_authenticator branch.
+            simulated_decision_kind: ReplayDecision.kind to simulate
+                when rc == 0 and not raises (0=accept, 1=duplicate,
+                2=per_key_quota, 3=global_ceiling).
+            simulated_raises: True to simulate `store.check_and_record`
+                raising; overrides simulated_decision_kind and takes
+                the no_authenticator branch.
+        """
+        # Mirror the integration's idempotency guard: a committed
+        # decision (1 or 2) is sticky.
+        if self._zero_rtt_replay_decision != UInt8(0):
+            return
+
+        if simulated_rc != Int32(0):
+            self._zero_rtt_replay_decision = UInt8(2)
+            self._record_replay_reject_no_authenticator()
+            return
+
+        if simulated_raises:
+            self._zero_rtt_replay_decision = UInt8(2)
+            self._record_replay_reject_no_authenticator()
+            return
+
+        if simulated_decision_kind == UInt8(0):
+            # accept
+            self._zero_rtt_replay_decision = UInt8(1)
+            self._record_replay_accept()
+        elif simulated_decision_kind == UInt8(1):
+            # duplicate
+            self._zero_rtt_replay_decision = UInt8(2)
+            self._record_replay_reject_duplicate()
+        elif simulated_decision_kind == UInt8(2):
+            # per_key_quota
+            self._zero_rtt_replay_decision = UInt8(2)
+            self._record_replay_reject_per_key_quota()
+        else:
+            # global_ceiling (kind == 3)
+            self._zero_rtt_replay_decision = UInt8(2)
+            self._record_replay_reject_global_ceiling()
+
     # ── Send path ────────────────────────────────────────────────────
 
     def send(mut self, now: UInt64) raises -> List[List[UInt8]]:

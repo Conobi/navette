@@ -32,7 +32,7 @@ from navette.tls.early_data_store import (
 )
 from navette.quic.connection import QuicConnection
 from navette.quic.packet_protect import ZERO_RTT_KEY_SLOT_IDX
-from navette.quic.profile import AcceptProfile
+from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT
 from navette.quic.trans_param import default_transport_params
 from tests._test_util import (
     assert_true, assert_false, assert_equal_int, load_test_cert,
@@ -86,9 +86,10 @@ def test_replay_decision_default_is_unchecked() raises:
 
 
 def test_replay_check_accept_transitions_to_1() raises:
-    """Direct exercise of the accept path with a real store. Asserts that
-    after a successful store-accept and a record-replay-accept, the
-    tristate sits at 1 and the AcceptProfile bumps by one (when profiled)."""
+    """Direct exercise of the integration's branching logic via the
+    `_drive_replay_check_for_test` seam. The accept branch (rc=0,
+    decision_kind=0, not raising) MUST set the tristate to 1 and bump
+    the `zero_rtt_replay_accept` counter (under PROFILE_ACCEPT)."""
     var tls = TlsBackend("lib/librustls_mojo.so")
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
@@ -97,67 +98,62 @@ def test_replay_check_accept_transitions_to_1() raises:
         UnsafePointer(to=prof)
     )
 
-    # Inject a deterministic now_ms via the override seam.
-    conn._zero_rtt_now_ms_override = Optional[UInt64](UInt64(1_000))
-
-    # Hand-built store mirrors what the integration would call: a fresh
-    # 32-byte authenticator must accept on the first call.
-    var store = InMemoryEarlyDataStore()
-    var auth = List[UInt8]()
-    for _ in range(32):
-        auth.append(UInt8(0x42))
-    var d = store.check_and_record(Span(auth), UInt64(1_000))
-    assert_true(d.is_accept(), "store must accept on first call")
-
-    # Mirror what the integration would do on accept.
-    conn._zero_rtt_replay_decision = UInt8(1)
-    conn._record_replay_accept()
+    conn._drive_replay_check_for_test(
+        simulated_rc=Int32(0),
+        simulated_decision_kind=UInt8(0),  # accept
+        simulated_raises=False,
+    )
 
     assert_equal_int(
         Int(conn._zero_rtt_replay_decision), 1,
-        "accept must set tristate to 1",
+        "accept branch MUST set tristate to 1",
     )
-    # PROFILE_ACCEPT is False at unit-test build by default; the recorder
-    # is dead-stripped. Counter stays at 0 unless PROFILE_ACCEPT=true.
-    _ = prof.zero_rtt_replay_accept
+    comptime if PROFILE_ACCEPT:
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_accept), 1,
+            "accept counter must +1 under PROFILE_ACCEPT",
+        )
     _ = conn.is_server
-    _ = store._config
+    _ = prof.zero_rtt_replay_accept
     print("  test_replay_check_accept_transitions_to_1: PASS")
 
 
 def test_replay_check_reject_duplicate_transitions_to_2() raises:
-    """A duplicate authenticator after one accept transitions the
-    tristate 0 → 2 and reaches the reject_duplicate path. The
-    rejection is silent — pending_close must remain None."""
+    """Direct exercise of the duplicate-reject branch (rc=0,
+    decision_kind=1) via the `_drive_replay_check_for_test` seam.
+    Tristate MUST transition 0 → 2, the `zero_rtt_replay_reject_duplicate`
+    counter MUST +1 (under PROFILE_ACCEPT), and the rejection MUST be
+    silent (no pending CONNECTION_CLOSE)."""
     var tls = TlsBackend("lib/librustls_mojo.so")
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    var store = InMemoryEarlyDataStore()
-
-    var auth = List[UInt8]()
-    for _ in range(32):
-        auth.append(UInt8(0xAA))
-    var d1 = store.check_and_record(Span(auth), UInt64(1_000))
-    assert_true(d1.is_accept(), "first call accepts")
-    var d2 = store.check_and_record(Span(auth), UInt64(1_000))
-    assert_true(d2.is_duplicate(), "second call duplicates")
-
-    # Mirror what the integration would do on duplicate.
-    conn._zero_rtt_replay_decision = UInt8(2)
-    prof.record_zero_rtt_replay_reject_duplicate()
-
-    assert_equal_int(Int(conn._zero_rtt_replay_decision), 2, "tristate -> 2")
-    assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_duplicate), 1, "duplicate +1"
+    conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+        UnsafePointer(to=prof)
     )
-    # Silent rejection: NO CONNECTION_CLOSE.
+
+    conn._drive_replay_check_for_test(
+        simulated_rc=Int32(0),
+        simulated_decision_kind=UInt8(1),  # duplicate
+        simulated_raises=False,
+    )
+
+    assert_equal_int(
+        Int(conn._zero_rtt_replay_decision), 2,
+        "duplicate branch MUST set tristate to 2",
+    )
+    comptime if PROFILE_ACCEPT:
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_duplicate), 1,
+            "duplicate counter must +1 under PROFILE_ACCEPT",
+        )
+    # Silent rejection: NO CONNECTION_CLOSE queued by the helper.
     assert_false(
         Bool(conn.pending_close),
         "silent rejection must NOT queue CONNECTION_CLOSE",
     )
     _ = conn.is_server
-    _ = store._config
+    _ = prof.zero_rtt_replay_reject_duplicate
     print("  test_replay_check_reject_duplicate_transitions_to_2: PASS")
 
 
@@ -187,27 +183,65 @@ def test_replay_check_reject_does_not_call_discard_zero_rtt_keys() raises:
 
 
 def test_record_replay_methods_route_to_correct_buckets() raises:
-    """The five `_record_replay_*` private methods exist and are
-    callable. They are PROFILE_ACCEPT-gated; under the default unit-test
-    build the recorder is dead-stripped and counters stay at 0. The test
-    scope is the WIRING (methods exist and link), not the runtime bump."""
-    var tls = TlsBackend("lib/librustls_mojo.so")
-    var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
-    var conn = _make_server_conn(cfg, tls)
-    var prof = AcceptProfile()
-    conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
-    )
+    """The five `_record_replay_*` private methods route each tristate
+    branch into its matching `AcceptProfile.zero_rtt_replay_*` counter.
 
-    conn._record_replay_accept()
-    conn._record_replay_reject_duplicate()
-    conn._record_replay_reject_per_key_quota()
-    conn._record_replay_reject_global_ceiling()
-    conn._record_replay_reject_no_authenticator()
+    Body gated on `comptime if PROFILE_ACCEPT:` because the wrappers
+    are dead-stripped under the default build (no counter increment
+    is observable). Under PROFILE_ACCEPT=True, each call lands +1 on
+    its dedicated bucket and zero on the others — the wiring proof.
+    Under PROFILE_ACCEPT=False, the test reduces to a no-op so the
+    runner still records it as a deterministic PASS line."""
+    comptime if PROFILE_ACCEPT:
+        var tls = TlsBackend("lib/librustls_mojo.so")
+        var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
+        var conn = _make_server_conn(cfg, tls)
+        var prof = AcceptProfile()
+        conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+            UnsafePointer(to=prof)
+        )
 
-    _ = conn.is_server
-    _ = prof.zero_rtt_replay_accept
-    print("  test_record_replay_methods_route_to_correct_buckets: PASS")
+        conn._record_replay_accept()
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_accept), 1,
+            "_record_replay_accept routes to zero_rtt_replay_accept",
+        )
+        conn._record_replay_reject_duplicate()
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_duplicate), 1,
+            "_record_replay_reject_duplicate routes to its bucket",
+        )
+        conn._record_replay_reject_per_key_quota()
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_per_key_quota), 1,
+            "_record_replay_reject_per_key_quota routes to its bucket",
+        )
+        conn._record_replay_reject_global_ceiling()
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_global_ceiling), 1,
+            "_record_replay_reject_global_ceiling routes to its bucket",
+        )
+        conn._record_replay_reject_no_authenticator()
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_no_authenticator), 1,
+            "_record_replay_reject_no_authenticator routes to its bucket",
+        )
+
+        # Cross-check no cross-talk: each counter is exactly 1, not
+        # accidentally bumped by a sibling call.
+        assert_equal_int(Int(prof.zero_rtt_replay_accept), 1, "accept stays 1")
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_duplicate), 1, "duplicate stays 1"
+        )
+
+        _ = conn.is_server
+        _ = prof.zero_rtt_replay_accept
+        print("  test_record_replay_methods_route_to_correct_buckets: PASS")
+    else:
+        print(
+            "  test_record_replay_methods_route_to_correct_buckets:"
+            " SKIPPED (PROFILE_ACCEPT=False)"
+        )
 
 
 def test_now_ms_override_seam_returns_set_value() raises:
@@ -279,26 +313,71 @@ def test_replay_decision_is_idempotent_in_committed_state() raises:
 
 
 def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
-    """FFI rc != 0 OR store raises → tristate 0 → 2 with
-    `reject_no_authenticator` counter, NOT `reject_duplicate`."""
+    """Direct exercise of the anomaly branch via the
+    `_drive_replay_check_for_test` seam. Two distinct anomaly conditions
+    converge on the same counter:
+      - rc != 0  (FFI rejection: no authenticator captured)
+      - raises   (store.check_and_record raised)
+    Both MUST set the tristate to 2, bump
+    `zero_rtt_replay_reject_no_authenticator` (under PROFILE_ACCEPT),
+    and MUST NOT bump `zero_rtt_replay_reject_duplicate`."""
     var tls = TlsBackend("lib/librustls_mojo.so")
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    # Mirror what the integration's except-branch does.
-    conn._zero_rtt_replay_decision = UInt8(2)
-    prof.record_zero_rtt_replay_reject_no_authenticator()
+    conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+        UnsafePointer(to=prof)
+    )
 
-    assert_equal_int(Int(conn._zero_rtt_replay_decision), 2, "tristate -> 2")
+    # First anomaly: FFI rc != 0 (no authenticator).
+    conn._drive_replay_check_for_test(
+        simulated_rc=Int32(1),
+        simulated_decision_kind=UInt8(0),  # ignored on rc != 0 path
+        simulated_raises=False,
+    )
+
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_no_authenticator), 1,
-        "no_authenticator +1 (NOT duplicate)",
+        Int(conn._zero_rtt_replay_decision), 2,
+        "rc != 0 MUST set tristate to 2",
+    )
+    comptime if PROFILE_ACCEPT:
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_no_authenticator), 1,
+            "no_authenticator counter must +1 under PROFILE_ACCEPT",
+        )
+        assert_equal_int(
+            Int(prof.zero_rtt_replay_reject_duplicate), 0,
+            "duplicate counter must NOT bump on anomaly path",
+        )
+
+    # Second anomaly on a fresh conn: store raises.
+    var conn2 = _make_server_conn(cfg, tls)
+    var prof2 = AcceptProfile()
+    conn2.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+        UnsafePointer(to=prof2)
+    )
+    conn2._drive_replay_check_for_test(
+        simulated_rc=Int32(0),
+        simulated_decision_kind=UInt8(0),
+        simulated_raises=True,
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_duplicate), 0,
-        "duplicate stays at 0",
+        Int(conn2._zero_rtt_replay_decision), 2,
+        "raises path MUST set tristate to 2",
     )
+    comptime if PROFILE_ACCEPT:
+        assert_equal_int(
+            Int(prof2.zero_rtt_replay_reject_no_authenticator), 1,
+            "no_authenticator counter must +1 on raises path",
+        )
+        assert_equal_int(
+            Int(prof2.zero_rtt_replay_reject_duplicate), 0,
+            "duplicate counter must NOT bump on raises path",
+        )
     _ = conn.is_server
+    _ = conn2.is_server
+    _ = prof.zero_rtt_replay_reject_no_authenticator
+    _ = prof2.zero_rtt_replay_reject_no_authenticator
     print("  test_replay_check_anomaly_path_uses_no_authenticator_counter: PASS")
 
 

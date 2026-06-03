@@ -74,10 +74,10 @@ struct KeyTag(KeyElement):
 
     Bytewise equality; FNV-1a 64-bit hash for dict bucket distribution.
     The hash is NOT cryptographic. Collision resistance is upstream —
-    the FFI captures a 32-byte ClientHello.random embedded in encrypted
-    CRYPTO bytes (RFC 8446 §4.1.2), which is CSPRNG-sourced. This
-    struct's only job is to satisfy Mojo Dict's KeyElement traits
-    without pulling in a crypto dependency.
+    the FFI captures a 32-byte authenticator from the encrypted CRYPTO
+    bytes (RFC 8446 §4.1.2 wire layout), CSPRNG-sourced. This struct's
+    only job is to satisfy Mojo Dict's KeyElement traits without
+    pulling in a crypto dependency.
     """
     var bytes: InlineArray[UInt8, 32]
 
