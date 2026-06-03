@@ -26,11 +26,7 @@ All factories that consult `EarlyDataStoreConfig` raise via
 is reserved for the `QuicServerConfig` ctor — see the docstring there.
 """
 
-from navette.tls.early_data_filter import (
-    EarlyDataPredicateFn,
-    FilterDecision,
-    IdempotentOnlyFilter,
-)
+from navette.tls.early_data_filter import EarlyDataPredicateFn
 from navette.tls.early_data_store import (
     EarlyDataStoreConfig,
     default_early_data_store_config,
