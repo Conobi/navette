@@ -93,3 +93,11 @@ path = "src/bin/s_zero_rtt_replay.rs"
 [[bin]]
 name = "s_zero_rtt_fresh_resumption"
 path = "src/bin/s_zero_rtt_fresh_resumption.rs"
+
+[[bin]]
+name = "s_zero_rtt_http_get_accepted"
+path = "src/bin/s_zero_rtt_http_get_accepted.rs"
+
+[[bin]]
+name = "s_zero_rtt_http_post_rejected"
+path = "src/bin/s_zero_rtt_http_post_rejected.rs"
