@@ -11,6 +11,8 @@ Covers eight ACs from the public-API spec:
 - policy-copyable
 """
 
+from navette.http.headers import Headers
+from navette.tls.early_data_filter import FilterDecision
 from navette.tls.early_data_policy import EarlyDataPolicy
 from navette.tls.early_data_store import (
     EarlyDataStoreConfig,
@@ -194,6 +196,31 @@ def test_policy_copyable() raises:
     print("  test_policy_copyable: PASS")
 
 
+def my_test_policy_predicate(method: String, path: String, headers: Headers) raises -> FilterDecision:
+    if method == "GET":
+        return FilterDecision.accept()
+    return FilterDecision.reject_425()
+
+
+def test_policy_predicate_variant() raises:
+    """Predicate variant carries a user-supplied function pointer."""
+    var p = EarlyDataPolicy.predicate(my_test_policy_predicate)
+    assert_true(p.is_predicate(), String("predicate factory must build KIND_PREDICATE"))
+    assert_true(p.is_enabled(), String("Predicate must be enabled"))
+    print("  test_policy_predicate_variant: PASS")
+
+
+def test_policy_copy_preserves_predicate_fn() raises:
+    """Copy-ctor preserves variant + fn pointer for the Predicate
+    variant — extends the policy-copyable invariant."""
+    var src = EarlyDataPolicy.predicate(my_test_policy_predicate)
+    var dst = EarlyDataPolicy(other=src)
+    assert_true(dst.is_predicate(), String("copy of Predicate must be Predicate"))
+    var d = dst.predicate_fn().value()(String("GET"), String("/x"), Headers())
+    assert_true(d.is_accept(), String("copied fn must call correctly"))
+    print("  test_policy_copy_preserves_predicate_fn: PASS")
+
+
 def main() raises:
     print("test_early_data_policy")
     test_policy_off_is_default()
@@ -205,4 +232,6 @@ def main() raises:
     test_policy_variants_mutually_exclusive()
     test_policy_is_enabled_matches_non_off()
     test_policy_copyable()
+    test_policy_predicate_variant()
+    test_policy_copy_preserves_predicate_fn()
     print("test_early_data_policy: PASS")
