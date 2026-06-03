@@ -12,6 +12,7 @@ not just a re-export string match.
 
 from std.memory import Span
 
+from navette.http.headers import Headers
 from navette.tls import (
     EarlyDataPolicy,
     EarlyDataFilter,
@@ -30,7 +31,7 @@ def takes_filter[F: EarlyDataFilter](f: F) raises -> Bool:
     """Generic function with a trait bound. If `EarlyDataFilter` isn't
     name-resolvable from `navette.tls`, the function fails to compile
     — that compile failure IS the AC verification."""
-    var d = f.should_accept_for_0rtt(String("GET"))
+    var d = f.should_accept_for_0rtt(String("GET"), String(""), Headers())
     return d.is_accept()
 
 

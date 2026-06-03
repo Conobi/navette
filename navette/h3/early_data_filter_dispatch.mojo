@@ -170,7 +170,19 @@ def apply_early_data_filter(
             profile_ptr.value()[].record_zero_rtt_http_filter_misconfig_fail_closed()
         return FilterDispatchOutcome.send_425()
 
-    var decision = filter_ptr.value()[].should_accept_for_0rtt(method_str)
+    var decision: FilterDecision
+    try:
+        decision = filter_ptr.value()[].should_accept_for_0rtt(
+            method_str, String(""), headers
+        )
+    except:
+        # Temporary Task-2 shape: `IdempotentOnlyFilter` cannot raise,
+        # but the widened trait method gained `raises`. Route any raise
+        # through reject_425 until Task 5 introduces the dedicated
+        # `record_zero_rtt_http_filter_user_raised` counter.
+        if profile_ptr is not None:
+            profile_ptr.value()[].record_zero_rtt_http_filter_reject_425()
+        return FilterDispatchOutcome.send_425()
     if decision.is_accept():
         # Path 3: 0-RTT accepted. Inject `Early-Data: 1` per RFC 8470
         # §3 so upstream backends know the request rode 0-RTT.
