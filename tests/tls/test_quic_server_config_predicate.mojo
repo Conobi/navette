@@ -13,7 +13,7 @@ from navette.tls.config import QuicServerConfig
 from navette.tls.early_data_filter import FilterDecision
 from navette.tls.early_data_policy import EarlyDataPolicy
 from navette.tls.lib import TlsBackend
-from tests._test_util import assert_true, assert_false, load_test_cert
+from tests._test_util import assert_true, load_test_cert
 
 
 def my_test_config_predicate(method: String, path: String, headers: Headers) raises -> FilterDecision:
