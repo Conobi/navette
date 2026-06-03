@@ -31,7 +31,7 @@ def make_stream_map(is_server: Bool) -> StreamMap:
     )
 
 
-def setup_peer_limits(mut sm: StreamMap, max_streams_bidi: UInt64 = UInt64(100)):
+def setup_peer_limits(mut sm: StreamMap, max_streams_bidi: UInt64 = UInt64(100)) raises:
     sm.set_peer_limits(
         max_streams_bidi=max_streams_bidi,
         max_streams_uni=UInt64(100),
@@ -178,6 +178,49 @@ def test_peer_stream_already_exists() raises:
     assert_equal_int(len(new_ids2), 0, "peer exists second call: 0 new (already exists)")
     assert_equal_int(len(sm.streams), 1, "peer exists: still 1 stream")
     print("  test_peer_stream_already_exists: PASS")
+
+
+def test_set_peer_limits_retro_bumps_zero_rtt_streams() raises:
+    """Peer-initiated bidi streams created BEFORE set_peer_limits — i.e.
+    during 0-RTT processing on the server — start with `fc_send.limit=0`.
+    `set_peer_limits` must retroactively raise their send limit to the
+    peer's advertised value so server response data can flow on those
+    streams. Without this, the server's STREAM frames for stream 0 are
+    silent-dropped at the `fc.available()==0` gate in
+    `_build_app_frames` and the H3 response never reaches the peer
+    (R03/R04 regression caught this).
+    """
+    var sm = make_stream_map(True)  # server side
+
+    # Create a peer-initiated bidi stream BEFORE setting peer limits.
+    # This mirrors what `_handle_stream_frame` does when a 0-RTT
+    # packet carries a STREAM frame for stream 0 prior to the peer's
+    # transport parameters being parsed in `_on_handshake_complete`.
+    var new_ids = sm.get_or_create_peer_stream(UInt64(0))
+    assert_equal_int(len(new_ids), 1, "peer-initiated stream 0 created")
+    assert_true(0 in sm.streams, "stream 0 in map")
+
+    # The pre-handshake fc_send limit is 0 (peer_stream_fc_limit_bidi_local
+    # defaults to 0 until set_peer_limits is called).
+    var stream_pre = sm.streams[0].copy()
+    assert_true(Bool(stream_pre.fc_send), "stream 0 has fc_send")
+    var fc_pre = stream_pre.fc_send.value().copy()
+    assert_equal_int(Int(fc_pre.limit), 0, "fc_send.limit=0 before set_peer_limits")
+
+    # Apply peer limits as if the handshake just completed.
+    setup_peer_limits(sm)
+
+    # Stream 0's fc_send should now be bumped to 1048576 (the bidi_local
+    # limit from setup_peer_limits).
+    var stream_post = sm.streams[0].copy()
+    assert_true(Bool(stream_post.fc_send), "stream 0 retains fc_send")
+    var fc_post = stream_post.fc_send.value().copy()
+    assert_equal_int(
+        Int(fc_post.limit),
+        1048576,
+        "fc_send.limit retroactively raised to bidi_local",
+    )
+    print("  test_set_peer_limits_retro_bumps_zero_rtt_streams: PASS")
 
 
 def test_maybe_cleanup_bidi_both_terminal() raises:
@@ -344,6 +387,7 @@ def main() raises:
     test_peer_stream_creation_implicit()
     test_peer_stream_limit_exceeded()
     test_peer_stream_already_exists()
+    test_set_peer_limits_retro_bumps_zero_rtt_streams()
     test_maybe_cleanup_bidi_both_terminal()
     test_maybe_cleanup_bidi_one_terminal()
     test_maybe_cleanup_peer_bidi_increments_completed()

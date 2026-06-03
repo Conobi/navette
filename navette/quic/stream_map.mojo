@@ -169,14 +169,65 @@ struct StreamMap(Movable):
         stream_fc_bidi_remote: UInt64,
         stream_fc_uni: UInt64,
         conn_fc_send_limit: UInt64,
-    ):
-        """Populate peer-negotiated limits after the handshake completes."""
+    ) raises:
+        """Populate peer-negotiated limits after the handshake completes.
+
+        Any peer-initiated streams created BEFORE the handshake completed
+        (i.e., during 0-RTT processing on the server side) were initialised
+        with `peer_stream_fc_limit_*` defaults of 0. Once the peer's real
+        transport parameters arrive, we retroactively raise each existing
+        stream's `fc_send` limit to the matching peer limit so that response
+        data can flow on those streams. `FlowControl.ensure_limit` is
+        monotonic — never lowers an existing limit — so streams that
+        already have a higher limit (e.g. locally-initiated streams created
+        post-handshake) are unaffected.
+        """
         self.peer_max_streams_bidi = max_streams_bidi
         self.peer_max_streams_uni = max_streams_uni
         self.peer_stream_fc_limit_bidi_local = stream_fc_bidi_local
         self.peer_stream_fc_limit_bidi_remote = stream_fc_bidi_remote
         self.peer_stream_fc_limit_uni = stream_fc_uni
         self.conn_fc_send.ensure_limit(conn_fc_send_limit)
+
+        # Retroactively bump fc_send for any peer-initiated streams that
+        # were created with the default 0 limits (only happens on the
+        # server when peer opened streams via 0-RTT before its TPs were
+        # parsed). Iterate by snapshotted key list because we mutate
+        # the Dict mid-iteration.
+        var stream_ids = List[Int]()
+        for key in self.streams.keys():
+            stream_ids.append(key)
+        for i in range(len(stream_ids)):
+            var sid = stream_ids[i]
+            if sid not in self.streams:
+                continue
+            var stream = Stream(other=self.streams[sid])
+            if not stream.fc_send:
+                continue
+            # Pick the matching peer limit for this stream's direction.
+            # Bidi streams use the limit appropriate to "who initiated":
+            # peer-initiated bidi -> peer's bidi_local (peer is sender of
+            # initial OPEN, so they constrain WE on this peer-bidi stream
+            # via their bidi_local); local-initiated bidi -> peer's
+            # bidi_remote.
+            var target_limit: UInt64
+            var sid64 = UInt64(sid)
+            if stream_is_bidi(sid64):
+                if stream_is_local(sid64, self.is_server):
+                    target_limit = stream_fc_bidi_remote
+                else:
+                    target_limit = stream_fc_bidi_local
+            else:
+                if stream_is_local(sid64, self.is_server):
+                    target_limit = stream_fc_uni
+                else:
+                    # Peer-initiated uni stream — local endpoint never
+                    # sends, so fc_send is unused; skip.
+                    continue
+            var fc = stream.fc_send.value().copy()
+            fc.ensure_limit(target_limit)
+            stream.fc_send = fc^
+            self.streams[sid] = stream^
 
     # ── Local stream creation (§4.2) ─────────────────────────────────────────
 
