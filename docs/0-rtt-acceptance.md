@@ -169,11 +169,8 @@ does, and returns `FilterDecision.accept()` or
 `FilterDecision.reject_425()`.
 
 ```mojo
-from navette.tls import (
-    EarlyDataPolicy,
-    QuicServerConfig,
-    idempotency_key_predicate,
-)
+from navette.tls import EarlyDataPolicy, idempotency_key_predicate
+from navette.tls.config import QuicServerConfig
 
 var cfg = QuicServerConfig(
     tls.shared(), Span(cert), Span(key),
@@ -186,6 +183,7 @@ Custom predicates follow the same shape:
 ```mojo
 from navette.http.headers import Headers
 from navette.tls import EarlyDataPolicy, FilterDecision
+from navette.tls.config import QuicServerConfig
 
 def my_predicate(method: String, path: String, headers: Headers) raises -> FilterDecision:
     if method == "GET" and path.startswith(String("/public/")):
@@ -247,6 +245,8 @@ Header lookup is case-insensitive (`Idempotency-Key`, `idempotency-key`,
 and any mixed case all match). Reference: IETF httpapi-idempotency-key
 draft §3, §4.
 
+Call-site: see §6b above for the worked example.
+
 ### `unauthenticated_only_predicate`
 
 Implements a conservative auth-gating posture. Accepts only safe-method
@@ -263,6 +263,18 @@ Rationale: replays of unauthenticated read traffic at worst re-fetch a
 public resource; authenticated traffic (even a GET) could reveal
 user-specific state, so the conservative posture blocks 0-RTT for any
 request that may interact with a session.
+
+Call-site:
+
+```mojo
+from navette.tls import EarlyDataPolicy, unauthenticated_only_predicate
+from navette.tls.config import QuicServerConfig
+
+var cfg = QuicServerConfig(
+    tls.shared(), Span(cert), Span(key),
+    policy=EarlyDataPolicy.predicate(unauthenticated_only_predicate),
+)
+```
 
 ### Why no `path_prefix_predicate`?
 
