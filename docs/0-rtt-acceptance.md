@@ -160,6 +160,132 @@ Tuning tradeoffs:
 `IdempotentOnly` — there is currently no API to install a custom
 filter type (see §11).
 
+## 6b. `EarlyDataPolicy.predicate(fn)` — user-pluggable filter
+
+When the IdempotentOnly-shape policy does not match your application
+semantics, install a stateless free-function predicate. The predicate
+receives the same `(method, path, headers)` triple the trait method
+does, and returns `FilterDecision.accept()` or
+`FilterDecision.reject_425()`.
+
+```mojo
+from navette.tls import (
+    EarlyDataPolicy,
+    QuicServerConfig,
+    idempotency_key_predicate,
+)
+
+var cfg = QuicServerConfig(
+    tls.shared(), Span(cert), Span(key),
+    policy=EarlyDataPolicy.predicate(idempotency_key_predicate),
+)
+```
+
+Custom predicates follow the same shape:
+
+```mojo
+from navette.http.headers import Headers
+from navette.tls import EarlyDataPolicy, FilterDecision
+
+def my_predicate(method: String, path: String, headers: Headers) raises -> FilterDecision:
+    if method == "GET" and path.startswith(String("/public/")):
+        return FilterDecision.accept()
+    return FilterDecision.reject_425()
+
+var cfg = QuicServerConfig(
+    tls.shared(), Span(cert), Span(key),
+    policy=EarlyDataPolicy.predicate(my_predicate),
+)
+```
+
+Constraints (Mojo 1.0.0b1):
+
+- The predicate MUST be a free function at module scope (capturing
+  closures are not supported).
+- The predicate MUST be deterministic — same `(method, path, headers)`
+  triple MUST return the same decision.
+- The predicate runs on every 0-RTT-arrived HTTP request before
+  handler dispatch. Keep it fast (microseconds).
+- The predicate MAY raise. A raise is caught, increments
+  `zero_rtt_http_filter_user_raised` in `AcceptProfile`, and the
+  request is rejected with 425 (fail-closed).
+- The predicate sees a by-value copy of the headers; mutations have
+  no effect outside the call.
+
+Behavioural notes:
+
+- The `Predicate` variant installs the default `InMemoryEarlyDataStore`.
+  Combining operator-tuned store knobs (`Tuned`) with a user predicate
+  is deferred to a future change.
+- `policy.store_config()` returns `None` for the Predicate variant
+  (the default store has no exposed knobs), distinguishing it from
+  `Tuned` which returns `Some(config)`.
+
+## 6c. Reference predicates
+
+Two reference predicates ship in `navette.tls`:
+
+### `idempotency_key_predicate`
+
+Implements the Stripe / AWS / PayPal Idempotency-Key pattern. Accepts:
+
+- GET, HEAD, OPTIONS — unconditionally (the IdempotentOnly baseline);
+- POST, PUT, PATCH, DELETE that carry a non-empty `Idempotency-Key`
+  header.
+
+Rejects everything else with 425.
+
+| Method | `Idempotency-Key` present? | Decision |
+|---|---|---|
+| GET / HEAD / OPTIONS | any | accept |
+| POST / PUT / PATCH / DELETE | non-empty value | accept |
+| POST / PUT / PATCH / DELETE | empty value | reject 425 |
+| POST / PUT / PATCH / DELETE | absent | reject 425 |
+| CONNECT / TRACE / unknown | any | reject 425 |
+
+Header lookup is case-insensitive (`Idempotency-Key`, `idempotency-key`,
+and any mixed case all match). Reference: IETF httpapi-idempotency-key
+draft §3, §4.
+
+### `unauthenticated_only_predicate`
+
+Implements a conservative auth-gating posture. Accepts only safe-method
+requests that carry NEITHER `Authorization` NOR `Cookie`.
+
+| Method | `Authorization` | `Cookie` | Decision |
+|---|---|---|---|
+| GET / HEAD / OPTIONS | absent | absent | accept |
+| GET / HEAD / OPTIONS | present | any | reject 425 |
+| GET / HEAD / OPTIONS | any | present | reject 425 |
+| POST / PUT / DELETE / ... | any | any | reject 425 |
+
+Rationale: replays of unauthenticated read traffic at worst re-fetch a
+public resource; authenticated traffic (even a GET) could reveal
+user-specific state, so the conservative posture blocks 0-RTT for any
+request that may interact with a session.
+
+### Why no `path_prefix_predicate`?
+
+Path-prefix matching with a user-supplied allowlist is stateful (the
+allowlist IS the runtime state). Mojo 1.0.0b1 does not support
+runtime module-`var` globals, and a predicate-only API cannot accept
+runtime parameters. Operators wanting a path-prefix policy either:
+
+- author their own predicate with a hardcoded prefix list, e.g.:
+
+  ```mojo
+  def my_path_prefix(method: String, path: String, headers: Headers) raises -> FilterDecision:
+      if method == "GET" and (
+          path.startswith(String("/static/"))
+          or path.startswith(String("/api/v1/public/"))
+      ):
+          return FilterDecision.accept()
+      return FilterDecision.reject_425()
+  ```
+
+- or wait for a future change that lands struct-based filter
+  pluggability with runtime configuration.
+
 ## 7. `QuicServerConfig` ctor recipes
 
 The legacy `max_early_data: UInt32` ctor kwarg is preserved for
@@ -203,9 +329,13 @@ Each 0-RTT request increments at most one counter in the
   `zero_rtt_replay_per_key_quota` /
   `zero_rtt_replay_global_ceiling` /
   `zero_rtt_replay_no_authenticator` — transport-layer outcomes.
-- `zero_rtt_filter_accept` / `zero_rtt_filter_reject_425` /
-  `zero_rtt_filter_misconfig` /
-  `zero_rtt_filter_skipped_for_1rtt` — HTTP-layer outcomes.
+- `zero_rtt_http_filter_accept` / `zero_rtt_http_filter_reject_425` /
+  `zero_rtt_http_filter_misconfig_fail_closed` /
+  `zero_rtt_http_filter_1rtt_bypassed` /
+  `zero_rtt_http_filter_user_raised` — HTTP-layer outcomes. The
+  `user_raised` counter increments when a user-supplied predicate
+  raises (fail-closed; distinguishes operator bugs from healthy
+  rejections).
 
 Bucket discrimination is exhaustive: every accepted 0-RTT request
 increments exactly one transport counter AND exactly one HTTP-layer
@@ -235,18 +365,42 @@ counter. Counters surface in the AcceptProfile text + JSON reporters.
   closes. Operators sizing connection memory under POST-heavy 0-RTT
   traffic should account for this; a planned `STOP_SENDING`-on-reject
   hardening is documented as follow-up work.
+- **User predicate code is in the trust path for whatever it does
+  with request headers.** Predicates and custom filter impls now
+  receive the full post-QPACK-walk `Headers` collection by value.
+  Operator code is responsible for not leaking sensitive header
+  values (e.g., `Authorization`, `Cookie`) to logs, side channels,
+  or third-party services. navette provides the seam; the policy is
+  the operator's responsibility.
+- **User predicate exceptions fail closed.** A raise from the
+  predicate propagates to the dispatch helper; the helper catches,
+  increments `zero_rtt_http_filter_user_raised`, returns 425 Too
+  Early, and skips handler invocation. No handler invocation; no
+  header forwarding to upstream.
+- **Predicates cannot mutate the request.** The predicate's `Headers`
+  parameter is by-value; mutations have no effect outside the call.
+  The dispatch helper's `Early-Data: 1` injection runs AFTER the
+  predicate returns accept, on its own `mut Headers` reference.
+- **Trait widening is source-breaking for downstream
+  `EarlyDataFilter` impls.** A pre-landing audit confirmed no public
+  consumers; navette-internal impls (`IdempotentOnlyFilter` + test
+  fixtures) are updated alongside the widening. Downstream impls
+  (if any) must add `path: String` + `headers: Headers` parameters
+  and a `raises` annotation to the trait method.
 
 ## 11. Deferred: user-defined filter types
 
 The `EarlyDataFilter` and `EarlyDataStore` traits are exposed
-publicly via `from navette.tls import EarlyDataFilter, EarlyDataStore`
-so future user implementations have a stable import path. However,
-the current `EarlyDataPolicy` enum does NOT expose a `Custom(filter)`
-variant — wiring a user-defined filter type through
-`QuicServerConfig` → `QuicConnection` → the three H3 adapters
-requires a trait-object plumbing refactor (~15-20 files) that is
-deferred to a follow-up change. `Tuned(store_config)` is the v1
-stand-in for what will become `Custom(filter, store)` later.
+publicly via `from navette.tls import EarlyDataFilter, EarlyDataStore`.
+v1 ships `EarlyDataPolicy.predicate(fn)` (see §6b) for stateless
+user-pluggable filtering via free-function predicates. The
+`Custom(filter, store)` variant for user-defined filter STRUCTS
+with runtime state (Redis-backed stores, operator-supplied path
+allowlists, etc.) remains deferred — wiring user-defined types
+through `QuicServerConfig` → `QuicConnection` → the three H3
+adapters requires parametric machinery that Mojo 1.0.0b1 does not
+yet reach. `Tuned(store_config)` is the v1 stand-in for the
+store-tuning half of that future surface.
 
 If you need a non-`IdempotentOnly` filter behaviour today, the
 recommended path is to file an issue describing the use case
