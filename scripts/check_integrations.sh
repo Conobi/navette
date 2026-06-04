@@ -317,6 +317,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §3.13 — navette.tls.filters has zero third-party type leakage
+# ---------------------------------------------------------------------------
+echo '§3.13 reference predicates file has no third-party type references'
+# Reuses the leak_pattern defined in §3.5. The reference predicates are
+# stateless free functions consuming only navette-owned Headers +
+# FilterDecision; no rustls, no librustls-mojo, no libcompress, no
+# resumption-data symbols should appear.
+if [ -f navette/tls/filters.mojo ]; then
+    if rgrep -E "$leak_pattern" navette/tls/filters.mojo > /dev/null; then
+        fail 'navette/tls/filters.mojo references a third-party type'
+    else
+        pass 'navette/tls/filters.mojo free of third-party type names'
+    fi
+else
+    fail 'navette/tls/filters.mojo missing'
+fi
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$failed" -eq 0 ]; then
     echo 'all integration invariants ok'
