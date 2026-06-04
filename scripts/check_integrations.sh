@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Deps health smoke test (plans/2026-05-13-deps-enhancement.md §4.3).
-# Asserts invariants set up by Phase 1/2/3 of the deps-enhancement plan.
-# Wire into CI on every PR.
+# Deps health smoke test. Asserts the invariants the deps-enhancement
+# work set up (pyproject pins, Rust toolchain pin, FFI symbol parity,
+# leak-guards, etc.). Wire into CI on every PR.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -122,7 +122,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# §2.4 — libcompress-mojo FFI symbol parity (spec 2026-05-17-compress-shim-split)
+# §2.4 — libcompress-mojo FFI symbol parity (C source vs Mojo bindings)
 # ---------------------------------------------------------------------------
 echo '§2.4 libcompress FFI symbol parity (C source vs Mojo bindings vs .so)'
 c_count=$(grep -hE '^[A-Za-z_][A-Za-z0-9_ ]*\<lcm_[a-z_0-9]+\s*\(' \
@@ -141,9 +141,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# §2.5 — librustls_mojo.so exports zero compression symbols (AC1 of the
-# compress-shim-split spec). Decouples release surfaces: a zlib/brotli CVE
-# is a system-package update, never a Navette release.
+# §2.5 — librustls_mojo.so exports zero compression symbols. Decouples
+# release surfaces: a zlib/brotli CVE is a system-package update, never
+# a Navette release.
 # ---------------------------------------------------------------------------
 echo '§2.5 librustls_mojo.so free of compression symbols'
 lcs_so="$REPO_ROOT/lib/librustls_mojo.so"
