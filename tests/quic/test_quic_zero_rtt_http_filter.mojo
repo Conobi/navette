@@ -150,6 +150,10 @@ def test_zero_rtt_http_filter_counters_default_zero() raises:
         Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
         String("1rtt_bypassed defaults 0"),
     )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_user_raised), 0,
+        String("user_raised defaults 0"),
+    )
 
 
 def test_zero_rtt_http_filter_recorders_bump_correct_bucket() raises:
@@ -173,6 +177,9 @@ def test_zero_rtt_http_filter_recorders_bump_correct_bucket() raises:
     prof.record_zero_rtt_http_filter_1rtt_bypassed()
     assert_equal_int(Int(prof.zero_rtt_http_filter_1rtt_bypassed), 1, String("1rtt +=1"))
 
+    prof.record_zero_rtt_http_filter_user_raised()
+    assert_equal_int(Int(prof.zero_rtt_http_filter_user_raised), 1, String("user_raised +=1"))
+
 
 def test_zero_rtt_http_filter_text_reporter_emits_block() raises:
     """AC counters-emit-text-block. The text reporter outputs a
@@ -187,6 +194,7 @@ def test_zero_rtt_http_filter_text_reporter_emits_block() raises:
     assert_true("  reject_425:" in txt, String("reject_425 line present"))
     assert_true("  misconfig_fail_closed:" in txt, String("misconfig line present"))
     assert_true("  1rtt_bypassed:" in txt, String("1rtt_bypassed line present"))
+    assert_true("  user_raised:" in txt, String("user_raised line present"))
 
 
 def test_zero_rtt_http_filter_json_reporter_emits_object() raises:
@@ -201,6 +209,7 @@ def test_zero_rtt_http_filter_json_reporter_emits_object() raises:
     assert_true('"reject_425"' in j, String("reject_425 key present"))
     assert_true('"misconfig_fail_closed"' in j, String("misconfig key present"))
     assert_true('"1rtt_bypassed"' in j, String("1rtt_bypassed key present"))
+    assert_true('"user_raised"' in j, String("user_raised key present"))
 
 
 def test_filter_field_populated_when_zero_rtt_enabled() raises:

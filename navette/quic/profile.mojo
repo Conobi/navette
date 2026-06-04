@@ -968,7 +968,8 @@ struct AcceptProfile(Copyable, Movable):
         s += "  accept:                " + _fmt_count(UInt64(self.zero_rtt_http_filter_accept)) + "\n"
         s += "  reject_425:            " + _fmt_count(UInt64(self.zero_rtt_http_filter_reject_425)) + "\n"
         s += "  misconfig_fail_closed: " + _fmt_count(UInt64(self.zero_rtt_http_filter_misconfig_fail_closed)) + "\n"
-        s += "  1rtt_bypassed:         " + _fmt_count(UInt64(self.zero_rtt_http_filter_1rtt_bypassed)) + "\n\n"
+        s += "  1rtt_bypassed:         " + _fmt_count(UInt64(self.zero_rtt_http_filter_1rtt_bypassed)) + "\n"
+        s += "  user_raised:           " + _fmt_count(UInt64(self.zero_rtt_http_filter_user_raised)) + "\n\n"
 
         # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
@@ -1256,7 +1257,8 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "accept": ' + String(self.zero_rtt_http_filter_accept) + ',\n'
         s += '    "reject_425": ' + String(self.zero_rtt_http_filter_reject_425) + ',\n'
         s += '    "misconfig_fail_closed": ' + String(self.zero_rtt_http_filter_misconfig_fail_closed) + ',\n'
-        s += '    "1rtt_bypassed": ' + String(self.zero_rtt_http_filter_1rtt_bypassed) + '\n'
+        s += '    "1rtt_bypassed": ' + String(self.zero_rtt_http_filter_1rtt_bypassed) + ',\n'
+        s += '    "user_raised": ' + String(self.zero_rtt_http_filter_user_raised) + '\n'
         s += "  },\n"
 
         # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
