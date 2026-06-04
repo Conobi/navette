@@ -7,12 +7,14 @@ from .connection import TlsConnection
 
 # Public 0-RTT acceptance configuration surface.
 #
-# Callers configure 0-RTT via the `EarlyDataPolicy` enum (three variants:
-# Off / IdempotentOnly / Tuned) passed to `QuicServerConfig` as a ctor
-# kwarg. The two underlying traits (`EarlyDataFilter`, `EarlyDataStore`)
-# are exposed here so future user implementations have a stable import
-# path; user types via a `Custom(filter)` variant are deferred to a
-# follow-up cycle.
+# Callers configure 0-RTT via the `EarlyDataPolicy` enum (four variants:
+# Off / IdempotentOnly / Tuned / Predicate) passed to `QuicServerConfig`
+# as a ctor kwarg. The Predicate variant carries a user-supplied
+# free-function pointer (`EarlyDataPredicateFn`); two reference
+# predicates ship below. The two underlying traits (`EarlyDataFilter`,
+# `EarlyDataStore`) are exposed here so future user implementations
+# have a stable import path; user types via a `Custom(filter, store)`
+# variant for stateful filter STRUCTS are deferred to a follow-up change.
 from .early_data_policy import EarlyDataPolicy
 from .early_data_filter import (
     EarlyDataFilter,
