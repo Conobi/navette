@@ -603,19 +603,32 @@ def test_accept_profile_replay_counters_increment_independently() raises:
 
 
 def test_drain_survives_mid_packet_raise() raises:
-    """AC drain-survives-mid-packet-raise: a raise from one buffered
-    packet mid-drain is contained to that packet — packets after it
-    still replay, and `_draining_zero_rtt` resets.
+    """AC drain-survives-mid-packet-raise: the drain continues past a
+    silently-dropped middle 0-RTT packet — packets one and three still
+    replay, and `_draining_zero_rtt` resets to False.
+
+    What this test actually exercises (Fix-2 drain-mode containment):
+    the middle 0-RTT packet is dropped at the Path B install-fold
+    *inside* recv_from_buffer (drain-mode silent drop), NOT at the
+    drain's own `except e:` / `_record_zero_rtt_drain_dropped()` branch.
+    That branch executes zero times in this test. Its purpose is
+    defense-in-depth against UNCLASSIFIED raises (internal errors,
+    future bugs); it is exercised in isolation by the recorder/reporter
+    unit test in test_quic_profile.mojo, not by this integration test.
+
+    The proof: packets one AND three advance `largest_recv_pn` to 1,
+    and `ack_ranges[0].start == 0` proves packet one (pn=0) really
+    replayed (a lone pn=1 receipt would leave start=1).
 
     White-box mixed-buffer injection with the pinned negative-handle
     fault: `rlsm_quic_server_conn_zero_rtt_keys` returns -1 for an
     invalid conn handle, so overwriting `conn.conn_handle` with -1
-    makes the middle 0-RTT packet raise at Path B install. The two
-    encrypted PING-only Initials are conn-handle-free (slot-0 keys
-    handles only) and stay processable under the fault. The handle is
-    saved and restored in a `finally` so a failing assertion cannot
-    leak the QUIC_CONN_TABLE entry (`__del__` skips quic_conn_free
-    when conn_handle < 0).
+    makes the middle 0-RTT packet hit the Path B failure fold in drain
+    mode. The two encrypted PING-only Initials are conn-handle-free
+    (slot-0 keys handles only) and stay processable under the fault.
+    The handle is saved and restored in a `finally` so a failing
+    assertion cannot leak the QUIC_CONN_TABLE entry (`__del__` skips
+    quic_conn_free when conn_handle < 0).
     """
     var tls = TlsBackend("lib/librustls_mojo.so")
     var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))

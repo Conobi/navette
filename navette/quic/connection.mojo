@@ -2243,9 +2243,18 @@ struct QuicConnection(Movable):
                 or tid == FRAME_STREAM_DATA_BLOCKED):
             return
 
-        # PATH_CHALLENGE (0x1A) — RFC 9000 §8.2. Reaches this point only
-        # in 1-RTT (F13 closes earlier epochs above). Stash the 8-byte
-        # token so the next 1-RTT flush emits the matching PATH_RESPONSE.
+        # PATH_CHALLENGE (0x1A) — RFC 9000 §8.2. Reaches this point in
+        # 1-RTT (space_idx == 2) or in the 0-RTT sentinel space
+        # (space_idx == ZERO_RTT_SPACE_IDX == 3): F13
+        # (is_path_challenge_in_handshake) only fires for space_idx 0 or
+        # 1, so a PATH_CHALLENGE arriving with the 0-RTT sentinel falls
+        # through here and is processed permissively. This is a §12.4
+        # violation (PATH_CHALLENGE is forbidden in 0-RTT); the full
+        # 0-RTT frame-table audit is deferred to the conformance harness.
+        # Neither path is memory-unsafe: on_path_challenge_received only
+        # appends to pending_path_responses and does not index spaces[].
+        # Stash the 8-byte token so the next 1-RTT flush emits the
+        # matching PATH_RESPONSE.
         if frame.is_path_challenge():
             ref data = frame.as_path_data()
             self.on_path_challenge_received(Span(data), now)
@@ -3112,6 +3121,14 @@ struct QuicConnection(Movable):
                     # connection-fatal protocol errors on this path
                     # use the explicit close_transport + return
                     # idiom, not raises.
+                    # This is the sans-I/O QUIC core: the protocol
+                    # layer carries no I/O imports, so there is no
+                    # stderr print here (unlike the I/O-layer
+                    # _flush_impl catch). Observability is provided
+                    # by the `comptime`-gated `zero_rtt_drain_dropped`
+                    # counter (live in PROFILE_ACCEPT builds); human-
+                    # facing traces are the responsibility of the
+                    # I/O-layer caller that drives recv_from_buffer.
                     _ = e
                     self._record_zero_rtt_drain_dropped()
                 finally:
