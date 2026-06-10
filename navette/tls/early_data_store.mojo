@@ -202,9 +202,16 @@ struct EarlyDataEntry(Copyable, Movable):
         of this authenticator (or its post-TTL reset).
     attempt_count: number of accept-or-duplicate observations seen
         within the current entry_ttl_ms window. Saturates at UInt32.MAX.
+    referenced: second-chance (CLOCK) bit. False on fresh insert
+        (classic CLOCK — the False initial value decides which entry
+        the first at-capacity eviction removes); set True by
+        `_touch_lru` on every dict-hit path (duplicate,
+        quota-exhausted, TTL-reset). `_evict_lru` clears it and grants
+        one extra eviction pass instead of evicting.
     """
     var first_seen_ms: UInt64
     var attempt_count: UInt32
+    var referenced: Bool
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -240,12 +247,18 @@ trait EarlyDataStore(Movable):
 # ─────────────────────────────────────────────────────────────────────
 
 struct InMemoryEarlyDataStore(EarlyDataStore):
-    """LRU-bounded in-memory store with per-key quotas + global ceiling.
+    """Capacity-bounded in-memory store with per-key quotas + global
+    ceiling; approximate-LRU eviction via second-chance (CLOCK).
 
-    Storage: a Dict[KeyTag, EarlyDataEntry] holds live records; eviction
-    order is tracked via a Deque[KeyTag] (front = least recent). On hit,
-    the touched key is moved to the back; on insert past `max_entries`,
-    the front is evicted.
+    Storage: a Dict[KeyTag, EarlyDataEntry] holds live records. The
+    Deque[KeyTag] holds EXACTLY ONE tag per dict key (front = next
+    eviction candidate). A dict-hit sets the entry's `referenced` bit
+    (O(1) — the deque is never scanned or rebuilt on touch); at-capacity
+    insert pops the front, re-appending referenced tags (clearing the
+    bit) until an unreferenced victim is found. Eviction order is
+    approximate-LRU: the store is a heuristic capacity manager —
+    replay-rejection correctness lives in the dict, not the eviction
+    order. Capacity invariant: len(_entries) <= max_entries.
 
     The global-accept window is a Deque[UInt64] of accept timestamps;
     each `check_and_record` slides off expired timestamps before
@@ -345,38 +358,59 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
         var fresh = EarlyDataEntry(
             first_seen_ms=now_unix_ms,
             attempt_count=UInt32(1),
+            referenced=False,
         )
         self._entries[KeyTag(other=key)] = fresh^
         self._lru.append(key^)
         self._global_window.append(now_unix_ms)
         return ReplayDecision.accept()
 
-    def _touch_lru(mut self, key: KeyTag):
-        """Move `key` to the back of the LRU deque. Linear scan is
-        acceptable for the default capacity (16384); production-grade
-        deployments can swap in a custom store with a doubly-linked
-        list via the EarlyDataStore trait seam."""
-        var idx = -1
-        for i in range(len(self._lru)):
-            if self._lru[i] == key:
-                idx = i
-                break
-        if idx < 0:
-            self._lru.append(KeyTag(other=key))
+    def _touch_lru(mut self, key: KeyTag) raises:
+        """Mark `key`'s entry as recently used — O(1).
+
+        Second-chance (CLOCK) touch: sets the entry's `referenced` bit
+        instead of reordering the deque. Called on every dict-hit path
+        (duplicate, quota-exhausted, TTL-reset); `_evict_lru` consumes
+        the bit. The deque is never scanned, rebuilt, or appended to
+        here — it holds exactly one tag per dict key at all times. A
+        key with no dict entry is a no-op (unreachable from the
+        dict-hit call sites; kept total for safety).
+        """
+        if key not in self._entries:
             return
-        # Remove at idx via swap-and-pop-with-rebuild: Deque doesn't
-        # expose remove(idx). Rebuild excluding idx.
-        var rebuilt = Deque[KeyTag]()
-        for i in range(len(self._lru)):
-            if i != idx:
-                rebuilt.append(KeyTag(other=self._lru[i]))
-        rebuilt.append(KeyTag(other=key))
-        self._lru = rebuilt^
+        var entry = self._entries[key].copy()
+        entry.referenced = True
+        self._entries[KeyTag(other=key)] = entry^
 
     def _evict_lru(mut self) raises:
-        """Pop the LRU front and remove the matching dict entry."""
-        if len(self._lru) == 0:
+        """Evict one entry via second-chance (CLOCK).
+
+        Pops the deque front; a referenced entry gets its bit cleared
+        and its tag re-appended (second chance), an unreferenced entry
+        is evicted from both structures. Termination bound: worst case
+        (all entries referenced at capacity) is n re-appends plus one
+        evicting pop — n+1 pops total; amortized O(1) because every
+        re-append clears a bit. Edge behaviors: empty deque returns
+        without evicting; a popped tag with no dict entry is skipped
+        defensively (the one-tag-per-key invariant says it is
+        unreachable — asserted under ASSERT=all).
+        """
+        while True:
+            if len(self._lru) == 0:
+                return
+            var tag = self._lru.popleft()
+            if tag not in self._entries:
+                debug_assert(
+                    False,
+                    "early_data_store: LRU tag without dict entry"
+                    " (one-tag-per-key invariant violated)",
+                )
+                continue
+            var entry = self._entries[tag].copy()
+            if entry.referenced:
+                entry.referenced = False
+                self._entries[KeyTag(other=tag)] = entry^
+                self._lru.append(tag^)
+                continue
+            _ = self._entries.pop(tag)
             return
-        var victim = self._lru.popleft()
-        if victim in self._entries:
-            _ = self._entries.pop(victim)

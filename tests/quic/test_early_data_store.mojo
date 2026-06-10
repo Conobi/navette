@@ -363,6 +363,46 @@ def test_lru_eviction_preserves_recently_touched() raises:
     print("  test_lru_eviction_preserves_recently_touched: PASS")
 
 
+def test_clock_eviction_terminates_when_all_referenced() raises:
+    """AC eviction-terminates-when-all-referenced: with every resident
+    entry's `referenced` bit set, one at-capacity insert performs
+    exactly one eviction (n re-appends + one evicting pop), evicts the
+    clock-order front, and clears the survivors' bits — no spin, no
+    over-eviction. Reads `EarlyDataEntry.referenced` directly, so this
+    test is compile-blocked on the pre-CLOCK code (Red-Gate exempt,
+    compile-blocked class)."""
+    var cfg = default_early_data_store_config()
+    cfg.max_entries = UInt32(4)
+    var store = InMemoryEarlyDataStore(config=cfg)
+    var a = _fill_auth(UInt8(0x01))
+    var b = _fill_auth(UInt8(0x02))
+    var c = _fill_auth(UInt8(0x03))
+    var d = _fill_auth(UInt8(0x04))
+    var e = _fill_auth(UInt8(0x05))
+    _ = store.check_and_record(Span(a), UInt64(1000))
+    _ = store.check_and_record(Span(b), UInt64(1000))
+    _ = store.check_and_record(Span(c), UInt64(1000))
+    _ = store.check_and_record(Span(d), UInt64(1000))
+    _ = store.check_and_record(Span(a), UInt64(1000))
+    _ = store.check_and_record(Span(b), UInt64(1000))
+    _ = store.check_and_record(Span(c), UInt64(1000))
+    _ = store.check_and_record(Span(d), UInt64(1000))
+    var d_e = store.check_and_record(Span(e), UInt64(1000))
+    assert_true(d_e.is_accept(), "E must accept after one eviction")
+    assert_equal_int(len(store._entries), 4, "exactly one eviction (dict)")
+    assert_equal_int(len(store._lru), 4, "exactly one eviction (deque)")
+    var key_a = KeyTag.from_span(Span(a))
+    assert_false(key_a in store._entries, "A (clock front) must be evicted")
+    var key_b = KeyTag.from_span(Span(b))
+    var key_c = KeyTag.from_span(Span(c))
+    var key_d = KeyTag.from_span(Span(d))
+    assert_false(store._entries[key_b].referenced, "B bit cleared by the pass")
+    assert_false(store._entries[key_c].referenced, "C bit cleared by the pass")
+    assert_false(store._entries[key_d].referenced, "D bit cleared by the pass")
+    _ = store._config
+    print("  test_clock_eviction_terminates_when_all_referenced: PASS")
+
+
 def test_default_store_field_populated_when_zero_rtt_enabled() raises:
     """AC default-store-field-populated-when-zero-rtt-enabled."""
     from navette.tls.lib import TlsBackend
@@ -421,5 +461,6 @@ def main() raises:
     test_clock_regression_treats_old_entry_as_live()
     test_lru_eviction_bounds_memory()
     test_lru_eviction_preserves_recently_touched()
+    test_clock_eviction_terminates_when_all_referenced()
     test_default_store_field_populated_when_zero_rtt_enabled()
     test_no_store_field_when_zero_rtt_disabled()
