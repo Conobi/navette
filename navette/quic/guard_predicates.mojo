@@ -33,18 +33,20 @@ from navette.quic.guard_tags import (
 # NOT be sent in 0-RTT) can fire without colliding with legitimate
 # CRYPTO frames in the 1-RTT space (e.g. NewSessionTicket).
 #
-# COINCIDENCE NOTE (paired with `ZERO_RTT_KEY_SLOT_IDX` in packet_protect.mojo):
-# Both constants share the value 3, but they are *independent* — each is
-# the next free integer in its own monotonic sequence.
-#
-#   - `ZERO_RTT_SPACE_IDX = 3` (here) is a frame-dispatch sentinel ABOVE
-#     the valid PN-space range (0=Initial, 1=Handshake, 2=Application).
-#     It is NOT a valid `Connection.spaces[]` index.
+# DECOUPLING NOTE (paired with `ZERO_RTT_KEY_SLOT_IDX` in packet_protect.mojo):
+# Both constants share the value 3 today, but nothing depends on that
+# equality: connection.mojo's decrypt path maps the sentinel onto the
+# key slot explicitly (identity comparison against ZERO_RTT_SPACE_IDX,
+# never magnitude or numeric reuse), and the PN-space collapse does the
+# same. The sentinel's value has two residual constraints: it must be a
+# non-negative integer outside 0..2 (i.e. > 2) — negative values are
+# consumed by connection.mojo's `if space_idx < 0: break` (the
+# VN/Retry unparseable-packet path) before dispatch ever fires, and it
+# must not collide with a valid PN-space index (0=Initial, 1=Handshake,
+# 2=Application) — it is NOT a valid `Connection.spaces[]` index.
 #
 #   - `ZERO_RTT_KEY_SLOT_IDX = 3` (in packet_protect.mojo) IS a valid
 #     `PacketProtect.keys[]` index.
-#
-# If one moves, REVIEW the other but the linkage is not required.
 comptime ZERO_RTT_SPACE_IDX: Int = 3
 
 
@@ -317,9 +319,13 @@ def is_path_challenge_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
     """RFC 9000 §17.2.4: PATH_CHALLENGE / PATH_RESPONSE (0x1A / 0x1B) are
     allowed only in 1-RTT packets (space_idx == 2). Receipt in Initial
     (0) or Handshake (1) is a PROTOCOL_VIOLATION.
+
+    `space_idx` may carry the 0-RTT dispatch sentinel (ZERO_RTT_SPACE_IDX=3).
+    The test uses identity comparisons rather than a magnitude bound so
+    the check remains correct if the sentinel's value ever changes.
     """
     var is_path = type_id == UInt64(0x1A) or type_id == UInt64(0x1B)
-    return is_path and space_idx < 2
+    return is_path and (space_idx == 0 or space_idx == 1)
 
 
 def is_datagram_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
@@ -329,9 +335,13 @@ def is_datagram_in_handshake(type_id: UInt64, space_idx: Int) -> Bool:
     PROTOCOL_VIOLATION; the dispatch site closes with error 0x0A.
     Mirrors the shape of `is_path_challenge_in_handshake` so the gate
     composes the same way at the top of `_dispatch_frame`.
+
+    `space_idx` may carry the 0-RTT dispatch sentinel (ZERO_RTT_SPACE_IDX=3).
+    The test uses identity comparisons rather than a magnitude bound so
+    the check remains correct if the sentinel's value ever changes.
     """
     var is_dgram = type_id == UInt64(0x30) or type_id == UInt64(0x31)
-    return is_dgram and space_idx < 2
+    return is_dgram and (space_idx == 0 or space_idx == 1)
 
 
 def is_crypto_in_zero_rtt(type_id: UInt64, space_idx: Int) -> Bool:

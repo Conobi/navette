@@ -1212,7 +1212,19 @@ struct QuicConnection(Movable):
             if space_idx < 0:
                 break  # VN, Retry — skip for M3b
 
-            if not self.protect.has_keys(space_idx):
+            # Explicit dispatch-space → key-slot mapping. The 0-RTT
+            # dispatch sentinel (ZERO_RTT_SPACE_IDX) and the 0-RTT key
+            # slot (ZERO_RTT_KEY_SLOT_IDX) are independent constants
+            # that happen to share the value 3 today; mapping by
+            # identity (never by numeric coincidence) means either
+            # constant can move without silently breaking the other.
+            var key_slot: Int
+            if space_idx == ZERO_RTT_SPACE_IDX:
+                key_slot = ZERO_RTT_KEY_SLOT_IDX
+            else:
+                key_slot = space_idx
+
+            if not self.protect.has_keys(key_slot):
                 # No keys for this level. For long-header packets we can
                 # compute the packet boundary and skip to the next coalesced
                 # packet (RFC 9000 §12.2). Short headers consume the rest.
@@ -1246,7 +1258,7 @@ struct QuicConnection(Movable):
                     if self.profile_ptr is not None:
                         ph_hp_us = monotonic_us()
                 var hp_result = self.protect.unprotect_header_ptr(
-                    space_idx, pkt_ptr, pkt_len, header.pn_offset
+                    key_slot, pkt_ptr, pkt_len, header.pn_offset
                 )
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
@@ -1273,12 +1285,14 @@ struct QuicConnection(Movable):
                         return
 
                 # 7. Decode packet number.
-                # `space_idx` is the DISPATCH sentinel (3 for 0-RTT). RFC
+                # `space_idx` is the DISPATCH sentinel for 0-RTT. RFC
                 # 9000 §12.3 places 0-RTT and 1-RTT in the same Application
                 # PN space, so the PN bookkeeping uses index 2 for both.
                 # `pn_space_idx` is the valid `self.spaces[]` index; only
-                # the F30-dispatch code path keeps `space_idx == 3`.
-                var pn_space_idx = space_idx if space_idx < 3 else 2
+                # the F30-dispatch code path keeps the sentinel value.
+                # Identity comparison, not magnitude — the sentinel's
+                # numeric value is free as long as it avoids 0..2.
+                var pn_space_idx = 2 if space_idx == ZERO_RTT_SPACE_IDX else space_idx
                 var truncated_pn = UInt64(0)
                 for i in range(pn_length):
                     truncated_pn = (truncated_pn << 8) | UInt64(
@@ -1295,7 +1309,7 @@ struct QuicConnection(Movable):
                     if self.profile_ptr is not None:
                         ph_aead_us = monotonic_us()
                 var plaintext_len = self.protect.decrypt_payload_in_place(
-                    space_idx, full_pn, header_len, pkt_ptr, pkt_len
+                    key_slot, full_pn, header_len, pkt_ptr, pkt_len
                 )
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
@@ -2995,7 +3009,7 @@ struct QuicConnection(Movable):
         Wired now so the decrypt-path change is purely additive;
         forgetting it later would be a CVE.
         """
-        self.protect.discard_keys(3)
+        self.protect.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
         # RFC 9001 §5.7 reorder buffer is meaningful only while 0-RTT keys
         # exist; once they're gone the buffered ciphertext is undecryptable
         # forever, so free it eagerly. Helper stays non-raising — replacing

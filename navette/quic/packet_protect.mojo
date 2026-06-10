@@ -24,17 +24,22 @@ comptime _MAX_PN_LEN: Int = 4
 
 # 0-RTT decrypt key slot index.
 #
-# COINCIDENCE NOTE (paired with `ZERO_RTT_SPACE_IDX` in guard_predicates.mojo):
-# Both constants share the value 3, but they are *independent* — each is
-# the next free integer in its own monotonic sequence.
+# DECOUPLING NOTE (paired with `ZERO_RTT_SPACE_IDX` in guard_predicates.mojo):
+# Both constants share the value 3 today, but nothing depends on that
+# equality: every site where a dispatch-space index flows into a
+# `PacketProtect` key-slot parameter maps it explicitly
+# (`key_slot = ZERO_RTT_KEY_SLOT_IDX if space_idx == ZERO_RTT_SPACE_IDX
+# else space_idx` in connection.mojo's decrypt path), and the PN-space
+# collapse compares the sentinel by identity, not magnitude.
 #
-#   - `ZERO_RTT_SPACE_IDX = 3` is a frame-dispatch sentinel above the
-#     valid PN-space range (0=Initial, 1=Handshake, 2=Application). It
-#     is NOT a valid `Connection.spaces[]` index. See guard_predicates.mojo.
+#   - `ZERO_RTT_SPACE_IDX` is a frame-dispatch sentinel. Its residual
+#     constraints are: it must be a non-negative integer outside 0..2
+#     (i.e. > 2) — negative values are consumed by connection.mojo's
+#     `if space_idx < 0: break` (the VN/Retry unparseable-packet path)
+#     before dispatch fires, and it must not collide with a valid
+#     PN-space index (0..2). See guard_predicates.mojo.
 #
 #   - `ZERO_RTT_KEY_SLOT_IDX = 3` IS a valid `PacketProtect.keys[]` index.
-#
-# If one moves, REVIEW the other but the linkage is not required.
 comptime ZERO_RTT_KEY_SLOT_IDX: Int = 3
 
 
