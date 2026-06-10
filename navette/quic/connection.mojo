@@ -75,6 +75,7 @@ from navette.quic.guard_predicates import (
     is_path_challenge_in_handshake,
     is_datagram_in_handshake,
     is_crypto_in_zero_rtt,
+    is_ack_in_zero_rtt,
     is_unknown_frame_type,
     predicate_f11_no_frames,
     predicate_f15_reset_on_server_uni,
@@ -94,6 +95,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
     GUARD_TAG_STREAM_LARGE_OFFSET,
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
+    GUARD_TAG_ACK_IN_ZERO_RTT,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
 from navette.quic.path_validator import PathValidator, PathKey
@@ -2003,6 +2005,16 @@ struct QuicConnection(Movable):
         if is_crypto_in_zero_rtt(tid, space_idx):
             self.close_transport(
                 UInt64(0x0A), String(GUARD_TAG_CRYPTO_IN_ZERO_RTT), now
+            )
+            return
+
+        # RFC 9000 §12.4 (Table 3): ACK / ACK_ECN are forbidden in 0-RTT
+        # packets. Must fire before the ACK dispatch arm below — without
+        # this guard `_handle_ack` would index `spaces[]` with the
+        # `ZERO_RTT_SPACE_IDX` sentinel, out of bounds.
+        if is_ack_in_zero_rtt(tid, space_idx):
+            self.close_transport(
+                UInt64(0x0A), String(GUARD_TAG_ACK_IN_ZERO_RTT), now
             )
             return
 

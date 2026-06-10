@@ -20,6 +20,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_CID_ZERO_LENGTH,
     GUARD_TAG_STREAM_LARGE_OFFSET,
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
+    GUARD_TAG_ACK_IN_ZERO_RTT,
 )
 
 
@@ -361,6 +362,26 @@ def is_crypto_in_zero_rtt(type_id: UInt64, space_idx: Int) -> Bool:
     return space_idx == ZERO_RTT_SPACE_IDX
 
 
+def is_ack_in_zero_rtt(type_id: UInt64, space_idx: Int) -> Bool:
+    """RFC 9000 §12.4 (Table 3) — ACK (0x02) and ACK_ECN (0x03) frames
+    are forbidden in 0-RTT packets.
+
+    Returns True iff `type_id` is ACK or ACK_ECN and `space_idx` equals
+    the dedicated 0-RTT sentinel (`ZERO_RTT_SPACE_IDX`). The dispatch
+    site closes the connection with PROTOCOL_VIOLATION (0x0A) and the
+    `[QUIC-ACK-IN-0RTT]` tag. Beyond protocol correctness, this guard is
+    load-bearing for memory safety: without it `_handle_ack` indexes
+    `self.spaces[space_idx]` with the sentinel value, out of bounds on
+    the 3-entry list.
+
+    ACKs in the real Application space (space_idx == 2) are legal and
+    intentionally NOT flagged.
+    """
+    if type_id != UInt64(0x02) and type_id != UInt64(0x03):
+        return False
+    return space_idx == ZERO_RTT_SPACE_IDX
+
+
 def predicate_crypto_in_zero_rtt(
     type_id: UInt64, space_idx: Int
 ) -> Optional[GuardVerdict]:
@@ -375,6 +396,25 @@ def predicate_crypto_in_zero_rtt(
         GuardVerdict(
             error_code=UInt64(0x0A),  # PROTOCOL_VIOLATION
             tag=String(GUARD_TAG_CRYPTO_IN_ZERO_RTT),
+        )
+    )
+
+
+def predicate_ack_in_zero_rtt(
+    type_id: UInt64, space_idx: Int
+) -> Optional[GuardVerdict]:
+    """Return Some(PROTOCOL_VIOLATION + tag) when `is_ack_in_zero_rtt`
+    fires; otherwise None. Symmetric companion to `predicate_crypto_in_zero_rtt`
+    so call sites that already carry a `GuardVerdict`-shaped pattern
+    (close_transport) can use a uniform interface (RFC 9000 §12.4 —
+    ACK and ACK_ECN are forbidden in 0-RTT packets).
+    """
+    if not is_ack_in_zero_rtt(type_id, space_idx):
+        return Optional[GuardVerdict]()
+    return Optional[GuardVerdict](
+        GuardVerdict(
+            error_code=UInt64(0x0A),  # PROTOCOL_VIOLATION
+            tag=String(GUARD_TAG_ACK_IN_ZERO_RTT),
         )
     )
 

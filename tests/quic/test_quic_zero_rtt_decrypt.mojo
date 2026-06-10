@@ -24,9 +24,12 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection, QuicEvent
-from navette.quic.frame import Frame, StreamFrame, CryptoFrame
+from navette.quic.frame import Frame, StreamFrame, CryptoFrame, AckFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
-from navette.quic.guard_tags import GUARD_TAG_CRYPTO_IN_ZERO_RTT
+from navette.quic.guard_tags import (
+    GUARD_TAG_CRYPTO_IN_ZERO_RTT,
+    GUARD_TAG_ACK_IN_ZERO_RTT,
+)
 from navette.quic.packet_protect import PacketProtect
 from navette.quic.profile import AcceptProfile
 from navette.quic.trans_param import default_transport_params
@@ -246,6 +249,80 @@ def test_decrypt_zero_rtt_crypto_trips_f30_guard() raises:
     )
     _ = conn.is_server
     print("  test_decrypt_zero_rtt_crypto_trips_f30_guard: PASS")
+
+
+def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
+    """An ACK frame dispatched with `space_idx=ZERO_RTT_SPACE_IDX` MUST
+    close the connection with PROTOCOL_VIOLATION (RFC 9000 §12.4 — ACK
+    is forbidden in 0-RTT packets) instead of indexing `spaces[3]` out
+    of bounds in `_handle_ack`.
+
+    Sub-case A covers ACK (type 0x02); sub-case B covers ACK_ECN (type
+    0x03). Each sub-case uses a fresh connection because `pending_close`
+    is sticky — once set, a second dispatch on the same conn would
+    vacuously see an already-closed connection.
+    """
+    # Sub-case A: plain ACK (0x02).
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
+
+    var af = AckFrame()
+    af.largest_ack = UInt64(0)
+    var frame = Frame.ack(af)
+
+    var now = UInt64(2_000_000)
+    conn._dispatch_frame(frame, ZERO_RTT_SPACE_IDX, now)
+
+    assert_true(
+        Bool(conn.pending_close),
+        "ACK-in-0-RTT guard must fire — pending_close must be set",
+    )
+    var cc = conn.pending_close.value().copy()
+    assert_equal_int(
+        Int(cc.error_code), 0x0A,
+        "ACK-in-0-RTT closes with PROTOCOL_VIOLATION (0x0A)",
+    )
+    assert_true(cc.is_transport, "ACK-in-0-RTT emits a transport-CC frame")
+    var reason_str = String("")
+    for i in range(len(cc.reason)):
+        reason_str = reason_str + chr(Int(cc.reason[i]))
+    assert_true(
+        String(GUARD_TAG_ACK_IN_ZERO_RTT) in reason_str,
+        "reason carries [QUIC-ACK-IN-0RTT]; got " + reason_str,
+    )
+    _ = conn.is_server
+
+    # Sub-case B: ACK_ECN (0x03) — fresh connection, same guard must fire.
+    # `AckFrame.has_ecn = True` causes `Frame.ack` to set `type_id = 0x03`.
+    var conn2 = _make_server_conn(tls, UInt32(0xFFFFFFFF))
+    var af_ecn = AckFrame()
+    af_ecn.largest_ack = UInt64(0)
+    af_ecn.has_ecn = True
+    var frame_ecn = Frame.ack(af_ecn)
+
+    conn2._dispatch_frame(frame_ecn, ZERO_RTT_SPACE_IDX, now)
+
+    assert_true(
+        Bool(conn2.pending_close),
+        "ACK_ECN-in-0-RTT guard must fire — pending_close must be set",
+    )
+    var cc_ecn = conn2.pending_close.value().copy()
+    assert_equal_int(
+        Int(cc_ecn.error_code), 0x0A,
+        "ACK_ECN-in-0-RTT closes with PROTOCOL_VIOLATION (0x0A)",
+    )
+    assert_true(
+        cc_ecn.is_transport, "ACK_ECN-in-0-RTT emits a transport-CC frame"
+    )
+    var reason_str2 = String("")
+    for i in range(len(cc_ecn.reason)):
+        reason_str2 = reason_str2 + chr(Int(cc_ecn.reason[i]))
+    assert_true(
+        String(GUARD_TAG_ACK_IN_ZERO_RTT) in reason_str2,
+        "ACK_ECN reason carries [QUIC-ACK-IN-0RTT]; got " + reason_str2,
+    )
+    _ = conn2.is_server
+    print("  test_decrypt_zero_rtt_ack_trips_guard_not_oob: PASS")
 
 
 def test_lazy_install_success_counter_increments_once_per_install() raises:
@@ -693,9 +770,49 @@ def test_coalesced_survivors_still_processed() raises:
     print("  test_coalesced_survivors_still_processed: PASS")
 
 
+def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
+    """AC one-rtt-acks-unaffected: an ACK frame dispatched with
+    `space_idx=2` (1-RTT / Application space) MUST NOT trip the
+    ACK-in-0-RTT guard — `pending_close` stays unset after dispatch.
+
+    Scope: the 0-RTT guard is checked BEFORE `_handle_ack`; if `_handle_ack`
+    subsequently raises (e.g. "ACK for unsent packet" when the sent-pkt table
+    is empty), that raise originates downstream of the guard and does not
+    contradict the guard's non-firing. The test wraps `_dispatch_frame` in
+    a try/except so it can inspect `pending_close` after the call regardless
+    of whether `_handle_ack` itself raises. A `pending_close` that is unset
+    when the except branch is entered confirms the guard did not run — no
+    close_transport call was made before the handler raised.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
+
+    var af = AckFrame()
+    af.largest_ack = UInt64(0)
+    var frame = Frame.ack(af)
+
+    var now = UInt64(2_000_000)
+    # space_idx=2 is the 1-RTT Application space; the 0-RTT guard must not fire.
+    try:
+        conn._dispatch_frame(frame, 2, now)
+    except:
+        # _handle_ack may raise on an empty sent-packet table — that is a
+        # downstream handler concern, not the guard. Check guard state below.
+        pass
+
+    assert_false(
+        Bool(conn.pending_close),
+        "ACK in 1-RTT space MUST NOT trip the 0-RTT guard — connection must stay open",
+    )
+    _ = conn.is_server
+    print("  test_one_rtt_ack_dispatch_unaffected_by_guard: PASS")
+
+
 def main() raises:
     test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer()
     test_decrypt_zero_rtt_crypto_trips_f30_guard()
+    test_decrypt_zero_rtt_ack_trips_guard_not_oob()
+    test_one_rtt_ack_dispatch_unaffected_by_guard()
     test_lazy_install_success_counter_increments_once_per_install()
     test_zero_rtt_buffer_respects_packet_cap()
     test_zero_rtt_buffer_respects_byte_cap_boundary()
