@@ -134,7 +134,10 @@ def main() raises:
     #
     # One-release deprecation overlap: the previous env name
     # HELLO_H3_MAX_EARLY_DATA=max is still honored, with a stderr
-    # warning. The legacy name will be removed in a follow-up.
+    # warning. Any other non-empty legacy value is unrecognized: a
+    # stderr warning names it and the replacement, and the server
+    # boots with 0-RTT off (unchanged behavior — the warning is the
+    # fix). The legacy name will be removed in a follow-up.
     var enable_env = getenv("HELLO_H3_ENABLE_EARLY_DATA", "")
     var legacy_env = getenv("HELLO_H3_MAX_EARLY_DATA", "")
     if enable_env == "" and legacy_env == "max":
@@ -144,6 +147,14 @@ def main() raises:
             file=stderr,
         )
         enable_env = "1"
+    elif enable_env == "" and legacy_env != "":
+        print(
+            "warning: unrecognized HELLO_H3_MAX_EARLY_DATA value '"
+            + legacy_env
+            + "'; only 'max' is honored — 0-RTT stays off. "
+            + "Use HELLO_H3_ENABLE_EARLY_DATA=1 to enable acceptance",
+            file=stderr,
+        )
     var policy: EarlyDataPolicy
     if enable_env == "1" or enable_env == "true":
         policy = EarlyDataPolicy.idempotent_only()
