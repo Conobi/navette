@@ -2,7 +2,7 @@
 #
 # Unit tests for src/quic/profile.mojo (Plan A).
 
-from navette.quic.profile import PROFILE_ACCEPT, monotonic_us
+from navette.quic.profile import PROFILE_ACCEPT, AcceptProfile, monotonic_us
 from std.testing import assert_true
 from tests._test_util import assert_equal_int
 
@@ -1254,6 +1254,30 @@ def test_q8_egress_pool_counters() raises:
     print("PASS: test_q8_egress_pool_counters")
 
 
+def test_zero_rtt_drain_dropped_counter_and_reporters() raises:
+    """zero_rtt_drain_dropped defaults to 0, its recorder bumps only
+    itself, and both reporters emit the zero_rtt_drain block (AC
+    drain-drop-counter-reported)."""
+    var p = AcceptProfile()
+    assert_equal_int(
+        Int(p.zero_rtt_drain_dropped), 0, "drain_dropped defaults 0"
+    )
+    p.record_zero_rtt_drain_dropped()
+    p.record_zero_rtt_drain_dropped()
+    assert_equal_int(Int(p.zero_rtt_drain_dropped), 2, "drain_dropped +2")
+    assert_equal_int(
+        Int(p.zero_rtt_install_attempts), 0,
+        "install_attempts untouched by drain recorder",
+    )
+    var t = p.report_text()
+    assert_true("zero_rtt_drain:" in t, "text block header present")
+    assert_true("  dropped:" in t, "text dropped line present")
+    var j = p.report_json()
+    assert_true('"zero_rtt_drain"' in j, "json object key present")
+    assert_true('"dropped"' in j, "json dropped key present")
+    print("PASS: test_zero_rtt_drain_dropped_counter_and_reporters")
+
+
 def main() raises:
     test_monotonic_us_increases()
     test_profile_accept_is_bool()
@@ -1316,4 +1340,5 @@ def main() raises:
     test_q7_batch_histogram_dispatch()
     test_iouring_park_us_record()
     test_q8_egress_pool_counters()
+    test_zero_rtt_drain_dropped_counter_and_reporters()
     print("All Plan A tests passed.")

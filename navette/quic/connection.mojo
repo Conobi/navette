@@ -3048,6 +3048,11 @@ struct QuicConnection(Movable):
         recv_from_buffer is guarded by self._draining_zero_rtt = True,
         which makes the decrypt-path's Path B fail branch drop instead
         of re-buffer (preventing unbounded re-entry).
+
+        Each buffered packet replays inside its own per-packet
+        containment: a packet that raises is dropped (counted via
+        `zero_rtt_drain_dropped`) and the drain continues with the
+        remaining packets.
         """
         if len(self.zero_rtt_buffer) == 0:
             return
@@ -3060,8 +3065,24 @@ struct QuicConnection(Movable):
                 var buf_ptr = _heap_alloc[UInt8](len(pkt)).as_any_origin()
                 for i in range(len(pkt)):
                     buf_ptr[i] = pkt[i]
+                # NOTE: flat try/except/finally — Mojo 1.0.0b1 cannot
+                # parse a bare nested try/except as the body of a
+                # try/finally (the parser binds the except to the outer
+                # try). Semantics are identical: except contains the
+                # per-packet raise, finally always frees the buffer.
                 try:
                     self.recv_from_buffer(buf_ptr, len(pkt), now, ecn_mark)
+                except e:
+                    # Per-packet containment: a raise mid-drain is
+                    # scoped to one buffered packet — drop it, count
+                    # it, and keep draining the rest.
+                    # Drop-and-continue over close_transport: the
+                    # failure scope is one buffered packet, and
+                    # connection-fatal protocol errors on this path
+                    # use the explicit close_transport + return
+                    # idiom, not raises.
+                    _ = e
+                    self._record_zero_rtt_drain_dropped()
                 finally:
                     buf_ptr.free()
         finally:
@@ -3108,6 +3129,14 @@ struct QuicConnection(Movable):
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].record_zero_rtt_replay_reject_no_authenticator()
+
+    def _record_zero_rtt_drain_dropped(mut self):
+        """Bump `zero_rtt_drain_dropped` on each buffered packet whose
+        replay raised mid-drain and was dropped by the per-packet
+        containment in `_drain_zero_rtt_buffer`."""
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_zero_rtt_drain_dropped()
 
     def _invoke_replay_authenticator_ffi(
         mut self,

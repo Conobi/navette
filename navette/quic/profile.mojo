@@ -253,6 +253,12 @@ struct AcceptProfile(Copyable, Movable):
     var zero_rtt_install_attempts: Int64
     var zero_rtt_install_successes: Int64
 
+    # 0-RTT drain-containment counter: packets dropped because they
+    # raised while being replayed by `_drain_zero_rtt_buffer`. Each
+    # swallowed per-packet raise bumps this once, making the
+    # drop-and-continue containment path observable.
+    var zero_rtt_drain_dropped: Int64
+
     # 0-RTT anti-replay outcome counters. Five buckets corresponding
     # to the 4 ReplayDecision variants + a fifth bucket for anomaly
     # paths (FFI rc != 0; store.check_and_record raises) that never
@@ -405,6 +411,7 @@ struct AcceptProfile(Copyable, Movable):
         self.egress_pool_misses_total = UInt64(0)
         self.zero_rtt_install_attempts = Int64(0)
         self.zero_rtt_install_successes = Int64(0)
+        self.zero_rtt_drain_dropped = Int64(0)
         self.zero_rtt_replay_accept = Int64(0)
         self.zero_rtt_replay_reject_duplicate = Int64(0)
         self.zero_rtt_replay_reject_per_key_quota = Int64(0)
@@ -793,6 +800,12 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.zero_rtt_install_attempts += 1
 
+    def record_zero_rtt_drain_dropped(mut self):
+        """Bump zero_rtt_drain_dropped. Called once per buffered 0-RTT
+        packet whose replay raised mid-drain and was dropped by the
+        per-packet containment in `_drain_zero_rtt_buffer`."""
+        self.zero_rtt_drain_dropped += 1
+
     def record_zero_rtt_replay_accept(mut self):
         """Bump zero_rtt_replay_accept (ReplayDecision.accept path)."""
         self.zero_rtt_replay_accept += 1
@@ -954,6 +967,10 @@ struct AcceptProfile(Copyable, Movable):
         s += "zero_rtt_install:\n"
         s += "  attempts:  " + _fmt_count(UInt64(self.zero_rtt_install_attempts)) + "\n"
         s += "  successes: " + _fmt_count(UInt64(self.zero_rtt_install_successes)) + "\n\n"
+
+        # 0-RTT drain-containment counter.
+        s += "zero_rtt_drain:\n"
+        s += "  dropped: " + _fmt_count(UInt64(self.zero_rtt_drain_dropped)) + "\n\n"
 
         # 0-RTT anti-replay outcome counters.
         s += "zero_rtt_replay:\n"
@@ -1241,6 +1258,11 @@ struct AcceptProfile(Copyable, Movable):
         s += '  "zero_rtt_install": {\n'
         s += '    "attempts": ' + String(self.zero_rtt_install_attempts) + ',\n'
         s += '    "successes": ' + String(self.zero_rtt_install_successes) + '\n'
+        s += "  },\n"
+
+        # 0-RTT drain-containment counter.
+        s += '  "zero_rtt_drain": {\n'
+        s += '    "dropped": ' + String(self.zero_rtt_drain_dropped) + '\n'
         s += "  },\n"
 
         # 0-RTT anti-replay outcome counters.

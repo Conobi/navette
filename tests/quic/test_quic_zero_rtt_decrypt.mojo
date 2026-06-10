@@ -27,6 +27,7 @@ from navette.quic.connection import QuicConnection, QuicEvent
 from navette.quic.frame import Frame, StreamFrame, CryptoFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.guard_tags import GUARD_TAG_CRYPTO_IN_ZERO_RTT
+from navette.quic.packet_protect import PacketProtect
 from navette.quic.profile import AcceptProfile
 from navette.quic.trans_param import default_transport_params
 from tests._test_util import (
@@ -69,6 +70,93 @@ def _make_server_conn(
     return QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
     )
+
+
+def _build_ping_initial(
+    client_protect: PacketProtect, pn: UInt64
+) raises -> List[UInt8]:
+    """Build an AEAD-encrypted, header-protected, PING-only Initial packet.
+
+    Layout mirrors test_quic_connection.mojo::test_batch_crypto_roundtrip:
+    18-byte clear header (first byte 0xC3: Initial, pn_len=4, reserved
+    bits 0) + 4-byte PN + 32-byte payload (PING 0x01 + 31 PADDING) +
+    16-byte AEAD tag = 70 bytes. DCID is the canonical `_synth_dcid()`,
+    matching the server fixture's Initial-keys derivation. The packet is
+    conn-handle-free: no CRYPTO frames, so processing it never touches
+    `conn_handle` (decrypt uses slot-0 keys handles only) — which is what
+    keeps it processable under the negative-handle pinned fault.
+
+    Args:
+        client_protect: A PacketProtect with client-side Initial keys
+            derived from `_synth_dcid()`.
+        pn: Packet number (must be <= 255; written into the low PN byte).
+
+    Returns:
+        The 70-byte wire-format packet.
+    """
+    var buf = _heap_alloc[UInt8](70).as_any_origin()
+    for i in range(70):
+        buf[i] = UInt8(0)
+    buf[0] = UInt8(0xC3)  # long header | fixed bit | Initial | pn_len=4
+    buf[1] = UInt8(0x00)  # version 0x00000001
+    buf[2] = UInt8(0x00)
+    buf[3] = UInt8(0x00)
+    buf[4] = UInt8(0x01)
+    buf[5] = UInt8(8)     # DCID len
+    var dcid = _synth_dcid()
+    for i in range(8):
+        buf[6 + i] = dcid[i]
+    buf[14] = UInt8(0)    # SCID len = 0
+    buf[15] = UInt8(0)    # token length varint = 0
+    buf[16] = UInt8(0x40) # payload length varint (2-byte form), hi
+    buf[17] = UInt8(52)   # 4 PN + 32 payload + 16 tag
+    # PN bytes 18..21 (big-endian; pn <= 255 so only the low byte is set).
+    buf[21] = UInt8(Int(pn) & 0xFF)
+    # Payload at 22..53: PING (0x01) then 31 PADDING (0x00).
+    buf[22] = UInt8(0x01)
+
+    var ct_len = client_protect.encrypt_payload_in_place(
+        0, pn, buf, 22, 32, 70
+    )
+    assert_equal_int(ct_len, 48, "ciphertext = payload 32 + tag 16")
+    client_protect.protect_header_ptr(0, buf, 70, 18, 4)
+
+    var out = List[UInt8](capacity=70)
+    for i in range(70):
+        out.append(buf[i])
+    buf.free()
+    return out^
+
+
+def _build_zero_rtt_stub() raises -> List[UInt8]:
+    """Build a parseable — never decrypted — 0-RTT long-header packet.
+
+    Path B (lazy key install) fires on the 0-RTT packet *type* before any
+    decrypt, so the payload is arbitrary non-zero filler; only the header
+    must parse and `pn_offset + payload_length` must fit the buffer.
+    Layout: first byte 0xD3 (long | fixed | 0-RTT | pn_len=4), version 1,
+    8-byte `_synth_dcid()` DCID, empty SCID, payload-length varint 52,
+    then 52 filler bytes = 69 bytes total (0-RTT has no token field).
+
+    Returns:
+        The 69-byte parseable 0-RTT packet.
+    """
+    var out = List[UInt8](capacity=69)
+    out.append(UInt8(0xD3))  # long header | fixed bit | 0-RTT | pn_len=4
+    out.append(UInt8(0x00))  # version 0x00000001
+    out.append(UInt8(0x00))
+    out.append(UInt8(0x00))
+    out.append(UInt8(0x01))
+    out.append(UInt8(8))     # DCID len
+    var dcid = _synth_dcid()
+    for i in range(8):
+        out.append(dcid[i])
+    out.append(UInt8(0))     # SCID len = 0
+    out.append(UInt8(0x40))  # payload length varint (2-byte form), hi
+    out.append(UInt8(52))
+    for _ in range(52):
+        out.append(UInt8(0x5A))  # "PN" + filler — never decrypted
+    return out^
 
 
 def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
@@ -437,6 +525,73 @@ def test_accept_profile_replay_counters_increment_independently() raises:
     print("  test_accept_profile_replay_counters_increment_independently: PASS")
 
 
+def test_drain_survives_mid_packet_raise() raises:
+    """AC drain-survives-mid-packet-raise: a raise from one buffered
+    packet mid-drain is contained to that packet — packets after it
+    still replay, and `_draining_zero_rtt` resets.
+
+    White-box mixed-buffer injection with the pinned negative-handle
+    fault: `rlsm_quic_server_conn_zero_rtt_keys` returns -1 for an
+    invalid conn handle, so overwriting `conn.conn_handle` with -1
+    makes the middle 0-RTT packet raise at Path B install. The two
+    encrypted PING-only Initials are conn-handle-free (slot-0 keys
+    handles only) and stay processable under the fault. The handle is
+    saved and restored in a `finally` so a failing assertion cannot
+    leak the QUIC_CONN_TABLE entry (`__del__` skips quic_conn_free
+    when conn_handle < 0).
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
+
+    var client_protect = PacketProtect(tls.shared())
+    var dcid = _synth_dcid()
+    client_protect.derive_initial_keys(Span(dcid), True)
+
+    var initial_pn0 = _build_ping_initial(client_protect, UInt64(0))
+    var zero_rtt = _build_zero_rtt_stub()
+    var initial_pn1 = _build_ping_initial(client_protect, UInt64(1))
+
+    assert_true(
+        conn._buffer_zero_rtt_or_drop(Span(initial_pn0)),
+        "packet one (Initial pn=0) buffered",
+    )
+    assert_true(
+        conn._buffer_zero_rtt_or_drop(Span(zero_rtt)),
+        "packet two (0-RTT) buffered",
+    )
+    assert_true(
+        conn._buffer_zero_rtt_or_drop(Span(initial_pn1)),
+        "packet three (Initial pn=1) buffered",
+    )
+    assert_equal_int(
+        conn.spaces[0].largest_recv_pn, -1,
+        "pre-drain: no Initial received yet",
+    )
+
+    var real_handle = conn.conn_handle
+    conn.conn_handle = Int32(-1)
+    try:
+        conn._drain_zero_rtt_buffer(UInt64(2_000_000), UInt8(0))
+    finally:
+        conn.conn_handle = real_handle
+
+    assert_equal_int(
+        conn.spaces[0].largest_recv_pn, 1,
+        "packets one AND three replayed (largest_recv_pn = 1) — the"
+        " mid-drain raise was contained to packet two",
+    )
+    assert_false(
+        conn._draining_zero_rtt,
+        "_draining_zero_rtt must be False after the drain",
+    )
+    assert_equal_int(
+        len(conn.zero_rtt_buffer), 0,
+        "buffer fully drained",
+    )
+    _ = conn.is_server
+    print("  test_drain_survives_mid_packet_raise: PASS")
+
+
 def main() raises:
     test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer()
     test_decrypt_zero_rtt_crypto_trips_f30_guard()
@@ -447,3 +602,4 @@ def main() raises:
     test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys()
     test_zero_rtt_buffer_cleared_at_connection_destroy()
     test_accept_profile_replay_counters_increment_independently()
+    test_drain_survives_mid_packet_raise()
