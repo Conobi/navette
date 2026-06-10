@@ -179,11 +179,15 @@ struct QuicServerConfig(Movable):
     var _max_early_data: UInt32
     var _early_data_store: Optional[InMemoryEarlyDataStore]
     var _early_data_filter: Optional[IdempotentOnlyFilter]
-    """RFC 8470 HTTP early-data filter. Paired with `_early_data_store`:
-    both populated when `max_early_data > 0` (0-RTT accept mode); both
-    `None` when `max_early_data == 0` (rejection mode). The H3-layer
-    dispatch helper reads this field to decide whether to admit or
-    reject (425) a 0-RTT-tagged request."""
+    """RFC 8470 HTTP early-data filter. Population is per policy
+    variant: Off (or legacy `max_early_data == 0`) populates neither
+    this field nor `_early_data_predicate_fn`; IdempotentOnly / Tuned
+    (or legacy `max_early_data > 0` with `policy` omitted) populate
+    this struct filter, paired with `_early_data_store`; Predicate
+    enables 0-RTT (`max_early_data = u32::MAX`) but leaves this field
+    `None` and populates `_early_data_predicate_fn` instead. The
+    H3-layer dispatch helper reads this field to decide whether to
+    admit or reject (425) a 0-RTT-tagged request."""
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate function from
     `EarlyDataPolicy.predicate(...)`. Populated only when the policy

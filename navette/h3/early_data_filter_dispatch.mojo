@@ -155,7 +155,7 @@ def apply_early_data_filter(
           arrived inside a 0-RTT-decrypted packet.
         filter_ptr: Optional pointer to the connection's struct-
           based filter. Populated when the server config has 0-RTT
-          enabled via Off / IdempotentOnly / Tuned.
+          enabled via IdempotentOnly / Tuned (Off populates nothing).
         predicate_fn: Optional user-supplied predicate function.
           Populated when the server config has 0-RTT enabled via
           Predicate.

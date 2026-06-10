@@ -80,8 +80,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
-    # only when 0-RTT is enabled via the Off / IdempotentOnly / Tuned
-    # policy variants (struct-filter path). Mutually exclusive with
+    # only when 0-RTT is enabled via the IdempotentOnly / Tuned
+    # policy variants (struct-filter path); Off populates nothing.
+    # Mutually exclusive with
     # `_early_data_predicate_fn`: at most one is Some when 0-RTT is on,
     # and both are None when 0-RTT is off. When BOTH are None on a
     # 0-RTT-arrived request, the dispatch helper takes the fail-closed
