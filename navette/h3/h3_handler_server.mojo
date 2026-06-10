@@ -260,24 +260,40 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         for i in range(len(user_headers)):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
-        # RFC 8470 0-RTT HTTP filter dispatch. On reject (0-RTT request
-        # whose method is non-idempotent OR fail-closed misconfig),
-        # synthesise a 425 Too Early and skip the handler. On accept,
-        # the helper has already injected `Early-Data: 1` into
-        # req_headers.
-        var stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
-        var outcome = apply_early_data_filter(
-            method_str,
-            path_str,
-            stream_is_zr,
-            self._early_data_filter_ptr,
-            self._early_data_predicate_fn,
-            req_headers,
-            self.profile_ptr,
-        )
-        if outcome.should_send_425():
-            send_425_response(ev.stream_id, self._h3)
-            return
+        # RFC 8470 0-RTT HTTP filter dispatch, gated on the connection's
+        # cached `zero_rtt_enabled` opt-in (the authoritative O(1) signal
+        # set from QuicServerConfig.max_early_data() at conn creation).
+        #
+        # When 0-RTT is DISABLED (rejection-mode listener), no stream can
+        # ever carry the is_zero_rtt tag — the 0-RTT packet space is never
+        # keyed, so `stream_is_zero_rtt` would always return False. The
+        # whole dispatch is therefore dead weight: we skip both the
+        # per-request Dict probe AND the apply_early_data_filter call,
+        # leaving `stream_is_zr=False` so the request flows straight to the
+        # handler with caps.is_early_data=False. Gating here (not on
+        # filter-pointer presence) keeps the fail-closed misconfig row
+        # intact: a 0-RTT-ENABLED connection with both filter pointers None
+        # still runs the dispatch and fail-closes with a 425.
+        #
+        # On reject (0-RTT request whose method is non-idempotent OR
+        # fail-closed misconfig), synthesise a 425 Too Early and skip the
+        # handler. On accept, the helper has already injected
+        # `Early-Data: 1` into req_headers.
+        var stream_is_zr = False
+        if self._h3._quic.zero_rtt_enabled:
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            var outcome = apply_early_data_filter(
+                method_str,
+                path_str,
+                stream_is_zr,
+                self._early_data_filter_ptr,
+                self._early_data_predicate_fn,
+                req_headers,
+                self.profile_ptr,
+            )
+            if outcome.should_send_425():
+                send_425_response(ev.stream_id, self._h3)
+                return
 
         var req = Request(
             method=Method.custom(method_str),

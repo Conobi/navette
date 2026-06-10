@@ -22,6 +22,8 @@ from boucle.stackful import CoroYielder
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
+from navette.quic.frame import StreamFrame
+from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.h3_streaming_server import (
@@ -518,6 +520,72 @@ def test_h3_streaming_multi_chunk_body_fifo_order() raises:
     print("  test_h3_streaming_multi_chunk_body_fifo_order: PASS")
 
 
+def _gate_probe_streaming(mut yld: CoroYielder) raises:
+    """No-op streaming handler for the zero-rtt gate test: returns
+    immediately (coro completes on first resume) without ending the
+    response, so the stream ctx stays registered for assertions."""
+    pass
+
+
+def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
+    """AC sibling-adapters-gate-skips-dispatch (streaming adapter;
+    Red-Gated): with zero_rtt_enabled=False and a stream ARTIFICIALLY
+    tagged is_zero_rtt=True (white-box), the request must proceed with
+    caps.is_early_data=False. Pre-gate the both-None fail-closed row
+    yields 425 and skips ctx registration, so the registration
+    assertion fails on that code."""
+    var tc = _TestConfigs()
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+    var dcid_a = List[UInt8]()
+    var dcid_b = List[UInt8]()
+    for _ in range(8):
+        dcid_a.append(UInt8(0xab))
+        dcid_b.append(UInt8(0xcd))
+    var server_quic = QuicConnection.server(
+        tc._tls.shared(), tc.srv_cfg, params, Span(dcid_a), Span(dcid_b), now,
+    )
+    var server = H3StreamingServer(
+        quic=server_quic^, handler_fn=_gate_probe_streaming
+    )
+
+    server._h3._quic._current_space_idx = ZERO_RTT_SPACE_IDX
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x00))
+    var sf = StreamFrame(UInt64(0), UInt64(0), payload^, False)
+    try:
+        server._h3._quic._handle_stream_frame(sf)
+    except:
+        pass
+    server._h3._quic._current_space_idx = -1
+    assert_true(
+        server._h3._quic.stream_map.streams[0].is_zero_rtt,
+        "white-box setup: stream must carry the artificial 0-RTT tag",
+    )
+
+    var ev = H3Event(H3Event.HEADERS_RECEIVED)
+    ev.stream_id = UInt64(0)
+    ev.fin = True
+    ev.fields.append(QpackHeaderField(String(":method"), String("GET")))
+    ev.fields.append(QpackHeaderField(String(":scheme"), String("https")))
+    ev.fields.append(QpackHeaderField(String(":path"), String("/")))
+    ev.fields.append(QpackHeaderField(String(":authority"), String("localhost")))
+    server._on_request(ev)
+
+    var sid = Int(0)
+    assert_true(
+        sid in server._streams,
+        "request must proceed to ctx registration when 0-RTT is disabled",
+    )
+    assert_true(
+        not server._streams[sid].ptr()[].caps.is_early_data,
+        "caps.is_early_data must be False when the gate skips dispatch",
+    )
+    _ = server._h3._quic.conn_handle
+    _ = tc.srv_cfg._handle
+    print("  test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch: PASS")
+
+
 def main() raises:
     print("=== test_h3_streaming_server ===")
     test_h3_streaming_post_with_body()
@@ -525,5 +593,6 @@ def main() raises:
     test_h3_streaming_rst_stream()
     test_h3_streaming_cancel_via_rst_stream()
     test_h3_streaming_multi_chunk_body_fifo_order()
+    test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch()
     print("All H3StreamingServer tests passed.")
     print("ok")

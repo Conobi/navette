@@ -432,6 +432,127 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
     _ = cfg._handle
 
 
+def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
+    """AC zero-rtt-disabled-requests-skip-dispatch (defect-demonstrating,
+    Red-Gated): on a connection with 0-RTT disabled (rejection-mode
+    config -> zero_rtt_enabled=False), a 1-RTT request proceeds to the
+    handler WITHOUT consulting the early-data dispatch — every
+    zero_rtt_http_filter_* counter stays zero and caps.is_early_data is
+    False. Pre-gate, the 1-RTT row bumps 1rtt_bypassed unconditionally,
+    so the all-zero assertion fails on that code."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(lib.shared(), Span(cert_pem), Span(key_pem))
+    var prof = AcceptProfile()
+    var tp = default_transport_params()
+    var dcid_a = List[UInt8]()
+    var dcid_b = List[UInt8]()
+    for _ in range(8):
+        dcid_a.append(UInt8(0xab))
+        dcid_b.append(UInt8(0xcd))
+    var quic = QuicConnection.server(
+        lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), UInt64(1_000_000),
+    )
+    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+        UnsafePointer(to=prof)
+    )
+    var server = H3HandlerServer[RecordingHandler](
+        quic=quic^,
+        handler=RecordingHandler(),
+        profile_ptr=prof_ptr,
+    )
+
+    var APPLICATION_SPACE_IDX: Int = 2
+    var stream_id: UInt64 = 0
+    _force_stream_in_space(server, stream_id, APPLICATION_SPACE_IDX)
+    var ev = _build_h3_event(stream_id, String("POST"), True)
+    server._on_request(ev, UInt64(1_000_001))
+
+    assert_equal_int(
+        server.handler.calls, 1,
+        String("handler must be invoked on 1-RTT POST with 0-RTT disabled"),
+    )
+    assert_false(
+        server.handler.last_caps_is_early_data,
+        String("caps.is_early_data must be False when the gate skips dispatch"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        String("dispatch must be skipped when 0-RTT is disabled"
+               " (no 1rtt_bypassed bump)"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_accept), 0,
+        String("accept counter must stay zero"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        String("reject_425 counter must stay zero"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        String("misconfig_fail_closed counter must stay zero"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_user_raised), 0,
+        String("user_raised counter must stay zero"),
+    )
+    _ = server._h3._quic.conn_handle
+    _ = cfg._handle
+
+
+def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
+    """AC misconfig-fail-closed-row-preserved (invariant-preservation
+    pin — passes pre-gate by design, Red-Gate exempt): a 0-RTT-ENABLED
+    connection with BOTH filter pointers None and a 0-RTT-tagged stream
+    still gets 425 + misconfig_fail_closed. The zero_rtt_enabled gate
+    must not bypass the fail-closed row."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var prof = AcceptProfile()
+    var tp = default_transport_params()
+    var dcid_a = List[UInt8]()
+    var dcid_b = List[UInt8]()
+    for _ in range(8):
+        dcid_a.append(UInt8(0xab))
+        dcid_b.append(UInt8(0xcd))
+    var quic = QuicConnection.server(
+        lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), UInt64(1_000_000),
+    )
+    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
+        UnsafePointer(to=prof)
+    )
+    var server = H3HandlerServer[RecordingHandler](
+        quic=quic^,
+        handler=RecordingHandler(),
+        profile_ptr=prof_ptr,
+    )
+
+    var stream_id: UInt64 = 0
+    _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
+    var ev = _build_h3_event(stream_id, String("POST"), True)
+    server._on_request(ev, UInt64(1_000_001))
+
+    assert_equal_int(
+        server.handler.calls, 0,
+        String("misconfigured 0-RTT-enabled conn must fail closed (no handler)"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 1,
+        String("misconfig_fail_closed counter += 1"),
+    )
+    _ = server._h3._quic.conn_handle
+    _ = cfg._handle
+
+
 def main() raises:
     """Driver for `scripts/run_tests.sh`: each test must be invoked here."""
     print("=== test_h3_adapter_early_data_filter ===")
@@ -443,5 +564,9 @@ def main() raises:
     print("  test_h3_handler_server_filter_accept_injects_early_data_header: PASS")
     test_h3_handler_server_1rtt_request_bypasses_filter()
     print("  test_h3_handler_server_1rtt_request_bypasses_filter: PASS")
+    test_h3_handler_server_zero_rtt_disabled_skips_dispatch()
+    print("  test_h3_handler_server_zero_rtt_disabled_skips_dispatch: PASS")
+    test_h3_handler_server_misconfig_fail_closed_row_preserved()
+    print("  test_h3_handler_server_misconfig_fail_closed_row_preserved: PASS")
     print("test_h3_adapter_early_data_filter: all tests passed")
     print("ok")

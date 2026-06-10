@@ -279,8 +279,13 @@ struct AcceptProfile(Copyable, Movable):
     #   - misconfig_fail_closed:  0-RTT request reached H3 dispatch but no
     #                              filter was wired (config invariant
     #                              violation); fail-closed 425 was emitted
-    #   - 1rtt_bypassed:          request rode 1-RTT (filter not consulted);
+    #   - 1rtt_bypassed:          request rode 1-RTT on a 0-RTT-ENABLED
+    #                              connection (filter not consulted);
     #                              tracks the 0-RTT-vs-1-RTT request mix
+    #                              among listeners that opted into 0-RTT.
+    #                              Connections that never enabled 0-RTT
+    #                              skip the dispatch entirely and do NOT
+    #                              bump this counter.
     var zero_rtt_http_filter_accept: Int64
     var zero_rtt_http_filter_reject_425: Int64
     var zero_rtt_http_filter_misconfig_fail_closed: Int64
@@ -856,7 +861,11 @@ struct AcceptProfile(Copyable, Movable):
         """Bump zero_rtt_http_filter_1rtt_bypassed. Called when the
         adapter reaches the filter site with is_zero_rtt=False
         (request rode 1-RTT) — filter is NOT consulted and handler
-        is dispatched normally. Tracks the 0-RTT-vs-1-RTT mix."""
+        is dispatched normally. Only fires on connections that opted
+        into 0-RTT (`QuicConnection.zero_rtt_enabled=True`); rejection-
+        mode listeners gate out the dispatch before it reaches this
+        counter, so the count reflects the 0-RTT-vs-1-RTT mix among
+        0-RTT-enabled listeners only."""
         self.zero_rtt_http_filter_1rtt_bypassed += 1
 
     def record_zero_rtt_http_filter_user_raised(mut self):
