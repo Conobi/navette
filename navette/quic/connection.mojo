@@ -1096,8 +1096,10 @@ struct QuicConnection(Movable):
             #      on CRYPTO frames in 0-RTT).
             #   B. Slot 3 empty AND 0-RTT enabled by config — lazy-install
             #      via the server FFI. On success: fall through. On
-            #      failure: buffer the packet (unless we are already
-            #      draining, in which case silent-drop) and skip ahead.
+            #      failure (rc=1 keys-not-yet-available, or an rc=-1 FFI
+            #      raise — both folded into the same path): buffer the
+            #      packet (unless we are already draining, in which case
+            #      silent-drop) and skip ahead.
             #   C. 0-RTT disabled by config (max_early_data == 0) —
             #      rejection mode: skip past the packet boundary so
             #      coalesced packets after it are still processed.
@@ -1112,7 +1114,20 @@ struct QuicConnection(Movable):
                     space_idx = ZERO_RTT_SPACE_IDX
                 elif self._zero_rtt_enabled():
                     # Path B — lazy install. Buffer-or-drop on fail.
-                    var ok = self.protect.install_zero_rtt_read_keys(self.conn_handle)
+                    # An rc=-1 FFI raise (anomalous handle/state) folds
+                    # into the same failure handling as the rc=1
+                    # keys-not-yet-available return: no exception from
+                    # 0-RTT key installation propagates out of
+                    # recv_from_buffer, and non-0-RTT coalesced packets
+                    # in the same datagram keep processing.
+                    var ok = False
+                    try:
+                        ok = self.protect.install_zero_rtt_read_keys(
+                            self.conn_handle
+                        )
+                    except:
+                        # ok keeps its False initializer — failure path.
+                        pass
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
                             self.profile_ptr.value()[].record_zero_rtt_install(ok)
@@ -3073,9 +3088,13 @@ struct QuicConnection(Movable):
                 try:
                     self.recv_from_buffer(buf_ptr, len(pkt), now, ecn_mark)
                 except e:
-                    # Per-packet containment: a raise mid-drain is
-                    # scoped to one buffered packet — drop it, count
-                    # it, and keep draining the rest.
+                    # Defense-in-depth against unclassified raises
+                    # (internal errors, future bugs): 0-RTT install
+                    # raises are folded at their Path B call site
+                    # inside recv_from_buffer and no longer reach
+                    # this except. A raise mid-drain is scoped to
+                    # one buffered packet — drop it, count it, and
+                    # keep draining the rest.
                     # Drop-and-continue over close_transport: the
                     # failure scope is one buffered packet, and
                     # connection-fatal protocol errors on this path

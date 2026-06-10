@@ -580,6 +580,11 @@ def test_drain_survives_mid_packet_raise() raises:
         "packets one AND three replayed (largest_recv_pn = 1) — the"
         " mid-drain raise was contained to packet two",
     )
+    assert_equal_int(
+        Int(conn.spaces[0].ack_ranges[0].start), 0,
+        "ack range covers pn 0 — packet one really replayed, not just"
+        " packet three (a lone pn=1 receipt would leave start=1)",
+    )
     assert_false(
         conn._draining_zero_rtt,
         "_draining_zero_rtt must be False after the drain",
@@ -590,6 +595,102 @@ def test_drain_survives_mid_packet_raise() raises:
     )
     _ = conn.is_server
     print("  test_drain_survives_mid_packet_raise: PASS")
+
+
+def test_install_raise_folds_into_failure_path() raises:
+    """AC install-raise-folds-into-failure-path: with the pinned
+    negative-handle fault, `recv_from_buffer` does NOT raise on a 0-RTT
+    packet whose key install fails with rc=-1, and the packet lands in
+    `zero_rtt_buffer` (pre-drain mode), exactly like the rc=1
+    keys-not-yet-available path.
+
+    The datagram contains ONLY the 0-RTT packet — with no successfully
+    processed packet in the datagram, the post-handshake-drive drain
+    never runs, so the buffer-length observable survives the call.
+    Handle saved and restored in a `finally` (a failing assertion must
+    not leak the QUIC_CONN_TABLE entry).
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
+    var zero_rtt = _build_zero_rtt_stub()
+
+    var real_handle = conn.conn_handle
+    conn.conn_handle = Int32(-1)
+    var buf_ptr = _heap_alloc[UInt8](len(zero_rtt)).as_any_origin()
+    for i in range(len(zero_rtt)):
+        buf_ptr[i] = zero_rtt[i]
+    try:
+        conn.recv_from_buffer(
+            buf_ptr, len(zero_rtt), UInt64(2_000_000), UInt8(0)
+        )
+    finally:
+        conn.conn_handle = real_handle
+        buf_ptr.free()
+
+    assert_equal_int(
+        len(conn.zero_rtt_buffer), 1,
+        "0-RTT packet lands in zero_rtt_buffer after the contained"
+        " install raise (buffer-or-drop path, pre-drain mode)",
+    )
+    _ = conn.is_server
+    print("  test_install_raise_folds_into_failure_path: PASS")
+
+
+def test_coalesced_survivors_still_processed() raises:
+    """AC coalesced-survivors-still-processed: a datagram of
+    [0-RTT packet that triggers the install fault, PING-only Initial]
+    still processes the Initial — `spaces[0].largest_recv_pn` advances
+    to the survivor's packet number. The survivor is conn-handle-free
+    (PING-only, no CRYPTO frames) so it stays processable under the
+    negative-handle fault.
+
+    Note on the buffer: the surviving Initial triggers the
+    post-handshake-drive drain, which replays the just-buffered 0-RTT
+    packet in drain mode and silently drops it — so the buffer ends
+    empty here; the buffer-length observable lives in
+    test_install_raise_folds_into_failure_path instead.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
+
+    var client_protect = PacketProtect(tls.shared())
+    var dcid = _synth_dcid()
+    client_protect.derive_initial_keys(Span(dcid), True)
+
+    var zero_rtt = _build_zero_rtt_stub()
+    var initial_pn0 = _build_ping_initial(client_protect, UInt64(0))
+
+    var total = len(zero_rtt) + len(initial_pn0)
+    var buf_ptr = _heap_alloc[UInt8](total).as_any_origin()
+    for i in range(len(zero_rtt)):
+        buf_ptr[i] = zero_rtt[i]
+    for i in range(len(initial_pn0)):
+        buf_ptr[len(zero_rtt) + i] = initial_pn0[i]
+
+    assert_equal_int(
+        conn.spaces[0].largest_recv_pn, -1,
+        "pre-feed: no Initial received yet",
+    )
+
+    var real_handle = conn.conn_handle
+    conn.conn_handle = Int32(-1)
+    try:
+        conn.recv_from_buffer(buf_ptr, total, UInt64(2_000_000), UInt8(0))
+    finally:
+        conn.conn_handle = real_handle
+        buf_ptr.free()
+
+    assert_equal_int(
+        conn.spaces[0].largest_recv_pn, 0,
+        "survivor Initial processed — largest_recv_pn advanced to 0"
+        " despite the preceding 0-RTT install raise",
+    )
+    assert_false(
+        conn._draining_zero_rtt,
+        "_draining_zero_rtt must be False after the feed",
+    )
+    _ = conn.is_server
+    print("  test_coalesced_survivors_still_processed: PASS")
 
 
 def main() raises:
@@ -603,3 +704,5 @@ def main() raises:
     test_zero_rtt_buffer_cleared_at_connection_destroy()
     test_accept_profile_replay_counters_increment_independently()
     test_drain_survives_mid_packet_raise()
+    test_install_raise_folds_into_failure_path()
+    test_coalesced_survivors_still_processed()
