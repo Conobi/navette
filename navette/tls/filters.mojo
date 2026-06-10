@@ -13,7 +13,7 @@ struct-based filter pluggability with runtime configuration.
 """
 
 from navette.http.headers import Headers
-from navette.tls.early_data_filter import FilterDecision
+from navette.tls.early_data_filter import FilterDecision, is_rfc_safe_method
 
 
 def idempotency_key_predicate(
@@ -53,7 +53,7 @@ def idempotency_key_predicate(
         carries a non-empty idempotency key. FilterDecision.reject_425()
         otherwise.
     """
-    if method == "GET" or method == "HEAD" or method == "OPTIONS":
+    if is_rfc_safe_method(method):
         return FilterDecision.accept()
     if (
         method == "POST"
@@ -98,7 +98,7 @@ def unauthenticated_only_predicate(
         FilterDecision.accept() iff the method is safe AND neither auth
         header is present. FilterDecision.reject_425() otherwise.
     """
-    if method != "GET" and method != "HEAD" and method != "OPTIONS":
+    if not is_rfc_safe_method(method):
         return FilterDecision.reject_425()
     if headers.has(String("authorization")):
         return FilterDecision.reject_425()

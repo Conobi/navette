@@ -68,6 +68,29 @@ struct FilterDecision(Copyable, Movable, Equatable):
         return self.kind != other.kind
 
 
+def is_rfc_safe_method(method: String) -> Bool:
+    """True iff `method` is exactly "GET", "HEAD", or "OPTIONS".
+
+    Single source of truth for the RFC-safe-method triple — RFC 9110
+    §9.2.1 (safe) + §9.2.2 (idempotent); these three methods are both,
+    so a 0-RTT replay produces no new server-observable effect. Every
+    filter / predicate that consults the triple routes through this
+    helper.
+
+    Comparison is byte-wise per RFC 9110 §5.6.2 (tokens are exact
+    bytes) and case-sensitive per §9.1: lowercase "get" is NOT GET;
+    whitespace-padded " GET" / "GET " do not match.
+
+    Args:
+        method: The `:method` pseudo-header value verbatim
+            (pre-`Method.custom()` normalisation).
+
+    Returns:
+        True iff the method is one of the three RFC-safe tokens.
+    """
+    return method == "GET" or method == "HEAD" or method == "OPTIONS"
+
+
 comptime EarlyDataPredicateFn = def (
     String, String, Headers
 ) thin raises -> FilterDecision
@@ -130,10 +153,6 @@ struct IdempotentOnlyFilter(EarlyDataFilter):
         The `_path` and `_headers` arguments are accepted to satisfy
         the widened trait signature but are not consulted.
         """
-        if method == "GET":
-            return FilterDecision.accept()
-        if method == "HEAD":
-            return FilterDecision.accept()
-        if method == "OPTIONS":
+        if is_rfc_safe_method(method):
             return FilterDecision.accept()
         return FilterDecision.reject_425()
