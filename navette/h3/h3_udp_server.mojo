@@ -703,6 +703,114 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             )
         )
 
+    # ── Per-connection construction ──────────────────────────────
+
+    def _construct_conn_handler(
+        mut self, dcid: Span[UInt8, _], now: UInt64
+    ) raises -> UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]:
+        """Build a fresh per-connection `H3HandlerServer[H]` on the heap.
+
+        Extracted from `_flush_impl`'s new-connection branch so tests can
+        exercise the real wiring without standing up an io_uring loop. The
+        body mirrors the inline construction exactly, with one difference:
+        the accept-profile pointer is threaded into BOTH the QUIC layer and
+        the H3 adapter so every counter family stays live in the library
+        server (the inline code never did this, leaving them dead).
+
+        # Both pointers wired unconditionally
+
+        `UnsafePointer(to=self.profile)` is passed to `QuicConnection.server`
+        and `H3HandlerServer`'s `profile_ptr` kwarg with no compile-time or
+        runtime guard. This is cheap by construction:
+
+          * The QUIC-side record sites are `comptime if PROFILE_ACCEPT`
+            gated, so a default (`PROFILE_ACCEPT=False`) build dead-strips
+            every `record_*` call and pays only for one stored pointer.
+          * The `zero_rtt_http_filter_*` record sites are runtime-gated by
+            design (they only fire on a 0-RTT-arrived request when the
+            policy is on), so wiring the pointer is the only thing that
+            lets those counters reach `self.profile` at all.
+
+        # Pointer stability
+
+        `UnsafePointer(to=self.profile)` is only valid while `self` stays
+        put. `serve_forever` moves the server into `BatchCompletionLoop`
+        BEFORE any connection exists, so the profile's address is fixed by
+        the time the first handler is built; `H3UdpServer` must not be moved
+        while handlers hold this pointer. This mirrors the existing
+        `_early_data_store` / `_early_data_filter` pointer discipline.
+
+        Args:
+            dcid: The client's Initial DCID span (used as both `orig_dcid`
+                and, copied, `client_dcid` for the dual-DCID server start).
+            now: Current monotonic time in microseconds.
+
+        Returns:
+            A heap-allocated, move-initialized `H3HandlerServer[Self.H]`
+            pointer. The caller owns it and is responsible for
+            `destroy_pointee()` + `free()` (or transferring ownership into
+            a `ConnSlot`).
+
+        Raises:
+            Propagated from `QuicConnection.server` (TLS handle alloc, key
+            derivation) or the `H3HandlerServer` ctor. `_flush_impl` catches
+            these per-datagram and releases the inbound buffer rather than
+            aborting the whole flush.
+        """
+        var dcid_copy = List[UInt8](capacity=len(dcid))
+        for i in range(len(dcid)):
+            dcid_copy.append(dcid[i])
+
+        var quic = QuicConnection.server(
+            self._tls.shared(),
+            self.server_config,
+            self.transport_params.copy(),
+            dcid,
+            Span(dcid_copy),
+            now,
+            UnsafePointer(to=self.profile),
+        )
+
+        # Per-conn StreamHandler — produced by the user-supplied factory.
+        var handler = self.make_handler()
+
+        # Promote QuicServerConfig._early_data_filter into a raw pointer the
+        # H3 adapter dispatches via on `_on_request`. Mirrors how
+        # `QuicConnection.server` promotes the `_early_data_store`
+        # reference — the pointer is valid for the connection's lifetime
+        # because `self.server_config` outlives every connection here.
+        # `rebind` lifts the inferred config-bound origin to `MutAnyOrigin`
+        # so the pointer can be stored alongside the existing
+        # `_early_data_store_ptr` shape.
+        var early_data_filter_ptr_opt = Optional[
+            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        ](None)
+        if self.server_config._early_data_filter is not None:
+            var filter_ptr = rebind[
+                UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            ](UnsafePointer(to=self.server_config._early_data_filter.value()))
+            early_data_filter_ptr_opt = Optional[
+                UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            ](filter_ptr)
+
+        # Thread the policy's predicate-fn (if any) into the per-connection
+        # adapter ctor. The fn-pointer is Optional[EarlyDataPredicateFn] —
+        # trivially copyable in Mojo 1.0.0b1 — so no pointer-lifetime
+        # threading is needed (unlike the IdempotentOnlyFilter struct above).
+        var predicate_fn_opt = self.server_config._early_data_predicate_fn
+
+        var h3 = H3HandlerServer[Self.H](
+            quic=quic^,
+            handler=handler^,
+            profile_ptr=UnsafePointer(to=self.profile),
+            early_data_filter_ptr=early_data_filter_ptr_opt,
+            predicate_fn=predicate_fn_opt,
+        )
+
+        var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_any_origin()
+        h3_ptr.init_pointee_move(h3^)
+        return h3_ptr
+
     # ── Batch flush ──────────────────────────────────────────────
 
     def on_flush(mut self):
@@ -734,20 +842,13 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
 
             if conn_idx < 0:
                 # New conn — drive QuicConnection.server() and wrap in
-                # H3HandlerServer.
-                var dcid_copy = List[UInt8](copy=pd.dcid)
-                var quic: QuicConnection
+                # H3HandlerServer via the extracted constructor (which wires
+                # the accept-profile pointer through both layers).
+                var h3_ptr: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]
                 try:
-                    quic = QuicConnection.server(
-                        self._tls.shared(),
-                        self.server_config,
-                        self.transport_params.copy(),
-                        Span(pd.dcid),
-                        Span(dcid_copy),
-                        now,
-                    )
+                    h3_ptr = self._construct_conn_handler(Span(pd.dcid), now)
                 except e:
-                    print("H3UdpServer: QuicConnection.server error:", e)
+                    print("H3UdpServer: conn construction error:", e)
                     self._release_buf(pd.buf_id)
                     continue
 
@@ -755,57 +856,17 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 # (random ICID) and the server's chosen SCID (local_cid)
                 # map to the same conn_idx so the ICID→SCID transition
                 # is transparent during the handshake.
-                debug_assert(len(quic.initial_dcid) == 8, "initial_dcid != 8 bytes")
-                debug_assert(len(quic.local_cid) == 8, "local_cid != 8 bytes")
+                debug_assert(
+                    len(h3_ptr[]._h3._quic.initial_dcid) == 8,
+                    "initial_dcid != 8 bytes",
+                )
+                debug_assert(
+                    len(h3_ptr[]._h3._quic.local_cid) == 8,
+                    "local_cid != 8 bytes",
+                )
 
-                var icid_u64 = dcid_to_u64(Span(quic.initial_dcid))
-                var lcid_u64 = dcid_to_u64(Span(quic.local_cid))
-
-                # Per-conn StreamHandler — produced by the user-supplied
-                # factory. The factory's free to share state via captured
-                # module globals or external pointers.
-                var handler = self.make_handler()
-                # Promote QuicServerConfig._early_data_filter into a raw
-                # pointer the H3 adapter dispatches via on `_on_request`.
-                # Mirrors how `QuicConnection.server` promotes the
-                # `_early_data_store` reference — the pointer is valid
-                # for the connection's lifetime because
-                # `self.server_config` outlives every connection here.
-                # `rebind` lifts the inferred config-bound origin to
-                # `MutAnyOrigin` so the pointer can be stored alongside
-                # the existing `_early_data_store_ptr` shape.
-                var early_data_filter_ptr_opt = Optional[
-                    UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
-                ](None)
-                if self.server_config._early_data_filter is not None:
-                    var filter_ptr = rebind[
-                        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
-                    ](UnsafePointer(to=self.server_config._early_data_filter.value()))
-                    early_data_filter_ptr_opt = Optional[
-                        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
-                    ](filter_ptr)
-                # Thread the policy's predicate-fn (if any) into the
-                # per-connection adapter ctor. The fn-pointer is
-                # Optional[EarlyDataPredicateFn] — trivially copyable
-                # in Mojo 1.0.0b1 — so no pointer-lifetime threading
-                # is needed (unlike the IdempotentOnlyFilter struct
-                # above).
-                var predicate_fn_opt = self.server_config._early_data_predicate_fn
-                var h3: H3HandlerServer[Self.H]
-                try:
-                    h3 = H3HandlerServer[Self.H](
-                        quic=quic^,
-                        handler=handler^,
-                        early_data_filter_ptr=early_data_filter_ptr_opt,
-                        predicate_fn=predicate_fn_opt,
-                    )
-                except e:
-                    print("H3UdpServer: H3HandlerServer init error:", e)
-                    self._release_buf(pd.buf_id)
-                    continue
-
-                var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_any_origin()
-                h3_ptr.init_pointee_move(h3^)
+                var icid_u64 = dcid_to_u64(Span(h3_ptr[]._h3._quic.initial_dcid))
+                var lcid_u64 = dcid_to_u64(Span(h3_ptr[]._h3._quic.local_cid))
 
                 # Build peer address from the provided buffer for sendmsg
                 # routing. Stored as a raw sockaddr blob (16 or 28 bytes)
