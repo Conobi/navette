@@ -200,10 +200,26 @@ struct QuicServerConfig(Movable):
         cert_pem: Span[UInt8, _],
         key_pem: Span[UInt8, _],
         alpn: String = "h3",
-        max_early_data: UInt32 = UInt32(0),
+        max_early_data: Optional[UInt32] = None,
         policy: Optional[EarlyDataPolicy] = None,
     ) raises:
         """Build a rustls QUIC server config from PEM cert + key.
+
+        Early-data kwarg resolution (total — every cell):
+
+        | `max_early_data` | `policy`  | result                          |
+        |------------------|-----------|---------------------------------|
+        | omitted          | omitted   | 0-RTT off (default)             |
+        | Some(v), any v   | omitted   | legacy semantics, effective = v |
+        | omitted          | off()     | 0-RTT off (kwargs agree)        |
+        | omitted          | enabling  | policy decides: u32::MAX        |
+        | Some(0)          | off()     | 0-RTT off (kwargs agree)        |
+        | Some(v>0)        | off()     | raise (contradictory)           |
+        | Some(0)          | enabling  | raise (contradictory)           |
+        | Some(v>0)        | enabling  | policy wins: u32::MAX           |
+
+        "enabling" means `policy.value().is_enabled()` — true for the
+        IdempotentOnly, Tuned, and Predicate variants; false for Off.
 
         Args:
             lib: SharedLibrary handle (refcount is incremented).
@@ -211,45 +227,52 @@ struct QuicServerConfig(Movable):
             key_pem: PEM-encoded private-key bytes.
             alpn: ALPN protocol id (default "h3").
             max_early_data: legacy 0-RTT enable knob, kept for
-                backward compatibility with existing callers.
-                `UInt32(0)` disables 0-RTT (rejection mode);
+                backward compatibility with existing callers. `None`
+                (omitted) defers entirely to `policy`. `UInt32(0)`
+                explicitly disables 0-RTT (rejection mode);
                 `UInt32::MAX` enables acceptance (rustls QUIC, RFC
-                9001 §4.6.1). Prefer the `policy=` kwarg for new code.
+                9001 §4.6.1). A `UInt32` value converts implicitly
+                into the Optional; bare integer literals do not —
+                pass `UInt32(...)`. Prefer the `policy=` kwarg for
+                new code.
             policy: public `EarlyDataPolicy` ctor kwarg (default
                 `None`, meaning "kwarg omitted; honor the legacy
                 `max_early_data` reading unchanged"). When the caller
                 supplies a non-None policy, it overrides the legacy
-                semantics: `EarlyDataPolicy.off()` disables 0-RTT and
-                conflicts with `max_early_data > 0`;
-                `EarlyDataPolicy.idempotent_only()` or
-                `EarlyDataPolicy.tuned(...)` enables 0-RTT (sets
-                `_max_early_data` to `u32::MAX`) and populates both
-                `_early_data_store` + `_early_data_filter`.
+                semantics per the table above:
+                `EarlyDataPolicy.off()` disables 0-RTT and conflicts
+                with `max_early_data > 0`;
+                `EarlyDataPolicy.idempotent_only()`, `.tuned(...)`,
+                and `.predicate(...)` enable 0-RTT (set
+                `_max_early_data` to `u32::MAX`, also when the caller
+                passes a redundant `max_early_data > 0`) and conflict
+                with an explicit `max_early_data=UInt32(0)`.
                 `tuned(...)` threads the user-supplied
                 `EarlyDataStoreConfig` into the store.
 
         Raises:
-            Error: when the rustls FFI ctor reports failure, OR when
-                the caller passes BOTH `max_early_data > 0` AND
-                `policy=EarlyDataPolicy.off()` — the contradictory
-                operator-intent case (only triggers when `policy` is
-                explicitly supplied; the default `None` does not
-                conflict with the legacy enable kwarg). The
-                contradictory-kwarg error message contains the stable
+            Error: when the rustls FFI ctor reports failure, OR on
+                either contradictory kwarg combination: explicit
+                `max_early_data > 0` with `policy=EarlyDataPolicy.off()`,
+                or explicit `max_early_data=UInt32(0)` with an
+                enabling policy. Both messages contain the stable
                 substring `"contradictory early-data kwargs"` (API
-                contract; operator-facing diagnostic).
+                contract; operator-facing diagnostic). Both checks
+                fire only when BOTH kwargs are explicitly supplied;
+                omitting either kwarg never raises.
         """
         # Reject contradictory kwarg combinations early, before the
         # rustls FFI call. Fail-fast keeps the FFI resource graph
         # uninstantiated under operator confusion and surfaces the
         # mistake at the call site rather than at first handshake.
         #
-        # The check fires only when the caller PASSED `policy`
-        # explicitly (Some(...)). Omitting the kwarg leaves the
-        # legacy `max_early_data` reading untouched — preserving the
-        # observable behaviour for callers that have not migrated.
+        # Both checks fire only when the caller PASSED both kwargs
+        # explicitly (Some(...)). Omitting `max_early_data` defers to
+        # the policy; omitting `policy` preserves the legacy
+        # `max_early_data` reading untouched.
         if (
-            max_early_data != UInt32(0)
+            max_early_data is not None
+            and max_early_data.value() != UInt32(0)
             and policy is not None
             and policy.value().is_off()
         ):
@@ -260,21 +283,41 @@ struct QuicServerConfig(Movable):
                 "or .tuned(...) to enable 0-RTT, OR (b) max_early_data=0 "
                 "(or omit it) to disable. Do not pass both."
             )
+        if (
+            max_early_data is not None
+            and max_early_data.value() == UInt32(0)
+            and policy is not None
+            and policy.value().is_enabled()
+        ):
+            raise Error(
+                "QuicServerConfig: contradictory early-data kwargs: "
+                "explicit max_early_data=0 with an enabling policy "
+                "(idempotent_only / tuned / predicate). Pass either "
+                "(a) the enabling policy alone (omit max_early_data) to "
+                "enable 0-RTT, OR (b) policy=EarlyDataPolicy.off() (or "
+                "omit policy) to disable. Do not pass both."
+            )
 
         # Resolve the effective max_early_data:
-        #   - explicit, enabled policy → u32::MAX (policy wins).
-        #   - explicit, Off policy     → legacy max_early_data
-        #                                  (already guaranteed 0 by
-        #                                  the contradictory-kwargs
-        #                                  check above).
-        #   - omitted policy           → legacy max_early_data
-        #                                  (untouched backward-compat
-        #                                  path).
+        #   - enabling policy          → u32::MAX (policy wins; an
+        #                                  explicit max_early_data=0
+        #                                  was already rejected by the
+        #                                  contradictory-kwargs check
+        #                                  above).
+        #   - explicit max_early_data  → legacy reading, effective = v
+        #                                  (an Off policy alongside
+        #                                  v > 0 was already rejected
+        #                                  above; Some(0) + off agree).
+        #   - both omitted (and the
+        #     omitted + off cell)      → 0 (0-RTT off, the safe
+        #                                  default).
         var effective_max_early_data: UInt32
         if policy is not None and policy.value().is_enabled():
             effective_max_early_data = UInt32(0xFFFFFFFF)
+        elif max_early_data is not None:
+            effective_max_early_data = max_early_data.value()
         else:
-            effective_max_early_data = max_early_data
+            effective_max_early_data = UInt32(0)
 
         self._lib = SharedLibrary(other=lib)
 
