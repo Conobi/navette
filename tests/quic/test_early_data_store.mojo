@@ -249,6 +249,42 @@ def test_global_ceiling_window_slides() raises:
     print("  test_global_ceiling_window_slides: PASS")
 
 
+def test_global_window_boundary_half_open() raises:
+    """AC window-boundary-convention-pinned: the global accept window is
+    half-open (now − window_ms, now] — an accept recorded at t still
+    counts at t + window_ms − 1 and is expired at exactly t + window_ms
+    (`front + window_ms <= now` in the drain loop)."""
+    var cfg = default_early_data_store_config()
+    cfg.global_window_max_accepts = UInt32(2)
+    cfg.global_window_ms = UInt64(1000)
+    var store = InMemoryEarlyDataStore(config=cfg)
+    var a = _fill_auth(UInt8(0x01))
+    var b = _fill_auth(UInt8(0x02))
+    var c = _fill_auth(UInt8(0x03))
+    var d = _fill_auth(UInt8(0x04))
+    # Fill the window (ceiling = 2) at t = 1000.
+    var d1 = store.check_and_record(Span(a), UInt64(1000))
+    var d2 = store.check_and_record(Span(b), UInt64(1000))
+    assert_true(d1.is_accept(), "t=1000 first accept")
+    assert_true(d2.is_accept(), "t=1000 second accept")
+    # t + window_ms − 1 = 1999: both accepts still count — the global
+    # ceiling rejects a third, distinct authenticator.
+    var d3 = store.check_and_record(Span(c), UInt64(1999))
+    assert_true(
+        d3.is_global_ceiling(),
+        "t+window_ms-1 must still count the window entries (ceiling fires)",
+    )
+    # t + window_ms = 2000: both accepts expire (front + window_ms <= now)
+    # — a fresh authenticator is accepted.
+    var d4 = store.check_and_record(Span(d), UInt64(2000))
+    assert_true(
+        d4.is_accept(),
+        "at exactly t+window_ms the entries are expired (half-open window)",
+    )
+    _ = store._config
+    print("  test_global_window_boundary_half_open: PASS")
+
+
 def test_ttl_expiry_resets_authenticator() raises:
     """AC ttl-expiry-resets-authenticator."""
     var cfg = default_early_data_store_config()
@@ -380,6 +416,7 @@ def main() raises:
     test_per_key_quota_exhausts()
     test_global_ceiling_exhausts()
     test_global_ceiling_window_slides()
+    test_global_window_boundary_half_open()
     test_ttl_expiry_resets_authenticator()
     test_clock_regression_treats_old_entry_as_live()
     test_lru_eviction_bounds_memory()

@@ -289,6 +289,9 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
         # 1. Slide the global window. Anything older than now - window_ms
         #    is dropped from the deque front. Worst case O(window_max) on
         #    the post-idle wakeup; O(1) amortised under steady-state.
+        #    Half-open convention (now − window_ms, now]: an accept at t
+        #    counts for checks at t .. t+window_ms−1 and expires at
+        #    exactly t+window_ms (`front + window_ms <= now`).
         var window_ms = self._config.global_window_ms
         while len(self._global_window) > 0:
             var front = self._global_window[0]
