@@ -8,7 +8,7 @@ prerelease-mode = "allow"
 [[package]]
 name = "boucle"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/Conobi/boucle.git?rev=d0f8717c50a5aa40e6c513477fe02fee295dc76b#d0f8717c50a5aa40e6c513477fe02fee295dc76b" }
+source = { git = "ssh://git@github.com/Conobi/boucle.git?rev=27f8b3e666de32d78458fd839377183624461e5e#27f8b3e666de32d78458fd839377183624461e5e" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojox" },
@@ -59,7 +59,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=d0f8717c50a5aa40e6c513477fe02fee295dc76b" },
+    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=27f8b3e666de32d78458fd839377183624461e5e" },
     { name = "mojo-compiler", specifier = "==1.0.0b1" },
     { name = "mojox", specifier = ">=0.2" },
 ]
@@ -90,7 +90,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=d0f8717c50a5aa40e6c513477fe02fee295dc76b" },
+    { name = "boucle", git = "ssh://git@github.com/Conobi/boucle.git?rev=27f8b3e666de32d78458fd839377183624461e5e" },
     { name = "mojo-compiler", specifier = "==1.0.0b1" },
     { name = "mojox", specifier = ">=0.2" },
     { name = "navette", editable = "../../" },
