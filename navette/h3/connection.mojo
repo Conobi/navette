@@ -260,6 +260,16 @@ struct H3Connection(Movable):
     def is_closed(self) -> Bool:
         return self._quic.is_closed()
 
+    fn peer_max_bidi_streams_raw(self) -> UInt64:
+        """Return the peer's QUIC MAX_STREAMS (bidirectional) limit.
+
+        Thin chain to `QuicConnection.peer_max_bidi_streams_raw()` that
+        preserves `H3Connection._quic` encapsulation. Reads a single
+        `UInt64` field without copying any `StreamMap` snapshot, so it is
+        safe for hot-path use by `H3Session.peer_max_bidi_streams()`.
+        """
+        return self._quic.peer_max_bidi_streams_raw()
+
     # --- Path-validation pass-through (RFC 9000 §8 + §9) ---------------------
 
     def on_ingress_from(

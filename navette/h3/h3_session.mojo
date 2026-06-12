@@ -247,6 +247,27 @@ struct H3Session(Session):
     def alpn(self) -> Int:
         return ALPN_H3
 
+    fn current_streams(self) -> Int:
+        """Return the count of in-flight HTTP/3 streams on this session.
+
+        Used by requette's connection pool to decide whether a multiplexed
+        connection has free stream capacity. Sync v1 will only ever observe
+        0 or 1 here; the accessor is positioned for a future async client.
+        """
+        return len(self._handle_to_stream)
+
+    fn peer_max_bidi_streams(self) -> UInt64:
+        """Return the peer's MAX_STREAMS (bidirectional) limit.
+
+        H3 client request streams are bidirectional, so this value gates
+        how many concurrent requests the connection can multiplex. Chains
+        through `H3Connection.peer_max_bidi_streams_raw()` →
+        `QuicConnection.peer_max_bidi_streams_raw()`, which reads the
+        single `UInt64` field on `StreamMap` directly without copying any
+        snapshot. Called on every pool acquire for an H3 origin.
+        """
+        return self._h3.peer_max_bidi_streams_raw()
+
     def close(deinit self) raises:
         """Send GOAWAY and free all heap-allocated stream contexts."""
         if not self._h3.is_closed():
