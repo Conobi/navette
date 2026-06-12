@@ -233,6 +233,25 @@ struct H2Session(Session):
     def alpn(self) -> Int:
         return ALPN_H2
 
+    fn current_streams(self) -> Int:
+        """Return the count of in-flight HTTP/2 streams on this session.
+
+        Used by requette's connection pool to decide whether a multiplexed
+        connection has free stream capacity. Sync v1 will only ever observe
+        0 or 1 here; the accessor is positioned for a future async client.
+        """
+        return len(self._handle_to_stream)
+
+    fn peer_max_concurrent_streams(self) -> UInt32:
+        """Return the peer's SETTINGS_MAX_CONCURRENT_STREAMS limit.
+
+        Chains to `H2Connection.peer_max_concurrent_streams_raw()`, which
+        reads the single `UInt32` field directly without copying the full
+        `H2Settings` struct. This accessor is called on every pool acquire
+        for an H2 origin.
+        """
+        return self._conn.peer_max_concurrent_streams_raw()
+
     def close(deinit self) raises:
         """Send GOAWAY if connection is not already closed, then free all
         remaining heap-allocated stream contexts."""
