@@ -820,7 +820,7 @@ struct ProxyHandler(CompletionHandler):
 
     # --- Close helper ---------------------------------------------------
 
-    def _close_connection(mut self, idx: Int):
+    def _close_connection(mut self, idx: Int) raises:
         """Drop the connection: shutdown + close both sockets, run the
         ProxyConnection destructor, and free the heap slot.
 

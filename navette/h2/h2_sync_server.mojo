@@ -41,8 +41,8 @@ from navette.http.handler import (
 from navette.http.body import BodyFrame
 from navette.http.headers import Headers
 from navette.http.request import Request
-from navette.h2.config import h2_production_config
-from navette.h2.pseudo_headers import (
+from .config import h2_production_config
+from .pseudo_headers import (
     request_from_h2_headers,
     response_to_h2_headers,
     headers_from_h2,

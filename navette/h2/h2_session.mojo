@@ -30,8 +30,8 @@ from navette.http.headers import Headers
 from navette.http.version import Version
 from navette.http.status import StatusCode
 from navette.http.body import BodyFrame
-from navette.h2.pseudo_headers import request_to_h2_headers, response_from_h2_headers
-from navette.h2.config import h2_production_config
+from .pseudo_headers import request_to_h2_headers, response_from_h2_headers
+from .config import h2_production_config
 from navette.util.ptrbox import PtrBox
 
 

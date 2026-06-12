@@ -4,7 +4,7 @@
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional
-from navette.http.body import BodyFrame
+from .body import BodyFrame
 from navette.http.config import DEFAULT_STREAM_WINDOW_HIGH, DEFAULT_STREAM_WINDOW_LOW
 from navette.http.headers import Headers
 from navette.http.status import StatusCode

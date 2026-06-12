@@ -217,7 +217,7 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
 
     # ── Submit-queue helpers ─────────────────────────────────────
 
-    def _queue_accept(mut self):
+    def _queue_accept(mut self) raises:
         self.pending_submits.append(
             PendingSubmit(
                 kind=_SUBMIT_ACCEPT,
@@ -227,7 +227,7 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
             )
         )
 
-    def _queue_recv(mut self, idx: Int):
+    def _queue_recv(mut self, idx: Int) raises:
         if self.connections[idx][].recv_in_flight:
             return
         self.connections[idx][].recv_in_flight = True
@@ -240,7 +240,7 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
             )
         )
 
-    def _queue_send(mut self, idx: Int):
+    def _queue_send(mut self, idx: Int) raises:
         if self.connections[idx][].send_in_flight:
             return
         if len(self.connections[idx][].send_buf) == 0:
@@ -255,7 +255,7 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
             )
         )
 
-    def _stage_send(mut self, idx: Int, var data: List[UInt8]):
+    def _stage_send(mut self, idx: Int, var data: List[UInt8]) raises:
         """Hand bytes to the send pipeline. If a send is already in
         flight, the data is appended to `send_pending` for later
         promotion via `_handle_send`."""
@@ -372,7 +372,7 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
 
     # ── Close ────────────────────────────────────────────────────
 
-    def _close_connection(mut self, idx: Int):
+    def _close_connection(mut self, idx: Int) raises:
         if self.connections[idx][].closed:
             return
         # shutdown(SHUT_RDWR) -> FIN; close() doesn't send FIN while io_uring holds fd refs.

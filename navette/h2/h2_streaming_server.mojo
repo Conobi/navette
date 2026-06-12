@@ -266,7 +266,7 @@ def _free_streaming_stream(ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin])
     methods. ALWAYS call _streams.pop(sid) BEFORE calling this function."""
     if ctx_ptr[].coro_addr.is_some():
         var coro_p = ctx_ptr[].coro_ptr()
-        coro_p.destroy_pointee()
+        coro_p.take_pointee().destroy()
         coro_p.free()
         ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
     ctx_ptr.destroy_pointee()
@@ -484,7 +484,7 @@ struct H2StreamingServer(Movable):
         ALWAYS call _streams.pop(sid) BEFORE invoking this method."""
         if ctx_ptr[].coro_addr.is_some():
             var coro_p = ctx_ptr[].coro_ptr()
-            coro_p.destroy_pointee()
+            coro_p.take_pointee().destroy()
             coro_p.free()
             ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
         ctx_ptr.destroy_pointee()
