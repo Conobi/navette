@@ -68,6 +68,40 @@ def _setsockopt_int(
         )
 
 
+# SO_SNDTIMEO optname on Linux. The kernel honors this on a blocking
+# socket *before* `connect(2)` — the blocking connect returns EAGAIN/
+# EINPROGRESS once the timeout expires, which we surface to the caller
+# as `connect() failed`. Setting it BEFORE connect is the cleanest way
+# to bound `tcp_connect` / `udp_connect` without restructuring them
+# around an O_NONBLOCK + poll loop.
+comptime _SO_SNDTIMEO: Int32 = 21
+
+
+def _setsockopt_so_sndtimeo(fd: RawHandle, ms: Int) raises:
+    """Set SO_SNDTIMEO on `fd` (millisecond resolution, tv_sec + tv_usec).
+
+    Used by `tcp_connect` / `udp_connect` when the caller requests a
+    connect-timeout: setting SO_SNDTIMEO on a blocking socket before
+    `connect(2)` causes the kernel to abort the connect once the wall
+    time elapses, returning -1 instead of blocking indefinitely.
+    """
+    var tv = _heap_alloc[UInt8](16).as_any_origin()
+    for i in range(16):
+        tv[i] = UInt8(0)
+    var sec_ptr = tv.bitcast[Int64]()
+    sec_ptr[] = Int64(ms // 1000)
+    var usec_ptr = UnsafePointer[Int64, MutAnyOrigin](
+        unsafe_from_address=Int(tv) + 8
+    )
+    usec_ptr[] = Int64((ms % 1000) * 1000)
+    var rc = external_call["setsockopt", Int32](
+        fd, _SOL_SOCKET, _SO_SNDTIMEO, tv, Int32(16),
+    )
+    tv.free()
+    if rc < 0:
+        raise "setsockopt(SO_SNDTIMEO) failed: rc=" + String(Int(rc))
+
+
 def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     """Create a dual-stack TCP listening socket bound to `[::]:port`.
 
@@ -174,12 +208,19 @@ def _pack_v6(addr: ResolvedAddr, dst: UnsafePointer[UInt8, MutAnyOrigin]) -> Int
     return _SOCKADDR_IN6_SIZE
 
 
-def tcp_connect(addr: ResolvedAddr) raises -> OwnedHandle:
+def tcp_connect(
+    addr: ResolvedAddr, *, connect_timeout_ms: UInt64 = UInt64(0),
+) raises -> OwnedHandle:
     """Open a blocking TCP socket and connect it to `addr`.
 
     Picks `AF_INET` vs `AF_INET6` from the `ResolvedAddr` tag. Socket
     flags: `SOCK_STREAM | SOCK_CLOEXEC` (no `SOCK_NONBLOCK` — callers
     using blocking send/recv get the simpler programming model).
+
+    When `connect_timeout_ms > 0`, sets `SO_SNDTIMEO` on the socket
+    before `connect(2)` so a non-routable peer cannot pin the call
+    indefinitely. `0` (the default) means "no timeout" for backward
+    compatibility.
     """
     var family = _AF_INET if addr.is_ipv4() else _AF_INET6
     var fd = external_call["socket", Int32](
@@ -188,6 +229,9 @@ def tcp_connect(addr: ResolvedAddr) raises -> OwnedHandle:
     if fd < 0:
         raise "tcp_connect: socket() failed"
     var handle = OwnedHandle(raw=fd)
+
+    if connect_timeout_ms > UInt64(0):
+        _setsockopt_so_sndtimeo(handle.raw(), Int(connect_timeout_ms))
 
     var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
     var n: Int32
@@ -202,7 +246,9 @@ def tcp_connect(addr: ResolvedAddr) raises -> OwnedHandle:
     return handle^
 
 
-def udp_connect(addr: ResolvedAddr) raises -> OwnedHandle:
+def udp_connect(
+    addr: ResolvedAddr, *, connect_timeout_ms: UInt64 = UInt64(0),
+) raises -> OwnedHandle:
     """Open a blocking UDP socket "connected" to `addr`.
 
     `connect(2)` on a datagram socket pins the peer address so
@@ -210,6 +256,10 @@ def udp_connect(addr: ResolvedAddr) raises -> OwnedHandle:
     argument and only deliver datagrams from that peer. Picks
     `AF_INET` vs `AF_INET6` from the `ResolvedAddr` tag. Socket
     flags: `SOCK_DGRAM | SOCK_CLOEXEC`.
+
+    When `connect_timeout_ms > 0`, sets `SO_SNDTIMEO` before connect.
+    UDP `connect(2)` is normally instantaneous (no handshake) but the
+    kwarg is mirrored from `tcp_connect` for API symmetry.
     """
     var family = _AF_INET if addr.is_ipv4() else _AF_INET6
     var fd = external_call["socket", Int32](
@@ -218,6 +268,9 @@ def udp_connect(addr: ResolvedAddr) raises -> OwnedHandle:
     if fd < 0:
         raise "udp_connect: socket() failed"
     var handle = OwnedHandle(raw=fd)
+
+    if connect_timeout_ms > UInt64(0):
+        _setsockopt_so_sndtimeo(handle.raw(), Int(connect_timeout_ms))
 
     var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
     var n: Int32
