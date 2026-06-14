@@ -60,6 +60,45 @@ struct HttpCoroClient(Movable):
         """Inject a connected session into the pool."""
         self._client.attach_session(origin^, slot^)
 
+    def detach_session(mut self, origin: Origin) raises -> SessionSlot:
+        """Pop the first pooled session for `origin` and return it by value.
+
+        The inverse of `attach_session`: lifts ownership of the underlying
+        `SessionSlot` back out of the internal pool so a downstream
+        connection pool (e.g. requette's per-origin keep-alive cache) can
+        hold the session across requests instead of letting the slot
+        evaporate when the next `attach_session` overwrites it.
+
+        Raises if no session is pooled for `origin`. The heap allocation
+        backing the slot is freed; the returned value is move-only.
+        """
+        if origin not in self._client._pool:
+            raise Error("HttpCoroClient.detach_session: no session for origin")
+        var slots = self._client._pool.pop(Origin(other=origin))
+        if len(slots) == 0:
+            raise Error("HttpCoroClient.detach_session: empty slot list for origin")
+        # Pull the first slot, then re-insert the remainder so the pool
+        # state is consistent before we touch the heap allocation.
+        var ptr = SessionSlotPtr(other=slots[0])
+        var keep = List[SessionSlotPtr]()
+        for i in range(1, len(slots)):
+            keep.append(SessionSlotPtr(other=slots[i]))
+        if len(keep) > 0:
+            self._client._pool[Origin(other=origin)] = keep^
+        var slot_p = ptr.ptr()
+        var moved = slot_p.take_pointee()
+        slot_p.free()
+        # Drop any handle-routing entries that pointed at the freed slot
+        # so a future attach_session reusing the address cannot misroute.
+        var stale_addr = Int(ptr.addr)
+        var hids = List[Int]()
+        for kv in self._client._handle_slot.items():
+            if kv.value == stale_addr:
+                hids.append(kv.key)
+        for i in range(len(hids)):
+            _ = self._client._handle_slot.pop(hids[i])
+        return moved^
+
     # --- Transport API (caller drives I/O) ---
 
     def feed(mut self, data: Span[UInt8, _], origin: Origin) raises:

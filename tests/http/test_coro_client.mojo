@@ -89,8 +89,23 @@ def test_coro_client_has_connection() raises:
     assert_true(client.has_connection(Origin(other=origin)), "has connection after attach")
 
 
+def test_coro_client_detach_session_round_trip() raises:
+    """detach_session lifts a slot out so a downstream pool can hold it."""
+    var client = HttpCoroClient()
+    var origin = Origin(scheme="https", host="detach.test", port=UInt16(443))
+    var session = H1Session()
+    client.attach_session(Origin(other=origin), SessionSlot.from_h1(session^))
+    assert_true(client.has_connection(Origin(other=origin)), "attached before detach")
+    var slot = client.detach_session(Origin(other=origin))
+    assert_true(not client.has_connection(Origin(other=origin)), "no connection after detach")
+    # Re-attach the moved slot to confirm the returned value is intact.
+    client.attach_session(Origin(other=origin), slot^)
+    assert_true(client.has_connection(Origin(other=origin)), "re-attached after detach")
+
+
 def main() raises:
     test_coro_client_roundtrip()
     test_coro_client_alt_svc_caching()
     test_coro_client_has_connection()
-    print("test_coro_client: 3/3 passed")
+    test_coro_client_detach_session_round_trip()
+    print("test_coro_client: 4/4 passed")
