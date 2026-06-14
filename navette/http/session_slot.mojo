@@ -81,6 +81,18 @@ struct SessionSlot(Movable):
             idle_since=UInt64(0),
         )
 
+    @staticmethod
+    def empty_for_tests() raises -> Self:
+        """Test-only fixture — fabricates a SessionSlot wrapping a fresh,
+        unused H1Session so that downstream pool / bookkeeping tests can
+        instantiate slot-bearing structs without driving real I/O.
+
+        Do not call from production code: the embedded session has never
+        seen a socket, so any submit / feed / drain on this slot will
+        produce protocol-level nonsense.
+        """
+        return Self.from_h1(H1Session())
+
     def submit(mut self, var req: Request) raises -> RequestHandle:
         self.mark_active()
         if self.kind == SLOT_H1:
