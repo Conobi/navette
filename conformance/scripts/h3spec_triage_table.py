@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path("/home/donokami/Projets/perso/navette")
+REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "tests/conformance/fixtures/h3spec_triage_capture"
 TRIAGE = REPO / "conformance/scripts/h3spec_triage.py"
 
