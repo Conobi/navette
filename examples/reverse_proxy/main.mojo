@@ -12,14 +12,24 @@
 #   $ cd examples/reverse_proxy
 #   $ uv sync
 #   $ LD_LIBRARY_PATH=../../lib uv run mojox build main.mojo -o mojo_reverse_proxy
-#   $ python3 ../../scripts/test_backend.py &
-#   $ LD_LIBRARY_PATH=../../lib ./mojo_reverse_proxy
+#   $ python3 ../../scripts/test_backend.py &              # a backend MUST run
+#   $ LD_LIBRARY_PATH=../../lib ./mojo_reverse_proxy --upstream 127.0.0.1:9443
 #
-# Env-var knobs (no CLI flags; the smoke harness drives via env):
+# Config. CLI flags (override the env vars below):
+#   --listen PORT          client-facing TLS port      (default 8443)
+#   --upstream HOST:PORT    backend to proxy to         (default localhost:9443)
+#                          accepts an optional scheme, e.g.
+#                          --upstream https://127.0.0.1:9443
+#   -h, --help             show usage and exit
+#
+# Env-var knobs (the smoke harness drives via these):
 #   LISTEN_PORT          (default 8443)
 #   H1_BACKEND_PORT      (default 9443)
 #   H2_BACKEND_PORT      (default H1_BACKEND_PORT)
 #   BACKEND_HOST         (default "localhost")
+#
+# If the upstream connect is refused, the proxy now returns 502 Bad Gateway
+# (H1 and H2) instead of dropping the connection.
 
 from std.collections.optional import Optional
 from std.ffi import external_call
@@ -926,11 +936,138 @@ def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
 
 
 # ---------------------------------------------------------------------------
+# Upstream / CLI parsing
+# ---------------------------------------------------------------------------
+
+
+def _ipv4_octets(host: String) raises -> List[Int]:
+    """Parse a dotted-quad IPv4 literal into its four octets.
+
+    `localhost` maps to 127.0.0.1. Raises on anything that is not an IPv4
+    literal — hostname/DNS resolution is out of scope for this loopback
+    demo, so pass an IP address (e.g. 127.0.0.1).
+    """
+    var octets = List[Int]()
+    if host == "localhost":
+        octets.append(127)
+        octets.append(0)
+        octets.append(0)
+        octets.append(1)
+        return octets^
+
+    var hb = host.as_bytes()
+    var cur = String()
+    for i in range(len(hb)):
+        if hb[i] == UInt8(46):  # '.'
+            octets.append(atol(cur))
+            cur = String()
+        else:
+            cur += chr(Int(hb[i]))
+    octets.append(atol(cur))
+
+    if len(octets) != 4:
+        raise String(
+            "upstream host must be an IPv4 address or 'localhost', got: "
+        ) + host
+    for i in range(len(octets)):
+        if octets[i] < 0 or octets[i] > 255:
+            raise String("invalid IPv4 octet in upstream host: ") + host
+    return octets^
+
+
+struct _Upstream(Movable):
+    """A parsed `--upstream` target: IPv4 connect octets + SNI host + port."""
+
+    var octets: List[Int]
+    var host: String
+    var port: UInt16
+
+    def __init__(
+        out self, var octets: List[Int], var host: String, port: UInt16
+    ):
+        self.octets = octets^
+        self.host = host^
+        self.port = port
+
+    def __init__(out self, *, deinit take: Self):
+        self.octets = take.octets^
+        self.host = take.host^
+        self.port = take.port
+
+
+def _parse_upstream(spec: String) raises -> _Upstream:
+    """Parse a `[scheme://]host:port` upstream spec.
+
+    The scheme (if any) and any trailing path are ignored; the host is kept
+    verbatim as the TLS SNI name and also resolved to IPv4 connect octets.
+    """
+    var b = spec.as_bytes()
+    var n = len(b)
+    var i = 0
+
+    # Skip an optional `scheme://` prefix.
+    var scheme_end = -1
+    for j in range(n):
+        if (
+            j + 2 < n
+            and b[j] == UInt8(58)  # ':'
+            and b[j + 1] == UInt8(47)  # '/'
+            and b[j + 2] == UInt8(47)  # '/'
+        ):
+            scheme_end = j
+            break
+    if scheme_end >= 0:
+        i = scheme_end + 3
+
+    # Host runs up to ':' (port) or '/' (path).
+    var host = String()
+    while i < n and b[i] != UInt8(58) and b[i] != UInt8(47):
+        host += chr(Int(b[i]))
+        i += 1
+
+    if i >= n or b[i] != UInt8(58):
+        raise String(
+            "upstream must be host:port (e.g. 127.0.0.1:9443), got: "
+        ) + spec
+    i += 1  # skip ':'
+
+    var port_str = String()
+    while i < n and b[i] != UInt8(47):  # stop at '/'
+        port_str += chr(Int(b[i]))
+        i += 1
+
+    if len(host) == 0 or len(port_str) == 0:
+        raise String(
+            "upstream must be host:port (e.g. 127.0.0.1:9443), got: "
+        ) + spec
+
+    var octets = _ipv4_octets(host)
+    return _Upstream(octets=octets^, host=host^, port=UInt16(atol(port_str)))
+
+
+def _print_usage():
+    """Print CLI usage for the reverse proxy."""
+    print("Usage: reverse_proxy [OPTIONS]")
+    print("")
+    print("  --listen PORT          Port to accept client TLS on (default 8443)")
+    print(
+        "  --upstream HOST:PORT   Backend to proxy to (default localhost:9443)."
+    )
+    print("                         Accepts an optional scheme, e.g.")
+    print("                         --upstream https://127.0.0.1:9443")
+    print("  -h, --help             Show this help and exit")
+    print("")
+    print("Env vars (overridden by the flags above): LISTEN_PORT,")
+    print("H1_BACKEND_PORT, H2_BACKEND_PORT, BACKEND_HOST.")
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 
 def main() raises:
+    # Defaults come from env vars; the CLI flags below override them.
     var listen_port = UInt16(_getenv_int(String("LISTEN_PORT"), 8443))
     var h1_backend_port = UInt16(
         _getenv_int(String("H1_BACKEND_PORT"), 9443)
@@ -941,9 +1078,48 @@ def main() raises:
     var backend_host = _getenv_str(
         String("BACKEND_HOST"), String("localhost")
     )
+    var connect_octets = _ipv4_octets(backend_host)
 
-    var h1_backend_addr = SocketAddrV4(127, 0, 0, 1, port=h1_backend_port)
-    var h2_backend_addr = SocketAddrV4(127, 0, 0, 1, port=h2_backend_port)
+    # CLI flags override env. --upstream sets host + both backend ports;
+    # --listen sets the client-facing port.
+    from std.sys import argv
+
+    var args = argv()
+    var ai = 1
+    while ai < len(args):
+        var arg = args[ai]
+        if arg == "--listen" and ai + 1 < len(args):
+            ai += 1
+            listen_port = UInt16(atol(args[ai]))
+        elif arg == "--upstream" and ai + 1 < len(args):
+            ai += 1
+            var up = _parse_upstream(args[ai])
+            backend_host = up.host.copy()
+            h1_backend_port = up.port
+            h2_backend_port = up.port
+            connect_octets = up.octets.copy()
+        elif arg == "-h" or arg == "--help":
+            _print_usage()
+            return
+        else:
+            _print_usage()
+            raise String("unknown argument: ") + arg
+        ai += 1
+
+    var h1_backend_addr = SocketAddrV4(
+        connect_octets[0],
+        connect_octets[1],
+        connect_octets[2],
+        connect_octets[3],
+        port=h1_backend_port,
+    )
+    var h2_backend_addr = SocketAddrV4(
+        connect_octets[0],
+        connect_octets[1],
+        connect_octets[2],
+        connect_octets[3],
+        port=h2_backend_port,
+    )
 
     # Load TLS material.
     var proxy_cert = _read_file(_CERT_DIR + "/proxy_cert.pem")
