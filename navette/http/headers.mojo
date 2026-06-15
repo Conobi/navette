@@ -29,24 +29,34 @@ struct Headers(Copyable, Movable, Sized):
 
     Names are lowercased on insert. Values are preserved exactly.
     Multiple headers with the same name are allowed (e.g., Set-Cookie).
+
+    `_auto_content_type` is a non-wire sidecar bit that body-source helpers
+    flip to True when they auto-insert a Content-Type header (and leave at
+    False when the caller supplied their own). Downstream code paths that
+    rewrite the request (e.g. POST -> GET on a 3xx redirect) read this
+    bit to decide whether dropping the body should also drop the type.
     """
     var _names: List[String]
     var _values: List[String]
+    var _auto_content_type: Bool
 
     def __init__(out self):
         """Construct an empty Headers collection."""
         self._names = List[String]()
         self._values = List[String]()
+        self._auto_content_type = False
 
     def __init__(out self, *, other: Self):
         """Copy constructor."""
         self._names = other._names.copy()
         self._values = other._values.copy()
+        self._auto_content_type = other._auto_content_type
 
     def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self._names = take._names^
         self._values = take._values^
+        self._auto_content_type = take._auto_content_type
 
     # --- Size ---
 
