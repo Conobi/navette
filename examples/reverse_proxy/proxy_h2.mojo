@@ -139,6 +139,10 @@ struct ProxyShared(Movable):
       the client stream_id, then resumes the coro so it can forward it.
     - handle_to_stream: maps backend RequestHandle.id() -> client stream_id
       so the driver can find which coro to wake when a response completes.
+    - failed_streams: client stream_ids whose backend leg failed (e.g. the
+      upstream connect was refused). The driver resumes the matching coro
+      with this flag set so it synthesizes a 502 Bad Gateway instead of
+      dropping the request.
 
     Heap-allocated so the address is stable across moves of the surrounding
     H2ProxyState (the H2StreamingServer's `extra_data` is plumbed in at
@@ -148,16 +152,19 @@ struct ProxyShared(Movable):
     var pending_backend: List[_BackendWork]
     var completed_responses: Dict[Int, UInt64]
     var handle_to_stream: Dict[Int, Int]
+    var failed_streams: Dict[Int, Bool]
 
     def __init__(out self):
         self.pending_backend = List[_BackendWork]()
         self.completed_responses = Dict[Int, UInt64]()
         self.handle_to_stream = Dict[Int, Int]()
+        self.failed_streams = Dict[Int, Bool]()
 
     def __init__(out self, *, deinit take: Self):
         self.pending_backend = take.pending_backend^
         self.completed_responses = take.completed_responses^
         self.handle_to_stream = take.handle_to_stream^
+        self.failed_streams = take.failed_streams^
 
     def __del__(deinit self):
         """Free any remaining heap-allocated Requests / Responses if the
@@ -258,8 +265,31 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
 
     # --- Step 3: forward backend response ---
     if stream_id not in proxy_ptr[].completed_responses:
-        # Driver woke us without a response — likely a backend error or
-        # stream cleanup during teardown. Drop.
+        if stream_id in proxy_ptr[].failed_streams:
+            # Backend leg failed (e.g. the upstream connect was refused).
+            # Synthesize a 502 Bad Gateway on the client stream instead of
+            # dropping the request silently.
+            _ = proxy_ptr[].failed_streams.pop(stream_id)
+            var err_headers = Headers()
+            err_headers.add("content-type", "text/plain; charset=utf-8")
+            err_headers.add("via", _VIA_H2)
+            var err_text = String(
+                "502 Bad Gateway: upstream connect failed\n"
+            )
+            var err_bytes = err_text.as_bytes()
+            var err_body = List[UInt8]()
+            for i in range(len(err_bytes)):
+                err_body.append(err_bytes[i])
+            var ctx_err = ctx_ptr.take_pointee()
+            ctx_err.resp_writer.send_status(
+                StatusCode.bad_gateway(), err_headers^
+            )
+            _ = ctx_err.resp_writer.try_send_body(BodyFrame.data(err_body^))
+            ctx_err.resp_writer.end()
+            ctx_ptr.init_pointee_move(ctx_err^)
+            return
+        # Driver woke us without a response — likely stream cleanup during
+        # teardown. Drop.
         return
 
     var resp_addr = proxy_ptr[].completed_responses[stream_id]
@@ -575,6 +605,67 @@ def h2_handle_client_recv(
 # ---------------------------------------------------------------------------
 
 
+def _fail_open_streams_502(
+    mut state: H2ProxyState,
+    mut send_state: ConnSendState,
+    mut client_tls: TlsConnection,
+    mut out_submits: List[PendingSubmit],
+    client_fd: Int32,
+    conn_id: UInt64,
+) raises -> Bool:
+    """Fail every open client stream with a 502 Bad Gateway.
+
+    The client-side H2 connection is already established by the time the
+    backend leg can fail, so rather than drop the connection we resume each
+    waiting stream coro with `failed_streams` set (it synthesizes the 502
+    via its resp_writer), then drain the frontend H2 server and stage the
+    bytes toward the client. Mirrors `_deliver_backend_responses`.
+
+    Returns True if a 502 was staged toward the client (caller should close
+    once it flushes), False if no stream was open yet (nothing to respond
+    on — caller should drop).
+    """
+    var shared = state.shared_ptr
+    var failed_ids = List[Int]()
+
+    # Backend work queued by a coro but not yet submitted upstream. Free the
+    # heap Requests — they will never be sent — and remember the streams.
+    while len(shared[].pending_backend) > 0:
+        var work = shared[].pending_backend.pop(0)
+        var req_ptr = work.request_ptr()
+        req_ptr.destroy_pointee()
+        req_ptr.free()
+        failed_ids.append(work.client_stream_id)
+
+    # Defensive symmetry with _deliver_backend_responses: streams whose
+    # backend handle already exists (none at connect time, but keep the path
+    # uniform in case this helper is reused for mid-flight failures).
+    var hkeys = List[Int]()
+    for key in shared[].handle_to_stream.keys():
+        hkeys.append(key)
+    for i in range(len(hkeys)):
+        var hid = hkeys[i]
+        failed_ids.append(shared[].handle_to_stream[hid])
+        _ = shared[].handle_to_stream.pop(hid)
+
+    if len(failed_ids) == 0:
+        return False
+
+    for i in range(len(failed_ids)):
+        var sid = failed_ids[i]
+        shared[].failed_streams[sid] = True
+        if state.client_h2.has_stream(sid):
+            state.client_h2.resume_stream(sid)
+
+    var h2_out = state.client_h2.drain()
+    if len(h2_out) == 0:
+        return False
+    client_tls.send_data(Span(h2_out))
+    var ct = client_tls.drain_ciphertext()
+    stage_client_send(send_state, out_submits, client_fd, conn_id, ct^)
+    return True
+
+
 def h2_handle_backend_connect(
     mut state: H2ProxyState,
     mut send_state: ConnSendState,
@@ -588,14 +679,23 @@ def h2_handle_backend_connect(
     result: Int32,
 ) raises -> List[PendingSubmit]:
     """Backend TCP connect completed; drain pre-staged ClientHello and
-    send it. Closes the connection on connect failure (the H2 streaming
-    server cannot synthesize an HTTP error mid-handshake the way H1 can,
-    so just drop)."""
+    send it. On connect failure, fail the open client stream(s) with a 502
+    Bad Gateway (the client H2 connection is already up, so an error
+    response beats a silent drop) and close once it flushes."""
     var out = List[PendingSubmit]()
 
     if result < 0:
         print("h2-proxy: backend connect failed:", result)
-        closed = True
+        var responded = _fail_open_streams_502(
+            state, send_state, client_tls, out, client_fd, conn_id
+        )
+        if responded:
+            # 502 staged toward the client; close after it flushes (see
+            # h2_handle_client_send's PHASE_DONE branch).
+            phase = PHASE_DONE
+        else:
+            # No client stream open yet — nothing to respond on. Drop.
+            closed = True
         return out^
 
     phase = PHASE_BACKEND_TLS_HANDSHAKE
