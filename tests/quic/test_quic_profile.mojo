@@ -1234,26 +1234,6 @@ def test_iouring_park_us_record() raises:
     print("PASS: test_iouring_park_us_record")
 
 
-def test_q8_egress_pool_counters() raises:
-    """Q8: egress_pool hit/miss counters increment cleanly; JSON shape exposes
-    egress_pool block with hits_total + misses_total."""
-    from navette.quic.profile import AcceptProfile
-    var p = AcceptProfile()
-    p.record_egress_pool_hit()
-    p.record_egress_pool_hit()
-    p.record_egress_pool_hit()
-    p.record_egress_pool_miss()
-    assert_true(p.egress_pool_hits_total == UInt64(3),
-        "egress_pool_hits_total = 3 after 3 hits")
-    assert_true(p.egress_pool_misses_total == UInt64(1),
-        "egress_pool_misses_total = 1 after 1 miss")
-    var j = p.report_json()
-    assert_true("egress_pool" in j, '"egress_pool" key present in JSON')
-    assert_true("hits_total" in j, '"hits_total" key present in JSON')
-    assert_true("misses_total" in j, '"misses_total" key present in JSON')
-    print("PASS: test_q8_egress_pool_counters")
-
-
 def test_zero_rtt_drain_dropped_counter_and_reporters() raises:
     """zero_rtt_drain_dropped defaults to 0, its recorder bumps only
     itself, and both reporters emit the zero_rtt_drain block (AC
@@ -1339,6 +1319,5 @@ def main() raises:
     test_q7_gauge_sampling()
     test_q7_batch_histogram_dispatch()
     test_iouring_park_us_record()
-    test_q8_egress_pool_counters()
     test_zero_rtt_drain_dropped_counter_and_reporters()
     print("All Plan A tests passed.")

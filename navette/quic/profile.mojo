@@ -15,8 +15,6 @@ from std.memory import UnsafePointer
 
 
 comptime PROFILE_ACCEPT: Bool = False
-comptime EGRESS_POOL_SIZE: Int = 256
-comptime EGRESS_POOL_V2: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
@@ -75,7 +73,7 @@ struct AcceptProfile(Copyable, Movable):
     var hs_timed_out: UInt64
     var hs_latency_us: List[UInt64]
 
-    # Arrival-to-processing queueing latency (Plan: queueing-tail spec).
+    # Arrival-to-processing queueing latency.
     # Wall-clock interval between packet ingress (_handle_recvmsg) and
     # flush-time processing (_flush_impl). Distinct from per_pkt_total
     # which times the *processing*, not the wait. PROFILE_ACCEPT-gated
@@ -108,13 +106,13 @@ struct AcceptProfile(Copyable, Movable):
     var loop_teardown_us_total: UInt64
     var loop_iter_count: UInt64
 
-    # 3 H3 phase totals — decompose long-conn unaccounted ε (Plan: 2026-04-29).
+    # 3 H3 phase totals — decompose long-conn unaccounted ε.
     # All three live in the post-recv tail of feed_datagram_from_buffer.
     var h3_drain_resp_us_total: UInt64
     var quic_post_recv_us_total: UInt64
     var h3_dispatch_us_total: UInt64
 
-    # 5 sub-legs of quic_post_recv_us → _drain_stream (Plan: 2026-05-01-quic-h3-drain-stream-subleg).
+    # 5 sub-legs of quic_post_recv_us → _drain_stream.
     # event_dispatch is computed via residual at emit time, no field.
     var drain_stream_us_total: UInt64
     var drain_recv_ffi_us_total: UInt64
@@ -122,28 +120,28 @@ struct AcceptProfile(Copyable, Movable):
     var drain_frame_parse_us_total: UInt64
     var drain_qpack_decode_us_total: UInt64
 
-    # 2 handshake-kind totals (Plan: 2026-05-03-short-conn-resumption).
+    # 2 handshake-kind totals.
     # Server-side increments exactly once per QuicConnection at handshake completion.
     # Sum invariant: handshakes_full_total + handshakes_resumed_total ==
     # number of server connections that completed the handshake.
     var handshakes_full_total: UInt64
     var handshakes_resumed_total: UInt64
 
-    # 4 per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+    # 4 per-fresh-conn measurements.
     # fresh_conn_ffi_us_buckets[24] dispatches via _per_pkt_bucket (pow2, [0, 2^23) us).
     # recv_batch_size_buckets[8] mirrors pkts_per_flush_buckets shape.
     var fresh_conn_ffi_us_buckets: List[UInt64]
     var fresh_conn_ffi_us_overflow: UInt64
     var recv_batch_size_buckets: List[UInt64]
 
-    # 3 read_hs decomposition fields (Plan: 2026-05-03-q5-read-hs-per-call-decomposition).
+    # 3 read_hs decomposition fields.
     # Per-handshake call count: 8-bucket via _pkts_per_flush_bucket.
     # Per-call duration: 24-bucket pow2 via _per_pkt_bucket.
     var read_hs_per_handshake_count_buckets: List[UInt64]
     var read_hs_us_per_call_buckets: List[UInt64]
     var read_hs_us_per_call_overflow: UInt64
 
-    # Q6 read_hs internal sub-leg histograms (Plan: 2026-05-04-q6-read-hs-internal-decomposition).
+    # read_hs internal sub-leg histograms.
     # Four 24-bucket pow2-µs histograms decomposing per-call read_hs wall-clock into:
     #   input_marshalling  (Mojo→Rust CRYPTO copy)
     #   state_machine      (rustls conn.read_hs body)
@@ -161,12 +159,12 @@ struct AcceptProfile(Copyable, Movable):
 
     # Per-fresh-conn rustls handle creation timer. Brackets the
     # `quic_server_conn_new` FFI call inside QuicConnection.server.
-    # Originated as Q9 sub-leg alloc_tls_handle_us; other Q9 sub-legs
-    # were retired post-verdict (DIFFUSE-CONFIRMS-LIB-BOUND, each <5%).
+    # Originated as the alloc_tls_handle_us sub-leg; the sibling sub-legs
+    # were retired post-verdict (diffuse, lib-bound, each <5%).
     var alloc_tls_handle_us_buckets: List[UInt64]
     var alloc_tls_handle_us_overflow: UInt64
 
-    # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+    # Cold-handshake CPU-utilization decomposition.
     # Cadence gate for tick_profile_gauges (100ms cadence).
     var last_gauge_sample_us: UInt64
 
@@ -185,10 +183,9 @@ struct AcceptProfile(Copyable, Movable):
     var hs_wait_us_per_handshake_buckets: List[UInt64]
     var hs_wait_us_per_handshake_overflow: UInt64
 
-    # Group F — H_F instrumentation (PARK-BOUND verdict). Total-only per spec §4.6.1.
+    # Group F — H_F instrumentation (park-bound finding). Total-only.
     var iouring_park_us_total: UInt64
 
-    # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
     # IO-path per-wake instrumentation. All comptime-gated under PROFILE_ACCEPT.
     #
     # `iouring_park_us_buckets` promotes the existing `iouring_park_us_total`
@@ -205,7 +202,7 @@ struct AcceptProfile(Copyable, Movable):
     # Measures count of `on_complete` invocations per `loop.poll` cycle.
     # Does NOT measure kernel queue depth, SQE submission count, or
     # datagrams in pending_rx (those are downstream of CQE handling).
-    # `cqes_total` accumulates the per-wake counts for AC2 sum-sanity:
+    # `cqes_total` accumulates the per-wake counts for sum-sanity:
     # Σ(buckets × midpoint) ≈ cqes_total ≈ Σ(on_complete calls).
     var cqes_per_wake_buckets: List[UInt64]
     var cqes_per_wake_count: UInt64   # number of wakes with ≥1 CQE recorded
@@ -223,27 +220,19 @@ struct AcceptProfile(Copyable, Movable):
 
     # `drain_submits_us_total` — total wall-clock spent inside
     # `_drain_pending_submits` between adjacent `loop.poll` calls. Total-only;
-    # this counter exists for AC3 sum-sanity (park + flush_impl + drain_submits
+    # this counter exists for sum-sanity (park + flush_impl + drain_submits
     # ≈ wall_clock_total). Does NOT measure SQE count or kernel-side submit
     # cost.
     var drain_submits_us_total: UInt64
 
     # `flush_feed_datagram_us` — wraps the per-pkt feed_datagram_from_buffer
-    # call in bench/h3_server.mojo's _flush_impl. Q10 verdict named this leg
-    # as 67.57% of flush_impl on short-conn (ingress dominates flush).
-    # Originated as one of 4 Q10 sub-legs; the other 3 (drain_extension,
+    # call in bench/h3_server.mojo's _flush_impl. Measured as 67.57% of
+    # flush_impl on short-conn (ingress dominates flush).
+    # Originated as one of 4 sub-legs; the other 3 (drain_extension,
     # drain_egress_build, drain_enqueue_sendmsg) were retired post-verdict.
     var flush_feed_datagram_us_buckets: List[UInt64]
     var flush_feed_datagram_us_overflow: UInt64
     var flush_feed_datagram_us_total: UInt64
-
-    # Egress-pool counters (Plan: 2026-05-05-q8-egress-hot-path-batching).
-    # `egress_pool_hits_total` ticks each time `_drain_and_send` reuses a slot
-    # popped from the `H3UdpHandler.egress_pool_freelist`; `egress_pool_misses_total`
-    # ticks when the freelist was empty and the slot fell back to `_heap_alloc`.
-    # Hit/(hit+miss) ratio reports pool reuse rate (target ≥0.95 per AC7).
-    var egress_pool_hits_total: UInt64
-    var egress_pool_misses_total: UInt64
 
     # 0-RTT key install lifecycle counters. Split attempts vs successes so
     # the lazy-install test can distinguish "called many times during
@@ -354,7 +343,7 @@ struct AcceptProfile(Copyable, Movable):
         for _ in range(24):
             self.read_hs_us_per_call_buckets.append(UInt64(0))
         self.read_hs_us_per_call_overflow = UInt64(0)
-        # Q6 init (Plan: 2026-05-04-q6-read-hs-internal-decomposition).
+        # read_hs sub-leg histogram init.
         self.read_hs_input_marshalling_us_buckets = List[UInt64]()
         self.read_hs_state_machine_us_buckets = List[UInt64]()
         self.read_hs_output_alloc_us_buckets = List[UInt64]()
@@ -368,12 +357,12 @@ struct AcceptProfile(Copyable, Movable):
         self.read_hs_state_machine_us_overflow = UInt64(0)
         self.read_hs_output_alloc_us_overflow = UInt64(0)
         self.read_hs_output_marshalling_us_overflow = UInt64(0)
-        # Q9 init (Plan: 2026-05-05-q9).
+        # alloc_tls_handle histogram init.
         self.alloc_tls_handle_us_buckets = List[UInt64]()
         for _ in range(24):
             self.alloc_tls_handle_us_buckets.append(UInt64(0))
         self.alloc_tls_handle_us_overflow = UInt64(0)
-        # Q7 init (Plan: 2026-05-04-q7).
+        # Gauge-sampling init.
         self.last_gauge_sample_us = UInt64(0)
         self.active_drive_count = UInt32(0)
         self.active_boucle_count_samples = List[UInt32]()
@@ -391,7 +380,7 @@ struct AcceptProfile(Copyable, Movable):
             self.hs_cpu_us_per_handshake_buckets.append(UInt64(0))
             self.hs_wait_us_per_handshake_buckets.append(UInt64(0))
         self.iouring_park_us_total = UInt64(0)
-        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1).
+        # IO-path per-wake park-time histogram.
         self.iouring_park_us_buckets = List[UInt64]()
         for _ in range(24):
             self.iouring_park_us_buckets.append(UInt64(0))
@@ -412,8 +401,6 @@ struct AcceptProfile(Copyable, Movable):
             self.flush_feed_datagram_us_buckets.append(UInt64(0))
         self.flush_feed_datagram_us_overflow = UInt64(0)
         self.flush_feed_datagram_us_total = UInt64(0)
-        self.egress_pool_hits_total = UInt64(0)
-        self.egress_pool_misses_total = UInt64(0)
         self.zero_rtt_install_attempts = Int64(0)
         self.zero_rtt_install_successes = Int64(0)
         self.zero_rtt_drain_dropped = Int64(0)
@@ -588,11 +575,11 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.read_hs_us_per_call_buckets[b] = self.read_hs_us_per_call_buckets[b] + UInt64(1)
 
-    # Q6 read_hs internal sub-leg record methods (Plan: 2026-05-04-q6).
+    # read_hs internal sub-leg record methods.
     # Each dispatches via _per_pkt_bucket; overflow on >= 2^23 us.
 
     def record_read_hs_input_marshalling_us(mut self, us: UInt64):
-        """Q6 — Mojo-side input marshalling (CRYPTO bytes alloc + per-byte copy)."""
+        """Mojo-side input marshalling (CRYPTO bytes alloc + per-byte copy)."""
         var b = _per_pkt_bucket(us)
         if b >= 24:
             self.read_hs_input_marshalling_us_overflow = self.read_hs_input_marshalling_us_overflow + UInt64(1)
@@ -600,7 +587,7 @@ struct AcceptProfile(Copyable, Movable):
             self.read_hs_input_marshalling_us_buckets[b] = self.read_hs_input_marshalling_us_buckets[b] + UInt64(1)
 
     def record_read_hs_state_machine_us(mut self, us: UInt64):
-        """Q6 — Rust-side rustls conn.read_hs body (TLS state machine + crypto)."""
+        """Rust-side rustls conn.read_hs body (TLS state machine + crypto)."""
         var b = _per_pkt_bucket(us)
         if b >= 24:
             self.read_hs_state_machine_us_overflow = self.read_hs_state_machine_us_overflow + UInt64(1)
@@ -608,7 +595,7 @@ struct AcceptProfile(Copyable, Movable):
             self.read_hs_state_machine_us_buckets[b] = self.read_hs_state_machine_us_buckets[b] + UInt64(1)
 
     def record_read_hs_output_alloc_us(mut self, us: UInt64):
-        """Q6 — Rust-side handle-table lookup overhead (with_mut path)."""
+        """Rust-side handle-table lookup overhead (with_mut path)."""
         var b = _per_pkt_bucket(us)
         if b >= 24:
             self.read_hs_output_alloc_us_overflow = self.read_hs_output_alloc_us_overflow + UInt64(1)
@@ -616,7 +603,7 @@ struct AcceptProfile(Copyable, Movable):
             self.read_hs_output_alloc_us_buckets[b] = self.read_hs_output_alloc_us_buckets[b] + UInt64(1)
 
     def record_read_hs_output_marshalling_us(mut self, us: UInt64):
-        """Q6 — Rust→Mojo output copy on read_hs return.
+        """Rust→Mojo output copy on read_hs return.
         Zero-by-design for read_hs (returns status only); slot reserved for
         future symmetric write_hs/take_keys decomposition reuse."""
         var b = _per_pkt_bucket(us)
@@ -633,10 +620,10 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.alloc_tls_handle_us_buckets[b] = self.alloc_tls_handle_us_buckets[b] + UInt64(1)
 
-    # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+    # Cold-handshake CPU-utilization decomposition.
     def tick_profile_gauges(mut self, now_us: UInt64):
         """100ms-cadence sampler. No-ops if last sample < 100_000us ago.
-        Cadence gate stored as field (not caller-owned) per spec §3.2 / AC2.
+        Cadence gate stored as field (not caller-owned).
         Caller writes to active_drive_count via inc/dec at _drive_handshake;
         in-flight HS = handshakes_started - (full + resumed) running totals.
 
@@ -654,25 +641,25 @@ struct AcceptProfile(Copyable, Movable):
             self.last_gauge_sample_us = now_us
         if len(self.active_boucle_count_samples) < 600:
             self.active_boucle_count_samples.append(self.active_drive_count)
-        # In-flight = handshakes_started_total - completed_total. If P2 has no
-        # handshakes_started_total counter, T2 adds it (additive scope per §7.4 risk).
+        # In-flight = handshakes_started_total - completed_total. There is no
+        # handshakes_started_total counter yet; adding one is purely additive.
         # For now, use active_drive_count as proxy gauge until handshakes_started lands.
         var inflight: UInt32 = self.active_drive_count
         if len(self.in_flight_handshake_count_samples) < 600:
             self.in_flight_handshake_count_samples.append(inflight)
 
     def record_sendmsg_batch_size(mut self, n: Int):
-        """Q7 Group B — sendmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
+        """Group B — sendmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
         var b = _pkts_per_flush_bucket(n)
         self.sendmsg_batch_size_buckets[b] = self.sendmsg_batch_size_buckets[b] + UInt64(1)
 
     def record_recvmsg_batch_size(mut self, n: Int):
-        """Q7 Group B — recvmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
+        """Group B — recvmsg batch-size histogram (8-bucket via _pkts_per_flush_bucket)."""
         var b = _pkts_per_flush_bucket(n)
         self.recvmsg_batch_size_buckets[b] = self.recvmsg_batch_size_buckets[b] + UInt64(1)
 
     def record_hs_cpu_us_per_handshake(mut self, us: UInt64):
-        """Q7 Group D — per-FD per-handshake CPU duration (24-bucket pow2)."""
+        """Group D — per-FD per-handshake CPU duration (24-bucket pow2)."""
         var b = _per_pkt_bucket(us)
         if b >= 24:
             self.hs_cpu_us_per_handshake_overflow = self.hs_cpu_us_per_handshake_overflow + UInt64(1)
@@ -680,7 +667,7 @@ struct AcceptProfile(Copyable, Movable):
             self.hs_cpu_us_per_handshake_buckets[b] = self.hs_cpu_us_per_handshake_buckets[b] + UInt64(1)
 
     def record_hs_wait_us_per_handshake(mut self, us: UInt64):
-        """Q7 Group D — per-FD per-handshake wait duration (24-bucket pow2)."""
+        """Group D — per-FD per-handshake wait duration (24-bucket pow2)."""
         var b = _per_pkt_bucket(us)
         if b >= 24:
             self.hs_wait_us_per_handshake_overflow = self.hs_wait_us_per_handshake_overflow + UInt64(1)
@@ -688,12 +675,11 @@ struct AcceptProfile(Copyable, Movable):
             self.hs_wait_us_per_handshake_buckets[b] = self.hs_wait_us_per_handshake_buckets[b] + UInt64(1)
 
     def record_iouring_park_us(mut self, us: UInt64):
-        """Q7 Group F — H_F PARK-BOUND instrumentation. Total + 24-bucket
+        """Group F — H_F park-bound instrumentation. Total + 24-bucket
         pow2 histogram; bracket every io_uring_enter call site (or equivalent
         submit-and-wait entry).
 
-        Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1)
-        promoted this from total-only to histogrammed. Counts wall-clock us
+        This was promoted from total-only to histogrammed. Counts wall-clock us
         spent inside `loop.poll`. Does NOT count `_flush_impl` or
         `_drain_pending_submits` time."""
         self.iouring_park_us_total = self.iouring_park_us_total + us
@@ -704,14 +690,13 @@ struct AcceptProfile(Copyable, Movable):
             self.iouring_park_us_buckets[b] = self.iouring_park_us_buckets[b] + UInt64(1)
 
     def record_cqes_per_wake(mut self, n: UInt64):
-        """Q-IO-1 — record CQE count for one `loop.poll` cycle.
+        """Record CQE count for one `loop.poll` cycle.
 
-        Spec: 2026-05-05-shortconn-io-path-investigation §4.1. Counts CQEs
-        drained between two adjacent `submit_and_wait` returns. Does NOT
-        count kernel queue depth, SQE submission count, or pending_rx
-        arrivals.
+        Counts CQEs drained between two adjacent `submit_and_wait` returns.
+        Does NOT count kernel queue depth, SQE submission count, or
+        pending_rx arrivals.
 
-        AC2 sum-sanity: Σ(`on_complete` calls) ≡ Σ(per-wake counts) within
+        Sum-sanity: Σ(`on_complete` calls) ≡ Σ(per-wake counts) within
         ±5%; `cqes_total` mirrors the sum to make the cross-check trivial.
         Caller MUST snapshot+reset its handler-side counter before the next
         wake to prevent double-counting.
@@ -719,20 +704,19 @@ struct AcceptProfile(Copyable, Movable):
         var b = _pkts_per_flush_bucket(Int(n))
         # _pkts_per_flush_bucket caps at 7 (128+); n=0 also lands in bucket 0
         # (the "1 or fewer" bucket). For diagnostic clarity, n=0 is treated
-        # the same as n=1 in the bucket because the spec's bucket layout is
-        # `[0, 1, 2-3, ...]` per §4.1 — _pkts_per_flush_bucket returns 0 for
-        # both n=0 and n=1, which matches the spec's bucket definition.
+        # the same as n=1 in the bucket because the bucket layout is
+        # `[0, 1, 2-3, ...]` — _pkts_per_flush_bucket returns 0 for
+        # both n=0 and n=1, which matches the bucket definition.
         self.cqes_per_wake_buckets[b] = self.cqes_per_wake_buckets[b] + UInt64(1)
         self.cqes_per_wake_count = self.cqes_per_wake_count + UInt64(1)
         self.cqes_total = self.cqes_total + n
 
     def record_flush_impl_us(mut self, us: UInt64):
-        """Q-IO-1 — record per-wake `_flush_impl` wall-clock duration.
+        """Record per-wake `_flush_impl` wall-clock duration.
 
-        Spec: 2026-05-05-shortconn-io-path-investigation §4.1. 24-bucket
-        pow2 histogram. Measures end-to-end `_flush_impl` (per-pkt loop +
-        drain hooks). Does NOT measure CQE processing in `on_complete` or
-        SQE submissions in `_drain_pending_submits`.
+        24-bucket pow2 histogram. Measures end-to-end `_flush_impl` (per-pkt
+        loop + drain hooks). Does NOT measure CQE processing in `on_complete`
+        or SQE submissions in `_drain_pending_submits`.
         """
         self.flush_impl_us_total = self.flush_impl_us_total + us
         var b = _per_pkt_bucket(us)
@@ -741,16 +725,16 @@ struct AcceptProfile(Copyable, Movable):
         else:
             self.flush_impl_us_buckets[b] = self.flush_impl_us_buckets[b] + UInt64(1)
 
-    # Q10 `_flush_impl` sub-leg recorders (Plan: 2026-05-04-flush-impl-subleg-decomposition).
+    # `_flush_impl` sub-leg recorders.
     # All 4 dispatch via `_per_pkt_bucket` (pow2 µs, [0, 2^23) us). Each
-    # records BOTH a bucket and a running `_us_total` for AC4 sum-sanity.
+    # records BOTH a bucket and a running `_us_total` for sum-sanity.
 
     def record_flush_feed_datagram_us(mut self, us: UInt64):
         """Wall-clock of `feed_datagram_from_buffer` call (QUIC ingress).
 
         Brackets the try/except wrapping `feed_datagram_from_buffer` in
-        bench/h3_server.mojo's _flush_impl. Q10 verdict named this as
-        67.57% of flush_impl on short-conn — the dominant ingress leg.
+        bench/h3_server.mojo's _flush_impl. Measured as 67.57% of
+        flush_impl on short-conn — the dominant ingress leg.
 
         Measures: full QUIC ingress path = header-parse + AEAD +
         state-machine + frame-parse + h3 push. SUPERSET wall-clock —
@@ -766,33 +750,15 @@ struct AcceptProfile(Copyable, Movable):
             self.flush_feed_datagram_us_buckets[b] = self.flush_feed_datagram_us_buckets[b] + UInt64(1)
 
     def record_drain_submits_us(mut self, us: UInt64):
-        """Q-IO-1 — record per-iter `_drain_pending_submits` wall-clock.
+        """Record per-iter `_drain_pending_submits` wall-clock.
 
-        Spec: 2026-05-05-shortconn-io-path-investigation §4.1. Total-only.
-        Bracketed around the `_drain_pending_submits(loop)` call site in
-        the event loop. Closes the AC3 budget:
+        Total-only. Bracketed around the `_drain_pending_submits(loop)` call
+        site in the event loop. Closes the budget:
         `iouring_park_us_total + flush_impl_us_total + drain_submits_us_total
         ≈ wall_clock_total` within ±5%.
         Does NOT measure kernel-side submit cost or per-SQE breakdown.
         """
         self.drain_submits_us_total = self.drain_submits_us_total + us
-
-    def record_egress_pool_hit(mut self):
-        """Egress-pool hit (Plan: 2026-05-05-q8-egress-hot-path-batching).
-
-        Records a single `_drain_and_send` slot acquisition that reused an
-        `UdpTxSlot` popped from `H3UdpHandler.egress_pool_freelist`.
-        """
-        self.egress_pool_hits_total += UInt64(1)
-
-    def record_egress_pool_miss(mut self):
-        """Egress-pool miss (Plan: 2026-05-05-q8-egress-hot-path-batching).
-
-        Records a single `_drain_and_send` slot acquisition that fell back to
-        `_heap_alloc` because `H3UdpHandler.egress_pool_freelist` was empty
-        (peak burst exceeded `EGRESS_POOL_SIZE`).
-        """
-        self.egress_pool_misses_total += UInt64(1)
 
     def record_zero_rtt_install(mut self, success: Bool):
         """Bump the install-lifecycle counters. SUCCESS increments
@@ -959,18 +925,13 @@ struct AcceptProfile(Copyable, Movable):
         s += "  (n=" + String(arr_total_obs) + ", overflow=" + String(self.arrival_lat_us_overflow) + ")\n"
         s += "  total_us:        " + String(self.arrival_lat_us_total) + "\n\n"
 
-        # DCID-mismatch scalar (Plan: 2026-04-27 collision counter).
+        # DCID-mismatch scalar (collision counter).
         s += "dcid_mismatch_pkts: " + String(self.dcid_mismatch_pkts) + "\n\n"
 
-        # Handshake kinds (Plan: 2026-05-03-short-conn-resumption).
+        # Handshake kinds.
         s += "Handshake kinds:\n"
         s += "  full:    " + _fmt_count(self.handshakes_full_total) + "\n"
         s += "  resumed: " + _fmt_count(self.handshakes_resumed_total) + "\n\n"
-
-        # Egress-pool (Plan: 2026-05-05-q8-egress-hot-path-batching).
-        s += "egress_pool:\n"
-        s += "  hits_total:   " + _fmt_count(self.egress_pool_hits_total) + "\n"
-        s += "  misses_total: " + _fmt_count(self.egress_pool_misses_total) + "\n\n"
 
         # 0-RTT install lifecycle counters.
         s += "zero_rtt_install:\n"
@@ -997,7 +958,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "  1rtt_bypassed:         " + _fmt_count(UInt64(self.zero_rtt_http_filter_1rtt_bypassed)) + "\n"
         s += "  user_raised:           " + _fmt_count(UInt64(self.zero_rtt_http_filter_user_raised)) + "\n\n"
 
-        # Per-fresh-conn measurements (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+        # Per-fresh-conn measurements.
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
         var fci_total: UInt64 = UInt64(0)
         for i in range(24):
@@ -1019,7 +980,7 @@ struct AcceptProfile(Copyable, Movable):
             s += "  size=" + rb_labels[i] + " " + _fmt_count(self.recv_batch_size_buckets[i]) + "\n"
         s += "\n"
 
-        # Q5 read_hs decomposition (Plan: 2026-05-03-q5-read-hs-per-call-decomposition).
+        # read_hs decomposition.
         s += "read_hs per-handshake count (8-bucket):\n"
         var rh_labels = List[String]()
         rh_labels.append(String("1     "))
@@ -1040,7 +1001,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "  total samples:    " + _fmt_count(rd_total) + "\n"
         s += "  overflow (>=2^23):" + _fmt_count(self.read_hs_us_per_call_overflow) + "\n\n"
 
-        # Q6 read_hs sub-leg histograms (Plan: 2026-05-04-q6).
+        # read_hs sub-leg histograms.
         s += "read_hs_input_marshalling_us:\n"
         var rh_im_total: UInt64 = UInt64(0)
         for i in range(24):
@@ -1077,24 +1038,24 @@ struct AcceptProfile(Copyable, Movable):
         s += "  total samples:    " + _fmt_count(ath_total) + "\n"
         s += "  overflow (>=2^23):" + _fmt_count(self.alloc_tls_handle_us_overflow) + "\n\n"
 
-        # FFI sub-legs (Plan: 2026-04-28).
+        # FFI sub-legs.
         s += "FFI sub-legs:\n"
         s += "  " + _fmt_leg("read_hs",   self.ffi_read_hs_us_total,   self.pkt_count) + "\n"
         s += "  " + _fmt_leg("write_hs",  self.ffi_write_hs_us_total,  self.pkt_count) + "\n"
         s += "  " + _fmt_leg("take_keys", self.ffi_take_keys_us_total, self.pkt_count) + "\n\n"
 
-        # Loop phases (Plan: 2026-04-28).
+        # Loop phases.
         s += "Loop phases:\n"
         s += "  " + _fmt_leg("pop_dispatch", self.loop_pop_dispatch_us_total, self.loop_iter_count) + "\n"
         s += "  " + _fmt_leg("post_pkt",     self.loop_post_pkt_us_total,     self.loop_iter_count) + "\n"
         s += "  " + _fmt_leg("teardown",     self.loop_teardown_us_total,     self.on_flush_count) + "\n"
         s += "  loop_iter_count:                  " + _fmt_count(self.loop_iter_count) + "\n"
-        # H3 phases (Plan: 2026-04-29-quic-h3-phase-leg-instrumentation).
+        # H3 phases.
         s += "H3 phases:\n"
         s += "  drain_resp.total: " + _fmt_count(self.h3_drain_resp_us_total) + "\n"
         s += "  post_recv.total:  " + _fmt_count(self.quic_post_recv_us_total) + "\n"
         s += "  dispatch.total:   " + _fmt_count(self.h3_dispatch_us_total) + "\n\n"
-        # Drain-stream sub-leg decomposition (Plan: 2026-05-01-quic-h3-drain-stream-subleg).
+        # Drain-stream sub-leg decomposition.
         var de_t_us = self._compute_drain_event_dispatch_us()
         s += "Drain-stream sub-legs:\n"
         s += "  drain_stream.total:     " + _fmt_count(self.drain_stream_us_total) + "\n"
@@ -1103,7 +1064,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "  frame_parse.total:      " + _fmt_count(self.drain_frame_parse_us_total) + "\n"
         s += "  qpack_decode.total:     " + _fmt_count(self.drain_qpack_decode_us_total) + "\n"
         s += "  event_dispatch.derived: " + _fmt_count(de_t_us) + "\n\n"
-        # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
+        # Cold-handshake CPU-utilization decomposition.
         s += "Q7 gauge sampling (100ms cadence, capped 600 entries):\n"
         s += "  active_drive_count.live:                " + _fmt_count(UInt64(self.active_drive_count)) + "\n"
         s += "  active_boucle_count_samples.len:        " + _fmt_count(UInt64(len(self.active_boucle_count_samples))) + "\n"
@@ -1135,8 +1096,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "Q7 io_uring park (H_F PARK-BOUND, total + 24-bucket pow2):\n"
         s += "  iouring_park_us.total:    " + _fmt_count(self.iouring_park_us_total) + "\n"
         s += "  iouring_park_us.overflow: " + _fmt_count(self.iouring_park_us_overflow) + "\n"
-        # Q-IO-1 — IO-path per-wake instrumentation (spec
-        # 2026-05-05-shortconn-io-path-investigation §4.1).
+        # IO-path per-wake instrumentation.
         s += "Q-IO-1 cqes_per_wake (8-bucket via _pkts_per_flush_bucket):\n"
         s += "  cqes_per_wake.wakes:    " + _fmt_count(self.cqes_per_wake_count) + "\n"
         s += "  cqes_per_wake.cqes_sum: " + _fmt_count(self.cqes_total) + "\n"
@@ -1248,19 +1208,13 @@ struct AcceptProfile(Copyable, Movable):
                 s += ", "
         s += "],\n"
 
-        # DCID-mismatch scalar (Plan: 2026-04-27 collision counter).
+        # DCID-mismatch scalar (collision counter).
         s += '  "dcid_mismatch_pkts": ' + String(self.dcid_mismatch_pkts) + ',\n'
 
-        # Handshake kind block (Plan: 2026-05-03-short-conn-resumption).
+        # Handshake kind block.
         s += '  "handshakes": {\n'
         s += '    "full": ' + String(self.handshakes_full_total) + ',\n'
         s += '    "resumed": ' + String(self.handshakes_resumed_total) + '\n'
-        s += "  },\n"
-
-        # Egress-pool block (Plan: 2026-05-05-q8-egress-hot-path-batching).
-        s += '  "egress_pool": {\n'
-        s += '    "hits_total": ' + String(self.egress_pool_hits_total) + ',\n'
-        s += '    "misses_total": ' + String(self.egress_pool_misses_total) + '\n'
         s += "  },\n"
 
         # 0-RTT install lifecycle counters.
@@ -1292,7 +1246,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "user_raised": ' + String(self.zero_rtt_http_filter_user_raised) + '\n'
         s += "  },\n"
 
-        # Per-fresh-conn FFI histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+        # Per-fresh-conn FFI histogram.
         s += '  "fresh_conn_ffi_us": {\n'
         s += '    "buckets": ['
         for i in range(24):
@@ -1303,7 +1257,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.fresh_conn_ffi_us_overflow) + "\n"
         s += "  },\n"
 
-        # Recv-batch-size histogram (Plan: 2026-05-03-q4-fresh-conn-cpu-decomposition).
+        # Recv-batch-size histogram.
         var rb_keys = List[String]()
         rb_keys.append(String("1"))
         rb_keys.append(String("2-3"))
@@ -1321,7 +1275,7 @@ struct AcceptProfile(Copyable, Movable):
             s += "\n"
         s += "  },\n"
 
-        # Q5 read_hs decomposition (Plan: 2026-05-03-q5-read-hs-per-call-decomposition).
+        # read_hs decomposition.
         var rh_keys = List[String]()
         rh_keys.append(String("1"))
         rh_keys.append(String("2-3"))
@@ -1349,7 +1303,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.read_hs_us_per_call_overflow) + "\n"
         s += "  },\n"
 
-        # Q6 read_hs sub-leg histograms (Plan: 2026-05-04-q6-read-hs-internal-decomposition).
+        # read_hs sub-leg histograms.
         s += '  "read_hs_input_marshalling_us": {\n'
         s += '    "buckets": ['
         for i in range(24):
@@ -1401,7 +1355,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.alloc_tls_handle_us_overflow) + "\n"
         s += "  },\n"
 
-        # FFI sub-legs (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
+        # FFI sub-legs.
         var read_hs_avg: UInt64 = UInt64(0)
         var write_hs_avg: UInt64 = UInt64(0)
         var take_keys_avg: UInt64 = UInt64(0)
@@ -1415,7 +1369,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "take_keys": {"avg": ' + String(take_keys_avg) + ', "total": ' + String(self.ffi_take_keys_us_total) + '}\n'
         s += "  },\n"
 
-        # Loop phases (Plan: 2026-04-28-quic-accept-loop-subleg-instrumentation).
+        # Loop phases.
         var pop_dispatch_avg: UInt64 = UInt64(0)
         var post_pkt_avg: UInt64 = UInt64(0)
         if self.loop_iter_count > UInt64(0):
@@ -1480,8 +1434,8 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "unaccounted_pct": ' + String(unacct_drain_pct) + '\n'
         s += "  },\n"
 
-        # Q7 cold-handshake CPU-utilization decomposition (Plan: 2026-05-04-q7).
-        # 10 new top-level keys per spec §4.7.
+        # Cold-handshake CPU-utilization decomposition.
+        # 10 new top-level keys.
         s += '  "active_boucle_count_samples": ['
         for i in range(len(self.active_boucle_count_samples)):
             s += String(self.active_boucle_count_samples[i])
@@ -1539,7 +1493,6 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.hs_wait_us_per_handshake_overflow) + "\n"
         s += "  },\n"
 
-        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1):
         # iouring_park_us promoted from total-only to total + 24-bucket
         # pow2 histogram. Backward-compatible: existing readers keying on
         # "total" continue to work; new readers can consume "buckets".
@@ -1554,10 +1507,10 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.iouring_park_us_overflow) + "\n"
         s += "  },\n"
 
-        # Q-IO-1 — CQEs-per-wake histogram. 8-bucket via
+        # CQEs-per-wake histogram. 8-bucket via
         # _pkts_per_flush_bucket; key shape mirrors recvmsg_batch_size_buckets.
         # `wakes` = number of `loop.poll` calls observed under PROFILE_ACCEPT.
-        # `cqes_total` = Σ CQEs across those wakes (AC2 sum-sanity vs
+        # `cqes_total` = Σ CQEs across those wakes (sum-sanity vs
         # `Σ on_complete` observed kernel-side).
         s += '  "cqes_per_wake": {\n'
         s += '    "wakes": ' + String(self.cqes_per_wake_count) + ',\n'
@@ -1571,7 +1524,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "    }\n"
         s += "  },\n"
 
-        # Q-IO-1 — _flush_impl wall-clock per-wake histogram (24-bucket pow2).
+        # _flush_impl wall-clock per-wake histogram (24-bucket pow2).
         s += '  "flush_impl_us": {\n'
         s += '    "total": ' + String(self.flush_impl_us_total) + ',\n'
         s += '    "buckets": ['
@@ -1595,7 +1548,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "overflow": ' + String(self.flush_feed_datagram_us_overflow) + "\n"
         s += "  },\n"
 
-        # Q-IO-1 — _drain_pending_submits wall-clock total (AC3 budget closure).
+        # _drain_pending_submits wall-clock total (budget closure).
         s += '  "drain_submits_us": {\n'
         s += '    "total": ' + String(self.drain_submits_us_total) + "\n"
         s += "  },\n"
