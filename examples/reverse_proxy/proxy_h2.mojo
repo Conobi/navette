@@ -1,14 +1,14 @@
 # examples/reverse_proxy/proxy_h2.mojo
 #
 # H2-specific state and completion-handler free functions for the unified
-# reverse proxy. Built against the post-Sprint-2 H2StreamingServer +
+# reverse proxy. Built against the H2StreamingServer +
 # H2Session APIs (the bit-rotted examples/h2_reverse_proxy/main.mojo
 # targeted the removed H2CoroServer.resume_stream surface).
 #
-# DESIGN NOTE (mirrors proxy_h1.mojo's Task 2 deviation):
+# DESIGN NOTE (mirrors proxy_h1.mojo):
 #   ProxyConnection / ProxyVariant are NOT defined here. They aggregate
 #   both H1ProxyState (from proxy_h1.mojo) and H2ProxyState (this file)
-#   and live in the consumer (main.mojo, Task 4). Putting them in
+#   and live in the consumer (main.mojo). Putting them in
 #   proxy_common would invert the dependency direction; putting them in
 #   either of the per-version files would force a circular import.
 #

@@ -14,7 +14,7 @@
 #
 # NOTE: _drain_pending_submits and ProxyConnection / ProxyVariant are
 # intentionally not included here — they depend on the ProxyHandler /
-# H1ProxyState types that are introduced in later tasks of Plan 3.
+# H1ProxyState types defined in the per-version files.
 
 from std.io.file import FileHandle
 
@@ -29,21 +29,20 @@ from navette.http import (
 
 
 # ---------------------------------------------------------------------------
-# Token encoding helpers + op-kind constants
+# Token encoding helpers + op-kind constants (canonical source: token.mojo)
 # ---------------------------------------------------------------------------
 
 
-comptime OP_ACCEPT: UInt8 = 0
-comptime OP_CLIENT_RECV: UInt8 = 1
-comptime OP_CLIENT_SEND: UInt8 = 2
-comptime OP_BACKEND_CONNECT: UInt8 = 3
-comptime OP_BACKEND_RECV: UInt8 = 4
-comptime OP_BACKEND_SEND: UInt8 = 5
-comptime LISTENER_CONN_ID: UInt64 = 0
-
-
-def encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
-    return (conn_id << 8) | UInt64(op_kind)
+from token import (
+    OP_ACCEPT,
+    OP_CLIENT_RECV,
+    OP_CLIENT_SEND,
+    OP_BACKEND_CONNECT,
+    OP_BACKEND_RECV,
+    OP_BACKEND_SEND,
+    LISTENER_CONN_ID,
+    encode_token,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +117,7 @@ struct PendingSubmit(Copyable, Movable):
 # in-flight flags that the H1 (and later H2) free-function handlers need
 # to mutate. Without this bundle, each handler would take ~10 individual
 # `mut` parameters for these fields; aggregating them keeps signatures
-# tractable until Task 3 introduces `ProxyConnection` to subsume the
+# tractable; `ProxyConnection` (in main.mojo) subsumes the
 # whole connection record.
 
 

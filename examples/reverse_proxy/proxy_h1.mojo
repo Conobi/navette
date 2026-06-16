@@ -1,20 +1,19 @@
 # examples/reverse_proxy/proxy_h1.mojo
 #
 # H1-specific state and completion-handler free functions for the unified
-# reverse proxy. Extracted from the original `main.mojo` ProxyHandler in
-# Task 2 of Plan 3 (Unified ALPN-Dispatched Reverse Proxy).
+# ALPN-dispatched reverse proxy. Extracted from the original `main.mojo`
+# ProxyHandler.
 #
-# DESIGN NOTE (Task 2 deviation from plan):
-#   The plan caveat suggests moving `ProxyConnection` and `ProxyVariant`
-#   into `proxy_common.mojo`. We cannot do that yet: `ProxyVariant` needs
-#   `H2ProxyState`, which is introduced in Task 3, and `ProxyConnection`
-#   aggregates both H1 and H2 state — a circular dependency.
+# DESIGN NOTE:
+#   `ProxyConnection` and `ProxyVariant` are not defined here. `ProxyVariant`
+#   needs `H2ProxyState` and `ProxyConnection` aggregates both H1 and H2
+#   state, so defining them here would create a circular dependency.
 #
-#   Instead, this file uses the plan's option (b): the H1 free functions
-#   take H1-relevant fields directly (`mut state: H1ProxyState`,
-#   `mut send_state: ConnSendState`, individual TLS connections, etc.).
-#   `ProxyConnection` will be introduced in Task 3/4 once `H2ProxyState`
-#   exists, and the parameter lists tightened then.
+#   Instead, the H1 free functions take H1-relevant fields directly
+#   (`mut state: H1ProxyState`, `mut send_state: ConnSendState`, individual
+#   TLS connections, etc.). `ProxyConnection` lives in main.mojo, which can
+#   see both per-version state types, and the parameter lists are tightened
+#   there.
 
 from std.collections.optional import Optional
 from std.memory import Span

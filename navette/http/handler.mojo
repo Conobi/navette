@@ -1,6 +1,6 @@
 # src/http/handler.mojo
 #
-# Protocol-agnostic HTTP handler trait surface (M2.5a).
+# Protocol-agnostic HTTP handler trait surface.
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional
@@ -33,6 +33,8 @@ struct Capabilities(Copyable, Movable):
     var datagrams: Bool
     var alpn: Int
     var is_early_data: Bool
+    var stream_id: UInt64
+    var conn_id: UInt64
 
     def __init__(
         out self,
@@ -43,6 +45,8 @@ struct Capabilities(Copyable, Movable):
         datagrams: Bool,
         alpn: Int,
         is_early_data: Bool = False,
+        stream_id: UInt64 = 0,
+        conn_id: UInt64 = 0,
     ):
         self.multiplexed = multiplexed
         self.trailers = trailers
@@ -50,6 +54,8 @@ struct Capabilities(Copyable, Movable):
         self.datagrams = datagrams
         self.alpn = alpn
         self.is_early_data = is_early_data
+        self.stream_id = stream_id
+        self.conn_id = conn_id
 
     def __init__(out self, *, other: Self):
         self.multiplexed = other.multiplexed
@@ -58,6 +64,8 @@ struct Capabilities(Copyable, Movable):
         self.datagrams = other.datagrams
         self.alpn = other.alpn
         self.is_early_data = other.is_early_data
+        self.stream_id = other.stream_id
+        self.conn_id = other.conn_id
 
     def __init__(out self, *, deinit take: Self):
         self.multiplexed = take.multiplexed
@@ -66,6 +74,8 @@ struct Capabilities(Copyable, Movable):
         self.datagrams = take.datagrams
         self.alpn = take.alpn
         self.is_early_data = take.is_early_data
+        self.stream_id = take.stream_id
+        self.conn_id = take.conn_id
 
     @staticmethod
     def for_h1() -> Self:
@@ -82,13 +92,26 @@ struct Capabilities(Copyable, Movable):
         )
 
     @staticmethod
-    def for_h3(is_early_data: Bool = False) -> Self:
+    def for_h3(
+        is_early_data: Bool = False,
+        stream_id: UInt64 = 0,
+        conn_id: UInt64 = 0,
+    ) -> Self:
         """H3 capability defaults. Pass `is_early_data=True` when a
         0-RTT-arrived request has just been accepted by the early-data
-        filter; the handler will observe `caps.is_early_data == True`."""
+        filter; the handler will observe `caps.is_early_data == True`.
+
+        `stream_id` is the H3 request stream id; `conn_id` is a stable
+        per-connection identity (the server SCID as a u64). A handler that
+        must complete a request out-of-band — e.g. a reverse proxy that
+        forwards the request to a different transport and writes the
+        backend response back later via `H3UdpServer.inject_response` —
+        records `(conn_id, stream_id)` here so it can address the right
+        open stream when the backend result arrives."""
         return Self(
             multiplexed=True, trailers=True, priority_hints=True,
             datagrams=True, alpn=ALPN_H3, is_early_data=is_early_data,
+            stream_id=stream_id, conn_id=conn_id,
         )
 
     def is_h1(self) -> Bool:
@@ -496,7 +519,7 @@ struct SendBody(Movable):
 struct ResponseWriter(Movable):
     """Server-side outbound writer. Composes status/headers send with a
     SendBody. send_status must be called before any try_send_body. The
-    runtime owns the actual byte emission for status/headers; M2.5a stores
+    runtime owns the actual byte emission for status/headers; this stores
     them in _captured_status / _captured_headers and the H1 adapter polls
     them after each handler invocation."""
 

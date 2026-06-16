@@ -9,6 +9,7 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
+from navette.quic.cid import dcid_to_u64
 from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
@@ -27,6 +28,7 @@ from navette.http.handler import (
 from navette.http.request import Request, RequestBody
 from navette.http.headers import Headers
 from navette.http.method import Method
+from navette.http.status import StatusCode
 from navette.http.version import Version
 from navette.http.body import BodyFrame
 from navette.tls.early_data_filter import (
@@ -305,8 +307,23 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var body = RecvBody()
         var resp = ResponseWriter()
 
+        # Surface a stable connection identity (the server SCID as a u64)
+        # plus the request stream id to the handler. A handler that defers
+        # the response across an out-of-band round-trip (e.g. a reverse
+        # proxy forwarding to a different transport) records this pair and
+        # later addresses the open stream via `inject_response`.
+        var conn_id_u64 = dcid_to_u64(Span(self._h3._quic.local_cid))
         try:
-            self.handler.on_request(req^, body, resp, Capabilities.for_h3(is_early_data=stream_is_zr))
+            self.handler.on_request(
+                req^,
+                body,
+                resp,
+                Capabilities.for_h3(
+                    is_early_data=stream_is_zr,
+                    stream_id=ev.stream_id,
+                    conn_id=conn_id_u64,
+                ),
+            )
         except:
             pass
 
@@ -446,3 +463,63 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             _ = self._streams.pop(sid)
             ctx_ptr.destroy_pointee()
             ctx_ptr.free()
+
+    # --- Out-of-band response injection (cross-transport wake) ---------------
+
+    def has_stream(self, sid: Int) -> Bool:
+        """Return True if `sid` is an open stream awaiting a response.
+
+        A reverse-proxy driver consults this before `inject_response` to
+        confirm the stream survived (it could have been reset or torn down
+        while the backend round-trip was in flight)."""
+        return sid in self._streams
+
+    def inject_response(
+        mut self,
+        sid: Int,
+        var status: StatusCode,
+        var headers: Headers,
+        var body: List[UInt8],
+        end: Bool,
+    ) raises:
+        """Write a response into an open stream's `ResponseWriter` from
+        OUTSIDE a `StreamHandler` callback.
+
+        This is the sync analog of `H2StreamingServer.resume_stream`: it
+        lets an event-loop driver complete a request whose backend leg ran
+        on a different transport (TCP) and woke on a different io_uring
+        token — a token that carries no `StreamHandler` callback to ride in
+        on. The stream must have been left open by the handler
+        (`request_ended` True, `response_ended` False); the writer is
+        re-polled by `_drain_responses` on the next egress pass, which
+        emits `:status` + DATA + FIN over QPACK/H3.
+
+        A no-op (returns cleanly) if `sid` is not an open stream — the
+        stream may have been reset or the connection torn down while the
+        backend round-trip was in flight. Internal write errors are
+        swallowed so a malformed backend response cannot crash the loop.
+
+        Args:
+            sid: H3 request stream id (from `caps.stream_id`).
+            status: Response status code.
+            headers: Response headers (hop-by-hop already stripped by the
+                caller; this method writes them verbatim).
+            body: Full response body bytes; emitted as a single DATA frame
+                when non-empty.
+            end: When True, terminates the response (FIN). Pass True for a
+                buffered backend response (the whole body is in `body`).
+        """
+        if sid not in self._streams:
+            return
+        var ctx_ptr = self._streams[sid].ptr()
+        var ctx = ctx_ptr.take_pointee()
+        try:
+            ctx.resp_writer.send_status(status^, headers^)
+            if len(body) > 0:
+                var data = body^
+                _ = ctx.resp_writer.try_send_body(BodyFrame.data(data^))
+            if end:
+                ctx.resp_writer.end()
+        except:
+            pass
+        ctx_ptr.init_pointee_move(ctx^)

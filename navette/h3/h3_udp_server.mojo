@@ -1,7 +1,7 @@
 """H3UdpServer — generic UDP + QUIC + H3 server (callback model).
 
 Drives multiple H3 connections off a single UDP socket using boucle's
-`BatchCompletionLoop` via the `UdpIo` trait.
+`BatchCompletionLoop` (the server conforms to `BatchCompletionHandler`).
 
 # Architecture
 
@@ -64,6 +64,8 @@ from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
 from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFilter
 from navette.http.handler import StreamHandler
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
 from navette.quic.connection import QuicConnection
@@ -893,7 +895,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                     ConnSlot[Self.H](h3_ptr, addr^, dcids^, gen)
                 )
 
-                # AC17: seed `peer_addr` exactly once at conn creation so
+                # Seed `peer_addr` exactly once at conn creation so
                 # the sentinel zero PathKey is replaced. From this point
                 # forward, `peer_addr` only mutates inside
                 # `on_path_response_received` after a verified match.
@@ -905,15 +907,15 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 )
 
             # Build a structured PathKey for path-validation bookkeeping
-            # — used for address-change detection (AC7/AC9), anti-amp
-            # accounting (AC16), and the per-datagram RECV-addr cursor
-            # (AC17) consumed by `_dispatch_frame` when a PATH_RESPONSE
+            # — used for address-change detection, anti-amp
+            # accounting, and the per-datagram RECV-addr cursor
+            # consumed by `_dispatch_frame` when a PATH_RESPONSE
             # arrives in this same datagram.
             var from_path = _sockaddr_to_path_key(
                 pd.buf_ptr, pd.addr_offset, pd.addr_len
             )
 
-            # AC7/AC9/AC16: detect path change vs the validated peer_addr.
+            # Detect path change vs the validated peer_addr.
             # On migration-disabled, close_transport(0x0A) — the
             # connection-close frame goes out in the next flush. On
             # migration-allowed mismatch, kick off PATH_CHALLENGE. Always
@@ -925,7 +927,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             except e:
                 print("H3UdpServer: on_ingress_from error:", e)
 
-            # AC17: stamp the receive-addr cursor so the inner
+            # Stamp the receive-addr cursor so the inner
             # _dispatch_frame can match an incoming PATH_RESPONSE against
             # the address that carried it. Set BEFORE feed_datagram so
             # the coalesced packets in this datagram all see the same
@@ -999,7 +1001,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             if len(pkt) == 0:
                 continue
 
-            # AC16: per-path anti-amp gate. No-op when `target_key` has
+            # Per-path anti-amp gate. No-op when `target_key` has
             # no pending challenge (validated path → returns True). The
             # validator's `can_send_bytes` includes the QUIC header +
             # AEAD ciphertext (i.e. the full UDP payload), matching RFC
@@ -1124,6 +1126,68 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         _ = self.tx_slots.pop()
         _ = self.tx_slot_tokens.pop()
         _ = self.tx_slot_idx_by_token.pop(token)
+
+    # ── Out-of-band response injection (cross-transport wake) ─────
+
+    def has_stream(self, conn_id: UInt64, sid: Int) -> Bool:
+        """Return True if `(conn_id, sid)` names an open stream.
+
+        `conn_id` is the stable per-connection identity surfaced to the
+        handler via `caps.conn_id` (the server SCID as a u64). It is
+        resolved through the generation-guarded DCID demux map, so a
+        `conn_id` whose connection was torn down (and whose slot index was
+        reused by swap-and-pop) reports False rather than aliasing onto an
+        unrelated connection."""
+        var conn_idx = self._find_conn_by_dcid(conn_id)
+        if conn_idx < 0:
+            return False
+        return self.conn_slots[conn_idx].h3[].has_stream(sid)
+
+    def inject_response(
+        mut self,
+        conn_id: UInt64,
+        sid: Int,
+        var status: StatusCode,
+        var headers: Headers,
+        var body: List[UInt8],
+        end: Bool,
+    ) raises:
+        """Write a response into an open H3 stream from OUTSIDE the inbound
+        datagram path, then queue its egress so it ships on the next flush.
+
+        This is the public hook a reverse-proxy driver calls when a backend
+        round-trip — running on a different transport (TCP) and waking on a
+        different io_uring token — produces the response (or a 502 on
+        connect failure). It routes to the owning connection's
+        `H3HandlerServer.inject_response`, which stages status/headers/body
+        into the stream's `ResponseWriter`, then runs the same
+        `_drain_and_send` the inbound path uses so the resulting sendmsg is
+        queued into `pending_submits` for the driver to drain.
+
+        `conn_id` is resolved via the generation-guarded DCID demux map
+        (the server SCID surfaced as `caps.conn_id`). A stale or
+        torn-down `conn_id`, or an `sid` that is no longer open, is a clean
+        no-op — the client simply never receives a late response for a
+        connection or stream that has already gone away. This makes
+        cross-connection misdelivery structurally impossible: the response
+        can only reach the exact connection that issued the request.
+
+        Args:
+            conn_id: Stable connection identity from `caps.conn_id`.
+            sid: H3 request stream id from `caps.stream_id`.
+            status: Response status code.
+            headers: Response headers (hop-by-hop already stripped).
+            body: Full response body bytes.
+            end: When True, terminates the response (FIN).
+        """
+        var conn_idx = self._find_conn_by_dcid(conn_id)
+        if conn_idx < 0:
+            return
+        self.conn_slots[conn_idx].h3[].inject_response(
+            sid, status^, headers^, body^, end
+        )
+        var now = monotonic_us()
+        self._drain_and_send(conn_idx, now)
 
 
 # ── Outer driver helpers ─────────────────────────────────────────────────────

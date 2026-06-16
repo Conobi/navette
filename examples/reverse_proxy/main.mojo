@@ -42,15 +42,31 @@ from navette.tls import (
     TlsClientConfig,
     TlsServerConfig,
     TlsConnection,
+    EarlyDataPolicy,
 )
+from navette.tls.config import QuicServerConfig
 
 from boucle import CompletionLoop, CompletionHandler
+from boucle.ctypes import c_void
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
 from boucle.net.options import Backlog
 
-from navette.runtime.socket_helpers import tcp_v4_nonblocking
+from navette.runtime.socket_helpers import tcp_v4_nonblocking, udp_listener
+from navette.quic.trans_param import default_transport_params
+from navette.h3.h3_udp_server import (
+    H3UdpServer,
+    PBUF_SIZE,
+    PBUF_COUNT,
+    PBUF_GROUP_ID,
+    OP_PROVIDE_BUF,
+    OP_RECVMSG,
+    OP_SENDMSG,
+    OP_TIMEOUT,
+    PendingSubmit as H3PendingSubmit,
+    _encode_token as h3_encode_token,
+)
 
 from proxy_common import (
     ConnSendState,
@@ -99,6 +115,17 @@ from proxy_h2 import (
     h2_handle_client_recv,
     h2_handle_client_send,
     h2_proxy_state_new,
+)
+from proxy_h3 import (
+    ForwardingHandler,
+    H3BackendRegistry,
+    H3_TOKEN_TAG,
+    H3_BACKEND_TOKEN_TAG,
+    h3_encode_backend_token,
+    h3_handle_backend_connect,
+    h3_handle_backend_recv,
+    h3_handle_backend_send,
+    make_forwarding_handler,
 )
 
 
@@ -312,6 +339,20 @@ struct ProxyHandler(CompletionHandler):
     var h2_backend_addr: SocketAddrV4
     var backend_host: String
     var pending_submits: List[PendingSubmit]
+    # H3-backend TCP follow-up ops queued from on_complete; drained post-poll
+    # by `_drain_h3_backend_submits` against the H3 backend-conn registry
+    # (these conn_ids are synthetic and do NOT live in `self.connections`).
+    var h3_backend_submits: List[PendingSubmit]
+    # H3-backend registry: per-request backend conns + the backend dial
+    # target + the (addresses of the) long-lived TLS configs. Owned here so
+    # there is no module-level global (Mojo 1.0.0b1 forbids those).
+    var h3_backends: H3BackendRegistry
+    # Embedded H3/QUIC frontend, driven from this same CompletionLoop via
+    # the H3-tagged tokens (see _dispatch). Declared LAST and moved into the
+    # loop before any QUIC connection exists, so the pointer the H3 server's
+    # per-conn handlers take to `self.profile` stays stable (the struct does
+    # not move again after the handler^ move into CompletionLoop).
+    var _h3: H3UdpServer[ForwardingHandler]
 
     def __init__(
         out self,
@@ -323,6 +364,8 @@ struct ProxyHandler(CompletionHandler):
         h1_backend_addr: SocketAddrV4,
         h2_backend_addr: SocketAddrV4,
         backend_host: String,
+        var h3_backends: H3BackendRegistry,
+        var h3: H3UdpServer[ForwardingHandler],
     ):
         self.listener_fd = listener_fd
         self.connections = List[
@@ -337,6 +380,9 @@ struct ProxyHandler(CompletionHandler):
         self.h2_backend_addr = h2_backend_addr
         self.backend_host = backend_host
         self.pending_submits = List[PendingSubmit]()
+        self.h3_backend_submits = List[PendingSubmit]()
+        self.h3_backends = h3_backends^
+        self._h3 = h3^
 
     def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
@@ -350,6 +396,27 @@ struct ProxyHandler(CompletionHandler):
         self.h2_backend_addr = take.h2_backend_addr
         self.backend_host = take.backend_host^
         self.pending_submits = take.pending_submits^
+        self.h3_backend_submits = take.h3_backend_submits^
+        self.h3_backends = take.h3_backends^
+        self._h3 = take._h3^
+
+    # --- H3 backend config publication ----------------------------------
+
+    def publish_h3_backend_config_addrs(mut self):
+        """Publish the stable in-loop addresses of `tls` + `h1_client_tls_config`
+        to the H3 backend registry so `open_backend` can build backend TLS
+        connections. Taken from `self` (a clean field lvalue) rather than
+        through `loop._handler.<field>` — the address-of of a field reached
+        across the loop's handler getter mis-lowers in Mojo 1.0.0b1; taking it
+        from inside the owning struct is the codegen-safe form. Call once,
+        after the handler has been moved into the loop (so the addresses point
+        at the final, stable copies)."""
+        self.h3_backends.tls_shared_addr = UInt64(
+            Int(UnsafePointer(to=self.tls))
+        )
+        self.h3_backends.h1_client_config_addr = UInt64(
+            Int(UnsafePointer(to=self.h1_client_tls_config))
+        )
 
     # --- Connection lookup ----------------------------------------------
 
@@ -364,11 +431,28 @@ struct ProxyHandler(CompletionHandler):
 
     def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
         try:
-            self._dispatch(token, result)
+            self._dispatch(token, result, flags)
         except e:
             print("proxy: on_complete error:", e)
 
-    def _dispatch(mut self, token: UInt64, result: Int32) raises:
+    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
+        # H3 frontend tokens (UDP recvmsg / sendmsg / timeout / provide-buf):
+        # strip the tag and hand straight to the embedded H3 server. The CQE
+        # `flags` MUST be forwarded verbatim: the multishot recvmsg path reads
+        # the provided-buffer id (flags >> IORING_CQE_BUFFER_SHIFT) and the
+        # IORING_CQE_F_MORE / F_BUFFER bits out of it. Dropping flags (passing
+        # 0) silently discards every inbound datagram → QUIC handshake stalls.
+        if (token & H3_TOKEN_TAG) != 0:
+            self._h3.on_complete(token & ~H3_TOKEN_TAG, result, flags)
+            return
+
+        # H3 backend TCP tokens (per-request H1Session round-trip): decode the
+        # synthetic backend conn id + op kind and run the H3 backend handler,
+        # then issue any follow-up SQEs it queued.
+        if (token & H3_BACKEND_TOKEN_TAG) != 0:
+            self._dispatch_h3_backend(token, result)
+            return
+
         var op_kind = UInt8(token & 0xFF)
         var conn_id = token >> 8
 
@@ -399,6 +483,38 @@ struct ProxyHandler(CompletionHandler):
 
         if self.connections[idx][].closed:
             self._close_connection(idx)
+
+    # --- H3 backend dispatch --------------------------------------------
+
+    def _dispatch_h3_backend(mut self, token: UInt64, result: Int32) raises:
+        """Route an H3-backend TCP completion to its handler and queue the
+        follow-up ops into `h3_backend_submits`.
+
+        The handlers take a `mut self._h3` (so a complete response or a 502
+        injects straight into the owning H3 stream) and the synthetic
+        backend conn id; they return the recv/send ops to issue next. Buffer
+        pointers are resolved post-poll in `_drain_h3_backend_submits` from
+        the backend-conn registry.
+        """
+        var untagged = token & ~H3_BACKEND_TOKEN_TAG
+        var op_kind = UInt8(untagged & 0xFF)
+        var backend_conn_id = untagged >> 8
+
+        if op_kind == OP_BACKEND_CONNECT:
+            var subs = h3_handle_backend_connect(
+                self._h3, self.h3_backends, backend_conn_id, result
+            )
+            self.h3_backend_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_RECV:
+            var subs = h3_handle_backend_recv(
+                self._h3, self.h3_backends, backend_conn_id, result
+            )
+            self.h3_backend_submits.extend(subs^)
+        elif op_kind == OP_BACKEND_SEND:
+            var subs = h3_handle_backend_send(
+                self._h3, self.h3_backends, backend_conn_id, result
+            )
+            self.h3_backend_submits.extend(subs^)
 
     # --- Accept handling ------------------------------------------------
 
@@ -936,6 +1052,211 @@ def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
 
 
 # ---------------------------------------------------------------------------
+# H3 frontend + backend glue (loop-typed; lives here so proxy_h3 stays free
+# of a circular import on ProxyHandler / CompletionLoop[ProxyHandler]).
+# ---------------------------------------------------------------------------
+
+
+def h3_collect_forwards(mut loop: CompletionLoop[ProxyHandler]) raises:
+    """Walk every live H3 connection's `ForwardingHandler`, drain its
+    captured requests, open a backend TCP+TLS+`H1Session` for each, and
+    submit the SUBMIT_CONNECT. Called each tick after `_h3.on_flush()` (the
+    flush is what runs the handler callbacks that populate `_pending`).
+
+    The handler is reached via the H3 server's public
+    `conn_slots[i].h3[].handler` — there is no module-level global to bridge
+    the factory to the driver (Mojo 1.0.0b1 forbids globals).
+    """
+    var n_conns = len(loop._handler._h3.conn_slots)
+    for ci in range(n_conns):
+        if ci >= len(loop._handler._h3.conn_slots):
+            break
+        # conn_slots[ci].h3 is an UnsafePointer[H3HandlerServer]; bind it to
+        # a local pointer first (avoid a deep chained mutable place-expr) and
+        # deref to reach the per-conn handler and drain its captured requests.
+        var h3_ptr = loop._handler._h3.conn_slots[ci].h3
+        var forwards = h3_ptr[].handler.take_pending()
+        for fi in range(len(forwards)):
+            var fwd = forwards[fi].copy()
+            var backend_conn_id = loop._handler.h3_backends.open_backend(fwd^)
+            var fd = loop._handler.h3_backends.backend_fd(backend_conn_id)
+            if fd < 0:
+                continue
+            var token = h3_encode_backend_token(
+                backend_conn_id, OP_BACKEND_CONNECT
+            )
+            # Use the conn's stable, heap-stored addr (outlives the in-flight
+            # connect), not a stack temporary.
+            var addr_ptr = loop._handler.h3_backends.backend_addr_ptr(
+                backend_conn_id
+            )
+            if Int(addr_ptr) == 0:
+                continue
+            var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
+            loop.submit_connect(fd, addr_ptr, addr_len, token)
+
+
+def _drain_h3_backend_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
+    """Issue the H3-backend recv/send SQEs queued by the backend handlers.
+    Buffer pointers come from the backend-conn registry (these conn_ids are
+    synthetic and absent from `self.connections`)."""
+    var submits = loop._handler.h3_backend_submits^
+    loop._handler.h3_backend_submits = List[PendingSubmit]()
+
+    for i in range(len(submits)):
+        var s = submits[i].copy()
+        var backend_conn_id = s.conn_id
+        var token = h3_encode_backend_token(backend_conn_id, s.op_kind)
+        if s.kind == SUBMIT_RECV:
+            var raw_addr = loop._handler.h3_backends.backend_recv_buf_addr(
+                backend_conn_id
+            )
+            if raw_addr == 0:
+                continue
+            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
+                unsafe_from_address=raw_addr
+            )
+            loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
+        elif s.kind == SUBMIT_SEND:
+            var n = loop._handler.h3_backends.backend_send_buf_len(
+                backend_conn_id
+            )
+            if n == 0:
+                continue
+            var raw_addr = loop._handler.h3_backends.backend_send_buf_addr(
+                backend_conn_id
+            )
+            if raw_addr == 0:
+                continue
+            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
+                unsafe_from_address=raw_addr
+            )
+            loop.submit_send(s.fd, buf_ptr, UInt(n), token)
+
+
+def h3_bootstrap(mut loop: CompletionLoop[ProxyHandler]) raises:
+    """Bootstrap the embedded H3 server against the proxy's CompletionLoop:
+    register the provided-buffer pool, submit the initial multishot recvmsg,
+    and submit the initial periodic timeout. Direct port of `serve_forever`'s
+    bootstrap, with every token ORed with `H3_TOKEN_TAG`.
+    """
+    var provide_token = H3_TOKEN_TAG | h3_encode_token(
+        UInt64(0), OP_PROVIDE_BUF
+    )
+    loop.provide_buffers(
+        loop._handler._h3.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID,
+        UInt16(0), provide_token,
+    )
+
+    var msghdr_addr = Int(loop._handler._h3.msghdr_template)
+    var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        unsafe_from_address=msghdr_addr
+    )
+    var recvmsg_token = H3_TOKEN_TAG | h3_encode_token(UInt64(0), OP_RECVMSG)
+    loop.submit_recvmsg_multishot(
+        loop._handler._h3.udp_handle.raw(), msghdr_ptr, PBUF_GROUP_ID,
+        recvmsg_token,
+    )
+    loop._handler._h3.multishot_active = True
+
+    var ts_addr = Int(loop._handler._h3.timeout_ts)
+    var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        unsafe_from_address=ts_addr
+    )
+    loop.submit_timeout(
+        ts_ptr, H3_TOKEN_TAG | h3_encode_token(UInt64(0), OP_TIMEOUT)
+    )
+
+
+def h3_post_poll(mut loop: CompletionLoop[ProxyHandler]) raises:
+    """Per-tick H3 housekeeping: re-provide buffers consumed during this
+    batch and re-arm the multishot recvmsg if it ended. Call AFTER
+    `_h3.on_flush()`.
+    """
+    var consumed = loop._handler._h3.consumed_bufs^
+    loop._handler._h3.consumed_bufs = List[UInt16]()
+    for i in range(len(consumed)):
+        var bid = consumed[i]
+        var buf_base = loop._handler._h3.pbuf_pool + Int(bid) * PBUF_SIZE
+        loop.reprovide_buffer(
+            buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid,
+            H3_TOKEN_TAG | h3_encode_token(UInt64(bid), OP_PROVIDE_BUF),
+        )
+
+    if not loop._handler._h3.multishot_active:
+        var ms_addr = Int(loop._handler._h3.msghdr_template)
+        var ms_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+            unsafe_from_address=ms_addr
+        )
+        loop.submit_recvmsg_multishot(
+            loop._handler._h3.udp_handle.raw(), ms_ptr, PBUF_GROUP_ID,
+            H3_TOKEN_TAG | h3_encode_token(UInt64(0), OP_RECVMSG),
+        )
+        loop._handler._h3.multishot_active = True
+
+
+def h3_drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
+    """Drain the embedded H3 server's `pending_submits` (sendmsg / timeout)
+    into the proxy loop. Port of navette's `drain_pending_submits`, tagging
+    every token with `H3_TOKEN_TAG`. Call each tick after `h3_post_poll`.
+    """
+    var submits = loop._handler._h3.pending_submits^
+    loop._handler._h3.pending_submits = List[H3PendingSubmit]()
+
+    for i in range(len(submits)):
+        var s = submits[i].copy()
+        if s.kind == OP_SENDMSG:
+            var tx_id = s.slot_idx
+            var inner = h3_encode_token(tx_id, OP_SENDMSG)
+            if inner not in loop._handler._h3.tx_slot_idx_by_token:
+                continue
+            var tx_idx = loop._handler._h3.tx_slot_idx_by_token[inner]
+            var msghdr_addr = Int(
+                loop._handler._h3.tx_slots[tx_idx][].msghdr_buf
+            )
+            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=msghdr_addr
+            )
+            try:
+                loop.submit_sendmsg(
+                    loop._handler._h3.udp_handle.raw(),
+                    msghdr_ptr,
+                    H3_TOKEN_TAG | inner,
+                )
+            except:
+                loop._handler._h3.pending_submits.append(s.copy())
+        elif s.kind == OP_TIMEOUT:
+            var ts_addr = Int(loop._handler._h3.timeout_ts)
+            var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+                unsafe_from_address=ts_addr
+            )
+            var inner = h3_encode_token(s.slot_idx, OP_TIMEOUT)
+            try:
+                loop.submit_timeout(ts_ptr, H3_TOKEN_TAG | inner)
+            except:
+                loop._handler._h3.pending_submits.append(s.copy())
+
+
+def _run_tick(mut loop: CompletionLoop[ProxyHandler]) raises:
+    """One event-loop iteration: poll the ring, then run the embedded H3
+    server's batch flush + per-tick housekeeping, then drain both the TCP
+    proxy paths and the H3 backend follow-ups.
+
+    Extracted from `main`'s `while True` so the loop body lowers as its own
+    small codegen unit rather than inflating `main`. `on_flush` also runs
+    the `ForwardingHandler` callbacks, which park forwarded requests for
+    `h3_collect_forwards` to turn into backend connects.
+    """
+    loop.poll(wait_nr=1)
+    loop._handler._h3.on_flush()
+    h3_collect_forwards(loop)
+    h3_post_poll(loop)
+    h3_drain_pending_submits(loop)
+    _drain_pending_submits(loop)
+    _drain_h3_backend_submits(loop)
+
+
+# ---------------------------------------------------------------------------
 # Upstream / CLI parsing
 # ---------------------------------------------------------------------------
 
@@ -1148,6 +1469,36 @@ def main() raises:
     h2_alpn.append(String("h2"))
     h2_client_config.set_alpn_protocols(h2_alpn)
 
+    # ── H3/QUIC frontend ─────────────────────────────────────────────────
+    #
+    # The embedded H3 server reuses the proxy's TLS material (same cert/key)
+    # and its own UDP listener. Each inbound H3 request is forwarded to the
+    # H1 backend over a fresh TCP+TLS+H1Session round-trip; the backend TLS
+    # client config is the SAME `h1_client_config` the H1 path uses, reached
+    # by address from `ProxyShared` after the handler is moved into the loop.
+    var h3_port = _getenv_int(String("H3_PORT"), 8444)
+    var h3_quic_config = QuicServerConfig(
+        tls.shared(), Span(proxy_cert), Span(proxy_key),
+        policy=EarlyDataPolicy.off(),
+    )
+    var h3_sock = udp_listener(h3_port)
+    var h3_tp = default_transport_params()
+
+    # H3-backend registry: dial target + SNI. The long-lived TLS config
+    # ADDRESSES are published below, after the handler is moved into the
+    # loop (so they point at the stable, in-loop copies). No global needed.
+    var h3_registry = H3BackendRegistry(
+        backend_addr=h1_backend_addr, backend_host=backend_host.copy()
+    )
+
+    var h3_server = H3UdpServer[ForwardingHandler](
+        h3_sock^,
+        TlsBackend(other=tls),
+        h3_quic_config^,
+        h3_tp^,
+        make_forwarding_handler,
+    )
+
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
     var bind_addr = SocketAddrV4(0, 0, 0, 0, port=listen_port)
@@ -1157,6 +1508,9 @@ def main() raises:
 
     print(
         "mojo-proxy: listening on https://127.0.0.1:" + String(listen_port)
+    )
+    print(
+        "mojo-proxy: H3 (QUIC) listening on udp/" + String(h3_port)
     )
     print(
         "mojo-proxy: H1 backend at https://"
@@ -1180,16 +1534,32 @@ def main() raises:
         h1_backend_addr=h1_backend_addr,
         h2_backend_addr=h2_backend_addr,
         backend_host=backend_host,
+        h3_backends=h3_registry^,
+        h3=h3_server^,
     )
-    var loop = CompletionLoop[ProxyHandler](handler^, sq_entries=256)
+    # sq_entries bumped from 256 to 4096: the H3 path adds provide_buffers
+    # (1024) + multishot recvmsg + timeout + per-stream sendmsg on top of the
+    # TCP accept/recv/send/connect ops; 256 would overflow under load.
+    var loop = CompletionLoop[ProxyHandler](handler^, sq_entries=4096)
+
+    # Now that the handler (and its `tls` + `h1_client_tls_config`) lives at
+    # a stable address inside the loop, publish those addresses to the H3
+    # backend registry so `open_backend` can build backend TLS connections.
+    loop._handler.publish_h3_backend_config_addrs()
 
     # Submit the initial accept.
     loop.submit_accept(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
+    # Bootstrap the embedded H3 server (provide-buffers + multishot recvmsg +
+    # periodic timeout), all on H3-tagged tokens.
+    h3_bootstrap(loop)
+
     # Event loop. Drain queued submissions from the handler after every
     # poll() tick — handlers cannot submit from inside on_complete
     # because the trait signature does not give them a loop reference.
+    # The per-tick body is extracted into `_run_tick` to keep `main`'s
+    # codegen unit small (large monolithic `main` bodies that mix the
+    # generic loop with many free-function calls stress the lowering pass).
     while True:
-        loop.poll(wait_nr=1)
-        _drain_pending_submits(loop)
+        _run_tick(loop)
         _ = listener  # anchor: keep listener fd alive for io_uring
