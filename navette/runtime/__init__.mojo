@@ -1,19 +1,13 @@
-"""navette runtime — submission-side I/O capability layer.
+"""navette runtime — socket setup helpers.
 
-The `Io` and `UdpIo` traits abstract the H1/H2/H3 servers' I/O calls
-behind a small set of submission verbs. `IoUring` and `IoUringUdp`
-are the io_uring-backed impls today. Future impls (KTlsIo, AsyncIo,
-epoll-based fallbacks) plug in behind the same trait.
+Thin wrappers over the Linux socket syscalls the example servers use to
+create listeners and client connections (`tcp_listener`, `udp_listener`,
+`tcp_connect`, `udp_connect`, `tcp_v4_nonblocking`).
 
-This lives in navette (not Boucle) because the trait is a swap point
-for navette's executor strategy — see the structured-async direction.
-Boucle stays neutral on which executor seam a consumer adopts.
+The event loop itself is boucle's `CompletionLoop` / `BatchCompletionLoop`,
+which the H1/H2/H3 server runtimes drive directly.
 """
 
-from .io_trait import Io
-from .io_uring import IoUring
-from .udp_io_trait import UdpIo
-from .io_uring_udp import IoUringUdp
 from .socket_helpers import (
     tcp_listener,
     udp_listener,

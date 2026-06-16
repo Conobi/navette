@@ -20,7 +20,6 @@ from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.h1.handler_server import H1HandlerServer
-from navette.runtime.io_uring import IoUring
 from navette.tls import TlsServerConfig, TlsConnection
 from navette.tls.lib import TlsBackend, SharedLibrary
 from bench.lib.handler import (
@@ -250,7 +249,7 @@ struct H1ServerHandler(CompletionHandler):
             )
         )
 
-    def _queue_recv(mut self, idx: Int):
+    def _queue_recv(mut self, idx: Int) raises:
         if self.connections[idx][].recv_in_flight:
             return
         self.connections[idx][].recv_in_flight = True
@@ -263,7 +262,7 @@ struct H1ServerHandler(CompletionHandler):
             )
         )
 
-    def _queue_send(mut self, idx: Int):
+    def _queue_send(mut self, idx: Int) raises:
         if self.connections[idx][].send_in_flight:
             return
         if len(self.connections[idx][].send_buf) == 0:
@@ -280,7 +279,7 @@ struct H1ServerHandler(CompletionHandler):
 
     # --- Staging helper ---
 
-    def _stage_send(mut self, idx: Int, var data: List[UInt8]):
+    def _stage_send(mut self, idx: Int, var data: List[UInt8]) raises:
         if len(data) == 0:
             return
         if self.connections[idx][].send_in_flight:
@@ -457,9 +456,9 @@ struct H1ServerHandler(CompletionHandler):
 # ---------------------------------------------------------------------------
 
 
-def _drain_pending_submits(mut io: IoUring[H1ServerHandler]) raises:
-    var submits = io.loop._handler.pending_submits^
-    io.loop._handler.pending_submits = List[PendingSubmit]()
+def _drain_pending_submits(mut io: CompletionLoop[H1ServerHandler]) raises:
+    var submits = io._handler.pending_submits^
+    io._handler.pending_submits = List[PendingSubmit]()
 
     for i in range(len(submits)):
         var s = submits[i].copy()
@@ -467,47 +466,47 @@ def _drain_pending_submits(mut io: IoUring[H1ServerHandler]) raises:
 
         if s.kind == _SUBMIT_ACCEPT:
             try:
-                io.loop.submit_accept_multishot(s.fd, token)
+                io.submit_accept_multishot(s.fd, token)
             except:
                 # SQ full — re-queue for next poll iteration.
-                io.loop._handler.pending_submits.append(s.copy())
+                io._handler.pending_submits.append(s.copy())
         elif s.kind == _SUBMIT_RECV:
-            var idx = io.loop._handler._find_index(s.conn_id)
+            var idx = io._handler._find_index(s.conn_id)
             if idx < 0:
                 # Connection gone — clear the in-flight flag would be moot,
                 # just skip.
                 continue
             var raw_addr = Int(
-                io.loop._handler.connections[idx][].recv_buf.unsafe_ptr()
+                io._handler.connections[idx][].recv_buf.unsafe_ptr()
             )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
             try:
-                io.loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
+                io.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
             except:
                 # SQ full — mark not-in-flight so it can be re-queued.
-                io.loop._handler.connections[idx][].recv_in_flight = False
-                io.loop._handler.pending_submits.append(s.copy())
+                io._handler.connections[idx][].recv_in_flight = False
+                io._handler.pending_submits.append(s.copy())
         elif s.kind == _SUBMIT_SEND:
-            var idx = io.loop._handler._find_index(s.conn_id)
+            var idx = io._handler._find_index(s.conn_id)
             if idx < 0:
                 continue
-            var n = len(io.loop._handler.connections[idx][].send_buf)
+            var n = len(io._handler.connections[idx][].send_buf)
             if n == 0:
                 continue
             var raw_addr = Int(
-                io.loop._handler.connections[idx][].send_buf.unsafe_ptr()
+                io._handler.connections[idx][].send_buf.unsafe_ptr()
             )
             var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
                 unsafe_from_address=raw_addr
             )
             try:
-                io.loop.submit_send(s.fd, buf_ptr, UInt(n), token)
+                io.submit_send(s.fd, buf_ptr, UInt(n), token)
             except:
                 # SQ full — mark not-in-flight so it can be re-queued.
-                io.loop._handler.connections[idx][].send_in_flight = False
-                io.loop._handler.pending_submits.append(s.copy())
+                io._handler.connections[idx][].send_in_flight = False
+                io._handler.pending_submits.append(s.copy())
 
 
 # ---------------------------------------------------------------------------
@@ -620,13 +619,13 @@ def main() raises:
         tls_lib=tls_lib_opt^,
         server_tls_config=server_tls_config_opt^,
     )
-    var io = IoUring[H1ServerHandler](handler^, sq_entries=4096)
+    var io = CompletionLoop[H1ServerHandler](handler^, sq_entries=4096)
 
     # Initial accept submission.
-    io.loop.submit_accept_multishot(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
+    io.submit_accept_multishot(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
 
     # Event loop.
     while True:
-        io.loop.poll(wait_nr=1)
+        io.poll(wait_nr=1)
         _drain_pending_submits(io)
         _ = listener
