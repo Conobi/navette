@@ -4,7 +4,7 @@
 # Build:
 #   docker build -t navette-bench:latest \
 #       --build-context boucle=../boucle \
-#       --build-context simdjson=../json-simd-mojo \
+#       --build-context jsonette=../jsonette \
 #       -f bench/Dockerfile .
 
 # ---------------------------------------------------------------------------
@@ -58,11 +58,11 @@ EOF
 RUN uv sync
 
 # Copy boucle source (from --build-context boucle=../boucle) and
-# json-simd-mojo (from --build-context simdjson=../json-simd-mojo).
-# `mojox build` consumes them via -I /boucle / -I /simdjson; neither
+# jsonette (from --build-context jsonette=../jsonette).
+# `mojox build` consumes them via -I /boucle / -I /jsonette; neither
 # is installed as a Python package.
 COPY --from=boucle . /boucle
-COPY --from=simdjson . /simdjson
+COPY --from=jsonette . /jsonette
 
 # Copy the rest of the source tree, then re-stamp the stub pyproject
 # so the venv mojox we installed earlier isn't disturbed by uv
@@ -92,9 +92,9 @@ RUN mkdir -p lib && cp crates/librustls-mojo/target/release/liblibrustls_mojo.so
 # Build the three benchmark server binaries directly via the venv mojox
 # (bypassing `uv run` so uv doesn't try to re-resolve the (now-stubbed)
 # project).
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/servers/h1_server.mojo -o /bench-h1
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/servers/h2_server.mojo -o /bench-h2
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /simdjson bench/servers/h3_server.mojo -o /bench-h3
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /jsonette bench/servers/h1_server.mojo -o /bench-h1
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /jsonette bench/servers/h2_server.mojo -o /bench-h2
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle -I /jsonette bench/servers/h3_server.mojo -o /bench-h3
 RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build -I . -I /boucle bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------

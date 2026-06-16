@@ -29,7 +29,7 @@ build-navette:
 	    echo "[setup] building navette-bench:latest"; \
 	    docker build -t navette-bench:latest \
 	        --build-context boucle=$(REPO_ROOT)/../boucle \
-	        --build-context simdjson=$(REPO_ROOT)/../json-simd-mojo \
+	        --build-context jsonette=$(REPO_ROOT)/../jsonette \
 	        -f $(REPO_ROOT)/bench/Dockerfile $(REPO_ROOT); \
 	else \
 	    echo "[setup] navette-bench:latest exists (skip)"; \

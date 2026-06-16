@@ -21,9 +21,7 @@ from navette.h2.h2_sync_server import CoroStreamCtx as H2CoroStreamCtx
 from navette.h3.h3_sync_server import CoroStreamCtx as H3CoroStreamCtx
 from interop.file_io import read_file
 
-from simdjson.parser import Parser
-from simdjson.document import Document
-from simdjson.value import Value
+from jsonette.document import parse
 
 from bench.lib.json_writer import (
     write_bytes,
@@ -364,38 +362,31 @@ struct DatasetItem(Copyable, Movable, ImplicitlyDestructible):
 
 
 # ---------------------------------------------------------------------------
-# Dataset loader (simdjson)
+# Dataset loader (jsonette)
 # ---------------------------------------------------------------------------
 
 
-def _build_quoted_string(mut doc: Document, val: Value) raises -> List[UInt8]:
-    """Render *val* (a JSON string) as an escaped, double-quoted byte fragment."""
-    var s = val.get_string(doc)
+def _build_quoted_string(s: String) raises -> List[UInt8]:
+    """Render a JSON string as an escaped, double-quoted byte fragment."""
     var out = List[UInt8]()
     write_str_escaped(out, s.as_bytes())
     return out^
 
 
-def _build_tags_array(mut doc: Document, tags: Value) raises -> List[UInt8]:
-    """Render a JSON array of strings as a single pre-escaped byte fragment."""
+def _build_tags_array(tags: List[String]) raises -> List[UInt8]:
+    """Render a list of strings as a single pre-escaped JSON-array byte fragment."""
     var out = List[UInt8]()
     out.append(UInt8(ord("[")))
-    var n = tags.count(doc)
-    var i = 0
-    while i < n:
+    for i in range(len(tags)):
         if i > 0:
             out.append(UInt8(ord(",")))
-        var s = tags.at(doc, i).get_string(doc)
-        write_str_escaped(out, s.as_bytes())
-        i += 1
+        write_str_escaped(out, tags[i].as_bytes())
     out.append(UInt8(ord("]")))
     return out^
 
 
-def _build_rating_object(mut doc: Document, rating: Value) raises -> List[UInt8]:
+def _build_rating_object(score: UInt64, count: UInt64) raises -> List[UInt8]:
     """Render the rating object {score, count} as a pre-escaped byte fragment."""
-    var score = rating.get(doc, String("score")).get_uint(doc)
-    var count = rating.get(doc, String("count")).get_uint(doc)
     var out = List[UInt8]()
     write_bytes(out, String('{"score":').as_bytes())
     write_uint(out, score)
@@ -406,7 +397,7 @@ def _build_rating_object(mut doc: Document, rating: Value) raises -> List[UInt8]
 
 
 def _load_dataset(path: String) -> List[DatasetItem]:
-    """Parse *path* with simdjson and materialise pre-escaped DatasetItems.
+    """Parse *path* with jsonette and materialise pre-escaped DatasetItems.
 
     Returns an empty list on any error so the bench still boots when the
     data mount is absent.
@@ -420,24 +411,40 @@ def _load_dataset(path: String) -> List[DatasetItem]:
         return items^
 
     try:
-        var parser = Parser()
-        var doc = parser.parse(raw^)
+        var doc = parse(raw)
         var root = doc.root()
-        if not root.is_array(doc):
+        if not root.is_array():
             print("bench: warning: dataset root is not an array")
             return items^
-        var n = root.count(doc)
+        var n = root.len()
         var i = 0
         while i < n:
-            var item = root.at(doc, i)
-            var id = item.get(doc, String("id")).get_uint(doc)
-            var price = item.get(doc, String("price")).get_uint(doc)
-            var quantity = item.get(doc, String("quantity")).get_uint(doc)
-            var active = item.get(doc, String("active")).get_bool(doc)
-            var name_quoted = _build_quoted_string(doc, item.get(doc, String("name")))
-            var category_quoted = _build_quoted_string(doc, item.get(doc, String("category")))
-            var tags_array = _build_tags_array(doc, item.get(doc, String("tags")))
-            var rating_object = _build_rating_object(doc, item.get(doc, String("rating")))
+            var item = root.elem(i)
+            var id = item.field(String("id")).get_uint()
+            var price = item.field(String("price")).get_uint()
+            var quantity = item.field(String("quantity")).get_uint()
+            var active = item.field(String("active")).get_bool()
+            var name_quoted = _build_quoted_string(
+                item.field(String("name")).get_string()
+            )
+            var category_quoted = _build_quoted_string(
+                item.field(String("category")).get_string()
+            )
+
+            var tags_val = item.field(String("tags"))
+            var tags_list = List[String]()
+            var tag_n = tags_val.len()
+            var ti = 0
+            while ti < tag_n:
+                tags_list.append(tags_val.elem(ti).get_string())
+                ti += 1
+            var tags_array = _build_tags_array(tags_list)
+
+            var rating_val = item.field(String("rating"))
+            var score = rating_val.field(String("score")).get_uint()
+            var count = rating_val.field(String("count")).get_uint()
+            var rating_object = _build_rating_object(score, count)
+
             items.append(
                 DatasetItem(
                     id=id,

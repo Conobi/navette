@@ -29,7 +29,7 @@ Verified by `grep -rnE 'quictls/openssl|Tencent/tquic|axboe/liburing|nghttp2/ngh
 | `http2jp/hpack-test-case`             | (latest)                      | `conformance/scripts/download_hpack_stories.py` L17         | Medium — corpus is small but irreplaceable test vectors. |
 | `http2jp/http2-frame-test-case`       | (latest)                      | `conformance/scripts/convert_h2_vectors.py` L22             | Medium — same. |
 
-Not in scope (already reproducible from package indexes): cargo crates (rustls, aws-lc-rs, etc.), Python packages (h2, hpack, etc.), Mojo siblings (boucle, json-simd-mojo — both publishable via mojox-build).
+Not in scope (already reproducible from package indexes): cargo crates (rustls, aws-lc-rs, etc.), Python packages (h2, hpack, etc.), Mojo siblings (boucle, jsonette — both publishable via mojox-build).
 
 ## Recommended approach
 

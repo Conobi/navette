@@ -103,9 +103,9 @@ Transitive (resolved by uv, not directly imported): `attrs`, `certifi`, `cffi`, 
 | Sibling       | Source                                            | Purpose                                                  | Consumers in navette                                                                                                |
 |---------------|---------------------------------------------------|----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
 | **boucle**    | `$HOME/Projets/perso/boucle` (publishable via mojox-build, 2026-05-13) | io_uring loop, raw fd handles, stackful coroutines, Linux syscall raw types. | `src/io/{io_uring,io_uring_udp,udp_io,tcp_socket,udp_socket}.mojo`, `src/h{2,3}/*streaming_server.mojo`, `src/tls/lib.mojo`. |
-| **json-simd-mojo** | `$HOME/Projets/perso/json-simd-mojo` — **bench-only**, NOT a navette runtime dep | simdjson bindings.                                       | `bench/handler.mojo` only. Consumed by `bench/build.sh` via `docker build --build-context simdjson=…`; does NOT flow through `pyproject.toml`. |
+| **jsonette** | `$HOME/Projets/perso/jsonette` — **bench-only**, NOT a navette runtime dep | jsonette bindings.                                       | `bench/handler.mojo` only. Consumed by `bench/build.sh` via `docker build --build-context jsonette=…`; does NOT flow through `pyproject.toml`. |
 
-Resolution: **boucle** is a navette runtime dep — declared in `pyproject.toml` (project + build-system + tool.uv.sources) and resolved by PEP 517 / `uv`. **json-simd-mojo** is only used by the HttpArena bench harness, so it lives outside the wheel/sdist boundary: the bench Dockerfile mounts a sibling checkout via `--build-context`. Removed from `pyproject.toml` on 2026-05-19 to slim the PEP 517 build env (one fewer private-SSH-only clone).
+Resolution: **boucle** is a navette runtime dep — declared in `pyproject.toml` (project + build-system + tool.uv.sources) and resolved by PEP 517 / `uv`. **jsonette** is only used by the HttpArena bench harness, so it lives outside the wheel/sdist boundary: the bench Dockerfile mounts a sibling checkout via `--build-context`. Removed from `pyproject.toml` on 2026-05-19 to slim the PEP 517 build env (one fewer private-SSH-only clone).
 
 ---
 
@@ -222,7 +222,7 @@ Vector directories under `conformance/vectors/`: `rfc7541` (HPACK), `rfc9000` (Q
 | **TQUIC repo deletion**                                                   | Perf comparator only               | Mirror plan in §4.1.                             |
 | **liburing version drift**                                                | io_uring backend stability         | Audit found no in-tree version pin — siblings install via apt. Add explicit pin if a future Dockerfile begins vendoring. |
 | **rustls `--features insecure` accidentally shipped**                     | Dev escape hatch in release binary | `scripts/build_rustls.sh release` + post-build `nm` check; `scripts/check_integrations.sh` WARNs on stray insecure symbol. |
-| **Sibling repo (boucle) without pyproject `[build-system]`** | `uv add` against it fails       | Fixed 2026-05-13 — boucle has `[build-system]` + `[tool.mojox-build]`. (json-simd-mojo same fix at the time but removed from pyproject.toml 2026-05-19 — bench-only, doesn't go through PEP 517.) |
+| **Sibling repo (boucle) without pyproject `[build-system]`** | `uv add` against it fails       | Fixed 2026-05-13 — boucle has `[build-system]` + `[tool.mojox-build]`. (jsonette same fix at the time but removed from pyproject.toml 2026-05-19 — bench-only, doesn't go through PEP 517.) |
 | **Mojo flat-layout setuptools-discovery footgun**                          | Library posture upgrade blocked    | Documented (§1.3 plan); requires `src/navette/` reshuffle. |
 
 ---

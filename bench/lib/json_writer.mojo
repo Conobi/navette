@@ -1,7 +1,7 @@
 # bench/json_writer.mojo
 #
 # Hand-rolled JSON byte writer for the HttpArena bench /json endpoint.
-# simdjson-mojo ships only a parser; serialisation is on us. The writer
+# jsonette ships only a parser; serialisation is on us. The writer
 # appends raw bytes into a caller-owned List[UInt8] so the same scratch
 # buffer can be reused across requests without per-call allocation.
 

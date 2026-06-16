@@ -18,7 +18,7 @@ full-coverage profiling (json, static, gateway, db, grpc, …) use
 ## One-time setup
 
 ```bash
-# Build navette image (uses bench/Dockerfile + boucle/json-simd-mojo
+# Build navette image (uses bench/Dockerfile + boucle/jsonette
 # build contexts):
 bash bench/build.sh
 
