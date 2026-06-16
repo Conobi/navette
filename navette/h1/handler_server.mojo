@@ -2,7 +2,7 @@
 #
 # Runtime adapter that dispatches a StreamHandler against a sans-I/O
 # H1 ServerConnection. Owns the connection state machine and translates
-# lifecycle events into handler callbacks (M2.5a §8.1).
+# lifecycle events into handler callbacks.
 
 from std.memory import Span
 from navette.h1.config import ParseConfig
@@ -24,7 +24,7 @@ from navette.http.status import StatusCode
 struct H1HandlerServer[H: StreamHandler](Movable):
     """Drive a StreamHandler from an H1 ServerConnection. Request-at-a-time
     in v1: the entire request body is materialized before on_request fires.
-    HC-4 will introduce streaming inbound bodies."""
+    A future version will introduce streaming inbound bodies."""
 
     var _conn: ServerConnection
     var handler: Self.H

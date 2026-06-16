@@ -450,7 +450,6 @@ comptime HUFFMAN_EOS_BITS: UInt8 = 30
 # ---------------------------------------------------------------------------
 # Huffman decode: flat trie + 8-bit root fast-path
 #
-# Spec: specs/2026-05-04-qpack-huffman-table-driven.md
 # Reference: TQUIC `.research/tquic/src/h3/qpack/huffman.rs:90-141` (4-bit nibble
 # state machine). We use a derivative: per-call-built flat trie with a 256-entry
 # 8-bit root fast-path table. Same asymptotic cost (O(N)) as TQUIC's table; the
@@ -703,7 +702,7 @@ def _huffman_decode_with_tables(
 def huffman_decode(data: List[UInt8]) raises -> String:
     """Huffman-decode bytes per RFC 7541 §5.2.
 
-    Algorithm (spec: specs/2026-05-04-qpack-huffman-table-driven.md):
+    Algorithm:
       Tier 1 — 256-entry root fast-path table; resolves any symbol whose
                code length is ≤8 bits in a single lookup (covers most ASCII).
       Tier 2 — bit-by-bit walk through a flat trie for codes ≥9 bits.
@@ -967,8 +966,6 @@ struct QpackDecoder(Copyable, Movable):
     table at construction time. Production callers (`H3Connection`) hold
     one `QpackDecoder` per connection, so the ~13 µs build cost amortizes
     across every QPACK field section the connection ever sees.
-
-    See specs/2026-05-04-qpack-huffman-table-driven.md.
     """
 
     var _huff_trie: List[_HuffTrieNode]
@@ -1000,7 +997,6 @@ struct QpackDecoder(Copyable, Movable):
         then decodes each field instruction until data is exhausted.
 
         Reuses the cached Huffman decode tables stored on the decoder.
-        See specs/2026-05-04-qpack-huffman-table-driven.md.
         """
         if len(data) < 2:
             raise "QPACK: field section too short"

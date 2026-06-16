@@ -1,6 +1,6 @@
 # src/http/sse.mojo
 #
-# Server-Sent Events (text/event-stream) — M2.5b §7.3.
+# Server-Sent Events (text/event-stream).
 #
 # WHATWG HTML Living Standard §9.2 "Server-sent events" subset:
 #   https://html.spec.whatwg.org/multipage/server-sent-events.html
@@ -271,7 +271,7 @@ def try_write_event(
     EventStreamWriter struct wrapping an `UnsafePointer[ResponseWriter]`,
     but that contradicts the sketch's own "does NOT take ownership" line
     and adds lifetime risk in Mojo 0.26.2. SSE writers need no per-call
-    state, so a free function is both simpler and safer. HC-4/M5 can
+    state, so a free function is both simpler and safer. A future change can
     promote this to a struct if a real use case for state emerges."""
     var buf = String("")
 

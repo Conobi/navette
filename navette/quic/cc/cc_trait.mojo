@@ -1,12 +1,12 @@
 # src/quic/cc/trait.mojo
 # Shared types + method-contract documentation for CC implementations.
-# See specs/2026-04-15-m4a-quic-cc-core.md §3 for the full contract.
+# Implements the QUIC congestion-control core per RFC 9002.
 
-# --- Module-scope constants (RFC 9002 + spec §3.1) ---
+# --- Module-scope constants (RFC 9002 §7) ---
 
 comptime CC_KIND_CUBIC: UInt8 = 0
 comptime CC_KIND_DUMMY: UInt8 = 1
-# Reserved for M4b / later: CC_KIND_BBR = 2, CC_KIND_BBR3 = 3.
+# Reserved for later: CC_KIND_BBR = 2, CC_KIND_BBR3 = 3.
 
 comptime MIN_WINDOW_PACKETS: UInt64 = 2            # RFC 9002 §7.2
 comptime INITIAL_WINDOW_PACKETS: UInt64 = 10       # RFC 9002 §7.2
@@ -15,7 +15,7 @@ comptime LOSS_REDUCTION_NUM: UInt64 = 1            # 0.5 expressed as num/den fo
 comptime LOSS_REDUCTION_DEN: UInt64 = 2
 comptime PERSISTENT_CONG_THRESHOLD: UInt64 = 3     # RFC 9002 §7.6.2
 
-# Sentinel for Dummy CC's unlimited cwnd. Per Task 0 spike, UInt64.MAX works as a comptime initializer.
+# Sentinel for Dummy CC's unlimited cwnd. UInt64.MAX works as a comptime initializer.
 comptime UINT64_UNLIMITED: UInt64 = UInt64.MAX
 
 

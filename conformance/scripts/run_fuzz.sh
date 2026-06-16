@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run the fuzz-harness suite per specs/2026-05-21-fuzz-harnesses-critical-parsers.md.
+# Run the fuzz-harness suite.
 #
 # Mirrors conformance/scripts/run_tests.sh shape but with FUZZ_FILTER substring
 # match (vs CONFORMANCE_FILTER) and a separate HARNESSES list.

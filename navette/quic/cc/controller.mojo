@@ -1,6 +1,6 @@
 # src/quic/cc/controller.mojo
 # Tag-discriminated CC variant dispatcher.
-# Per Task 0 spike: nested-Copyable struct fields + kind tag work in Mojo 0.26.2.
+# Uses nested-Copyable struct fields plus a kind tag for variant dispatch.
 
 from navette.quic.cc.cc_trait import (
     AckedPacket, LostPacket,

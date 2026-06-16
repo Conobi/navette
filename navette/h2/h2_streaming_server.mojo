@@ -9,7 +9,7 @@
 # R8' compile-time budget: size_of[H2StreamingCtx]() < 96 KiB.
 # R1' grep gate: this file IS allowed to import boucle.stackful.
 #
-# Backpressure note (Sprint 2 design): write_chunk calls H2Connection.send_data
+# Backpressure note: write_chunk calls H2Connection.send_data
 # directly and returns. H2 flow control is handled by H2Connection internally —
 # oversized writes are queued in _pending_data and drained on WINDOW_UPDATE.
 # No WouldBlock handling is needed at this layer.
@@ -23,8 +23,6 @@
 # CoroYielder.yield_to_caller() is the suspension primitive (not .suspend()).
 # The helper functions next_chunk / write_chunk / finish call yield_to_caller
 # internally so handlers can use them directly.
-#
-# See plans/2026-04-27-sprint-2b-streaming.md.
 
 from std.collections import Dict, Optional
 from std.memory import Span, UnsafePointer

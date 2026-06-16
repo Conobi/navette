@@ -1,6 +1,6 @@
 # src/quic/cc/cubic.mojo
 # CUBIC congestion controller per RFC 9438 with HyStart++ (RFC 9406).
-# See specs/2026-04-15-m4a-quic-cc-core.md §4 for the full spec.
+# Implements the QUIC congestion-control core per RFC 9002.
 
 from std.bit import bit_width
 

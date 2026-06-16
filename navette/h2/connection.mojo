@@ -1234,7 +1234,7 @@ struct H2Connection(Movable):
             try:
                 var stream = self._streams[stream_id].copy()
                 if stream.data_received:
-                    # Trailers — Task 8 stub
+                    # Trailers — stub
                     self._handle_trailer_headers(frame, stream, events)
                     return
                 # Response headers (client receiving server response)

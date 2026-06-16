@@ -175,7 +175,7 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
 def serialize_request(request: Request) raises -> List[UInt8]:
     """Serialize a Request into HTTP/1.1 wire bytes.
 
-    M2.5a: Request.body is a RequestBody. Buffered bodies are emitted with a
+    Request.body is a RequestBody. Buffered bodies are emitted with a
     content-length header. Streaming bodies are not yet supported by the
     sans-I/O serializer (the H1Session adapter handles streaming separately).
     """

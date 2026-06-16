@@ -1,7 +1,7 @@
 # src/http/priority.mojo
 #
-# RFC 9218 Priority header (M2.5b §7.1). Pure parse/serialize — no I/O, no
-# integration with the H2/H3 PRIORITY_UPDATE frame (that lands in HC-4/M5).
+# RFC 9218 Priority header. Pure parse/serialize — no I/O, no
+# integration with the H2/H3 PRIORITY_UPDATE frame (that lands later).
 
 comptime DEFAULT_URGENCY = 3
 

@@ -1,7 +1,7 @@
 # src/http/mock_session.mojo
 #
-# In-memory H1 substrate for trait conformance tests (M2.5a §5).
-# Lives in src/, not tests/, so HC-4 / M5 / application code can import it
+# In-memory H1 substrate for trait conformance tests.
+# Lives in src/, not tests/, so application code can import it
 # without depending on test infrastructure. v1 only models H1 mode (single
 # in-flight request, no multiplexing).
 

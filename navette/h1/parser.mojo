@@ -815,9 +815,9 @@ def try_parse_request(
             return result^
 
     # --- Body framing (RFC 9112 Section 6, request side) ---
-    # M2.5a: Request.body is a RequestBody (buffered bytes or empty). Trailers
-    # on the request side are dropped here — see spec §5.12. Streaming variant
-    # is only produced by H1Session in M2.5a Task 19.
+    # Request.body is a RequestBody (buffered bytes or empty). Trailers
+    # on the request side are dropped here. The streaming variant
+    # is only produced by H1Session.
     var body_bytes = List[UInt8]()
     var msg_end: Int
 

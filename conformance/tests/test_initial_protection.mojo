@@ -3,7 +3,7 @@
 # RFC 9001 Appendix A.1–A.2 known-answer tests for QUIC initial packet
 # protection.
 #
-# As of §3.2 of plans/2026-05-13-deps-enhancement.md, this test no longer
+# This test no longer
 # imports `cryptography.hazmat` at runtime. The expected outputs are
 # pre-materialized in conformance/vectors/rfc9001/ by the oracle scripts:
 #

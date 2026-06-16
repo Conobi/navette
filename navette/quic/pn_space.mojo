@@ -456,7 +456,7 @@ struct PacketNumberSpace(Copyable, Movable):
         has advanced past latest (earlier range-ACKs may have been overwritten).
         Returns False if last_ae_acked_time_sent == 0 (no AE ACK ever received)
         or if it predates earliest.
-        Used by persistent-congestion detection (Task 9 / M4a §5.4)."""
+        Used by persistent-congestion detection (RFC 9002 §7.6)."""
         if self.last_ae_acked_time_sent == UInt64(0):
             return False   # no AE ACK ever received in this space
         if self.last_ae_acked_time_sent >= earliest:

@@ -22,7 +22,7 @@ comptime _REQ_BODY_EMPTY    = 2
 
 struct RequestBody(Movable):
     """Tagged union for request bodies: in-memory bytes, streaming
-    DetachedBody, or empty. See spec §5.12."""
+    DetachedBody, or empty."""
 
     var _tag: Int
     var _bytes: List[UInt8]

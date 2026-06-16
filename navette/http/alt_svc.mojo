@@ -1,7 +1,7 @@
 # src/http/alt_svc.mojo
 #
-# RFC 7838 Alt-Svc header (M2.5b §7.2). Ships parsing, the entry struct,
-# and an in-memory AltSvcCache keyed by Origin that M6's HttpClient will
+# RFC 7838 Alt-Svc header. Ships parsing, the entry struct,
+# and an in-memory AltSvcCache keyed by Origin that the HttpClient will
 # consult during connection establishment.
 
 from std.collections.dict import Dict, KeyElement

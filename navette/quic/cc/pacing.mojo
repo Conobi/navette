@@ -1,8 +1,8 @@
 # src/quic/cc/pacing.mojo
 # Token-bucket pacer — TQUIC-style, mirrors TQUIC src/congestion_control/pacing.rs.
-# See specs/2026-04-15-m4a-quic-cc-core.md §6 for the full spec.
+# Implements the QUIC congestion-control core per RFC 9002.
 
-# --- Module-scope constants (§6.2) ---
+# --- Module-scope constants ---
 
 comptime PACER_MIN_BURST_PACKETS: UInt64 = 10
 comptime PACER_MAX_BURST_PACKETS: UInt64 = 128

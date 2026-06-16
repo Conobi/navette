@@ -2,7 +2,7 @@
 #
 # ContentDecoder — streaming gzip / brotli / identity decoder backed by
 # libcompress_mojo.so FFI (lcm_gzip_* / lcm_br_*). Previously lived in
-# librustls_mojo.so; split out per spec 2026-05-17-compress-shim-split.md
+# librustls_mojo.so; split into its own shim
 # so a future zlib/brotli CVE is a `apt upgrade` away, not a Navette release.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer

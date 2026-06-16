@@ -1,6 +1,6 @@
 # src/http/session.mojo
 #
-# Client-side session abstraction (M2.5a §5.11). Defines the Session trait
+# Client-side session abstraction. Defines the Session trait
 # and the RequestHandle owning state container.
 
 from std.collections.deque import Deque
@@ -108,10 +108,10 @@ trait Session(Movable, ImplicitlyDestructible):
       - Same-session calls (calling submit on the SAME session from inside
         a handler driven by run_until) are UNSUPPORTED in v1.
 
-    NOTE on `run_until` API: spec §5.11 sketches a `List[RequestHandle]`
-    parameter, but Mojo 0.26.2's `List` and `Deque` require Copyable element
+    NOTE on `run_until` API: a `List[RequestHandle]` parameter would be
+    natural, but Mojo 0.26.2's `List` and `Deque` require Copyable element
     types and `RequestHandle` is move-only (it owns Optional[RecvBody] /
-    Optional[Response]). M2.5a passes a `Deque[UInt64]` of handle IDs that
+    Optional[Response]). This API passes a `Deque[UInt64]` of handle IDs that
     the session resolves internally. Callers register handles via `submit`,
     keep them, and pass the corresponding IDs to wait on."""
 

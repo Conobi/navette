@@ -3,14 +3,12 @@
 # HTTP/3 server-side adapter — sans-IO codec wrapper. Feed inbound QUIC
 # datagrams via `feed_datagram_from_buffer()`; drain outbound datagrams via
 # `drain()`. Translates H3Connection events into a per-stream hand-written
-# state machine, NOT stackful coroutines (Sprint 2A Path A — mirrors
-# Sprint 1's H2CoroServer over QUIC).
+# state machine, NOT stackful coroutines (mirrors the H2CoroServer design
+# over QUIC).
 #
 # The "Coro" in `CoroStreamCtx` is preserved to mirror the H2 sister-file's
-# naming (Sprint 1 chose to leave it that way to minimise churn). A future
+# naming (left that way to minimise churn). A future
 # rename pass can unify both names — out of scope here.
-#
-# See plans/2026-04-27-sprint-2a-h1h3-sync.md.
 
 from std.collections import Dict, Optional
 from std.memory import Span, UnsafePointer
@@ -52,7 +50,7 @@ from navette.util.ptrbox import PtrBox
 # `ctx.request` (or for streaming POST bodies, polls `ctx.recv_body`),
 # and writes the response into `ctx.resp_writer`. It runs to completion
 # in one call — no `yield_to_caller`. Streaming-handler use cases are
-# served by `src/h3/h3_streaming_server.mojo` (Plan 2B).
+# served by `src/h3/h3_streaming_server.mojo`.
 
 comptime H3BodyFn = def (
     UnsafePointer[CoroStreamCtx, MutAnyOrigin]
@@ -70,7 +68,7 @@ struct CoroStreamCtx(Movable):
     request, body receiver, response writer, capabilities, and
     request/response bookkeeping.
 
-    No `coro_addr` field (Sprint 2A Path A — handler runs synchronously).
+    No `coro_addr` field (handler runs synchronously).
     No `unacked_bytes` (QUIC handles flow control internally).
     Stream IDs are UInt64 (QUIC uses 62-bit stream IDs, wider than H2's UInt32).
     """
@@ -202,7 +200,7 @@ struct H3CoroServer(Movable):
     """Drive per-stream state from an HTTP/3 H3Connection. Sans-IO:
     the caller feeds inbound QUIC datagrams via `feed_datagram_from_buffer()`
     and drains outbound datagrams via `drain()`. Each stream's user handler
-    runs synchronously when the request arrives (Sprint 2A Path A — no
+    runs synchronously when the request arrives (no
     stackful coroutines).
 
     Note: `_h3: H3Connection` already wraps and owns the `QuicConnection`
@@ -402,7 +400,7 @@ struct H3CoroServer(Movable):
     def _on_request(mut self, ev: H3Event) raises:
         """First HEADERS_RECEIVED: parse pseudo-fields into Request, allocate
         CoroStreamCtx on heap, register in streams dict, and run the handler
-        synchronously (Path A — no coroutine spawn).
+        synchronously (no coroutine spawn).
         If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end()."""
         var method_str = String("GET")
         var path_str = String("/")
@@ -576,7 +574,7 @@ struct H3CoroServer(Movable):
 
         R-2A-3: H3HandlerServer._drain_responses has identical logic but operates
         on _H3StreamCtx (not CoroStreamCtx) so it cannot be called directly here.
-        Ported verbatim from h3_coro_server.mojo; flagged for Sprint 4 dedup pass."""
+        Ported verbatim from h3_coro_server.mojo; flagged for a future dedup pass."""
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)

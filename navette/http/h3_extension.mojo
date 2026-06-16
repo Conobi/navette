@@ -1,8 +1,8 @@
 # src/http/h3_extension.mojo
 #
-# Standalone H3 trait + H3-specific per-stream context (M2.5a §5.10).
-# M2.5a ships scaffolding only — datagram methods are stubs that return
-# Closed until M5 wires up the QUIC datagram path.
+# Standalone H3 trait + H3-specific per-stream context.
+# This ships scaffolding only — datagram methods are stubs that return
+# Closed until the QUIC datagram path is wired up.
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional

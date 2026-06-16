@@ -39,7 +39,7 @@ struct Recovery(Movable):
             max_datagram_size: Max datagram size in bytes (default 1200).
                                Callers that used Recovery() continue to work unchanged.
             use_cubic: If True (default), use CUBIC CC. If False, use Dummy CC.
-                       Task 8/9 callers will thread max_datagram_size and now properly.
+                       Callers thread max_datagram_size through to the CC.
         """
         self.smoothed_rtt = INITIAL_RTT
         self.rttvar = INITIAL_RTTVAR
@@ -123,7 +123,7 @@ struct Recovery(Movable):
         """Track bytes when a packet is sent and notify CC.
 
         `pn` defaults to 0 for backward compatibility with existing call sites.
-        `connection.mojo` (Task 6) will pass the real PN.
+        `connection.mojo` passes the real PN.
         Note: pacer.on_sent is called at the actual send site by connection.mojo,
         not here, since the connection controls the send path.
         """
@@ -152,7 +152,7 @@ struct Recovery(Movable):
     def on_ack_received(mut self):
         """Reset PTO backoff on ACK receipt and refresh pacer capacity.
 
-        CC.on_packet_acked fan-out is called by connection.mojo (Task 9),
+        CC.on_packet_acked fan-out is called by connection.mojo,
         which iterates sent_packets to build AckedPacket records.
         Here we just reset PTO and sync the pacer with current CC state.
         """

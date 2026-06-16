@@ -3,17 +3,14 @@
 # HTTP/2 server-side adapter — sans-IO codec wrapper.  Feed inbound wire
 # bytes via `feed()`; drain outbound bytes via `drain()`.
 #
-# As of Sprint 1 Step 3 (Path A), per-stream concurrency is a
-# hand-written state machine, not a stackful coroutine.  The user's
-# request handler is invoked synchronously when a request is complete:
-# headers parsed, body (if any) accumulated.  This eliminates the
-# 64 KiB stack + ucontext swap + TLS reload per stream.
+# Per-stream concurrency is a hand-written state machine, not a stackful
+# coroutine.  The user's request handler is invoked synchronously when a
+# request is complete: headers parsed, body (if any) accumulated.  This
+# eliminates the 64 KiB stack + ucontext swap + TLS reload per stream.
 #
 # The "Coro" in the names is preserved to minimise churn in callers
 # (bench/h2_server.mojo, tests/test_h2_sync_server.mojo); a follow-up
-# sprint can rename to H2StreamServer / H2StreamCtx if needed.
-#
-# See plans/2026-04-27-h2-perf-roadmap-sprint-sequence.md § Sprint 1.
+# can rename to H2StreamServer / H2StreamCtx if needed.
 
 from std.collections import Dict
 from std.memory import Span, UnsafePointer
@@ -142,8 +139,8 @@ struct CoroStreamCtx(Movable):
 #   Request (248) + RecvBody (96) + ResponseWriter (216) + Capabilities (16)
 # = 576 B for the protocol holders, the rest being small ints/bools.
 #
-# Trimming the holders is out of scope for Sprint 1 (the architectural
-# 100× memory reduction is the headline). A future sprint may revisit.
+# Trimming the holders is out of scope here (the architectural
+# 100× memory reduction is the headline). A future change may revisit.
 #
 # The check fires inside `_check_stream_ctx_size` below, called at the
 # top of every H2CoroServer constructor — `comptime assert` cannot live
@@ -239,7 +236,7 @@ struct H2CoroServer(Movable):
     """Drive per-stream state from an HTTP/2 H2Connection.  Sans-IO:
     the caller feeds inbound bytes via `feed()` and drains outbound
     bytes via `drain()`.  Each stream's user handler runs synchronously
-    when the request arrives (Sprint 1 Path A — no stackful coroutines).
+    when the request arrives (no stackful coroutines).
     """
 
     var _conn: H2Connection

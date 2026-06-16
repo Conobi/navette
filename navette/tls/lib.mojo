@@ -11,7 +11,7 @@
 # Follows the same OwnedDLHandle pattern as conformance/lib/rustls.mojo, but
 # wraps the 13 TCP-TLS FFI symbols (4 config + 9 connection) plus the shared
 # rlsm_last_error helper. QUIC FFI symbols consolidated from
-# conformance/lib/rustls.mojo as of M3b.
+# conformance/lib/rustls.mojo.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
@@ -637,9 +637,9 @@ struct RustlsLibrary(Movable):
     ) -> Int32:
         """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success.
 
-        Q6 instrumentation out-params (both default-NULL, NULL-safe in Rust):
-          out_state_machine_us: rustls read_hs body µs (Q6 slot 1).
-          out_handle_lookup_us: with_mut handle-table lookup µs (Q6 slot 2).
+        Instrumentation out-params (both default-NULL, NULL-safe in Rust):
+          out_state_machine_us: rustls read_hs body µs (slot 1).
+          out_handle_lookup_us: with_mut handle-table lookup µs (slot 2).
         """
         return load_rlsm_quic_conn_read_hs(self._handle)(
             conn_handle, data, data_len,
@@ -765,7 +765,7 @@ struct RustlsLibrary(Movable):
 
     @always_inline
     def noop(self) -> Int32:
-        """No-op FFI call — for thunk-overhead microbench (Q5 follow-up).
+        """No-op FFI call — for thunk-overhead microbench.
         Returns 0. Body in Rust is `pub extern \"C\" fn rlsm_noop() -> i32 { 0 }`."""
         return load_rlsm_noop(self._handle)()
 

@@ -2,7 +2,7 @@
 #
 # HTTP/2 client session adapter.  Sans-I/O: feed inbound wire bytes,
 # drain outbound bytes.  Implements the Session trait for multiplexed
-# HTTP/2 client connections.  (M5.5 Task 8)
+# HTTP/2 client connections.
 
 from std.collections import Dict
 from std.collections.deque import Deque

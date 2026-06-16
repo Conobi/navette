@@ -7,7 +7,7 @@
 # time, in a follow-up commit. AC0 (RFC 7541 §C wire decode parity) and
 # AC0b (Divergence note) are satisfied by the decoder + tables alone.
 #
-# Divergence note (AC0b — see specs/2026-05-21-fuzz-harnesses-critical-parsers.md):
+# Divergence note:
 # This file MUST NOT share authorship with navette/h2/hpack.mojo. Concretely:
 #
 #  (a) Decoder dispatch: this file uses a single flat while-loop with explicit

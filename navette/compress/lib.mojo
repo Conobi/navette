@@ -6,7 +6,7 @@
 #
 # DecoderLimits — runtime decompression caps. The defaults sit here
 # rather than in the C wrapper so a CLI or library user can override
-# without rebuilding the .so. See spec §4.3.
+# without rebuilding the .so.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
@@ -37,7 +37,7 @@ struct DecoderLimits:
     """Runtime caps for streaming decompression.
 
     Limits are explicit knobs on the Mojo side, not magic constants in
-    the C wrapper (spec §4.3). A cap of 0 disables the corresponding
+    the C wrapper. A cap of 0 disables the corresponding
     check.
 
     - input_cap:  total compressed bytes that may be fed via successive

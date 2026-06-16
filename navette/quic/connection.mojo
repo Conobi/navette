@@ -185,7 +185,7 @@ def _tls_guard_tag_for(
     """Map a rustls QUIC alert byte to the matching `GUARD_TAG_TLS_*` token.
 
     The four C6 scenarios (F25/F26/F27/F29) each have an allowed alert-set
-    per the v3.1 spec AC-3.alert table:
+    per the v3.1 spec alert table:
 
       * F25 (KeyUpdate-in-Handshake) — exact alert 10 (unexpected_message).
       * F26 (KeyUpdate-in-1-RTT) — alert 47 (illegal_parameter) or 50 fallback.
@@ -233,8 +233,8 @@ def _tls_guard_tag_for(
 # ── SentStreamFrame ──────────────────────────────────────────────────
 #
 # Per-packet record of stream/flow-control/CID frames sent in the Application
-# space, used for ACK and loss processing (M3c).  STREAM/CRYPTO retransmission
-# for Initial/Handshake is still handled via SentPacket.frames (M3b).
+# space, used for ACK and loss processing.  STREAM/CRYPTO retransmission
+# for Initial/Handshake is still handled via SentPacket.frames.
 
 comptime SSF_STREAM: UInt8 = 0
 comptime SSF_RESET_STREAM: UInt8 = 1
@@ -463,7 +463,7 @@ struct QuicConnection(Movable):
     var pending_outbound_datagrams: List[List[UInt8]]
     # Current validated peer 4-tuple (RFC 9000 §9). Updated ONLY inside
     # `on_path_response_received` after a verified PATH_RESPONSE token+addr
-    # match (per AC17). The bench-server receive site MUST NOT mutate it
+    # match. The bench-server receive site MUST NOT mutate it
     # directly; all outbound traffic targets this address unless an active
     # validation is rerouting via `path_validator.pending`.
     var peer_addr: PathKey
@@ -481,7 +481,7 @@ struct QuicConnection(Movable):
     # `pending_new_cid_entries` normally without re-issuing.
     var initial_cids_emitted: Bool
     # Maps Application-space packet number -> list of stream-layer frames
-    # sent in that packet, for ACK/loss processing (M3c).
+    # sent in that packet, for ACK/loss processing.
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
     # ECN path validation state (RFC 9000 §13.4.2, RFC 9002 §7.9).
     var ecn_state: UInt8           # ECN_STATE_PROBING / ECN_STATE_CAPABLE / ECN_STATE_DISABLED
@@ -489,9 +489,9 @@ struct QuicConnection(Movable):
     var ecn_probe_pkts_sent: Int   # ECT(0) packets sent during probing phase
     var ecn_probe_first_pn: UInt64 # PN of first ECT(0) probe packet
 
-    # ── Plan B profile instrumentation (always present; off-build = dead) ──
+    # ── Profile instrumentation (always present; off-build = dead) ──
     #
-    # struct-layout drift accepted in spec §Constraints. The profile_ptr field
+    # A small struct-layout cost is accepted here. The profile_ptr field
     # is null for non-bench callers (client tests, conformance suite). Server
     # constructors stamp profile_first_initial_us before any FFI call so
     # handshake-latency does not under-report by Initial-key-derivation cost.
@@ -872,9 +872,9 @@ struct QuicConnection(Movable):
         the client Initial to drive the handshake.
         """
         var config_handle = config.handle()
-        # Plan B: stamp arrival timestamp BEFORE any FFI call so that
+        # Stamp arrival timestamp BEFORE any FFI call so that
         # handshake-latency does not under-report by Initial-key-derivation.
-        # The stamp is unconditional (8 bytes) — see spec §Constraints.
+        # The stamp is unconditional (8 bytes).
         var profile_arrival_us = monotonic_us()
 
         # 1. Generate random 8-byte local CID (server's SCID).
@@ -1112,7 +1112,7 @@ struct QuicConnection(Movable):
                     break  # Truncated
 
                 if self.protect.has_keys(ZERO_RTT_KEY_SLOT_IDX):
-                    # Path A — keys installed; decrypt through slot 3.
+                    # Keys installed; decrypt through slot 3.
                     space_idx = ZERO_RTT_SPACE_IDX
                 elif self._zero_rtt_enabled():
                     # Path B — lazy install. Buffer-or-drop on fail.
@@ -1227,7 +1227,7 @@ struct QuicConnection(Movable):
                 space_idx = packet_type_to_space(header.packet_type)
 
             if space_idx < 0:
-                break  # VN, Retry — skip for M3b
+                break  # VN, Retry — skip (no packet-number space)
 
             # Explicit dispatch-space → key-slot mapping. The 0-RTT
             # dispatch sentinel (ZERO_RTT_SPACE_IDX) and the 0-RTT key
@@ -1744,7 +1744,7 @@ struct QuicConnection(Movable):
         `_rotate_to_spare_remote_cid` to advance `cid_mgr.remote_active_cid_seq`
         to an unused Active remote CID (queuing RETIRE_CONNECTION_ID for
         the previous sequence). If no spare exists, the validation result
-        is deferred per AC15: `peer_addr` does NOT swap, and the client
+        is deferred: `peer_addr` does NOT swap, and the client
         must issue a NEW_CONNECTION_ID before the migration can complete.
         """
         var maybe = self.path_validator.on_response(
@@ -1761,7 +1761,7 @@ struct QuicConnection(Movable):
             return
 
         # Promotion: the validated path is now the active peer addr. This
-        # is the ONLY site that mutates `peer_addr` (AC17).
+        # is the ONLY site that mutates `peer_addr`.
         self.peer_addr = from_addr^
 
     def _rotate_to_spare_remote_cid(mut self, now: UInt64) raises -> Bool:
@@ -1938,8 +1938,8 @@ struct QuicConnection(Movable):
         new conn slot is allocated for an incoming Initial — so the
         sentinel `PathKey.zero()` is replaced with a real 4-tuple before
         any address-change check runs. This is the ONLY caller path that
-        sets `peer_addr` outside of `on_path_response_received`; AC17
-        permits it because the "validated path" at handshake start is
+        sets `peer_addr` outside of `on_path_response_received`; this is
+        permitted because the "validated path" at handshake start is
         defined as the address that carried the client's Initial (the
         connection IS that path until migration begins).
         """
@@ -2084,7 +2084,7 @@ struct QuicConnection(Movable):
             self.events.append(QuicEvent.handshake_complete())
             return
 
-        # NEW_TOKEN: minimal handling on client (ignored for M3c).
+        # NEW_TOKEN: minimal handling on client (ignored).
         # F17 — RFC 9000 §19.7: NEW_TOKEN is server-to-client only. A server
         # receiving NEW_TOKEN MUST close with PROTOCOL_VIOLATION.
         if tid == FRAME_NEW_TOKEN:
@@ -2224,7 +2224,7 @@ struct QuicConnection(Movable):
                     self.stream_map.streams_blocked_at_uni = UInt64(0)
             return
 
-        # *_BLOCKED frames: informational only for M3c. STREAMS_BLOCKED
+        # *_BLOCKED frames: informational only. STREAMS_BLOCKED
         # carries a stream-count field with the same 2^60 cap as
         # MAX_STREAMS (RFC 9000 §19.14). F21 — close with
         # FRAME_ENCODING_ERROR on overflow before treating the frame as
@@ -2306,7 +2306,7 @@ struct QuicConnection(Movable):
         if len(acked) == 0:
             return
 
-        # Process stream-layer frames for acked Application-space packets (M3c).
+        # Process stream-layer frames for acked Application-space packets.
         if space_idx == 2:
             for i in range(len(acked)):
                 self._on_app_pkt_acked(Int(acked[i].pn))
@@ -2338,7 +2338,7 @@ struct QuicConnection(Movable):
 
         # Release bytes for acked packets and fan out to congestion controller.
         # Also advance the per-space last_ae_acked_time_sent tracker used by
-        # persistent-congestion detection (spec §5.4).
+        # persistent-congestion detection (RFC 9002 §7.6).
         var ect0_acked_count = UInt64(0)
         for i in range(len(acked)):
             # Decrement ECT(0) in-flight counter on ACK (O(1)).
@@ -2462,7 +2462,7 @@ struct QuicConnection(Movable):
                                 cf.offset, Span(cf.data)
                             )
 
-                # Re-apply stream-layer loss handling for Application space (M3c).
+                # Re-apply stream-layer loss handling for Application space.
                 if space_idx == 2:
                     self._on_app_pkt_lost(pn_key)
 
@@ -2497,7 +2497,7 @@ struct QuicConnection(Movable):
           - Invoking `cc.on_packets_lost(..., persistent=True)` on True.
           - Resetting `recovery.min_rtt = recovery.latest_rtt` (RFC 9002 §5.2).
 
-        Filtering to ack-eliciting packets is inline (spec §5.3): the check
+        Filtering to ack-eliciting packets is inline: the check
         looks up each lost PN in `sent_packets` and uses its `ack_eliciting`
         flag to decide whether it contributes to the span.
 
@@ -2625,7 +2625,7 @@ struct QuicConnection(Movable):
             if self.crypto_streams[level].has_pending():
                 var crypto_data = self.crypto_streams[level].drain()
                 if len(crypto_data) > 0:
-                    # Q6: Mojo-side input-marshalling timer wraps the heap alloc
+                    # Mojo-side input-marshalling timer wraps the heap alloc
                     # + per-byte copy loop (the FFI input ABI marshalling).
                     var t_input_start: UInt64 = 0
                     comptime if PROFILE_ACCEPT:
@@ -2646,11 +2646,11 @@ struct QuicConnection(Movable):
                         if self.profile_ptr is not None:
                             t_start = monotonic_us()
                             self.profile_rustls_us_accum -= t_start
-                    # Q6: out-param locals always declared (zero-cost; comptime
+                    # out-param locals always declared (zero-cost; comptime
                     # branch chooses 5-arg wired call vs legacy 3-arg below).
                     # Slot order matches src/tls/lib.mojo:499 quic_conn_read_hs:
-                    #   slot 1: out_state_machine_us (Q6 — rustls read_hs body µs)
-                    #   slot 2: out_handle_lookup_us (Q6 — with_mut handle-table lookup µs)
+                    #   slot 1: out_state_machine_us (rustls read_hs body µs)
+                    #   slot 2: out_handle_lookup_us (with_mut handle-table lookup µs)
                     var rc: Int32 = Int32(0)
                     var out_sm_us: UInt64 = UInt64(0)
                     var out_lookup_us: UInt64 = UInt64(0)
@@ -2820,7 +2820,7 @@ struct QuicConnection(Movable):
             # Handshake complete.
             self._on_handshake_complete(now)
 
-        # Q7 exit bracket: accumulate _drive_handshake body µs into
+        # Exit bracket: accumulate _drive_handshake body µs into
         # hs_cpu_us_total and decrement active_drive_count. Mirrors the
         # entry bracket above. raise paths leave the bracket unbalanced
         # but those terminate the connection so the imbalance is moot.
@@ -2847,7 +2847,7 @@ struct QuicConnection(Movable):
         # Increment full/resumed counter exactly once per server connection.
         # Runtime gate only (not @parameter if PROFILE_ACCEPT:) so the test
         # build (PROFILE_ACCEPT=False) can verify the increment by attaching a
-        # profile_ptr directly — approach (c) per Plan 2026-05-03.
+        # profile_ptr directly.
         # profile_ptr is null when PROFILE_ACCEPT=False (no bench attachment),
         # so the runtime branch is paid at most once per server handshake.
         if self.is_server and self.profile_ptr is not None:
@@ -3378,7 +3378,7 @@ struct QuicConnection(Movable):
                 self.recovery.pacer.on_sent(UInt64(pkt_size))
 
             # Register stream-layer frame records for this Application-space packet
-            # so ACK / loss handlers can re-apply state (M3c).
+            # so ACK / loss handlers can re-apply state.
             if space_idx == 2 and len(sent_records) > 0:
                 self.app_frames_sent[Int(pn)] = sent_records^
 
@@ -3451,7 +3451,7 @@ struct QuicConnection(Movable):
             frames.append(Frame.handshake_done())
             self.send_handshake_done = False
 
-        # Application-space stream-layer frames (M3c).
+        # Application-space stream-layer frames.
         if space_idx == 2:
             # RFC 9000 §5.1.1: initial NEW_CONNECTION_ID burst. On the first
             # 1-RTT flush after CONN_ESTABLISHED, fill `local_cids` up to
@@ -3769,7 +3769,7 @@ struct QuicConnection(Movable):
 
             if space_idx == 0:
                 header.packet_type = PacketType.initial()
-                # Token is empty for M3b (no retry support yet).
+                # Token is empty (no retry support yet).
                 header.token = List[UInt8]()
             else:
                 header.packet_type = PacketType.handshake()
@@ -3872,7 +3872,7 @@ struct QuicConnection(Movable):
 
             return header_bytes^
 
-    # ── Application-space frame ACK/loss handling (M3c) ─────────────
+    # ── Application-space frame ACK/loss handling ─────────────
 
     def _on_app_pkt_acked(mut self, pn: Int) raises:
         """Apply ACK side-effects for stream-layer frames in the acked packet."""
@@ -4214,8 +4214,7 @@ struct QuicConnection(Movable):
           the locally-chosen SCID). The peer uses it as DCID after the
           first server Initial.
 
-        Connection migration is a project non-goal in v1 of M3 (project
-        non-goal line 28 of docs/project-context.md). Once
+        Connection migration is a v1 non-goal. Once
         NEW_CONNECTION_ID emission lands, expand this accessor to a set
         membership over all active local CIDs.
         """
@@ -4255,7 +4254,7 @@ struct QuicConnection(Movable):
         """
         return self.stream_map.peer_max_streams_bidi
 
-    # ── Stream public API (M3c) ──────────────────────────────────────
+    # ── Stream public API ──────────────────────────────────────
 
     def open_stream(mut self, bidi: Bool) raises -> UInt64:
         """Open a new locally-initiated stream.  Returns the stream ID."""
@@ -4434,8 +4433,7 @@ struct QuicConnection(Movable):
         to the initial congestion window" — the retained anti-amp + cwnd
         checks satisfy the latter clause for handshake-space sends.
         Reference impls split: picoquic ships this design; quinn / TQUIC /
-        ngtcp2 / quiche pace every encryption level. See
-        specs/2026-04-25-quic-pacer-bypass-handshake.md for the verdict.
+        ngtcp2 / quiche pace every encryption level.
         """
         if not self._anti_amp_ok(size):
             return False
@@ -4489,7 +4487,7 @@ def _has_ack_eliciting(frames: List[Frame]) -> Bool:
 
 
 def _apply_m3c_defaults(mut params: TransportParams):
-    """Set M3c flow-control / stream-limit defaults if not already set."""
+    """Set flow-control / stream-limit defaults if not already set."""
     if params.initial_max_data == 0:
         params.initial_max_data = UInt64(10485760)  # 10 MiB
     if params.initial_max_stream_data_bidi_local == 0:

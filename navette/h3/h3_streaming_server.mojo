@@ -9,7 +9,7 @@
 # R8' compile-time budget: size_of[H3StreamingCtx]() < 96 KiB.
 # R1' grep gate: this file IS allowed to import boucle.stackful.
 #
-# Backpressure note (Sprint 2 design): write_chunk calls H3Connection.send_data
+# Backpressure note: write_chunk calls H3Connection.send_data
 # directly and returns. H3 does not surface FC backpressure to the caller;
 # QUIC's per-stream FC absorbs slow consumers transparently. No WouldBlock
 # handling is needed at this layer. If the handler emits faster than the
@@ -26,8 +26,6 @@
 # CoroYielder.yield_to_caller() is the suspension primitive (not .suspend()).
 # The helper functions next_chunk / write_chunk / finish call yield_to_caller
 # internally so handlers can use them directly.
-#
-# See plans/2026-04-27-sprint-2b-streaming.md.
 
 from std.collections import Dict, Optional
 from std.memory import Span, UnsafePointer

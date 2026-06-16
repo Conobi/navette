@@ -4,8 +4,6 @@
 # level. Pre-fix: `H2Connection.send_data()` raises when the sender's payload
 # exceeds the remaining connection (or stream) window. Post-fix: the codec
 # emits as much as fits, queues the remainder, and drains it on WINDOW_UPDATE.
-#
-# Diagnosis: plans/2026-04-25-h2-flow-control-window-bug.md
 
 from std.memory import Span
 

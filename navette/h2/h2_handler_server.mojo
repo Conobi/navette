@@ -2,7 +2,7 @@
 #
 # HTTP/2 server-side handler adapter.  Sans-I/O: feed inbound wire bytes,
 # drain outbound bytes.  Translates H2Connection events into StreamHandler
-# lifecycle callbacks.  (M5.5 Task 4)
+# lifecycle callbacks.
 
 from std.collections import Dict
 from std.memory import Span, UnsafePointer

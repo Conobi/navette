@@ -57,7 +57,7 @@ echo "All $PASSED/$TOTAL conformance tests passed."
 if [[ "${H3I:-0}" == "1" ]]; then
     echo "Running AC-0 comptime probe..."
     PROBE_OUT="$(uv run --project "$REPO_ROOT" mojo \
-        "$REPO_ROOT/plans/2026-05-29-h3i-phase-a-completion/comptime_probe.mojo" 2>&1)"
+        "$REPO_ROOT/conformance/scripts/comptime_probe.mojo" 2>&1)"
     echo "$PROBE_OUT" | grep -q "case1: \[H3-TEST\] some runtime detail" \
         || { echo "AC-0 probe regression: case1 missing" >&2; exit 1; }
     echo "$PROBE_OUT" | grep -q "case3-contains: True" \
