@@ -126,14 +126,15 @@ def _to_lower(b: UInt8) -> UInt8:
     return b
 
 
+@always_inline
 def _bytes_to_string(data: List[UInt8], start: Int, end: Int) -> String:
-    """Build a String from a byte slice using ASCII chr conversion."""
-    var result = String()
-    var i = start
-    while i < end:
-        result += chr(Int(data[i]))
-        i += 1
-    return result^
+    """Build a String from an ASCII byte slice (caller guarantees ASCII)."""
+    var n = end - start
+    if n <= 0:
+        return String()
+    var out = List[UInt8](capacity=n)
+    out.extend(Span(data)[start:end])
+    return String(unsafe_from_utf8=out^)
 
 
 def _iequals(a: String, b: String) -> Bool:

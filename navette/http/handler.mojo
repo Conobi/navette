@@ -461,6 +461,7 @@ struct SendBody(Movable):
         self._low_water = take._low_water
         self._abort_code = take._abort_code
 
+    @always_inline
     def try_write(mut self, var frame: BodyFrame) -> WriteResult:
         if self._state != _SEND_OPEN:
             return WriteResult.closed()
@@ -471,6 +472,7 @@ struct SendBody(Movable):
             return WriteResult.would_block()
         return WriteResult.ok()
 
+    @always_inline
     def end(mut self) raises:
         if self._state != _SEND_OPEN:
             raise Error("SendBody.end: stream is not open")
@@ -503,6 +505,7 @@ struct SendBody(Movable):
     def abort_code(self) -> UInt32:
         return self._abort_code
 
+    @always_inline
     def _pop(mut self) raises -> Optional[BodyFrame]:
         if len(self._frames) == 0:
             return Optional[BodyFrame]()
@@ -521,7 +524,8 @@ struct ResponseWriter(Movable):
     SendBody. send_status must be called before any try_send_body. The
     runtime owns the actual byte emission for status/headers; this stores
     them in _captured_status / _captured_headers and the H1 adapter polls
-    them after each handler invocation."""
+    them after each handler invocation.
+    """
 
     var _status_sent: Bool
     var _send_body: SendBody
@@ -546,6 +550,7 @@ struct ResponseWriter(Movable):
         self._captured_informational = take._captured_informational^
         self._captured_informational_headers = take._captured_informational_headers^
 
+    @always_inline
     def send_status(mut self, var status: StatusCode, var headers: Headers) raises:
         if self._status_sent:
             raise Error("ResponseWriter.send_status: already sent")
@@ -561,11 +566,13 @@ struct ResponseWriter(Movable):
         self._captured_informational.append(status^)
         self._captured_informational_headers.append(headers^)
 
+    @always_inline
     def try_send_body(mut self, var frame: BodyFrame) raises -> WriteResult:
         if not self._status_sent:
             raise Error("ResponseWriter.try_send_body: status not sent yet")
         return self._send_body.try_write(frame^)
 
+    @always_inline
     def end(mut self) raises:
         if not self._status_sent:
             raise Error("ResponseWriter.end: status not sent yet")
@@ -578,14 +585,17 @@ struct ResponseWriter(Movable):
         return self._send_body.bytes_buffered()
 
     # --- Runtime-internal API (called by the H1 adapter) ---
+    @always_inline
     def _has_status(self) -> Bool:
         return self._status_sent
 
+    @always_inline
     def _take_status(mut self) -> Optional[StatusCode]:
         var s = self._captured_status^
         self._captured_status = Optional[StatusCode]()
         return s^
 
+    @always_inline
     def _take_headers(mut self) -> Optional[Headers]:
         var h = self._captured_headers^
         self._captured_headers = Optional[Headers]()
@@ -606,6 +616,7 @@ struct ResponseWriter(Movable):
         self._captured_informational_headers = List[Headers]()
         return h^
 
+    @always_inline
     def _pop_body_frame(mut self) raises -> Optional[BodyFrame]:
         return self._send_body._pop()
 

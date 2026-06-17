@@ -291,11 +291,24 @@ struct H1Connection(Movable):
         var wire = serialize_request(request^)
         self._outbound_buf.extend(Span(wire))
 
+    @always_inline
     def drain(mut self) -> List[UInt8]:
-        """Remove and return all bytes currently in the outbound buffer."""
+        """Swap out the outbound buffer (allocates a fresh empty replacement).
+
+        For hot paths, prefer ``drain_into`` which preserves capacity.
+        """
         var out = self._outbound_buf^
         self._outbound_buf = List[UInt8]()
         return out^
+
+    @always_inline
+    def drain_into(mut self, mut sink: List[UInt8]):
+        """Append the outbound buffer into ``sink`` and clear in place (keeps capacity)."""
+        var n = len(self._outbound_buf)
+        if n == 0:
+            return
+        sink.extend(Span(self._outbound_buf))
+        self._outbound_buf.clear()
 
     # --- Connection state queries ---
 
@@ -328,19 +341,20 @@ struct H1Connection(Movable):
     # --- Internal helpers ---
 
     def _compact_inbound(mut self):
-        """Drop consumed bytes from the front of the inbound buffer.
-
-        Called after every successful parse so the cursor stays at zero
-        and the buffer does not grow without bound across many messages.
-        """
-        if self._inbound_cursor == 0:
+        """Drop consumed bytes from the front of the inbound buffer (preserves capacity)."""
+        var cursor = self._inbound_cursor
+        if cursor == 0:
             return
         var n = len(self._inbound_buf)
-        var keep = n - self._inbound_cursor
-        var new_buf = List[UInt8](capacity=keep)
-        if keep > 0:
-            new_buf.extend(Span(self._inbound_buf)[self._inbound_cursor:n])
-        self._inbound_buf = new_buf^
+        var keep = n - cursor
+        if keep <= 0:
+            self._inbound_buf.clear()
+            self._inbound_cursor = 0
+            return
+        var ptr = self._inbound_buf.unsafe_ptr()
+        for i in range(keep):
+            ptr[i] = ptr[cursor + i]
+        self._inbound_buf.resize(keep, UInt8(0))
         self._inbound_cursor = 0
 
     def _update_keep_alive(mut self, headers: Headers):

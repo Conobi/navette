@@ -60,40 +60,50 @@ def _method_string(method: Method) -> String:
     return String(method)
 
 
-def _int_to_string(value: Int) -> String:
-    """Convert a non-negative integer to its decimal string representation."""
+@always_inline
+def _append_decimal(mut buf: List[UInt8], value: Int):
+    """Append ASCII decimal digits of ``value`` (>= 0) into ``buf``."""
     if value == 0:
-        return String("0")
-    var digits = List[UInt8]()
+        buf.append(UInt8(48))
+        return
+    var start = len(buf)
     var v = value
     while v > 0:
-        digits.append(UInt8(v % 10 + 48))
+        buf.append(UInt8((v % 10) + 48))
         v //= 10
-    var result = String()
-    var i = len(digits) - 1
-    while i >= 0:
-        result += chr(Int(digits[i]))
-        i -= 1
-    return result^
+    var end = len(buf) - 1
+    var ptr = buf.unsafe_ptr()
+    while start < end:
+        var t = ptr[start]
+        ptr[start] = ptr[end]
+        ptr[end] = t
+        start += 1
+        end -= 1
 
 
-def _int_to_hex_lower(value: Int) -> String:
-    """Convert a non-negative integer to a lowercase hex string."""
+@always_inline
+def _append_hex_lower(mut buf: List[UInt8], value: Int):
+    """Append lowercase ASCII hex digits of ``value`` (>= 0) into ``buf``."""
     if value == 0:
-        return String("0")
-    var hex_chars = String("0123456789abcdef")
-    var hb = hex_chars.as_bytes()
-    var digits = List[UInt8]()
+        buf.append(UInt8(48))
+        return
+    var start = len(buf)
     var v = value
     while v > 0:
-        digits.append(hb[v & 0xF])
+        var nib = v & 0xF
+        if nib < 10:
+            buf.append(UInt8(nib + 48))
+        else:
+            buf.append(UInt8(nib - 10 + 97))
         v >>= 4
-    var result = String()
-    var i = len(digits) - 1
-    while i >= 0:
-        result += chr(Int(digits[i]))
-        i -= 1
-    return result^
+    var end = len(buf) - 1
+    var ptr = buf.unsafe_ptr()
+    while start < end:
+        var t = ptr[start]
+        ptr[start] = ptr[end]
+        ptr[end] = t
+        start += 1
+        end -= 1
 
 
 # --- Header / body helpers ---
@@ -152,7 +162,7 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
             ref chunk = body[i].data()
             var chunk_len = len(chunk)
             if chunk_len > 0:
-                _append_str(buf, _int_to_hex_lower(chunk_len))
+                _append_hex_lower(buf, chunk_len)
                 _append_crlf(buf)
                 buf.extend(Span(chunk))
                 _append_crlf(buf)
@@ -200,7 +210,10 @@ def serialize_request(request: Request) raises -> List[UInt8]:
 
     _serialize_headers(buf, request.headers)
     if body_len > 0 and not request.headers.has("content-length"):
-        _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
+        _append_str(buf, String("content-length"))
+        _append_colon_sp(buf)
+        _append_decimal(buf, body_len)
+        _append_crlf(buf)
 
     # End of header block.
     _append_crlf(buf)
@@ -211,6 +224,9 @@ def serialize_request(request: Request) raises -> List[UInt8]:
         buf.extend(Span(chunk))
 
     return buf^
+
+
+comptime _STATUS_LINE_HTTP_11_200_OK: StaticString = "HTTP/1.1 200 OK\r\n"
 
 
 def serialize_response(response: Response) -> List[UInt8]:
@@ -228,13 +244,22 @@ def serialize_response(response: Response) -> List[UInt8]:
     var buf = List[UInt8]()
     var status_int = Int(response.status.code())
 
-    # Status-line: version SP status-code SP reason-phrase CRLF.
-    _append_str(buf, _version_string(response.version))
-    buf.append(UInt8(0x20))
-    _append_str(buf, _int_to_string(status_int))
-    buf.append(UInt8(0x20))  # SP after status, even with empty reason.
-    _append_str(buf, response.reason)
-    _append_crlf(buf)
+    # Common-case status-line memcpy (mirrors hyper's role.rs:405-409).
+    # HTTP/1.1 200 OK with an empty reason is the bulk of real responses.
+    if (
+        response.version.is_http_1_1()
+        and status_int == 200
+        and response.reason.byte_length() == 0
+    ):
+        buf.extend(_STATUS_LINE_HTTP_11_200_OK.as_bytes())
+    else:
+        # General path: version SP status-code SP reason-phrase CRLF.
+        _append_str(buf, _version_string(response.version))
+        buf.append(UInt8(0x20))
+        _append_decimal(buf, status_int)
+        buf.append(UInt8(0x20))  # SP after status, even with empty reason.
+        _append_str(buf, response.reason)
+        _append_crlf(buf)
 
     var bodyless = (
         (status_int >= 100 and status_int <= 199)
@@ -256,7 +281,10 @@ def serialize_response(response: Response) -> List[UInt8]:
     if use_chunked:
         _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
     elif body_len > 0 and not response.headers.has("content-length"):
-        _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
+        _append_str(buf, String("content-length"))
+        _append_colon_sp(buf)
+        _append_decimal(buf, body_len)
+        _append_crlf(buf)
 
     _append_crlf(buf)
 
@@ -277,7 +305,7 @@ def serialize_informational(status: StatusCode, headers: Headers) -> List[UInt8]
     var buf = List[UInt8]()
     _append_str(buf, String("HTTP/1.1"))
     buf.append(UInt8(0x20))
-    _append_str(buf, _int_to_string(Int(status.code())))
+    _append_decimal(buf, Int(status.code()))
     buf.append(UInt8(0x20))  # SP after status, even with empty reason.
     _append_crlf(buf)
     _serialize_headers(buf, headers)

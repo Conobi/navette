@@ -5,7 +5,7 @@ from navette.http.handler import ResponseWriter, WriteResult
 from navette.http.body import BodyFrame
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
-from tests._test_util import assert_true, assert_false
+from tests._test_util import assert_true
 
 
 def test_send_status_then_body_ok() raises:

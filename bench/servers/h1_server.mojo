@@ -59,6 +59,10 @@ comptime _RECV_BUF_SIZE: Int = 8192
 comptime _DEFAULT_PLAINTEXT_PORT: UInt16 = 8080
 comptime _DEFAULT_TLS_PORT: UInt16 = 8081
 comptime SO_REUSEPORT: Int32 = 15
+# Disable Nagle so small writes flush immediately rather than waiting
+# for an ACK from the peer or the delayed-ACK timer to fire.
+comptime IPPROTO_TCP: Int32 = 6
+comptime TCP_NODELAY: Int32 = 1
 
 # TLS connection phases — only meaningful when tls_enabled.
 comptime _PHASE_TLS_HANDSHAKE: UInt8 = 0
@@ -163,6 +167,8 @@ struct H1ServerHandler(CompletionHandler):
     var tls_enabled: Bool
     var tls_lib: Optional[SharedLibrary]
     var server_tls_config: Optional[TlsServerConfig]
+    # Shared "1" optval for setsockopt(TCP_NODELAY) so each accept doesn't realloc.
+    var _sockopt_on: UnsafePointer[UInt8, MutAnyOrigin]
 
     def __init__(
         out self,
@@ -179,6 +185,12 @@ struct H1ServerHandler(CompletionHandler):
         self.tls_enabled = Bool(tls_lib) and Bool(server_tls_config)
         self.tls_lib = tls_lib^
         self.server_tls_config = server_tls_config^
+        var optval = _heap_alloc[UInt8](4).as_any_origin()
+        optval[0] = 1
+        optval[1] = 0
+        optval[2] = 0
+        optval[3] = 0
+        self._sockopt_on = optval
 
     def __init__(out self, *, deinit take: Self):
         self.listener_fd = take.listener_fd
@@ -189,6 +201,14 @@ struct H1ServerHandler(CompletionHandler):
         self.tls_enabled = take.tls_enabled
         self.tls_lib = take.tls_lib^
         self.server_tls_config = take.server_tls_config^
+        self._sockopt_on = take._sockopt_on
+
+    @always_inline
+    def _set_tcp_nodelay(self, fd: Int32):
+        """setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &1, 4). Best-effort."""
+        _ = external_call["setsockopt", Int32](
+            fd, IPPROTO_TCP, TCP_NODELAY, self._sockopt_on, Int32(4)
+        )
 
     # --- Conn lookup ---
 
@@ -288,6 +308,21 @@ struct H1ServerHandler(CompletionHandler):
         self.connections[idx][].send_buf = data^
         self._queue_send(idx)
 
+    def _stage_send_drain(mut self, idx: Int) raises:
+        """Drain queued response bytes into the connection's owned send buffer.
+
+        Appends directly into ``send_buf`` (or ``send_pending`` when a
+        send is already in flight) via ``H1HandlerServer.drain_into``,
+        reusing both buffers' underlying capacity across requests.
+        """
+        ref c = self.connections[idx][]
+        if c.send_in_flight:
+            c.http.drain_into(c.send_pending)
+            return
+        c.http.drain_into(c.send_buf)
+        if len(c.send_buf) > 0:
+            self._queue_send(idx)
+
     # --- Accept ---
 
     def _handle_accept(mut self, result: Int32, flags: UInt32) raises:
@@ -302,6 +337,8 @@ struct H1ServerHandler(CompletionHandler):
         var client_fd = result
         var conn_id = self.next_conn_id
         self.next_conn_id += 1
+
+        self._set_tcp_nodelay(client_fd)
 
         var handle = OwnedHandle(raw=client_fd)
         var handler = BenchHandler(self.state_ptr)
@@ -349,9 +386,7 @@ struct H1ServerHandler(CompletionHandler):
             self._handle_recv_tls(idx, recv_span)
         else:
             self.connections[idx][].http.feed(recv_span)
-            var response_bytes = self.connections[idx][].http.drain()
-            if len(response_bytes) > 0:
-                self._stage_send(idx, response_bytes^)
+            self._stage_send_drain(idx)
 
             if not self.connections[idx][].send_in_flight:
                 if not self.connections[idx][].http.should_close():
@@ -391,35 +426,38 @@ struct H1ServerHandler(CompletionHandler):
     # --- Send ---
 
     def _handle_send(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].send_in_flight = False
+        ref c = self.connections[idx][]
+        c.send_in_flight = False
 
         if result < 0:
             self._close_connection(idx)
             return
 
-        # Handle partial sends.
+        # Handle partial sends — left-shift the unsent tail in place,
+        # preserving send_buf's capacity rather than allocating a new List.
         var sent = Int(result)
-        var buf_len = len(self.connections[idx][].send_buf)
+        var buf_len = len(c.send_buf)
         if sent < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - sent)
-            remaining.extend(Span(self.connections[idx][].send_buf)[sent:buf_len])
-            self.connections[idx][].send_buf = remaining^
+            # Partial send: forward left-shift the unsent tail in place.
+            var keep = buf_len - sent
+            var ptr = c.send_buf.unsafe_ptr()
+            for i in range(keep):
+                ptr[i] = ptr[sent + i]
+            c.send_buf.resize(keep, UInt8(0))
             self._queue_send(idx)
             return
 
-        self.connections[idx][].send_buf = List[UInt8]()
+        c.send_buf.clear()
 
-        # Promote any pending data — single memcpy via extend, not byte-by-byte.
-        if len(self.connections[idx][].send_pending) > 0:
-            var pending_view = Span(self.connections[idx][].send_pending)
-            var pending = List[UInt8](capacity=len(pending_view))
-            pending.extend(pending_view)
-            self.connections[idx][].send_pending = List[UInt8]()
-            self.connections[idx][].send_buf = pending^
+        # Swap with send_pending so both buffers' capacities persist.
+        if len(c.send_pending) > 0:
+            var tmp = c.send_buf^
+            c.send_buf = c.send_pending^
+            c.send_pending = tmp^
             self._queue_send(idx)
             return
 
-        if self.connections[idx][].http.should_close():
+        if c.http.should_close():
             self._close_connection(idx)
         else:
             # Ready for next request.
