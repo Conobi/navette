@@ -18,6 +18,7 @@ from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.util.ptrbox import PtrBox
+from navette.util.null_ptr import null_ptr
 
 from navette.h3.h3_udp_server import (
     H3UdpServer,
@@ -119,7 +120,7 @@ def _push_fake_slot(
     conn_slots and would destroy_pointee+free a null h3).
     """
     var slot = ConnSlot[StubHandler](
-        UnsafePointer[H3HandlerServer[StubHandler], MutAnyOrigin](),
+        null_ptr[H3HandlerServer[StubHandler], MutAnyOrigin](),
         List[UInt8](),
         dcids.copy(),
         generation,
