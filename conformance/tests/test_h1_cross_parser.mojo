@@ -14,7 +14,7 @@ from lib.test_util import load_vectors, hex_decode, assert_true
 from lib.http1.types import ParseConfig, Header, ParsedRequest
 from lib.http1.parser import parse_request
 from lib.stateful_vectors import load_states, py_has_key, py_field_str, py_field_bool
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def _iequals(a: String, b: String) -> Bool:

@@ -5,7 +5,7 @@
 # Mojo parse_packet_header implementation against expected fields.
 
 from lib.test_util import hex_decode, hex_encode, load_vectors, assert_true, assert_equal
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from navette.quic.packet import parse_packet_header, PacketType, PacketHeader
 
 

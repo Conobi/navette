@@ -7,7 +7,7 @@
 # correct complements.
 from lib.test_util import assert_true, assert_equal
 from lib.rustls import RustlsLibrary
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 

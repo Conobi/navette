@@ -12,7 +12,7 @@ from lib.test_util import (
 )
 from lib.http1.types import Header
 from lib.http2.hpack import HpackDecoder, HpackConfig
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def _has_key(obj: PythonObject, key: String) -> Bool:

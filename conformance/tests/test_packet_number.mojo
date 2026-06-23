@@ -1,7 +1,7 @@
 # conformance/tests/test_packet_number.mojo
 from lib.test_util import load_vectors, assert_true, assert_equal
 from lib.packet import decode_packet_number, encode_packet_number_length
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def main() raises:

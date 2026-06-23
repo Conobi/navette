@@ -23,7 +23,7 @@ from lib.http2.frame import (
     SCOPE_STREAM,
     SCOPE_CONNECTION,
 )
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
 

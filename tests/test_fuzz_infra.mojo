@@ -3,7 +3,7 @@
 # Unit tests for the fuzz infrastructure modules under tests/fuzz/lib/.
 # Covers spec AC2 (determinism), AC3 (saved replay → raise), AC4 (shrink halves).
 
-from python import Python
+from std.python import Python
 from std.testing import assert_equal, assert_true
 
 from tests.fuzz.lib.prng import SplitMix64

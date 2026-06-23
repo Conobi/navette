@@ -6,7 +6,7 @@ from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, ass
 from lib.rustls import RustlsLibrary
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from python import PythonObject
+from std.python import PythonObject
 
 
 def derive_and_check(

@@ -16,7 +16,7 @@
 from lib.test_util import load_vectors, assert_true, hex_decode, hex_encode
 from lib.rustls import RustlsLibrary
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def py_bytes_to_hex(raw: PythonObject) raises -> String:

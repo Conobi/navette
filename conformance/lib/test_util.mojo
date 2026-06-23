@@ -1,4 +1,4 @@
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def hex_decode(s: String) raises -> List[UInt8]:

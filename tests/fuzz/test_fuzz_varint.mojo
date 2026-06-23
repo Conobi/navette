@@ -11,7 +11,7 @@
 #       byte sequences that decode (via the opposite stack) to the same value.
 
 from std.os import getenv
-from python import Python
+from std.python import Python
 
 from tests.fuzz.lib.prng import SplitMix64
 from tests.fuzz.lib.generators import random_bytes_geom

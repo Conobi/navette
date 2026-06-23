@@ -18,7 +18,7 @@
 # implementations lives in test_rustls_initial.mojo and
 # test_cross_initial_crypto.mojo.
 from lib.test_util import load_vectors, assert_true
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def _expect_string_field(v: PythonObject, key: String) raises -> String:

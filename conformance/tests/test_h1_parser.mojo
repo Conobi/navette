@@ -4,7 +4,7 @@
 from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
 from lib.http1.types import ParseConfig, Header, ParsedRequest, ParserStrictness
 from lib.http1.parser import parse_request
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def _has_key(obj: PythonObject, key: String) -> Bool:

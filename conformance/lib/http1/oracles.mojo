@@ -9,4 +9,4 @@
 # This module is intentionally left empty (apart from this note) to keep
 # the `from lib.http1.oracles import …` import sites in any future test
 # easy to revive — but no new live oracle calls should be added here.
-from python import Python, PythonObject  # noqa: F401  (kept for potential reuse)
+from std.python import Python, PythonObject  # noqa: F401  (kept for potential reuse)

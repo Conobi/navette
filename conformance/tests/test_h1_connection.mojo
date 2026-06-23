@@ -4,7 +4,7 @@
 from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
 from lib.http1.types import ParseConfig, ParserStrictness, Header, ParsedRequest, ParsedResponse, ConnectionState, ConnectionResult
 from lib.http1.connection import parse_messages
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
 

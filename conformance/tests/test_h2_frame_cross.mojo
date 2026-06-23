@@ -32,7 +32,7 @@ from lib.http2.frame import (
     FRAME_WINDOW_UPDATE,
     FRAME_CONTINUATION,
 )
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def _has_key(obj: PythonObject, key: String) -> Bool:

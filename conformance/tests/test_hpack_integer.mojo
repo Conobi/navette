@@ -12,7 +12,7 @@ from lib.test_util import (
     assert_bytes_equal,
 )
 from lib.http2.hpack_integer import encode_integer, decode_integer
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
 

@@ -4,7 +4,7 @@
 from lib.test_util import load_vectors, hex_decode, assert_true, assert_equal
 from lib.http1.types import ParseConfig
 from lib.http1.parser import parse_request
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def main() raises:

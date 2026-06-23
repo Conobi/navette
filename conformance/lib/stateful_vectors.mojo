@@ -6,7 +6,7 @@
 # test_h2_{connection,stream}_cross, and test_hpack_cross.
 #
 # JSON shapes are documented in conformance/scripts/oracle_h1_h2_states.py.
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def load_states(path: String) raises -> PythonObject:

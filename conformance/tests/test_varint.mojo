@@ -2,7 +2,7 @@
 from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors, assert_true, assert_equal
 from lib.cursor import ByteWriter, ByteReader
 from lib.varint import varint_encode, varint_decode
-from python import Python, PythonObject
+from std.python import Python, PythonObject
 
 
 def main() raises:

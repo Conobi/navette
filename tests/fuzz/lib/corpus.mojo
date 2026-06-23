@@ -9,7 +9,7 @@
 # prohibits live Python oracles at test time applies to the parser oracle
 # layer, NOT to harness-level file I/O.
 
-from python import Python
+from std.python import Python
 
 
 struct CorpusEntry(Copyable, Movable):
