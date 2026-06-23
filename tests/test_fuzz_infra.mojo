@@ -4,7 +4,7 @@
 # Covers spec AC2 (determinism), AC3 (saved replay → raise), AC4 (shrink halves).
 
 from python import Python
-from testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true
 
 from tests.fuzz.lib.prng import SplitMix64
 from tests.fuzz.lib.generators import random_bytes_geom, mutate, weighted_pick
