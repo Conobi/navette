@@ -69,7 +69,7 @@ struct ReplayDecision(Copyable, Movable, Equatable):
 # KeyTag — 32-byte authenticator-as-dict-key.
 # ─────────────────────────────────────────────────────────────────────
 
-struct KeyTag(KeyElement):
+struct KeyTag(Copyable, Movable, KeyElement):
     """32-byte authenticator-as-dict-key.
 
     Bytewise equality; FNV-1a 64-bit hash for dict bucket distribution.
