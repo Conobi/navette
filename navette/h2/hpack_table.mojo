@@ -5,7 +5,7 @@
 from .header import Header
 
 
-struct StaticTable:
+struct StaticTable(Copyable, Movable):
     """HPACK static table -- 61 entries from RFC 7541 Appendix A."""
 
     var _entries: List[Tuple[String, String]]

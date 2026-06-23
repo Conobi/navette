@@ -32,7 +32,7 @@ comptime _ENC_GZIP: UInt8 = 1
 comptime _ENC_BROTLI: UInt8 = 2
 
 
-struct ContentEncoding:
+struct ContentEncoding(Copyable, Movable):
     """Identifies the wire encoding of a response body."""
 
     var _tag: UInt8
