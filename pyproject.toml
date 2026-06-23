@@ -126,10 +126,9 @@ pythonpath = ["."]
 prerelease = "allow"
 
 [tool.uv.sources]
-# INTERIM (b2 migration): pinned to the local sibling boucle (b2) via a
-# relative path, because boucle's b2 branch is not yet published. RE-PIN to a
-# published git rev once boucle's b2 lands on the remote (and re-sync the
-# examples/*/pyproject.toml, which still carry the old b1 git rev). The git-pin
-# form is the canonical, reproducible dependency; this local path is a
-# deliberate local-only interim per the boucle-first integration.
-boucle = { path = "../boucle" }
+# Pin boucle to a published git rev (not a local path) so external clones
+# reproduce the exact dependency, and so the example projects — which pin the
+# same rev — resolve without a path-vs-git URL conflict. Keep this rev in sync
+# with examples/*/pyproject.toml. Consumers that develop boucle locally should
+# override boucle in their own [tool.uv.sources] (or use a uv workspace).
+boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "f3c9b67ede41c52b85ce521eb5d9767ab55c405a" }
