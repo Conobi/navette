@@ -30,6 +30,8 @@ from std.collections.optional import Optional
 from boucle.net.addr import SocketAddrV4, SocketAddrV6
 from boucle.net.ip import IpAddrV4
 
+from navette.util.null_ptr import null_ptr
+
 
 comptime _AF_INET: Int32 = 2
 comptime _AF_INET6: Int32 = 10
@@ -153,7 +155,7 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     out_res[0] = UInt64(0)
     var rc = external_call["getaddrinfo", Int32](
         host_cstr,
-        UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0),  # service = NULL
+        null_ptr[UInt8, MutAnyOrigin](),  # service = NULL
         hints,
         out_res,
     )

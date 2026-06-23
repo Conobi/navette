@@ -16,7 +16,7 @@ def test_quic_conn_read_hs_null_out_params_do_not_crash() raises:
     var rlib = tls.shared().inner_ptr()
     var rc = rlib[].quic_conn_read_hs(
         Int32(-1),
-        UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0),
+        UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0)),
         Int32(0),
     )
     assert_equal_int(
@@ -39,7 +39,7 @@ def test_quic_conn_read_hs_q6_profiled_form_null_safe() raises:
     var out_lookup_us: UInt64 = UInt64(0)
     var rc = rlib[].quic_conn_read_hs(
         Int32(-1),
-        UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0),
+        UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0)),
         Int32(0),
         UnsafePointer(to=out_sm_us),
         UnsafePointer(to=out_lookup_us),

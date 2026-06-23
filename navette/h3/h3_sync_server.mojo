@@ -40,6 +40,7 @@ from navette.tls.early_data_filter import (
     IdempotentOnlyFilter,
 )
 from navette.util.ptrbox import PtrBox
+from navette.util.null_ptr import null_ptr
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +240,9 @@ struct H3CoroServer(Movable):
         *,
         var quic: QuicConnection,
         body_fn: H3BodyFn,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
+        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = null_ptr[
             NoneType, MutExternalOrigin
-        ](unsafe_from_address=0),
+        ](),
         early_data_filter_ptr: Optional[
             UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,

@@ -69,6 +69,7 @@ from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
 from navette.util.ptrbox import PtrBox
+from navette.util.null_ptr import null_ptr
 
 
 # ---------------------------------------------------------------------------
@@ -354,9 +355,9 @@ struct H2StreamingServer(Movable):
         out self,
         *,
         handler_fn: H2StreamingHandlerFn,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
+        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = null_ptr[
             NoneType, MutExternalOrigin
-        ](unsafe_from_address=0),
+        ](),
     ) raises:
         """Create with default production config (server-side)."""
         _check_streaming_ctx_size()
@@ -378,9 +379,9 @@ struct H2StreamingServer(Movable):
         *,
         handler_fn: H2StreamingHandlerFn,
         config: H2Config,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = UnsafePointer[
+        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = null_ptr[
             NoneType, MutExternalOrigin
-        ](unsafe_from_address=0),
+        ](),
     ) raises:
         """Create with a custom H2Config (server-side)."""
         _check_streaming_ctx_size()

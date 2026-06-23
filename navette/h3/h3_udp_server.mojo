@@ -73,6 +73,7 @@ from navette.quic.packet import is_long_header_initial, extract_dcid
 from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
+from navette.util.null_ptr import null_ptr
 
 
 # ── Wire constants ────────────────────────────────────────────────────────────
@@ -1067,9 +1068,9 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
                 # `conn_slots[i].h3` (before swap-and-pop overwrites
                 # the slot or `pop()` discards it) hits a clean null
                 # rather than a dangling pointer.
-                self.conn_slots[i].h3 = UnsafePointer[
+                self.conn_slots[i].h3 = null_ptr[
                     H3HandlerServer[Self.H], MutAnyOrigin
-                ](unsafe_from_address=0)
+                ]()
 
                 # B-permissive teardown: pop ALL of dying conn's DCID
                 # entries from the demux map (typically 2: initial_dcid
