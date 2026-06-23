@@ -620,6 +620,13 @@ struct H2Connection(Movable):
         Uses an in-place memmove + resize instead of building a fresh
         List byte-by-byte. memmove handles the overlapping src/dest
         correctly (unlike memcpy).
+
+        The src pointer is re-tagged with an immutable, erased origin
+        (`unsafe_mut_cast[False]().unsafe_origin_cast[ImmutAnyOrigin]()`)
+        so the b2 exclusivity checker no longer sees dest and src as
+        sharing one mutable origin. This only changes the compile-time
+        origin tag; the addresses, length and direction are identical, so
+        the actual self-overlapping byte move is unchanged at runtime.
         """
         if count <= 0:
             return
@@ -629,7 +636,8 @@ struct H2Connection(Movable):
             return
         var remaining = n - count
         var ptr = self._inbuf.unsafe_ptr()
-        memmove(dest=ptr, src=ptr + count, count=remaining)
+        var src = (ptr + count).unsafe_mut_cast[False]().unsafe_origin_cast[ImmutAnyOrigin]()
+        memmove(dest=ptr, src=src, count=remaining)
         self._inbuf.resize(unsafe_uninit_length=remaining)
 
     def _connection_error(mut self, mut events: List[H2Event], error_code: Int, message: String):
