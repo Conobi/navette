@@ -32,7 +32,7 @@ def _to_cstr(s: String) -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Allocate a null-terminated C string from a Mojo String.
     Caller must call .free() on the returned pointer."""
     var slen = s.byte_length()
-    var buf = alloc[UInt8](slen + 1).as_any_origin()
+    var buf = alloc[UInt8](slen + 1).as_unsafe_any_origin()
     var bytes = s.as_bytes()
     for i in range(slen):
         buf[i] = bytes[i]
@@ -79,7 +79,7 @@ def udp_bind(port: Int) raises -> Int32:
     if fd < 0:
         raise "udp_bind: socket() failed"
 
-    var optval = alloc[UInt8](4).as_any_origin()
+    var optval = alloc[UInt8](4).as_unsafe_any_origin()
 
     # SO_REUSEADDR
     _store_le32(optval, 0, Int32(1))
@@ -102,7 +102,7 @@ def udp_bind(port: Int) raises -> Int32:
         raise "udp_bind: setsockopt(IPV6_V6ONLY) failed"
 
     # Build sockaddr_in6 (28 bytes)
-    var addr = alloc[UInt8](_ADDR_SIZE).as_any_origin()
+    var addr = alloc[UInt8](_ADDR_SIZE).as_unsafe_any_origin()
     for i in range(_ADDR_SIZE):
         addr[i] = 0
     # sin6_family = AF_INET6 (10) — little-endian u16
@@ -129,11 +129,11 @@ def udp_recvfrom(fd: Int32) raises -> Tuple[List[UInt8], List[UInt8]]:
     Address buffer is _ADDR_SIZE bytes (sockaddr_in6) to handle both
     IPv4-mapped and native IPv6 peers on a dual-stack socket.
     """
-    var buf = alloc[UInt8](65536).as_any_origin()
-    var addr = alloc[UInt8](_ADDR_SIZE).as_any_origin()
+    var buf = alloc[UInt8](65536).as_unsafe_any_origin()
+    var addr = alloc[UInt8](_ADDR_SIZE).as_unsafe_any_origin()
     for i in range(_ADDR_SIZE):
         addr[i] = 0
-    var addrlen = alloc[UInt8](4).as_any_origin()
+    var addrlen = alloc[UInt8](4).as_unsafe_any_origin()
     _store_le32(addrlen, 0, Int32(_ADDR_SIZE))
 
     var n = external_call["recvfrom", Int](
@@ -162,12 +162,12 @@ def udp_recvfrom(fd: Int32) raises -> Tuple[List[UInt8], List[UInt8]]:
 def udp_sendto(fd: Int32, data: Span[UInt8, _], addr: Span[UInt8, _]) raises:
     """Send a UDP datagram to the given sockaddr."""
     var dlen = len(data)
-    var buf = alloc[UInt8](dlen).as_any_origin()
+    var buf = alloc[UInt8](dlen).as_unsafe_any_origin()
     for i in range(dlen):
         buf[i] = data[i]
 
     var alen = len(addr)
-    var addr_buf = alloc[UInt8](alen).as_any_origin()
+    var addr_buf = alloc[UInt8](alen).as_unsafe_any_origin()
     for i in range(alen):
         addr_buf[i] = addr[i]
 
@@ -183,7 +183,7 @@ def udp_sendto(fd: Int32, data: Span[UInt8, _], addr: Span[UInt8, _]) raises:
 def udp_poll(fd: Int32, timeout_ms: Int) raises -> Bool:
     """Wait for data on fd using poll(2).  Returns True if readable."""
     # struct pollfd: fd(4 bytes LE) + events(2 bytes LE) + revents(2 bytes LE) = 8 bytes
-    var pfd = alloc[UInt8](8).as_any_origin()
+    var pfd = alloc[UInt8](8).as_unsafe_any_origin()
     _store_le32(pfd, 0, fd)
     # events = POLLIN = 1  (little-endian u16)
     pfd[4] = 1
@@ -209,7 +209,7 @@ def udp_connect(host: String, port: Int) raises -> Int32:
     var port_str = _to_cstr(String(port))
 
     # struct addrinfo hints — 48 bytes on x86_64
-    var hints = alloc[UInt8](48).as_any_origin()
+    var hints = alloc[UInt8](48).as_unsafe_any_origin()
     for i in range(48):
         hints[i] = 0
     # ai_flags = 0 (already zero)
@@ -219,7 +219,7 @@ def udp_connect(host: String, port: Int) raises -> Int32:
     _store_le32(hints, 8, SOCK_DGRAM)
 
     # result_ptr is a pointer-to-pointer
-    var result_ptr = alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_any_origin()
+    var result_ptr = alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_unsafe_any_origin()
     result_ptr[0] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
 
     var rc = external_call["getaddrinfo", Int32](
@@ -266,7 +266,7 @@ def udp_connect(host: String, port: Int) raises -> Int32:
 def monotonic_us() -> UInt64:
     """Return monotonic clock in microseconds."""
     # struct timespec: tv_sec(i64) + tv_nsec(i64) = 16 bytes
-    var ts = alloc[UInt8](16).as_any_origin()
+    var ts = alloc[UInt8](16).as_unsafe_any_origin()
     for i in range(16):
         ts[i] = 0
     _ = external_call["clock_gettime", Int32](CLOCK_MONOTONIC, ts)

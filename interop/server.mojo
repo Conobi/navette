@@ -177,7 +177,7 @@ def main() raises:
                     var client_dcid = List[UInt8](copy=dcid)
                     var params = default_transport_params()
 
-                    var conn_ptr = _heap_alloc[QuicConnection](1).as_any_origin()
+                    var conn_ptr = _heap_alloc[QuicConnection](1).as_unsafe_any_origin()
                     conn_ptr.init_pointee_move(
                         QuicConnection.server(
                             tls.shared(), server_config, params,

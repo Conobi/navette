@@ -115,7 +115,7 @@ def _send_datagrams(fd: Int32, datagrams: List[List[UInt8]]) raises:
     for i in range(len(datagrams)):
         var dlen = len(datagrams[i])
         if dlen > 0:
-            var buf = _heap_alloc[UInt8](dlen).as_any_origin()
+            var buf = _heap_alloc[UInt8](dlen).as_unsafe_any_origin()
             for j in range(dlen):
                 buf[j] = datagrams[i][j]
             _ = external_call["send", Int](fd, buf, dlen, Int32(0))
@@ -124,7 +124,7 @@ def _send_datagrams(fd: Int32, datagrams: List[List[UInt8]]) raises:
 
 def _recv_datagram(fd: Int32) raises -> List[UInt8]:
     """Non-blocking recv on connected UDP socket.  Returns empty list on EAGAIN."""
-    var buf = _heap_alloc[UInt8](65536).as_any_origin()
+    var buf = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
     # MSG_DONTWAIT = 0x40
     var n = external_call["recv", Int](fd, buf, 65536, Int32(0x40))
     if n <= 0:

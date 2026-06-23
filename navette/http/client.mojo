@@ -121,7 +121,7 @@ struct HttpClient(Movable):
             if len(existing) >= max_conns:
                 raise Error("HttpClient: max connections reached for origin")
 
-        var ptr = _heap_alloc[SessionSlot](1).as_any_origin()
+        var ptr = _heap_alloc[SessionSlot](1).as_unsafe_any_origin()
         ptr.init_pointee_move(slot^)
         var slot_ptr = SessionSlotPtr(UInt64(Int(ptr)))
         if origin not in self._pool:

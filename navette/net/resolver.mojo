@@ -41,7 +41,7 @@ comptime _CLOCK_MONOTONIC: Int32 = 1
 
 def _monotonic_secs() -> Int:
     """clock_gettime(CLOCK_MONOTONIC) → seconds (drops nsec)."""
-    var ts = _heap_alloc[UInt8](16).as_any_origin()
+    var ts = _heap_alloc[UInt8](16).as_unsafe_any_origin()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts)
     var sec_ptr = ts.bitcast[Int64]()
     var sec = Int(sec_ptr[])
@@ -135,7 +135,7 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     # `struct addrinfo` on Linux x86_64 is 48 bytes:
     #   ai_flags(4)  ai_family(4)  ai_socktype(4)  ai_protocol(4)
     #   ai_addrlen(4)  pad(4)  ai_addr(8)  ai_canonname(8)  ai_next(8)
-    var hints = _heap_alloc[UInt8](48).as_any_origin()
+    var hints = _heap_alloc[UInt8](48).as_unsafe_any_origin()
     for i in range(48):
         hints[i] = UInt8(0)
     # ai_family = AF_UNSPEC (0) — leave hints[4..8] as zero.
@@ -146,12 +146,12 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     hints[8] = UInt8(1)
 
     var host_bytes = host.as_bytes()
-    var host_cstr = _heap_alloc[UInt8](len(host_bytes) + 1).as_any_origin()
+    var host_cstr = _heap_alloc[UInt8](len(host_bytes) + 1).as_unsafe_any_origin()
     for i in range(len(host_bytes)):
         host_cstr[i] = host_bytes[i]
     host_cstr[len(host_bytes)] = UInt8(0)
 
-    var out_res = _heap_alloc[UInt64](1).as_any_origin()
+    var out_res = _heap_alloc[UInt64](1).as_unsafe_any_origin()
     out_res[0] = UInt64(0)
     var rc = external_call["getaddrinfo", Int32](
         host_cstr,

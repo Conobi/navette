@@ -65,7 +65,7 @@ def test_bind_and_sendto_recvfrom() raises:
     msg.append(108)
     msg.append(108)
     msg.append(111)
-    var msg_buf = alloc[UInt8](5).as_any_origin()
+    var msg_buf = alloc[UInt8](5).as_unsafe_any_origin()
     for i in range(5):
         msg_buf[i] = msg[i]
     var n = external_call["send", Int](cli_fd, msg_buf, Int(5), Int32(0))

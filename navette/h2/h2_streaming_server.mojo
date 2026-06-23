@@ -80,7 +80,7 @@ from navette.util.null_ptr import null_ptr
 #   fn (mut CoroYielder) raises -> None
 #
 # Inside the body, access the per-stream ctx via:
-#   var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
+#   var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
 #
 # The handler may call next_chunk(ctx_ptr, yld) / write_chunk(ctx_ptr, yld, bytes)
 # / finish(ctx_ptr, yld) to suspend across event-loop passes.
@@ -112,7 +112,7 @@ struct H2StreamingCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt32
-    var extra_data: UnsafePointer[NoneType, MutExternalOrigin]
+    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
@@ -125,7 +125,7 @@ struct H2StreamingCtx(Movable):
         var request: Request,
         caps: Capabilities,
         stream_id: UInt32,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin],
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
@@ -307,7 +307,7 @@ struct H2StreamingCtxPool(Movable):
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
-        return _heap_alloc[H2StreamingCtx](1).as_any_origin()
+        return _heap_alloc[H2StreamingCtx](1).as_unsafe_any_origin()
 
     def release(
         mut self, ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin]
@@ -338,12 +338,12 @@ struct H2StreamingServer(Movable):
     The handler function must match CoroBody:
         fn (mut CoroYielder) raises -> None
     Access per-stream ctx inside the handler via:
-        var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
+        var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
     """
 
     var _conn: H2Connection
     var _handler_fn: H2StreamingHandlerFn
-    var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
+    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, PtrBox[H2StreamingCtx]]
     var _ctx_pool: H2StreamingCtxPool
@@ -355,8 +355,8 @@ struct H2StreamingServer(Movable):
         out self,
         *,
         handler_fn: H2StreamingHandlerFn,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = null_ptr[
-            NoneType, MutExternalOrigin
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
+            NoneType, MutUntrackedOrigin
         ](),
     ) raises:
         """Create with default production config (server-side)."""
@@ -379,8 +379,8 @@ struct H2StreamingServer(Movable):
         *,
         handler_fn: H2StreamingHandlerFn,
         config: H2Config,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = null_ptr[
-            NoneType, MutExternalOrigin
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
+            NoneType, MutUntrackedOrigin
         ](),
     ) raises:
         """Create with a custom H2Config (server-side)."""
@@ -594,8 +594,8 @@ struct H2StreamingServer(Movable):
         ctx_ptr.init_pointee_move(ctx^)
 
         # Acquire CoroHandle from pool; user_data = ctx_ptr reinterpreted as
-        # an opaque MutExternalOrigin pointer (boucle's CoroBody.user_data type).
-        var user_data = UnsafePointer[NoneType, MutExternalOrigin](
+        # an opaque MutUntrackedOrigin pointer (boucle's CoroBody.user_data type).
+        var user_data = UnsafePointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(ctx_ptr)
         )
         var coro_heap = self._coro_pool.acquire(self._handler_fn, user_data)

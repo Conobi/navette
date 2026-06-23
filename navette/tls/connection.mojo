@@ -108,7 +108,7 @@ struct TlsConnection(Movable):
         var rlib = lib.inner_ptr()
         var name_bytes = server_name.as_bytes()
         var name_len = len(name_bytes)
-        var name_buf = _heap_alloc[UInt8](name_len).as_any_origin()
+        var name_buf = _heap_alloc[UInt8](name_len).as_unsafe_any_origin()
         for i in range(name_len):
             name_buf[i] = name_bytes[i]
 
@@ -126,7 +126,7 @@ struct TlsConnection(Movable):
         # We allocate the ciphertext drain buffer here and reuse it as the
         # struct's pre-allocated buffer (no double allocation).
         var ct_out = List[UInt8]()
-        var init_ct_buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_any_origin()
+        var init_ct_buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_unsafe_any_origin()
         try:
             while True:
                 var dn = rlib[].tls_conn_write_tls(
@@ -149,7 +149,7 @@ struct TlsConnection(Movable):
             _handle=handle,
             _ciphertext_out=ct_out^,
             _ct_drain_buf=init_ct_buf,
-            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin(),
+            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_unsafe_any_origin(),
             _handshake_complete=False,
         )
 
@@ -172,8 +172,8 @@ struct TlsConnection(Movable):
             _lib=lib,
             _handle=handle,
             _ciphertext_out=List[UInt8](),
-            _ct_drain_buf=_heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_any_origin(),
-            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_any_origin(),
+            _ct_drain_buf=_heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_unsafe_any_origin(),
+            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_unsafe_any_origin(),
             _handshake_complete=False,
         )
 
@@ -197,7 +197,7 @@ struct TlsConnection(Movable):
 
         var rc = self._lib.inner_ptr()[].tls_conn_read_tls(
             self._handle,
-            ciphertext.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            ciphertext.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             Int32(n),
         )
 
@@ -251,7 +251,7 @@ struct TlsConnection(Movable):
 
         var rc = self._lib.inner_ptr()[].tls_conn_write_plaintext(
             self._handle,
-            plaintext.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            plaintext.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             Int32(n),
         )
         if rc < 0:
@@ -289,7 +289,7 @@ struct TlsConnection(Movable):
         "h3"). The Rust FFI returns -1 if it would have to truncate, so
         any -1 here is a real error rather than silent data loss.
         """
-        var buf = _heap_alloc[UInt8](_ALPN_BUF_SIZE).as_any_origin()
+        var buf = _heap_alloc[UInt8](_ALPN_BUF_SIZE).as_unsafe_any_origin()
         var n = self._lib.inner_ptr()[].tls_conn_alpn(
             self._handle, buf, Int32(_ALPN_BUF_SIZE)
         )

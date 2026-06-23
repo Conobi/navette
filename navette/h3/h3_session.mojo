@@ -170,7 +170,7 @@ struct H3Session(Session):
             self._h3.send_data(stream_id, body_bytes, True)
 
         # Allocate client context on heap
-        var ctx_ptr = _heap_alloc[_H3ClientCtx](1).as_any_origin()
+        var ctx_ptr = _heap_alloc[_H3ClientCtx](1).as_unsafe_any_origin()
         var ctx = _H3ClientCtx(handle_id=handle_id)
         ctx_ptr.init_pointee_move(ctx^)
         self._streams[Int(stream_id)] = PtrBox[_H3ClientCtx](ctx_ptr)

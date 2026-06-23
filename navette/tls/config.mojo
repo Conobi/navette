@@ -74,7 +74,7 @@ struct TlsClientConfig(Movable):
             buf.append(UInt8(proto_len))
             for j in range(proto_len):
                 buf.append(proto_bytes[j])
-        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_any_origin()
+        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_unsafe_any_origin()
         for i in range(len(buf)):
             buf_ptr[i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
@@ -108,11 +108,11 @@ struct TlsServerConfig(Movable):
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
 
-        var cert_buf = _heap_alloc[UInt8](cert_len).as_any_origin()
+        var cert_buf = _heap_alloc[UInt8](cert_len).as_unsafe_any_origin()
         for i in range(cert_len):
             cert_buf[i] = cert_pem[i]
 
-        var key_buf = _heap_alloc[UInt8](key_len).as_any_origin()
+        var key_buf = _heap_alloc[UInt8](key_len).as_unsafe_any_origin()
         for i in range(key_len):
             key_buf[i] = key_pem[i]
 
@@ -160,7 +160,7 @@ struct TlsServerConfig(Movable):
             buf.append(UInt8(proto_len))
             for j in range(proto_len):
                 buf.append(proto_bytes[j])
-        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_any_origin()
+        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_unsafe_any_origin()
         for i in range(len(buf)):
             buf_ptr[i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
@@ -324,21 +324,21 @@ struct QuicServerConfig(Movable):
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
 
-        var cert_buf = _heap_alloc[UInt8](cert_len).as_any_origin()
+        var cert_buf = _heap_alloc[UInt8](cert_len).as_unsafe_any_origin()
         for i in range(cert_len):
             cert_buf[i] = cert_pem[i]
 
-        var key_buf = _heap_alloc[UInt8](key_len).as_any_origin()
+        var key_buf = _heap_alloc[UInt8](key_len).as_unsafe_any_origin()
         for i in range(key_len):
             key_buf[i] = key_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
-        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
         for i in range(alpn_len):
             alpn_buf[i] = alpn_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
         out_handle[0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_config_new(
@@ -458,11 +458,11 @@ struct QuicClientConfig(Movable):
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
-        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
         for i in range(alpn_len):
             alpn_buf[i] = alpn_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
         out_handle[0] = Int32(-1)
 
         var rlib = self._lib.inner_ptr()
@@ -505,17 +505,17 @@ struct QuicClientConfig(Movable):
             alpn: ALPN protocol identifier (default "h3").
         """
         var ca_len = len(ca_pem)
-        var ca_buf = _heap_alloc[UInt8](ca_len).as_any_origin()
+        var ca_buf = _heap_alloc[UInt8](ca_len).as_unsafe_any_origin()
         for i in range(ca_len):
             ca_buf[i] = ca_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
-        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
         for i in range(alpn_len):
             alpn_buf[i] = alpn_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
         out_handle[0] = Int32(-1)
         var rlib = lib.inner_ptr()
         var rc = rlib[].quic_client_config_with_ca(

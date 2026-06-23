@@ -105,7 +105,7 @@ struct CompressLibrary(Movable):
 
         Returns an empty string if no error is set.
         """
-        var buf = _heap_alloc[UInt8](512).as_any_origin()
+        var buf = _heap_alloc[UInt8](512).as_unsafe_any_origin()
         var n = load_lcm_last_error(self._handle)(buf, Int32(512))
         if n <= 0:
             buf.free()

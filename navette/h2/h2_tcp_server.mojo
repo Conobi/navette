@@ -305,7 +305,7 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
             http=http^,
         )
 
-        var conn_ptr = _heap_alloc[H2Conn[Self.H]](1).as_any_origin()
+        var conn_ptr = _heap_alloc[H2Conn[Self.H]](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1

@@ -212,7 +212,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             self.handler.on_request_end(body, resp)
 
         # Now allocate stream context on the heap and move locals in.
-        var ctx_ptr = _heap_alloc[_StreamCtx](1).as_any_origin()
+        var ctx_ptr = _heap_alloc[_StreamCtx](1).as_unsafe_any_origin()
         var ctx = _StreamCtx()
         ctx.recv_body = body^
         ctx.resp_writer = resp^

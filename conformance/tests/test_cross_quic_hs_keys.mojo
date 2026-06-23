@@ -48,7 +48,7 @@ def aead_cross_check(
     var tag_len       = 16
     var buf_capacity  = payload_len + tag_len + 4
 
-    var enc_buf = _heap_alloc[UInt8](buf_capacity).as_any_origin()
+    var enc_buf = _heap_alloc[UInt8](buf_capacity).as_unsafe_any_origin()
     # Fill "key-pair-check" (14 bytes)
     enc_buf[0]  = UInt8(ord("k"))
     enc_buf[1]  = UInt8(ord("e"))
@@ -66,12 +66,12 @@ def aead_cross_check(
     enc_buf[13] = UInt8(ord("k"))
 
     # Stash original plaintext for comparison
-    var orig = _heap_alloc[UInt8](payload_len).as_any_origin()
+    var orig = _heap_alloc[UInt8](payload_len).as_unsafe_any_origin()
     for i in range(payload_len):
         orig[i] = enc_buf[i]
 
     # AAD = "qc1" (3 bytes)
-    var aad_ptr = _heap_alloc[UInt8](3).as_any_origin()
+    var aad_ptr = _heap_alloc[UInt8](3).as_unsafe_any_origin()
     aad_ptr[0] = UInt8(ord("q"))
     aad_ptr[1] = UInt8(ord("c"))
     aad_ptr[2] = UInt8(ord("1"))
@@ -113,11 +113,11 @@ def run_handshake(
     keys = HandshakeKeys()
 
     # Use 65536 bytes for server buffer to accommodate TLS cert in ServerHello
-    var buf_c = _heap_alloc[UInt8](65536).as_any_origin()
-    var buf_s = _heap_alloc[UInt8](65536).as_any_origin()
-    var written_ptr = _heap_alloc[Int32](1).as_any_origin()
-    var kc_ptr      = _heap_alloc[UInt8](1).as_any_origin()
-    var kh_ptr      = _heap_alloc[Int32](1).as_any_origin()
+    var buf_c = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
+    var buf_s = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
+    var written_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var kc_ptr      = _heap_alloc[UInt8](1).as_unsafe_any_origin()
+    var kh_ptr      = _heap_alloc[Int32](1).as_unsafe_any_origin()
 
     for _ in range(20):  # max rounds
         var progress = False
@@ -236,13 +236,13 @@ def main() raises:
 
     var cert_bytes = py_bytes_to_mojo(cert_pem_py)
     var key_bytes  = py_bytes_to_mojo(key_pem_py)
-    var cert_ptr = cert_bytes.unsafe_ptr().as_any_origin()
-    var key_ptr  = key_bytes.unsafe_ptr().as_any_origin()
+    var cert_ptr = cert_bytes.unsafe_ptr().as_unsafe_any_origin()
+    var key_ptr  = key_bytes.unsafe_ptr().as_unsafe_any_origin()
     var cert_len = Int32(len(cert_bytes))
     var key_len  = Int32(len(key_bytes))
 
     # ALPN = "test" (4 bytes, raw - no null terminator)
-    var alpn_ptr = _heap_alloc[UInt8](4).as_any_origin()
+    var alpn_ptr = _heap_alloc[UInt8](4).as_unsafe_any_origin()
     alpn_ptr[0] = UInt8(ord("t"))
     alpn_ptr[1] = UInt8(ord("e"))
     alpn_ptr[2] = UInt8(ord("s"))
@@ -250,7 +250,7 @@ def main() raises:
     var alpn_len = Int32(4)
 
     # Server config
-    var srv_cfg_h_ptr = _heap_alloc[Int32](1).as_any_origin()
+    var srv_cfg_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
     assert_equal(
         Int(rl.quic_server_config_new(cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len, srv_cfg_h_ptr)),
         0, "quic_server_config_new failed: " + rl.last_error()
@@ -258,7 +258,7 @@ def main() raises:
     var srv_cfg_h = srv_cfg_h_ptr[0]
 
     # Client config (trusts the server cert as CA)
-    var cli_cfg_h_ptr = _heap_alloc[Int32](1).as_any_origin()
+    var cli_cfg_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
     assert_equal(
         Int(rl.quic_client_config_with_ca(cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_h_ptr)),
         0, "quic_client_config_with_ca failed: " + rl.last_error()
@@ -267,10 +267,10 @@ def main() raises:
 
     # Transport params (empty - sufficient for handshake-only test)
     # Use a 1-byte alloc as sentinel for null-like pointer with len=0
-    var tp_sentinel = _heap_alloc[UInt8](1).as_any_origin()
+    var tp_sentinel = _heap_alloc[UInt8](1).as_unsafe_any_origin()
 
     # Server connection
-    var srv_h_ptr = _heap_alloc[Int32](1).as_any_origin()
+    var srv_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
     assert_equal(
         Int(rl.quic_server_conn_new(srv_cfg_h, Int32(1), tp_sentinel, Int32(0), srv_h_ptr)),
         0, "quic_server_conn_new failed: " + rl.last_error()
@@ -278,7 +278,7 @@ def main() raises:
     var srv_h = srv_h_ptr[0]
 
     # Client connection - SNI = "localhost" (9 bytes, raw)
-    var sni_ptr = _heap_alloc[UInt8](9).as_any_origin()
+    var sni_ptr = _heap_alloc[UInt8](9).as_unsafe_any_origin()
     sni_ptr[0] = UInt8(ord("l"))
     sni_ptr[1] = UInt8(ord("o"))
     sni_ptr[2] = UInt8(ord("c"))
@@ -290,7 +290,7 @@ def main() raises:
     sni_ptr[8] = UInt8(ord("t"))
     var sni_len = Int32(9)
 
-    var cli_h_ptr = _heap_alloc[Int32](1).as_any_origin()
+    var cli_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
     assert_equal(
         Int(rl.quic_client_conn_new(cli_cfg_h, Int32(1), sni_ptr, sni_len, tp_sentinel, Int32(0), cli_h_ptr)),
         0, "quic_client_conn_new failed: " + rl.last_error()

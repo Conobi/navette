@@ -41,11 +41,11 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
 
     var alpn_bytes = String("h3").as_bytes()
     var alpn_len = len(alpn_bytes)
-    var alpn_buf = _heap_alloc[UInt8](alpn_len).as_any_origin()
+    var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
     for i in range(alpn_len):
         alpn_buf[i] = alpn_bytes[i]
 
-    var cfg_handle = _heap_alloc[Int32](1).as_any_origin()
+    var cfg_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
     cfg_handle[0] = Int32(-1)
     var rc_cfg = lib.quic_client_config_new(
         alpn_buf, Int32(alpn_len), cfg_handle
@@ -55,15 +55,15 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
 
     var sni_bytes = String("example.com").as_bytes()
     var sni_len = len(sni_bytes)
-    var sni_buf = _heap_alloc[UInt8](sni_len).as_any_origin()
+    var sni_buf = _heap_alloc[UInt8](sni_len).as_unsafe_any_origin()
     for i in range(sni_len):
         sni_buf[i] = sni_bytes[i]
 
     # Empty transport-params buffer is acceptable for this test.
-    var tp_buf = _heap_alloc[UInt8](1).as_any_origin()
+    var tp_buf = _heap_alloc[UInt8](1).as_unsafe_any_origin()
     tp_buf[0] = UInt8(0)
 
-    var conn_handle = _heap_alloc[Int32](1).as_any_origin()
+    var conn_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
     conn_handle[0] = Int32(-1)
     var rc_conn = lib.quic_client_conn_new(
         cfg_handle[0], Int32(1),  # version=1 (QUIC v1)
@@ -163,7 +163,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # into the same counters.
     var profile_heap = _heap_alloc[AcceptProfile](1)
     profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap.as_any_origin()
+    var p_ptr = profile_heap.as_unsafe_any_origin()
 
     var params = _resumption_params()
     var now = UInt64(1_000_000)
@@ -302,7 +302,7 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
     profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap.as_any_origin()
+    var p_ptr = profile_heap.as_unsafe_any_origin()
 
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
@@ -389,7 +389,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
     profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap.as_any_origin()
+    var p_ptr = profile_heap.as_unsafe_any_origin()
 
     var params = _resumption_params()
     var now = UInt64(3_000_000)

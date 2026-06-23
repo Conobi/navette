@@ -79,7 +79,7 @@ struct CoroStreamCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt64
-    var extra_data: UnsafePointer[NoneType, MutExternalOrigin]
+    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
@@ -89,7 +89,7 @@ struct CoroStreamCtx(Movable):
         var request: Request,
         caps: Capabilities,
         stream_id: UInt64,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin],
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
@@ -176,7 +176,7 @@ struct CoroStreamCtxPool(Movable):
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
-        return _heap_alloc[CoroStreamCtx](1).as_any_origin()
+        return _heap_alloc[CoroStreamCtx](1).as_unsafe_any_origin()
 
     def release(
         mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
@@ -212,7 +212,7 @@ struct H3CoroServer(Movable):
 
     var _h3: H3Connection
     var _body_fn: H3BodyFn
-    var _extra_data: UnsafePointer[NoneType, MutExternalOrigin]
+    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[List[UInt8]]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
@@ -240,8 +240,8 @@ struct H3CoroServer(Movable):
         *,
         var quic: QuicConnection,
         body_fn: H3BodyFn,
-        extra_data: UnsafePointer[NoneType, MutExternalOrigin] = null_ptr[
-            NoneType, MutExternalOrigin
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
+            NoneType, MutUntrackedOrigin
         ](),
         early_data_filter_ptr: Optional[
             UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]

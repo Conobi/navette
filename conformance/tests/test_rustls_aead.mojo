@@ -10,7 +10,7 @@ from std.time import perf_counter_ns
 
 def _alloc_dcid() -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Allocate and fill the RFC 9001 A.1 DCID (8394c8f03e515708)."""
-    var dcid = _heap_alloc[UInt8](8).as_any_origin()
+    var dcid = _heap_alloc[UInt8](8).as_unsafe_any_origin()
     dcid[0] = 0x83
     dcid[1] = 0x94
     dcid[2] = 0xC8
@@ -24,7 +24,7 @@ def _alloc_dcid() -> UnsafePointer[UInt8, MutAnyOrigin]:
 
 def _alloc_header() -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Allocate a dummy 4-byte QUIC Long Header."""
-    var header = _heap_alloc[UInt8](4).as_any_origin()
+    var header = _heap_alloc[UInt8](4).as_unsafe_any_origin()
     header[0] = 0xC0
     header[1] = 0x00
     header[2] = 0x00
@@ -47,7 +47,7 @@ def test_encrypt_decrypt_roundtrip(lib: RustlsLibrary) raises:
 
     # Prepare plaintext "Hello QUIC!" (11 bytes)
     var pt_len = 11
-    var pt = _heap_alloc[UInt8](pt_len).as_any_origin()
+    var pt = _heap_alloc[UInt8](pt_len).as_unsafe_any_origin()
     pt[0] = 0x48  # H
     pt[1] = 0x65  # e
     pt[2] = 0x6C  # l
@@ -63,7 +63,7 @@ def test_encrypt_decrypt_roundtrip(lib: RustlsLibrary) raises:
 
     # Allocate buffer: plaintext + tag
     var buf_cap = pt_len + Int(tag_len)
-    var buf = _heap_alloc[UInt8](buf_cap).as_any_origin()
+    var buf = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
     for i in range(pt_len):
         buf[i] = pt[i]
 
@@ -142,7 +142,7 @@ def test_nonce_reuse_rejected(lib: RustlsLibrary) raises:
     var buf_cap = pt_len + tag_len
 
     # First encrypt at pn=0 — should succeed
-    var buf1 = _heap_alloc[UInt8](buf_cap).as_any_origin()
+    var buf1 = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
     buf1[0] = 0x41  # A
     buf1[1] = 0x42  # B
     buf1[2] = 0x43  # C
@@ -153,7 +153,7 @@ def test_nonce_reuse_rejected(lib: RustlsLibrary) raises:
     assert_true(Int(ct1) > 0, "first encrypt should succeed")
 
     # Second encrypt at pn=0 (reuse) — must fail
-    var buf2 = _heap_alloc[UInt8](buf_cap).as_any_origin()
+    var buf2 = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
     buf2[0] = 0x41
     buf2[1] = 0x42
     buf2[2] = 0x43
@@ -181,7 +181,7 @@ def test_throughput(lib: RustlsLibrary) raises:
     # 1200-byte payload (typical QUIC packet)
     var pt_len = 1200
     var buf_cap = pt_len + tag_len
-    var buf = _heap_alloc[UInt8](buf_cap).as_any_origin()
+    var buf = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
     var header = _alloc_header()
 
     # Fill payload with a pattern

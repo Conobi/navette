@@ -47,7 +47,7 @@ from interop.file_io import read_file
 
 
 def test_ptrbox_roundtrip() raises:
-    var p = _heap_alloc[Int](1).as_any_origin()
+    var p = _heap_alloc[Int](1).as_unsafe_any_origin()
     p.init_pointee_move(123)
     var box = PtrBox[Int](p)
     assert_true(box.is_some())

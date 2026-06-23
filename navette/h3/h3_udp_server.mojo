@@ -244,10 +244,10 @@ struct UdpTxSlot(Movable):
     def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
         var data_len = len(data)
 
-        self.msghdr_buf = _heap_alloc[UInt8](_MSGHDR_SIZE).as_any_origin()
-        self.iov_buf = _heap_alloc[UInt8](_IOVEC_SIZE).as_any_origin()
-        self.addr_buf = _heap_alloc[UInt8](_ADDR_SIZE).as_any_origin()
-        self.data_buf = _heap_alloc[UInt8](data_len).as_any_origin()
+        self.msghdr_buf = _heap_alloc[UInt8](_MSGHDR_SIZE).as_unsafe_any_origin()
+        self.iov_buf = _heap_alloc[UInt8](_IOVEC_SIZE).as_unsafe_any_origin()
+        self.addr_buf = _heap_alloc[UInt8](_ADDR_SIZE).as_unsafe_any_origin()
+        self.data_buf = _heap_alloc[UInt8](data_len).as_unsafe_any_origin()
 
         # Copy payload.
         for i in range(data_len):
@@ -516,11 +516,11 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         for _ in range(PBUF_COUNT):
             self.inflight_bufs.append(False)
 
-        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
+        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_unsafe_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
             self.pbuf_pool[i] = 0
 
-        self.msghdr_template = _heap_alloc[UInt8](_MSGHDR_SIZE).as_any_origin()
+        self.msghdr_template = _heap_alloc[UInt8](_MSGHDR_SIZE).as_unsafe_any_origin()
         for i in range(_MSGHDR_SIZE):
             self.msghdr_template[i] = 0
         # msg_namelen at offset 8 = sizeof(sockaddr_in6). The kernel populates
@@ -537,7 +537,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
         self.pending_submits = List[PendingSubmit]()
 
         # 50ms periodic timeout — tv_sec=0, tv_nsec=50_000_000 LE.
-        self.timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE).as_any_origin()
+        self.timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE).as_unsafe_any_origin()
         for i in range(_TIMESPEC_SIZE):
             self.timeout_ts[i] = 0
         self.timeout_ts[8] = 0x80
@@ -810,7 +810,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             predicate_fn=predicate_fn_opt,
         )
 
-        var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_any_origin()
+        var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_unsafe_any_origin()
         h3_ptr.init_pointee_move(h3^)
         return h3_ptr
 
@@ -1023,7 +1023,7 @@ struct H3UdpServer[H: StreamHandler](BatchCompletionHandler):
             var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
             var pkt_len = len(pkt)
 
-            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_unsafe_any_origin()
             tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
 
             var slot_idx = len(self.tx_slots)

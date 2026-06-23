@@ -39,7 +39,7 @@ def _to_cstr(s: String) -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Allocate a null-terminated C string from a Mojo String.
     Caller must call .free() on the returned pointer."""
     var slen = s.byte_length()
-    var buf = alloc[UInt8](slen + 1).as_any_origin()
+    var buf = alloc[UInt8](slen + 1).as_unsafe_any_origin()
     var bytes = s.as_bytes()
     for i in range(slen):
         buf[i] = bytes[i]
@@ -69,7 +69,7 @@ def read_file(path: String) raises -> List[UInt8]:
         raise "read_file: open failed for " + path
 
     # fstat64 — struct stat on x86_64 is 144 bytes; st_size is 8 bytes at offset 48
-    var statbuf = alloc[UInt8](144).as_any_origin()
+    var statbuf = alloc[UInt8](144).as_unsafe_any_origin()
     var fstat_rc = external_call["fstat64", Int32](fd, statbuf)
     if fstat_rc < 0:
         _ = external_call["close", Int32](fd)
@@ -84,7 +84,7 @@ def read_file(path: String) raises -> List[UInt8]:
     # Read in 65536-byte chunks via pread64
     var result = List[UInt8](capacity=file_size)
     var chunk_size = 65536
-    var buf = alloc[UInt8](chunk_size).as_any_origin()
+    var buf = alloc[UInt8](chunk_size).as_unsafe_any_origin()
     var offset = 0
     while offset < file_size:
         var to_read = min(chunk_size, file_size - offset)
@@ -126,7 +126,7 @@ def write_file(path: String, data: Span[UInt8, _]) raises:
 
     var total = len(data)
     var chunk_size = 65536
-    var buf = alloc[UInt8](chunk_size).as_any_origin()
+    var buf = alloc[UInt8](chunk_size).as_unsafe_any_origin()
     var offset = 0
     while offset < total:
         var to_write = min(chunk_size, total - offset)
@@ -184,7 +184,7 @@ def list_dir(path: String) raises -> List[String]:
     if fd < 0:
         raise "list_dir: open failed for " + path
 
-    var buf = alloc[UInt8](4096).as_any_origin()
+    var buf = alloc[UInt8](4096).as_unsafe_any_origin()
     var names = List[String]()
 
     while True:

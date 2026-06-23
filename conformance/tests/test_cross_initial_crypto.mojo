@@ -32,16 +32,16 @@ def rustls_derive_keys(
 ) raises -> List[String]:
     """Derive key, iv, hp via librustls_mojo.so. Returns list [key, iv, hp] as hex strings."""
     var dcid_bytes = hex_decode(dcid_hex)
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid_bytes)).as_any_origin()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid_bytes)).as_unsafe_any_origin()
     for i in range(len(dcid_bytes)):
         dcid_ptr[i] = dcid_bytes[i]
 
-    var out_key = _heap_alloc[UInt8](32).as_any_origin()
-    var out_iv = _heap_alloc[UInt8](12).as_any_origin()
-    var out_hp = _heap_alloc[UInt8](32).as_any_origin()
-    var out_key_len = _heap_alloc[Int32](1).as_any_origin()
-    var out_iv_len = _heap_alloc[Int32](1).as_any_origin()
-    var out_hp_len = _heap_alloc[Int32](1).as_any_origin()
+    var out_key = _heap_alloc[UInt8](32).as_unsafe_any_origin()
+    var out_iv = _heap_alloc[UInt8](12).as_unsafe_any_origin()
+    var out_hp = _heap_alloc[UInt8](32).as_unsafe_any_origin()
+    var out_key_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_iv_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_hp_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
     # rlsm_initial_keys_raw treats *out_*_len as in/out: caller writes capacity.
     out_key_len[] = Int32(32)
     out_iv_len[] = Int32(12)

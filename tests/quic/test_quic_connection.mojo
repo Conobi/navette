@@ -2606,7 +2606,7 @@ def test_batch_crypto_roundtrip() raises:
 
     # Build packet: 22-byte header + 32-byte PADDING + 16-byte tag space = 70 bytes
     # PN_OFFSET = 18, HEADER_LEN = 22 (18 + 4-byte PN)
-    var buf_ptr = _heap_alloc[UInt8](70).as_any_origin()
+    var buf_ptr = _heap_alloc[UInt8](70).as_unsafe_any_origin()
     for i in range(70):
         buf_ptr[i] = UInt8(0)
 
@@ -2640,20 +2640,20 @@ def test_batch_crypto_roundtrip() raises:
     # Bytes 54-69: tag space (zeros)
 
     # Allocate parallel arrays on the heap
-    var pkt_ptrs   = _heap_alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_any_origin()
-    var pns        = _heap_alloc[UInt64](1).as_any_origin()
-    var hdr_lens   = _heap_alloc[Int32](1).as_any_origin()
-    var pay_lens   = _heap_alloc[Int32](1).as_any_origin()
-    var capacities = _heap_alloc[Int32](1).as_any_origin()
-    var pkt_lens   = _heap_alloc[Int32](1).as_any_origin()
-    var pn_offsets = _heap_alloc[Int32](1).as_any_origin()
-    var pn_lengths = _heap_alloc[Int32](1).as_any_origin()
+    var pkt_ptrs   = _heap_alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_unsafe_any_origin()
+    var pns        = _heap_alloc[UInt64](1).as_unsafe_any_origin()
+    var hdr_lens   = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var pay_lens   = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var capacities = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var pkt_lens   = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var pn_offsets = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var pn_lengths = _heap_alloc[Int32](1).as_unsafe_any_origin()
 
-    var out_ct_lens  = _heap_alloc[Int32](1).as_any_origin()
-    var out_results  = _heap_alloc[Int32](1).as_any_origin()
-    var out_fb       = _heap_alloc[UInt8](1).as_any_origin()
-    var out_pnl      = _heap_alloc[Int32](1).as_any_origin()
-    var out_pt_lens  = _heap_alloc[Int32](1).as_any_origin()
+    var out_ct_lens  = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_results  = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_fb       = _heap_alloc[UInt8](1).as_unsafe_any_origin()
+    var out_pnl      = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_pt_lens  = _heap_alloc[Int32](1).as_unsafe_any_origin()
 
     pkt_ptrs[0]   = buf_ptr
     pns[0]        = UInt64(0)

@@ -52,7 +52,7 @@ comptime _SOCKADDR_IN6_SIZE: Int32 = 28
 def _setsockopt_int(
     fd: RawHandle, level: Int32, optname: Int32, value: Int32,
 ) raises:
-    var optval = _heap_alloc[Int32](1).as_any_origin()
+    var optval = _heap_alloc[Int32](1).as_unsafe_any_origin()
     optval[0] = value
     var rc = external_call["setsockopt", Int32](
         fd, level, optname, optval, Int32(4),
@@ -85,7 +85,7 @@ def _setsockopt_so_sndtimeo(fd: RawHandle, ms: Int) raises:
     `connect(2)` causes the kernel to abort the connect once the wall
     time elapses, returning -1 instead of blocking indefinitely.
     """
-    var tv = _heap_alloc[UInt8](16).as_any_origin()
+    var tv = _heap_alloc[UInt8](16).as_unsafe_any_origin()
     for i in range(16):
         tv[i] = UInt8(0)
     var sec_ptr = tv.bitcast[Int64]()
@@ -128,7 +128,7 @@ def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
 
     # Build sockaddr_in6 for [::]:port — 28 bytes:
     #   family(2) + port(2 big-endian) + flowinfo(4) + addr(16) + scope_id(4).
-    var addr = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
+    var addr = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
         addr[i] = 0
     addr[0] = 10  # sin6_family = AF_INET6 (LE u16)
@@ -233,7 +233,7 @@ def tcp_connect(
     if connect_timeout_ms > UInt64(0):
         _setsockopt_so_sndtimeo(handle.raw(), Int(connect_timeout_ms))
 
-    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
+    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
     var n: Int32
     if addr.is_ipv4():
         n = _pack_v4(addr, buf)
@@ -272,7 +272,7 @@ def udp_connect(
     if connect_timeout_ms > UInt64(0):
         _setsockopt_so_sndtimeo(handle.raw(), Int(connect_timeout_ms))
 
-    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
+    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
     var n: Int32
     if addr.is_ipv4():
         n = _pack_v4(addr, buf)
@@ -305,7 +305,7 @@ def udp_listener(port: Int) raises -> OwnedHandle:
     _setsockopt_int(handle.raw(), _SOL_SOCKET, _SO_REUSEPORT, Int32(1))
     _setsockopt_int(handle.raw(), _IPPROTO_IPV6, _IPV6_V6ONLY, Int32(0))
 
-    var addr = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_any_origin()
+    var addr = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
         addr[i] = 0
     addr[0] = 10  # sin6_family = AF_INET6 (LE u16)

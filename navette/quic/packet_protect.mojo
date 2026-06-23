@@ -136,7 +136,7 @@ struct PacketProtect(Movable):
         """
         self.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
 
-        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
         out_handle[0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, out_handle)
@@ -166,7 +166,7 @@ struct PacketProtect(Movable):
         """
         self.discard_keys(0)  # Free existing Initial keys if any
         var dcid_len = len(dcid)
-        var dcid_buf = _heap_alloc[UInt8](dcid_len).as_any_origin()
+        var dcid_buf = _heap_alloc[UInt8](dcid_len).as_unsafe_any_origin()
         for i in range(dcid_len):
             dcid_buf[i] = dcid[i]
 
@@ -233,7 +233,7 @@ struct PacketProtect(Movable):
         """Remove header protection (List convenience wrapper)."""
         return self.unprotect_header_ptr(
             level,
-            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             len(packet_buf),
             pn_offset,
         )
@@ -290,7 +290,7 @@ struct PacketProtect(Movable):
         """Decrypt payload (List convenience wrapper — copies result out)."""
         var plaintext_len = self.decrypt_payload_in_place(
             level, pn, header_len,
-            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             len(packet_buf),
         )
         # Copy plaintext out of the buffer for backward compatibility.
@@ -356,7 +356,7 @@ struct PacketProtect(Movable):
         var capacity = header_len + pt_len + _AEAD_TAG_LEN
 
         # Build contiguous buffer: header + plaintext + tag space
-        var buf = _heap_alloc[UInt8](capacity).as_any_origin()
+        var buf = _heap_alloc[UInt8](capacity).as_unsafe_any_origin()
         for i in range(header_len):
             buf[i] = header[i]
         for i in range(pt_len):
@@ -417,7 +417,7 @@ struct PacketProtect(Movable):
         """Apply header protection (List convenience wrapper)."""
         self.protect_header_ptr(
             level,
-            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin(),
+            packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             len(packet_buf),
             pn_offset,
             pn_length,

@@ -11,6 +11,11 @@ export LD_LIBRARY_PATH="$REPO_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cd "$REPO_ROOT"
 
+# Reintroduction guard: fail if any deprecated b2 origin alias / cast method
+# reappears in in-scope source (see scripts/check_no_deprecated_origins.sh).
+echo "=== deprecated-origin guard ==="
+"$SCRIPT_DIR/check_no_deprecated_origins.sh"
+
 # Examples smoke gate — catches example bit-rot under refactors (per Plan 4).
 # Skippable via SKIP_EXAMPLES=1 (the 6 examples are a deferred migration scope;
 # they do not build on b2 yet — and were already broken pre-b2 — so the b2

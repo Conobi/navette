@@ -104,7 +104,7 @@ def test_set_keys_replaces_without_leak_at_slot_3() raises:
     _reset_keys_free_counter(tls.shared())
 
     var dcid = _synth_dcid()
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
 
@@ -151,7 +151,7 @@ def test_install_is_free_first_when_slot_3_populated() raises:
     var protect = PacketProtect(tls.shared())
 
     var dcid = _synth_dcid()
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
@@ -245,7 +245,7 @@ def test_discard_zero_rtt_keys_helper_targets_slot_3() raises:
     # PacketProtect directly (the helper reaches the real field, not a
     # detached test fixture).
     var dcid = _synth_dcid()
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
@@ -296,7 +296,7 @@ def test_discard_clears_slot_3_and_frees_handle() raises:
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
@@ -338,7 +338,7 @@ def test_del_frees_slot_3_handle_exactly_once() raises:
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_any_origin()
+    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()

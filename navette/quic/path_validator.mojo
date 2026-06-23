@@ -224,7 +224,7 @@ struct PathValidator(Movable):
         PATH_CHALLENGE frame and emit it. The token is drawn from
         getrandom(2) — same primitive used by CidManager.generate_cid.
         """
-        var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN).as_any_origin()
+        var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN).as_unsafe_any_origin()
         _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
         var token = List[UInt8](capacity=PATH_TOKEN_LEN)
         for i in range(PATH_TOKEN_LEN):

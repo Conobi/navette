@@ -179,7 +179,7 @@ struct RustlsLibrary(Movable):
 
         Returns an empty string if no error is set.
         """
-        var buf = _heap_alloc[UInt8](512).as_any_origin()
+        var buf = _heap_alloc[UInt8](512).as_unsafe_any_origin()
         var n = load_rlsm_last_error(self._handle)(buf, Int32(512))
         if n <= 0:
             buf.free()
@@ -860,7 +860,7 @@ struct SharedLibrary(Copyable, Movable):
     var _ptr: UnsafePointer[_SharedLibraryInner, MutAnyOrigin]
 
     def __init__(out self, var lib: RustlsLibrary):
-        var p = _heap_alloc[_SharedLibraryInner](1).as_any_origin()
+        var p = _heap_alloc[_SharedLibraryInner](1).as_unsafe_any_origin()
         p.init_pointee_move(_SharedLibraryInner(lib^))
         self._ptr = p
 
@@ -879,7 +879,7 @@ struct SharedLibrary(Copyable, Movable):
 
     @always_inline
     def inner_ptr(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer(to=self._ptr[].lib).as_any_origin()
+        return UnsafePointer(to=self._ptr[].lib).as_unsafe_any_origin()
 
 
 # ── TlsBackend (public facade) ──────────────────────────────────────────────

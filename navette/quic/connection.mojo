@@ -799,16 +799,16 @@ struct QuicConnection(Movable):
         # 3. Create QUIC client TLS connection.
         var sni_bytes = server_name.as_bytes()
         var sni_len = len(sni_bytes)
-        var sni_buf = _heap_alloc[UInt8](sni_len).as_any_origin()
+        var sni_buf = _heap_alloc[UInt8](sni_len).as_unsafe_any_origin()
         for i in range(sni_len):
             sni_buf[i] = sni_bytes[i]
 
         var tp_len = len(tp_bytes)
-        var tp_buf = _heap_alloc[UInt8](tp_len).as_any_origin()
+        var tp_buf = _heap_alloc[UInt8](tp_len).as_unsafe_any_origin()
         for i in range(tp_len):
             tp_buf[i] = tp_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
         out_handle[0] = Int32(-1)
 
         var rlib = lib.inner_ptr()
@@ -895,11 +895,11 @@ struct QuicConnection(Movable):
 
         # 3. Create QUIC server TLS connection.
         var tp_len = len(tp_bytes)
-        var tp_buf = _heap_alloc[UInt8](tp_len).as_any_origin()
+        var tp_buf = _heap_alloc[UInt8](tp_len).as_unsafe_any_origin()
         for i in range(tp_len):
             tp_buf[i] = tp_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_any_origin()
+        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
         out_handle[0] = Int32(-1)
 
         var rlib = lib.inner_ptr()
@@ -1001,7 +1001,7 @@ struct QuicConnection(Movable):
         var n = len(datagram)
         if n == 0:
             return
-        var buf = _heap_alloc[UInt8](n).as_any_origin()
+        var buf = _heap_alloc[UInt8](n).as_unsafe_any_origin()
         for i in range(n):
             buf[i] = datagram[i]
         try:
@@ -2633,7 +2633,7 @@ struct QuicConnection(Movable):
                             t_input_start = monotonic_us()
                     var data_buf = _heap_alloc[UInt8](
                         len(crypto_data)
-                    ).as_any_origin()
+                    ).as_unsafe_any_origin()
                     for i in range(len(crypto_data)):
                         data_buf[i] = crypto_data[i]
                     var input_marshalling_us: UInt64 = 0
@@ -2716,9 +2716,9 @@ struct QuicConnection(Movable):
                         return
 
         # 2. Loop write_hs to drain TLS output.
-        var out_buf = _heap_alloc[UInt8](_WRITE_HS_BUF_SIZE).as_any_origin()
-        var out_written = _heap_alloc[Int32](1).as_any_origin()
-        var out_kc = _heap_alloc[UInt8](1).as_any_origin()
+        var out_buf = _heap_alloc[UInt8](_WRITE_HS_BUF_SIZE).as_unsafe_any_origin()
+        var out_written = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_kc = _heap_alloc[UInt8](1).as_unsafe_any_origin()
 
         while True:
             out_written[0] = Int32(0)
@@ -2769,7 +2769,7 @@ struct QuicConnection(Movable):
 
             # Now handle key change AFTER writing data.
             if kc != UInt8(0):
-                var keys_handle_buf = _heap_alloc[Int32](1).as_any_origin()
+                var keys_handle_buf = _heap_alloc[Int32](1).as_unsafe_any_origin()
                 keys_handle_buf[0] = Int32(-1)
 
                 var t_start: UInt64 = 0
@@ -2891,8 +2891,8 @@ struct QuicConnection(Movable):
         self.state = self.state & ~CONN_HANDSHAKING
 
         # Read peer transport params.
-        var tp_buf = _heap_alloc[UInt8](_TP_BUF_SIZE).as_any_origin()
-        var tp_written = _heap_alloc[Int32](1).as_any_origin()
+        var tp_buf = _heap_alloc[UInt8](_TP_BUF_SIZE).as_unsafe_any_origin()
+        var tp_written = _heap_alloc[Int32](1).as_unsafe_any_origin()
         tp_written[0] = Int32(0)
 
         var lib = self._lib.inner_ptr()
@@ -3098,7 +3098,7 @@ struct QuicConnection(Movable):
         self._draining_zero_rtt = True
         try:
             for pkt in pending:
-                var buf_ptr = _heap_alloc[UInt8](len(pkt)).as_any_origin()
+                var buf_ptr = _heap_alloc[UInt8](len(pkt)).as_unsafe_any_origin()
                 for i in range(len(pkt)):
                     buf_ptr[i] = pkt[i]
                 # NOTE: flat try/except/finally — Mojo 1.0.0b1 cannot
@@ -3804,7 +3804,7 @@ struct QuicConnection(Movable):
 
             # header_bytes is now: [header | PN | payload | tag_space]
             var total_len = len(header_bytes)
-            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin()
+            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
 
             # Encrypt payload region in-place.
             var header_len = pn_offset + pn_len
@@ -3856,7 +3856,7 @@ struct QuicConnection(Movable):
                 header_bytes.append(UInt8(0))
 
             var total_len = len(header_bytes)
-            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_any_origin()
+            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
 
             # Encrypt payload region in-place.
             var header_len = pn_offset + pn_len
@@ -4466,7 +4466,7 @@ struct QuicConnection(Movable):
 
 def _generate_random_cid() raises -> List[UInt8]:
     """Generate a random 8-byte connection ID via getrandom(2)."""
-    var buf = _heap_alloc[UInt8](8).as_any_origin()
+    var buf = _heap_alloc[UInt8](8).as_unsafe_any_origin()
     var rc = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
     if rc != 8:
         buf.free()

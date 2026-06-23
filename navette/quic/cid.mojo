@@ -105,7 +105,7 @@ struct CidManager(Movable):
         self._lib = SharedLibrary(other=lib)
 
         # Generate 32-byte server_secret via getrandom(2).
-        var rbuf = _cid_alloc[UInt8](32).as_any_origin()
+        var rbuf = _cid_alloc[UInt8](32).as_unsafe_any_origin()
         _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
         self.server_secret = List[UInt8](capacity=32)
         for i in range(32):
@@ -163,7 +163,7 @@ struct CidManager(Movable):
 
     def generate_cid(mut self) raises -> List[UInt8]:
         """Generate an 8-byte random connection ID via getrandom(2)."""
-        var buf = _cid_alloc[UInt8](8).as_any_origin()
+        var buf = _cid_alloc[UInt8](8).as_unsafe_any_origin()
         _ = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
         var cid = List[UInt8](capacity=8)
         for i in range(8):
@@ -352,15 +352,15 @@ def _hmac_sha256_truncate16(
     """
     var rlib = lib.inner_ptr()
 
-    var key_ptr = _cid_alloc[UInt8](len(key)).as_any_origin()
+    var key_ptr = _cid_alloc[UInt8](len(key)).as_unsafe_any_origin()
     for i in range(len(key)):
         key_ptr[i] = key[i]
 
-    var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1)).as_any_origin()
+    var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1)).as_unsafe_any_origin()
     for i in range(len(msg)):
         msg_ptr[i] = msg[i]
 
-    var out_ptr = _cid_alloc[UInt8](32).as_any_origin()
+    var out_ptr = _cid_alloc[UInt8](32).as_unsafe_any_origin()
 
     var rc = rlib[].hmac_sha256(
         key_ptr, Int32(len(key)),

@@ -329,7 +329,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
         var detached = body._state == 3
 
-        var ctx_ptr = _heap_alloc[_H3StreamCtx](1).as_any_origin()
+        var ctx_ptr = _heap_alloc[_H3StreamCtx](1).as_unsafe_any_origin()
         var ctx = _H3StreamCtx()
         ctx.recv_body = body^
         ctx.resp_writer = resp^

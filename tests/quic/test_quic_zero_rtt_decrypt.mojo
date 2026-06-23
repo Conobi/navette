@@ -97,7 +97,7 @@ def _build_ping_initial(
     Returns:
         The 70-byte wire-format packet.
     """
-    var buf = _heap_alloc[UInt8](70).as_any_origin()
+    var buf = _heap_alloc[UInt8](70).as_unsafe_any_origin()
     for i in range(70):
         buf[i] = UInt8(0)
     buf[0] = UInt8(0xC3)  # long header | fixed bit | Initial | pn_len=4
@@ -706,7 +706,7 @@ def test_install_raise_folds_into_failure_path() raises:
 
     var real_handle = conn.conn_handle
     conn.conn_handle = Int32(-1)
-    var buf_ptr = _heap_alloc[UInt8](len(zero_rtt)).as_any_origin()
+    var buf_ptr = _heap_alloc[UInt8](len(zero_rtt)).as_unsafe_any_origin()
     for i in range(len(zero_rtt)):
         buf_ptr[i] = zero_rtt[i]
     try:
@@ -751,7 +751,7 @@ def test_coalesced_survivors_still_processed() raises:
     var initial_pn0 = _build_ping_initial(client_protect, UInt64(0))
 
     var total = len(zero_rtt) + len(initial_pn0)
-    var buf_ptr = _heap_alloc[UInt8](total).as_any_origin()
+    var buf_ptr = _heap_alloc[UInt8](total).as_unsafe_any_origin()
     for i in range(len(zero_rtt)):
         buf_ptr[i] = zero_rtt[i]
     for i in range(len(initial_pn0)):

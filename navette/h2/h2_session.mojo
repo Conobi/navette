@@ -153,7 +153,7 @@ struct H2Session(Session):
         # Flush pending frames to outbuf
         self._flush_outbound()
         # Allocate client context on heap
-        var ctx_ptr = _heap_alloc[_ClientCtx](1).as_any_origin()
+        var ctx_ptr = _heap_alloc[_ClientCtx](1).as_unsafe_any_origin()
         var ctx = _ClientCtx(handle_id=handle_id)
         ctx_ptr.init_pointee_move(ctx^)
         self._stream_ctxs[Int(stream_id)] = PtrBox[_ClientCtx](ctx_ptr)
