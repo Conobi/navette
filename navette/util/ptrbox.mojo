@@ -14,6 +14,8 @@ aliases the pointer; the unique owner is responsible for exactly-one
 
 from std.memory import UnsafePointer
 
+from navette.util.null_ptr import null_ptr
+
 
 struct PtrBox[T: AnyType](Copyable, Movable):
     var _ptr: UnsafePointer[Self.T, MutAnyOrigin]
@@ -23,7 +25,7 @@ struct PtrBox[T: AnyType](Copyable, Movable):
 
     @staticmethod
     def null() -> Self:
-        return PtrBox[Self.T](UnsafePointer[Self.T, MutAnyOrigin](unsafe_from_address=0))
+        return PtrBox[Self.T](null_ptr[Self.T, MutAnyOrigin]())
 
     def __init__(out self, *, other: Self):
         self._ptr = other._ptr
