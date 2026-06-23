@@ -7,7 +7,8 @@ requires-python = ">=3.11"
 dependencies = [
     "boucle",
     "mojox>=0.2",
-    "mojo-compiler==1.0.0b1",
+    "mojo-compiler==1.0.0b2",
+    "mojo-compiler-mojo-libs==1.0.0b2",
 ]
 
 [dependency-groups]
@@ -25,9 +26,9 @@ dev = [
 
 [build-system]
 requires = [
-    "mojox-build>=0.2.3",
-    "mojo-compiler==1.0.0b1",
-    "mojo-compiler-mojo-libs==1.0.0b1",
+    "mojox-build>=0.4",
+    "mojo-compiler==1.0.0b2",
+    "mojo-compiler-mojo-libs==1.0.0b2",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
     # the project's runtime deps, so boucle is pinned here too.
@@ -125,9 +126,10 @@ pythonpath = ["."]
 prerelease = "allow"
 
 [tool.uv.sources]
-# Pin boucle to a published git rev (not a local path) so external clones
-# reproduce the exact dependency, and so the example projects — which pin the
-# same rev — resolve without a path-vs-git URL conflict. Keep this rev in sync
-# with examples/*/pyproject.toml. Consumers that develop boucle locally should
-# override boucle in their own [tool.uv.sources] (or use a uv workspace).
-boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "27f8b3e666de32d78458fd839377183624461e5e" }
+# INTERIM (b2 migration): pinned to the local sibling boucle (b2) via a
+# relative path, because boucle's b2 branch is not yet published. RE-PIN to a
+# published git rev once boucle's b2 lands on the remote (and re-sync the
+# examples/*/pyproject.toml, which still carry the old b1 git rev). The git-pin
+# form is the canonical, reproducible dependency; this local path is a
+# deliberate local-only interim per the boucle-first integration.
+boucle = { path = "../boucle" }
