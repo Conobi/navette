@@ -12,7 +12,7 @@ from navette.tls.filters import (
 from tests._test_util import assert_true
 
 
-fn _splitmix64(mut state: UInt64) -> UInt64:
+def _splitmix64(mut state: UInt64) -> UInt64:
     state = state + UInt64(0x9E3779B97F4A7C15)
     var z = state
     z = (z ^ (z >> 30)) * UInt64(0xBF58476D1CE4E5B9)
