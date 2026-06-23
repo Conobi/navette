@@ -247,7 +247,7 @@ struct H3Session(Session):
     def alpn(self) -> Int:
         return ALPN_H3
 
-    fn current_streams(self) -> Int:
+    def current_streams(self) -> Int:
         """Return the count of in-flight HTTP/3 streams on this session.
 
         Used by requette's connection pool to decide whether a multiplexed
@@ -256,7 +256,7 @@ struct H3Session(Session):
         """
         return len(self._handle_to_stream)
 
-    fn peer_max_bidi_streams(self) -> UInt64:
+    def peer_max_bidi_streams(self) -> UInt64:
         """Return the peer's MAX_STREAMS (bidirectional) limit.
 
         H3 client request streams are bidirectional, so this value gates

@@ -580,7 +580,7 @@ struct H2Connection(Movable):
     def remote_settings(self) -> H2Settings:
         return H2Settings(other=self._remote_settings)
 
-    fn peer_max_concurrent_streams_raw(self) -> UInt32:
+    def peer_max_concurrent_streams_raw(self) -> UInt32:
         """Return the peer's SETTINGS_MAX_CONCURRENT_STREAMS without copying.
 
         Unlike `remote_settings()`, which copies the full `H2Settings` struct,

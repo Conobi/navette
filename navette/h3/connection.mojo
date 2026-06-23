@@ -260,7 +260,7 @@ struct H3Connection(Movable):
     def is_closed(self) -> Bool:
         return self._quic.is_closed()
 
-    fn peer_max_bidi_streams_raw(self) -> UInt64:
+    def peer_max_bidi_streams_raw(self) -> UInt64:
         """Return the peer's QUIC MAX_STREAMS (bidirectional) limit.
 
         Thin chain to `QuicConnection.peer_max_bidi_streams_raw()` that

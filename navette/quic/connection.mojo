@@ -4244,7 +4244,7 @@ struct QuicConnection(Movable):
         """True if the connection is in the draining state."""
         return (self.state & CONN_DRAINING) != 0
 
-    fn peer_max_bidi_streams_raw(self) -> UInt64:
+    def peer_max_bidi_streams_raw(self) -> UInt64:
         """Return the peer's MAX_STREAMS (bidirectional) limit without copying.
 
         Reads `self.stream_map.peer_max_streams_bidi` directly. Intended for
