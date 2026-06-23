@@ -69,6 +69,12 @@ from navette.tls._rlsm_bindings import (
     load_rlsm_tls_conn_write_plaintext,
     load_rlsm_tls_conn_write_tls,
     load_rlsm_tls_server_new,
+    # Function-pointer type aliases for the per-packet hot path — cached
+    # once in `_HotFns` (below) to avoid a `dlsym` on every FFI crossing.
+    rlsm_keys_remote_header_unprotect_fn,
+    rlsm_keys_remote_decrypt_fn,
+    rlsm_keys_local_encrypt_fn,
+    rlsm_keys_local_header_protect_fn,
 )
 from navette.util.null_ptr import null_ptr
 
@@ -112,19 +118,59 @@ def _open_librustls() raises -> OwnedDLHandle:
         return OwnedDLHandle("lib/librustls_mojo.so")
 
 
+struct _HotFns(Movable):
+    """Per-packet FFI function pointers, resolved once at library load.
+
+    The QUIC data path crosses into librustls_mojo four times per packet —
+    header-unprotect + AEAD-decrypt on ingress, AEAD-encrypt + header-protect
+    on egress. The generated loaders run a `dlsym` on every call; resolving
+    these four symbols once here and caching the `thin abi("C")` pointers
+    turns each crossing into a direct indirect call, with no per-packet
+    dynamic-loader lookup.
+
+    Lifetime: a cached pointer is valid only while the owning
+    `RustlsLibrary._handle` keeps the .so loaded. Both live in the same
+    struct and are destroyed together, so a cached pointer is never called
+    after the handle closes. Only the four per-packet symbols are cached;
+    every other (per-connection / setup) symbol keeps the resolve-on-call
+    path, which is not hot.
+    """
+
+    var keys_remote_header_unprotect: rlsm_keys_remote_header_unprotect_fn
+    var keys_remote_decrypt: rlsm_keys_remote_decrypt_fn
+    var keys_local_encrypt: rlsm_keys_local_encrypt_fn
+    var keys_local_header_protect: rlsm_keys_local_header_protect_fn
+
+    def __init__(out self, ref handle: OwnedDLHandle):
+        self.keys_remote_header_unprotect = load_rlsm_keys_remote_header_unprotect(handle)
+        self.keys_remote_decrypt = load_rlsm_keys_remote_decrypt(handle)
+        self.keys_local_encrypt = load_rlsm_keys_local_encrypt(handle)
+        self.keys_local_header_protect = load_rlsm_keys_local_header_protect(handle)
+
+    def __init__(out self, *, deinit take: Self):
+        self.keys_remote_header_unprotect = take.keys_remote_header_unprotect
+        self.keys_remote_decrypt = take.keys_remote_decrypt
+        self.keys_local_encrypt = take.keys_local_encrypt
+        self.keys_local_header_protect = take.keys_local_header_protect
+
+
 struct RustlsLibrary(Movable):
     """Dynamically loaded librustls_mojo.so (TCP-TLS symbols)."""
 
     var _handle: OwnedDLHandle
+    var _hot: _HotFns
 
     def __init__(out self) raises:
         self._handle = _open_librustls()
+        self._hot = _HotFns(self._handle)
 
     def __init__(out self, path: String) raises:
         self._handle = OwnedDLHandle(path)
+        self._hot = _HotFns(self._handle)
 
     def __init__(out self, *, deinit take: Self):
         self._handle = take._handle^
+        self._hot = take._hot^
 
     # -- Error retrieval -------------------------------------------------------
 
@@ -365,7 +411,7 @@ struct RustlsLibrary(Movable):
         buf_capacity: Int32,
     ) -> Int32:
         """Encrypt payload in-place. Returns ciphertext length or -1."""
-        return load_rlsm_keys_local_encrypt(self._handle)(
+        return self._hot.keys_local_encrypt(
             keys_handle, packet_number,
             header, header_len,
             payload, payload_len, buf_capacity,
@@ -382,7 +428,7 @@ struct RustlsLibrary(Movable):
         payload_len: Int32,
     ) -> Int32:
         """Decrypt payload in-place. Returns plaintext length or -1."""
-        return load_rlsm_keys_remote_decrypt(self._handle)(
+        return self._hot.keys_remote_decrypt(
             keys_handle, packet_number,
             header, header_len,
             payload, payload_len,
@@ -399,7 +445,7 @@ struct RustlsLibrary(Movable):
         pn_len: Int32,
     ) -> Int32:
         """Apply header protection (local/encrypt direction). Returns 0 or -1."""
-        return load_rlsm_keys_local_header_protect(self._handle)(
+        return self._hot.keys_local_header_protect(
             keys_handle, sample, sample_len,
             first_byte, pn_bytes, pn_len,
         )
@@ -415,7 +461,7 @@ struct RustlsLibrary(Movable):
         pn_len: Int32,
     ) -> Int32:
         """Remove header protection (remote/decrypt direction). Returns 0 or -1."""
-        return load_rlsm_keys_remote_header_unprotect(self._handle)(
+        return self._hot.keys_remote_header_unprotect(
             keys_handle, sample, sample_len,
             first_byte, pn_bytes, pn_len,
         )
