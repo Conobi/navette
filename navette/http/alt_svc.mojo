@@ -8,7 +8,7 @@ from std.collections.dict import Dict, KeyElement
 from std.memory import Span
 
 
-struct Origin(KeyElement):
+struct Origin(Copyable, Movable, KeyElement):
     """Origin key for the Alt-Svc cache: (scheme, host, port)."""
 
     var scheme: String   # "https" or "http"
