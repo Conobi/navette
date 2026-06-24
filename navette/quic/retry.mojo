@@ -4,8 +4,8 @@
 
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from navette.util.owned_alloc import Owned
 from navette.tls.lib import SharedLibrary
 
 
@@ -77,7 +77,8 @@ def generate_retry_token(
 
     # Build plaintext: 1 + dcid_len + 32 + 8
     var pt_len = 1 + len(orig_dcid) + 32 + 8
-    var pt_ptr = _heap_alloc[UInt8](pt_len).as_unsafe_any_origin()
+    var pt_buf = Owned[UInt8](pt_len)
+    var pt_ptr = pt_buf.ptr()
     pt_ptr[0] = UInt8(len(orig_dcid))
     var off = 1
     off = _copy_span_to_ptr(orig_dcid, pt_ptr, off)
@@ -85,25 +86,30 @@ def generate_retry_token(
     off = _write_u64_be(pt_ptr, off, now)
 
     # Generate 12-byte random nonce via getrandom(2).
-    var nonce_ptr = _heap_alloc[UInt8](12).as_unsafe_any_origin()
+    var nonce_buf = Owned[UInt8](12)
+    var nonce_ptr = nonce_buf.ptr()
     _ = external_call["getrandom", Int](nonce_ptr, UInt64(12), UInt32(0))
 
     # Prepare key pointer
-    var key_ptr = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var key_buf = Owned[UInt8](16)
+    var key_ptr = key_buf.ptr()
     _ = _copy_span_to_ptr(server_secret, key_ptr, 0)
 
     # Prepare AAD
     var aad_str = String("navette-retry-v1")
     var aad_bytes = aad_str.as_bytes()
     var aad_len = len(aad_bytes)
-    var aad_ptr = _heap_alloc[UInt8](aad_len).as_unsafe_any_origin()
+    var aad_buf = Owned[UInt8](aad_len)
+    var aad_ptr = aad_buf.ptr()
     for i in range(aad_len):
         aad_ptr[i] = aad_bytes[i]
 
     # Output buffer: plaintext + 16-byte tag
     var out_cap = pt_len + 16
-    var out_ptr = _heap_alloc[UInt8](out_cap).as_unsafe_any_origin()
-    var out_len_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_buf = Owned[UInt8](out_cap)
+    var out_ptr = out_buf.ptr()
+    var out_len_buf = Owned[Int32](1)
+    var out_len_ptr = out_len_buf.ptr()
     out_len_ptr[0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_seal(
@@ -121,12 +127,6 @@ def generate_retry_token(
 
     if rc != 0:
         var err = rlib[].last_error()
-        pt_ptr.free()
-        nonce_ptr.free()
-        key_ptr.free()
-        aad_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "AES-GCM-128 seal failed: " + err
 
     var ct_len = Int(out_len_ptr[0])
@@ -138,13 +138,10 @@ def generate_retry_token(
     for i in range(ct_len):
         token.append(out_ptr[i])
 
-    # Cleanup
-    pt_ptr.free()
-    nonce_ptr.free()
-    key_ptr.free()
-    aad_ptr.free()
-    out_ptr.free()
-    out_len_ptr.free()
+    # Keep the post-FFI-read buffers alive through their last reads above.
+    _ = nonce_buf
+    _ = out_buf
+    _ = out_len_buf
 
     return token^
 
@@ -172,17 +169,20 @@ def validate_retry_token(
     var rlib = lib.inner_ptr()
 
     # Extract nonce (first 12 bytes) and ciphertext+tag (rest)
-    var nonce_ptr = _heap_alloc[UInt8](12).as_unsafe_any_origin()
+    var nonce_buf = Owned[UInt8](12)
+    var nonce_ptr = nonce_buf.ptr()
     for i in range(12):
         nonce_ptr[i] = token[i]
 
     var ct_len = len(token) - 12
-    var ct_ptr = _heap_alloc[UInt8](ct_len).as_unsafe_any_origin()
+    var ct_buf = Owned[UInt8](ct_len)
+    var ct_ptr = ct_buf.ptr()
     for i in range(ct_len):
         ct_ptr[i] = token[12 + i]
 
     # Prepare key
-    var key_ptr = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var key_buf = Owned[UInt8](16)
+    var key_ptr = key_buf.ptr()
     for i in range(16):
         key_ptr[i] = server_secret[i]
 
@@ -190,21 +190,20 @@ def validate_retry_token(
     var aad_str = String("navette-retry-v1")
     var aad_bytes = aad_str.as_bytes()
     var aad_len = len(aad_bytes)
-    var aad_ptr = _heap_alloc[UInt8](aad_len).as_unsafe_any_origin()
+    var aad_buf = Owned[UInt8](aad_len)
+    var aad_ptr = aad_buf.ptr()
     for i in range(aad_len):
         aad_ptr[i] = aad_bytes[i]
 
     # Output buffer for plaintext (ct_len - 16 bytes)
     var pt_cap = ct_len - 16
     if pt_cap < 0:
-        nonce_ptr.free()
-        ct_ptr.free()
-        key_ptr.free()
-        aad_ptr.free()
         raise "token ciphertext too short"
 
-    var out_ptr = _heap_alloc[UInt8](pt_cap).as_unsafe_any_origin()
-    var out_len_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_buf = Owned[UInt8](pt_cap)
+    var out_ptr = out_buf.ptr()
+    var out_len_buf = Owned[Int32](1)
+    var out_len_ptr = out_len_buf.ptr()
     out_len_ptr[0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_open(
@@ -222,34 +221,16 @@ def validate_retry_token(
 
     if rc != 0:
         var err = rlib[].last_error()
-        nonce_ptr.free()
-        ct_ptr.free()
-        key_ptr.free()
-        aad_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "token authentication failed: " + err
 
     var pt_len = Int(out_len_ptr[0])
 
     # Parse plaintext: dcid_len (1) || dcid || addr_hash (32) || timestamp (8)
     if pt_len < 1 + 0 + 32 + 8:
-        nonce_ptr.free()
-        ct_ptr.free()
-        key_ptr.free()
-        aad_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "decrypted token plaintext too short"
 
     var dcid_len = Int(out_ptr[0])
     if 1 + dcid_len + 32 + 8 != pt_len:
-        nonce_ptr.free()
-        ct_ptr.free()
-        key_ptr.free()
-        aad_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "token plaintext length mismatch"
 
     # Extract orig_dcid
@@ -261,33 +242,17 @@ def validate_retry_token(
     var hash_offset = 1 + dcid_len
     for i in range(32):
         if out_ptr[hash_offset + i] != client_addr_hash[i]:
-            nonce_ptr.free()
-            ct_ptr.free()
-            key_ptr.free()
-            aad_ptr.free()
-            out_ptr.free()
-            out_len_ptr.free()
             raise "token address hash mismatch"
 
     # Verify timestamp
     var ts_offset = hash_offset + 32
     var timestamp = _read_u64_be(out_ptr, ts_offset)
     if now < timestamp or (now - timestamp) > max_age:
-        nonce_ptr.free()
-        ct_ptr.free()
-        key_ptr.free()
-        aad_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "token expired"
 
-    # Cleanup
-    nonce_ptr.free()
-    ct_ptr.free()
-    key_ptr.free()
-    aad_ptr.free()
-    out_ptr.free()
-    out_len_ptr.free()
+    # Keep the post-FFI-read output buffers alive through their last reads above.
+    _ = out_buf
+    _ = out_len_buf
 
     return orig_dcid^
 
@@ -305,7 +270,8 @@ def compute_retry_integrity_tag(
     var rlib = lib.inner_ptr()
 
     # Fixed key: 0xbe0c690b9f66575a1d766b54e368c84e
-    var key_ptr = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var key_buf = Owned[UInt8](16)
+    var key_ptr = key_buf.ptr()
     key_ptr[0] = 0xBE
     key_ptr[1] = 0x0C
     key_ptr[2] = 0x69
@@ -324,7 +290,8 @@ def compute_retry_integrity_tag(
     key_ptr[15] = 0x4E
 
     # Fixed nonce: 0x461599d35d632bf2239825bb
-    var nonce_ptr = _heap_alloc[UInt8](12).as_unsafe_any_origin()
+    var nonce_buf = Owned[UInt8](12)
+    var nonce_ptr = nonce_buf.ptr()
     nonce_ptr[0] = 0x46
     nonce_ptr[1] = 0x15
     nonce_ptr[2] = 0x99
@@ -340,16 +307,20 @@ def compute_retry_integrity_tag(
 
     # Build pseudo-Retry: orig_dcid_len (1) || orig_dcid || retry_packet_without_tag
     var aad_len = 1 + len(orig_dcid) + len(retry_packet_without_tag)
-    var aad_ptr = _heap_alloc[UInt8](aad_len).as_unsafe_any_origin()
+    var aad_buf = Owned[UInt8](aad_len)
+    var aad_ptr = aad_buf.ptr()
     aad_ptr[0] = UInt8(len(orig_dcid))
     var off = 1
     off = _copy_span_to_ptr(orig_dcid, aad_ptr, off)
     off = _copy_span_to_ptr(retry_packet_without_tag, aad_ptr, off)
 
     # Empty plaintext, output is just the 16-byte tag
-    var empty_ptr = _heap_alloc[UInt8](1).as_unsafe_any_origin()  # dummy, not used
-    var out_ptr = _heap_alloc[UInt8](16).as_unsafe_any_origin()
-    var out_len_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var empty_buf = Owned[UInt8](1)  # dummy, not used
+    var empty_ptr = empty_buf.ptr()
+    var out_buf = Owned[UInt8](16)
+    var out_ptr = out_buf.ptr()
+    var out_len_buf = Owned[Int32](1)
+    var out_len_ptr = out_len_buf.ptr()
     out_len_ptr[0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_seal(
@@ -367,34 +338,18 @@ def compute_retry_integrity_tag(
 
     if rc != 0:
         var err = rlib[].last_error()
-        key_ptr.free()
-        nonce_ptr.free()
-        aad_ptr.free()
-        empty_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "Retry integrity tag computation failed: " + err
 
     var tag_len = Int(out_len_ptr[0])
     if tag_len != 16:
-        key_ptr.free()
-        nonce_ptr.free()
-        aad_ptr.free()
-        empty_ptr.free()
-        out_ptr.free()
-        out_len_ptr.free()
         raise "expected 16-byte tag, got " + String(tag_len)
 
     var tag = List[UInt8](capacity=16)
     for i in range(16):
         tag.append(out_ptr[i])
 
-    # Cleanup
-    key_ptr.free()
-    nonce_ptr.free()
-    aad_ptr.free()
-    empty_ptr.free()
-    out_ptr.free()
-    out_len_ptr.free()
+    # Keep the post-FFI-read output buffers alive through their last reads above.
+    _ = out_buf
+    _ = out_len_buf
 
     return tag^

@@ -14,8 +14,8 @@
 #   3 = 0-RTT (server-side decrypt only; discarded at handshake-complete
 #       OR connection-close, whichever first — RFC 9001 §4.1.3)
 from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from navette.util.owned_alloc import Owned
 from navette.tls.lib import SharedLibrary
 
 comptime _AEAD_TAG_LEN: Int = 16
@@ -136,21 +136,21 @@ struct PacketProtect(Movable):
         """
         self.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
 
-        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_handle_buf = Owned[Int32](1)
+        var out_handle = out_handle_buf.ptr()
         out_handle[0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, out_handle)
 
         if rc == Int32(0):
             var kh = out_handle[0]
-            out_handle.free()
+            # Keep out_handle_buf alive through the post-FFI read above.
+            _ = out_handle_buf
             self.keys[ZERO_RTT_KEY_SLOT_IDX] = kh
             return True
         elif rc == Int32(1):
-            out_handle.free()
             return False
         else:
-            out_handle.free()
             var err = rlib[].last_error()
             raise "install_zero_rtt_read_keys failed: " + err
 
@@ -166,7 +166,8 @@ struct PacketProtect(Movable):
         """
         self.discard_keys(0)  # Free existing Initial keys if any
         var dcid_len = len(dcid)
-        var dcid_buf = _heap_alloc[UInt8](dcid_len).as_unsafe_any_origin()
+        var dcid_owned = Owned[UInt8](dcid_len)
+        var dcid_buf = dcid_owned.ptr()
         for i in range(dcid_len):
             dcid_buf[i] = dcid[i]
 
@@ -177,7 +178,6 @@ struct PacketProtect(Movable):
             Int32(dcid_len),
             is_client_i32,
         )
-        dcid_buf.free()
 
         if handle < 0:
             raise (
@@ -356,7 +356,8 @@ struct PacketProtect(Movable):
         var capacity = header_len + pt_len + _AEAD_TAG_LEN
 
         # Build contiguous buffer: header + plaintext + tag space
-        var buf = _heap_alloc[UInt8](capacity).as_unsafe_any_origin()
+        var buf_owned = Owned[UInt8](capacity)
+        var buf = buf_owned.ptr()
         for i in range(header_len):
             buf[i] = header[i]
         for i in range(pt_len):
@@ -373,7 +374,8 @@ struct PacketProtect(Movable):
         for i in range(ct_len):
             result.append(buf[header_len + i])
 
-        buf.free()
+        # Keep buf_owned alive through the post-FFI read above.
+        _ = buf_owned
         return result^
 
     # -- Header protection (encrypt direction) ---------------------------------

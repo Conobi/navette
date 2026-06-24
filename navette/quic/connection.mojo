@@ -14,7 +14,7 @@
 from std.collections import Dict, Optional
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 from navette.tls.lib import SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
@@ -799,16 +799,19 @@ struct QuicConnection(Movable):
         # 3. Create QUIC client TLS connection.
         var sni_bytes = server_name.as_bytes()
         var sni_len = len(sni_bytes)
-        var sni_buf = _heap_alloc[UInt8](sni_len).as_unsafe_any_origin()
+        var sni_buf_buf = Owned[UInt8](sni_len)
+        var sni_buf = sni_buf_buf.ptr()
         for i in range(sni_len):
             sni_buf[i] = sni_bytes[i]
 
         var tp_len = len(tp_bytes)
-        var tp_buf = _heap_alloc[UInt8](tp_len).as_unsafe_any_origin()
+        var tp_buf_buf = Owned[UInt8](tp_len)
+        var tp_buf = tp_buf_buf.ptr()
         for i in range(tp_len):
             tp_buf[i] = tp_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_handle_buf = Owned[Int32](1)
+        var out_handle = out_handle_buf.ptr()
         out_handle[0] = Int32(-1)
 
         var rlib = lib.inner_ptr()
@@ -822,16 +825,13 @@ struct QuicConnection(Movable):
             out_handle,
         )
 
-        sni_buf.free()
-        tp_buf.free()
-
         if rc < 0:
             var err = rlib[].last_error()
-            out_handle.free()
             raise "quic_client_conn_new failed: " + err
 
         var conn_handle = out_handle[0]
-        out_handle.free()
+        # Keep out_handle_buf alive across the post-FFI `[0]` read above.
+        _ = out_handle_buf
 
         if conn_handle < 0:
             raise "quic_client_conn_new returned invalid handle"
@@ -895,11 +895,13 @@ struct QuicConnection(Movable):
 
         # 3. Create QUIC server TLS connection.
         var tp_len = len(tp_bytes)
-        var tp_buf = _heap_alloc[UInt8](tp_len).as_unsafe_any_origin()
+        var tp_buf_buf = Owned[UInt8](tp_len)
+        var tp_buf = tp_buf_buf.ptr()
         for i in range(tp_len):
             tp_buf[i] = tp_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_handle_buf = Owned[Int32](1)
+        var out_handle = out_handle_buf.ptr()
         out_handle[0] = Int32(-1)
 
         var rlib = lib.inner_ptr()
@@ -918,15 +920,13 @@ struct QuicConnection(Movable):
             if profile_ptr is not None:
                 profile_ptr.value()[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
 
-        tp_buf.free()
-
         if rc < 0:
             var err = rlib[].last_error()
-            out_handle.free()
             raise "quic_server_conn_new failed: " + err
 
         var conn_handle = out_handle[0]
-        out_handle.free()
+        # Keep out_handle_buf alive across the post-FFI `[0]` read above.
+        _ = out_handle_buf
 
         if conn_handle < 0:
             raise "quic_server_conn_new returned invalid handle"
@@ -1001,15 +1001,11 @@ struct QuicConnection(Movable):
         var n = len(datagram)
         if n == 0:
             return
-        var buf = _heap_alloc[UInt8](n).as_unsafe_any_origin()
+        var buf_owned = Owned[UInt8](n)
+        var buf = buf_owned.ptr()
         for i in range(n):
             buf[i] = datagram[i]
-        try:
-            self.recv_from_buffer(buf, n, now, ecn_mark)
-        except e:
-            buf.free()
-            raise e.copy()
-        buf.free()
+        self.recv_from_buffer(buf, n, now, ecn_mark)
 
     def recv_from_buffer(
         mut self,
@@ -2631,9 +2627,8 @@ struct QuicConnection(Movable):
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
                             t_input_start = monotonic_us()
-                    var data_buf = _heap_alloc[UInt8](
-                        len(crypto_data)
-                    ).as_unsafe_any_origin()
+                    var data_buf_owned = Owned[UInt8](len(crypto_data))
+                    var data_buf = data_buf_owned.ptr()
                     for i in range(len(crypto_data)):
                         data_buf[i] = crypto_data[i]
                     var input_marshalling_us: UInt64 = 0
@@ -2696,7 +2691,6 @@ struct QuicConnection(Movable):
                             self.profile_ptr.value()[].record_read_hs_state_machine_us(out_sm_us)
                             self.profile_ptr.value()[].record_read_hs_output_alloc_us(out_lookup_us)
                             self.profile_ptr.value()[].record_read_hs_output_marshalling_us(UInt64(0))
-                    data_buf.free()
 
                     if rc < 0:
                         # Close + return on the TLS-error path. The I/O loop's
@@ -2716,9 +2710,12 @@ struct QuicConnection(Movable):
                         return
 
         # 2. Loop write_hs to drain TLS output.
-        var out_buf = _heap_alloc[UInt8](_WRITE_HS_BUF_SIZE).as_unsafe_any_origin()
-        var out_written = _heap_alloc[Int32](1).as_unsafe_any_origin()
-        var out_kc = _heap_alloc[UInt8](1).as_unsafe_any_origin()
+        var out_buf_owned = Owned[UInt8](_WRITE_HS_BUF_SIZE)
+        var out_buf = out_buf_owned.ptr()
+        var out_written_owned = Owned[Int32](1)
+        var out_written = out_written_owned.ptr()
+        var out_kc_owned = Owned[UInt8](1)
+        var out_kc = out_kc_owned.ptr()
 
         while True:
             out_written[0] = Int32(0)
@@ -2745,9 +2742,6 @@ struct QuicConnection(Movable):
 
             if rc < 0:
                 var err = lib[].last_error()
-                out_buf.free()
-                out_written.free()
-                out_kc.free()
                 raise "quic_conn_write_hs failed: " + err
 
             var kc = out_kc[0]
@@ -2769,7 +2763,8 @@ struct QuicConnection(Movable):
 
             # Now handle key change AFTER writing data.
             if kc != UInt8(0):
-                var keys_handle_buf = _heap_alloc[Int32](1).as_unsafe_any_origin()
+                var keys_handle_buf_owned = Owned[Int32](1)
+                var keys_handle_buf = keys_handle_buf_owned.ptr()
                 keys_handle_buf[0] = Int32(-1)
 
                 var t_start: UInt64 = 0
@@ -2789,14 +2784,11 @@ struct QuicConnection(Movable):
 
                 if take_rc < 0:
                     var err = lib[].last_error()
-                    keys_handle_buf.free()
-                    out_buf.free()
-                    out_written.free()
-                    out_kc.free()
                     raise "quic_conn_take_keys failed: " + err
 
                 var new_keys = keys_handle_buf[0]
-                keys_handle_buf.free()
+                # Keep keys_handle_buf alive across the post-FFI `[0]` read.
+                _ = keys_handle_buf_owned
 
                 if kc == UInt8(1):
                     # Handshake keys.
@@ -2809,10 +2801,6 @@ struct QuicConnection(Movable):
 
             if written == 0 and kc == UInt8(0):
                 break  # No more TLS output and no key change
-
-        out_buf.free()
-        out_written.free()
-        out_kc.free()
 
         # 3. Check if handshake is complete.
         var hs_state = lib[].quic_conn_is_handshaking(self.conn_handle)
@@ -2891,8 +2879,10 @@ struct QuicConnection(Movable):
         self.state = self.state & ~CONN_HANDSHAKING
 
         # Read peer transport params.
-        var tp_buf = _heap_alloc[UInt8](_TP_BUF_SIZE).as_unsafe_any_origin()
-        var tp_written = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var tp_buf_owned = Owned[UInt8](_TP_BUF_SIZE)
+        var tp_buf = tp_buf_owned.ptr()
+        var tp_written_owned = Owned[Int32](1)
+        var tp_written = tp_written_owned.ptr()
         tp_written[0] = Int32(0)
 
         var lib = self._lib.inner_ptr()
@@ -2908,6 +2898,10 @@ struct QuicConnection(Movable):
             var tp_bytes = List[UInt8](capacity=tp_len)
             for i in range(tp_len):
                 tp_bytes.append(tp_buf[i])
+            # Keep the out-buffers alive across the post-FFI reads above
+            # (tp_written[0] and the tp_buf[i] copy loop).
+            _ = tp_written_owned
+            _ = tp_buf_owned
 
             # Parse the peer's transport parameters. The parser raises with a
             # GUARD_TAG_TP_* bracketed prefix on §18.2 range violations
@@ -2921,8 +2915,6 @@ struct QuicConnection(Movable):
             try:
                 peer_tp = parse_transport_params(Span(tp_bytes))
             except e:
-                tp_buf.free()
-                tp_written.free()
                 self.close_transport(UInt64(0x08), String(e), now)
                 return
 
@@ -2935,8 +2927,6 @@ struct QuicConnection(Movable):
                 try:
                     validate_client_transport_params(peer_tp)
                 except e:
-                    tp_buf.free()
-                    tp_written.free()
                     self.close_transport(UInt64(0x08), String(e), now)
                     return
 
@@ -2958,9 +2948,6 @@ struct QuicConnection(Movable):
 
             # Issue a spare local CID (seq=1) so the peer has a backup.
             _ = self.cid_mgr.issue_new_cid()
-
-        tp_buf.free()
-        tp_written.free()
 
         # Seed Application-space PN skip RNG from local_cid (per-connection).
         # Initial and Handshake spaces retain pn_skip_rng=0 (skip disabled).
@@ -3098,14 +3085,15 @@ struct QuicConnection(Movable):
         self._draining_zero_rtt = True
         try:
             for pkt in pending:
-                var buf_ptr = _heap_alloc[UInt8](len(pkt)).as_unsafe_any_origin()
+                var buf_ptr_owned = Owned[UInt8](len(pkt))
+                var buf_ptr = buf_ptr_owned.ptr()
                 for i in range(len(pkt)):
                     buf_ptr[i] = pkt[i]
-                # NOTE: flat try/except/finally — Mojo 1.0.0b1 cannot
-                # parse a bare nested try/except as the body of a
-                # try/finally (the parser binds the except to the outer
-                # try). Semantics are identical: except contains the
-                # per-packet raise, finally always frees the buffer.
+                # The Owned wrapper frees `buf_ptr_owned` on every path —
+                # normal loop-iteration exit AND the per-packet raise
+                # unwind — so no `finally` free is needed. The except below
+                # is retained purely for the drop-and-continue semantics
+                # (count the dropped packet, keep draining the rest).
                 try:
                     self.recv_from_buffer(buf_ptr, len(pkt), now, ecn_mark)
                 except e:
@@ -3131,8 +3119,12 @@ struct QuicConnection(Movable):
                     # I/O-layer caller that drives recv_from_buffer.
                     _ = e
                     self._record_zero_rtt_drain_dropped()
-                finally:
-                    buf_ptr.free()
+                # Keep `buf_ptr_owned` alive to the end of the iteration (its
+                # `.ptr()` borrow feeds recv_from_buffer above), and ensure the
+                # inner try/except is NOT the for-body's final statement: Mojo
+                # 1.0.0b2's parser rejects an outer try/finally whose for-loop
+                # body ends in an inner try/except (no inner finally).
+                _ = buf_ptr_owned
         finally:
             self._draining_zero_rtt = False
 
@@ -4466,15 +4458,16 @@ struct QuicConnection(Movable):
 
 def _generate_random_cid() raises -> List[UInt8]:
     """Generate a random 8-byte connection ID via getrandom(2)."""
-    var buf = _heap_alloc[UInt8](8).as_unsafe_any_origin()
+    var buf_owned = Owned[UInt8](8)
+    var buf = buf_owned.ptr()
     var rc = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
     if rc != 8:
-        buf.free()
         raise "getrandom failed"
     var cid = List[UInt8](capacity=8)
     for i in range(8):
         cid.append(buf[i])
-    buf.free()
+    # Keep buf_owned alive across the post-FFI `buf[i]` copy loop above.
+    _ = buf_owned
     return cid^
 
 

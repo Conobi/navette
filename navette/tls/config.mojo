@@ -9,7 +9,7 @@
 # RustlsLibrary stays alive as long as any config or connection exists.
 # Destructors call `rlsm_config_free`.
 from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 from std.memory import Span
 
 from .lib import SharedLibrary
@@ -74,13 +74,13 @@ struct TlsClientConfig(Movable):
             buf.append(UInt8(proto_len))
             for j in range(proto_len):
                 buf.append(proto_bytes[j])
-        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_unsafe_any_origin()
+        var buf_ptr_buf = Owned[UInt8](len(buf))
+        var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
             buf_ptr[i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
-        buf_ptr.free()
         if rc < 0:
             raise "set_alpn_protocols failed: " + self._lib.inner_ptr()[].last_error()
 
@@ -108,11 +108,13 @@ struct TlsServerConfig(Movable):
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
 
-        var cert_buf = _heap_alloc[UInt8](cert_len).as_unsafe_any_origin()
+        var cert_buf_buf = Owned[UInt8](cert_len)
+        var cert_buf = cert_buf_buf.ptr()
         for i in range(cert_len):
             cert_buf[i] = cert_pem[i]
 
-        var key_buf = _heap_alloc[UInt8](key_len).as_unsafe_any_origin()
+        var key_buf_buf = Owned[UInt8](key_len)
+        var key_buf = key_buf_buf.ptr()
         for i in range(key_len):
             key_buf[i] = key_pem[i]
 
@@ -123,9 +125,6 @@ struct TlsServerConfig(Movable):
             key_buf,
             Int32(key_len),
         )
-
-        cert_buf.free()
-        key_buf.free()
 
         if handle < 0:
             self._handle = handle
@@ -160,13 +159,13 @@ struct TlsServerConfig(Movable):
             buf.append(UInt8(proto_len))
             for j in range(proto_len):
                 buf.append(proto_bytes[j])
-        var buf_ptr = _heap_alloc[UInt8](len(buf)).as_unsafe_any_origin()
+        var buf_ptr_buf = Owned[UInt8](len(buf))
+        var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
             buf_ptr[i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
-        buf_ptr.free()
         if rc < 0:
             raise "set_alpn_protocols failed: " + self._lib.inner_ptr()[].last_error()
 
@@ -324,21 +323,25 @@ struct QuicServerConfig(Movable):
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
 
-        var cert_buf = _heap_alloc[UInt8](cert_len).as_unsafe_any_origin()
+        var cert_buf_buf = Owned[UInt8](cert_len)
+        var cert_buf = cert_buf_buf.ptr()
         for i in range(cert_len):
             cert_buf[i] = cert_pem[i]
 
-        var key_buf = _heap_alloc[UInt8](key_len).as_unsafe_any_origin()
+        var key_buf_buf = Owned[UInt8](key_len)
+        var key_buf = key_buf_buf.ptr()
         for i in range(key_len):
             key_buf[i] = key_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
-        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
+        var alpn_buf_buf = Owned[UInt8](alpn_len)
+        var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
             alpn_buf[i] = alpn_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_handle_buf = Owned[Int32](1)
+        var out_handle = out_handle_buf.ptr()
         out_handle[0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_config_new(
@@ -349,13 +352,8 @@ struct QuicServerConfig(Movable):
             out_handle,
         )
 
-        cert_buf.free()
-        key_buf.free()
-        alpn_buf.free()
-
         if rc != 0:
             var err = rlib[].last_error()
-            out_handle.free()
             self._handle = Int32(-1)
             self._max_early_data = UInt32(0)
             self._early_data_store = None
@@ -363,7 +361,9 @@ struct QuicServerConfig(Movable):
             self._early_data_predicate_fn = None
             raise "quic_server_config_new failed: " + err
         self._handle = out_handle[0]
-        out_handle.free()
+        # Keep out_handle_buf alive across the post-FFI `[0]` read above
+        # (origin-tie should suffice; defensive against ASAP free).
+        _ = out_handle_buf
         self._max_early_data = effective_max_early_data
         # Synchronised-population invariant: when 0-RTT is enabled,
         # exactly one of `_early_data_filter` / `_early_data_predicate_fn`
@@ -458,11 +458,13 @@ struct QuicClientConfig(Movable):
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
-        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
+        var alpn_buf_buf = Owned[UInt8](alpn_len)
+        var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
             alpn_buf[i] = alpn_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_handle_buf = Owned[Int32](1)
+        var out_handle = out_handle_buf.ptr()
         out_handle[0] = Int32(-1)
 
         var rlib = self._lib.inner_ptr()
@@ -476,15 +478,13 @@ struct QuicClientConfig(Movable):
                 alpn_buf, Int32(alpn_len), out_handle,
             )
 
-        alpn_buf.free()
-
         if rc != 0:
             var err = rlib[].last_error()
-            out_handle.free()
             self._handle = Int32(-1)
             raise "quic_client_config_new failed: " + err
         self._handle = out_handle[0]
-        out_handle.free()
+        # Keep out_handle_buf alive across the post-FFI `[0]` read above.
+        _ = out_handle_buf
 
     def __init__(out self, *, _lib: SharedLibrary, _handle: Int32):
         """Private constructor for static factory methods."""
@@ -505,17 +505,20 @@ struct QuicClientConfig(Movable):
             alpn: ALPN protocol identifier (default "h3").
         """
         var ca_len = len(ca_pem)
-        var ca_buf = _heap_alloc[UInt8](ca_len).as_unsafe_any_origin()
+        var ca_buf_buf = Owned[UInt8](ca_len)
+        var ca_buf = ca_buf_buf.ptr()
         for i in range(ca_len):
             ca_buf[i] = ca_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
-        var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
+        var alpn_buf_buf = Owned[UInt8](alpn_len)
+        var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
             alpn_buf[i] = alpn_bytes[i]
 
-        var out_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+        var out_handle_buf = Owned[Int32](1)
+        var out_handle = out_handle_buf.ptr()
         out_handle[0] = Int32(-1)
         var rlib = lib.inner_ptr()
         var rc = rlib[].quic_client_config_with_ca(
@@ -524,16 +527,12 @@ struct QuicClientConfig(Movable):
             out_handle,
         )
 
-        ca_buf.free()
-        alpn_buf.free()
-
         if rc != 0:
             var err = rlib[].last_error()
-            var handle = out_handle[0]
-            out_handle.free()
             raise "quic_client_config_with_ca failed: " + err
         var handle = out_handle[0]
-        out_handle.free()
+        # Keep out_handle_buf alive across the post-FFI `[0]` read above.
+        _ = out_handle_buf
         return QuicClientConfig(_lib=lib, _handle=handle)
 
     def __init__(out self, *, deinit take: Self):
