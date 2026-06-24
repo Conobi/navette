@@ -58,9 +58,28 @@ def test_alloc_then_raise_autofrees() raises:
     print("PASS test_alloc_then_raise_autofrees")
 
 
+def test_zero_count() raises:
+    """`Owned[T](0)` is valid under ASSERT=all and reports a requested count 0.
+
+    The underlying `alloc(count=0)` aborts under ASSERT=all; `Owned` clamps the
+    storage to one element so a length-0 FFI call keeps a valid pointer (the old
+    `_heap_alloc(0)` behaviour). Regression guard for the count==0 DoS.
+    """
+    var b = Owned[UInt8](0)
+    assert_equal(b.count(), 0)
+    var p = b.ptr()  # valid for a length-0 FFI call; never dereferenced
+    _ = p
+    _ = b
+    var ba = Owned[UInt8](count=0, alignment=64)
+    assert_equal(ba.count(), 0)
+    _ = ba
+    print("PASS test_zero_count")
+
+
 def main() raises:
     test_alloc_and_count()
     test_aligned_ctor()
     test_move()
     test_alloc_then_raise_autofrees()
+    test_zero_count()
     print("All Owned[T] tests passed.")

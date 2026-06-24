@@ -40,14 +40,21 @@ struct Owned[T: AnyType](Movable):
     """
 
     var _alloc: Allocation[Self.T]
+    var _count: Int
 
     def __init__(out self, count: Int):
         """Allocate `count` elements of `T` with `T`'s natural alignment.
 
+        A `count` of 0 allocates a single element so the returned pointer stays
+        valid for a length-0 FFI call (matching the old `_heap_alloc(0)`):
+        `alloc(count=0)` aborts under `ASSERT=all`. `count()` still reports the
+        requested 0.
+
         Args:
             count: Number of elements to allocate. Storage is uninitialized.
         """
-        self._alloc = alloc(Layout[Self.T](count=count))
+        self._count = count
+        self._alloc = alloc(Layout[Self.T](count=count if count > 0 else 1))
 
     def __init__(out self, *, count: Int, alignment: Int):
         """Allocate `count` elements of `T` with an explicit byte `alignment`.
@@ -57,7 +64,10 @@ struct Owned[T: AnyType](Movable):
             alignment: Byte alignment; must be a power of two and at least
                 `T`'s natural alignment.
         """
-        self._alloc = alloc(Layout[Self.T](count=count, alignment=alignment))
+        self._count = count
+        self._alloc = alloc(
+            Layout[Self.T](count=count if count > 0 else 1, alignment=alignment)
+        )
 
     def __del__(deinit self):
         """Deallocate the storage. Compiler-checked: consumed exactly once."""
@@ -77,9 +87,9 @@ struct Owned[T: AnyType](Movable):
         return self._alloc.unsafe_ptr().unsafe_origin_cast[origin_of(self)]()
 
     def count(self) -> Int:
-        """Return the number of elements allocated.
+        """Return the requested element count (the value passed to the ctor).
 
-        Returns:
-            The element count this `Owned` was constructed with.
+        Returns the requested count even when it is 0 (the storage is clamped to
+        a single element internally; see `__init__`).
         """
-        return self._alloc.layout().count()
+        return self._count
