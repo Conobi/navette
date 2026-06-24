@@ -16,6 +16,11 @@ cd "$REPO_ROOT"
 echo "=== deprecated-origin guard ==="
 "$SCRIPT_DIR/check_no_deprecated_origins.sh"
 
+# Anti-regression guard: migrated files must allocate via Owned[T], not raw
+# _heap_alloc (see scripts/check_no_raw_heap_alloc.sh).
+echo "=== raw-heap-alloc guard ==="
+"$SCRIPT_DIR/check_no_raw_heap_alloc.sh"
+
 # Examples smoke gate — catches example bit-rot under refactors (per Plan 4).
 # Skippable via SKIP_EXAMPLES=1 (the 6 examples are a deferred migration scope;
 # they do not build on b2 yet — and were already broken pre-b2 — so the b2
