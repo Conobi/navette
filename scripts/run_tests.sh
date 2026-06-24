@@ -21,10 +21,14 @@ echo "=== deprecated-origin guard ==="
 echo "=== raw-heap-alloc guard ==="
 "$SCRIPT_DIR/check_no_raw_heap_alloc.sh"
 
+# Examples pin guard: fail if any example regresses off the b2 toolchain
+# (compiler 1.0.0b2, boucle cd91272, mojox>=0.3). See scripts/check_examples_pins.sh.
+echo "=== examples-pins guard ==="
+"$SCRIPT_DIR/check_examples_pins.sh"
+
 # Examples smoke gate — catches example bit-rot under refactors (per Plan 4).
-# Skippable via SKIP_EXAMPLES=1 (the 6 examples are a deferred migration scope;
-# they do not build on b2 yet — and were already broken pre-b2 — so the b2
-# src/conformance gate runs with SKIP_EXAMPLES=1 until the examples pass lands).
+# The 6 examples build on b2, so this gate runs by default. Skippable via
+# SKIP_EXAMPLES=1 for a faster src-only iteration loop.
 if [[ "${SKIP_EXAMPLES:-0}" != "1" ]]; then
     echo "=== examples-smoke gate ==="
     "$SCRIPT_DIR/check_examples_build.sh"
