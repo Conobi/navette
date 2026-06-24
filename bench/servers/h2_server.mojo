@@ -17,6 +17,7 @@ from std.collections import Dict
 from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 from navette.tls import TlsServerConfig, TlsConnection
 from navette.tls.lib import TlsBackend, SharedLibrary
@@ -629,7 +630,8 @@ def main() raises:
     # Listening socket
     var listener = Socket.tcp_v4()
     # Set SO_REUSEPORT for multi-worker support.
-    var reuseport_val = _heap_alloc[UInt8](4).as_any_origin()
+    var reuseport_val_buf = Owned[UInt8](4)
+    var reuseport_val = reuseport_val_buf.ptr()
     reuseport_val[0] = 1
     reuseport_val[1] = 0
     reuseport_val[2] = 0
@@ -637,7 +639,8 @@ def main() raises:
     var rp_rc = external_call["setsockopt", Int32](
         listener.raw(), Int32(1), SO_REUSEPORT, reuseport_val, Int32(4)
     )
-    reuseport_val.free()
+    # Keep reuseport_val alive across the setsockopt FFI call above.
+    _ = reuseport_val_buf
     if rp_rc < 0:
         print("h2-bench: warning: setsockopt(SO_REUSEPORT) failed")
     var bind_addr = SocketAddrV4(0, 0, 0, 0, port=_LISTEN_PORT)

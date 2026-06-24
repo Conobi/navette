@@ -15,7 +15,7 @@
 # the same way. Path C (rustls FFI) is the system-under-test.
 from lib.test_util import load_vectors, assert_true, hex_decode, hex_encode
 from lib.rustls import RustlsLibrary
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 from std.python import Python, PythonObject
 
 
@@ -32,16 +32,23 @@ def rustls_derive_keys(
 ) raises -> List[String]:
     """Derive key, iv, hp via librustls_mojo.so. Returns list [key, iv, hp] as hex strings."""
     var dcid_bytes = hex_decode(dcid_hex)
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid_bytes)).as_unsafe_any_origin()
+    var dcid_ptr_buf = Owned[UInt8](len(dcid_bytes))
+    var dcid_ptr = dcid_ptr_buf.ptr()
     for i in range(len(dcid_bytes)):
         dcid_ptr[i] = dcid_bytes[i]
 
-    var out_key = _heap_alloc[UInt8](32).as_unsafe_any_origin()
-    var out_iv = _heap_alloc[UInt8](12).as_unsafe_any_origin()
-    var out_hp = _heap_alloc[UInt8](32).as_unsafe_any_origin()
-    var out_key_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_iv_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_hp_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_key_buf = Owned[UInt8](32)
+    var out_key = out_key_buf.ptr()
+    var out_iv_buf = Owned[UInt8](12)
+    var out_iv = out_iv_buf.ptr()
+    var out_hp_buf = Owned[UInt8](32)
+    var out_hp = out_hp_buf.ptr()
+    var out_key_len_buf = Owned[Int32](1)
+    var out_key_len = out_key_len_buf.ptr()
+    var out_iv_len_buf = Owned[Int32](1)
+    var out_iv_len = out_iv_len_buf.ptr()
+    var out_hp_len_buf = Owned[Int32](1)
+    var out_hp_len = out_hp_len_buf.ptr()
     # rlsm_initial_keys_raw treats *out_*_len as in/out: caller writes capacity.
     out_key_len[] = Int32(32)
     out_iv_len[] = Int32(12)
@@ -75,13 +82,14 @@ def rustls_derive_keys(
     var iv_hex = hex_encode(iv_list)
     var hp_hex = hex_encode(hp_list)
 
-    dcid_ptr.free()
-    out_key.free()
-    out_iv.free()
-    out_hp.free()
-    out_key_len.free()
-    out_iv_len.free()
-    out_hp_len.free()
+    # Keep buffers alive across the FFI call + post-FFI out-param reads above.
+    _ = dcid_ptr_buf
+    _ = out_key_buf
+    _ = out_iv_buf
+    _ = out_hp_buf
+    _ = out_key_len_buf
+    _ = out_iv_len_buf
+    _ = out_hp_len_buf
 
     var result = List[String]()
     result.append(key_hex)

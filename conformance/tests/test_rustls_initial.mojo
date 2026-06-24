@@ -5,7 +5,7 @@
 from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_bytes_equal
 from lib.rustls import RustlsLibrary
 from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 from std.python import PythonObject
 
 
@@ -20,19 +20,26 @@ def derive_and_check(
 ) raises:
     """Call rlsm_initial_keys_raw and assert outputs match expected values."""
     # Allocate output buffers
-    var out_key = _heap_alloc[UInt8](32).as_unsafe_any_origin()
-    var out_iv = _heap_alloc[UInt8](12).as_unsafe_any_origin()
-    var out_hp = _heap_alloc[UInt8](32).as_unsafe_any_origin()
-    var out_key_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_iv_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_hp_len = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_key_buf = Owned[UInt8](32)
+    var out_key = out_key_buf.ptr()
+    var out_iv_buf = Owned[UInt8](12)
+    var out_iv = out_iv_buf.ptr()
+    var out_hp_buf = Owned[UInt8](32)
+    var out_hp = out_hp_buf.ptr()
+    var out_key_len_buf = Owned[Int32](1)
+    var out_key_len = out_key_len_buf.ptr()
+    var out_iv_len_buf = Owned[Int32](1)
+    var out_iv_len = out_iv_len_buf.ptr()
+    var out_hp_len_buf = Owned[Int32](1)
+    var out_hp_len = out_hp_len_buf.ptr()
     # rlsm_initial_keys_raw treats *out_*_len as in/out: caller writes capacity.
     out_key_len[] = Int32(32)
     out_iv_len[] = Int32(12)
     out_hp_len[] = Int32(32)
 
     # Build dcid pointer from the List
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid_bytes)).as_unsafe_any_origin()
+    var dcid_ptr_buf = Owned[UInt8](len(dcid_bytes))
+    var dcid_ptr = dcid_ptr_buf.ptr()
     for i in range(len(dcid_bytes)):
         dcid_ptr[i] = dcid_bytes[i]
 
@@ -64,14 +71,16 @@ def derive_and_check(
     for i in range(Int(out_hp_len[])):
         got_hp.append(out_hp[i])
 
-    # Free all allocations (before asserts, so they don't leak on failure)
-    dcid_ptr.free()
-    out_key.free()
-    out_iv.free()
-    out_hp.free()
-    out_key_len.free()
-    out_iv_len.free()
-    out_hp_len.free()
+    # Keep buffers alive across the FFI call + post-FFI out-param reads above.
+    # `Owned` auto-frees on every path (incl. the assert raises below), so the
+    # leak-on-failure the old manual-free-before-asserts guarded against is gone.
+    _ = dcid_ptr_buf
+    _ = out_key_buf
+    _ = out_iv_buf
+    _ = out_hp_buf
+    _ = out_key_len_buf
+    _ = out_iv_len_buf
+    _ = out_hp_len_buf
 
     # Assert
     assert_bytes_equal(got_key, expected_key, label + " key")

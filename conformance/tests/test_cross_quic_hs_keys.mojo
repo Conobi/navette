@@ -8,7 +8,7 @@
 from lib.test_util import assert_true, assert_equal
 from lib.rustls import RustlsLibrary
 from std.python import Python, PythonObject
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 
 struct HandshakeKeys:
@@ -48,7 +48,8 @@ def aead_cross_check(
     var tag_len       = 16
     var buf_capacity  = payload_len + tag_len + 4
 
-    var enc_buf = _heap_alloc[UInt8](buf_capacity).as_unsafe_any_origin()
+    var enc_buf_buf = Owned[UInt8](buf_capacity)
+    var enc_buf = enc_buf_buf.ptr()
     # Fill "key-pair-check" (14 bytes)
     enc_buf[0]  = UInt8(ord("k"))
     enc_buf[1]  = UInt8(ord("e"))
@@ -66,12 +67,14 @@ def aead_cross_check(
     enc_buf[13] = UInt8(ord("k"))
 
     # Stash original plaintext for comparison
-    var orig = _heap_alloc[UInt8](payload_len).as_unsafe_any_origin()
+    var orig_buf = Owned[UInt8](payload_len)
+    var orig = orig_buf.ptr()
     for i in range(payload_len):
         orig[i] = enc_buf[i]
 
     # AAD = "qc1" (3 bytes)
-    var aad_ptr = _heap_alloc[UInt8](3).as_unsafe_any_origin()
+    var aad_ptr_buf = Owned[UInt8](3)
+    var aad_ptr = aad_ptr_buf.ptr()
     aad_ptr[0] = UInt8(ord("q"))
     aad_ptr[1] = UInt8(ord("c"))
     aad_ptr[2] = UInt8(ord("1"))
@@ -95,9 +98,10 @@ def aead_cross_check(
     for i in range(payload_len):
         assert_true(enc_buf[i] == orig[i], label + ": plaintext byte mismatch at " + String(i))
 
-    enc_buf.free()
-    orig.free()
-    aad_ptr.free()
+    # Keep Owned buffers alive across the FFI calls + post-FFI reads above.
+    _ = enc_buf_buf
+    _ = orig_buf
+    _ = aad_ptr_buf
     print("  OK " + label)
 
 
@@ -113,11 +117,16 @@ def run_handshake(
     keys = HandshakeKeys()
 
     # Use 65536 bytes for server buffer to accommodate TLS cert in ServerHello
-    var buf_c = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
-    var buf_s = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
-    var written_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var kc_ptr      = _heap_alloc[UInt8](1).as_unsafe_any_origin()
-    var kh_ptr      = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var buf_c_buf = Owned[UInt8](65536)
+    var buf_c = buf_c_buf.ptr()
+    var buf_s_buf = Owned[UInt8](65536)
+    var buf_s = buf_s_buf.ptr()
+    var written_ptr_buf = Owned[Int32](1)
+    var written_ptr = written_ptr_buf.ptr()
+    var kc_ptr_buf  = Owned[UInt8](1)
+    var kc_ptr      = kc_ptr_buf.ptr()
+    var kh_ptr_buf  = Owned[Int32](1)
+    var kh_ptr      = kh_ptr_buf.ptr()
 
     for _ in range(20):  # max rounds
         var progress = False
@@ -175,11 +184,12 @@ def run_handshake(
 
         assert_true(progress, "handshake stalled - no bytes exchanged")
 
-    buf_c.free()
-    buf_s.free()
-    written_ptr.free()
-    kc_ptr.free()
-    kh_ptr.free()
+    # Keep Owned buffers alive across the handshake loop's FFI calls above.
+    _ = buf_c_buf
+    _ = buf_s_buf
+    _ = written_ptr_buf
+    _ = kc_ptr_buf
+    _ = kh_ptr_buf
 
     assert_true(keys.client_hs   > 0, "client Handshake key handle not acquired")
     assert_true(keys.server_hs   > 0, "server Handshake key handle not acquired")
@@ -242,7 +252,8 @@ def main() raises:
     var key_len  = Int32(len(key_bytes))
 
     # ALPN = "test" (4 bytes, raw - no null terminator)
-    var alpn_ptr = _heap_alloc[UInt8](4).as_unsafe_any_origin()
+    var alpn_ptr_buf = Owned[UInt8](4)
+    var alpn_ptr = alpn_ptr_buf.ptr()
     alpn_ptr[0] = UInt8(ord("t"))
     alpn_ptr[1] = UInt8(ord("e"))
     alpn_ptr[2] = UInt8(ord("s"))
@@ -250,7 +261,8 @@ def main() raises:
     var alpn_len = Int32(4)
 
     # Server config
-    var srv_cfg_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var srv_cfg_h_ptr_buf = Owned[Int32](1)
+    var srv_cfg_h_ptr = srv_cfg_h_ptr_buf.ptr()
     assert_equal(
         Int(rl.quic_server_config_new(cert_ptr, cert_len, key_ptr, key_len, alpn_ptr, alpn_len, srv_cfg_h_ptr)),
         0, "quic_server_config_new failed: " + rl.last_error()
@@ -258,7 +270,8 @@ def main() raises:
     var srv_cfg_h = srv_cfg_h_ptr[0]
 
     # Client config (trusts the server cert as CA)
-    var cli_cfg_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var cli_cfg_h_ptr_buf = Owned[Int32](1)
+    var cli_cfg_h_ptr = cli_cfg_h_ptr_buf.ptr()
     assert_equal(
         Int(rl.quic_client_config_with_ca(cert_ptr, cert_len, alpn_ptr, alpn_len, cli_cfg_h_ptr)),
         0, "quic_client_config_with_ca failed: " + rl.last_error()
@@ -267,10 +280,12 @@ def main() raises:
 
     # Transport params (empty - sufficient for handshake-only test)
     # Use a 1-byte alloc as sentinel for null-like pointer with len=0
-    var tp_sentinel = _heap_alloc[UInt8](1).as_unsafe_any_origin()
+    var tp_sentinel_buf = Owned[UInt8](1)
+    var tp_sentinel = tp_sentinel_buf.ptr()
 
     # Server connection
-    var srv_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var srv_h_ptr_buf = Owned[Int32](1)
+    var srv_h_ptr = srv_h_ptr_buf.ptr()
     assert_equal(
         Int(rl.quic_server_conn_new(srv_cfg_h, Int32(1), tp_sentinel, Int32(0), srv_h_ptr)),
         0, "quic_server_conn_new failed: " + rl.last_error()
@@ -278,7 +293,8 @@ def main() raises:
     var srv_h = srv_h_ptr[0]
 
     # Client connection - SNI = "localhost" (9 bytes, raw)
-    var sni_ptr = _heap_alloc[UInt8](9).as_unsafe_any_origin()
+    var sni_ptr_buf = Owned[UInt8](9)
+    var sni_ptr = sni_ptr_buf.ptr()
     sni_ptr[0] = UInt8(ord("l"))
     sni_ptr[1] = UInt8(ord("o"))
     sni_ptr[2] = UInt8(ord("c"))
@@ -290,7 +306,8 @@ def main() raises:
     sni_ptr[8] = UInt8(ord("t"))
     var sni_len = Int32(9)
 
-    var cli_h_ptr = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var cli_h_ptr_buf = Owned[Int32](1)
+    var cli_h_ptr = cli_h_ptr_buf.ptr()
     assert_equal(
         Int(rl.quic_client_conn_new(cli_cfg_h, Int32(1), sni_ptr, sni_len, tp_sentinel, Int32(0), cli_h_ptr)),
         0, "quic_client_conn_new failed: " + rl.last_error()
@@ -316,13 +333,13 @@ def main() raises:
     _ = rl.keys_free(keys.client_1rtt)
     _ = rl.keys_free(keys.server_1rtt)
 
-    # Free heap allocs
-    tp_sentinel.free()
-    srv_cfg_h_ptr.free()
-    cli_cfg_h_ptr.free()
-    srv_h_ptr.free()
-    cli_h_ptr.free()
-    alpn_ptr.free()
-    sni_ptr.free()
+    # Keep Owned buffers alive across the FFI calls + post-FFI out-param reads.
+    _ = tp_sentinel_buf
+    _ = srv_cfg_h_ptr_buf
+    _ = cli_cfg_h_ptr_buf
+    _ = srv_h_ptr_buf
+    _ = cli_h_ptr_buf
+    _ = alpn_ptr_buf
+    _ = sni_ptr_buf
 
     print("test_cross_quic_hs_keys: all 4 cross-checks passed")

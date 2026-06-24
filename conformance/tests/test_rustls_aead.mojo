@@ -5,6 +5,7 @@
 from lib.test_util import assert_true, assert_equal
 from lib.rustls import RustlsLibrary
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 from std.time import perf_counter_ns
 
 
@@ -47,7 +48,8 @@ def test_encrypt_decrypt_roundtrip(lib: RustlsLibrary) raises:
 
     # Prepare plaintext "Hello QUIC!" (11 bytes)
     var pt_len = 11
-    var pt = _heap_alloc[UInt8](pt_len).as_unsafe_any_origin()
+    var pt_buf = Owned[UInt8](pt_len)
+    var pt = pt_buf.ptr()
     pt[0] = 0x48  # H
     pt[1] = 0x65  # e
     pt[2] = 0x6C  # l
@@ -63,7 +65,8 @@ def test_encrypt_decrypt_roundtrip(lib: RustlsLibrary) raises:
 
     # Allocate buffer: plaintext + tag
     var buf_cap = pt_len + Int(tag_len)
-    var buf = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
+    var buf_buf = Owned[UInt8](buf_cap)
+    var buf = buf_buf.ptr()
     for i in range(pt_len):
         buf[i] = pt[i]
 
@@ -100,8 +103,9 @@ def test_encrypt_decrypt_roundtrip(lib: RustlsLibrary) raises:
     # Cleanup
     dcid.free()
     header.free()
-    buf.free()
-    pt.free()
+    # Keep Owned buffers alive across the FFI calls + post-FFI reads above.
+    _ = buf_buf
+    _ = pt_buf
     _ = lib.keys_free(client_h)
     _ = lib.keys_free(server_h)
 
@@ -142,7 +146,8 @@ def test_nonce_reuse_rejected(lib: RustlsLibrary) raises:
     var buf_cap = pt_len + tag_len
 
     # First encrypt at pn=0 — should succeed
-    var buf1 = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
+    var buf1_buf = Owned[UInt8](buf_cap)
+    var buf1 = buf1_buf.ptr()
     buf1[0] = 0x41  # A
     buf1[1] = 0x42  # B
     buf1[2] = 0x43  # C
@@ -153,7 +158,8 @@ def test_nonce_reuse_rejected(lib: RustlsLibrary) raises:
     assert_true(Int(ct1) > 0, "first encrypt should succeed")
 
     # Second encrypt at pn=0 (reuse) — must fail
-    var buf2 = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
+    var buf2_buf = Owned[UInt8](buf_cap)
+    var buf2 = buf2_buf.ptr()
     buf2[0] = 0x41
     buf2[1] = 0x42
     buf2[2] = 0x43
@@ -166,8 +172,9 @@ def test_nonce_reuse_rejected(lib: RustlsLibrary) raises:
     _ = lib.keys_free(h)
     dcid.free()
     header.free()
-    buf1.free()
-    buf2.free()
+    # Keep Owned buffers alive across the FFI calls above.
+    _ = buf1_buf
+    _ = buf2_buf
     print("  nonce reuse rejected: OK")
 
 
@@ -181,7 +188,8 @@ def test_throughput(lib: RustlsLibrary) raises:
     # 1200-byte payload (typical QUIC packet)
     var pt_len = 1200
     var buf_cap = pt_len + tag_len
-    var buf = _heap_alloc[UInt8](buf_cap).as_unsafe_any_origin()
+    var buf_buf = Owned[UInt8](buf_cap)
+    var buf = buf_buf.ptr()
     var header = _alloc_header()
 
     # Fill payload with a pattern
@@ -231,7 +239,8 @@ def test_throughput(lib: RustlsLibrary) raises:
     _ = lib.keys_free(server_h)
     dcid.free()
     header.free()
-    buf.free()
+    # Keep buf alive across the loop's FFI encrypt/decrypt calls above.
+    _ = buf_buf
 
 
 def main() raises:

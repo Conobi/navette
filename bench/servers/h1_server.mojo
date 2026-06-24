@@ -18,6 +18,7 @@ from std.collections.optional import Optional
 from std.ffi import external_call
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 from navette.h1.handler_server import H1HandlerServer
 from navette.tls import TlsServerConfig, TlsConnection
@@ -585,7 +586,8 @@ def main() raises:
     var listener = Socket.tcp_v4()
 
     # Set SO_REUSEPORT for multi-worker support.
-    var optval = _heap_alloc[UInt8](4).as_any_origin()
+    var optval_buf = Owned[UInt8](4)
+    var optval = optval_buf.ptr()
     optval[0] = 1
     optval[1] = 0
     optval[2] = 0
@@ -593,7 +595,8 @@ def main() raises:
     var sso = external_call["setsockopt", Int32](
         listener.raw(), Int32(1), SO_REUSEPORT, optval, Int32(4)
     )
-    optval.free()
+    # Keep optval alive across the setsockopt FFI call above.
+    _ = optval_buf
     if sso < 0:
         print("h1-bench: warning: setsockopt(SO_REUSEPORT) failed")
 

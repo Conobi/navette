@@ -10,6 +10,7 @@
 from std.ffi import external_call
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 
 # ---------------------------------------------------------------------------
@@ -86,19 +87,22 @@ def _setenv(name: String, value: String):
     var name_bytes = name.as_bytes()
     var val_bytes = value.as_bytes()
 
-    var name_buf = _heap_alloc[UInt8](len(name_bytes) + 1).as_any_origin()
+    var name_buf_buf = Owned[UInt8](len(name_bytes) + 1)
+    var name_buf = name_buf_buf.ptr()
     for i in range(len(name_bytes)):
         name_buf[i] = name_bytes[i]
     name_buf[len(name_bytes)] = 0
 
-    var val_buf = _heap_alloc[UInt8](len(val_bytes) + 1).as_any_origin()
+    var val_buf_buf = Owned[UInt8](len(val_bytes) + 1)
+    var val_buf = val_buf_buf.ptr()
     for i in range(len(val_bytes)):
         val_buf[i] = val_bytes[i]
     val_buf[len(val_bytes)] = 0
 
     _ = external_call["setenv", Int32](name_buf, val_buf, Int32(1))
-    name_buf.free()
-    val_buf.free()
+    # Keep buffers alive across the setenv FFI call above.
+    _ = name_buf_buf
+    _ = val_buf_buf
 
 
 def _find_binary(name: String) raises -> String:
@@ -108,26 +112,30 @@ def _find_binary(name: String) raises -> String:
 
     # Try Docker path first via access(2), X_OK = 1
     var docker_bytes = docker_path.as_bytes()
-    var path_buf = _heap_alloc[UInt8](len(docker_bytes) + 1).as_any_origin()
+    var path_buf_buf = Owned[UInt8](len(docker_bytes) + 1)
+    var path_buf = path_buf_buf.ptr()
     for i in range(len(docker_bytes)):
         path_buf[i] = docker_bytes[i]
     path_buf[len(docker_bytes)] = 0
 
     var rc = external_call["access", Int32](path_buf, Int32(1))
-    path_buf.free()
+    # Keep path_buf alive across the access FFI call above.
+    _ = path_buf_buf
 
     if rc == 0:
         return docker_path
 
     # Try local path
     var local_bytes = local_path.as_bytes()
-    var path_buf2 = _heap_alloc[UInt8](len(local_bytes) + 1).as_any_origin()
+    var path_buf2_buf = Owned[UInt8](len(local_bytes) + 1)
+    var path_buf2 = path_buf2_buf.ptr()
     for i in range(len(local_bytes)):
         path_buf2[i] = local_bytes[i]
     path_buf2[len(local_bytes)] = 0
 
     var rc2 = external_call["access", Int32](path_buf2, Int32(1))
-    path_buf2.free()
+    # Keep path_buf2 alive across the access FFI call above.
+    _ = path_buf2_buf
 
     if rc2 == 0:
         return local_path
@@ -159,17 +167,24 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
             _setenv("BENCH_H1_ROLE", String("h1"))
 
         var path_bytes = binary_path.as_bytes()
-        var path_buf = _heap_alloc[UInt8](len(path_bytes) + 1).as_any_origin()
+        var path_buf_buf = Owned[UInt8](len(path_bytes) + 1)
+        var path_buf = path_buf_buf.ptr()
         for i in range(len(path_bytes)):
             path_buf[i] = path_bytes[i]
         path_buf[len(path_bytes)] = 0
 
         # Build argv: [path, NULL]
-        var argv = _heap_alloc[UnsafePointer[UInt8, MutAnyOrigin]](2).as_any_origin()
-        argv[0] = path_buf
+        var argv_buf = Owned[UnsafePointer[UInt8, MutAnyOrigin]](2)
+        var argv = argv_buf.ptr()
+        argv[0] = path_buf.as_unsafe_any_origin()
         argv[1] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
 
         _ = external_call["execv", Int32](path_buf, argv)
+
+        # Keep buffers alive across the execv FFI call above (no return on
+        # success — the child image is replaced; on failure we _exit below).
+        _ = path_buf_buf
+        _ = argv_buf
 
         # If execv failed, exit child.
         _ = external_call["_exit", Int32](Int32(127))
@@ -225,13 +240,15 @@ def main() raises:
 
     var env_name = "BENCH_WORKERS"
     var env_bytes = env_name.as_bytes()
-    var env_buf = _heap_alloc[UInt8](len(env_bytes) + 1).as_any_origin()
+    var env_buf_buf = Owned[UInt8](len(env_bytes) + 1)
+    var env_buf = env_buf_buf.ptr()
     for i in range(len(env_bytes)):
         env_buf[i] = env_bytes[i]
     env_buf[len(env_bytes)] = 0
 
     var env_ptr = external_call["getenv", UnsafePointer[UInt8, MutAnyOrigin]](env_buf)
-    env_buf.free()
+    # Keep env_buf alive across the getenv FFI call above.
+    _ = env_buf_buf
 
     if Int(env_ptr) != 0:
         var val = 0
@@ -254,13 +271,15 @@ def main() raises:
     # If unset or empty, all protocols are launched.
     var proto_env_name = "BENCH_PROTOCOL"
     var proto_env_bytes = proto_env_name.as_bytes()
-    var proto_env_buf = _heap_alloc[UInt8](len(proto_env_bytes) + 1).as_any_origin()
+    var proto_env_buf_buf = Owned[UInt8](len(proto_env_bytes) + 1)
+    var proto_env_buf = proto_env_buf_buf.ptr()
     for i in range(len(proto_env_bytes)):
         proto_env_buf[i] = proto_env_bytes[i]
     proto_env_buf[len(proto_env_bytes)] = 0
 
     var proto_ptr = external_call["getenv", UnsafePointer[UInt8, MutAnyOrigin]](proto_env_buf)
-    proto_env_buf.free()
+    # Keep proto_env_buf alive across the getenv FFI call above.
+    _ = proto_env_buf_buf
 
     var protocol_filter = String("")
     if Int(proto_ptr) != 0:
@@ -314,8 +333,10 @@ def main() raises:
 
     # Monitor loop: use sigtimedwait with 500ms timeout.
     # Returns signal number if caught, -1 with errno=EAGAIN on timeout.
-    var status_buf = _heap_alloc[Int32](1).as_any_origin()
-    var ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_any_origin()
+    var status_buf_buf = Owned[Int32](1)
+    var status_buf = status_buf_buf.ptr()
+    var ts_buf = Owned[UInt8](TIMESPEC_SIZE)
+    var ts = ts_buf.ptr()
     for i in range(TIMESPEC_SIZE):
         ts[i] = 0
     # tv_sec = 0, tv_nsec = 500_000_000 (500ms) = 0x1DCD6500 LE
@@ -426,7 +447,8 @@ def main() raises:
                 children[i].pid, status_buf, Int32(0)
             )
 
-    ts.free()
     sigset.free()
-    status_buf.free()
+    # Keep Owned buffers alive across the monitor loop's FFI calls above.
+    _ = ts_buf
+    _ = status_buf_buf
     print("[launcher] all children reaped, exiting")

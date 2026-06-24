@@ -5,7 +5,7 @@
 # functions for the rlsm_* C FFI symbols.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 
 struct RustlsLibrary(Movable):
@@ -26,17 +26,18 @@ struct RustlsLibrary(Movable):
 
         Returns an empty string if no error is set.
         """
-        var buf = _heap_alloc[UInt8](512).as_unsafe_any_origin()
+        var buf_owned = Owned[UInt8](512)
+        var buf = buf_owned.ptr()
         var n = self._handle.call["rlsm_last_error", Int32](buf, Int32(512))
         if n <= 0:
-            buf.free()
             return String("")
         # n includes the NUL terminator; the message is n-1 bytes.
         # Build the String byte-by-byte (safe for Mojo 0.26.2).
         var msg = String()
         for i in range(Int(n - 1)):
             msg += chr(Int(buf[i]))
-        buf.free()
+        # Keep buf alive across the FFI call + the post-FFI byte reads above.
+        _ = buf_owned
         return msg^
 
     # -- QUIC Initial keys (raw) -----------------------------------------------
