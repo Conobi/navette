@@ -18,25 +18,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Migrated library file : max permitted `_heap_alloc[` call sites.
-declare -A EXPECTED=(
-  ["navette/runtime/socket_helpers.mojo"]=0
-  ["navette/tls/lib.mojo"]=1
-  ["navette/compress/lib.mojo"]=0
-  ["navette/http/decode.mojo"]=0
-  ["interop/client.mojo"]=0
-  ["navette/quic/retry.mojo"]=0
-  ["navette/quic/packet_protect.mojo"]=0
-  ["navette/tls/config.mojo"]=0
-  ["navette/quic/connection.mojo"]=0
+# Each row: "<file> <expected _heap_alloc[ call sites> <expected raw-alloc imports>".
+# Counts are EXACT (a missed site or a regression both fail). The import column
+# catches an aliased re-import (`import alloc as foo; foo[...]`) that the call
+# grep alone would miss. tls/lib keeps its refcounted _SharedLibraryInner site
+# + its import; every other migrated file is fully on Owned[T] (0/0).
+FILES=(
+  "navette/runtime/socket_helpers.mojo 0 0"
+  "navette/tls/lib.mojo 1 1"
+  "navette/compress/lib.mojo 0 0"
+  "navette/http/decode.mojo 0 0"
+  "interop/client.mojo 0 0"
+  "navette/quic/retry.mojo 0 0"
+  "navette/quic/packet_protect.mojo 0 0"
+  "navette/tls/config.mojo 0 0"
+  "navette/quic/connection.mojo 0 0"
 )
 
 fail=0
-for f in "${!EXPECTED[@]}"; do
-  got=$(grep -cE '_heap_alloc\[' "$f" 2>/dev/null || true)
-  exp=${EXPECTED[$f]}
-  if [ "$got" -gt "$exp" ]; then
-    echo "check_no_raw_heap_alloc: FAIL — $f has $got '_heap_alloc[' site(s), expected <= $exp" >&2
+for row in "${FILES[@]}"; do
+  read -r f exp_call exp_imp <<<"$row"
+  got_call=$(grep -cE '_heap_alloc\[' "$f" 2>/dev/null || true)
+  # raw allocator import (any alias): from std.memory.unsafe_pointer import ... alloc ...
+  got_imp=$(grep -cE 'from std\.memory\.unsafe_pointer import.*\balloc\b' "$f" 2>/dev/null || true)
+  if [ "$got_call" -ne "$exp_call" ]; then
+    echo "check_no_raw_heap_alloc: FAIL — $f: $got_call '_heap_alloc[' call(s), expected $exp_call" >&2
+    fail=1
+  fi
+  if [ "$got_imp" -ne "$exp_imp" ]; then
+    echo "check_no_raw_heap_alloc: FAIL — $f: $got_imp raw-allocator import(s), expected $exp_imp" >&2
     fail=1
   fi
 done
