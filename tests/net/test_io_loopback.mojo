@@ -22,8 +22,8 @@ HTTP semantics.
 """
 
 from std.ffi import external_call
-from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from navette.util.owned_alloc import Owned
 from navette.net.resolver import resolve_host
 from navette.runtime.socket_helpers import tcp_connect, tcp_listener
 
@@ -33,35 +33,39 @@ def _accept_blocking(listener_fd: Int32) raises -> Int32:
     # F_SETFL=4, flags=0 — clears O_NONBLOCK set by tcp_listener's
     # SOCK_NONBLOCK so the test can synchronously wait for the SYN.
     _ = external_call["fcntl", Int32](listener_fd, Int32(4), Int32(0))
-    var sa = _heap_alloc[UInt8](28).as_unsafe_any_origin()
-    var alen = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var sa_buf = Owned[UInt8](28)
+    var sa = sa_buf.ptr()
+    var alen_buf = Owned[Int32](1)
+    var alen = alen_buf.ptr()
     alen[0] = Int32(28)
     var cfd = external_call["accept", Int32](listener_fd, sa, alen)
-    sa.free()
-    alen.free()
+    _ = sa_buf
+    _ = alen_buf
     if cfd < 0:
         raise "accept() returned " + String(Int(cfd))
     return cfd
 
 
 def _send_bytes(fd: Int32, data: List[UInt8]) raises:
-    var buf = _heap_alloc[UInt8](len(data)).as_unsafe_any_origin()
+    var buf_owned = Owned[UInt8](len(data))
+    var buf = buf_owned.ptr()
     for i in range(len(data)):
         buf[i] = data[i]
     var rc = external_call["send", Int](fd, buf, len(data), Int32(0))
-    buf.free()
+    _ = buf_owned
     if rc <= 0:
         raise "send() returned " + String(rc)
 
 
 def _recv_bytes(fd: Int32, max_n: Int) raises -> List[UInt8]:
-    var buf = _heap_alloc[UInt8](max_n).as_unsafe_any_origin()
+    var buf_owned = Owned[UInt8](max_n)
+    var buf = buf_owned.ptr()
     var rc = external_call["recv", Int](fd, buf, max_n, Int32(0))
     var out = List[UInt8]()
     if rc > 0:
         for i in range(rc):
             out.append(buf[i])
-    buf.free()
+    _ = buf_owned
     if rc < 0:
         raise "recv() returned " + String(rc)
     return out^
@@ -86,14 +90,16 @@ def test_loopback_roundtrip() raises:
     """Server binds dual-stack, client resolves+connects, both sides exchange."""
     var srv = tcp_listener(0)
 
-    var sa = _heap_alloc[UInt8](28).as_unsafe_any_origin()
-    var alen = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var sa_buf = Owned[UInt8](28)
+    var sa = sa_buf.ptr()
+    var alen_buf = Owned[Int32](1)
+    var alen = alen_buf.ptr()
     alen[0] = Int32(28)
     _ = external_call["getsockname", Int32](srv.raw(), sa, alen)
     # sockaddr_in6 port at offset 2, big-endian u16.
     var port = (Int(sa[2]) << 8) | Int(sa[3])
-    sa.free()
-    alen.free()
+    _ = sa_buf
+    _ = alen_buf
     if port == 0:
         raise "test_loopback: getsockname returned port 0"
 

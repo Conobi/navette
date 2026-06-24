@@ -14,6 +14,7 @@
 from std.memory import UnsafePointer, Span
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection, QuicEvent
@@ -41,11 +42,13 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
 
     var alpn_bytes = String("h3").as_bytes()
     var alpn_len = len(alpn_bytes)
-    var alpn_buf = _heap_alloc[UInt8](alpn_len).as_unsafe_any_origin()
+    var alpn_owned = Owned[UInt8](alpn_len)
+    var alpn_buf = alpn_owned.ptr()
     for i in range(alpn_len):
         alpn_buf[i] = alpn_bytes[i]
 
-    var cfg_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var cfg_handle_owned = Owned[Int32](1)
+    var cfg_handle = cfg_handle_owned.ptr()
     cfg_handle[0] = Int32(-1)
     var rc_cfg = lib.quic_client_config_new(
         alpn_buf, Int32(alpn_len), cfg_handle
@@ -55,15 +58,18 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
 
     var sni_bytes = String("example.com").as_bytes()
     var sni_len = len(sni_bytes)
-    var sni_buf = _heap_alloc[UInt8](sni_len).as_unsafe_any_origin()
+    var sni_owned = Owned[UInt8](sni_len)
+    var sni_buf = sni_owned.ptr()
     for i in range(sni_len):
         sni_buf[i] = sni_bytes[i]
 
     # Empty transport-params buffer is acceptable for this test.
-    var tp_buf = _heap_alloc[UInt8](1).as_unsafe_any_origin()
+    var tp_owned = Owned[UInt8](1)
+    var tp_buf = tp_owned.ptr()
     tp_buf[0] = UInt8(0)
 
-    var conn_handle = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var conn_handle_owned = Owned[Int32](1)
+    var conn_handle = conn_handle_owned.ptr()
     conn_handle[0] = Int32(-1)
     var rc_conn = lib.quic_client_conn_new(
         cfg_handle[0], Int32(1),  # version=1 (QUIC v1)
@@ -78,11 +84,11 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
     assert_equal_int(Int(k), -2, "client conn must return -2 from handshake_kind")
 
     _ = lib.quic_conn_free(conn_handle[0])
-    alpn_buf.free()
-    sni_buf.free()
-    tp_buf.free()
-    cfg_handle.free()
-    conn_handle.free()
+    _ = alpn_owned
+    _ = sni_owned
+    _ = tp_owned
+    _ = cfg_handle_owned
+    _ = conn_handle_owned
 
 
 def _read_file_bytes(path: String) raises -> List[UInt8]:

@@ -19,8 +19,8 @@
 # AEAD encryption that the F30 scenario harness already covers.
 
 from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection, QuicEvent
@@ -97,7 +97,8 @@ def _build_ping_initial(
     Returns:
         The 70-byte wire-format packet.
     """
-    var buf = _heap_alloc[UInt8](70).as_unsafe_any_origin()
+    var buf_owned = Owned[UInt8](70)
+    var buf = buf_owned.ptr()
     for i in range(70):
         buf[i] = UInt8(0)
     buf[0] = UInt8(0xC3)  # long header | fixed bit | Initial | pn_len=4
@@ -127,7 +128,7 @@ def _build_ping_initial(
     var out = List[UInt8](capacity=70)
     for i in range(70):
         out.append(buf[i])
-    buf.free()
+    _ = buf_owned
     return out^
 
 
@@ -706,7 +707,8 @@ def test_install_raise_folds_into_failure_path() raises:
 
     var real_handle = conn.conn_handle
     conn.conn_handle = Int32(-1)
-    var buf_ptr = _heap_alloc[UInt8](len(zero_rtt)).as_unsafe_any_origin()
+    var buf_owned = Owned[UInt8](len(zero_rtt))
+    var buf_ptr = buf_owned.ptr()
     for i in range(len(zero_rtt)):
         buf_ptr[i] = zero_rtt[i]
     try:
@@ -715,7 +717,7 @@ def test_install_raise_folds_into_failure_path() raises:
         )
     finally:
         conn.conn_handle = real_handle
-        buf_ptr.free()
+    _ = buf_owned
 
     assert_equal_int(
         len(conn.zero_rtt_buffer), 1,
@@ -751,7 +753,8 @@ def test_coalesced_survivors_still_processed() raises:
     var initial_pn0 = _build_ping_initial(client_protect, UInt64(0))
 
     var total = len(zero_rtt) + len(initial_pn0)
-    var buf_ptr = _heap_alloc[UInt8](total).as_unsafe_any_origin()
+    var buf_owned = Owned[UInt8](total)
+    var buf_ptr = buf_owned.ptr()
     for i in range(len(zero_rtt)):
         buf_ptr[i] = zero_rtt[i]
     for i in range(len(initial_pn0)):
@@ -768,7 +771,7 @@ def test_coalesced_survivors_still_processed() raises:
         conn.recv_from_buffer(buf_ptr, total, UInt64(2_000_000), UInt8(0))
     finally:
         conn.conn_handle = real_handle
-        buf_ptr.free()
+    _ = buf_owned
 
     assert_equal_int(
         conn.spaces[0].largest_recv_pn, 0,

@@ -13,8 +13,8 @@
 #     of FFI return code.
 
 from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
 
+from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
@@ -104,7 +104,8 @@ def test_set_keys_replaces_without_leak_at_slot_3() raises:
     _reset_keys_free_counter(tls.shared())
 
     var dcid = _synth_dcid()
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
+    var dcid_owned = Owned[UInt8](len(dcid))
+    var dcid_ptr = dcid_owned.ptr()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
 
@@ -115,7 +116,7 @@ def test_set_keys_replaces_without_leak_at_slot_3() raises:
     var h2 = rlib[].initial_keys(
         Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
     )
-    dcid_ptr.free()
+    _ = dcid_owned
     assert_true(h1 > Int32(0) and h2 > Int32(0), "synth handles must be positive")
     assert_true(h1 != h2, "synth handles must be distinct")
 
@@ -151,14 +152,15 @@ def test_install_is_free_first_when_slot_3_populated() raises:
     var protect = PacketProtect(tls.shared())
 
     var dcid = _synth_dcid()
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
+    var dcid_owned = Owned[UInt8](len(dcid))
+    var dcid_ptr = dcid_owned.ptr()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
     var h_pre = rlib[].initial_keys(
         Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
     )
-    dcid_ptr.free()
+    _ = dcid_owned
     assert_true(h_pre > Int32(0), "pre-populate handle must be positive")
     protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h_pre)
     assert_true(protect.has_keys(ZERO_RTT_KEY_SLOT_IDX), "slot 3 populated")
@@ -245,14 +247,15 @@ def test_discard_zero_rtt_keys_helper_targets_slot_3() raises:
     # PacketProtect directly (the helper reaches the real field, not a
     # detached test fixture).
     var dcid = _synth_dcid()
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
+    var dcid_owned = Owned[UInt8](len(dcid))
+    var dcid_ptr = dcid_owned.ptr()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
     var h_pre = rlib[].initial_keys(
         Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
     )
-    dcid_ptr.free()
+    _ = dcid_owned
     assert_true(h_pre > Int32(0), "synth handle must be positive")
 
     conn.protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h_pre)
@@ -296,14 +299,15 @@ def test_discard_clears_slot_3_and_frees_handle() raises:
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
+    var dcid_owned = Owned[UInt8](len(dcid))
+    var dcid_ptr = dcid_owned.ptr()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
     var h = rlib[].initial_keys(
         Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
     )
-    dcid_ptr.free()
+    _ = dcid_owned
     assert_true(h > Int32(0), "synth handle must be positive")
     protect.set_keys(ZERO_RTT_KEY_SLOT_IDX, h)
 
@@ -338,14 +342,15 @@ def test_del_frees_slot_3_handle_exactly_once() raises:
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
-    var dcid_ptr = _heap_alloc[UInt8](len(dcid)).as_unsafe_any_origin()
+    var dcid_owned = Owned[UInt8](len(dcid))
+    var dcid_ptr = dcid_owned.ptr()
     for i in range(len(dcid)):
         dcid_ptr[i] = dcid[i]
     var rlib = tls.shared().inner_ptr()
     var h = rlib[].initial_keys(
         Int32(1), dcid_ptr, Int32(len(dcid)), Int32(0)
     )
-    dcid_ptr.free()
+    _ = dcid_owned
     assert_true(h > Int32(0), "synth handle must be positive")
 
     _reset_keys_free_counter(tls.shared())
