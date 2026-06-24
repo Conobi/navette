@@ -233,7 +233,11 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
             break
 
     # --- Step 2: build the backend Request and queue it ---
-    var ctx2 = ctx_ptr.take_pointee()
+    # Read the request fields directly through ctx_ptr (borrowing the heap
+    # pointee) rather than take_pointee()/init_pointee_move() round-tripping
+    # the whole H2StreamingCtx. The ctx must survive intact for Step 3, and
+    # b2's stricter move-checker rejects consuming a value back into the same
+    # slot it was taken from. Borrowing the fields leaves the ctx in place.
     var req_body: RequestBody
     if len(body_bytes) > 0:
         req_body = RequestBody.buffered(body_bytes^)
@@ -241,13 +245,12 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
         req_body = RequestBody.empty()
 
     var request = Request(
-        method=Method.custom(String(ctx2.request.method)),
-        target=ctx2.request.target,
+        method=Method.custom(String(ctx_ptr[].request.method)),
+        target=ctx_ptr[].request.target.copy(),
         version=Version.http_2(),
-        headers=Headers(other=ctx2.request.headers),
+        headers=Headers(other=ctx_ptr[].request.headers),
         body=req_body^,
     )
-    ctx_ptr.init_pointee_move(ctx2^)
 
     rewrite_request_headers(request, "127.0.0.1", "localhost", _VIA_H2)
 

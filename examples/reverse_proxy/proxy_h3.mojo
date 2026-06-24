@@ -490,7 +490,7 @@ struct H3BackendRegistry(Movable):
         pointer, or a null pointer if absent (stale completion)."""
         if backend_conn_id not in self.backends:
             return UnsafePointer[H3BackendConn, MutAnyOrigin](
-                unsafe_from_address=0
+                unsafe_from_address=Int(0)
             )
         try:
             var addr = self.backends[backend_conn_id]
@@ -499,7 +499,7 @@ struct H3BackendRegistry(Movable):
             )
         except:
             return UnsafePointer[H3BackendConn, MutAnyOrigin](
-                unsafe_from_address=0
+                unsafe_from_address=Int(0)
             )
 
     def free_backend(mut self, backend_conn_id: UInt64) raises:
@@ -586,7 +586,7 @@ struct H3BackendRegistry(Movable):
         var ptr = self.backend_ptr(backend_conn_id)
         if Int(ptr) == 0:
             return UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=0
+                unsafe_from_address=Int(0)
             )
         return ptr[].backend_addr_stor.addr_unsafe_ptr()
 
