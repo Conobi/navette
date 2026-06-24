@@ -131,4 +131,4 @@ prerelease = "allow"
 # same rev — resolve without a path-vs-git URL conflict. Keep this rev in sync
 # with examples/*/pyproject.toml. Consumers that develop boucle locally should
 # override boucle in their own [tool.uv.sources] (or use a uv workspace).
-boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "f3c9b67ede41c52b85ce521eb5d9767ab55c405a" }
+boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "cd91272af9e3a3c5038563d8fb0f6965365ac42a" }
