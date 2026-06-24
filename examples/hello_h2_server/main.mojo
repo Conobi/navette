@@ -76,7 +76,7 @@ def _read_file(path: String) raises -> List[UInt8]:
     pbuf.free()
     if fd < 0:
         raise "_read_file: open failed for " + path
-    var statbuf = _heap_alloc[UInt8](144).as_any_origin()
+    var statbuf = _heap_alloc[UInt8](144).as_unsafe_any_origin()
     var fstat_rc = external_call["fstat64", Int32](fd, statbuf)
     if fstat_rc < 0:
         _ = external_call["close", Int32](fd)
@@ -88,7 +88,7 @@ def _read_file(path: String) raises -> List[UInt8]:
     statbuf.free()
     var result = List[UInt8](capacity=file_size)
     var chunk_size = 65536
-    var buf = _heap_alloc[UInt8](chunk_size).as_any_origin()
+    var buf = _heap_alloc[UInt8](chunk_size).as_unsafe_any_origin()
     var offset = 0
     while offset < file_size:
         var to_read = min(chunk_size, file_size - offset)

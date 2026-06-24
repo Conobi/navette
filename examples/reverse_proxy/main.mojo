@@ -561,7 +561,7 @@ struct ProxyHandler(CompletionHandler):
         # Heap-allocate so the address is stable across any `connections`
         # List reallocations (io_uring ops read/write into buffers held
         # inside the pointee, so the pointee must not move).
-        var conn_ptr = _heap_alloc[ProxyConnection](1).as_any_origin()
+        var conn_ptr = _heap_alloc[ProxyConnection](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1

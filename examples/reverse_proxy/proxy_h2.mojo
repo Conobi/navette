@@ -207,7 +207,7 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
          the client through the streaming-ctx's resp_writer.
     """
     # Recover ctx + ProxyShared pointers from the coro's user_data.
-    var ctx_ptr = yielder.user_data().bitcast[H2StreamingCtx]().as_any_origin()
+    var ctx_ptr = yielder.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
     var proxy_ptr = UnsafePointer[ProxyShared, MutAnyOrigin](
         unsafe_from_address=Int(ctx_ptr[].extra_data)
     )
@@ -251,7 +251,7 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
 
     rewrite_request_headers(request, "127.0.0.1", "localhost", _VIA_H2)
 
-    var req_heap = _heap_alloc[Request](1).as_any_origin()
+    var req_heap = _heap_alloc[Request](1).as_unsafe_any_origin()
     req_heap.init_pointee_move(request^)
 
     var work = _BackendWork(
@@ -410,9 +410,9 @@ def h2_proxy_state_new() raises -> H2ProxyState:
     server's extra_data), builds an H2StreamingServer wired to
     proxy_h2_stream_body, and pairs it with a default H2Session.
     """
-    var shared_ptr = _heap_alloc[ProxyShared](1).as_any_origin()
+    var shared_ptr = _heap_alloc[ProxyShared](1).as_unsafe_any_origin()
     shared_ptr.init_pointee_move(ProxyShared())
-    var noneptr = UnsafePointer[NoneType, MutExternalOrigin](
+    var noneptr = UnsafePointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(shared_ptr)
     )
     var server = H2StreamingServer(
@@ -453,7 +453,7 @@ def _process_pending_backend(
         var handle = state.backend_session.submit(req^)
         var handle_id = Int(handle.id())
         shared[].handle_to_stream[handle_id] = work.client_stream_id
-        var h_ptr = _heap_alloc[RequestHandle](1).as_any_origin()
+        var h_ptr = _heap_alloc[RequestHandle](1).as_unsafe_any_origin()
         h_ptr.init_pointee_move(handle^)
         state.backend_handles[handle_id] = UInt64(Int(h_ptr))
 
@@ -505,7 +505,7 @@ def _deliver_backend_responses(
         _ = shared[].handle_to_stream.pop(hid)
 
         var response = handle^.take_response()
-        var resp_heap = _heap_alloc[Response](1).as_any_origin()
+        var resp_heap = _heap_alloc[Response](1).as_unsafe_any_origin()
         resp_heap.init_pointee_move(response^)
         shared[].completed_responses[client_stream_id] = UInt64(
             Int(resp_heap)

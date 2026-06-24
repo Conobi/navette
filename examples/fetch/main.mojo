@@ -97,7 +97,7 @@ comptime _MAX_REDIRECTS: Int = 10
 def _monotonic_ms() -> UInt64:
     """Get monotonic time in milliseconds via clock_gettime."""
     # struct timespec { time_t tv_sec; long tv_nsec; }  — 16 bytes on x86_64
-    var ts = _heap_alloc[UInt8](16).as_any_origin()
+    var ts = _heap_alloc[UInt8](16).as_unsafe_any_origin()
     _ = external_call["clock_gettime", Int32](
         Int32(1),  # CLOCK_MONOTONIC
         ts,
@@ -121,7 +121,7 @@ def _realtime_secs() -> UInt:
     across process restarts (monotonic clocks reset on reboot and can't
     be persisted).
     """
-    var ts = _heap_alloc[UInt8](16).as_any_origin()
+    var ts = _heap_alloc[UInt8](16).as_unsafe_any_origin()
     _ = external_call["clock_gettime", Int32](
         Int32(0),  # CLOCK_REALTIME
         ts,
@@ -172,7 +172,7 @@ def _udp_send(fd: Int32, data: List[UInt8]) raises:
     """Send a single UDP datagram."""
     if len(data) == 0:
         return
-    var buf = _heap_alloc[UInt8](len(data)).as_any_origin()
+    var buf = _heap_alloc[UInt8](len(data)).as_unsafe_any_origin()
     for i in range(len(data)):
         buf[i] = data[i]
     var rc = external_call["send", Int](fd, buf, len(data), Int32(0))
@@ -183,7 +183,7 @@ def _udp_send(fd: Int32, data: List[UInt8]) raises:
 
 def _udp_recv(fd: Int32) raises -> List[UInt8]:
     """Receive a single UDP datagram (non-blocking attempt with MSG_DONTWAIT)."""
-    var buf = _heap_alloc[UInt8](65536).as_any_origin()
+    var buf = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0x40))  # MSG_DONTWAIT
     var result = List[UInt8]()
     if rc > 0:
@@ -204,7 +204,7 @@ def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
     `external_call`, we can't distinguish a real socket error from a
     benign timeout; the deadline catches both.
     """
-    var buf = _heap_alloc[UInt8](65536).as_any_origin()
+    var buf = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0))
     var result = List[UInt8]()
     if rc > 0:
@@ -224,7 +224,7 @@ def _set_recv_timeout_ms(fd: Int32, ms: Int) raises:
     enforce a wall-clock deadline.
     """
     # struct timeval { time_t tv_sec; suseconds_t tv_usec; }  — 16 bytes on x86_64.
-    var tv = _heap_alloc[UInt8](16).as_any_origin()
+    var tv = _heap_alloc[UInt8](16).as_unsafe_any_origin()
     for i in range(16):
         tv[i] = UInt8(0)
     var sec_ptr = tv.bitcast[Int64]()
@@ -248,7 +248,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
         remaining.append(data[i])
     while len(remaining) > 0:
         var m = len(remaining)
-        var buf = _heap_alloc[UInt8](m).as_any_origin()
+        var buf = _heap_alloc[UInt8](m).as_unsafe_any_origin()
         for i in range(m):
             buf[i] = remaining[i]
         var rc = external_call["send", Int](fd, buf, m, Int32(0))
@@ -262,7 +262,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
 
 
 def _recv_some(fd: Int32) raises -> List[UInt8]:
-    var buf = _heap_alloc[UInt8](_RECV_BUF).as_any_origin()
+    var buf = _heap_alloc[UInt8](_RECV_BUF).as_unsafe_any_origin()
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
     var result = List[UInt8]()
     if rc > 0:

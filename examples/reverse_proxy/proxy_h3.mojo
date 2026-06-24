@@ -310,7 +310,7 @@ struct ForwardingHandler(StreamHandler):
             body=req_body^,
         )
 
-        var req_heap = _heap_alloc[Request](1).as_any_origin()
+        var req_heap = _heap_alloc[Request](1).as_unsafe_any_origin()
         req_heap.init_pointee_move(request^)
 
         self._pending.append(
@@ -565,7 +565,7 @@ struct H3BackendRegistry(Movable):
         )
         bconn.handle = Optional[RequestHandle](handle^)
 
-        var bptr = _heap_alloc[H3BackendConn](1).as_any_origin()
+        var bptr = _heap_alloc[H3BackendConn](1).as_unsafe_any_origin()
         bptr.init_pointee_move(bconn^)
         self.backends[backend_conn_id] = UInt64(Int(bptr))
         return backend_conn_id

@@ -53,7 +53,7 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
 
     # Build sockaddr_in (16 bytes) inline in a heap buffer.
     # Layout: sin_family(2) | sin_port(2) | sin_addr(4) | sin_zero(8)
-    var addr = _heap_alloc[UInt8](16).as_any_origin()
+    var addr = _heap_alloc[UInt8](16).as_unsafe_any_origin()
     for i in range(16):
         addr[i] = 0
 
@@ -102,7 +102,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
         remaining.append(data[i])
     while len(remaining) > 0:
         var m = len(remaining)
-        var buf = _heap_alloc[UInt8](m).as_any_origin()
+        var buf = _heap_alloc[UInt8](m).as_unsafe_any_origin()
         for i in range(m):
             buf[i] = remaining[i]
         var rc = external_call["send", Int](fd, buf, m, Int32(0))
@@ -116,7 +116,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
 
 
 def _recv_some(fd: Int32) raises -> List[UInt8]:
-    var buf = _heap_alloc[UInt8](_RECV_BUF).as_any_origin()
+    var buf = _heap_alloc[UInt8](_RECV_BUF).as_unsafe_any_origin()
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
     var result = List[UInt8]()
     if rc > 0:
