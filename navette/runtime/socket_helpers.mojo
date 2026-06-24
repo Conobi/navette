@@ -23,7 +23,7 @@ delete this module and switch the consumers to the Boucle factories.
 
 from std.ffi import external_call
 from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 from boucle.handle import RawHandle, OwnedHandle
 
@@ -52,12 +52,12 @@ comptime _SOCKADDR_IN6_SIZE: Int32 = 28
 def _setsockopt_int(
     fd: RawHandle, level: Int32, optname: Int32, value: Int32,
 ) raises:
-    var optval = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var optval_buf = Owned[Int32](1)
+    var optval = optval_buf.ptr()
     optval[0] = value
     var rc = external_call["setsockopt", Int32](
         fd, level, optname, optval, Int32(4),
     )
-    optval.free()
     if rc < 0:
         raise (
             "setsockopt failed (level="
@@ -85,7 +85,8 @@ def _setsockopt_so_sndtimeo(fd: RawHandle, ms: Int) raises:
     `connect(2)` causes the kernel to abort the connect once the wall
     time elapses, returning -1 instead of blocking indefinitely.
     """
-    var tv = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var tv_buf = Owned[UInt8](16)
+    var tv = tv_buf.ptr()
     for i in range(16):
         tv[i] = UInt8(0)
     var sec_ptr = tv.bitcast[Int64]()
@@ -97,7 +98,6 @@ def _setsockopt_so_sndtimeo(fd: RawHandle, ms: Int) raises:
     var rc = external_call["setsockopt", Int32](
         fd, _SOL_SOCKET, _SO_SNDTIMEO, tv, Int32(16),
     )
-    tv.free()
     if rc < 0:
         raise "setsockopt(SO_SNDTIMEO) failed: rc=" + String(Int(rc))
 
@@ -128,7 +128,8 @@ def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
 
     # Build sockaddr_in6 for [::]:port — 28 bytes:
     #   family(2) + port(2 big-endian) + flowinfo(4) + addr(16) + scope_id(4).
-    var addr = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
+    var addr_buf = Owned[UInt8](Int(_SOCKADDR_IN6_SIZE))
+    var addr = addr_buf.ptr()
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
         addr[i] = 0
     addr[0] = 10  # sin6_family = AF_INET6 (LE u16)
@@ -139,7 +140,6 @@ def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     var rc = external_call["bind", Int32](
         handle.raw(), addr, _SOCKADDR_IN6_SIZE,
     )
-    addr.free()
     if rc < 0:
         raise "tcp_listener: bind() failed on port " + String(port)
 
@@ -233,14 +233,14 @@ def tcp_connect(
     if connect_timeout_ms > UInt64(0):
         _setsockopt_so_sndtimeo(handle.raw(), Int(connect_timeout_ms))
 
-    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
+    var buf_owner = Owned[UInt8](Int(_SOCKADDR_IN6_SIZE))
+    var buf = buf_owner.ptr()
     var n: Int32
     if addr.is_ipv4():
         n = _pack_v4(addr, buf)
     else:
         n = _pack_v6(addr, buf)
     var rc = external_call["connect", Int32](handle.raw(), buf, n)
-    buf.free()
     if rc < 0:
         raise "tcp_connect: connect() failed: rc=" + String(Int(rc))
     return handle^
@@ -272,14 +272,14 @@ def udp_connect(
     if connect_timeout_ms > UInt64(0):
         _setsockopt_so_sndtimeo(handle.raw(), Int(connect_timeout_ms))
 
-    var buf = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
+    var buf_owner = Owned[UInt8](Int(_SOCKADDR_IN6_SIZE))
+    var buf = buf_owner.ptr()
     var n: Int32
     if addr.is_ipv4():
         n = _pack_v4(addr, buf)
     else:
         n = _pack_v6(addr, buf)
     var rc = external_call["connect", Int32](handle.raw(), buf, n)
-    buf.free()
     if rc < 0:
         raise "udp_connect: connect() failed: rc=" + String(Int(rc))
     return handle^
@@ -305,7 +305,8 @@ def udp_listener(port: Int) raises -> OwnedHandle:
     _setsockopt_int(handle.raw(), _SOL_SOCKET, _SO_REUSEPORT, Int32(1))
     _setsockopt_int(handle.raw(), _IPPROTO_IPV6, _IPV6_V6ONLY, Int32(0))
 
-    var addr = _heap_alloc[UInt8](Int(_SOCKADDR_IN6_SIZE)).as_unsafe_any_origin()
+    var addr_buf = Owned[UInt8](Int(_SOCKADDR_IN6_SIZE))
+    var addr = addr_buf.ptr()
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
         addr[i] = 0
     addr[0] = 10  # sin6_family = AF_INET6 (LE u16)
@@ -316,7 +317,6 @@ def udp_listener(port: Int) raises -> OwnedHandle:
     var rc = external_call["bind", Int32](
         handle.raw(), addr, _SOCKADDR_IN6_SIZE,
     )
-    addr.free()
     if rc < 0:
         raise "udp_listener: bind() failed on port " + String(port)
 

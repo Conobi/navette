@@ -9,7 +9,7 @@
 # without rebuilding the .so.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 from navette.compress._lcm_bindings import (
     load_lcm_last_error,
@@ -105,13 +105,12 @@ struct CompressLibrary(Movable):
 
         Returns an empty string if no error is set.
         """
-        var buf = _heap_alloc[UInt8](512).as_unsafe_any_origin()
+        var buf_owner = Owned[UInt8](512)
+        var buf = buf_owner.ptr()
         var n = load_lcm_last_error(self._handle)(buf, Int32(512))
         if n <= 0:
-            buf.free()
             return String("")
         var msg = String()
         for i in range(Int(n - 1)):
             msg += chr(Int(buf[i]))
-        buf.free()
         return msg^

@@ -15,6 +15,7 @@
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 # Typed FFI loaders auto-generated from crates/librustls-mojo/symbols.toml.
 # §2.3 deps-enhancement: all rlsm_* call sites resolve symbols through the
@@ -179,16 +180,15 @@ struct RustlsLibrary(Movable):
 
         Returns an empty string if no error is set.
         """
-        var buf = _heap_alloc[UInt8](512).as_unsafe_any_origin()
+        var buf_owner = Owned[UInt8](512)
+        var buf = buf_owner.ptr()
         var n = load_rlsm_last_error(self._handle)(buf, Int32(512))
         if n <= 0:
-            buf.free()
             return String("")
         # n includes the NUL terminator; the message is n-1 bytes.
         var msg = String()
         for i in range(Int(n - 1)):
             msg += chr(Int(buf[i]))
-        buf.free()
         return msg^
 
     # -- Config: client --------------------------------------------------------

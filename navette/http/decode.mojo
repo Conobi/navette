@@ -6,7 +6,7 @@
 # so a future zlib/brotli CVE is a `apt upgrade` away, not a Navette release.
 from std.ffi import OwnedDLHandle
 from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 # Typed FFI loaders auto-generated from crates/libcompress-mojo/symbols.toml
 # by scripts/gen_ffi_bindings.py — signature drift between C and Mojo
@@ -178,7 +178,8 @@ struct ContentDecoder(Movable):
             return out^
 
         var in_ptr = data.unsafe_ptr().bitcast[UInt8]().unsafe_mut_cast[True]().as_unsafe_any_origin()
-        var out_buf = _heap_alloc[UInt8](_OUT_CAP).as_unsafe_any_origin()
+        var out_buf_owner = Owned[UInt8](_OUT_CAP)
+        var out_buf = out_buf_owner.ptr()
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
@@ -191,13 +192,11 @@ struct ContentDecoder(Movable):
             )
 
         if n < 0:
-            out_buf.free()
             raise "ContentDecoder.feed: decompression error (" + String(n) + ")"
 
         var result = List[UInt8]()
         for i in range(Int(n)):
             result.append(out_buf[i])
-        out_buf.free()
         return result^
 
     def finish(self) raises -> List[UInt8]:
@@ -209,7 +208,8 @@ struct ContentDecoder(Movable):
         if self._encoding._tag == _ENC_IDENTITY:
             return List[UInt8]()
 
-        var out_buf = _heap_alloc[UInt8](_OUT_CAP).as_unsafe_any_origin()
+        var out_buf_owner = Owned[UInt8](_OUT_CAP)
+        var out_buf = out_buf_owner.ptr()
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
@@ -222,11 +222,9 @@ struct ContentDecoder(Movable):
             )
 
         if n < 0:
-            out_buf.free()
             raise "ContentDecoder.finish: decompression error (" + String(n) + ")"
 
         var result = List[UInt8]()
         for i in range(Int(n)):
             result.append(out_buf[i])
-        out_buf.free()
         return result^

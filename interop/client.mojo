@@ -12,7 +12,7 @@
 
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from navette.util.owned_alloc import Owned
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicClientConfig
@@ -115,25 +115,24 @@ def _send_datagrams(fd: Int32, datagrams: List[List[UInt8]]) raises:
     for i in range(len(datagrams)):
         var dlen = len(datagrams[i])
         if dlen > 0:
-            var buf = _heap_alloc[UInt8](dlen).as_unsafe_any_origin()
+            var buf_owner = Owned[UInt8](dlen)
+            var buf = buf_owner.ptr()
             for j in range(dlen):
                 buf[j] = datagrams[i][j]
             _ = external_call["send", Int](fd, buf, dlen, Int32(0))
-            buf.free()
 
 
 def _recv_datagram(fd: Int32) raises -> List[UInt8]:
     """Non-blocking recv on connected UDP socket.  Returns empty list on EAGAIN."""
-    var buf = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
+    var buf_owner = Owned[UInt8](65536)
+    var buf = buf_owner.ptr()
     # MSG_DONTWAIT = 0x40
     var n = external_call["recv", Int](fd, buf, 65536, Int32(0x40))
     if n <= 0:
-        buf.free()
         return List[UInt8]()
     var result = List[UInt8](capacity=n)
     for i in range(n):
         result.append(buf[i])
-    buf.free()
     return result^
 
 
