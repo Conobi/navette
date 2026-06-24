@@ -6,15 +6,15 @@ requires-python = ">=3.11"
 dependencies = [
     "navette",
     "boucle",
-    "mojox>=0.2",
-    "mojo-compiler==1.0.0b1",
+    "mojox>=0.3",
+    "mojo-compiler==1.0.0b2",
 ]
 
 [build-system]
 requires = [
-    "mojox-build>=0.3.0",
-    "mojo-compiler==1.0.0b1",
-    "mojo-compiler-mojo-libs==1.0.0b1",
+    "mojox-build>=0.4",
+    "mojo-compiler==1.0.0b2",
+    "mojo-compiler-mojo-libs==1.0.0b2",
     # mojo build of main.mojo needs cross-package imports resolved at build
     # time; PEP 517 build envs are isolated from runtime deps, so navette
     # and its Mojo deps are pinned here too.
@@ -33,6 +33,5 @@ binaries = [
 prerelease = "allow"
 
 [tool.uv.sources]
-mojox-build = { git = "ssh://git@github.com/Conobi/mojox.git", rev = "d6b1f07e99453f3d04c94cdbd925eaef9aa34d03", subdirectory = "packages/mojox-build" }
 navette     = { path = "../..", editable = true }
-boucle      = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "27f8b3e666de32d78458fd839377183624461e5e" }
+boucle      = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "cd91272af9e3a3c5038563d8fb0f6965365ac42a" }
