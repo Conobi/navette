@@ -33,6 +33,13 @@ FILES=(
   "navette/quic/packet_protect.mojo 0 0"
   "navette/tls/config.mojo 0 0"
   "navette/quic/connection.mojo 0 0"
+  # Partially-migrated: single-scope temps moved to Owned[T]; the pinned
+  # residuals are legitimate out-of-scope sites (helper-returns, escapes,
+  # kernel-pinned buf-rings) — pinned here so a regression in them is caught.
+  "bench/launcher.mojo 1 1"
+  "bench/servers/h1_server.mojo 2 1"
+  "bench/servers/h2_server.mojo 3 1"
+  "conformance/tests/test_rustls_aead.mojo 2 1"
 )
 
 fail=0
