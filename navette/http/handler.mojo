@@ -397,15 +397,19 @@ struct DetachedBody(Movable):
     def __init__(out self, *, deinit take: Self):
         self._inner = take._inner^
 
+    @always_inline
     def try_read(mut self) raises -> Optional[BodyFrame]:
         return self._inner.try_read()
 
+    @always_inline
     def is_end(self) -> Bool:
         return self._inner.is_end()
 
+    @always_inline
     def is_errored(self) -> Bool:
         return self._inner.is_errored()
 
+    @always_inline
     def bytes_buffered(self) -> UInt:
         return self._inner.bytes_buffered()
 
@@ -416,12 +420,15 @@ struct DetachedBody(Movable):
         return self._inner^
 
     # --- Runtime-internal: forwarded so the runtime can keep pushing ---
+    @always_inline
     def _push(mut self, var frame: BodyFrame):
         self._inner._push(frame^)
 
+    @always_inline
     def _set_end(mut self):
         self._inner._set_end()
 
+    @always_inline
     def _set_error(mut self, var err: StreamError):
         self._inner._set_error(err^)
 

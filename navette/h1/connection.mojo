@@ -341,6 +341,7 @@ struct H1Connection(Movable):
 
     # --- Connection state queries ---
 
+    @always_inline
     def should_close(self) -> Bool:
         """True if the HTTP layer should not read/write further on the wire.
 
@@ -355,14 +356,17 @@ struct H1Connection(Movable):
             or self._phase == PHASE_UPGRADED
         )
 
+    @always_inline
     def is_keep_alive(self) -> Bool:
         """True if the connection is currently considered persistent."""
         return self._keep_alive
 
+    @always_inline
     def wants_read(self) -> Bool:
         """True if the state machine is ready to accept more inbound bytes."""
         return self._phase == PHASE_IDLE
 
+    @always_inline
     def wants_write(self) -> Bool:
         """True if the outbound buffer has bytes pending."""
         return len(self._outbound_buf) > 0
