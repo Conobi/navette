@@ -96,6 +96,38 @@ def _int_to_hex_lower(value: Int) -> String:
     return result^
 
 
+def _append_decimal(mut buf: List[UInt8], value: Int):
+    """Append the ASCII decimal representation of a non-negative integer.
+
+    Writes digits directly into ``buf`` (LSD first) then reverses the
+    just-appended tail in place — no intermediate allocation. Bytes before the
+    append point are untouched; ``len(buf)`` grows by exactly the digit count.
+
+    Precondition: ``value >= 0``. Proven at every call site by the
+    ``audit-int-nonneg`` table; backed here by a debug-only ``ASSERT=all``
+    check (compiled out at default/release, so not a release DoS surface). On a
+    negative value at release level the ``while`` loop never runs and zero
+    bytes are appended — see edge ``inplace-int-negative``.
+    """
+    debug_assert(value >= 0, "_append_decimal requires value >= 0")
+    if value == 0:
+        buf.append(UInt8(48))  # '0'
+        return
+    var start = len(buf)
+    var v = value
+    while v > 0:
+        buf.append(UInt8(v % 10 + 48))
+        v //= 10
+    var lo = start
+    var hi = len(buf) - 1
+    while lo < hi:
+        var tmp = buf[lo]
+        buf[lo] = buf[hi]
+        buf[hi] = tmp
+        lo += 1
+        hi -= 1
+
+
 # --- Header / body helpers ---
 
 def _serialize_headers(mut buf: List[UInt8], headers: Headers):
