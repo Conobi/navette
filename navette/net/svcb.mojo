@@ -494,11 +494,85 @@ def _recv_dgram(fd: Int32, max_n: Int) raises -> List[UInt8]:
     return out^
 
 
+def _send_all_tcp(fd: Int32, data: List[UInt8]) raises -> Int:
+    """Send every byte of `data` over TCP. Returns the total bytes sent.
+
+    Returns fewer than `len(data)` bytes only when `send(2)` returns <= 0
+    (connection reset, broken pipe), in which case the caller treats the
+    short count as a failure and returns `None`.
+    """
+    var sent = 0
+    var n = len(data)
+    while sent < n:
+        var m = n - sent
+        var buf_owned = Owned[UInt8](m)
+        var buf = buf_owned.ptr()
+        for i in range(m):
+            buf[i] = data[sent + i]
+        var rc = external_call["send", Int](fd, buf, m, _MSG_NOSIGNAL)
+        if rc <= 0:
+            return sent
+        sent += rc
+    return sent
+
+
+def _recv_n(fd: Int32, want: Int, timeout_ms: UInt) raises -> List[UInt8]:
+    """Read exactly `want` bytes, bounded by a monotonic deadline.
+
+    `want` is pre-capped by the caller (<= _MAX_TCP_FRAME); the deadline
+    bounds a dribbling resolver — together they bound the buffer so a
+    malicious advertised length cannot grow it without limit.  Returns
+    fewer than `want` bytes on EOF, error, or deadline expiry.
+    """
+    var out = List[UInt8]()
+    var deadline = _monotonic_ms() + UInt64(timeout_ms)
+    while len(out) < want and _monotonic_ms() < deadline:
+        var rem = want - len(out)
+        var buf_owned = Owned[UInt8](rem)
+        var buf = buf_owned.ptr()
+        var rc = external_call["recv", Int](fd, buf, rem, Int32(0))
+        if rc <= 0:
+            break
+        for i in range(rc):
+            out.append(buf[i])
+    return out^
+
+
 def _query_tcp(
     addr: ResolvedAddr, host: String, txn_id: UInt16, timeout_ms: UInt,
 ) raises -> Optional[HttpsRecord]:
-    """TCP/53 fallback for TC=1 answers — stubbed until the TCP fallback lands."""
-    return None
+    """Re-issue the same query (incl. EDNS0 OPT) over TCP/53, length-framed.
+
+    Sends a 2-byte big-endian length prefix followed by the query wire bytes;
+    reads a 2-byte length prefix then that many body bytes (per RFC 1035 §4.2.2).
+    The declared frame length is capped at `_MAX_TCP_FRAME` — a resolver claiming
+    0xFFFF and dribbling cannot grow an unbounded buffer or hang: the frame-length
+    cap prevents the allocation, and the `_recv_n` deadline bounds the read time.
+    A still-truncated answer, a length over the cap, or any I/O failure yields
+    `None` — never a raise to the caller, never a hang.
+    """
+    var q = _build_query(host, txn_id)
+    var sock = tcp_connect(addr, connect_timeout_ms=UInt64(timeout_ms))
+    var fd = sock.raw()
+    _set_rcvtimeo(fd, Int(timeout_ms))
+    var framed = List[UInt8]()
+    framed.append(UInt8((len(q) >> 8) & 0xFF))
+    framed.append(UInt8(len(q) & 0xFF))
+    for i in range(len(q)):
+        framed.append(q[i])
+    var result = Optional[HttpsRecord](None)
+    if _send_all_tcp(fd, framed) == len(framed):
+        var hdr = _recv_n(fd, 2, timeout_ms)
+        if len(hdr) == 2:
+            var mlen = (Int(hdr[0]) << 8) | Int(hdr[1])
+            if mlen > 0 and mlen <= _MAX_TCP_FRAME:
+                var body = _recv_n(fd, mlen, timeout_ms)
+                if len(body) == mlen:
+                    var ans = _parse_https_answer(body, txn_id, host)
+                    if ans.kind == _ANS_RECORD:
+                        result = ans.record.copy()
+    _ = sock.raw()                            # NLL keepalive
+    return result^
 
 
 def _query_udp(

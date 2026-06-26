@@ -8,7 +8,7 @@ from navette.net.resolver import resolve_host
 from navette.net.svcb import _query_udp
 
 
-struct _Bound(Movable):
+struct _Bound(Copyable, Movable):
     var udp_fd: Int32
     var tcp_fd: Int32
     var port: Int
@@ -17,6 +17,11 @@ struct _Bound(Movable):
         self.udp_fd = udp_fd
         self.tcp_fd = tcp_fd
         self.port = port
+
+    def __init__(out self, *, other: Self):
+        self.udp_fd = other.udp_fd
+        self.tcp_fd = other.tcp_fd
+        self.port = other.port
 
     def __init__(out self, *, deinit take: Self):
         self.udp_fd = take.udp_fd
@@ -164,7 +169,78 @@ def test_udp_timeout_returns_none() raises:
     assert_true(not rec)
 
 
+def _serve_udp_tc_then_tcp(b: _Bound, tcp_answer: List[UInt8]) raises:
+    """Reply TC=1 to the UDP query, then serve the full answer over TCP."""
+    # UDP: receive the query and echo it back with TC=1 set.
+    var rbuf = Owned[UInt8](65536)
+    var sa = Owned[UInt8](16)
+    var sl = Owned[Int32](1)
+    sl.ptr()[0] = Int32(16)
+    var n = external_call["recvfrom", Int](
+        b.udp_fd, rbuf.ptr(), 65536, Int32(0), sa.ptr(), sl.ptr()
+    )
+    _ = n
+    # copy the query bytes and force TC=1 (QR=1 | TC=1), RA=1 in flags
+    var tc = List[UInt8]()
+    for i in range(Int(n)):
+        tc.append(rbuf.ptr()[i])
+    tc[2] = UInt8(0x80 | 0x02)   # QR=1, TC=1
+    tc[3] = UInt8(0x80)          # RA=1, rcode=0
+    var ob = Owned[UInt8](len(tc))
+    for i in range(len(tc)):
+        ob.ptr()[i] = tc[i]
+    _ = external_call["sendto", Int](
+        b.udp_fd, ob.ptr(), len(tc), Int32(0), sa.ptr(), Int32(16)
+    )
+    # TCP: accept, read 2-byte length + query, reply with length-framed answer.
+    var pa = Owned[UInt8](16)
+    var pl = Owned[Int32](1)
+    pl.ptr()[0] = Int32(16)
+    var cfd = external_call["accept", Int32](b.tcp_fd, pa.ptr(), pl.ptr())
+    if cfd < 0:
+        raise "accept failed"
+    var hdr = Owned[UInt8](2)
+    _ = external_call["recv", Int](cfd, hdr.ptr(), 2, Int32(0))
+    var qlen = Int(hdr.ptr()[0]) * 256 + Int(hdr.ptr()[1])
+    var qb = Owned[UInt8](qlen if qlen > 0 else 1)
+    _ = external_call["recv", Int](cfd, qb.ptr(), qlen, Int32(0))
+    var framed = List[UInt8]()
+    framed.append(UInt8((len(tcp_answer) >> 8) & 0xFF))
+    framed.append(UInt8(len(tcp_answer) & 0xFF))
+    for i in range(len(tcp_answer)):
+        framed.append(tcp_answer[i])
+    var fb = Owned[UInt8](len(framed))
+    for i in range(len(framed)):
+        fb.ptr()[i] = framed[i]
+    _ = external_call["send", Int](cfd, fb.ptr(), len(framed), Int32(0x4000))
+    _ = external_call["close", Int32](cfd)
+
+
+def test_tc_bit_triggers_tcp_fallback() raises:
+    var b = _bind_loopback()
+    var pid = _fork()
+    if pid == 0:
+        # child: close stdio so the test's stdout pipe is not inherited
+        _ = external_call["close", Int32](Int32(0))
+        _ = external_call["close", Int32](Int32(1))
+        _ = external_call["close", Int32](Int32(2))
+        try:
+            _serve_udp_tc_then_tcp(b, _canned_h3_answer())
+        except:
+            pass
+        _ = external_call["_exit", Int32](Int32(0))
+    var addr = resolve_host(String("127.0.0.1"), b.port)
+    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), UInt(2000))
+    _waitpid(pid)
+    _ = external_call["close", Int32](b.udp_fd)
+    _ = external_call["close", Int32](b.tcp_fd)
+    assert_true(Bool(rec))
+    ref r = rec.value()
+    assert_equal(r.alpns[0], String("h3"))
+
+
 def main() raises:
     test_udp_roundtrip_returns_record()
     test_udp_timeout_returns_none()
-    print("All test_svcb_io UDP tests passed.")
+    test_tc_bit_triggers_tcp_fallback()
+    print("All test_svcb_io UDP + TCP tests passed.")
