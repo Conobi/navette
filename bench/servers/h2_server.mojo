@@ -284,7 +284,7 @@ struct H2ServerHandler(CompletionHandler):
             )
         )
 
-    def _queue_recv_multishot(mut self, idx: Int):
+    def _queue_recv_multishot(mut self, idx: Int) raises:
         """Submit a multishot recv for the connection — produces one CQE
         per arrival until the multishot ends (peer close, error, or
         ENOBUFS). Idempotent."""
@@ -300,7 +300,7 @@ struct H2ServerHandler(CompletionHandler):
             )
         )
 
-    def _queue_send(mut self, idx: Int):
+    def _queue_send(mut self, idx: Int) raises:
         if self.connections[idx][].send_in_flight:
             return
         if len(self.connections[idx][].send_buf) == 0:
@@ -317,7 +317,7 @@ struct H2ServerHandler(CompletionHandler):
 
     # --- Outbound staging ---
 
-    def _stage_send(mut self, idx: Int, var ct: List[UInt8]):
+    def _stage_send(mut self, idx: Int, var ct: List[UInt8]) raises:
         if len(ct) == 0:
             return
         if self.connections[idx][].send_in_flight:
