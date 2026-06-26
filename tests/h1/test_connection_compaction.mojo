@@ -8,6 +8,9 @@
 from std.memory import Span
 from std.random import random_ui64, seed
 from navette.h1.connection import _compact_forward
+from navette.http import StatusCode, Version, Headers, Response
+from navette.h1.connection import H1Connection
+from navette.h1 import ParseConfig
 from tests._test_util import assert_true, assert_equal_int
 
 
@@ -44,7 +47,28 @@ def test_compaction_random() raises:
         _check_compaction(L, c)
 
 
+def test_drain_into() raises:
+    # drain_into appends the outbound buffer into the sink and clears it in
+    # place (capacity preserved); a second response reuses the same backing.
+    var conn = H1Connection(ParseConfig())
+    var r1 = Response(status=StatusCode(200), reason="",
+                      version=Version.http_1_1(), headers=Headers())
+    conn.send_response(r1^)
+    var sink = List[UInt8]()
+    conn.drain_into(sink)
+    assert_true(len(sink) > 0, "drain_into filled the sink")
+    assert_true(not conn.wants_write(), "outbound empty after drain_into")
+    # Second response appends after the first drained content.
+    var prefix_len = len(sink)
+    var r2 = Response(status=StatusCode(404), reason="",
+                      version=Version.http_1_1(), headers=Headers())
+    conn.send_response(r2^)
+    conn.drain_into(sink)
+    assert_true(len(sink) > prefix_len, "drain_into appended the second response")
+
+
 def main() raises:
     test_compaction_boundaries()
     test_compaction_random()
+    test_drain_into()
     print("test_connection_compaction: all tests passed")

@@ -328,6 +328,17 @@ struct H1Connection(Movable):
         self._outbound_buf = List[UInt8]()
         return out^
 
+    def drain_into(mut self, mut sink: List[UInt8]):
+        """Append the outbound buffer into ``sink`` and clear it in place.
+
+        Unlike ``drain()`` (which moves the buffer out and reallocates a fresh
+        one), ``drain_into`` preserves the outbound buffer's backing allocation
+        across requests (``clear()`` keeps capacity on 1.0.0b2; gate-zero-capacity).
+        This is the steady-state zero-churn drain used by H1HandlerServer.
+        """
+        sink.extend(Span(self._outbound_buf))
+        self._outbound_buf.clear()
+
     # --- Connection state queries ---
 
     def should_close(self) -> Bool:
@@ -359,19 +370,24 @@ struct H1Connection(Movable):
     # --- Internal helpers ---
 
     def _compact_inbound(mut self):
-        """Drop consumed bytes from the front of the inbound buffer.
+        """Drop consumed bytes from the front of the inbound buffer, reusing the
+        backing allocation (see ``_compact_forward``). Called after every
+        successful parse so the cursor stays at 0 and the buffer does not grow
+        without bound across many messages.
 
-        Called after every successful parse so the cursor stays at zero
-        and the buffer does not grow without bound across many messages.
+        audit-cursor-bounds (§7): ``self._inbound_cursor <= len(self._inbound_buf)``
+        at every call site —
+          * next_request: cursor = old_cursor + result.bytes_consumed, and the
+            parser sets bytes_consumed = msg_end - cursor with msg_end <= buf_len
+            (CL path gates remaining >= cl_int; chunked consumes <= available).
+          * next_response: identical invariant (msg_end <= buf_len in every
+            framing rule). The cursor only ever advances over already-parsed
+            bytes, never past the buffer end. The cursor > len ASSERT=all abort
+            in _compact_forward is therefore unreachable (probes/compact_cursor_oob.mojo).
         """
         if self._inbound_cursor == 0:
             return
-        var n = len(self._inbound_buf)
-        var keep = n - self._inbound_cursor
-        var new_buf = List[UInt8](capacity=keep)
-        if keep > 0:
-            new_buf.extend(Span(self._inbound_buf)[self._inbound_cursor:n])
-        self._inbound_buf = new_buf^
+        _compact_forward(self._inbound_buf, self._inbound_cursor)
         self._inbound_cursor = 0
 
     def _update_keep_alive(mut self, headers: Headers):
