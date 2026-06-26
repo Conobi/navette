@@ -312,6 +312,19 @@ def test_answer_txnid_mismatch_invalid() raises:
     assert_equal(ans.kind, _ANS_INVALID)         # anti-spoof
 
 
+def test_answer_qr_zero_is_invalid() raises:
+    """A DNS query packet (QR=0) must be rejected as _ANS_INVALID.
+
+    RFC 1035 §4.1.1: QR distinguishes queries (0) from responses (1).
+    A stray query that happens to share our txn-id should be discarded
+    by the anti-spoof filter, never treated as a server response.
+    """
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3"), 60)
+    a[2] = a[2] & UInt8(0x7F)                   # clear QR bit → this is now a query
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_INVALID)
+
+
 def test_answer_tc_bit_truncated() raises:
     var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3"), 60, tc=True)
     var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
@@ -425,6 +438,7 @@ def main() raises:
     test_answer_nodata_is_none()
     test_answer_aliasmode_skipped()
     test_answer_txnid_mismatch_invalid()
+    test_answer_qr_zero_is_invalid()
     test_answer_tc_bit_truncated()
     test_answer_oversized_rdlen_no_crash()
     test_answer_min_priority_selected()

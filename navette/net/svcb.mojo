@@ -358,7 +358,7 @@ def _parse_https_answer_inner(
     """Validate the header/question, then select the preferred ServiceMode RR.
 
     Validation order (anti-spoof first, then status, then content):
-      1. txn-id, QDCOUNT==1, echoed QNAME (case-insensitive), QTYPE/QCLASS
+      1. txn-id, QR=1 (response bit), QDCOUNT==1, echoed QNAME (case-insensitive), QTYPE/QCLASS
          -> mismatch = `_ANS_INVALID` (discard, keep reading).
       2. TC=1 -> `_ANS_TRUNCATED` (TCP/53 fallback).
       3. rcode != 0 -> `_ANS_NONE` (legitimate negative answer).
@@ -371,6 +371,8 @@ def _parse_https_answer_inner(
         return _Answer(_ANS_INVALID, None)
     if _read_u16(m, 0) != qid:
         return _Answer(_ANS_INVALID, None)
+    if (Int(m[2]) & 0x80) == 0:
+        return _Answer(_ANS_INVALID, None)  # QR=0 means query, not response (RFC 1035 §4.1.1)
     var qd = Int(_read_u16(m, 4))
     var an = Int(_read_u16(m, 6))
     if qd != 1:
@@ -624,7 +626,7 @@ def _random_txn_id() -> UInt16:
 
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
-) raises -> Optional[HttpsRecord]:
+) -> Optional[HttpsRecord]:
     """Resolve the HTTPS RR (type 65) for `host`; return the preferred record.
 
     SVCB-optional (RFC 9460 §3): every failure mode — unreadable
