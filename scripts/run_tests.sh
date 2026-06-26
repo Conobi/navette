@@ -99,7 +99,7 @@ for t in "${TESTS[@]}"; do
         io/test_ecn) EXTRA_I=(-I conformance) ;;
         # interop tests share helpers via tests/_test_util and conformance/lib
         interop/*) EXTRA_I=(-I conformance) ;;
-        http/test_cross_validation|http/test_http_client|http/test_coro_client)
+        http/test_cross_validation|http/test_http_client|http/test_coro_client|http/test_inject_alt_svc)
             EXTRA_I=(-I conformance) ;;
         http/test_proxy_token) EXTRA_I=(-I examples/reverse_proxy) ;;
     esac

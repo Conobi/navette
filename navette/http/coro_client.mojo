@@ -194,6 +194,19 @@ struct HttpCoroClient(Movable):
                 var entries = parse_alt_svc(value)
                 self._alt_svc.insert(origin^, entries^, now)
 
+    def inject_alt_svc_entries(
+        mut self, var origin: Origin, var entries: List[AltSvcEntry], received_at: UInt,
+    ) raises:
+        """Seed pre-built Alt-Svc entries directly, bypassing header parsing.
+
+        Mirrors `update_alt_svc` but takes entries the caller already built
+        (e.g. an `h3` entry synthesized from a DNS HTTPS RR) instead of an
+        `Alt-Svc` response header. Used by requette's DNS-based H3 discovery so
+        the existing `_cache_has_h3 -> _via_h3` promotion path fires on the first
+        request, with no new attempt logic.
+        """
+        self._alt_svc.insert(origin^, entries^, received_at)
+
     def lookup_alt_svc(self, origin: Origin, now: UInt) raises -> List[AltSvcEntry]:
         """Check if an upgraded protocol is available for this origin."""
         return self._alt_svc.lookup(origin, now)
