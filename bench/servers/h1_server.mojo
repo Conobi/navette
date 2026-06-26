@@ -324,7 +324,7 @@ struct H1ServerHandler(CompletionHandler):
             tls=tls_opt^,
         )
 
-        var conn_ptr = _heap_alloc[H1Conn](1).as_any_origin()
+        var conn_ptr = _heap_alloc[H1Conn](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1
@@ -553,7 +553,7 @@ def main() raises:
 
     # Heap-allocate combined bench state so the pointer stays stable.
     var state = BenchState(static_cache=cache^, dataset=dataset^)
-    var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
+    var state_ptr = _heap_alloc[BenchState](1).as_unsafe_any_origin()
     state_ptr.init_pointee_move(state^)
 
     # Optionally build the TLS backend + server config (TLS mode).

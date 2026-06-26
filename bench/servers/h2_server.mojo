@@ -346,7 +346,7 @@ struct H2ServerHandler(CompletionHandler):
             SharedLibrary(other=self.tls_lib), self.server_tls_config
         )
 
-        var noneptr = UnsafePointer[NoneType, MutExternalOrigin](
+        var noneptr = UnsafePointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(self.state_ptr)
         )
         var h2 = H2CoroServer(
@@ -361,7 +361,7 @@ struct H2ServerHandler(CompletionHandler):
             h2=h2^,
         )
 
-        var conn_ptr = _heap_alloc[H2Conn](1).as_any_origin()
+        var conn_ptr = _heap_alloc[H2Conn](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1
@@ -624,7 +624,7 @@ def main() raises:
 
     # Heap-allocate combined bench state.
     var bstate = BenchState(static_cache=cache^, dataset=dataset^)
-    var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
+    var state_ptr = _heap_alloc[BenchState](1).as_unsafe_any_origin()
     state_ptr.init_pointee_move(bstate^)
 
     # Listening socket
@@ -658,7 +658,7 @@ def main() raises:
 
     # Allocate the per-worker buffer pool (data buffers; the ring
     # metadata is allocated separately by register_buf_ring).
-    var buf_base = _heap_alloc[UInt8](_BUF_RING_SIZE * _RECV_BUF_SIZE).as_any_origin()
+    var buf_base = _heap_alloc[UInt8](_BUF_RING_SIZE * _RECV_BUF_SIZE).as_unsafe_any_origin()
 
     # Build handler with an empty BufRing, then move-replace after the
     # CompletionLoop is built (since register_buf_ring is on the loop).

@@ -169,10 +169,10 @@ struct UdpTxSlot(Movable):
 
     def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
         var data_len = len(data)
-        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
-        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_any_origin()
-        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-        self.data_buf = _heap_alloc[UInt8](data_len).as_any_origin()
+        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_unsafe_any_origin()
+        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_unsafe_any_origin()
+        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_unsafe_any_origin()
+        self.data_buf = _heap_alloc[UInt8](data_len).as_unsafe_any_origin()
         for i in range(data_len):
             self.data_buf[i] = data[i]
         var addr_len = len(addr)
@@ -284,13 +284,13 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
         self.conn_map = Dict[String, Int]()
         self.conn_h3s = List[UnsafePointer[H3StreamingServer, MutAnyOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
-        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
+        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_unsafe_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
             self.pbuf_pool[i] = 0
         self.pending_rx = List[PendingDatagram]()
         self.multishot_active = False
         self.consumed_bufs = List[UInt16]()
-        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
+        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_unsafe_any_origin()
         for i in range(MSGHDR_SIZE):
             self.msghdr_template[i] = 0
         self.msghdr_template[8] = 28  # msg_namelen
@@ -301,7 +301,7 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
         self.tls_lib = tls_lib^
         self.server_config = server_config^
         self.pending_submits = List[PendingSubmit]()
-        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_any_origin()
+        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_unsafe_any_origin()
         for i in range(TIMESPEC_SIZE):
             self.timeout_ts[i] = 0
         # tv_nsec = 50ms = 50_000_000 ns LE
@@ -439,7 +439,7 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
                     print("h3-streaming-bench: H3StreamingServer error:", e)
                     self.consumed_bufs.append(pd.buf_id)
                     continue
-                var h3_ptr = _heap_alloc[H3StreamingServer](1).as_any_origin()
+                var h3_ptr = _heap_alloc[H3StreamingServer](1).as_unsafe_any_origin()
                 h3_ptr.init_pointee_move(h3^)
                 var addr = List[UInt8](capacity=pd.addr_len)
                 for j in range(pd.addr_len):
@@ -473,7 +473,7 @@ struct H3StreamingUdpHandler(BatchCompletionHandler):
             self.next_tx_id += 1
             var token = _encode_token(tx_id, OP_SENDMSG)
             var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
-            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_unsafe_any_origin()
             tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
             var slot_idx = len(self.tx_slots)
             self.tx_slots.append(tx_ptr)

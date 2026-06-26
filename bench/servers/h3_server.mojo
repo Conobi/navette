@@ -252,10 +252,10 @@ struct UdpTxSlot(Movable):
     def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
         var data_len = len(data)
 
-        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
-        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_any_origin()
-        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_any_origin()
-        self.data_buf = _heap_alloc[UInt8](data_len).as_any_origin()
+        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_unsafe_any_origin()
+        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_unsafe_any_origin()
+        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_unsafe_any_origin()
+        self.data_buf = _heap_alloc[UInt8](data_len).as_unsafe_any_origin()
 
         # Copy data
         for i in range(data_len):
@@ -408,13 +408,13 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
         self.conn_dcids = List[List[UInt64]]()
-        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_any_origin()
+        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_unsafe_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
             self.pbuf_pool[i] = 0
         self.pending_rx = List[PendingDatagram]()
         self.multishot_active = False
         self.consumed_bufs = List[UInt16]()
-        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_any_origin()
+        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_unsafe_any_origin()
         for i in range(MSGHDR_SIZE):
             self.msghdr_template[i] = 0
         # msg_namelen at offset 8 = 28 (sockaddr_in6 size) — kernel
@@ -434,7 +434,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         self.pending_submits = List[PendingSubmit]()
 
         # Allocate timeout timespec (16 bytes): 50ms = 50_000_000 ns LE.
-        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_any_origin()
+        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_unsafe_any_origin()
         for i in range(TIMESPEC_SIZE):
             self.timeout_ts[i] = 0
         # tv_nsec at offset 8 = 50_000_000 = 0x02FAF080 LE
@@ -767,7 +767,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
-                var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_any_origin()
+                var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_unsafe_any_origin()
                 h3_ptr.init_pointee_move(h3^)
 
                 # Build address from buffer for the new connection.
@@ -884,7 +884,7 @@ struct H3UdpHandler(BatchCompletionHandler):
 
             var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
 
-            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_any_origin()
+            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_unsafe_any_origin()
             tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
 
             var slot_idx = len(self.tx_slots)
@@ -1112,7 +1112,7 @@ def main() raises:
 
     # Heap-allocate combined bench state.
     var bstate = BenchState(static_cache=cache^, dataset=dataset^)
-    var state_ptr = _heap_alloc[BenchState](1).as_any_origin()
+    var state_ptr = _heap_alloc[BenchState](1).as_unsafe_any_origin()
     state_ptr.init_pointee_move(bstate^)
 
     # Load TLS library and create server config.

@@ -47,7 +47,7 @@ def llm_stream_h3_handler(mut yld: CoroYielder) raises:
 
     Any incoming request body is ignored (GET or POST both work).
     """
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_any_origin()
+    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
 
     # Drain any request body (ignore it — demo only cares about streaming out)
     while True:
@@ -83,7 +83,7 @@ def llm_stream_h2_handler(mut yld: CoroYielder) raises:
     HTTP 200 + SSE headers, then emits LLM_TOKEN_COUNT chunks of
     LLM_TOKEN_BYTES via h2_write_chunk + h2_finish.
     """
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_any_origin()
+    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
 
     # Send response headers: 200 OK + SSE content-type
     from navette.http.headers import Headers

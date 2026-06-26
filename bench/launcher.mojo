@@ -211,7 +211,7 @@ def _kill_children(children: List[ProcessInfo], sig: Int32):
 
 def _make_sigset(sig1: Int32, sig2: Int32) -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Create a sigset_t with sig1 and sig2 added."""
-    var ss = _heap_alloc[UInt8](SIGSET_SIZE).as_any_origin()
+    var ss = _heap_alloc[UInt8](SIGSET_SIZE).as_unsafe_any_origin()
     # sigemptyset: zero all 128 bytes
     for i in range(SIGSET_SIZE):
         ss[i] = 0

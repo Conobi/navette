@@ -804,7 +804,7 @@ def bench_h2_body_fn(
     ctx_ptr: UnsafePointer[H2CoroStreamCtx, MutAnyOrigin],
 ) raises:
     """H2BodyFn for H2CoroServer (Sprint 1 Path A — sync handler)."""
-    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_any_origin()
+    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_unsafe_any_origin()
     _dispatch_request(
         ctx_ptr[].request.target,
         ctx_ptr[].request.headers,
@@ -817,7 +817,7 @@ def bench_h3_body_fn(
     ctx_ptr: UnsafePointer[H3CoroStreamCtx, MutAnyOrigin],
 ) raises:
     """H3BodyFn for H3CoroServer (Sprint 2A Path A — sync handler)."""
-    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_any_origin()
+    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_unsafe_any_origin()
     _dispatch_request(
         ctx_ptr[].request.target,
         ctx_ptr[].request.headers,

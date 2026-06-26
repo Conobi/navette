@@ -139,7 +139,7 @@ struct H2StreamingConn(Movable):
         self.send_in_flight = False
         self.recv_in_flight = False
         self.closed = False
-        self.recv_buf = _heap_alloc[UInt8](recv_buf_size).as_any_origin()
+        self.recv_buf = _heap_alloc[UInt8](recv_buf_size).as_unsafe_any_origin()
 
     def __init__(out self, *, deinit take: Self):
         self.conn_id = take.conn_id
@@ -319,7 +319,7 @@ struct H2StreamingServerHandler(CompletionHandler):
             recv_buf_size=_RECV_BUF_SIZE,
         )
 
-        var conn_ptr = _heap_alloc[H2StreamingConn](1).as_any_origin()
+        var conn_ptr = _heap_alloc[H2StreamingConn](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
         self.connections.append(conn_ptr)
         var idx = len(self.connections) - 1
@@ -526,7 +526,7 @@ def main() raises:
 
     # Listening socket on port 8445
     var listener = Socket.tcp_v4()
-    var reuseport_val = _heap_alloc[UInt8](4).as_any_origin()
+    var reuseport_val = _heap_alloc[UInt8](4).as_unsafe_any_origin()
     reuseport_val[0] = 1
     reuseport_val[1] = 0
     reuseport_val[2] = 0
