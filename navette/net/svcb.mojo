@@ -320,8 +320,12 @@ def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
 def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:
     """Parse the `alpn` (key 1) SvcParam value: a run of length-prefixed tokens.
 
-    Each token is `len(u8) value[len]`. Raises if a token overruns the value
-    bounds — the caller skips the offending RR.
+    Each token is `len(u8) value[len]`. Per RFC 9460 §7.1.1, every alpn-id
+    MUST be non-empty; zero-length tokens are silently skipped so that a record
+    whose `alpn` contains only empty tokens yields an empty list and correctly
+    fails the non-empty-alpn selection gate in the caller.
+    Raises if a token overruns the value bounds — the caller skips the
+    offending RR.
     """
     var out = List[String]()
     var p = start
@@ -330,6 +334,8 @@ def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:
         p += 1
         if p + tlen > end:
             raise "svcb: alpn token overruns value"
+        if tlen == 0:
+            continue   # RFC 9460 §7.1.1: each alpn-id MUST be non-empty; skip
         var tok = String()
         for k in range(p, p + tlen):
             tok += chr(Int(m[k]))

@@ -348,6 +348,58 @@ def test_answer_min_priority_selected() raises:
     assert_equal(rec.ttl, UInt(99))
 
 
+def test_parse_alpn_single_zero_length_token_yields_empty_list() raises:
+    # A single 0x00 length byte is a zero-length token.  RFC 9460 §7.1.1
+    # requires each alpn-id to be non-empty, so the token must be skipped and
+    # the returned list must be empty (length 0), not [""].
+    var m = List[UInt8]()
+    m.append(UInt8(0x00))
+    var alpns = _parse_alpn(m, 0, 1)
+    assert_equal(len(alpns), 0)
+
+
+def test_parse_alpn_zero_length_token_in_mixed_list_dropped() raises:
+    # Value bytes: 02 'h' '3'  00  02 'h' '2'  (h3, empty token, h2).
+    # The zero-length token must be dropped; real tokens must be preserved
+    # in order: ["h3", "h2"].
+    var m = List[UInt8]()
+    m.append(UInt8(0x02)); m.append(UInt8(0x68)); m.append(UInt8(0x33))  # "h3"
+    m.append(UInt8(0x00))                                                  # empty token
+    m.append(UInt8(0x02)); m.append(UInt8(0x68)); m.append(UInt8(0x32))  # "h2"
+    var alpns = _parse_alpn(m, 0, 7)
+    assert_equal(len(alpns), 2)
+    assert_equal(alpns[0], String("h3"))
+    assert_equal(alpns[1], String("h2"))
+
+
+def test_answer_zero_alpn_record_does_not_mask_valid_h3() raises:
+    # Masking regression: a ServiceMode RR at priority 1 whose alpn value
+    # contains only a zero-length token must NOT shadow a priority-2 RR with
+    # a valid "h3" token.
+    #
+    # Before the fix _parse_alpn returned [""] for the empty token, making
+    # len(alpns)>0 True — the priority-1 record was selected and the h3 record
+    # was never reached.  After the fix the empty token is dropped, alpns==[]
+    # for the priority-1 RR, it fails the selection gate, and the priority-2
+    # h3 record is returned.
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns(String("")), 60, an=2)
+    var b = _mk_answer(String("example.com"), UInt16(0x1234), 2, _alpns(String("h3")), 90, an=1)
+    # splice b's answer RR (everything after b's question section) onto a.
+    var qn = _encode_qname(String("example.com"))
+    var rr_start = 12 + len(qn) + 4
+    for i in range(rr_start, len(b)):
+        a.append(b[i])
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_RECORD)
+    ref rec = ans.record.value()
+    assert_equal(rec.priority, UInt16(2))
+    var has_h3 = False
+    for i in range(len(rec.alpns)):
+        if rec.alpns[i] == String("h3"):
+            has_h3 = True
+    assert_true(has_h3)
+
+
 def main() raises:
     test_resolv_conf_first_ipv4_nameserver()
     test_resolv_conf_skips_ipv6_nameserver()
@@ -365,6 +417,8 @@ def main() raises:
     test_name_edge_pointer_out_of_bounds_rejected()
     test_parse_alpn_token_list()
     test_parse_alpn_overrun_raises()
+    test_parse_alpn_single_zero_length_token_yields_empty_list()
+    test_parse_alpn_zero_length_token_in_mixed_list_dropped()
     test_answer_h3_record()
     test_answer_alpn_without_h3()
     test_answer_servfail_is_none()
@@ -374,4 +428,5 @@ def main() raises:
     test_answer_tc_bit_truncated()
     test_answer_oversized_rdlen_no_crash()
     test_answer_min_priority_selected()
+    test_answer_zero_alpn_record_does_not_mask_valid_h3()
     print("All test_svcb tests passed.")
