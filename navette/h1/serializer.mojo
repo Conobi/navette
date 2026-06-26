@@ -96,6 +96,8 @@ def _int_to_hex_lower(value: Int) -> String:
     return result^
 
 
+# inplace-int-negative (verified 1.0.0b2): the debug_assert below aborts under
+# ASSERT=all and is compiled out at default/release (probes/inplace_int_negative.mojo).
 def _append_decimal(mut buf: List[UInt8], value: Int):
     """Append the ASCII decimal representation of a non-negative integer.
 
