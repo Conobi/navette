@@ -127,13 +127,40 @@ def _to_lower(b: UInt8) -> UInt8:
 
 
 def _bytes_to_string(data: List[UInt8], start: Int, end: Int) -> String:
-    """Build a String from a byte slice using ASCII chr conversion."""
-    var result = String()
+    """Build a String from ``data[start:end]``.
+
+    SECURITY INVARIANT (resolve-non-ascii, §7): ``unsafe_from_utf8`` is reached
+    ONLY for all-ASCII ranges. We first scan for any byte ``>= 0x80``:
+      * none present (the common case) -> bulk-copy the bytes into a sized
+        ``List[UInt8]`` and adopt them via ``String(unsafe_from_utf8=...)``;
+        equivalent to per-byte ``chr()`` for 0x00-0x7F but without per-character
+        String growth.
+      * any high byte present -> fall back to the per-byte ``chr()`` loop.
+        ``chr(b)`` for ``b >= 0x80`` emits the 2-byte UTF-8 encoding of code
+        point ``b`` (Latin-1 semantics); bulk-copying the raw byte would instead
+        construct an INVALID-UTF-8 String and silently change decoding. The
+        split preserves exact current behavior on every input.
+    ``end <= start`` returns an empty String. Discharged by params-fuzz-non-ascii.
+    """
+    if end <= start:
+        return String()
+    var has_high = False
     var i = start
     while i < end:
-        result += chr(Int(data[i]))
+        if data[i] >= UInt8(0x80):
+            has_high = True
+            break
         i += 1
-    return result^
+    if has_high:
+        var result = String()
+        var j = start
+        while j < end:
+            result += chr(Int(data[j]))
+            j += 1
+        return result^
+    var out = List[UInt8](capacity=end - start)
+    out.extend(Span(data)[start:end])
+    return String(unsafe_from_utf8=out^)
 
 
 def _iequals(a: String, b: String) -> Bool:
