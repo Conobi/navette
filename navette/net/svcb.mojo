@@ -48,8 +48,8 @@ comptime _ANS_TRUNCATED: Int = 3   # valid header with TC=1 → TCP/53 fallback
 struct HttpsRecord(Copyable, Movable):
     """The projection of one ServiceMode HTTPS RR that requette consumes.
 
-    No `port` field: the `port` SvcParam is a non-goal for this increment
-    (§4.1/B1); the seeded port is always the origin port.
+    No `port` field: the `port` SvcParam is a non-goal for this increment;
+    the seeded port is always the origin port.
     """
 
     var alpns: List[String]   # ALPN tokens from the `alpn` SvcParam (key 1)
@@ -119,8 +119,90 @@ struct _Answer(Copyable, Movable):
         self.record = take.record^
 
 
+def _read_file(path: String) raises -> List[UInt8]:
+    """Read up to 8 KiB from a file into a byte list. Raises if unreadable.
+
+    The cap defends against symlinked or pathological files being slurped whole;
+    8 KiB is ample for any real resolv.conf.
+    """
+    var fh = FileHandle(path, "r")
+    return fh.read_bytes(8192)
+
+
+def _is_ipv4_literal(s: String) -> Bool:
+    """True iff `s` parses as a dotted IPv4 literal (IPv6 → False)."""
+    return Bool(IpAddrV4.parse(s))
+
+
+def _parse_resolv_conf(data: List[UInt8]) -> String:
+    """Return the first `nameserver <ipv4>` value, else "".
+
+    Skips blank lines and `#`/`;` comments; matches the case-sensitive token
+    `nameserver`; ignores nameserver values that are not dotted-IPv4 literals
+    (IPv6 nameservers and `options` are out of scope for the MVP).
+    """
+    var n = len(data)
+    var i = 0
+    while i < n:
+        # slice one line [ls, le)
+        var ls = i
+        while i < n and data[i] != UInt8(0x0A):
+            i += 1
+        var le = i
+        # strip a trailing CR so CRLF files parse identically to LF files
+        if le > ls and data[le - 1] == UInt8(0x0D):
+            le -= 1
+        i += 1
+        # strip leading SP/TAB
+        var p = ls
+        while p < le and (data[p] == UInt8(0x20) or data[p] == UInt8(0x09)):
+            p += 1
+        if p >= le or data[p] == UInt8(0x23) or data[p] == UInt8(0x3B):
+            continue  # blank, '#', or ';'
+        # read token 1
+        var t1s = p
+        while p < le and data[p] != UInt8(0x20) and data[p] != UInt8(0x09):
+            p += 1
+        var t1 = String()
+        for k in range(t1s, p):
+            t1 += chr(Int(data[k]))
+        if t1 != String("nameserver"):
+            continue
+        # skip ws, read token 2 (candidate IP)
+        while p < le and (data[p] == UInt8(0x20) or data[p] == UInt8(0x09)):
+            p += 1
+        var t2s = p
+        while p < le and data[p] != UInt8(0x20) and data[p] != UInt8(0x09):
+            p += 1
+        var ip = String()
+        for k in range(t2s, p):
+            ip += chr(Int(data[k]))
+        if _is_ipv4_literal(ip):
+            return ip^
+    return String("")
+
+
+def _first_nameserver(path: String = "/etc/resolv.conf") -> String:
+    """Return the resolver IP for DNS queries.
+
+    Reads `path` (default `/etc/resolv.conf`), returns the first IPv4
+    `nameserver` value found, or `127.0.0.53` (systemd-resolved stub) when the
+    file is missing, unreadable, or contains no IPv4 nameserver entry.
+    The `path` parameter exists primarily for testing; callers without a
+    specific path rely on the default.
+    """
+    try:
+        var data = _read_file(path)
+        var ip = _parse_resolv_conf(data)
+        if ip.byte_length() > 0:
+            return ip^
+    except:
+        pass
+    return String(_DEFAULT_NS)
+
+
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
 ) raises -> Optional[HttpsRecord]:
-    """Stub — implemented in T7."""
+    """Stub — the UDP query path is wired in a later step."""
     return None
