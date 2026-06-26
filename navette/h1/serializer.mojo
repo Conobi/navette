@@ -60,42 +60,19 @@ def _method_string(method: Method) -> String:
     return String(method)
 
 
-def _int_to_string(value: Int) -> String:
-    """Convert a non-negative integer to its decimal string representation."""
-    if value == 0:
-        return String("0")
-    var digits = List[UInt8]()
-    var v = value
-    while v > 0:
-        digits.append(UInt8(v % 10 + 48))
-        v //= 10
-    var result = String()
-    var i = len(digits) - 1
-    while i >= 0:
-        result += chr(Int(digits[i]))
-        i -= 1
-    return result^
-
-
-def _int_to_hex_lower(value: Int) -> String:
-    """Convert a non-negative integer to a lowercase hex string."""
-    if value == 0:
-        return String("0")
-    var hex_chars = String("0123456789abcdef")
-    var hb = hex_chars.as_bytes()
-    var digits = List[UInt8]()
-    var v = value
-    while v > 0:
-        digits.append(hb[v & 0xF])
-        v >>= 4
-    var result = String()
-    var i = len(digits) - 1
-    while i >= 0:
-        result += chr(Int(digits[i]))
-        i -= 1
-    return result^
-
-
+# ── audit-int-nonneg (§7) — every _append_decimal/_append_hex_lower call site ──
+# Proven value >= 0 at each site (no sampling). Content-Length / chunk sizes are
+# len(...) of server-produced buffers (never echoed from the request); status
+# codes come from the typed StatusCode enum.
+#
+# | call site (serializer.mojo)          | function                  | value source                         | justification (>= 0)            |
+# |--------------------------------------|---------------------------|--------------------------------------|---------------------------------|
+# | serialize_response, status line      | _append_decimal           | Int(response.status.code())          | StatusCode enum, code() in 100..599 |
+# | serialize_response, content-length   | _append_framing_header_int| _total_data_len(response.body)       | sum of len(frame.data()) >= 0   |
+# | serialize_request, content-length    | _append_framing_header_int| len(request.body.bytes()) (else 0)   | len(...) >= 0                   |
+# | serialize_informational, status line | _append_decimal           | Int(status.code())                   | 1xx StatusCode enum, 100..199   |
+# | _append_chunked_body, chunk size     | _append_hex_lower         | len(chunk)                           | len(...) >= 0                   |
+#
 # inplace-int-negative (verified 1.0.0b2): the debug_assert below aborts under
 # ASSERT=all and is compiled out at default/release (probes/inplace_int_negative.mojo).
 def _append_decimal(mut buf: List[UInt8], value: Int):
@@ -179,6 +156,19 @@ def _append_framing_header(mut buf: List[UInt8], name: String, value: String):
     _append_crlf(buf)
 
 
+def _append_framing_header_int(mut buf: List[UInt8], name: String, value: Int):
+    """Append ``name: <decimal value>\\r\\n`` using in-place decimal emission.
+
+    Used for the synthesized Content-Length header, whose value is a
+    ``len(...)`` of a server-produced buffer and therefore structurally
+    non-negative (``audit-int-nonneg``).
+    """
+    _append_str(buf, name)
+    _append_colon_sp(buf)
+    _append_decimal(buf, value)
+    _append_crlf(buf)
+
+
 def _total_data_len(body: List[BodyFrame]) -> Int:
     """Sum the byte length of every Data frame in the body."""
     var total = 0
@@ -216,7 +206,7 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
             ref chunk = body[i].data()
             var chunk_len = len(chunk)
             if chunk_len > 0:
-                _append_str(buf, _int_to_hex_lower(chunk_len))
+                _append_hex_lower(buf, chunk_len)
                 _append_crlf(buf)
                 buf.extend(Span(chunk))
                 _append_crlf(buf)
@@ -264,7 +254,7 @@ def serialize_request(request: Request) raises -> List[UInt8]:
 
     _serialize_headers(buf, request.headers)
     if body_len > 0 and not request.headers.has("content-length"):
-        _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
+        _append_framing_header_int(buf, String("content-length"), body_len)
 
     # End of header block.
     _append_crlf(buf)
@@ -295,7 +285,7 @@ def serialize_response(response: Response) -> List[UInt8]:
     # Status-line: version SP status-code SP reason-phrase CRLF.
     _append_str(buf, _version_string(response.version))
     buf.append(UInt8(0x20))
-    _append_str(buf, _int_to_string(status_int))
+    _append_decimal(buf, status_int)
     buf.append(UInt8(0x20))  # SP after status, even with empty reason.
     _append_str(buf, response.reason)
     _append_crlf(buf)
@@ -320,7 +310,7 @@ def serialize_response(response: Response) -> List[UInt8]:
     if use_chunked:
         _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
     elif body_len > 0 and not response.headers.has("content-length"):
-        _append_framing_header(buf, String("content-length"), _int_to_string(body_len))
+        _append_framing_header_int(buf, String("content-length"), body_len)
 
     _append_crlf(buf)
 
@@ -341,7 +331,7 @@ def serialize_informational(status: StatusCode, headers: Headers) -> List[UInt8]
     var buf = List[UInt8]()
     _append_str(buf, String("HTTP/1.1"))
     buf.append(UInt8(0x20))
-    _append_str(buf, _int_to_string(Int(status.code())))
+    _append_decimal(buf, Int(status.code()))
     buf.append(UInt8(0x20))  # SP after status, even with empty reason.
     _append_crlf(buf)
     _serialize_headers(buf, headers)
