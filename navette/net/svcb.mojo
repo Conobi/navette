@@ -259,6 +259,64 @@ def _build_query(host: String, txn_id: UInt16) -> List[UInt8]:
     return m^
 
 
+def _read_u16(m: List[UInt8], off: Int) raises -> UInt16:
+    """Read a big-endian u16 at `off`. Raises if it would over-read."""
+    if off < 0 or off + 1 >= len(m):
+        raise "svcb: u16 out of bounds"
+    return (UInt16(m[off]) << 8) | UInt16(m[off + 1])
+
+
+def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
+    """Decompress an RFC 1035 §4.1.4 domain name starting at `start`.
+
+    Returns the dotted name plus `next_off` — the offset just past the name in
+    the linear stream (for a compressed name, just past the *first* pointer).
+    Two guards make this DoS-proof: every compression pointer must target a
+    **strictly lower** offset than its own position (rejects equal/forward
+    pointers, terminating pure-pointer chains), and the assembled name is
+    capped at 255 octets (terminating label-bearing loops). Any violation
+    raises — the caller treats it as a malformed RR, never a hang or over-read.
+    """
+    var name = String()
+    var pos = start
+    var next_after = -1
+    var jumped = False
+    var total = 0
+    while True:
+        if pos < 0 or pos >= len(m):
+            raise "svcb: name out of bounds"
+        var b = Int(m[pos])
+        if b == 0:
+            if not jumped:
+                next_after = pos + 1
+            break
+        if (b & 0xC0) == 0xC0:
+            if pos + 1 >= len(m):
+                raise "svcb: truncated name pointer"
+            var ptr = ((b & 0x3F) << 8) | Int(m[pos + 1])
+            if not jumped:
+                next_after = pos + 2
+            if ptr >= pos:
+                raise "svcb: non-decreasing name pointer"
+            pos = ptr
+            jumped = True
+            continue
+        if (b & 0xC0) != 0:
+            raise "svcb: bad label flags"
+        var label_end = pos + 1 + b
+        if label_end > len(m):
+            raise "svcb: label out of bounds"
+        if name.byte_length() > 0:
+            name += "."
+        for k in range(pos + 1, label_end):
+            name += chr(Int(m[k]))
+        total += b + 1
+        if total > _NAME_MAX:
+            raise "svcb: name exceeds 255 octets"
+        pos = label_end
+    return _Name(name^, next_after)
+
+
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
 ) raises -> Optional[HttpsRecord]:

@@ -1,8 +1,8 @@
 """test_svcb.mojo — DNS HTTPS/SVCB discovery unit tests."""
 
-from std.testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true, assert_raises
 
-from navette.net.svcb import _parse_resolv_conf, _first_nameserver, _encode_qname, _build_query
+from navette.net.svcb import _parse_resolv_conf, _first_nameserver, _encode_qname, _build_query, _decode_name, _read_u16
 
 
 def _bytes(s: String) -> List[UInt8]:
@@ -82,6 +82,106 @@ def test_query_golden_bytes() raises:
     assert_equal(q[o + 10], UInt8(0x00))  # RDLEN lo = 0
 
 
+def test_name_decompression_resolves_pointer() raises:
+    # bytes: [0..]: 07 example 03 com 00 (offset 0), then a pointer 0xC000.
+    var m = List[UInt8]()
+    var qn = _encode_qname(String("example.com"))   # 13 bytes at offset 0
+    for i in range(len(qn)):
+        m.append(qn[i])
+    m.append(UInt8(0xC0)); m.append(UInt8(0x00))     # pointer → offset 0
+    var nm = _decode_name(m, len(qn))                # decode the pointer
+    assert_equal(nm.value, String("example.com"))
+    assert_equal(nm.next_off, len(qn) + 2)           # past the 2-byte pointer
+
+
+def test_name_pointer_cycle_rejected() raises:
+    # A self-pointer at offset 12 (→ 12) violates strictly-decreasing → raises.
+    var m = List[UInt8]()
+    for _k in range(12):
+        m.append(UInt8(0))
+    m.append(UInt8(0xC0)); m.append(UInt8(0x0C))     # pointer → 12 (itself)
+    with assert_raises():
+        _ = _decode_name(m, 12)
+
+
+def test_name_forward_pointer_rejected() raises:
+    # pointer at 0 → 4 (forward) must be rejected (kills cycles).
+    var m = List[UInt8]()
+    m.append(UInt8(0xC0)); m.append(UInt8(0x04))
+    m.append(UInt8(0x00)); m.append(UInt8(0x00))
+    m.append(UInt8(0x00))
+    with assert_raises():
+        _ = _decode_name(m, 0)
+
+
+def test_name_label_pointer_ratchet_terminated_by_cap() raises:
+    # Buffer: [0x01, 'A', 0xC0, 0x00] — a 1-byte label at offset 0 followed by
+    # a pointer back to offset 0.  The pointer at offset 2 always targets
+    # 0 < 2, so the strictly-decreasing guard passes on every iteration and
+    # cannot stop the loop by itself.  It is the 255-octet cap that must
+    # terminate the cycle.  Asserts it raises quickly (no hang).
+    var m = List[UInt8]()
+    m.append(UInt8(0x01))   # label length 1
+    m.append(UInt8(65))     # 'A'
+    m.append(UInt8(0xC0))   # pointer high byte (0b11xxxxxx)
+    m.append(UInt8(0x00))   # pointer low byte → target offset 0
+    with assert_raises():
+        _ = _decode_name(m, 0)
+
+
+def test_name_exceeds_255_octet_cap() raises:
+    # Four 63-byte labels produce total = 4 × (63 + 1) = 256 > 255 → cap raises.
+    # The root terminator is appended but never reached; the cap fires on the
+    # fourth label.
+    var m = List[UInt8]()
+    for _i in range(4):
+        m.append(UInt8(63))
+        for _j in range(63):
+            m.append(UInt8(65))   # 'A'
+    m.append(UInt8(0))   # root terminator (unreachable; cap fires first)
+    with assert_raises():
+        _ = _decode_name(m, 0)
+
+
+def test_name_label_over_read_rejected() raises:
+    # Label length byte claims 5 octets of content but the buffer holds only 2
+    # bytes after the length byte; label_end (= 0 + 1 + 5 = 6) exceeds len(m)
+    # (= 3) → raises before any out-of-range read.
+    var m = List[UInt8]()
+    m.append(UInt8(5))    # label length 5
+    m.append(UInt8(65))   # 'A' — only two content bytes present
+    m.append(UInt8(66))   # 'B'
+    with assert_raises():
+        _ = _decode_name(m, 0)
+
+
+def test_name_reserved_label_flags_rejected() raises:
+    # High bits 0b10 (0x80) are reserved by RFC 1035; the decoder must raise
+    # "bad label flags" rather than mis-parsing the byte as a label length.
+    var m80 = List[UInt8]()
+    m80.append(UInt8(0x80))
+    m80.append(UInt8(0x00))
+    with assert_raises():
+        _ = _decode_name(m80, 0)
+    # High bits 0b01 (0x40) are equally reserved and must be rejected.
+    var m40 = List[UInt8]()
+    m40.append(UInt8(0x40))
+    m40.append(UInt8(0x00))
+    with assert_raises():
+        _ = _decode_name(m40, 0)
+
+
+def test_name_edge_pointer_out_of_bounds_rejected() raises:
+    # Pointer at offset 0 targeting offset 2 == len(m) — exactly one past the
+    # last valid index.  ptr (2) >= pos (0) → rejected as non-decreasing before
+    # any attempt to read at the out-of-range target.
+    var m = List[UInt8]()
+    m.append(UInt8(0xC0))   # pointer high byte
+    m.append(UInt8(0x02))   # pointer low byte → offset 2 == len(m)
+    with assert_raises():
+        _ = _decode_name(m, 0)
+
+
 def main() raises:
     test_resolv_conf_first_ipv4_nameserver()
     test_resolv_conf_skips_ipv6_nameserver()
@@ -89,4 +189,12 @@ def main() raises:
     test_resolv_conf_crlf_lines_parsed_correctly()
     test_first_nameserver_missing_path_returns_default()
     test_query_golden_bytes()
+    test_name_decompression_resolves_pointer()
+    test_name_pointer_cycle_rejected()
+    test_name_forward_pointer_rejected()
+    test_name_label_pointer_ratchet_terminated_by_cap()
+    test_name_exceeds_255_octet_cap()
+    test_name_label_over_read_rejected()
+    test_name_reserved_label_flags_rejected()
+    test_name_edge_pointer_out_of_bounds_rejected()
     print("All test_svcb tests passed.")
