@@ -6,7 +6,7 @@
 # Covers edges inplace-int-zero / -single-digit / -multi-digit / -max.
 
 from std.random import random_ui64, seed
-from navette.h1.serializer import _append_decimal
+from navette.h1.serializer import _append_decimal, _append_hex_lower
 from tests._test_util import assert_equal_str
 
 
@@ -54,6 +54,39 @@ def test_append_decimal_property() raises:
         _check_decimal(Int(random_ui64(0, UInt64(9223372036854775807))))
 
 
+def _ref_hex(value: Int) -> String:
+    if value == 0:
+        return String("0")
+    var hex_chars = String("0123456789abcdef")
+    var hb = hex_chars.as_bytes()
+    var digits = List[UInt8]()
+    var v = value
+    while v > 0:
+        digits.append(hb[v & 0xF])
+        v >>= 4
+    var result = String()
+    var i = len(digits) - 1
+    while i >= 0:
+        result += chr(Int(digits[i]))
+        i -= 1
+    return result^
+
+
+def _check_hex(value: Int) raises:
+    var buf = List[UInt8]()
+    _append_hex_lower(buf, value)
+    assert_equal_str(_buf_to_str(buf), _ref_hex(value), "hex " + String(value))
+
+
+def test_append_hex_property() raises:
+    for v in [0, 1, 9, 10, 99, 100, 999, 9223372036854775807]:
+        _check_hex(v)
+    seed(0xBEEF)
+    for _ in range(1000):
+        _check_hex(Int(random_ui64(0, UInt64(9223372036854775807))))
+
+
 def main() raises:
     test_append_decimal_property()
-    print("test_serializer_inplace_int: decimal property PASS")
+    test_append_hex_property()
+    print("test_serializer_inplace_int: decimal+hex property PASS")

@@ -128,6 +128,36 @@ def _append_decimal(mut buf: List[UInt8], value: Int):
         hi -= 1
 
 
+def _append_hex_lower(mut buf: List[UInt8], value: Int):
+    """Append the lowercase hexadecimal representation of a non-negative integer.
+
+    Same in-place write-then-reverse technique as ``_append_decimal``; used for
+    chunk sizes (``_append_chunked_body``). Precondition ``value >= 0`` (see
+    ``_append_decimal``; ``audit-int-nonneg``).
+    """
+    debug_assert(value >= 0, "_append_hex_lower requires value >= 0")
+    if value == 0:
+        buf.append(UInt8(48))  # '0'
+        return
+    var start = len(buf)
+    var v = value
+    while v > 0:
+        var nyb = v & 0xF
+        if nyb < 10:
+            buf.append(UInt8(nyb + 48))       # '0'..'9'
+        else:
+            buf.append(UInt8(nyb - 10 + 97))  # 'a'..'f'
+        v >>= 4
+    var lo = start
+    var hi = len(buf) - 1
+    while lo < hi:
+        var tmp = buf[lo]
+        buf[lo] = buf[hi]
+        buf[hi] = tmp
+        lo += 1
+        hi -= 1
+
+
 # --- Header / body helpers ---
 
 def _serialize_headers(mut buf: List[UInt8], headers: Headers):
