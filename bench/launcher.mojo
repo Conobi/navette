@@ -177,7 +177,7 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
         var argv_buf = Owned[UnsafePointer[UInt8, MutAnyOrigin]](2)
         var argv = argv_buf.ptr()
         argv[0] = path_buf.as_unsafe_any_origin()
-        argv[1] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
+        argv[1] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
 
         _ = external_call["execv", Int32](path_buf, argv)
 
@@ -232,7 +232,7 @@ def _make_sigset(sig1: Int32, sig2: Int32) -> UnsafePointer[UInt8, MutAnyOrigin]
 def main() raises:
     # Block SIGTERM and SIGINT so they can be caught by sigtimedwait.
     var sigset = _make_sigset(SIGTERM, SIGINT)
-    var null_set = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
+    var null_set = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
     _ = external_call["sigprocmask", Int32](SIG_BLOCK, sigset, null_set)
 
     # Read worker count from BENCH_WORKERS env (default: CPU count).
@@ -345,7 +345,7 @@ def main() raises:
     ts[10] = 0xCD
     ts[11] = 0x1D
 
-    var null_info = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
+    var null_info = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
     var shutdown = False
 
     while not shutdown:
