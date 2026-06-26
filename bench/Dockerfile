@@ -48,8 +48,8 @@ version = "0.0.0"
 requires-python = ">=3.11"
 dependencies = [
     "mojox==0.2.0",
-    "mojo-compiler==1.0.0b1",
-    "mojo-compiler-mojo-libs==1.0.0b1",
+    "mojo-compiler==1.0.0b2",
+    "mojo-compiler-mojo-libs==1.0.0b2",
 ]
 
 [tool.uv]
