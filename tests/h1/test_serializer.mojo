@@ -248,6 +248,29 @@ def test_serialize_multiple_headers_same_name() raises:
     )
 
 
+def test_fastpath_200_and_guards() raises:
+    # 200 / 1.1 / empty reason -> fast path, byte-identical to empty-reason golden.
+    var r200 = Response(status=StatusCode(200), reason="",
+                        version=Version.http_1_1(), headers=Headers())
+    _assert_bytes_eq(serialize_response(r200), "HTTP/1.1 200 \r\n\r\n",
+                     "fastpath-200")
+    # 201 / 1.1 / empty -> general path (not 200).
+    var r201 = Response(status=StatusCode(201), reason="",
+                        version=Version.http_1_1(), headers=Headers())
+    _assert_bytes_eq(serialize_response(r201), "HTTP/1.1 201 \r\n\r\n",
+                     "fastpath-201-general")
+    # 200 / 1.1 / non-empty reason -> general path (reason not empty).
+    var rok = Response(status=StatusCode(200), reason="OK",
+                       version=Version.http_1_1(), headers=Headers())
+    _assert_bytes_eq(serialize_response(rok), "HTTP/1.1 200 OK\r\n\r\n",
+                     "fastpath-custom-reason-general")
+    # 200 / 1.0 / empty -> general path (not 1.1).
+    var r10 = Response(status=StatusCode(200), reason="",
+                       version=Version.http_1_0(), headers=Headers())
+    _assert_bytes_eq(serialize_response(r10), "HTTP/1.0 200 \r\n\r\n",
+                     "fastpath-http10-general")
+
+
 def main() raises:
     test_serialize_get_request()
     test_serialize_post_request_with_body()
@@ -259,4 +282,5 @@ def main() raises:
     test_serialize_304_allows_content_length()
     test_serialize_http10_request()
     test_serialize_multiple_headers_same_name()
-    print("test_serializer: all 10 tests passed")
+    test_fastpath_200_and_guards()
+    print("test_serializer: all 11 tests passed")

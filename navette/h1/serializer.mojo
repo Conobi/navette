@@ -28,6 +28,13 @@ from navette.http.request import Request
 from navette.http.response import Response
 
 
+# serializer-200-fastpath (§4.2): the precomputed 15-byte status line for the
+# dominant keep-alive plaintext response. Byte-identical to the general path for
+# version==1.1 ∧ status==200 ∧ empty reason (verified: corpus-wire-identical,
+# fastpath-vs-general-identical, and test_serialize_empty_reason).
+comptime _STATUS_LINE_200 = "HTTP/1.1 200 \r\n"
+
+
 # --- Low-level buffer helpers ---
 
 def _append_str(mut buf: List[UInt8], s: String):
@@ -283,12 +290,20 @@ def serialize_response(response: Response) -> List[UInt8]:
     var status_int = Int(response.status.code())
 
     # Status-line: version SP status-code SP reason-phrase CRLF.
-    _append_str(buf, _version_string(response.version))
-    buf.append(UInt8(0x20))
-    _append_decimal(buf, status_int)
-    buf.append(UInt8(0x20))  # SP after status, even with empty reason.
-    _append_str(buf, response.reason)
-    _append_crlf(buf)
+    # Hot-path fast path: emit the precomputed 200-OK status line verbatim.
+    if (
+        response.version.is_http_1_1()
+        and status_int == 200
+        and len(response.reason) == 0
+    ):
+        _append_str(buf, String(_STATUS_LINE_200))
+    else:
+        _append_str(buf, _version_string(response.version))
+        buf.append(UInt8(0x20))
+        _append_decimal(buf, status_int)
+        buf.append(UInt8(0x20))  # SP after status, even with empty reason.
+        _append_str(buf, response.reason)
+        _append_crlf(buf)
 
     var bodyless = (
         (status_int >= 100 and status_int <= 199)
