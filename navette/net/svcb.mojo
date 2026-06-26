@@ -201,6 +201,64 @@ def _first_nameserver(path: String = "/etc/resolv.conf") -> String:
     return String(_DEFAULT_NS)
 
 
+def _encode_qname(host: String) -> List[UInt8]:
+    """Encode `host` as a DNS label sequence terminated by a zero octet.
+
+    Empty labels (leading/trailing/`..`) are dropped, so `"example.com"` and
+    `"example.com."` encode identically.  Each non-empty label is prefixed with
+    its byte length per RFC 1035 §3.1.
+    """
+    var out = List[UInt8]()
+    var b = host.as_bytes()
+    var n = len(b)
+    var i = 0
+    while i < n:
+        var j = i
+        while j < n and b[j] != _B_DOT:
+            j += 1
+        var label_len = j - i
+        if label_len > 0:
+            out.append(UInt8(label_len))
+            for k in range(i, j):
+                out.append(b[k])
+        i = j + 1
+    out.append(UInt8(0))
+    return out^
+
+
+def _build_query(host: String, txn_id: UInt16) -> List[UInt8]:
+    """Build a type-65 HTTPS-RR query with a single EDNS0 OPT RR.
+
+    `txn_id` is injected (the anti-spoof random id is generated separately) so
+    the byte layout is deterministically testable.  Header: RD=1, all other
+    flags 0, QDCOUNT=1, ANCOUNT=NSCOUNT=0, ARCOUNT=1.  OPT RR: root name
+    (0x00), TYPE=41, CLASS=1232 (UDP payload size per DNS Flag Day 2020),
+    TTL=0 (extended-RCODE 0 / EDNS version 0 / DO=0), RDLEN=0.
+    """
+    var m = List[UInt8]()
+    m.append(UInt8((Int(txn_id) >> 8) & 0xFF))
+    m.append(UInt8(Int(txn_id) & 0xFF))
+    m.append(UInt8(0x01)); m.append(UInt8(0x00))   # flags: RD=1
+    m.append(UInt8(0x00)); m.append(UInt8(0x01))   # QDCOUNT=1
+    m.append(UInt8(0x00)); m.append(UInt8(0x00))   # ANCOUNT=0
+    m.append(UInt8(0x00)); m.append(UInt8(0x00))   # NSCOUNT=0
+    m.append(UInt8(0x00)); m.append(UInt8(0x01))   # ARCOUNT=1
+    var qn = _encode_qname(host)
+    for i in range(len(qn)):
+        m.append(qn[i])
+    m.append(UInt8(0x00)); m.append(UInt8(_QTYPE_HTTPS))  # QTYPE=65
+    m.append(UInt8(0x00)); m.append(UInt8(_QCLASS_IN))    # QCLASS=IN
+    # EDNS0 OPT RR (additional section)
+    m.append(UInt8(0x00))                                 # root name
+    m.append(UInt8(0x00)); m.append(UInt8(41))            # TYPE=41 (OPT)
+    m.append(UInt8((_EDNS_UDP_SIZE >> 8) & 0xFF))         # CLASS hi (1232)
+    m.append(UInt8(_EDNS_UDP_SIZE & 0xFF))                # CLASS lo
+    m.append(UInt8(0x00)); m.append(UInt8(0x00))          # TTL hi (DO=0)
+    m.append(UInt8(0x00)); m.append(UInt8(0x00))          # TTL lo
+    m.append(UInt8(0x00)); m.append(UInt8(0x00))          # RDLEN=0
+    return m^
+
+
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
 ) raises -> Optional[HttpsRecord]:
