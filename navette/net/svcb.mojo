@@ -444,8 +444,126 @@ def _parse_https_answer_inner(
     return _Answer(_ANS_NONE, None)
 
 
+def _monotonic_ms() -> UInt64:
+    """CLOCK_MONOTONIC milliseconds (for the recv-loop deadline)."""
+    var ts_buf = Owned[UInt8](16)
+    var ts = ts_buf.ptr()
+    _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts)
+    var sec = Int(ts.bitcast[Int64]()[])
+    var nsec_ptr = UnsafePointer[Int64, MutAnyOrigin](unsafe_from_address=Int(ts) + 8)
+    var nsec = Int(nsec_ptr[])
+    return UInt64(sec * 1000 + nsec // 1_000_000)
+
+
+def _set_rcvtimeo(fd: Int32, ms: Int) raises:
+    """SO_RCVTIMEO on `fd` (millisecond timeval). Mirrors socket_helpers."""
+    var tv_buf = Owned[UInt8](16)
+    var tv = tv_buf.ptr()
+    for i in range(16):
+        tv[i] = UInt8(0)
+    var sec_ptr = tv.bitcast[Int64]()
+    sec_ptr[] = Int64(ms // 1000)
+    var usec_ptr = UnsafePointer[Int64, MutAnyOrigin](unsafe_from_address=Int(tv) + 8)
+    usec_ptr[] = Int64((ms % 1000) * 1000)
+    var rc = external_call["setsockopt", Int32](
+        fd, _SOL_SOCKET, _SO_RCVTIMEO, tv, Int32(16)
+    )
+    if rc < 0:
+        raise "svcb: setsockopt(SO_RCVTIMEO) failed"
+
+
+def _send_dgram(fd: Int32, data: List[UInt8]) raises -> Int:
+    """Send one datagram (MSG_NOSIGNAL). Returns the send rc."""
+    var n = len(data)
+    var buf_owned = Owned[UInt8](n)
+    var buf = buf_owned.ptr()
+    for i in range(n):
+        buf[i] = data[i]
+    return external_call["send", Int](fd, buf, n, _MSG_NOSIGNAL)
+
+
+def _recv_dgram(fd: Int32, max_n: Int) raises -> List[UInt8]:
+    """Receive one datagram. Empty list on timeout/EAGAIN (rc <= 0)."""
+    var buf_owned = Owned[UInt8](max_n)
+    var buf = buf_owned.ptr()
+    var rc = external_call["recv", Int](fd, buf, max_n, Int32(0))
+    var out = List[UInt8]()
+    if rc > 0:
+        for i in range(rc):
+            out.append(buf[i])
+    return out^
+
+
+def _query_tcp(
+    addr: ResolvedAddr, host: String, txn_id: UInt16, timeout_ms: UInt,
+) raises -> Optional[HttpsRecord]:
+    """TCP/53 fallback for TC=1 answers — stubbed until the TCP fallback lands."""
+    return None
+
+
+def _query_udp(
+    addr: ResolvedAddr, host: String, txn_id: UInt16, timeout_ms: UInt,
+) raises -> Optional[HttpsRecord]:
+    """Query the type-65 RR over a *connected* UDP socket with anti-spoof recv.
+
+    The connected socket gives a random ephemeral source port and lets the
+    kernel drop off-path datagrams. We loop reading datagrams until one
+    validates or the deadline expires — a stray/spoofed/garbled datagram is
+    discarded (not fatal). A TC=1 answer delegates to `_query_tcp`.
+    """
+    var q = _build_query(host, txn_id)
+    var sock = udp_connect(addr)
+    var fd = sock.raw()
+    _set_rcvtimeo(fd, Int(timeout_ms))
+    var result = Optional[HttpsRecord](None)
+    var need_tcp = False
+    if _send_dgram(fd, q) > 0:
+        var deadline = _monotonic_ms() + UInt64(timeout_ms)
+        while _monotonic_ms() < deadline:
+            var dg = _recv_dgram(fd, 65536)
+            if len(dg) == 0:
+                continue                      # timeout slice / empty → keep waiting
+            var ans = _parse_https_answer(dg, txn_id, host)
+            if ans.kind == _ANS_INVALID:
+                continue                      # spoof/stray → keep reading
+            if ans.kind == _ANS_TRUNCATED:
+                need_tcp = True
+                break
+            if ans.kind == _ANS_RECORD:
+                result = ans.record.copy()
+                break
+            break                             # _ANS_NONE: valid, no record
+    _ = sock.raw()                            # NLL: hold the socket past the loop
+    if need_tcp:
+        return _query_tcp(addr, host, txn_id, timeout_ms)
+    return result^
+
+
+def _random_txn_id() -> UInt16:
+    """A random 16-bit DNS transaction id via getrandom(2) (anti-spoof)."""
+    var buf = Owned[UInt8](2)
+    var p = buf.ptr()
+    p[0] = UInt8(0); p[1] = UInt8(0)
+    _ = external_call["getrandom", Int](p, UInt64(2), UInt32(0))
+    return (UInt16(p[0]) << 8) | UInt16(p[1])
+
+
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
 ) raises -> Optional[HttpsRecord]:
-    """Stub — the UDP query path is wired in a later step."""
-    return None
+    """Resolve the HTTPS RR (type 65) for `host`; return the preferred record.
+
+    SVCB-optional (RFC 9460 §3): every failure mode — unreadable
+    resolv.conf, resolver-address failure, socket error, timeout, truncation
+    we can't resolve, malformed record — yields `None`, never a raise to the
+    caller. The result is a hint (RFC 9460 §9.5); TLS authenticates the endpoint.
+    """
+    try:
+        var ns = _first_nameserver()
+        var addrs = resolve_host(ns, 53)
+        if len(addrs) == 0:
+            return None
+        var txn_id = _random_txn_id()
+        return _query_udp(addrs[0], host, txn_id, timeout_ms)
+    except:
+        return None
