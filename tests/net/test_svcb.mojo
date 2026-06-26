@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, assert_raises
 
-from navette.net.svcb import _parse_resolv_conf, _first_nameserver, _encode_qname, _build_query, _decode_name, _read_u16
+from navette.net.svcb import _parse_resolv_conf, _first_nameserver, _encode_qname, _build_query, _decode_name, _read_u16, _parse_alpn
 
 
 def _bytes(s: String) -> List[UInt8]:
@@ -182,6 +182,25 @@ def test_name_edge_pointer_out_of_bounds_rejected() raises:
         _ = _decode_name(m, 0)
 
 
+def test_parse_alpn_token_list() raises:
+    # value = 02 'h3' 02 'h2'  (offsets 0..6)
+    var m = List[UInt8]()
+    m.append(UInt8(2)); m.append(UInt8(0x68)); m.append(UInt8(0x33))  # "h3"
+    m.append(UInt8(2)); m.append(UInt8(0x68)); m.append(UInt8(0x32))  # "h2"
+    var alpns = _parse_alpn(m, 0, 6)
+    assert_equal(len(alpns), 2)
+    assert_equal(alpns[0], String("h3"))
+    assert_equal(alpns[1], String("h2"))
+
+
+def test_parse_alpn_overrun_raises() raises:
+    # declared token length 9 overruns the 3-byte value → raise.
+    var m = List[UInt8]()
+    m.append(UInt8(9)); m.append(UInt8(0x68)); m.append(UInt8(0x33))
+    with assert_raises():
+        _ = _parse_alpn(m, 0, 3)
+
+
 def main() raises:
     test_resolv_conf_first_ipv4_nameserver()
     test_resolv_conf_skips_ipv6_nameserver()
@@ -197,4 +216,6 @@ def main() raises:
     test_name_label_over_read_rejected()
     test_name_reserved_label_flags_rejected()
     test_name_edge_pointer_out_of_bounds_rejected()
+    test_parse_alpn_token_list()
+    test_parse_alpn_overrun_raises()
     print("All test_svcb tests passed.")

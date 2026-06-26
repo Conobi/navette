@@ -317,6 +317,27 @@ def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
     return _Name(name^, next_after)
 
 
+def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:
+    """Parse the `alpn` (key 1) SvcParam value: a run of length-prefixed tokens.
+
+    Each token is `len(u8) value[len]`. Raises if a token overruns the value
+    bounds — the caller skips the offending RR.
+    """
+    var out = List[String]()
+    var p = start
+    while p < end:
+        var tlen = Int(m[p])
+        p += 1
+        if p + tlen > end:
+            raise "svcb: alpn token overruns value"
+        var tok = String()
+        for k in range(p, p + tlen):
+            tok += chr(Int(m[k]))
+        out.append(tok^)
+        p += tlen
+    return out^
+
+
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
 ) raises -> Optional[HttpsRecord]:
