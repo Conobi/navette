@@ -49,6 +49,37 @@ comptime PHASE_UPGRADED = 3
 comptime PHASE_ERROR = 4
 
 
+def _compact_forward(mut buf: List[UInt8], cursor: Int):
+    """In-place left-shift: drop ``buf[0:cursor]``, keeping ``buf[cursor:len]``
+    at ``[0:keep]`` (``keep = len - cursor``). Reuses the backing allocation —
+    ``clear()``/shrinking ``resize`` preserve capacity AND the backing
+    ``unsafe_ptr`` on 1.0.0b2 (gate-zero-capacity, §7).
+
+    The shift is an indexed forward copy over a single ``unsafe_ptr``; for every
+    ``cursor > 0`` the destination index ``0`` precedes the source index
+    ``cursor``, so overlapping ranges copy clobber-free. stdlib ``memmove`` is
+    deliberately NOT used: an in-place self-overlapping ``memmove`` fails b2's
+    argument-exclusivity check (both args alias one owned buffer).
+
+    Precondition: ``0 <= cursor <= len(buf)`` (audit-cursor-bounds, §7), backed
+    by a debug-only ``ASSERT=all`` check. ``cursor == 0`` is a no-op;
+    ``cursor == len`` clears.
+    """
+    debug_assert(cursor >= 0, "_compact_forward: negative cursor")
+    debug_assert(cursor <= len(buf), "_compact_forward: cursor past buffer end")
+    if cursor == 0:
+        return
+    var n = len(buf)
+    var keep = n - cursor
+    if keep == 0:
+        buf.clear()
+        return
+    var p = buf.unsafe_ptr()
+    for i in range(keep):
+        p[i] = p[i + cursor]
+    buf.resize(keep, UInt8(0))
+
+
 struct H1Connection(Movable):
     """Sans-I/O HTTP/1.1 connection state machine.
 
