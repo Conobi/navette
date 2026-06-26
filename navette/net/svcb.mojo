@@ -338,6 +338,106 @@ def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:
     return out^
 
 
+def _parse_https_answer(m: List[UInt8], qid: UInt16, host: String) -> _Answer:
+    """Classify + parse a datagram; never raises (any failure -> _ANS_INVALID)."""
+    try:
+        return _parse_https_answer_inner(m, qid, host)
+    except:
+        return _Answer(_ANS_INVALID, None)
+
+
+def _parse_https_answer_inner(
+    m: List[UInt8], qid: UInt16, host: String,
+) raises -> _Answer:
+    """Validate the header/question, then select the preferred ServiceMode RR.
+
+    Validation order (anti-spoof first, then status, then content):
+      1. txn-id, QDCOUNT==1, echoed QNAME (case-insensitive), QTYPE/QCLASS
+         -> mismatch = `_ANS_INVALID` (discard, keep reading).
+      2. TC=1 -> `_ANS_TRUNCATED` (TCP/53 fallback).
+      3. rcode != 0 -> `_ANS_NONE` (legitimate negative answer).
+      4. scan ANCOUNT RRs; return the smallest-SvcPriority (>0) ServiceMode RR
+         with a non-empty `alpn` as `_ANS_RECORD`, else `_ANS_NONE`. AliasMode
+         (priority 0) is skipped; a malformed RR stops the scan with the
+         best-so-far result (never fatal).
+    """
+    if len(m) < 12:
+        return _Answer(_ANS_INVALID, None)
+    if _read_u16(m, 0) != qid:
+        return _Answer(_ANS_INVALID, None)
+    var qd = Int(_read_u16(m, 4))
+    var an = Int(_read_u16(m, 6))
+    if qd != 1:
+        return _Answer(_ANS_INVALID, None)
+    var qn = _decode_name(m, 12)
+    var qoff = qn.next_off
+    if qn.value.lower() != host.lower():
+        return _Answer(_ANS_INVALID, None)
+    if Int(_read_u16(m, qoff)) != _QTYPE_HTTPS or Int(_read_u16(m, qoff + 2)) != _QCLASS_IN:
+        return _Answer(_ANS_INVALID, None)
+    # valid response to *our* query
+    if (Int(m[2]) & 0x02) != 0:
+        return _Answer(_ANS_TRUNCATED, None)
+    if (Int(m[3]) & 0x0F) != 0:
+        return _Answer(_ANS_NONE, None)
+    var off = qoff + 4
+    var have = False
+    var best_prio = 0x10000
+    var best_alpns = List[String]()
+    var best_ttl = UInt(0)
+    var best_target = String()
+    for _i in range(an):
+        var ok = True
+        try:
+            var nm = _decode_name(m, off)
+            var p = nm.next_off
+            var rtype = Int(_read_u16(m, p))
+            # TTL spans bytes p+4..p+7; use _read_u16 so any truncation raises
+            # (direct indexing panics rather than raises under ASSERT=all).
+            var ttl_hi = UInt(_read_u16(m, p + 4))
+            var ttl_lo = UInt(_read_u16(m, p + 6))
+            var ttl = (ttl_hi << 16) | ttl_lo
+            var rdlen = Int(_read_u16(m, p + 8))
+            var rdstart = p + 10
+            var rdend = rdstart + rdlen
+            if rdend > len(m):
+                ok = False
+            else:
+                if rtype == _QTYPE_HTTPS:
+                    var prio = Int(_read_u16(m, rdstart))
+                    if prio != 0:                       # skip AliasMode
+                        var tn = _decode_name(m, rdstart + 2)
+                        var sp = tn.next_off
+                        var alpns = List[String]()
+                        while sp + 4 <= rdend:
+                            var key = Int(_read_u16(m, sp))
+                            var vlen = Int(_read_u16(m, sp + 2))
+                            var vstart = sp + 4
+                            if vstart + vlen > rdend:
+                                break                   # malformed TLV -> stop this RR
+                            if key == 1:
+                                alpns = _parse_alpn(m, vstart, vstart + vlen)
+                            sp = vstart + vlen
+                        if len(alpns) > 0 and prio < best_prio:
+                            have = True
+                            best_prio = prio
+                            best_alpns = alpns^
+                            best_ttl = ttl
+                            best_target = tn.value
+                off = rdend
+        except:
+            ok = False
+        if not ok:
+            break
+    if have:
+        var rec = HttpsRecord(
+            alpns=best_alpns^, ttl=best_ttl,
+            target=best_target^, priority=UInt16(best_prio),
+        )
+        return _Answer(_ANS_RECORD, Optional(rec^))
+    return _Answer(_ANS_NONE, None)
+
+
 def resolve_https_rr(
     host: String, *, timeout_ms: UInt = 2000,
 ) raises -> Optional[HttpsRecord]:

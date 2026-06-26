@@ -3,6 +3,9 @@
 from std.testing import assert_equal, assert_true, assert_raises
 
 from navette.net.svcb import _parse_resolv_conf, _first_nameserver, _encode_qname, _build_query, _decode_name, _read_u16, _parse_alpn
+from navette.net.svcb import (
+    _parse_https_answer, _ANS_INVALID, _ANS_NONE, _ANS_RECORD, _ANS_TRUNCATED,
+)
 
 
 def _bytes(s: String) -> List[UInt8]:
@@ -201,6 +204,150 @@ def test_parse_alpn_overrun_raises() raises:
         _ = _parse_alpn(m, 0, 3)
 
 
+def _mk_answer(
+    host: String, qid: UInt16, priority: Int, var alpns: List[String], ttl: Int,
+    *, tc: Bool = False, rcode: Int = 0, an: Int = 1,
+) -> List[UInt8]:
+    """Assemble a one-RR HTTPS-RR response. `priority==0` => AliasMode (no alpn).
+
+    TargetName is always "." (root). `alpns` empty => no `alpn` SvcParam.
+    """
+    var a = List[UInt8]()
+    a.append(UInt8((Int(qid) >> 8) & 0xFF)); a.append(UInt8(Int(qid) & 0xFF))
+    var fl2 = 0x80                       # QR=1
+    if tc:
+        fl2 |= 0x02
+    a.append(UInt8(fl2)); a.append(UInt8(0x80 | (rcode & 0x0F)))  # RA=1 + rcode
+    a.append(UInt8(0x00)); a.append(UInt8(0x01))                  # QDCOUNT=1
+    a.append(UInt8((an >> 8) & 0xFF)); a.append(UInt8(an & 0xFF)) # ANCOUNT
+    a.append(UInt8(0x00)); a.append(UInt8(0x00))
+    a.append(UInt8(0x00)); a.append(UInt8(0x00))
+    var qn = _encode_qname(host)
+    for i in range(len(qn)):
+        a.append(qn[i])
+    a.append(UInt8(0x00)); a.append(UInt8(65))
+    a.append(UInt8(0x00)); a.append(UInt8(1))
+    if an == 0:
+        return a^
+    # answer RR: NAME = pointer to the question (0xC00C)
+    a.append(UInt8(0xC0)); a.append(UInt8(0x0C))
+    a.append(UInt8(0x00)); a.append(UInt8(65))   # TYPE=65
+    a.append(UInt8(0x00)); a.append(UInt8(1))    # CLASS=IN
+    a.append(UInt8((ttl >> 24) & 0xFF)); a.append(UInt8((ttl >> 16) & 0xFF))
+    a.append(UInt8((ttl >> 8) & 0xFF)); a.append(UInt8(ttl & 0xFF))
+    # build RDATA: priority(2) + target(.) [+ alpn svcparam]
+    var rd = List[UInt8]()
+    rd.append(UInt8((priority >> 8) & 0xFF)); rd.append(UInt8(priority & 0xFF))
+    rd.append(UInt8(0x00))                        # TargetName = "."
+    if priority != 0 and len(alpns) > 0:
+        var val = List[UInt8]()
+        for i in range(len(alpns)):
+            var t = alpns[i].as_bytes()
+            val.append(UInt8(len(t)))
+            for k in range(len(t)):
+                val.append(t[k])
+        rd.append(UInt8(0x00)); rd.append(UInt8(0x01))            # key=1 (alpn)
+        rd.append(UInt8((len(val) >> 8) & 0xFF)); rd.append(UInt8(len(val) & 0xFF))
+        for i in range(len(val)):
+            rd.append(val[i])
+    a.append(UInt8((len(rd) >> 8) & 0xFF)); a.append(UInt8(len(rd) & 0xFF))  # RDLEN
+    for i in range(len(rd)):
+        a.append(rd[i])
+    return a^
+
+
+def _alpns(*tokens: String) -> List[String]:
+    """Build a `List[String]` from variadic token arguments."""
+    var out = List[String]()
+    for t in tokens:
+        out.append(t)
+    return out^
+
+
+def test_answer_h3_record() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3", "h2"), 60)
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_RECORD)
+    ref rec = ans.record.value()
+    assert_equal(rec.priority, UInt16(1))
+    assert_equal(rec.ttl, UInt(60))
+    assert_equal(rec.target, String(""))       # "." -> empty (same-origin)
+    var has_h3 = False
+    for i in range(len(rec.alpns)):
+        if rec.alpns[i] == String("h3"):
+            has_h3 = True
+    assert_true(has_h3)
+
+
+def test_answer_alpn_without_h3() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h2"), 60)
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_RECORD)          # record returned...
+    ref rec = ans.record.value()
+    for i in range(len(rec.alpns)):
+        assert_true(rec.alpns[i] != String("h3"))  # ...but no h3 -> requette won't seed
+
+
+def test_answer_servfail_is_none() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3"), 60, rcode=2)
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_NONE)
+
+
+def test_answer_nodata_is_none() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns(), 0, an=0)
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_NONE)
+
+
+def test_answer_aliasmode_skipped() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 0, _alpns(), 0)  # prio 0
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_NONE)            # AliasMode carries no usable alpn
+
+
+def test_answer_txnid_mismatch_invalid() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3"), 60)
+    var ans = _parse_https_answer(a, UInt16(0x9999), String("example.com"))
+    assert_equal(ans.kind, _ANS_INVALID)         # anti-spoof
+
+
+def test_answer_tc_bit_truncated() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3"), 60, tc=True)
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_TRUNCATED)
+
+
+def test_answer_oversized_rdlen_no_crash() raises:
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 1, _alpns("h3"), 60)
+    # corrupt RDLEN to 0xFFFF (RR claims far more than the buffer holds).
+    # RDLEN offset: header(12) + question(qn + 4) + RRname(2) + type(2)
+    #               + class(2) + ttl(4).
+    var qn = _encode_qname(String("example.com"))
+    var idx = 12 + len(qn) + 4 + 2 + 2 + 2 + 4
+    a[idx] = UInt8(0xFF); a[idx + 1] = UInt8(0xFF)
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    # oversized RR is skipped; no record found -> NONE (and crucially, no crash)
+    assert_equal(ans.kind, _ANS_NONE)
+
+
+def test_answer_min_priority_selected() raises:
+    # Two ServiceMode RRs: prio 5 (h3) then prio 2 (h3). Min priority (2) wins.
+    var a = _mk_answer(String("example.com"), UInt16(0x1234), 5, _alpns("h3"), 60, an=2)
+    # append a second RR with priority 2 by reusing the builder's tail logic:
+    var b = _mk_answer(String("example.com"), UInt16(0x1234), 2, _alpns("h3"), 99, an=1)
+    # splice b's single answer RR (everything after b's question) onto a.
+    var qn = _encode_qname(String("example.com"))
+    var rr_start = 12 + len(qn) + 4
+    for i in range(rr_start, len(b)):
+        a.append(b[i])
+    var ans = _parse_https_answer(a, UInt16(0x1234), String("example.com"))
+    assert_equal(ans.kind, _ANS_RECORD)
+    ref rec = ans.record.value()
+    assert_equal(rec.priority, UInt16(2))
+    assert_equal(rec.ttl, UInt(99))
+
+
 def main() raises:
     test_resolv_conf_first_ipv4_nameserver()
     test_resolv_conf_skips_ipv6_nameserver()
@@ -218,4 +365,13 @@ def main() raises:
     test_name_edge_pointer_out_of_bounds_rejected()
     test_parse_alpn_token_list()
     test_parse_alpn_overrun_raises()
+    test_answer_h3_record()
+    test_answer_alpn_without_h3()
+    test_answer_servfail_is_none()
+    test_answer_nodata_is_none()
+    test_answer_aliasmode_skipped()
+    test_answer_txnid_mismatch_invalid()
+    test_answer_tc_bit_truncated()
+    test_answer_oversized_rdlen_no_crash()
+    test_answer_min_priority_selected()
     print("All test_svcb tests passed.")
