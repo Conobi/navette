@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
-DIRS=(navette interop tests conformance examples)
+DIRS=(navette interop tests conformance examples bench)
 PAT='\b(as_any_origin|ExternalOrigin|ImmutExternalOrigin|MutExternalOrigin)\b'
 HITS=$(grep -rEn --include='*.mojo' "$PAT" "${DIRS[@]}" 2>/dev/null || true)
 if [ -n "$HITS" ]; then
