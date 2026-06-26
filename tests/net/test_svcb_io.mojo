@@ -5,7 +5,7 @@ from std.testing import assert_equal, assert_true
 
 from navette.util.owned_alloc import Owned
 from navette.net.resolver import resolve_host
-from navette.net.svcb import _query_udp
+from navette.net.svcb import _query_udp, _monotonic_ms
 
 
 struct _Bound(Copyable, Movable):
@@ -151,7 +151,7 @@ def test_udp_roundtrip_returns_record() raises:
     # parent: close TCP fd we don't need, run the client
     _ = external_call["close", Int32](b.tcp_fd)
     var addr = resolve_host(String("127.0.0.1"), b.port)
-    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), UInt(1500))
+    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), _monotonic_ms() + UInt64(1500))
     _waitpid(pid)
     _ = external_call["close", Int32](b.udp_fd)
     assert_true(Bool(rec))
@@ -164,7 +164,7 @@ def test_udp_timeout_returns_none() raises:
     var b = _bind_loopback()
     _ = external_call["close", Int32](b.tcp_fd)
     var addr = resolve_host(String("127.0.0.1"), b.port)
-    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), UInt(150))
+    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), _monotonic_ms() + UInt64(150))
     _ = external_call["close", Int32](b.udp_fd)
     assert_true(not rec)
 
@@ -230,7 +230,7 @@ def test_tc_bit_triggers_tcp_fallback() raises:
             pass
         _ = external_call["_exit", Int32](Int32(0))
     var addr = resolve_host(String("127.0.0.1"), b.port)
-    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), UInt(2000))
+    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), _monotonic_ms() + UInt64(2000))
     _waitpid(pid)
     _ = external_call["close", Int32](b.udp_fd)
     _ = external_call["close", Int32](b.tcp_fd)
@@ -239,8 +239,72 @@ def test_tc_bit_triggers_tcp_fallback() raises:
     assert_equal(r.alpns[0], String("h3"))
 
 
+def _serve_udp_tc_then_stall_tcp(b: _Bound) raises:
+    """Reply TC=1 to the UDP query, accept the TCP connection, then exit without sending.
+
+    The child sends nothing on the TCP socket so the parent's `_recv_n` (for the
+    2-byte length header) must block until its SO_RCVTIMEO fires — which is set to
+    the remaining shared deadline rather than a fresh full-timeout allowance.
+    """
+    var rbuf = Owned[UInt8](65536)
+    var sa = Owned[UInt8](16)
+    var sl = Owned[Int32](1)
+    sl.ptr()[0] = Int32(16)
+    var n = external_call["recvfrom", Int](
+        b.udp_fd, rbuf.ptr(), 65536, Int32(0), sa.ptr(), sl.ptr()
+    )
+    # Echo the query back with TC=1 + QR=1 set.
+    var tc = List[UInt8]()
+    for i in range(Int(n)):
+        tc.append(rbuf.ptr()[i])
+    tc[2] = UInt8(0x80 | 0x02)   # QR=1, TC=1
+    tc[3] = UInt8(0x80)           # RA=1, rcode=0
+    var ob = Owned[UInt8](len(tc))
+    for i in range(len(tc)):
+        ob.ptr()[i] = tc[i]
+    _ = external_call["sendto", Int](
+        b.udp_fd, ob.ptr(), len(tc), Int32(0), sa.ptr(), Int32(16)
+    )
+    # Accept the TCP connection but never write — the parent must time out on recv.
+    var pa = Owned[UInt8](16)
+    var pl = Owned[Int32](1)
+    pl.ptr()[0] = Int32(16)
+    _ = external_call["accept", Int32](b.tcp_fd, pa.ptr(), pl.ptr())
+    _ = external_call["_exit", Int32](Int32(0))
+
+
+def test_total_deadline_bounds_tcp_stall() raises:
+    # TC=1 triggers TCP fallback; the TCP server accepts but sends nothing.
+    # With the shared deadline, _query_tcp is bounded by whatever time remains
+    # from the single total budget — the elapsed wall-clock must be at most
+    # ~2 × timeout_ms, not the old ~4 × (per-phase stacking).
+    var timeout_ms = UInt64(500)
+    var b = _bind_loopback()
+    var pid = _fork()
+    if pid == 0:
+        _ = external_call["close", Int32](Int32(0))
+        _ = external_call["close", Int32](Int32(1))
+        _ = external_call["close", Int32](Int32(2))
+        try:
+            _serve_udp_tc_then_stall_tcp(b)
+        except:
+            pass
+        _ = external_call["_exit", Int32](Int32(0))
+    var t0 = _monotonic_ms()
+    var addr = resolve_host(String("127.0.0.1"), b.port)
+    var deadline = t0 + timeout_ms
+    var rec = _query_udp(addr[0], String("example.com"), UInt16(0x1234), deadline)
+    var elapsed = _monotonic_ms() - t0
+    _waitpid(pid)
+    _ = external_call["close", Int32](b.udp_fd)
+    _ = external_call["close", Int32](b.tcp_fd)
+    assert_true(not rec)                          # stalled server → no response
+    assert_true(elapsed < timeout_ms * 2)         # total wall-clock < 2 × timeout
+
+
 def main() raises:
     test_udp_roundtrip_returns_record()
     test_udp_timeout_returns_none()
     test_tc_bit_triggers_tcp_fallback()
+    test_total_deadline_bounds_tcp_stall()
     print("All test_svcb_io UDP + TCP tests passed.")

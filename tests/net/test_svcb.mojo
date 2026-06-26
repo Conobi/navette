@@ -117,6 +117,25 @@ def test_name_forward_pointer_rejected() raises:
         _ = _decode_name(m, 0)
 
 
+def test_name_pure_pointer_ladder_rejected_by_indirection_cap() raises:
+    # Build a chain of 200 two-byte pointer entries, each pointing strictly to
+    # the pair two bytes below it.  No label bytes are present so `total` stays
+    # 0 and the 255-octet label-bytes cap never fires.  Only the 128-jump
+    # indirection cap can terminate the loop before the chain bottoms out.
+    # Layout: m[0]=0x00 (null at chain bottom), m[1]=padding,
+    #         m[2i+2..2i+3] = pointer to 2*i  (i = 0..199).
+    var m = List[UInt8]()
+    m.append(UInt8(0x00))   # offset 0: null label — chain bottom
+    m.append(UInt8(0x00))   # offset 1: padding
+    for i in range(200):
+        var target = i * 2          # targets: 0, 2, 4, …, 398
+        m.append(UInt8(0xC0 | ((target >> 8) & 0x3F)))
+        m.append(UInt8(target & 0xFF))
+    # Start at the last pointer pair — 200 strictly-decreasing jumps required.
+    with assert_raises():
+        _ = _decode_name(m, len(m) - 2)
+
+
 def test_name_label_pointer_ratchet_terminated_by_cap() raises:
     # Buffer: [0x01, 'A', 0xC0, 0x00] — a 1-byte label at offset 0 followed by
     # a pointer back to offset 0.  The pointer at offset 2 always targets
@@ -423,6 +442,7 @@ def main() raises:
     test_name_decompression_resolves_pointer()
     test_name_pointer_cycle_rejected()
     test_name_forward_pointer_rejected()
+    test_name_pure_pointer_ladder_rejected_by_indirection_cap()
     test_name_label_pointer_ratchet_terminated_by_cap()
     test_name_exceeds_255_octet_cap()
     test_name_label_over_read_rejected()

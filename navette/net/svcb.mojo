@@ -282,6 +282,7 @@ def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
     var next_after = -1
     var jumped = False
     var total = 0
+    var jumps = 0    # indirection-hop counter; capped at 128 (RFC 1035 §4.1.4)
     while True:
         if pos < 0 or pos >= len(m):
             raise "svcb: name out of bounds"
@@ -298,6 +299,9 @@ def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
                 next_after = pos + 2
             if ptr >= pos:
                 raise "svcb: non-decreasing name pointer"
+            jumps += 1
+            if jumps > 128:
+                raise "svcb: compression pointer chain too long"
             pos = ptr
             jumped = True
             continue
@@ -518,16 +522,17 @@ def _send_all_tcp(fd: Int32, data: List[UInt8]) raises -> Int:
     return sent
 
 
-def _recv_n(fd: Int32, want: Int, timeout_ms: UInt) raises -> List[UInt8]:
-    """Read exactly `want` bytes, bounded by a monotonic deadline.
+def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[UInt8]:
+    """Read exactly `want` bytes, bounded by an absolute monotonic deadline.
 
     `want` is pre-capped by the caller (<= _MAX_TCP_FRAME); the deadline
     bounds a dribbling resolver — together they bound the buffer so a
-    malicious advertised length cannot grow it without limit.  Returns
-    fewer than `want` bytes on EOF, error, or deadline expiry.
+    malicious advertised length cannot grow it without limit.  `deadline`
+    is an absolute `_monotonic_ms()` timestamp so the caller's single
+    total-operation deadline is honoured here rather than a fresh per-call
+    timeout.  Returns fewer than `want` bytes on EOF, error, or expiry.
     """
     var out = List[UInt8]()
-    var deadline = _monotonic_ms() + UInt64(timeout_ms)
     while len(out) < want and _monotonic_ms() < deadline:
         var rem = want - len(out)
         var buf_owned = Owned[UInt8](rem)
@@ -541,7 +546,7 @@ def _recv_n(fd: Int32, want: Int, timeout_ms: UInt) raises -> List[UInt8]:
 
 
 def _query_tcp(
-    addr: ResolvedAddr, host: String, txn_id: UInt16, timeout_ms: UInt,
+    addr: ResolvedAddr, host: String, txn_id: UInt16, deadline: UInt64,
 ) raises -> Optional[HttpsRecord]:
     """Re-issue the same query (incl. EDNS0 OPT) over TCP/53, length-framed.
 
@@ -550,13 +555,27 @@ def _query_tcp(
     The declared frame length is capped at `_MAX_TCP_FRAME` — a resolver claiming
     0xFFFF and dribbling cannot grow an unbounded buffer or hang: the frame-length
     cap prevents the allocation, and the `_recv_n` deadline bounds the read time.
+
+    `deadline` is an absolute monotonic timestamp shared with the UDP phase so
+    that connect + length-read + body-read together cannot exceed the caller's
+    single total-operation budget.  Each blocking step uses `remaining` computed
+    from `deadline - _monotonic_ms()` rather than a fresh per-phase timeout.
     A still-truncated answer, a length over the cap, or any I/O failure yields
     `None` — never a raise to the caller, never a hang.
     """
     var q = _build_query(host, txn_id)
-    var sock = tcp_connect(addr, connect_timeout_ms=UInt64(timeout_ms))
+    # Compute remaining budget; bail early if deadline already passed.
+    var now = _monotonic_ms()
+    if deadline <= now:
+        return Optional[HttpsRecord](None)
+    var rem_connect = Int(deadline - now)
+    var sock = tcp_connect(addr, connect_timeout_ms=UInt64(rem_connect))
     var fd = sock.raw()
-    _set_rcvtimeo(fd, Int(timeout_ms))
+    now = _monotonic_ms()
+    # SO_RCVTIMEO accepts 0 as "no timeout"; clamp to 1 ms minimum so a just-
+    # expired deadline does not inadvertently disable the receive timeout.
+    var rem_rcv = Int(deadline - now) if deadline > now else 1
+    _set_rcvtimeo(fd, rem_rcv)
     var framed = List[UInt8]()
     framed.append(UInt8((len(q) >> 8) & 0xFF))
     framed.append(UInt8(len(q) & 0xFF))
@@ -564,11 +583,11 @@ def _query_tcp(
         framed.append(q[i])
     var result = Optional[HttpsRecord](None)
     if _send_all_tcp(fd, framed) == len(framed):
-        var hdr = _recv_n(fd, 2, timeout_ms)
+        var hdr = _recv_n(fd, 2, deadline)
         if len(hdr) == 2:
             var mlen = (Int(hdr[0]) << 8) | Int(hdr[1])
             if mlen > 0 and mlen <= _MAX_TCP_FRAME:
-                var body = _recv_n(fd, mlen, timeout_ms)
+                var body = _recv_n(fd, mlen, deadline)
                 if len(body) == mlen:
                     var ans = _parse_https_answer(body, txn_id, host)
                     if ans.kind == _ANS_RECORD:
@@ -578,7 +597,7 @@ def _query_tcp(
 
 
 def _query_udp(
-    addr: ResolvedAddr, host: String, txn_id: UInt16, timeout_ms: UInt,
+    addr: ResolvedAddr, host: String, txn_id: UInt16, deadline: UInt64,
 ) raises -> Optional[HttpsRecord]:
     """Query the type-65 RR over a *connected* UDP socket with anti-spoof recv.
 
@@ -586,15 +605,22 @@ def _query_udp(
     kernel drop off-path datagrams. We loop reading datagrams until one
     validates or the deadline expires — a stray/spoofed/garbled datagram is
     discarded (not fatal). A TC=1 answer delegates to `_query_tcp`.
+
+    `deadline` is an absolute monotonic timestamp (from `_monotonic_ms()`) that
+    serves as the single total-operation budget for *both* the UDP receive loop
+    and any subsequent TCP fallback.  SO_RCVTIMEO is set to the time remaining
+    at socket-open rather than a fresh per-phase value.
     """
     var q = _build_query(host, txn_id)
     var sock = udp_connect(addr)
     var fd = sock.raw()
-    _set_rcvtimeo(fd, Int(timeout_ms))
+    var now = _monotonic_ms()
+    # SO_RCVTIMEO 0 = no timeout; clamp to 1 ms so an already-expired deadline
+    # still produces a bounded recv rather than blocking indefinitely.
+    _set_rcvtimeo(fd, Int(deadline - now) if deadline > now else 1)
     var result = Optional[HttpsRecord](None)
     var need_tcp = False
     if _send_dgram(fd, q) > 0:
-        var deadline = _monotonic_ms() + UInt64(timeout_ms)
         while _monotonic_ms() < deadline:
             var dg = _recv_dgram(fd, 65536)
             if len(dg) == 0:
@@ -611,7 +637,7 @@ def _query_udp(
             break                             # _ANS_NONE: valid, no record
     _ = sock.raw()                            # NLL: hold the socket past the loop
     if need_tcp:
-        return _query_tcp(addr, host, txn_id, timeout_ms)
+        return _query_tcp(addr, host, txn_id, deadline)
     return result^
 
 
@@ -633,6 +659,11 @@ def resolve_https_rr(
     resolv.conf, resolver-address failure, socket error, timeout, truncation
     we can't resolve, malformed record — yields `None`, never a raise to the
     caller. The result is a hint (RFC 9460 §9.5); TLS authenticates the endpoint.
+
+    `timeout_ms` is a true wall-clock bound on the entire operation: a single
+    absolute monotonic deadline is computed at entry and threaded through the
+    UDP receive loop and any TCP/53 fallback, so all phases share one budget
+    rather than each phase receiving a fresh `timeout_ms`-length allowance.
     """
     try:
         var ns = _first_nameserver()
@@ -640,6 +671,7 @@ def resolve_https_rr(
         if len(addrs) == 0:
             return None
         var txn_id = _random_txn_id()
-        return _query_udp(addrs[0], host, txn_id, timeout_ms)
+        var deadline = _monotonic_ms() + UInt64(timeout_ms)
+        return _query_udp(addrs[0], host, txn_id, deadline)
     except:
         return None
