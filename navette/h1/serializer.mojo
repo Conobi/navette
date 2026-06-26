@@ -294,7 +294,7 @@ def serialize_response(response: Response) -> List[UInt8]:
     if (
         response.version.is_http_1_1()
         and status_int == 200
-        and len(response.reason) == 0
+        and response.reason.byte_length() == 0
     ):
         _append_str(buf, String(_STATUS_LINE_200))
     else:
