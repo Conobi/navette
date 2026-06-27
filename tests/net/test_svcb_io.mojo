@@ -239,12 +239,15 @@ def test_tc_bit_triggers_tcp_fallback() raises:
     assert_equal(r.alpns[0], String("h3"))
 
 
-def _serve_udp_tc_then_stall_tcp(b: _Bound) raises:
-    """Reply TC=1 to the UDP query, accept the TCP connection, then exit without sending.
+def _serve_udp_tc_then_stall_tcp(b: _Bound, hold_us: UInt32 = UInt32(1_000_000)) raises:
+    """Reply TC=1 to the UDP query, hold the accepted TCP connection open, then exit.
 
-    The child sends nothing on the TCP socket so the parent's `_recv_n` (for the
-    2-byte length header) must block until its SO_RCVTIMEO fires — which is set to
-    the remaining shared deadline rather than a fresh full-timeout allowance.
+    After `accept()` the child sleeps for `hold_us` microseconds before calling
+    `_exit(0)`, keeping the connection alive without writing any data.  This forces
+    the parent's `_recv_n` (waiting for the 2-byte length header) to block until
+    SO_RCVTIMEO fires — which, with the shared deadline, is the time remaining from
+    the total budget rather than a fresh per-phase allowance.  The sleep is bounded
+    so the test runner never hangs regardless of how the parent times out.
     """
     var rbuf = Owned[UInt8](65536)
     var sa = Owned[UInt8](16)
@@ -265,19 +268,25 @@ def _serve_udp_tc_then_stall_tcp(b: _Bound) raises:
     _ = external_call["sendto", Int](
         b.udp_fd, ob.ptr(), len(tc), Int32(0), sa.ptr(), Int32(16)
     )
-    # Accept the TCP connection but never write — the parent must time out on recv.
+    # Accept the TCP connection, hold it open without writing so the parent's
+    # recv genuinely blocks until its SO_RCVTIMEO deadline fires.
     var pa = Owned[UInt8](16)
     var pl = Owned[Int32](1)
     pl.ptr()[0] = Int32(16)
     _ = external_call["accept", Int32](b.tcp_fd, pa.ptr(), pl.ptr())
+    # Sleep for hold_us µs (longer than the test timeout) so the connection
+    # stays open and unwritten; the parent must time out via SO_RCVTIMEO, not EOF.
+    _ = external_call["usleep", Int32](hold_us)
     _ = external_call["_exit", Int32](Int32(0))
 
 
 def test_total_deadline_bounds_tcp_stall() raises:
-    # TC=1 triggers TCP fallback; the TCP server accepts but sends nothing.
-    # With the shared deadline, _query_tcp is bounded by whatever time remains
-    # from the single total budget — the elapsed wall-clock must be at most
-    # ~2 × timeout_ms, not the old ~4 × (per-phase stacking).
+    # TC=1 triggers TCP fallback; the fake TCP server accepts but holds the
+    # connection open without writing for 2 × timeout_ms.  The parent's _recv_n
+    # genuinely blocks until SO_RCVTIMEO fires (set to the time remaining from the
+    # shared deadline), so elapsed ≈ 1 × timeout_ms.  Per-phase code that sets
+    # SO_RCVTIMEO to a fresh timeout_ms on each recv — or omits it entirely —
+    # would block until the child exits (~2 × timeout_ms), failing the < 1.5 × bound.
     var timeout_ms = UInt64(500)
     var b = _bind_loopback()
     var pid = _fork()
@@ -286,7 +295,9 @@ def test_total_deadline_bounds_tcp_stall() raises:
         _ = external_call["close", Int32](Int32(1))
         _ = external_call["close", Int32](Int32(2))
         try:
-            _serve_udp_tc_then_stall_tcp(b)
+            # hold_us = 2 × timeout_ms so the child outlasts the parent's deadline,
+            # keeping the connection open until SO_RCVTIMEO fires.
+            _serve_udp_tc_then_stall_tcp(b, UInt32(1_000_000))
         except:
             pass
         _ = external_call["_exit", Int32](Int32(0))
@@ -299,7 +310,7 @@ def test_total_deadline_bounds_tcp_stall() raises:
     _ = external_call["close", Int32](b.udp_fd)
     _ = external_call["close", Int32](b.tcp_fd)
     assert_true(not rec)                          # stalled server → no response
-    assert_true(elapsed < timeout_ms * 2)         # total wall-clock < 2 × timeout
+    assert_true(elapsed < timeout_ms * 3 / 2)    # shared deadline: < 1.5 × timeout
 
 
 def main() raises:
