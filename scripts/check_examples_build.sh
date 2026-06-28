@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # scripts/check_examples_build.sh — Build every example to catch bit-rot.
 #
-# Iterates examples/*/pyproject.toml and builds each via `uv run --project
-# examples/<name> mojox build main.mojo -o /tmp/_examples_smoke_<name>` with
-# zero -I flags. Fails fast on the first non-OK with verbatim mojox output.
+# Iterates examples/*/pyproject.toml and, for each, force-rebuilds the editable
+# navette pkg from current source (`uv sync --reinstall-package navette`) before
+# building the example via `uv run --project examples/<name> mojox build
+# main.mojo -o /tmp/_examples_smoke_<name>` with zero -I flags. The reinstall is
+# load-bearing: `uv run` does not rebuild an editable Mojo package on source
+# change, so without it the gate builds against a stale .venv pkg and tracks
+# freshness, not correctness. Reports every example (no fail-fast).
 #
 # Invoked by scripts/run_tests.sh as a pre-test gate. Designed to be runnable
 # standalone for developers iterating on an example.
@@ -49,9 +53,19 @@ for ex_dir in "${EXAMPLES[@]}"; do
     fi
     out_bin="/tmp/_examples_smoke_$name"
     printf "  %-22s " "$name:"
+    # Rebuild the editable navette .mojopkg from current source first: `uv run`
+    # does NOT rebuild an editable Mojo package when navette/** changes, so
+    # without this the example links against whatever navette pkg its .venv was
+    # last synced with — making the gate track .venv freshness, not example
+    # correctness (it can false-pass on a stale-but-matching pkg and false-fail
+    # on a stale-but-diverged one). boucle is git-pinned (immutable rev) and
+    # never goes stale; only the editable navette path-dep needs the reinstall.
     if LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+       uv sync --project "$ex_dir" --reinstall-package navette \
+       > "/tmp/_examples_smoke_$name.log" 2>&1 \
+       && LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
        uv run --project "$ex_dir" mojox build "$main_file" -o "$out_bin" \
-       > "/tmp/_examples_smoke_$name.log" 2>&1; then
+       >> "/tmp/_examples_smoke_$name.log" 2>&1; then
         echo "OK"
         rm -f "$out_bin" "/tmp/_examples_smoke_$name.log"
     else
