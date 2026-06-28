@@ -4135,6 +4135,53 @@ def test_disable_active_migration_triggers_close() raises:
     print("  test_disable_active_migration_triggers_close: PASS")
 
 
+def test_is_closing_reflects_bitfield() raises:
+    """is_closing() non-destructively mirrors the CONN_CLOSING state bit.
+
+    Mirrors is_draining()/is_closed(): a pure bitfield read with no side
+    effects. Exercised on an established connection (the downstream
+    race-driver's is_established()==True case) to prove the additive
+    bitfield lets `is_closing()` flip independently of CONN_ESTABLISHED,
+    and that repeated reads neither mutate `state` nor disturb other bits.
+    """
+    var conn = _build_server_for_rx_test()
+    # Establish so the accessor is read on a usable connection, matching
+    # the downstream consumer that checks a live (established) conn.
+    conn.state = conn.state | CONN_ESTABLISHED
+
+    # Bit clear -> is_closing() is False; established is unaffected.
+    assert_true(conn.is_established(), "precondition: connection established")
+    assert_false(
+        conn.is_closing(),
+        "is_closing() False before CONN_CLOSING is set",
+    )
+
+    # Set CONN_CLOSING -> is_closing() flips to True.
+    conn.state = conn.state | CONN_CLOSING
+    assert_true(
+        conn.is_closing(),
+        "is_closing() True once CONN_CLOSING is set",
+    )
+
+    # Non-destructive: a second read returns the same value and the raw
+    # bitfield is unchanged (no poll()-style side effect).
+    var snapshot = conn.state
+    assert_true(
+        conn.is_closing(),
+        "is_closing() is idempotent across repeated reads",
+    )
+    assert_equal_int(
+        Int(conn.state), Int(snapshot),
+        "is_closing() does not mutate state",
+    )
+    # The bitfield is additive: closing does not clear ESTABLISHED.
+    assert_true(
+        conn.is_established(),
+        "is_closing() True does not clear CONN_ESTABLISHED",
+    )
+    print("  test_is_closing_reflects_bitfield: PASS")
+
+
 def test_anti_amp_per_path_in_flusher() raises:
     """AC16: the per-path 3× budget gates `can_send_to` until validation lifts it.
 
@@ -4472,6 +4519,7 @@ def main() raises:
     test_path_validation_rejects_wrong_addr()
     test_path_validation_defers_without_spare_cid()
     test_disable_active_migration_triggers_close()
+    test_is_closing_reflects_bitfield()
     test_anti_amp_per_path_in_flusher()
     test_send_datagram_refused_when_peer_disabled()
     test_send_datagram_refused_when_oversize()

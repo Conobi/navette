@@ -4228,6 +4228,10 @@ struct QuicConnection(Movable):
                 return True
         return False
 
+    def is_closing(self) -> Bool:
+        """True if the connection is in the closing state."""
+        return (self.state & CONN_CLOSING) != 0
+
     def is_closed(self) -> Bool:
         """True if the connection has fully terminated."""
         return (self.state & CONN_CLOSED) != 0
