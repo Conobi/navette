@@ -2,10 +2,12 @@
 
 from std.testing import assert_equal, assert_true, assert_raises
 
-from navette.net.svcb import _parse_resolv_conf, _first_nameserver, _encode_qname, _build_query, _decode_name, _read_u16, _parse_alpn
-from navette.net.svcb import (
-    _parse_https_answer, _ANS_INVALID, _ANS_NONE, _ANS_RECORD, _ANS_TRUNCATED,
+from navette.net._dns_wire import (
+    _parse_resolv_conf, _first_nameserver, _encode_qname,
+    _build_query, _decode_name, _read_u16,
+    _ANS_INVALID, _ANS_NONE, _ANS_RECORD, _ANS_TRUNCATED,
 )
+from navette.net.svcb import _parse_alpn, _parse_https_answer
 
 
 def _bytes(s: String) -> List[UInt8]:
