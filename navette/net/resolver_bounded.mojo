@@ -201,6 +201,36 @@ def _parse_ipv6_segments(s: String) -> Optional[List[UInt16]]:
     return Optional(result^)
 
 
+# ── answer validation ─────────────────────────────────────────────────────
+
+
+def _validate_question(
+    dg: List[UInt8], host: String, expected_qtype: Int,
+) -> Bool:
+    """Validate QDCOUNT, echoed QNAME, QTYPE, and QCLASS of a DNS response.
+
+    Returns True only when the question section matches our query exactly.
+    Called before trusting any response field (TC, rcode, answer RRs) so
+    that stray or spoofed datagrams sharing only the txn-id cannot trigger
+    TCP fallback or rcode-error paths.  Assumes the caller already checked
+    len >= 12, txn-id, and QR=1.
+    """
+    try:
+        if Int(_read_u16(dg, 4)) != 1:
+            return False
+        var qn = _decode_name(dg, 12)
+        var qoff = qn.next_off
+        if qn.value.lower() != host.lower():
+            return False
+        if Int(_read_u16(dg, qoff)) != expected_qtype:
+            return False
+        if Int(_read_u16(dg, qoff + 2)) != _QCLASS_IN:
+            return False
+        return True
+    except:
+        return False
+
+
 # ── answer parsing ────────────────────────────────────────────────────────
 
 
@@ -474,6 +504,11 @@ def resolve_host_bounded(
 
         # QR must be 1 (response).
         if (Int(dg[2]) & 0x80) == 0:
+            continue
+
+        # Validate QDCOUNT, QNAME, QTYPE, QCLASS before trusting any field.
+        var expected_qt = _QTYPE_A if is_a else _QTYPE_AAAA
+        if not _validate_question(dg, host, expected_qt):
             continue
 
         # TC=1 -> mark for TCP fallback.
