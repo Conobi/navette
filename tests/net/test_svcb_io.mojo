@@ -5,7 +5,8 @@ from std.testing import assert_equal, assert_true
 
 from navette.util.owned_alloc import Owned
 from navette.net.resolver import resolve_host
-from navette.net.svcb import _query_udp, _monotonic_ms
+from navette.net._dns_wire import _monotonic_ms
+from navette.net.svcb import _query_udp
 
 
 struct _Bound(Copyable, Movable):
