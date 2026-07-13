@@ -5,7 +5,7 @@ description = "Pure-Mojo networking stack: QUIC, HTTP/3, HTTP/2, HTTP/1.1"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
-    "boucle",
+    "boucle @ git+https://github.com/Conobi/boucle",
     "mojox>=0.2",
     "mojo-compiler==1.0.0b2",
     "mojo-compiler-mojo-libs==1.0.0b2",
@@ -34,7 +34,7 @@ requires = [
     # the project's runtime deps, so boucle is pinned here too.
     # [tool.uv.sources] pins the exact git rev so PEP 517 build envs fetch the
     # same boucle as runtime; the bare PEP 508 `boucle` falls back gracefully.
-    "boucle",
+    "boucle @ git+https://github.com/Conobi/boucle",
 ]
 build-backend = "mojox_build"
 
@@ -125,10 +125,3 @@ pythonpath = ["."]
 # 1.0.0b1 is a pre-release; allow uv to pick it up by default for this project.
 prerelease = "allow"
 
-[tool.uv.sources]
-# Pin boucle to a published git rev (not a local path) so external clones
-# reproduce the exact dependency, and so the example projects — which pin the
-# same rev — resolve without a path-vs-git URL conflict. Keep this rev in sync
-# with examples/*/pyproject.toml. Consumers that develop boucle locally should
-# override boucle in their own [tool.uv.sources] (or use a uv workspace).
-boucle = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "cd91272af9e3a3c5038563d8fb0f6965365ac42a" }
