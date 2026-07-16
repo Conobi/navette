@@ -39,6 +39,52 @@ from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
+# PathKey → peer_addr string helper
+# ---------------------------------------------------------------------------
+
+
+def _hex_digit(v: Int) -> String:
+    """Return a single lowercase hex character for a 4-bit value (0-15)."""
+    if v < 10:
+        return chr(ord("0") + v)
+    return chr(ord("a") + v - 10)
+
+
+def _path_key_to_peer_addr(key: PathKey) -> String:
+    """Convert a PathKey to a human-readable peer address string.
+
+    IPv4 addresses are formatted as ``a.b.c.d:port``.
+    IPv6 addresses are formatted as ``[xxxx:xxxx:...]:port``.
+    Zero/unknown families return an empty string.
+    """
+    if key.family == Int32(2):
+        # AF_INET: last 4 bytes of the 16-byte addr buffer (PathKey.from_v4 layout).
+        return (
+            String(Int(key.addr[12])) + "." +
+            String(Int(key.addr[13])) + "." +
+            String(Int(key.addr[14])) + "." +
+            String(Int(key.addr[15])) + ":" +
+            String(Int(key.port))
+        )
+    elif key.family == Int32(10):
+        # AF_INET6: all 16 bytes, grouped as 8 big-endian 16-bit words.
+        var s = String("[")
+        for i in range(8):
+            if i > 0:
+                s += ":"
+            var hi = Int(key.addr[i * 2])
+            var lo = Int(key.addr[i * 2 + 1])
+            var word = hi * 256 + lo
+            s += _hex_digit((word >> 12) & 0xF)
+            s += _hex_digit((word >> 8) & 0xF)
+            s += _hex_digit((word >> 4) & 0xF)
+            s += _hex_digit(word & 0xF)
+        s += "]:" + String(Int(key.port))
+        return s
+    return String("")
+
+
+# ---------------------------------------------------------------------------
 # _H3StreamCtx — per-stream context (heap-allocated, Movable)
 # ---------------------------------------------------------------------------
 
@@ -313,6 +359,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # proxy forwarding to a different transport) records this pair and
         # later addresses the open stream via `inject_response`.
         var conn_id_u64 = dcid_to_u64(Span(self._h3._quic.local_cid))
+        # Read peer address at request dispatch time (not connection time)
+        # because QUIC connections can migrate (RFC 9000 §9).
+        var peer_key = self._h3.peer_addr_copy()
+        var peer_addr_str = _path_key_to_peer_addr(peer_key)
         try:
             self.handler.on_request(
                 req^,
@@ -322,6 +372,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     is_early_data=stream_is_zr,
                     stream_id=ev.stream_id,
                     conn_id=conn_id_u64,
+                    peer_addr=peer_addr_str^,
                 ),
             )
         except:

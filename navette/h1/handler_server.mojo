@@ -28,18 +28,22 @@ struct H1HandlerServer[H: StreamHandler](Movable):
 
     var _conn: ServerConnection
     var handler: Self.H
+    var _peer_addr: String
 
-    def __init__(out self, *, var handler: Self.H):
+    def __init__(out self, *, var handler: Self.H, var peer_addr: String = ""):
         self._conn = ServerConnection(ParseConfig())
         self.handler = handler^
+        self._peer_addr = peer_addr^
 
-    def __init__(out self, *, var handler: Self.H, var config: ParseConfig):
+    def __init__(out self, *, var handler: Self.H, var config: ParseConfig, var peer_addr: String = ""):
         self._conn = ServerConnection(config^)
         self.handler = handler^
+        self._peer_addr = peer_addr^
 
     def __init__(out self, *, deinit take: Self):
         self._conn = take._conn^
         self.handler = take.handler^
+        self._peer_addr = take._peer_addr^
 
     # --- Transport bridging API ---
 
@@ -85,7 +89,7 @@ struct H1HandlerServer[H: StreamHandler](Movable):
         var resp_writer = ResponseWriter()
         try:
             self.handler.on_request(
-                req^, body, resp_writer, Capabilities.for_h1(),
+                req^, body, resp_writer, Capabilities.for_h1(peer_addr=self._peer_addr),
             )
         except e:
             self.handler.on_reset(StreamError.local_abort(String(e)))
