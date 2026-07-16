@@ -90,10 +90,11 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     var handler: Self.H
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, PtrBox[_StreamCtx]]
+    var _peer_addr: String
 
     # --- Constructors -------------------------------------------------------
 
-    def __init__(out self, *, var handler: Self.H) raises:
+    def __init__(out self, *, var handler: Self.H, var peer_addr: String = "") raises:
         """Create with default production config (server-side)."""
         self._conn = H2Connection(
             client_side=False,
@@ -103,15 +104,17 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self.handler = handler^
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, PtrBox[_StreamCtx]]()
+        self._peer_addr = peer_addr^
         self._flush_outbound()
 
-    def __init__(out self, *, var handler: Self.H, config: H2Config) raises:
+    def __init__(out self, *, var handler: Self.H, config: H2Config, var peer_addr: String = "") raises:
         """Create with a custom H2Config (server-side)."""
         self._conn = H2Connection(client_side=False, config=config)
         self._conn.initiate_connection()
         self.handler = handler^
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, PtrBox[_StreamCtx]]()
+        self._peer_addr = peer_addr^
         self._flush_outbound()
 
     def __init__(out self, *, deinit take: Self):
@@ -119,6 +122,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self.handler = take.handler^
         self._outbuf = take._outbuf^
         self._streams = take._streams^
+        self._peer_addr = take._peer_addr^
 
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
@@ -201,7 +205,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             body._set_end()
 
         # Invoke handler with local mut borrows.
-        self.handler.on_request(req^, body, resp, Capabilities.for_h2())
+        self.handler.on_request(req^, body, resp, Capabilities.for_h2(peer_addr=self._peer_addr))
 
         # Check if handler detached the body (try_detach sets _state to 3).
         # RecvBody._state == 3 means _BODY_DETACHED (not publicly exported).

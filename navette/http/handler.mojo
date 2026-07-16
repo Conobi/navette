@@ -35,6 +35,7 @@ struct Capabilities(Copyable, Movable):
     var is_early_data: Bool
     var stream_id: UInt64
     var conn_id: UInt64
+    var peer_addr: String
 
     def __init__(
         out self,
@@ -47,6 +48,7 @@ struct Capabilities(Copyable, Movable):
         is_early_data: Bool = False,
         stream_id: UInt64 = 0,
         conn_id: UInt64 = 0,
+        var peer_addr: String = "",
     ):
         self.multiplexed = multiplexed
         self.trailers = trailers
@@ -56,6 +58,7 @@ struct Capabilities(Copyable, Movable):
         self.is_early_data = is_early_data
         self.stream_id = stream_id
         self.conn_id = conn_id
+        self.peer_addr = peer_addr^
 
     def __init__(out self, *, other: Self):
         self.multiplexed = other.multiplexed
@@ -66,6 +69,7 @@ struct Capabilities(Copyable, Movable):
         self.is_early_data = other.is_early_data
         self.stream_id = other.stream_id
         self.conn_id = other.conn_id
+        self.peer_addr = other.peer_addr.copy()
 
     def __init__(out self, *, deinit take: Self):
         self.multiplexed = take.multiplexed
@@ -76,19 +80,22 @@ struct Capabilities(Copyable, Movable):
         self.is_early_data = take.is_early_data
         self.stream_id = take.stream_id
         self.conn_id = take.conn_id
+        self.peer_addr = take.peer_addr^
 
     @staticmethod
-    def for_h1() -> Self:
+    def for_h1(var peer_addr: String = "") -> Self:
         return Self(
             multiplexed=False, trailers=False, priority_hints=False,
             datagrams=False, alpn=ALPN_H1, is_early_data=False,
+            peer_addr=peer_addr^,
         )
 
     @staticmethod
-    def for_h2() -> Self:
+    def for_h2(var peer_addr: String = "") -> Self:
         return Self(
             multiplexed=True, trailers=True, priority_hints=True,
             datagrams=False, alpn=ALPN_H2, is_early_data=False,
+            peer_addr=peer_addr^,
         )
 
     @staticmethod
@@ -96,6 +103,7 @@ struct Capabilities(Copyable, Movable):
         is_early_data: Bool = False,
         stream_id: UInt64 = 0,
         conn_id: UInt64 = 0,
+        var peer_addr: String = "",
     ) -> Self:
         """H3 capability defaults. Pass `is_early_data=True` when a
         0-RTT-arrived request has just been accepted by the early-data
@@ -112,6 +120,7 @@ struct Capabilities(Copyable, Movable):
             multiplexed=True, trailers=True, priority_hints=True,
             datagrams=True, alpn=ALPN_H3, is_early_data=is_early_data,
             stream_id=stream_id, conn_id=conn_id,
+            peer_addr=peer_addr^,
         )
 
     def is_h1(self) -> Bool:
