@@ -2911,7 +2911,7 @@ struct QuicConnection(Movable):
             # (0x1c) with error_code 0x08 and the raised string as the
             # reason, then return without raising so the I/O loop does not
             # swallow this on its catch-all path.
-            var peer_tp = TransportParams()
+            var peer_tp: TransportParams
             try:
                 peer_tp = parse_transport_params(Span(tp_bytes))
             except e:

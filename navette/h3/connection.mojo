@@ -386,6 +386,8 @@ struct H3Connection(Movable):
         # the disjoint H3-application-event-drain phase. Single-pair clock-read
         # with hoisted t_start (sub-leg pass T4 lesson — Mojo lexical scope).
         var t_start: UInt64 = 0
+        comptime if not PROFILE_ACCEPT:
+            _ = t_start
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 t_start = monotonic_us()

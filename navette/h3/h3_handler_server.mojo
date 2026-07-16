@@ -206,25 +206,27 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._h3.feed_datagram_from_buffer(buf, buf_len, now)
 
         # Bracket _dispatch_h3_events
-        var t_dispatch_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
+            var t_dispatch_start: UInt64 = 0
             if self.profile_ptr is not None:
                 t_dispatch_start = monotonic_us()
-        self._dispatch_h3_events(now)
-        comptime if PROFILE_ACCEPT:
+            self._dispatch_h3_events(now)
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
+        else:
+            self._dispatch_h3_events(now)
 
         # Bracket _drain_responses (only when established)
         if self._h3.is_established():
-            var t_drain_resp_start: UInt64 = 0
             comptime if PROFILE_ACCEPT:
+                var t_drain_resp_start: UInt64 = 0
                 if self.profile_ptr is not None:
                     t_drain_resp_start = monotonic_us()
-            self._drain_responses(now)
-            comptime if PROFILE_ACCEPT:
+                self._drain_responses(now)
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
+            else:
+                self._drain_responses(now)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         return self._h3.drain_datagrams(now)
