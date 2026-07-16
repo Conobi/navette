@@ -334,41 +334,7 @@ struct H3Connection(Movable):
     def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram; translate QuicEvents to H3Events."""
         self._quic.recv(data, now)
-        _ = self._quic.timeout(now)
-        while True:
-            var ev_opt = self._quic.poll()
-            if not ev_opt:
-                break
-            var ev = ev_opt.unsafe_take()
-            if ev.type_id == QuicEvent.HANDSHAKE_COMPLETE:
-                if not self._init_done:
-                    self._init_done = True
-                    self._bootstrap_local_streams(now)
-                var h3ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
-                self._h3_events.append(h3ev^)
-            elif ev.type_id == QuicEvent.STREAM_OPENED:
-                if self._is_peer_initiated(ev.stream_id):
-                    var sbuf = _H3StreamBuf()
-                    sbuf.is_uni = (ev.stream_id & UInt64(0x02)) != 0
-                    self._stream_bufs[Int(ev.stream_id)] = sbuf^
-            elif ev.type_id == QuicEvent.STREAM_READABLE:
-                try:
-                    self._drain_stream(ev.stream_id, now)
-                except:
-                    pass
-            elif ev.type_id == QuicEvent.STREAM_RESET:
-                if self._is_request_stream(ev.stream_id):
-                    var h3ev = H3Event(H3Event.STREAM_RESET)
-                    h3ev.stream_id = ev.stream_id
-                    h3ev.error_code = ev.error_code
-                    self._h3_events.append(h3ev^)
-            elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
-                var h3ev = H3Event(H3Event.CONNECTION_CLOSED)
-                h3ev.error_code = ev.error_code
-                h3ev.reason = ev.reason
-                self._h3_events.append(h3ev^)
-            elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
-                self._dispatch_quic_datagram(ev.datagram_payload)
+        self._poll_quic_events(now)
 
     def feed_datagram_from_buffer(
         mut self,
@@ -383,15 +349,19 @@ struct H3Connection(Movable):
         # Bracket the post-recv tail (timeout + poll-loop including _drain_stream).
         # record_pkt at connection.mojo:890 fires INSIDE recv_from_buffer's
         # coalesced-packet for-loop and is bounded by it; this bracket covers
-        # the disjoint H3-application-event-drain phase. Single-pair clock-read
-        # with hoisted t_start (sub-leg pass T4 lesson — Mojo lexical scope).
-        var t_start: UInt64 = 0
-        comptime if not PROFILE_ACCEPT:
-            _ = t_start
+        # the disjoint H3-application-event-drain phase.
         comptime if PROFILE_ACCEPT:
+            var t_start: UInt64 = 0
             if self.profile_ptr is not None:
                 t_start = monotonic_us()
+            self._poll_quic_events(now)
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_quic_post_recv(monotonic_us() - t_start)
+        else:
+            self._poll_quic_events(now)
 
+    def _poll_quic_events(mut self, now: UInt64) raises:
+        """Process pending QUIC timeout and drain application events."""
         _ = self._quic.timeout(now)
         while True:
             var ev_opt = self._quic.poll()
@@ -427,10 +397,6 @@ struct H3Connection(Movable):
                 self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
                 self._dispatch_quic_datagram(ev.datagram_payload)
-
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_quic_post_recv(monotonic_us() - t_start)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         """Drain outbound QUIC datagrams. Returns list of UDP payloads."""
