@@ -56,15 +56,9 @@ from navette.h3.h3_sync_server import H3CoroServer
 from navette.h3.h3_udp_server import (
     H3UdpServer,
     PendingDatagram,
-    PendingSubmit,
-    UdpTxSlot,
-    serve_forever,
-    drain_pending_submits,
+    EgressPacket,
     PBUF_COUNT,
     PBUF_SIZE,
     PBUF_GROUP_ID,
-    OP_RECVMSG,
-    OP_SENDMSG,
-    OP_TIMEOUT,
-    OP_PROVIDE_BUF,
 )
+from navette.h3.send_slab import SendSlab, SendSlabPool
