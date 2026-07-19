@@ -102,6 +102,10 @@ comptime PBUF_COUNT: Int = 1024
 comptime PBUF_SIZE: Int = 1600
 comptime PBUF_GROUP_ID: UInt16 = 0
 
+# Egress backpressure: when backlog exceeds capacity * multiplier,
+# BufRing recycling is delayed to throttle ingress at the kernel level.
+comptime _BACKLOG_CAP_MULTIPLIER: Int = 2
+
 
 @always_inline
 def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
@@ -682,10 +686,17 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # 3. Submit egress from backlog via slab pool.
         self._submit_egress(driver)
 
-        # 4. Recycle BufRing buffers.
-        for i in range(len(self._bufs_to_recycle)):
-            self._bufring.add_buffer(self._bufs_to_recycle[i])
-        self._bufs_to_recycle.clear()
+        # 4. Egress backpressure: if backlog exceeds 2x slab capacity,
+        # delay BufRing recycling to throttle ingress at the kernel level.
+        # Without available buffers, the kernel pauses multishot recvmsg.
+        var backlog_over_cap = len(self._egress_backlog) > (
+            self._send_pool.capacity * _BACKLOG_CAP_MULTIPLIER
+        )
+        if not backlog_over_cap:
+            for i in range(len(self._bufs_to_recycle)):
+                self._bufring.add_buffer(self._bufs_to_recycle[i])
+            self._bufs_to_recycle.clear()
+        # else: delay recycling — kernel pauses multishot (no available buffers)
 
         # 5. Re-arm multishot recvmsg if it ended.
         if self._needs_multishot_rearm:
