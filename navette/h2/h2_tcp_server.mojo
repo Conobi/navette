@@ -264,7 +264,6 @@ struct H2TcpConn[H: StreamHandler](Movable):
         """
         if self.recv_in_flight or self._closing:
             return
-        self.recv_in_flight = True
         var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
@@ -277,6 +276,9 @@ struct H2TcpConn[H: StreamHandler](Movable):
         driver[].submit_recv(
             self.fd.raw(), buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
         )
+        # Set after successful submit — if submit raises (SQ full), the
+        # flag stays False so the connection isn't permanently stuck.
+        self.recv_in_flight = True
 
     def _submit_send(mut self) raises:
         """Submit a send operation on this connection's fd.
@@ -289,7 +291,6 @@ struct H2TcpConn[H: StreamHandler](Movable):
             return
         if len(self.send_buf) == 0:
             return
-        self.send_in_flight = True
         var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
@@ -302,6 +303,9 @@ struct H2TcpConn[H: StreamHandler](Movable):
         driver[].submit_send(
             self.fd.raw(), buf_ptr, UInt32(len(self.send_buf)), cmp_ptr
         )
+        # Set after successful submit — if submit raises (SQ full), the
+        # flag stays False so the connection isn't permanently stuck.
+        self.send_in_flight = True
 
     def _stage_send(mut self, var data: List[UInt8]) raises:
         """Stage data for sending -- submit directly or queue as pending.
@@ -351,6 +355,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
         Args:
             result: CQE result -- bytes received (>0) or negative errno.
         """
+        debug_assert(self.recv_in_flight, "recv CQE fired without in-flight recv")
         self.recv_in_flight = False
 
         if self._closing:
@@ -430,6 +435,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
         Args:
             result: CQE result -- bytes sent (>=0) or negative errno.
         """
+        debug_assert(self.send_in_flight, "send CQE fired without in-flight send")
         self.send_in_flight = False
 
         if self._closing:
@@ -578,6 +584,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     var server_tls_config: TlsServerConfig
     var _accept_cmp: Completion
     var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
+    var _needs_accept_rearm: Bool
 
     def __init__(
         out self,
@@ -607,6 +614,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             context=null_ptr[NoneType, MutAnyOrigin](),
         )
         self._driver_ptr = null_ptr[NoneType, MutAnyOrigin]()
+        self._needs_accept_rearm = False
 
     def __init__(out self, *, deinit take: Self):
         """Move constructor."""
@@ -617,6 +625,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         self.server_tls_config = take.server_tls_config^
         self._accept_cmp = take._accept_cmp^
         self._driver_ptr = take._driver_ptr
+        self._needs_accept_rearm = take._needs_accept_rearm
 
     def __del__(deinit self):
         """Free all heap-allocated connections on server teardown."""
@@ -661,6 +670,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
         A connection is drained when _closing is True and both recv and
         send are no longer in flight. Called after each driver tick.
         Uses swap-and-pop for O(1) removal.
+
+        Also retries any deferred accept rearm (set by transient errors
+        or SQ-full conditions in _handle_accept_impl).
         """
         var i = 0
         while i < len(self.connections):
@@ -675,6 +687,14 @@ struct H2TcpServer[H: StreamHandler](Movable):
                 # Don't increment i — the swapped-in element needs checking.
             else:
                 i += 1
+
+        # Retry deferred accept rearm (transient error or SQ-full).
+        if self._needs_accept_rearm:
+            try:
+                self._resubmit_accept()
+                self._needs_accept_rearm = False
+            except:
+                pass  # SQ still full — retry on next tick.
 
     def _resubmit_accept(mut self) raises:
         """Re-submit the accept operation on the listener fd.
@@ -699,10 +719,21 @@ struct H2TcpServer[H: StreamHandler](Movable):
         context pointers, submits the initial recv, and re-submits
         accept for the next connection.
 
+        Transient resource errors (EMFILE, ENFILE, ENOMEM) defer the
+        accept rearm to the next reap_closed() tick to avoid a
+        CPU-burning hot loop. If the final _resubmit_accept raises
+        (SQ full), the rearm is likewise deferred.
+
         Args:
             result: CQE result -- accepted fd (>=0) or negative errno.
         """
         if result < 0:
+            # Transient resource errors — defer rearm to next reap_closed()
+            # tick to avoid a CPU-burning hot loop.
+            if result == -24 or result == -23 or result == -12:  # EMFILE / ENFILE / ENOMEM
+                print("H2TcpServer: accept backoff (errno", result, ")")
+                self._needs_accept_rearm = True
+                return
             print("H2TcpServer: accept failed:", result)
             self._resubmit_accept()
             return
@@ -731,5 +762,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
         # Submit initial recv on the new connection.
         conn_ptr[]._submit_recv()
 
-        # Re-submit accept for the next connection.
-        self._resubmit_accept()
+        # Re-submit accept for the next connection.  If SQ is full,
+        # defer to next reap_closed() tick instead of losing accepts.
+        try:
+            self._resubmit_accept()
+        except:
+            self._needs_accept_rearm = True
