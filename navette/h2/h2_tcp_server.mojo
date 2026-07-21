@@ -1,4 +1,7 @@
-"""H2TcpServer — generic HTTP/2 server over TLS-on-TCP + io_uring.
+"""H2TcpServer — generic HTTP/2 server over TLS-on-TCP + io_uring (proactor model).
+
+Drives multiple HTTP/2 connections off a single TCP listener using
+per-connection Completions with inline submission.
 
 # Architecture
 
@@ -6,20 +9,22 @@
   Mojo land                                Kernel
   ─────────                                ──────
 
-  H2TcpServer[H: StreamHandler]            io_uring
+  H2TcpServer[H: StreamHandler]            io_uring + IoUringDriver
+    │                                        │
+    │  _on_accept (Completion callback) ───┘   (CQE)
+    │  ├─ alloc H2Connection[H], TlsConnection.new_server, submit recv
     │
-    │  on_complete(token, result, flags) ───  (CQE)
-    │  ├─ accept CQE → alloc H2Conn[H], TlsConnection.new_server, queue recv
-    │  ├─ recv CQE  → tls.receive_data → tls.drain_plaintext → h2.feed
+    │  H2Connection[H]                       (per-connection)
+    │  ├─ _on_recv  → tls.receive_data → tls.drain_plaintext → h2.feed
     │  │              → h2.drain → tls.send_data → tls.drain_ciphertext
-    │  │              → stage_send
-    │  └─ send CQE  → handle partial, drain pending, re-queue recv
+    │  │              → _stage_send → inline submit_send
+    │  └─ _on_send  → handle partial, drain pending, inline submit_recv
     │
-    │  outer driver: tick() → drain_pending_submits() → SQE
+    │  All submissions inline via stored IoUringDriver pointer
     │
-    └─ connections: List[UnsafePointer[H2Conn[H]]]
+    └─ connections: List[UnsafePointer[H2Connection[H]]]
          └─ per conn: fd OwnedHandle, TlsConnection, H2HandlerServer[H],
-                     phase, buffers, flags
+                     phase, buffers, flags, owned recv/send Completions
 ```
 
 # Why TLS-only
@@ -35,6 +40,14 @@ negotiation).
 Same model as `H1TcpServer` and `H3UdpServer`: pass a
 `make_handler: fn () raises -> H` to `__init__`. Server calls
 the factory once per accepted TCP connection.
+
+# Integration
+
+After construction, the caller must:
+  1. Heap-allocate the server (pointer stability).
+  2. Call `wire_context()` to set the accept Completion context pointer.
+  3. Call `start(driver)` to submit the initial accept.
+  4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
 """
 
 from std.memory import UnsafePointer
@@ -42,12 +55,14 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.ffi import external_call
 
 from boucle.handle import RawHandle, OwnedHandle
-from boucle.completion import CompletionHandler, CompletionLoop, IORING_CQE_F_MORE
+from boucle.proactor.completion import Completion
+from boucle.drivers.io_uring import IoUringDriver
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer
 from navette.tls import TlsBackend, TlsServerConfig, TlsConnection
 from navette.util.owned_alloc import Owned
+from navette.util.null_ptr import null_ptr
 
 
 # ── Peer address extraction ─────────────────────────────────────────────────
@@ -130,13 +145,8 @@ def _peer_addr_from_fd(fd: Int32) -> String:
     return String("")
 
 
-# ── Token encoding ──────────────────────────────────────────────────────────
+# ── Constants ──────────────────────────────────────────────────────────────
 
-
-comptime OP_ACCEPT: UInt8 = 0
-comptime OP_RECV: UInt8 = 1
-comptime OP_SEND: UInt8 = 2
-comptime LISTENER_CONN_ID: UInt64 = 0
 
 comptime _RECV_BUF_SIZE: Int = 8192
 
@@ -152,43 +162,23 @@ comptime _PHASE_H2_READY: UInt8 = 1
 comptime _PHASE_DONE: UInt8 = 2
 
 
-def _encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
-    return (conn_id << 8) | UInt64(op_kind)
+# ── H2Connection — per-connection state ──────────────────────────────────────
 
 
-# ── PendingSubmit ────────────────────────────────────────────────────────────
+struct H2Connection[H: StreamHandler](Movable):
+    """One TCP+TLS connection with owned recv/send Completions.
 
+    Manages a single HTTP/2-over-TLS connection using inline I/O
+    submission via a stored IoUringDriver pointer. The recv and send
+    Completions are owned by this struct; their context pointers are
+    set via wire_context() after heap allocation.
 
-comptime _SUBMIT_ACCEPT: UInt8 = 0
-comptime _SUBMIT_RECV: UInt8 = 1
-comptime _SUBMIT_SEND: UInt8 = 2
+    The close state machine uses the _closing flag: once set, no
+    further I/O submissions are made. The connection is considered
+    drained (ready for deallocation) when _closing is True and both
+    recv_in_flight and send_in_flight are False.
+    """
 
-
-struct PendingSubmit(Copyable, Movable):
-    var kind: UInt8
-    var fd: RawHandle
-    var conn_id: UInt64
-    var op_kind: UInt8
-
-    def __init__(out self, kind: UInt8, fd: RawHandle, conn_id: UInt64, op_kind: UInt8):
-        self.kind = kind
-        self.fd = fd
-        self.conn_id = conn_id
-        self.op_kind = op_kind
-
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.fd = other.fd
-        self.conn_id = other.conn_id
-        self.op_kind = other.op_kind
-
-
-# ── H2Conn — per-connection state ────────────────────────────────────────────
-
-
-struct H2Conn[H: StreamHandler](Movable):
-    """One TCP+TLS connection's worth of state."""
-    var conn_id: UInt64
     var fd: OwnedHandle
     var tls: TlsConnection
     var http: H2HandlerServer[Self.H]
@@ -198,16 +188,30 @@ struct H2Conn[H: StreamHandler](Movable):
     var send_pending: List[UInt8]
     var send_in_flight: Bool
     var recv_in_flight: Bool
-    var closed: Bool
+    var _closing: Bool
+    var _recv_cmp: Completion
+    var _send_cmp: Completion
+    var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
 
     def __init__(
         out self,
-        conn_id: UInt64,
         var fd: OwnedHandle,
         var tls: TlsConnection,
         var http: H2HandlerServer[Self.H],
+        driver_ptr: UnsafePointer[NoneType, MutAnyOrigin],
     ):
-        self.conn_id = conn_id
+        """Construct a new H2Connection.
+
+        The recv and send Completions are initialized with the callback
+        functions but null context pointers -- call wire_context() after
+        heap allocation to set them.
+
+        Args:
+            fd: Owned TCP socket handle.
+            tls: TLS connection state machine.
+            http: H2 handler server adapter.
+            driver_ptr: Type-erased pointer to the IoUringDriver.
+        """
         self.fd = fd^
         self.tls = tls^
         self.http = http^
@@ -219,231 +223,179 @@ struct H2Conn[H: StreamHandler](Movable):
         self.send_pending = List[UInt8]()
         self.send_in_flight = False
         self.recv_in_flight = False
-        self.closed = False
+        self._closing = False
+        self._recv_cmp = Completion(
+            invoke=_on_recv[Self.H],
+            context=null_ptr[NoneType, MutAnyOrigin](),
+        )
+        self._send_cmp = Completion(
+            invoke=_on_send[Self.H],
+            context=null_ptr[NoneType, MutAnyOrigin](),
+        )
+        self._driver_ptr = driver_ptr
 
+    def is_drained(self) -> Bool:
+        """Check if the connection is closed and has no I/O in flight.
 
-# ── H2TcpServer ──────────────────────────────────────────────────────────────
+        A drained connection is safe to deallocate -- both the recv and
+        send operations have completed and _closing has been set.
 
+        Returns:
+            True if _closing and both recv/send not in flight.
+        """
+        return self._closing and not self.recv_in_flight and not self.send_in_flight
 
-struct H2TcpServer[H: StreamHandler](CompletionHandler):
-    """Generic HTTP/2 server over TLS+TCP+io_uring.
+    def wire_context(mut self):
+        """Set Completion context pointers to this connection's heap address.
 
-    Owns: the listening fd, the rustls library handle, the server-side
-    TlsServerConfig (with ALPN=h2 set by the caller), the per-conn
-    connection table, and the pending-submit queue.
-    """
+        Must be called after the H2Connection is at its final heap address
+        (pointer stability guaranteed) and before any SQE submission.
+        """
+        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self))
+        )
+        self._recv_cmp.context = self_ctx
+        self._send_cmp.context = self_ctx
 
-    var listen_handle: OwnedHandle
-    var connections: List[UnsafePointer[H2Conn[Self.H], MutAnyOrigin]]
-    var next_conn_id: UInt64
-    var pending_submits: List[PendingSubmit]
-    var make_handler: def () thin raises -> Self.H
-    var _tls: TlsBackend
-    var server_tls_config: TlsServerConfig
+    def _submit_recv(mut self) raises:
+        """Submit a recv operation on this connection's fd.
 
-    def __init__(
-        out self,
-        var listen_handle: OwnedHandle,
-        make_handler: def () thin raises -> Self.H,
-        var tls: TlsBackend,
-        var server_tls_config: TlsServerConfig,
-    ):
-        self.listen_handle = listen_handle^
-        self.connections = List[UnsafePointer[H2Conn[Self.H], MutAnyOrigin]]()
-        self.next_conn_id = 1
-        self.pending_submits = List[PendingSubmit]()
-        self.make_handler = make_handler
-        self._tls = tls^
-        self.server_tls_config = server_tls_config^
-
-    def __del__(deinit self):
-        """Free all heap-allocated connections on server teardown."""
-        for i in range(len(self.connections)):
-            var ptr = self.connections[i]
-            ptr.destroy_pointee()
-            ptr.free()
-
-    # ── Lookup ───────────────────────────────────────────────────
-
-    def _find_index(self, conn_id: UInt64) -> Int:
-        for i in range(len(self.connections)):
-            if self.connections[i][].conn_id == conn_id:
-                return i
-        return -1
-
-    # ── CompletionHandler ────────────────────────────────────────
-
-    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
-        try:
-            self._dispatch(token, result, flags)
-        except e:
-            print("H2TcpServer: on_complete error:", e)
-
-    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
-        var op_kind = UInt8(token & 0xFF)
-        var conn_id = token >> 8
-
-        if op_kind == OP_ACCEPT:
-            self._handle_accept(result, flags)
+        Guards on _recv_in_flight and _closing -- no-op if either is true.
+        Submits directly to the stored IoUringDriver via inline submission.
+        """
+        if self.recv_in_flight or self._closing:
             return
-
-        var idx = self._find_index(conn_id)
-        if idx < 0:
-            return
-
-        if self.connections[idx][].closed:
-            if op_kind == OP_RECV:
-                self.connections[idx][].recv_in_flight = False
-            elif op_kind == OP_SEND:
-                self.connections[idx][].send_in_flight = False
-            if (
-                not self.connections[idx][].recv_in_flight
-                and not self.connections[idx][].send_in_flight
-            ):
-                self._free_connection(idx)
-            return
-
-        if op_kind == OP_RECV:
-            self._handle_recv(idx, result)
-        elif op_kind == OP_SEND:
-            self._handle_send(idx, result)
-
-    # ── Submit-queue helpers ─────────────────────────────────────
-
-    def _queue_accept(mut self) raises:
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_ACCEPT,
-                fd=self.listen_handle.raw(),
-                conn_id=LISTENER_CONN_ID,
-                op_kind=OP_ACCEPT,
-            )
+        self.recv_in_flight = True
+        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+            unsafe_from_address=Int(self._driver_ptr)
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._recv_cmp))
+        )
+        var buf_ptr = UnsafePointer[UInt8, MutAnyOrigin](
+            unsafe_from_address=Int(self.recv_buf.unsafe_ptr())
+        )
+        driver[].submit_recv(
+            self.fd.raw(), buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
         )
 
-    def _queue_recv(mut self, idx: Int) raises:
-        if self.connections[idx][].recv_in_flight:
+    def _submit_send(mut self) raises:
+        """Submit a send operation on this connection's fd.
+
+        Guards on _send_in_flight, _closing, and empty send_buf --
+        no-op if any guard triggers. Submits directly to the stored
+        IoUringDriver via inline submission.
+        """
+        if self.send_in_flight or self._closing:
             return
-        self.connections[idx][].recv_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_RECV,
-                fd=self.connections[idx][].fd.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_RECV,
-            )
+        if len(self.send_buf) == 0:
+            return
+        self.send_in_flight = True
+        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+            unsafe_from_address=Int(self._driver_ptr)
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._send_cmp))
+        )
+        var buf_ptr = UnsafePointer[UInt8, MutAnyOrigin](
+            unsafe_from_address=Int(self.send_buf.unsafe_ptr())
+        )
+        driver[].submit_send(
+            self.fd.raw(), buf_ptr, UInt32(len(self.send_buf)), cmp_ptr
         )
 
-    def _queue_send(mut self, idx: Int) raises:
-        if self.connections[idx][].send_in_flight:
-            return
-        if len(self.connections[idx][].send_buf) == 0:
-            return
-        self.connections[idx][].send_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_SEND,
-                fd=self.connections[idx][].fd.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_SEND,
-            )
-        )
+    def _stage_send(mut self, var data: List[UInt8]) raises:
+        """Stage data for sending -- submit directly or queue as pending.
 
-    def _stage_send(mut self, idx: Int, var data: List[UInt8]) raises:
+        If no send is currently in flight, moves the data into send_buf
+        and submits immediately. If a send is in flight, appends the
+        data to send_pending for later promotion.
+
+        Args:
+            data: Outbound ciphertext bytes to send.
+        """
         if len(data) == 0:
             return
-        if self.connections[idx][].send_in_flight:
+        if self.send_in_flight:
             for i in range(len(data)):
-                self.connections[idx][].send_pending.append(data[i])
+                self.send_pending.append(data[i])
             return
-        self.connections[idx][].send_buf = data^
-        self._queue_send(idx)
+        self.send_buf = data^
+        self._submit_send()
 
-    # ── Accept ───────────────────────────────────────────────────
+    def _begin_close(mut self) raises:
+        """Initiate connection shutdown via shutdown(SHUT_RDWR).
 
-    def _handle_accept(mut self, result: Int32, flags: UInt32) raises:
-        var more = (flags & UInt32(IORING_CQE_F_MORE)) != 0
-
-        if result < 0:
-            print("H2TcpServer: accept failed:", result)
-            if not more:
-                self._queue_accept()
+        Calls shutdown(2) with SHUT_RDWR to send FIN, then sets
+        _closing = True to prevent further I/O submissions.
+        Idempotent -- no-op if already closing.
+        """
+        if self._closing:
             return
-
-        var client_fd = result
-        var conn_id = self.next_conn_id
-        self.next_conn_id += 1
-
-        var peer_addr = _peer_addr_from_fd(client_fd)
-
-        var handle = OwnedHandle(raw=client_fd)
-        var tls = TlsConnection.new_server(self._tls.shared(), self.server_tls_config)
-
-        var handler = self.make_handler()
-        var http = H2HandlerServer[Self.H](handler=handler^, peer_addr=peer_addr^)
-
-        var conn = H2Conn[Self.H](
-            conn_id=conn_id,
-            fd=handle^,
-            tls=tls^,
-            http=http^,
-        )
-
-        var conn_ptr = _heap_alloc[H2Conn[Self.H]](1).as_unsafe_any_origin()
-        conn_ptr.init_pointee_move(conn^)
-        self.connections.append(conn_ptr)
-        var idx = len(self.connections) - 1
-
-        self._queue_recv(idx)
-        if not more:
-            self._queue_accept()
+        var fd = self.fd.raw()
+        _ = external_call["shutdown", Int32](fd, Int32(2))
+        self._closing = True
 
     # ── Recv (ciphertext → TLS → plaintext → H2) ────────────────
 
-    def _handle_recv(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].recv_in_flight = False
+    def _handle_recv_impl(mut self, result: Int32) raises:
+        """Process a recv CQE -- feed ciphertext through TLS+H2, emit responses.
+
+        Preserves the exact TLS+H2 processing pipeline:
+          1. Feed ciphertext into TLS state machine.
+          2. Flush handshake-reply ciphertext immediately.
+          3. If still handshaking, re-queue recv (unless send in flight).
+          4. First post-handshake: emit H2 server preface (SETTINGS frame).
+          5. Feed plaintext into H2 codec, chunk output into TLS records.
+          6. Re-queue recv if connection still alive.
+
+        Args:
+            result: CQE result -- bytes received (>0) or negative errno.
+        """
+        self.recv_in_flight = False
 
         if result <= 0:
-            self._close_connection(idx)
+            self._begin_close()
             return
 
         var n = Int(result)
         var chunk = List[UInt8](capacity=n)
         for i in range(n):
-            chunk.append(self.connections[idx][].recv_buf[i])
+            chunk.append(self.recv_buf[i])
 
         # 1. Feed ciphertext into TLS state machine.
-        self.connections[idx][].tls.receive_data(Span(chunk))
+        self.tls.receive_data(Span(chunk))
 
         # 2. Flush any handshake-reply ciphertext immediately.
-        if self.connections[idx][].tls.wants_write():
-            var ct = self.connections[idx][].tls.drain_ciphertext()
-            self._stage_send(idx, ct^)
+        if self.tls.wants_write():
+            var ct = self.tls.drain_ciphertext()
+            self._stage_send(ct^)
 
         # 3. Still handshaking — keep reading more ciphertext.
-        if self.connections[idx][].tls.is_handshaking():
-            if not self.connections[idx][].send_in_flight:
-                self._queue_recv(idx)
+        if self.tls.is_handshaking():
+            if not self.send_in_flight:
+                self._submit_recv()
             return
 
         # 4. Handshake done — drain plaintext into H2HandlerServer.
-        var plaintext = self.connections[idx][].tls.drain_plaintext()
+        var plaintext = self.tls.drain_plaintext()
 
         # First post-handshake recv: emit the H2 server preface
         # (SETTINGS frame) ahead of any client data.
-        if self.connections[idx][].phase == _PHASE_TLS_HANDSHAKE:
-            var preface = self.connections[idx][].http.drain()
+        if self.phase == _PHASE_TLS_HANDSHAKE:
+            var preface = self.http.drain()
             if len(preface) > 0:
-                self.connections[idx][].tls.send_data(Span(preface))
-                var ct2 = self.connections[idx][].tls.drain_ciphertext()
+                self.tls.send_data(Span(preface))
+                var ct2 = self.tls.drain_ciphertext()
                 if len(ct2) > 0:
-                    self._stage_send(idx, ct2^)
-            self.connections[idx][].phase = _PHASE_H2_READY
+                    self._stage_send(ct2^)
+            self.phase = _PHASE_H2_READY
 
         # 5. Feed plaintext into the H2 codec + dispatch any complete
         #    requests via StreamHandler.
         if len(plaintext) > 0:
-            self.connections[idx][].http.feed(Span(plaintext))
-            var h2_out = self.connections[idx][].http.drain()
+            self.http.feed(Span(plaintext))
+            var h2_out = self.http.drain()
             # Slice into TLS-record-sized chunks so the wire format is
             # nginx-like (multiple records → client can interleave
             # WINDOW_UPDATEs between chunks).
@@ -453,156 +405,326 @@ struct H2TcpServer[H: StreamHandler](CompletionHandler):
                 var end = off + _TLS_RECORD_CHUNK
                 if end > total:
                     end = total
-                self.connections[idx][].tls.send_data(Span(h2_out)[off:end])
-                var ct = self.connections[idx][].tls.drain_ciphertext()
+                self.tls.send_data(Span(h2_out)[off:end])
+                var ct = self.tls.drain_ciphertext()
                 if len(ct) > 0:
-                    self._stage_send(idx, ct^)
+                    self._stage_send(ct^)
                 off = end
 
         # 6. Re-queue recv if conn is still alive.
-        if not self.connections[idx][].send_in_flight:
-            if not self.connections[idx][].http.should_close():
-                self._queue_recv(idx)
+        if not self.send_in_flight:
+            if not self.http.should_close():
+                self._submit_recv()
 
     # ── Send ─────────────────────────────────────────────────────
 
-    def _handle_send(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].send_in_flight = False
+    def _handle_send_impl(mut self, result: Int32) raises:
+        """Process a send CQE -- handle partial sends, promote pending data.
+
+        On successful full send, promotes any pending data and re-submits.
+        If should_close is true after all data is flushed, begins closing.
+        Otherwise re-queues recv for the next request.
+
+        Args:
+            result: CQE result -- bytes sent (>=0) or negative errno.
+        """
+        self.send_in_flight = False
 
         if result < 0:
-            self._close_connection(idx)
+            self._begin_close()
             return
 
         var sent = Int(result)
-        var buf_len = len(self.connections[idx][].send_buf)
+        var buf_len = len(self.send_buf)
 
         # Partial send — keep the unsent tail and re-queue.
         if sent < buf_len:
             var remaining = List[UInt8](capacity=buf_len - sent)
             var i = sent
             while i < buf_len:
-                remaining.append(self.connections[idx][].send_buf[i])
+                remaining.append(self.send_buf[i])
                 i += 1
-            self.connections[idx][].send_buf = remaining^
-            self._queue_send(idx)
+            self.send_buf = remaining^
+            self._submit_send()
             return
 
-        self.connections[idx][].send_buf = List[UInt8]()
+        self.send_buf = List[UInt8]()
 
         # Promote any pending data.
-        if len(self.connections[idx][].send_pending) > 0:
-            var n_pending = len(self.connections[idx][].send_pending)
+        if len(self.send_pending) > 0:
+            var n_pending = len(self.send_pending)
             var pending = List[UInt8](capacity=n_pending)
             for i in range(n_pending):
-                pending.append(self.connections[idx][].send_pending[i])
-            self.connections[idx][].send_pending = List[UInt8]()
-            self.connections[idx][].send_buf = pending^
-            self._queue_send(idx)
+                pending.append(self.send_pending[i])
+            self.send_pending = List[UInt8]()
+            self.send_buf = pending^
+            self._submit_send()
             return
 
-        if self.connections[idx][].http.should_close():
-            self._close_connection(idx)
+        if self.http.should_close():
+            self._begin_close()
         else:
-            self._queue_recv(idx)
-
-    # ── Close ────────────────────────────────────────────────────
-
-    def _close_connection(mut self, idx: Int) raises:
-        if self.connections[idx][].closed:
-            return
-        # shutdown(SHUT_RDWR) -> FIN; close() doesn't send FIN while io_uring holds fd refs.
-        var fd = self.connections[idx][].fd.raw()
-        _ = external_call["shutdown", Int32](fd, Int32(2))
-        self.connections[idx][].closed = True
-        if (
-            not self.connections[idx][].recv_in_flight
-            and not self.connections[idx][].send_in_flight
-        ):
-            self._free_connection(idx)
-
-    def _free_connection(mut self, idx: Int):
-        var ptr = self.connections[idx]
-        var last = len(self.connections) - 1
-        if idx != last:
-            self.connections[idx] = self.connections[last]
-        _ = self.connections.pop()
-        ptr.destroy_pointee()
-        ptr.free()
+            self._submit_recv()
 
 
-# ── Outer driver helpers ─────────────────────────────────────────────────────
+# ── Module-level completion callbacks ──────────────────────────────────────
 
 
-def drain_pending_submits[H: StreamHandler](
-    mut io: CompletionLoop[H2TcpServer[H]]
-) raises:
-    """Consume the server's `pending_submits` queue and issue
-    accept / recv / send io_uring submissions."""
-    var submits = io._handler.pending_submits^
-    io._handler.pending_submits = List[PendingSubmit]()
+def _on_accept[H: StreamHandler](
+    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    result: Int32,
+    flags: UInt32,
+):
+    """Accept CQE callback. Casts context to H2TcpServer and delegates
+    to _handle_accept_impl.
 
-    for i in range(len(submits)):
-        var s = submits[i].copy()
-        var token = _encode_token(s.conn_id, s.op_kind)
+    Defined at module level (rather than as a static method on the
+    parameterised struct) to avoid Mojo limitations with static
+    methods on generic structs.
 
-        if s.kind == _SUBMIT_ACCEPT:
-            try:
-                io.submit_accept_multishot(s.fd, token)
-            except:
-                io._handler.pending_submits.append(s.copy())
-        elif s.kind == _SUBMIT_RECV:
-            var idx = io._handler._find_index(s.conn_id)
-            if idx < 0:
-                continue
-            var raw_addr = Int(
-                io._handler.connections[idx][].recv_buf.unsafe_ptr()
-            )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            try:
-                io.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
-            except:
-                io._handler.connections[idx][].recv_in_flight = False
-                io._handler.pending_submits.append(s.copy())
-        elif s.kind == _SUBMIT_SEND:
-            var idx = io._handler._find_index(s.conn_id)
-            if idx < 0:
-                continue
-            var n = len(io._handler.connections[idx][].send_buf)
-            if n == 0:
-                continue
-            var raw_addr = Int(
-                io._handler.connections[idx][].send_buf.unsafe_ptr()
-            )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            try:
-                io.submit_send(s.fd, buf_ptr, UInt(n), token)
-            except:
-                io._handler.connections[idx][].send_in_flight = False
-                io._handler.pending_submits.append(s.copy())
-
-
-def serve_forever[H: StreamHandler](
-    var server: H2TcpServer[H],
-    sq_entries: UInt32 = 4096,
-) raises:
-    """Bootstrap the io_uring loop and run the H2 server until exit.
-
-    Steps:
-      1. Wrap `H2TcpServer[H]` in a `CompletionLoop`.
-      2. Submit the initial multishot accept on the listener fd.
-      3. Loop: poll → drain_pending_submits.
+    Args:
+        ctx: Type-erased pointer to the owning H2TcpServer instance.
+        result: io_uring CQE result (accepted fd or negative errno).
+        flags: io_uring CQE flags (unused for single-shot accept).
     """
-    var io = CompletionLoop[H2TcpServer[H]](server^, sq_entries=sq_entries)
-
-    var listen_fd = io._handler.listen_handle.raw()
-    io.submit_accept_multishot(
-        listen_fd, _encode_token(LISTENER_CONN_ID, OP_ACCEPT),
+    var self_ptr = UnsafePointer[H2TcpServer[H], MutAnyOrigin](
+        unsafe_from_address=Int(ctx)
     )
+    try:
+        self_ptr[]._handle_accept_impl(result)
+    except e:
+        print("H2TcpServer: _on_accept error:", e)
 
-    while True:
-        io.poll(wait_nr=1)
-        drain_pending_submits(io)
+
+def _on_recv[H: StreamHandler](
+    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    result: Int32,
+    flags: UInt32,
+):
+    """Recv CQE callback. Casts context to H2Connection and delegates
+    to _handle_recv_impl.
+
+    Defined at module level for parameterised-struct compatibility.
+
+    Args:
+        ctx: Type-erased pointer to the owning H2Connection instance.
+        result: io_uring CQE result (bytes received or negative errno).
+        flags: io_uring CQE flags (unused for TCP recv).
+    """
+    var self_ptr = UnsafePointer[H2Connection[H], MutAnyOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    try:
+        self_ptr[]._handle_recv_impl(result)
+    except e:
+        print("H2TcpServer: _on_recv error:", e)
+
+
+def _on_send[H: StreamHandler](
+    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    result: Int32,
+    flags: UInt32,
+):
+    """Send CQE callback. Casts context to H2Connection and delegates
+    to _handle_send_impl.
+
+    Defined at module level for parameterised-struct compatibility.
+
+    Args:
+        ctx: Type-erased pointer to the owning H2Connection instance.
+        result: io_uring CQE result (bytes sent or negative errno).
+        flags: io_uring CQE flags (unused for TCP send).
+    """
+    var self_ptr = UnsafePointer[H2Connection[H], MutAnyOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    try:
+        self_ptr[]._handle_send_impl(result)
+    except e:
+        print("H2TcpServer: _on_send error:", e)
+
+
+# ── H2TcpServer ──────────────────────────────────────────────────────────────
+
+
+struct H2TcpServer[H: StreamHandler](Movable):
+    """Generic HTTP/2 server over TLS+TCP+io_uring (proactor model).
+
+    Uses per-connection Completions with inline submission. Each
+    accepted TCP connection allocates a heap-owned H2Connection[H]
+    that owns recv/send Completions and submits I/O inline via the
+    stored driver pointer.
+
+    Owns: the listening fd, the rustls library handle, the server-side
+    TlsServerConfig (with ALPN=h2 set by the caller), and the
+    per-conn connection table.
+
+    After construction, the caller must:
+      1. Heap-allocate the server (pointer stability).
+      2. Call `wire_context()` to set the accept Completion context pointer.
+      3. Call `start(driver)` to submit the initial accept.
+      4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
+    """
+
+    var listen_handle: OwnedHandle
+    var connections: List[UnsafePointer[H2Connection[Self.H], MutAnyOrigin]]
+    var make_handler: def () thin raises -> Self.H
+    var _tls: TlsBackend
+    var server_tls_config: TlsServerConfig
+    var _accept_cmp: Completion
+    var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
+
+    def __init__(
+        out self,
+        var listen_handle: OwnedHandle,
+        make_handler: def () thin raises -> Self.H,
+        var tls: TlsBackend,
+        var server_tls_config: TlsServerConfig,
+    ):
+        """Construct an H2TcpServer.
+
+        After construction, heap-allocate the server for pointer
+        stability, then call wire_context() and start(driver).
+
+        Args:
+            listen_handle: Owned listening TCP socket (moved in).
+            make_handler: Factory producing one H per connection.
+            tls: TLS backend instance (moved in).
+            server_tls_config: Server TLS config with ALPN=h2 (moved in).
+        """
+        self.listen_handle = listen_handle^
+        self.connections = List[UnsafePointer[H2Connection[Self.H], MutAnyOrigin]]()
+        self.make_handler = make_handler
+        self._tls = tls^
+        self.server_tls_config = server_tls_config^
+        self._accept_cmp = Completion(
+            invoke=_on_accept[Self.H],
+            context=null_ptr[NoneType, MutAnyOrigin](),
+        )
+        self._driver_ptr = null_ptr[NoneType, MutAnyOrigin]()
+
+    def __init__(out self, *, deinit take: Self):
+        """Move constructor."""
+        self.listen_handle = take.listen_handle^
+        self.connections = take.connections^
+        self.make_handler = take.make_handler
+        self._tls = take._tls^
+        self.server_tls_config = take.server_tls_config^
+        self._accept_cmp = take._accept_cmp^
+        self._driver_ptr = take._driver_ptr
+
+    def __del__(deinit self):
+        """Free all heap-allocated connections on server teardown."""
+        for i in range(len(self.connections)):
+            var ptr = self.connections[i]
+            ptr.destroy_pointee()
+            ptr.free()
+
+    # ── Lifecycle — wire_context / start ────────────────────────
+
+    def wire_context(mut self):
+        """Set accept Completion context pointer to this server's heap address.
+
+        Must be called after the H2TcpServer is at its final heap address
+        (pointer stability guaranteed) and before any SQE submission.
+        """
+        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self))
+        )
+        self._accept_cmp.context = self_ctx
+
+    def start(mut self, mut driver: IoUringDriver) raises:
+        """Submit the initial accept on the listener fd.
+
+        Must be called after wire_context() and before the first tick.
+        Stores the driver pointer for inline submission by connections.
+
+        Args:
+            driver: The IoUringDriver to submit operations on.
+        """
+        self._driver_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=driver))
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._accept_cmp))
+        )
+        driver.submit_accept(self.listen_handle.raw(), cmp_ptr)
+
+    def reap_closed(mut self):
+        """Sweep the connection list and free any fully-drained connections.
+
+        A connection is drained when _closing is True and both recv and
+        send are no longer in flight. Called after each driver tick.
+        Uses swap-and-pop for O(1) removal.
+        """
+        var i = 0
+        while i < len(self.connections):
+            if self.connections[i][].is_drained():
+                var ptr = self.connections[i]
+                var last = len(self.connections) - 1
+                if i != last:
+                    self.connections[i] = self.connections[last]
+                _ = self.connections.pop()
+                ptr.destroy_pointee()
+                ptr.free()
+                # Don't increment i — the swapped-in element needs checking.
+            else:
+                i += 1
+
+    def _resubmit_accept(mut self) raises:
+        """Re-submit the accept operation on the listener fd.
+
+        Called after each accept CQE (success or failure) to keep
+        the server listening for new connections (single-shot model).
+        """
+        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+            unsafe_from_address=Int(self._driver_ptr)
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._accept_cmp))
+        )
+        driver[].submit_accept(self.listen_handle.raw(), cmp_ptr)
+
+    # ── Accept ───────────────────────────────────────────────────
+
+    def _handle_accept_impl(mut self, result: Int32) raises:
+        """Handle an accepted TCP connection.
+
+        Creates a new H2Connection with owned Completions, wires its
+        context pointers, submits the initial recv, and re-submits
+        accept for the next connection.
+
+        Args:
+            result: CQE result -- accepted fd (>=0) or negative errno.
+        """
+        if result < 0:
+            print("H2TcpServer: accept failed:", result)
+            self._resubmit_accept()
+            return
+
+        var client_fd = result
+        var peer_addr = _peer_addr_from_fd(client_fd)
+
+        var handle = OwnedHandle(raw=client_fd)
+        var tls = TlsConnection.new_server(self._tls.shared(), self.server_tls_config)
+
+        var handler = self.make_handler()
+        var http = H2HandlerServer[Self.H](handler=handler^, peer_addr=peer_addr^)
+
+        var conn = H2Connection[Self.H](
+            fd=handle^,
+            tls=tls^,
+            http=http^,
+            driver_ptr=self._driver_ptr,
+        )
+
+        var conn_ptr = _heap_alloc[H2Connection[Self.H]](1).as_unsafe_any_origin()
+        conn_ptr.init_pointee_move(conn^)
+        conn_ptr[].wire_context()
+        self.connections.append(conn_ptr)
+
+        # Submit initial recv on the new connection.
+        conn_ptr[]._submit_recv()
+
+        # Re-submit accept for the next connection.
+        self._resubmit_accept()
