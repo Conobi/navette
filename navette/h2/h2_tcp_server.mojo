@@ -12,9 +12,9 @@ per-connection Completions with inline submission.
   H2TcpServer[H: StreamHandler]            io_uring + IoUringDriver
     │                                        │
     │  _on_accept (Completion callback) ───┘   (CQE)
-    │  ├─ alloc H2Connection[H], TlsConnection.new_server, submit recv
+    │  ├─ alloc H2TcpConn[H], TlsConnection.new_server, submit recv
     │
-    │  H2Connection[H]                       (per-connection)
+    │  H2TcpConn[H]                       (per-connection)
     │  ├─ _on_recv  → tls.receive_data → tls.drain_plaintext → h2.feed
     │  │              → h2.drain → tls.send_data → tls.drain_ciphertext
     │  │              → _stage_send → inline submit_send
@@ -22,7 +22,7 @@ per-connection Completions with inline submission.
     │
     │  All submissions inline via stored IoUringDriver pointer
     │
-    └─ connections: List[UnsafePointer[H2Connection[H]]]
+    └─ connections: List[UnsafePointer[H2TcpConn[H]]]
          └─ per conn: fd OwnedHandle, TlsConnection, H2HandlerServer[H],
                      phase, buffers, flags, owned recv/send Completions
 ```
@@ -161,10 +161,10 @@ comptime _PHASE_TLS_HANDSHAKE: UInt8 = 0
 comptime _PHASE_H2_READY: UInt8 = 1
 
 
-# ── H2Connection — per-connection state ──────────────────────────────────────
+# ── H2TcpConn — per-TCP-connection state ──────────────────────────────────
 
 
-struct H2Connection[H: StreamHandler](Movable):
+struct H2TcpConn[H: StreamHandler](Movable):
     """One TCP+TLS connection with owned recv/send Completions.
 
     Manages a single HTTP/2-over-TLS connection using inline I/O
@@ -199,7 +199,7 @@ struct H2Connection[H: StreamHandler](Movable):
         var http: H2HandlerServer[Self.H],
         driver_ptr: UnsafePointer[NoneType, MutAnyOrigin],
     ):
-        """Construct a new H2Connection.
+        """Construct a new H2TcpConn.
 
         The recv and send Completions are initialized with the callback
         functions but null context pointers -- call wire_context() after
@@ -247,7 +247,7 @@ struct H2Connection[H: StreamHandler](Movable):
     def wire_context(mut self):
         """Set Completion context pointers to this connection's heap address.
 
-        Must be called after the H2Connection is at its final heap address
+        Must be called after the H2TcpConn is at its final heap address
         (pointer stability guaranteed) and before any SQE submission.
         """
         var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
@@ -506,17 +506,17 @@ def _on_recv[H: StreamHandler](
     result: Int32,
     flags: UInt32,
 ):
-    """Recv CQE callback. Casts context to H2Connection and delegates
+    """Recv CQE callback. Casts context to H2TcpConn and delegates
     to _handle_recv_impl.
 
     Defined at module level for parameterised-struct compatibility.
 
     Args:
-        ctx: Type-erased pointer to the owning H2Connection instance.
+        ctx: Type-erased pointer to the owning H2TcpConn instance.
         result: io_uring CQE result (bytes received or negative errno).
         flags: io_uring CQE flags (unused for TCP recv).
     """
-    var self_ptr = UnsafePointer[H2Connection[H], MutAnyOrigin](
+    var self_ptr = UnsafePointer[H2TcpConn[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -530,17 +530,17 @@ def _on_send[H: StreamHandler](
     result: Int32,
     flags: UInt32,
 ):
-    """Send CQE callback. Casts context to H2Connection and delegates
+    """Send CQE callback. Casts context to H2TcpConn and delegates
     to _handle_send_impl.
 
     Defined at module level for parameterised-struct compatibility.
 
     Args:
-        ctx: Type-erased pointer to the owning H2Connection instance.
+        ctx: Type-erased pointer to the owning H2TcpConn instance.
         result: io_uring CQE result (bytes sent or negative errno).
         flags: io_uring CQE flags (unused for TCP send).
     """
-    var self_ptr = UnsafePointer[H2Connection[H], MutAnyOrigin](
+    var self_ptr = UnsafePointer[H2TcpConn[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -556,7 +556,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     """Generic HTTP/2 server over TLS+TCP+io_uring (proactor model).
 
     Uses per-connection Completions with inline submission. Each
-    accepted TCP connection allocates a heap-owned H2Connection[H]
+    accepted TCP connection allocates a heap-owned H2TcpConn[H]
     that owns recv/send Completions and submits I/O inline via the
     stored driver pointer.
 
@@ -572,7 +572,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     """
 
     var listen_handle: OwnedHandle
-    var connections: List[UnsafePointer[H2Connection[Self.H], MutAnyOrigin]]
+    var connections: List[UnsafePointer[H2TcpConn[Self.H], MutAnyOrigin]]
     var make_handler: def () thin raises -> Self.H
     var _tls: TlsBackend
     var server_tls_config: TlsServerConfig
@@ -598,7 +598,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
         """
         self.listen_handle = listen_handle^
-        self.connections = List[UnsafePointer[H2Connection[Self.H], MutAnyOrigin]]()
+        self.connections = List[UnsafePointer[H2TcpConn[Self.H], MutAnyOrigin]]()
         self.make_handler = make_handler
         self._tls = tls^
         self.server_tls_config = server_tls_config^
@@ -695,7 +695,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     def _handle_accept_impl(mut self, result: Int32) raises:
         """Handle an accepted TCP connection.
 
-        Creates a new H2Connection with owned Completions, wires its
+        Creates a new H2TcpConn with owned Completions, wires its
         context pointers, submits the initial recv, and re-submits
         accept for the next connection.
 
@@ -716,14 +716,14 @@ struct H2TcpServer[H: StreamHandler](Movable):
         var handler = self.make_handler()
         var http = H2HandlerServer[Self.H](handler=handler^, peer_addr=peer_addr^)
 
-        var conn = H2Connection[Self.H](
+        var conn = H2TcpConn[Self.H](
             fd=handle^,
             tls=tls^,
             http=http^,
             driver_ptr=self._driver_ptr,
         )
 
-        var conn_ptr = _heap_alloc[H2Connection[Self.H]](1).as_unsafe_any_origin()
+        var conn_ptr = _heap_alloc[H2TcpConn[Self.H]](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
         conn_ptr[].wire_context()
         self.connections.append(conn_ptr)
