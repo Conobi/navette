@@ -1,4 +1,7 @@
-"""H1TcpServer — generic plaintext HTTP/1.1 server over TCP + io_uring.
+"""H1TcpServer — generic plaintext HTTP/1.1 server over TCP + io_uring (proactor model).
+
+Drives multiple HTTP/1.1 connections off a single TCP listener using
+per-connection Completions with inline submission.
 
 # Architecture
 
@@ -6,34 +9,41 @@
   Mojo land                                Kernel
   ─────────                                ──────
 
-  H1TcpServer[H: StreamHandler]            io_uring
+  H1TcpServer[H: StreamHandler]            io_uring + IoUringDriver
     │                                        │
-    │  on_complete(token, result, flags) ───┘  (CQE)
-    │  ├─ accept CQE → alloc H1Conn[H], queue recv
-    │  ├─ recv CQE → conn.http.feed + drain → stage_send
-    │  └─ send CQE → handle partial, drain pending, re-queue recv
+    │  _on_accept (Completion callback) ───┘   (CQE)
+    │  ├─ alloc H1TcpConn[H], submit recv
     │
-    │  outer driver: tick() → drain_pending_submits() → SQE
+    │  H1TcpConn[H]                       (per-connection)
+    │  ├─ _on_recv  → http.feed → http.drain → _stage_send
+    │  │              → inline submit_recv
+    │  └─ _on_send  → handle partial, drain pending, inline submit_recv
     │
-    └─ connections: List[UnsafePointer[H1Conn[H]]]
-         └─ per conn: fd OwnedHandle, H1HandlerServer[H], buffers, flags
+    │  All submissions inline via stored IoUringDriver pointer
+    │
+    └─ connections: List[UnsafePointer[H1TcpConn[H]]]
+         └─ per conn: fd OwnedHandle, H1HandlerServer[H],
+                     buffers, flags, owned recv/send Completions
 ```
 
 # Plaintext only
 
-This is the v1 plaintext server. TLS termination (ALPN=http/1.1)
-will be a follow-up that layers `TlsConnection` between the recv/send
-buffers and the `H1HandlerServer.feed/drain` calls — mirroring the
-optional path in `bench/h1_server.mojo`. For now: HTTP, not HTTPS.
+This is the plaintext HTTP/1.1 server — no TLS layer. For HTTPS
+use `H2TcpServer` which wraps TLS+H2 with the same proactor model.
 
 # Per-conn handler factory
 
-`H` is the per-request handler trait (`StreamHandler`). Each accepted
-TCP connection allocates a heap-owned `H1Conn[H]` which holds its own
-`H` instance inside `H1HandlerServer[H]`. The library makes a new `H`
-for each conn via the user-supplied `make_handler: fn () raises -> H`
-factory — share state via captured module globals or external pointers
-(Mojo 0.26.2 has no closures).
+Same model as `H2TcpServer` and `H3UdpServer`: pass a
+`make_handler: fn () raises -> H` to `__init__`. Server calls
+the factory once per accepted TCP connection.
+
+# Integration
+
+After construction, the caller must:
+  1. Heap-allocate the server (pointer stability).
+  2. Call `wire_context()` to set the accept Completion context pointer.
+  3. Call `start(driver)` to submit the initial accept.
+  4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
 """
 
 from std.memory import UnsafePointer
@@ -41,15 +51,17 @@ from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.ffi import external_call
 
 from boucle.handle import RawHandle, OwnedHandle
-from boucle.completion import CompletionHandler, CompletionLoop, IORING_CQE_F_MORE
+from boucle.proactor.completion import Completion
+from boucle.drivers.io_uring import IoUringDriver
 
 from navette.http.handler import StreamHandler
 from navette.h1.handler_server import H1HandlerServer
 from navette.h1.config import ParseConfig
 from navette.util.owned_alloc import Owned
+from navette.util.null_ptr import null_ptr
 
 
-# ── Peer address extraction ────────────────────────────────────────────────────
+# ── Peer address extraction ─────────────────────────────────────────────────
 
 
 def _peer_addr_from_fd(fd: Int32) -> String:
@@ -59,11 +71,13 @@ def _peer_addr_from_fd(fd: Int32) -> String:
     Returns the IP as a string (e.g. "192.168.1.1" or "fe80:0:0:0:0:0:0:1").
     Returns "" on failure.
     """
+    # sockaddr_storage is 128 bytes on Linux, enough for any address family.
     var addr_buf = Owned[UInt8](128)
     var addr = addr_buf.ptr()
     for i in range(128):
         addr[i] = UInt8(0)
 
+    # addrlen is an in/out parameter for getpeername(2).
     var len_buf = Owned[Int32](1)
     var len_ptr = len_buf.ptr()
     len_ptr[0] = Int32(128)
@@ -72,15 +86,19 @@ def _peer_addr_from_fd(fd: Int32) -> String:
     if rc < 0:
         return String("")
 
-    var family = Int(addr[0])
+    var family = Int(addr[0])  # sa_family low byte (LE u16)
 
     if family == 2:  # AF_INET
+        # sockaddr_in layout: family(2) port(2 BE) addr(4) zero(8)
         return (
             String(Int(addr[4])) + "." + String(Int(addr[5])) + "."
             + String(Int(addr[6])) + "." + String(Int(addr[7]))
         )
 
     if family == 10:  # AF_INET6
+        # sockaddr_in6 layout: family(2) port(2 BE) flowinfo(4) addr(16) scope_id(4)
+        # Check for IPv4-mapped address (::ffff:a.b.c.d) — bytes 8..17 = 0,
+        # bytes 18..19 = 0xFF, bytes 20..23 = IPv4 octets.
         var is_v4_mapped = True
         for i in range(10):
             if addr[8 + i] != UInt8(0):
@@ -92,6 +110,7 @@ def _peer_addr_from_fd(fd: Int32) -> String:
                 + String(Int(addr[22])) + "." + String(Int(addr[23]))
             )
 
+        # Full IPv6 — format as 8 colon-separated hex segments (no :: compression).
         var result = String("")
         for i in range(8):
             if i > 0:
@@ -99,6 +118,7 @@ def _peer_addr_from_fd(fd: Int32) -> String:
             var hi = Int(addr[8 + 2 * i])
             var lo = Int(addr[8 + 2 * i + 1])
             var seg = (hi << 8) | lo
+            # Format segment as lowercase hex (1-4 digits, no leading zeros).
             if seg == 0:
                 result += "0"
             else:
@@ -111,6 +131,7 @@ def _peer_addr_from_fd(fd: Int32) -> String:
                     else:
                         hex_buf.append(UInt8(nyb - 10 + 97))
                     v >>= 4
+                # Reverse into result (hex_buf is LSB-first).
                 var j = len(hex_buf) - 1
                 while j >= 0:
                     result += chr(Int(hex_buf[j]))
@@ -120,57 +141,30 @@ def _peer_addr_from_fd(fd: Int32) -> String:
     return String("")
 
 
-# ── Token encoding (low byte = op kind, high 56 bits = conn id) ──────────────
+# ── Constants ──────────────────────────────────────────────────────────────
 
-
-comptime OP_ACCEPT: UInt8 = 0
-comptime OP_RECV: UInt8 = 1
-comptime OP_SEND: UInt8 = 2
-
-# Reserved conn_id for the listener (accept CQEs share the same token).
-comptime LISTENER_CONN_ID: UInt64 = 0
 
 # Per-conn recv buffer size — single in-flight recv at a time.
 comptime _RECV_BUF_SIZE: Int = 16384
 
 
-def _encode_token(conn_id: UInt64, op_kind: UInt8) -> UInt64:
-    return (conn_id << 8) | UInt64(op_kind)
+# ── H1TcpConn — per-TCP-connection state ──────────────────────────────────
 
 
-# ── Pending submit (queued from on_complete, drained after tick) ─────────────
+struct H1TcpConn[H: StreamHandler](Movable):
+    """One plaintext TCP connection with owned recv/send Completions.
 
+    Manages a single HTTP/1.1 connection using inline I/O submission
+    via a stored IoUringDriver pointer. The recv and send Completions
+    are owned by this struct; their context pointers are set via
+    wire_context() after heap allocation.
 
-comptime _SUBMIT_ACCEPT: UInt8 = 0
-comptime _SUBMIT_RECV: UInt8 = 1
-comptime _SUBMIT_SEND: UInt8 = 2
+    The close state machine uses the _closing flag: once set, no
+    further I/O submissions are made. The connection is considered
+    drained (ready for deallocation) when _closing is True and both
+    recv_in_flight and send_in_flight are False.
+    """
 
-
-struct PendingSubmit(Copyable, Movable):
-    var kind: UInt8
-    var fd: RawHandle
-    var conn_id: UInt64
-    var op_kind: UInt8
-
-    def __init__(out self, kind: UInt8, fd: RawHandle, conn_id: UInt64, op_kind: UInt8):
-        self.kind = kind
-        self.fd = fd
-        self.conn_id = conn_id
-        self.op_kind = op_kind
-
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.fd = other.fd
-        self.conn_id = other.conn_id
-        self.op_kind = other.op_kind
-
-
-# ── H1Conn — per-connection state ────────────────────────────────────────────
-
-
-struct H1Conn[H: StreamHandler](Movable):
-    """One TCP connection's worth of state: fd, parser+dispatch, buffers."""
-    var conn_id: UInt64
     var fd: OwnedHandle
     var http: H1HandlerServer[Self.H]
     var recv_buf: List[UInt8]
@@ -178,15 +172,28 @@ struct H1Conn[H: StreamHandler](Movable):
     var send_pending: List[UInt8]
     var send_in_flight: Bool
     var recv_in_flight: Bool
-    var closed: Bool
+    var _closing: Bool
+    var _recv_cmp: Completion
+    var _send_cmp: Completion
+    var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
 
     def __init__(
         out self,
-        conn_id: UInt64,
         var fd: OwnedHandle,
         var http: H1HandlerServer[Self.H],
+        driver_ptr: UnsafePointer[NoneType, MutAnyOrigin],
     ):
-        self.conn_id = conn_id
+        """Construct a new H1TcpConn.
+
+        The recv and send Completions are initialized with the callback
+        functions but null context pointers -- call wire_context() after
+        heap allocation to set them.
+
+        Args:
+            fd: Owned TCP socket handle.
+            http: H1 handler server adapter.
+            driver_ptr: Type-erased pointer to the IoUringDriver.
+        """
         self.fd = fd^
         self.http = http^
         self.recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
@@ -196,27 +203,323 @@ struct H1Conn[H: StreamHandler](Movable):
         self.send_pending = List[UInt8]()
         self.send_in_flight = False
         self.recv_in_flight = False
-        self.closed = False
+        self._closing = False
+        self._recv_cmp = Completion(
+            invoke=_on_recv[Self.H],
+            context=null_ptr[NoneType, MutAnyOrigin](),
+        )
+        self._send_cmp = Completion(
+            invoke=_on_send[Self.H],
+            context=null_ptr[NoneType, MutAnyOrigin](),
+        )
+        self._driver_ptr = driver_ptr
+
+    def is_drained(self) -> Bool:
+        """Check if the connection is closed and has no I/O in flight.
+
+        A drained connection is safe to deallocate -- both the recv and
+        send operations have completed and _closing has been set.
+
+        Returns:
+            True if _closing and both recv/send not in flight.
+        """
+        return self._closing and not self.recv_in_flight and not self.send_in_flight
+
+    def wire_context(mut self):
+        """Set Completion context pointers to this connection's heap address.
+
+        Must be called after the H1TcpConn is at its final heap address
+        (pointer stability guaranteed) and before any SQE submission.
+        """
+        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self))
+        )
+        self._recv_cmp.context = self_ctx
+        self._send_cmp.context = self_ctx
+
+    def _submit_recv(mut self) raises:
+        """Submit a recv operation on this connection's fd.
+
+        Guards on _recv_in_flight and _closing -- no-op if either is true.
+        Submits directly to the stored IoUringDriver via inline submission.
+        """
+        if self.recv_in_flight or self._closing:
+            return
+        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+            unsafe_from_address=Int(self._driver_ptr)
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._recv_cmp))
+        )
+        var buf_ptr = UnsafePointer[UInt8, MutAnyOrigin](
+            unsafe_from_address=Int(self.recv_buf.unsafe_ptr())
+        )
+        driver[].submit_recv(
+            self.fd.raw(), buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
+        )
+        # Set after successful submit — if submit raises (SQ full), the
+        # flag stays False so the connection isn't permanently stuck.
+        self.recv_in_flight = True
+
+    def _submit_send(mut self) raises:
+        """Submit a send operation on this connection's fd.
+
+        Guards on _send_in_flight, _closing, and empty send_buf --
+        no-op if any guard triggers. Submits directly to the stored
+        IoUringDriver via inline submission.
+        """
+        if self.send_in_flight or self._closing:
+            return
+        if len(self.send_buf) == 0:
+            return
+        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+            unsafe_from_address=Int(self._driver_ptr)
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._send_cmp))
+        )
+        var buf_ptr = UnsafePointer[UInt8, MutAnyOrigin](
+            unsafe_from_address=Int(self.send_buf.unsafe_ptr())
+        )
+        driver[].submit_send(
+            self.fd.raw(), buf_ptr, UInt32(len(self.send_buf)), cmp_ptr
+        )
+        # Set after successful submit — if submit raises (SQ full), the
+        # flag stays False so the connection isn't permanently stuck.
+        self.send_in_flight = True
+
+    def _stage_send(mut self, var data: List[UInt8]) raises:
+        """Stage data for sending -- submit directly or queue as pending.
+
+        If no send is currently in flight, moves the data into send_buf
+        and submits immediately. If a send is in flight, appends the
+        data to send_pending for later promotion.
+
+        Args:
+            data: Outbound plaintext response bytes to send.
+        """
+        if len(data) == 0:
+            return
+        if self.send_in_flight:
+            for i in range(len(data)):
+                self.send_pending.append(data[i])
+            return
+        self.send_buf = data^
+        self._submit_send()
+
+    def _begin_close(mut self) raises:
+        """Initiate connection shutdown via shutdown(SHUT_RDWR).
+
+        Calls shutdown(2) with SHUT_RDWR to send FIN, then sets
+        _closing = True to prevent further I/O submissions.
+        Idempotent -- no-op if already closing.
+        """
+        if self._closing:
+            return
+        var fd = self.fd.raw()
+        _ = external_call["shutdown", Int32](fd, Int32(2))
+        self._closing = True
+
+    # ── Recv (raw bytes → H1 parser) ────────────────────────────
+
+    def _handle_recv_impl(mut self, result: Int32) raises:
+        """Process a recv CQE -- feed raw bytes through H1 parser, emit responses.
+
+        Pipeline:
+          1. Copy received bytes from recv buffer.
+          2. Feed plaintext into H1HandlerServer (parse + dispatch).
+          3. Drain response bytes and stage for sending.
+          4. Re-queue recv if connection still alive.
+
+        Args:
+            result: CQE result -- bytes received (>0) or negative errno.
+        """
+        debug_assert(self.recv_in_flight, "recv CQE fired without in-flight recv")
+        self.recv_in_flight = False
+
+        if self._closing:
+            return
+
+        if result <= 0:
+            self._begin_close()
+            return
+
+        var n = Int(result)
+        var chunk = List[UInt8](capacity=n)
+        for i in range(n):
+            chunk.append(self.recv_buf[i])
+
+        # Feed plaintext into H1 parser + dispatch any complete requests.
+        self.http.feed(Span(chunk))
+        var response_bytes = self.http.drain()
+        if len(response_bytes) > 0:
+            self._stage_send(response_bytes^)
+
+        # Re-queue recv if conn is still alive.
+        if not self.send_in_flight:
+            if not self.http.should_close():
+                self._submit_recv()
+
+    # ── Send ─────────────────────────────────────────────────────
+
+    def _handle_send_impl(mut self, result: Int32) raises:
+        """Process a send CQE -- handle partial sends, promote pending data.
+
+        On successful full send, promotes any pending data and re-submits.
+        If should_close is true after all data is flushed, begins closing.
+        Otherwise re-queues recv for the next request.
+
+        Args:
+            result: CQE result -- bytes sent (>=0) or negative errno.
+        """
+        debug_assert(self.send_in_flight, "send CQE fired without in-flight send")
+        self.send_in_flight = False
+
+        if self._closing:
+            return
+
+        if result < 0:
+            self._begin_close()
+            return
+
+        var sent = Int(result)
+        var buf_len = len(self.send_buf)
+
+        # Partial send — keep the unsent tail and re-queue.
+        if sent < buf_len:
+            var remaining = List[UInt8](capacity=buf_len - sent)
+            var i = sent
+            while i < buf_len:
+                remaining.append(self.send_buf[i])
+                i += 1
+            self.send_buf = remaining^
+            self._submit_send()
+            return
+
+        self.send_buf = List[UInt8]()
+
+        # Promote any pending data.
+        if len(self.send_pending) > 0:
+            var n_pending = len(self.send_pending)
+            var pending = List[UInt8](capacity=n_pending)
+            for i in range(n_pending):
+                pending.append(self.send_pending[i])
+            self.send_pending = List[UInt8]()
+            self.send_buf = pending^
+            self._submit_send()
+            return
+
+        if self.http.should_close():
+            self._begin_close()
+        else:
+            self._submit_recv()
+
+
+# ── Module-level completion callbacks ──────────────────────────────────────
+
+
+def _on_accept[H: StreamHandler](
+    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    result: Int32,
+    flags: UInt32,
+):
+    """Accept CQE callback. Casts context to H1TcpServer and delegates
+    to _handle_accept_impl.
+
+    Defined at module level (rather than as a static method on the
+    parameterised struct) to avoid Mojo limitations with static
+    methods on generic structs.
+
+    Args:
+        ctx: Type-erased pointer to the owning H1TcpServer instance.
+        result: io_uring CQE result (accepted fd or negative errno).
+        flags: io_uring CQE flags (unused for single-shot accept).
+    """
+    var self_ptr = UnsafePointer[H1TcpServer[H], MutAnyOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    try:
+        self_ptr[]._handle_accept_impl(result)
+    except e:
+        print("H1TcpServer: _on_accept error:", e)
+
+
+def _on_recv[H: StreamHandler](
+    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    result: Int32,
+    flags: UInt32,
+):
+    """Recv CQE callback. Casts context to H1TcpConn and delegates
+    to _handle_recv_impl.
+
+    Defined at module level for parameterised-struct compatibility.
+
+    Args:
+        ctx: Type-erased pointer to the owning H1TcpConn instance.
+        result: io_uring CQE result (bytes received or negative errno).
+        flags: io_uring CQE flags (unused for TCP recv).
+    """
+    var self_ptr = UnsafePointer[H1TcpConn[H], MutAnyOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    try:
+        self_ptr[]._handle_recv_impl(result)
+    except e:
+        print("H1TcpServer: _on_recv error:", e)
+
+
+def _on_send[H: StreamHandler](
+    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    result: Int32,
+    flags: UInt32,
+):
+    """Send CQE callback. Casts context to H1TcpConn and delegates
+    to _handle_send_impl.
+
+    Defined at module level for parameterised-struct compatibility.
+
+    Args:
+        ctx: Type-erased pointer to the owning H1TcpConn instance.
+        result: io_uring CQE result (bytes sent or negative errno).
+        flags: io_uring CQE flags (unused for TCP send).
+    """
+    var self_ptr = UnsafePointer[H1TcpConn[H], MutAnyOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    try:
+        self_ptr[]._handle_send_impl(result)
+    except e:
+        print("H1TcpServer: _on_send error:", e)
 
 
 # ── H1TcpServer ──────────────────────────────────────────────────────────────
 
 
-struct H1TcpServer[H: StreamHandler](CompletionHandler):
-    """Generic plaintext HTTP/1.1 server over TCP + io_uring.
+struct H1TcpServer[H: StreamHandler](Movable):
+    """Generic plaintext HTTP/1.1 server over TCP+io_uring (proactor model).
 
-    Parameterised on `H: StreamHandler`. Conforms to boucle's
-    `CompletionHandler` — drive via `CompletionLoop[H1TcpServer[H]]`
-    plus an outer drain loop that consumes `pending_submits` after
-    each tick (handler bodies can't re-enter the loop directly).
+    Uses per-connection Completions with inline submission. Each
+    accepted TCP connection allocates a heap-owned H1TcpConn[H]
+    that owns recv/send Completions and submits I/O inline via the
+    stored driver pointer.
+
+    Owns: the listening fd, the parse config, and the per-conn
+    connection table.
+
+    After construction, the caller must:
+      1. Heap-allocate the server (pointer stability).
+      2. Call `wire_context()` to set the accept Completion context pointer.
+      3. Call `start(driver)` to submit the initial accept.
+      4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
     """
 
     var listen_handle: OwnedHandle
-    var connections: List[UnsafePointer[H1Conn[Self.H], MutAnyOrigin]]
-    var next_conn_id: UInt64
-    var pending_submits: List[PendingSubmit]
+    var connections: List[UnsafePointer[H1TcpConn[Self.H], MutAnyOrigin]]
     var make_handler: def () thin raises -> Self.H
     var parse_config: ParseConfig
+    var _accept_cmp: Completion
+    var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
+    var _needs_accept_rearm: Bool
 
     def __init__(
         out self,
@@ -224,12 +527,36 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
         make_handler: def () thin raises -> Self.H,
         var parse_config: ParseConfig,
     ):
+        """Construct an H1TcpServer.
+
+        After construction, heap-allocate the server for pointer
+        stability, then call wire_context() and start(driver).
+
+        Args:
+            listen_handle: Owned listening TCP socket (moved in).
+            make_handler: Factory producing one H per connection.
+            parse_config: HTTP/1.1 parse configuration (moved in).
+        """
         self.listen_handle = listen_handle^
-        self.connections = List[UnsafePointer[H1Conn[Self.H], MutAnyOrigin]]()
-        self.next_conn_id = 1
-        self.pending_submits = List[PendingSubmit]()
+        self.connections = List[UnsafePointer[H1TcpConn[Self.H], MutAnyOrigin]]()
         self.make_handler = make_handler
         self.parse_config = parse_config^
+        self._accept_cmp = Completion(
+            invoke=_on_accept[Self.H],
+            context=null_ptr[NoneType, MutAnyOrigin](),
+        )
+        self._driver_ptr = null_ptr[NoneType, MutAnyOrigin]()
+        self._needs_accept_rearm = False
+
+    def __init__(out self, *, deinit take: Self):
+        """Move constructor."""
+        self.listen_handle = take.listen_handle^
+        self.connections = take.connections^
+        self.make_handler = take.make_handler
+        self.parse_config = take.parse_config^
+        self._accept_cmp = take._accept_cmp^
+        self._driver_ptr = take._driver_ptr
+        self._needs_accept_rearm = take._needs_accept_rearm
 
     def __del__(deinit self):
         """Free all heap-allocated connections on server teardown."""
@@ -238,123 +565,114 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
             ptr.destroy_pointee()
             ptr.free()
 
-    # ── Lookup ───────────────────────────────────────────────────
+    # ── Lifecycle — wire_context / start ────────────────────────
 
-    def _find_index(self, conn_id: UInt64) -> Int:
-        for i in range(len(self.connections)):
-            if self.connections[i][].conn_id == conn_id:
-                return i
-        return -1
+    def wire_context(mut self):
+        """Set accept Completion context pointer to this server's heap address.
 
-    # ── CompletionHandler ────────────────────────────────────────
-
-    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
-        try:
-            self._dispatch(token, result, flags)
-        except e:
-            print("H1TcpServer: on_complete error:", e)
-
-    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
-        var op_kind = UInt8(token & 0xFF)
-        var conn_id = token >> 8
-
-        if op_kind == OP_ACCEPT:
-            self._handle_accept(result, flags)
-            return
-
-        var idx = self._find_index(conn_id)
-        if idx < 0:
-            return
-
-        # If conn is marked closed (deferred-free path), clear the
-        # in-flight flag for this CQE's op and free once both are
-        # quiesced. Kernel may still be holding our buffers, so we
-        # can't free eagerly.
-        if self.connections[idx][].closed:
-            if op_kind == OP_RECV:
-                self.connections[idx][].recv_in_flight = False
-            elif op_kind == OP_SEND:
-                self.connections[idx][].send_in_flight = False
-            if (
-                not self.connections[idx][].recv_in_flight
-                and not self.connections[idx][].send_in_flight
-            ):
-                self._free_connection(idx)
-            return
-
-        if op_kind == OP_RECV:
-            self._handle_recv(idx, result)
-        elif op_kind == OP_SEND:
-            self._handle_send(idx, result)
-
-    # ── Submit-queue helpers ─────────────────────────────────────
-
-    def _queue_accept(mut self) raises:
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_ACCEPT,
-                fd=self.listen_handle.raw(),
-                conn_id=LISTENER_CONN_ID,
-                op_kind=OP_ACCEPT,
-            )
+        Must be called after the H1TcpServer is at its final heap address
+        (pointer stability guaranteed) and before any SQE submission.
+        """
+        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self))
         )
+        self._accept_cmp.context = self_ctx
 
-    def _queue_recv(mut self, idx: Int) raises:
-        if self.connections[idx][].recv_in_flight:
-            return
-        self.connections[idx][].recv_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_RECV,
-                fd=self.connections[idx][].fd.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_RECV,
-            )
+    def start(mut self, mut driver: IoUringDriver) raises:
+        """Submit the initial accept on the listener fd.
+
+        Must be called after wire_context() and before the first tick.
+        Stores the driver pointer for inline submission by connections.
+
+        Args:
+            driver: The IoUringDriver to submit operations on.
+        """
+        self._driver_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=driver))
         )
-
-    def _queue_send(mut self, idx: Int) raises:
-        if self.connections[idx][].send_in_flight:
-            return
-        if len(self.connections[idx][].send_buf) == 0:
-            return
-        self.connections[idx][].send_in_flight = True
-        self.pending_submits.append(
-            PendingSubmit(
-                kind=_SUBMIT_SEND,
-                fd=self.connections[idx][].fd.raw(),
-                conn_id=self.connections[idx][].conn_id,
-                op_kind=OP_SEND,
-            )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._accept_cmp))
         )
+        driver.submit_accept(self.listen_handle.raw(), cmp_ptr)
 
-    def _stage_send(mut self, idx: Int, var data: List[UInt8]) raises:
-        """Hand bytes to the send pipeline. If a send is already in
-        flight, the data is appended to `send_pending` for later
-        promotion via `_handle_send`."""
-        if len(data) == 0:
-            return
-        if self.connections[idx][].send_in_flight:
-            for i in range(len(data)):
-                self.connections[idx][].send_pending.append(data[i])
-            return
-        self.connections[idx][].send_buf = data^
-        self._queue_send(idx)
+    def reap_closed(mut self):
+        """Sweep the connection list and free any fully-drained connections.
+
+        A connection is drained when _closing is True and both recv and
+        send are no longer in flight. Called after each driver tick.
+        Uses swap-and-pop for O(1) removal.
+
+        Also retries any deferred accept rearm (set by transient errors
+        or SQ-full conditions in _handle_accept_impl).
+        """
+        var i = 0
+        while i < len(self.connections):
+            if self.connections[i][].is_drained():
+                var ptr = self.connections[i]
+                var last = len(self.connections) - 1
+                if i != last:
+                    self.connections[i] = self.connections[last]
+                _ = self.connections.pop()
+                ptr.destroy_pointee()
+                ptr.free()
+                # Don't increment i — the swapped-in element needs checking.
+            else:
+                i += 1
+
+        # Retry deferred accept rearm (transient error or SQ-full).
+        if self._needs_accept_rearm:
+            try:
+                self._resubmit_accept()
+                self._needs_accept_rearm = False
+            except:
+                pass  # SQ still full — retry on next tick.
+
+    def _resubmit_accept(mut self) raises:
+        """Re-submit the accept operation on the listener fd.
+
+        Called after each accept CQE (success or failure) to keep
+        the server listening for new connections (single-shot model).
+        """
+        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+            unsafe_from_address=Int(self._driver_ptr)
+        )
+        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(UnsafePointer(to=self._accept_cmp))
+        )
+        driver[].submit_accept(self.listen_handle.raw(), cmp_ptr)
 
     # ── Accept ───────────────────────────────────────────────────
 
-    def _handle_accept(mut self, result: Int32, flags: UInt32) raises:
-        var more = (flags & UInt32(IORING_CQE_F_MORE)) != 0
+    def _handle_accept_impl(mut self, result: Int32) raises:
+        """Handle an accepted TCP connection.
 
+        Creates a new H1TcpConn with owned Completions, wires its
+        context pointers, submits the initial recv, and re-submits
+        accept for the next connection.
+
+        Transient resource errors (EMFILE, ENFILE, ENOMEM) defer the
+        accept rearm to the next reap_closed() tick to avoid a
+        CPU-burning hot loop. If the final _resubmit_accept raises
+        (SQ full), the rearm is likewise deferred.
+
+        Args:
+            result: CQE result -- accepted fd (>=0) or negative errno.
+        """
         if result < 0:
+            # Transient resource errors — defer rearm to next reap_closed()
+            # tick to avoid a CPU-burning hot loop.
+            if result == -24 or result == -23 or result == -12:  # EMFILE / ENFILE / ENOMEM
+                print("H1TcpServer: accept backoff (errno", result, ")")
+                self._needs_accept_rearm = True
+                return
             print("H1TcpServer: accept failed:", result)
-            if not more:
-                self._queue_accept()
+            try:
+                self._resubmit_accept()
+            except:
+                self._needs_accept_rearm = True
             return
 
         var client_fd = result
-        var conn_id = self.next_conn_id
-        self.next_conn_id += 1
-
         var peer_addr = _peer_addr_from_fd(client_fd)
 
         var handle = OwnedHandle(raw=client_fd)
@@ -364,191 +682,27 @@ struct H1TcpServer[H: StreamHandler](CompletionHandler):
             peer_addr=peer_addr^,
         )
 
-        var conn = H1Conn[Self.H](
-            conn_id=conn_id,
+        var conn = H1TcpConn[Self.H](
             fd=handle^,
             http=http^,
+            driver_ptr=self._driver_ptr,
         )
 
-        var conn_ptr = _heap_alloc[H1Conn[Self.H]](1).as_unsafe_any_origin()
+        var conn_ptr = _heap_alloc[H1TcpConn[Self.H]](1).as_unsafe_any_origin()
         conn_ptr.init_pointee_move(conn^)
+        conn_ptr[].wire_context()
         self.connections.append(conn_ptr)
-        var idx = len(self.connections) - 1
 
-        self._queue_recv(idx)
-        if not more:
-            self._queue_accept()
+        # Re-submit accept BEFORE initial recv — if _submit_recv raises
+        # (SQ full), the accept rearm is already queued.
+        try:
+            self._resubmit_accept()
+        except:
+            self._needs_accept_rearm = True
 
-    # ── Recv ─────────────────────────────────────────────────────
-
-    def _handle_recv(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].recv_in_flight = False
-
-        if result <= 0:
-            # 0 = peer closed, <0 = error. Either way: tear down conn.
-            self._close_connection(idx)
-            return
-
-        var n = Int(result)
-        var chunk = List[UInt8](capacity=n)
-        for i in range(n):
-            chunk.append(self.connections[idx][].recv_buf[i])
-
-        self.connections[idx][].http.feed(Span(chunk))
-        var response_bytes = self.connections[idx][].http.drain()
-        if len(response_bytes) > 0:
-            self._stage_send(idx, response_bytes^)
-
-        if not self.connections[idx][].send_in_flight:
-            if not self.connections[idx][].http.should_close():
-                self._queue_recv(idx)
-
-    # ── Send ─────────────────────────────────────────────────────
-
-    def _handle_send(mut self, idx: Int, result: Int32) raises:
-        self.connections[idx][].send_in_flight = False
-
-        if result < 0:
-            self._close_connection(idx)
-            return
-
-        var sent = Int(result)
-        var buf_len = len(self.connections[idx][].send_buf)
-
-        # Partial send — keep the unsent tail and re-queue.
-        if sent < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - sent)
-            var i = sent
-            while i < buf_len:
-                remaining.append(self.connections[idx][].send_buf[i])
-                i += 1
-            self.connections[idx][].send_buf = remaining^
-            self._queue_send(idx)
-            return
-
-        self.connections[idx][].send_buf = List[UInt8]()
-
-        # Promote any pending data (response chunks staged while the
-        # previous send was in flight).
-        if len(self.connections[idx][].send_pending) > 0:
-            var n_pending = len(self.connections[idx][].send_pending)
-            var pending = List[UInt8](capacity=n_pending)
-            for i in range(n_pending):
-                pending.append(self.connections[idx][].send_pending[i])
-            self.connections[idx][].send_pending = List[UInt8]()
-            self.connections[idx][].send_buf = pending^
-            self._queue_send(idx)
-            return
-
-        if self.connections[idx][].http.should_close():
-            self._close_connection(idx)
-        else:
-            self._queue_recv(idx)
-
-    # ── Close ────────────────────────────────────────────────────
-
-    def _close_connection(mut self, idx: Int) raises:
-        if self.connections[idx][].closed:
-            return
-        # shutdown(SHUT_RDWR) -> FIN; close() doesn't send FIN while io_uring holds fd refs.
-        var fd = self.connections[idx][].fd.raw()
-        _ = external_call["shutdown", Int32](fd, Int32(2))
-        self.connections[idx][].closed = True
-        # Defer the free until the kernel's done with the buffers.
-        if (
-            not self.connections[idx][].recv_in_flight
-            and not self.connections[idx][].send_in_flight
-        ):
-            self._free_connection(idx)
-
-    def _free_connection(mut self, idx: Int):
-        var ptr = self.connections[idx]
-        var last = len(self.connections) - 1
-        if idx != last:
-            self.connections[idx] = self.connections[last]
-        _ = self.connections.pop()
-        ptr.destroy_pointee()
-        ptr.free()
-
-
-# ── Outer driver helpers ─────────────────────────────────────────────────────
-
-
-def drain_pending_submits[H: StreamHandler](
-    mut io: CompletionLoop[H1TcpServer[H]]
-) raises:
-    """Consume the server's `pending_submits` queue and issue
-    accept / recv / send io_uring submissions."""
-    var submits = io._handler.pending_submits^
-    io._handler.pending_submits = List[PendingSubmit]()
-
-    for i in range(len(submits)):
-        var s = submits[i].copy()
-        var token = _encode_token(s.conn_id, s.op_kind)
-
-        if s.kind == _SUBMIT_ACCEPT:
-            try:
-                io.submit_accept_multishot(s.fd, token)
-            except:
-                io._handler.pending_submits.append(s.copy())
-        elif s.kind == _SUBMIT_RECV:
-            var idx = io._handler._find_index(s.conn_id)
-            if idx < 0:
-                continue
-            var raw_addr = Int(
-                io._handler.connections[idx][].recv_buf.unsafe_ptr()
-            )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            try:
-                io.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
-            except:
-                # SQ full — mark not-in-flight so the next tick re-queues.
-                io._handler.connections[idx][].recv_in_flight = False
-                io._handler.pending_submits.append(s.copy())
-        elif s.kind == _SUBMIT_SEND:
-            var idx = io._handler._find_index(s.conn_id)
-            if idx < 0:
-                continue
-            var n = len(io._handler.connections[idx][].send_buf)
-            if n == 0:
-                continue
-            var raw_addr = Int(
-                io._handler.connections[idx][].send_buf.unsafe_ptr()
-            )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            try:
-                io.submit_send(s.fd, buf_ptr, UInt(n), token)
-            except:
-                io._handler.connections[idx][].send_in_flight = False
-                io._handler.pending_submits.append(s.copy())
-
-
-def serve_forever[H: StreamHandler](
-    var server: H1TcpServer[H],
-    sq_entries: UInt32 = 4096,
-) raises:
-    """Bootstrap the io_uring loop and run the H1 server until exit.
-
-    Steps:
-      1. Wrap `H1TcpServer[H]` in a `CompletionLoop` (sq_entries
-         submission queue depth).
-      2. Submit the initial multishot accept on the listener fd.
-      3. Loop: poll → drain_pending_submits.
-
-    No graceful shutdown — caller installs SIGTERM/SIGINT handler
-    externally if needed.
-    """
-    var io = CompletionLoop[H1TcpServer[H]](server^, sq_entries=sq_entries)
-
-    var listen_fd = io._handler.listen_handle.raw()
-    io.submit_accept_multishot(
-        listen_fd, _encode_token(LISTENER_CONN_ID, OP_ACCEPT),
-    )
-
-    while True:
-        io.poll(wait_nr=1)
-        drain_pending_submits(io)
+        # Submit initial recv on the new connection.  On failure, close
+        # the connection so it drains and gets reaped.
+        try:
+            conn_ptr[]._submit_recv()
+        except:
+            conn_ptr[]._begin_close()
