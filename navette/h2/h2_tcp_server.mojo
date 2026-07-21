@@ -159,7 +159,6 @@ comptime _TLS_RECORD_CHUNK: Int = 16384
 # Phases of a connection's lifecycle.
 comptime _PHASE_TLS_HANDSHAKE: UInt8 = 0
 comptime _PHASE_H2_READY: UInt8 = 1
-comptime _PHASE_DONE: UInt8 = 2
 
 
 # ── H2Connection — per-connection state ──────────────────────────────────────
@@ -354,6 +353,9 @@ struct H2Connection[H: StreamHandler](Movable):
         """
         self.recv_in_flight = False
 
+        if self._closing:
+            return
+
         if result <= 0:
             self._begin_close()
             return
@@ -429,6 +431,9 @@ struct H2Connection[H: StreamHandler](Movable):
             result: CQE result -- bytes sent (>=0) or negative errno.
         """
         self.send_in_flight = False
+
+        if self._closing:
+            return
 
         if result < 0:
             self._begin_close()
