@@ -735,7 +735,10 @@ struct H2TcpServer[H: StreamHandler](Movable):
                 self._needs_accept_rearm = True
                 return
             print("H2TcpServer: accept failed:", result)
-            self._resubmit_accept()
+            try:
+                self._resubmit_accept()
+            except:
+                self._needs_accept_rearm = True
             return
 
         var client_fd = result
@@ -759,12 +762,16 @@ struct H2TcpServer[H: StreamHandler](Movable):
         conn_ptr[].wire_context()
         self.connections.append(conn_ptr)
 
-        # Submit initial recv on the new connection.
-        conn_ptr[]._submit_recv()
-
-        # Re-submit accept for the next connection.  If SQ is full,
-        # defer to next reap_closed() tick instead of losing accepts.
+        # Re-submit accept BEFORE initial recv — if _submit_recv raises
+        # (SQ full), the accept rearm is already queued.
         try:
             self._resubmit_accept()
         except:
             self._needs_accept_rearm = True
+
+        # Submit initial recv on the new connection.  On failure, close
+        # the connection so it drains and gets reaped.
+        try:
+            conn_ptr[]._submit_recv()
+        except:
+            conn_ptr[]._begin_close()
