@@ -146,6 +146,26 @@ struct Method(Copyable, Movable, Writable):
     def is_custom(self) -> Bool:
         return self._tag == _CUSTOM
 
+    def is_safe(self) -> Bool:
+        """True iff the method is safe per RFC 9110 Section 9.2.1 + RFC 10008.
+
+        Safe methods: GET, HEAD, OPTIONS, TRACE, QUERY.
+        """
+        return (
+            self._tag == _GET
+            or self._tag == _HEAD
+            or self._tag == _OPTIONS
+            or self._tag == _TRACE
+            or self._tag == _QUERY
+        )
+
+    def is_idempotent(self) -> Bool:
+        """True iff the method is idempotent per RFC 9110 Section 9.2.2.
+
+        Idempotent methods: all safe methods + PUT + DELETE.
+        """
+        return self.is_safe() or self._tag == _PUT or self._tag == _DELETE
+
     # --- Equality ---
 
     def __eq__(self, rhs: Self) -> Bool:

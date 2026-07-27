@@ -16,6 +16,7 @@ def test_standard_methods() raises:
     assert_equal_str(String(Method.patch()), "PATCH", "PATCH")
     assert_equal_str(String(Method.connect()), "CONNECT", "CONNECT")
     assert_equal_str(String(Method.trace()), "TRACE", "TRACE")
+    assert_equal_str(String(Method.query()), "QUERY", "QUERY")
 
 
 def test_custom_method() raises:
@@ -54,6 +55,7 @@ def test_equality_standard_vs_custom() raises:
     """
     assert_true(Method.get() == Method.custom("GET"), "GET == custom(GET)")
     assert_true(Method.custom("POST") == Method.post(), "custom(POST) == POST")
+    assert_true(Method.query() == Method.custom("QUERY"), "QUERY == custom(QUERY)")
 
 
 def test_case_sensitivity() raises:
@@ -69,6 +71,38 @@ def test_is_helpers() raises:
     assert_true(Method.connect().is_connect(), "CONNECT.is_connect()")
     assert_true(not Method.post().is_get(), "POST is not GET")
     assert_true(not Method.get().is_head(), "GET is not HEAD")
+    assert_true(Method.query().is_query(), "QUERY.is_query()")
+    assert_true(not Method.query().is_get(), "QUERY is not GET")
+
+
+def test_is_safe() raises:
+    """Verify is_safe() returns true for GET, HEAD, OPTIONS, TRACE, QUERY only."""
+    assert_true(Method.get().is_safe(), "GET is safe")
+    assert_true(Method.head().is_safe(), "HEAD is safe")
+    assert_true(Method.options().is_safe(), "OPTIONS is safe")
+    assert_true(Method.trace().is_safe(), "TRACE is safe")
+    assert_true(Method.query().is_safe(), "QUERY is safe")
+    assert_true(not Method.post().is_safe(), "POST is not safe")
+    assert_true(not Method.put().is_safe(), "PUT is not safe")
+    assert_true(not Method.delete().is_safe(), "DELETE is not safe")
+    assert_true(not Method.patch().is_safe(), "PATCH is not safe")
+    assert_true(not Method.connect().is_safe(), "CONNECT is not safe")
+    assert_true(not Method.custom("PURGE").is_safe(), "custom PURGE is not safe")
+
+
+def test_is_idempotent() raises:
+    """Verify is_idempotent() returns true for all safe methods + PUT + DELETE."""
+    assert_true(Method.get().is_idempotent(), "GET is idempotent")
+    assert_true(Method.head().is_idempotent(), "HEAD is idempotent")
+    assert_true(Method.options().is_idempotent(), "OPTIONS is idempotent")
+    assert_true(Method.trace().is_idempotent(), "TRACE is idempotent")
+    assert_true(Method.query().is_idempotent(), "QUERY is idempotent")
+    assert_true(Method.put().is_idempotent(), "PUT is idempotent")
+    assert_true(Method.delete().is_idempotent(), "DELETE is idempotent")
+    assert_true(not Method.post().is_idempotent(), "POST is not idempotent")
+    assert_true(not Method.patch().is_idempotent(), "PATCH is not idempotent")
+    assert_true(not Method.connect().is_idempotent(), "CONNECT is not idempotent")
+    assert_true(not Method.custom("PURGE").is_idempotent(), "custom PURGE is not idempotent")
 
 
 def test_copy() raises:
@@ -88,5 +122,7 @@ def main() raises:
     test_equality_standard_vs_custom()
     test_case_sensitivity()
     test_is_helpers()
+    test_is_safe()
+    test_is_idempotent()
     test_copy()
-    print("test_method: all 9 tests passed")
+    print("test_method: all 11 tests passed")
