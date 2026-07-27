@@ -122,6 +122,13 @@ def test_idempotency_key_rejects_unknown_method() raises:
     print("  test_idempotency_key_rejects_unknown_method: PASS")
 
 
+def test_idempotency_key_accepts_query() raises:
+    """QUERY is accepted without an idempotency key (safe-method baseline)."""
+    var d = idempotency_key_predicate(String("QUERY"), String("/search"), Headers())
+    assert_true(d.is_accept(), String("QUERY without key should accept"))
+    print("  test_idempotency_key_accepts_query: PASS")
+
+
 def test_unauth_only_accepts_bare_safe_methods() raises:
     for m in [String("GET"), String("HEAD"), String("OPTIONS")]:
         var d = unauthenticated_only_predicate(m, String("/x"), Headers())
@@ -143,6 +150,21 @@ def test_unauth_only_rejects_with_cookie() raises:
     print("  test_unauth_only_rejects_with_cookie: PASS")
 
 
+def test_unauth_only_accepts_query_bare() raises:
+    """QUERY without auth headers is accepted (safe-method baseline)."""
+    var d = unauthenticated_only_predicate(String("QUERY"), String("/search"), Headers())
+    assert_true(d.is_accept(), String("QUERY without auth should accept"))
+    print("  test_unauth_only_accepts_query_bare: PASS")
+
+
+def test_unauth_only_rejects_query_with_cookie() raises:
+    """QUERY with Cookie header is rejected (auth-gating still applies)."""
+    var h = _headers_with(String("cookie"), String("session=abc"))
+    var d = unauthenticated_only_predicate(String("QUERY"), String("/search"), h)
+    assert_true(d.is_reject(), String("QUERY+Cookie should reject"))
+    print("  test_unauth_only_rejects_query_with_cookie: PASS")
+
+
 def test_unauth_only_rejects_unsafe_method() raises:
     var d = unauthenticated_only_predicate(String("POST"), String("/x"), Headers())
     assert_true(d.is_reject(), String("POST should reject regardless of headers"))
@@ -162,8 +184,11 @@ def main() raises:
     test_idempotency_key_rejects_empty_key()
     test_idempotency_key_case_insensitive_lookup()
     test_idempotency_key_rejects_unknown_method()
+    test_idempotency_key_accepts_query()
     test_unauth_only_accepts_bare_safe_methods()
     test_unauth_only_rejects_with_authorization()
     test_unauth_only_rejects_with_cookie()
+    test_unauth_only_accepts_query_bare()
+    test_unauth_only_rejects_query_with_cookie()
     test_unauth_only_rejects_unsafe_method()
     print("test_filters_predicates: PASS")

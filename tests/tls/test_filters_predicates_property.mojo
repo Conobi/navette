@@ -21,7 +21,7 @@ def _splitmix64(mut state: UInt64) -> UInt64:
 
 
 def _draw_method(mut state: UInt64) -> String:
-    var idx = Int(_splitmix64(state) % UInt64(9))
+    var idx = Int(_splitmix64(state) % UInt64(10))
     var pool = List[String]()
     pool.append(String("GET"))
     pool.append(String("HEAD"))
@@ -32,6 +32,7 @@ def _draw_method(mut state: UInt64) -> String:
     pool.append(String("DELETE"))
     pool.append(String("CONNECT"))
     pool.append(String("TRACE"))
+    pool.append(String("QUERY"))
     return pool[idx]
 
 

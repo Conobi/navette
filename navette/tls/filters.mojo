@@ -24,7 +24,10 @@ def idempotency_key_predicate(
     """Idempotency-Key-aware predicate (Stripe / AWS / PayPal pattern).
 
     Accepts:
-      - GET, HEAD, OPTIONS (the IdempotentOnly baseline);
+      - GET, HEAD, OPTIONS, QUERY (the IdempotentOnly baseline — QUERY is
+        accepted unconditionally via the safe-method baseline despite
+        carrying a body; its safety property means an idempotency key is
+        not required for replay protection);
       - POST, PUT, PATCH, DELETE that carry a non-empty
         `Idempotency-Key` header.
 
@@ -36,7 +39,7 @@ def idempotency_key_predicate(
     on insert). Empty-value `Idempotency-Key:` MUST reject — the
     header must be non-empty to count as a key (draft §3).
 
-    NOTE: an `Idempotency-Key` header on a safe (GET/HEAD/OPTIONS)
+    NOTE: an `Idempotency-Key` header on a safe (GET/HEAD/OPTIONS/QUERY)
     request is IGNORED — the draft §3 says the header MUST NOT be
     sent on safe methods, but the predicate's safe-method baseline
     accepts unconditionally. Over-acceptance on safe methods matches
@@ -75,7 +78,7 @@ def unauthenticated_only_predicate(
     """Accept only safe-method requests that carry no authentication header.
 
     Accepts:
-      - GET, HEAD, OPTIONS requests that carry neither `Authorization`
+      - GET, HEAD, OPTIONS, QUERY requests that carry neither `Authorization`
         nor `Cookie` headers.
 
     Rejects:
