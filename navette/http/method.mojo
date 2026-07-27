@@ -1,7 +1,7 @@
 # src/http/method.mojo
 #
-# HTTP request method (RFC 9110 Section 9).
-# Case-sensitive. 9 standard methods + custom variant.
+# HTTP request method (RFC 9110 Section 9, RFC 10008).
+# Case-sensitive. 10 standard methods + custom variant.
 
 # Tag values for standard methods
 comptime _GET = 0
@@ -13,14 +13,15 @@ comptime _OPTIONS = 5
 comptime _PATCH = 6
 comptime _CONNECT = 7
 comptime _TRACE = 8
-comptime _CUSTOM = 9
+comptime _QUERY = 9
+comptime _CUSTOM = 10
 
 
 struct Method(Copyable, Movable, Writable):
     """HTTP request method.
 
-    Represented as a tagged struct: Int tag for known methods (0-8),
-    tag 9 for custom methods with the string stored in _custom.
+    Represented as a tagged struct: Int tag for known methods (0-9),
+    tag 10 for custom methods with the string stored in _custom.
     Case-sensitive comparison per RFC 9110.
     """
     var _tag: Int
@@ -81,6 +82,10 @@ struct Method(Copyable, Movable, Writable):
         return Self(_tag=_TRACE)
 
     @staticmethod
+    def query() -> Self:
+        return Self(_tag=_QUERY)
+
+    @staticmethod
     def custom(name: String) -> Self:
         """Create a custom method. If the name matches a standard method,
         returns the standard variant for correct equality semantics."""
@@ -102,6 +107,8 @@ struct Method(Copyable, Movable, Writable):
             return Self(_tag=_CONNECT)
         if name == "TRACE":
             return Self(_tag=_TRACE)
+        if name == "QUERY":
+            return Self(_tag=_QUERY)
         return Self(_tag=_CUSTOM, _custom=name)
 
     # --- Predicates ---
@@ -132,6 +139,9 @@ struct Method(Copyable, Movable, Writable):
 
     def is_trace(self) -> Bool:
         return self._tag == _TRACE
+
+    def is_query(self) -> Bool:
+        return self._tag == _QUERY
 
     def is_custom(self) -> Bool:
         return self._tag == _CUSTOM
@@ -169,5 +179,7 @@ struct Method(Copyable, Movable, Writable):
             writer.write("CONNECT")
         elif self._tag == _TRACE:
             writer.write("TRACE")
+        elif self._tag == _QUERY:
+            writer.write("QUERY")
         else:
             writer.write(self._custom)
