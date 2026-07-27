@@ -409,6 +409,11 @@ def _parse_args() raises -> CliArgs:
 
 
 def _str_to_method(s: String) -> Method:
+    """Convert a CLI-provided method string to a Method value.
+
+    Covers all 10 standard methods (RFC 9110 + RFC 10008).
+    Unknown strings fall back to GET.
+    """
     if s == "GET":
         return Method.get()
     if s == "POST":
@@ -419,6 +424,16 @@ def _str_to_method(s: String) -> Method:
         return Method.delete()
     if s == "HEAD":
         return Method.head()
+    if s == "OPTIONS":
+        return Method.options()
+    if s == "PATCH":
+        return Method.patch()
+    if s == "CONNECT":
+        return Method.connect()
+    if s == "TRACE":
+        return Method.trace()
+    if s == "QUERY":
+        return Method.query()
     return Method.get()
 
 
