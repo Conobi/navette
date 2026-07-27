@@ -25,9 +25,12 @@ def _is_redirect(status_code: UInt16) -> Bool:
 
 
 def _is_idempotent(method: Method) -> Bool:
-    """Check if a method is idempotent (safe to retry)."""
-    var m = String(method)
-    return m == "GET" or m == "HEAD" or m == "OPTIONS" or m == "PUT" or m == "DELETE"
+    """Check if a method is idempotent (safe to retry).
+
+    Delegates to Method.is_idempotent() which covers GET, HEAD,
+    OPTIONS, TRACE, QUERY, PUT, DELETE per RFC 9110 + RFC 10008.
+    """
+    return method.is_idempotent()
 
 
 def _str_starts_with(s: String, prefix: String) -> Bool:

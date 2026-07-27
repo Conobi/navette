@@ -280,6 +280,9 @@ def test_is_idempotent() raises:
     assert_true(_is_idempotent(Method.head()), "HEAD")
     assert_true(_is_idempotent(Method.put()), "PUT")
     assert_true(_is_idempotent(Method.delete()), "DELETE")
+    assert_true(_is_idempotent(Method.query()), "QUERY")
+    assert_true(_is_idempotent(Method.options()), "OPTIONS")
+    assert_true(_is_idempotent(Method.trace()), "TRACE")
     assert_true(not _is_idempotent(Method.post()), "POST not idempotent")
 
 
