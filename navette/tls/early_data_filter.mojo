@@ -69,16 +69,16 @@ struct FilterDecision(Copyable, Movable, Equatable):
 
 
 def is_rfc_safe_method(method: String) -> Bool:
-    """True iff `method` is exactly "GET", "HEAD", or "OPTIONS".
+    """True iff `method` is exactly "GET", "HEAD", "OPTIONS", or "QUERY".
 
-    Single source of truth for the RFC-safe-method triple — RFC 9110
-    §9.2.1 (safe) + §9.2.2 (idempotent); these three methods are both,
-    so a 0-RTT replay produces no new server-observable effect. Every
-    filter / predicate that consults the triple routes through this
-    helper.
+    Single source of truth for the RFC-safe-for-0-RTT method set — RFC 9110
+    Section 9.2.1 (safe) + RFC 10008 (QUERY). TRACE is deliberately excluded:
+    it echoes the full request and has a different risk profile for 0-RTT
+    replay. Every filter / predicate that consults 0-RTT method safety
+    routes through this helper.
 
-    Comparison is byte-wise per RFC 9110 §5.6.2 (tokens are exact
-    bytes) and case-sensitive per §9.1: lowercase "get" is NOT GET;
+    Comparison is byte-wise per RFC 9110 Section 5.6.2 (tokens are exact
+    bytes) and case-sensitive per Section 9.1: lowercase "get" is NOT GET;
     whitespace-padded " GET" / "GET " do not match.
 
     Args:
@@ -86,9 +86,9 @@ def is_rfc_safe_method(method: String) -> Bool:
             (pre-`Method.custom()` normalisation).
 
     Returns:
-        True iff the method is one of the three RFC-safe tokens.
+        True iff the method is one of the four RFC-safe-for-0-RTT tokens.
     """
-    return method == "GET" or method == "HEAD" or method == "OPTIONS"
+    return method == "GET" or method == "HEAD" or method == "OPTIONS" or method == "QUERY"
 
 
 comptime EarlyDataPredicateFn = def (
@@ -114,7 +114,7 @@ trait EarlyDataFilter(Movable):
 
 
 struct IdempotentOnlyFilter(EarlyDataFilter):
-    """Conservative default filter: accepts GET, HEAD, OPTIONS;
+    """Conservative default filter: accepts GET, HEAD, OPTIONS, QUERY;
     rejects everything else with 425. RFC 9110 §9.2.1 (safe) + §9.2.2
     (idempotent) — these three methods are both, so a replay produces
     no new server-observable effect.
@@ -146,8 +146,8 @@ struct IdempotentOnlyFilter(EarlyDataFilter):
         _path: String,
         _headers: Headers,
     ) raises -> FilterDecision:
-        """Return accept iff `method` is exactly "GET", "HEAD", or
-        "OPTIONS"; otherwise return reject_425.
+        """Return accept iff `method` is exactly "GET", "HEAD",
+        "OPTIONS", or "QUERY"; otherwise return reject_425.
 
         Case- and whitespace-sensitive per RFC 9110 §9.1 + §5.6.2.
         The `_path` and `_headers` arguments are accepted to satisfy

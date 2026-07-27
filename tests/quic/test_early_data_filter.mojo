@@ -70,6 +70,16 @@ def test_idempotent_only_accepts_options() raises:
     print("  test_idempotent_only_accepts_options: PASS")
 
 
+def test_idempotent_only_accepts_query() raises:
+    """AC idempotent-only-accepts-query (RFC 10008)."""
+    var f = IdempotentOnlyFilter()
+    assert_true(
+        f.should_accept_for_0rtt(String("QUERY"), String(""), Headers()).is_accept(),
+        String("QUERY should accept"),
+    )
+    print("  test_idempotent_only_accepts_query: PASS")
+
+
 def test_idempotent_only_rejects_post() raises:
     """AC idempotent-only-rejects-post."""
     var f = IdempotentOnlyFilter()
@@ -251,8 +261,8 @@ def _splitmix64(mut state: UInt64) -> UInt64:
 def _draw_method(mut state: UInt64) -> String:
     """Draw one HTTP-method-shaped String for the property test.
 
-    70% chance: draw from a 13-element fixed pool that exercises both
-    accept paths (GET/HEAD/OPTIONS) and reject paths (other RFC 9110
+    70% chance: draw from a 14-element fixed pool that exercises both
+    accept paths (GET/HEAD/OPTIONS/QUERY) and reject paths (other RFC 9110
     methods, case variants, whitespace-padded, unknown extension).
     30% chance: generate a random 1-20 byte ASCII printable string so
     rare bytewise neighbours of accept tokens are reached.
@@ -267,6 +277,7 @@ def _draw_method(mut state: UInt64) -> String:
     pool.append(String("PATCH"))
     pool.append(String("CONNECT"))
     pool.append(String("TRACE"))
+    pool.append(String("QUERY"))
     pool.append(String("get"))
     pool.append(String("Get"))
     pool.append(String("GET "))
@@ -274,7 +285,7 @@ def _draw_method(mut state: UInt64) -> String:
 
     var r = _splitmix64(state)
     if (r % UInt64(100)) < UInt64(70):
-        var idx = Int((_splitmix64(state)) % UInt64(13))
+        var idx = Int((_splitmix64(state)) % UInt64(14))
         return pool[idx]
 
     # Random 1-20 byte ASCII printable string (bytes 0x20..0x7E).
@@ -301,7 +312,7 @@ def test_idempotent_only_structured_property() raises:
     for i in range(trials):
         var m = _draw_method(state)
         var d = f.should_accept_for_0rtt(m, String(""), Headers())
-        var expected_accept = (m == "GET") or (m == "HEAD") or (m == "OPTIONS")
+        var expected_accept = (m == "GET") or (m == "HEAD") or (m == "OPTIONS") or (m == "QUERY")
         if expected_accept:
             assert_true(
                 d.is_accept(),
@@ -323,6 +334,7 @@ def main() raises:
     test_idempotent_only_accepts_get()
     test_idempotent_only_accepts_head()
     test_idempotent_only_accepts_options()
+    test_idempotent_only_accepts_query()
     test_idempotent_only_rejects_post()
     test_idempotent_only_rejects_put()
     test_idempotent_only_rejects_delete()
