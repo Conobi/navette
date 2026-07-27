@@ -382,6 +382,48 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
     _ = cfg._handle
 
 
+def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
+    """0-RTT QUERY -> handler.on_request IS called (QUERY is RFC-safe);
+    the request has `headers['early-data'] == '1'` AND
+    `caps.is_early_data == True`; the `accept` profile counter
+    increments by exactly one. Mirrors the GET acceptance test."""
+    var lib = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var cfg = QuicServerConfig(
+        lib.shared(), Span(cert_pem), Span(key_pem),
+        max_early_data=UInt32(0xFFFFFFFF),
+    )
+    var filter = IdempotentOnlyFilter()
+    var prof = AcceptProfile()
+    var server = _make_server(lib, cfg, filter, prof)
+
+    var stream_id: UInt64 = 0
+    _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
+    var ev = _build_h3_event(stream_id, String("QUERY"), True)
+    server._on_request(ev, UInt64(1_000_001))
+
+    assert_equal_int(
+        server.handler.calls, 1,
+        String("handler must be invoked once on 0-RTT QUERY accept"),
+    )
+    assert_true(
+        server.handler.last_early_data_header == "1",
+        String("Early-Data: 1 header must be visible to the handler (QUERY)"),
+    )
+    assert_true(
+        server.handler.last_caps_is_early_data,
+        String("caps.is_early_data must be True on 0-RTT QUERY accept"),
+    )
+    assert_equal_int(
+        Int(prof.zero_rtt_http_filter_accept), 1,
+        String("accept counter += 1 (QUERY)"),
+    )
+    _ = server._h3._quic.conn_handle
+    _ = cfg._handle
+
+
 def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
     """AC `h3-handler-server-1rtt-request-bypasses-filter`.
 
@@ -562,6 +604,8 @@ def main() raises:
     print("  test_h3_handler_server_filter_reject_emits_stop_sending: PASS")
     test_h3_handler_server_filter_accept_injects_early_data_header()
     print("  test_h3_handler_server_filter_accept_injects_early_data_header: PASS")
+    test_h3_handler_server_filter_accept_query_on_0rtt()
+    print("  test_h3_handler_server_filter_accept_query_on_0rtt: PASS")
     test_h3_handler_server_1rtt_request_bypasses_filter()
     print("  test_h3_handler_server_1rtt_request_bypasses_filter: PASS")
     test_h3_handler_server_zero_rtt_disabled_skips_dispatch()

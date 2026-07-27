@@ -71,6 +71,7 @@ def _gen_request_grammar(mut rng: SplitMix64) -> List[UInt8]:
     methods.append(String("PATCH"))
     methods.append(String("CONNECT"))
     methods.append(String("TRACE"))
+    methods.append(String("QUERY"))
     var method = methods[Int(rng.next_below(UInt64(len(methods))))]
     # Random target
     var target = String("/")

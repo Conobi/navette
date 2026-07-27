@@ -42,6 +42,14 @@ def test_widened_trait_signature_compiles() raises:
     print("  test_widened_trait_signature_compiles: PASS")
 
 
+def test_widened_trait_accepts_query() raises:
+    """IdempotentOnlyFilter accepts QUERY through the widened (method, path, headers) signature."""
+    var f = IdempotentOnlyFilter()
+    var d = f.should_accept_for_0rtt(String("QUERY"), String("/search"), Headers())
+    assert_true(d.is_accept(), String("QUERY widened-signature accept"))
+    print("  test_widened_trait_accepts_query: PASS")
+
+
 def test_idempotent_only_ignores_path() raises:
     """AC idempotent-only-filter-still-method-only: path argument does
     NOT change the decision for any safe or unsafe method."""
@@ -113,6 +121,7 @@ def test_widened_trait_raises_propagates() raises:
 def main() raises:
     print("test_early_data_filter_widening")
     test_widened_trait_signature_compiles()
+    test_widened_trait_accepts_query()
     test_idempotent_only_ignores_path()
     test_idempotent_only_ignores_headers()
     test_idempotent_only_unchanged_with_idempotency_key()
