@@ -294,3 +294,15 @@ struct HttpClient(Movable):
         var origin = parsed.to_origin()
         var req = self._build_request(Method.head(), parsed^, List[UInt8]())
         return self.submit(origin^, req^)
+
+    def query(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+        """Submit a QUERY request (RFC 10008).
+
+        QUERY is a safe, idempotent, body-carrying method. The body
+        typically carries query parameters (e.g. JSON); Content-Type
+        is the caller's responsibility per RFC 10008.
+        """
+        var parsed = parse_url(url)
+        var origin = parsed.to_origin()
+        var req = self._build_request(Method.query(), parsed^, body^)
+        return self.submit(origin^, req^)

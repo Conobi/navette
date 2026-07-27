@@ -155,8 +155,8 @@ struct HttpCoroClient(Movable):
 
         Use this when you've constructed a `Request` yourself (custom
         headers, body, method) rather than calling one of the
-        `get`/`post`/`put`/`delete`/`head` convenience methods which
-        only let you pass a URL.
+        `get`/`post`/`put`/`delete`/`head`/`query` convenience methods
+        which only let you pass a URL.
         """
         return self._client.submit(origin^, req^)
 
@@ -179,6 +179,10 @@ struct HttpCoroClient(Movable):
     def head(mut self, url: String) raises -> RequestHandle:
         """Submit a HEAD request."""
         return self._client.head(url)
+
+    def query(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+        """Submit a QUERY request (RFC 10008)."""
+        return self._client.query(url, body^)
 
     def run_one(mut self, var origin: Origin, mut handle: RequestHandle) raises:
         """Advance a request handle after feeding response bytes."""
