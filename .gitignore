@@ -48,6 +48,9 @@ bench/.httparena
 # Claude Code session state (multi-GB local)
 .claude/
 
+# mojox cache
+.mojox/
+
 # Bench evidence artifacts (regenerable from PROFILE_ACCEPT=True + perf-record).
 # Keep only the cumulative reference table; raw sidecars, verdict docs, and
 # baselines live locally.
