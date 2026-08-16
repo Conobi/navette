@@ -6,7 +6,7 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "boucle @ git+https://github.com/Conobi/boucle",
-    "mojox>=0.2",
+    "mojox>=0.5",
     "mojo-compiler==1.0.0b2",
     "mojo-compiler-mojo-libs==1.0.0b2",
 ]
@@ -26,7 +26,8 @@ dev = [
 
 [build-system]
 requires = [
-    "mojox-build>=0.4",
+    "mojox-build>=0.5",
+    "mojox-core>=0.5",
     "mojo-compiler==1.0.0b2",
     "mojo-compiler-mojo-libs==1.0.0b2",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
@@ -38,7 +39,7 @@ requires = [
 ]
 build-backend = "mojox_build"
 
-[tool.mojox-build]
+[tool.mojox]
 packages = ["navette"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
 # uv-installed deps (boucle) resolve without manual flags.
