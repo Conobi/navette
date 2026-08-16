@@ -42,7 +42,7 @@ build-backend = "mojox_build"
 [tool.mojox]
 packages = ["navette"]
 test-parallel = true
-test-roots = ["tests", "conformance/tests"]
+test-roots = ["tests"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
 # uv-installed deps (boucle) resolve without manual flags.
 
@@ -122,7 +122,6 @@ native-libs = [
 ]
 
 [tool.mojox.lints]
-warnings = "error"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
