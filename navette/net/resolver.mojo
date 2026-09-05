@@ -22,7 +22,7 @@ the cache.
 """
 
 from std.ffi import external_call
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 from std.collections.dict import Dict
 from std.collections.optional import Optional
@@ -44,17 +44,17 @@ def _monotonic_secs() -> Int:
     var ts_buf = Owned[UInt8](16)
     var ts = ts_buf.ptr()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts)
-    var sec_ptr = ts.bitcast[Int64]()
+    var sec_ptr = ts.unsafe_bitcast[Int64]()
     var sec = Int(sec_ptr[])
     return sec
 
 
 @always_inline
-def _read_u64_le(p: UnsafePointer[UInt8, MutAnyOrigin], offset: Int) -> UInt64:
+def _read_u64_le(p: Pointer[UInt8, MutAnyOrigin], offset: Int) -> UInt64:
     """Read 8 bytes little-endian from `p[offset..offset+8]`."""
     var v = UInt64(0)
     for i in range(8):
-        v = v | (UInt64(p[offset + i]) << UInt64(i * 8))
+        v = v | (UInt64(p[unsafe_offset=offset + i]) << UInt64(i * 8))
     return v
 
 
@@ -138,24 +138,24 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     var hints_buf = Owned[UInt8](48)
     var hints = hints_buf.ptr()
     for i in range(48):
-        hints[i] = UInt8(0)
+        hints[unsafe_offset=i] = UInt8(0)
     # ai_family = AF_UNSPEC (0) — leave hints[4..8] as zero.
     # ai_socktype = SOCK_STREAM (1) at offset 8 so glibc returns ONE entry
     # per address rather than one-per-socktype. The packed bytes are the
     # same for SOCK_STREAM/SOCK_DGRAM/SOCK_RAW, so this dedupe is free for
     # both TCP and UDP callers.
-    hints[8] = UInt8(1)
+    hints[unsafe_offset=8] = UInt8(1)
 
     var host_bytes = host.as_bytes()
     var host_cstr_buf = Owned[UInt8](len(host_bytes) + 1)
     var host_cstr = host_cstr_buf.ptr()
     for i in range(len(host_bytes)):
-        host_cstr[i] = host_bytes[i]
-    host_cstr[len(host_bytes)] = UInt8(0)
+        host_cstr[unsafe_offset=i] = host_bytes[i]
+    host_cstr[unsafe_offset=len(host_bytes)] = UInt8(0)
 
     var out_res_buf = Owned[UInt64](1)
     var out_res = out_res_buf.ptr()
-    out_res[0] = UInt64(0)
+    out_res[unsafe_offset=0] = UInt64(0)
     var rc = external_call["getaddrinfo", Int32](
         host_cstr,
         null_ptr[UInt8, MutAnyOrigin](),  # service = NULL
@@ -166,33 +166,33 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     if rc != 0:
         raise "getaddrinfo(" + host + ") failed: rc=" + String(Int(rc))
 
-    var head = out_res[0]
+    var head = out_res[unsafe_offset=0]
     if head == UInt64(0):
         raise "getaddrinfo(" + host + "): empty result"
 
     var results = List[ResolvedAddr]()
     var node = head
     while node != UInt64(0):
-        var np = UnsafePointer[UInt8, MutAnyOrigin](
+        var np = Pointer[UInt8, MutAnyOrigin](
             unsafe_from_address=Int(node)
         )
         # addrinfo offsets (Linux x86_64):
         #   ai_family at 4    (i32, AF_INET or AF_INET6 fits in one byte)
         #   ai_addr  at 24    (sockaddr *)
         #   ai_next  at 40    (addrinfo *)
-        var fam = Int32(np[4])
+        var fam = Int32(np[unsafe_offset=4])
         var ai_addr = _read_u64_le(np, 24)
         var ai_next = _read_u64_le(np, 40)
 
         if ai_addr != UInt64(0) and (fam == _AF_INET or fam == _AF_INET6):
-            var sa = UnsafePointer[UInt8, MutAnyOrigin](
+            var sa = Pointer[UInt8, MutAnyOrigin](
                 unsafe_from_address=Int(ai_addr)
             )
             if fam == _AF_INET:
-                var o1 = UInt8(sa[4])
-                var o2 = UInt8(sa[5])
-                var o3 = UInt8(sa[6])
-                var o4 = UInt8(sa[7])
+                var o1 = UInt8(sa[unsafe_offset=4])
+                var o2 = UInt8(sa[unsafe_offset=5])
+                var o3 = UInt8(sa[unsafe_offset=6])
+                var o4 = UInt8(sa[unsafe_offset=7])
                 results.append(
                     ResolvedAddr.from_v4(
                         SocketAddrV4(o1, o2, o3, o4, port=UInt16(port))
@@ -201,19 +201,19 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
             else:
                 # sockaddr_in6: family(2) port(2 BE) flowinfo(4) addr(16) scope_id(4)
                 # Read 8 segments of 16 bits in network order from offset 8.
-                var seg0 = (UInt16(sa[8]) << 8) | UInt16(sa[9])
-                var seg1 = (UInt16(sa[10]) << 8) | UInt16(sa[11])
-                var seg2 = (UInt16(sa[12]) << 8) | UInt16(sa[13])
-                var seg3 = (UInt16(sa[14]) << 8) | UInt16(sa[15])
-                var seg4 = (UInt16(sa[16]) << 8) | UInt16(sa[17])
-                var seg5 = (UInt16(sa[18]) << 8) | UInt16(sa[19])
-                var seg6 = (UInt16(sa[20]) << 8) | UInt16(sa[21])
-                var seg7 = (UInt16(sa[22]) << 8) | UInt16(sa[23])
+                var seg0 = (UInt16(sa[unsafe_offset=8]) << 8) | UInt16(sa[unsafe_offset=9])
+                var seg1 = (UInt16(sa[unsafe_offset=10]) << 8) | UInt16(sa[unsafe_offset=11])
+                var seg2 = (UInt16(sa[unsafe_offset=12]) << 8) | UInt16(sa[unsafe_offset=13])
+                var seg3 = (UInt16(sa[unsafe_offset=14]) << 8) | UInt16(sa[unsafe_offset=15])
+                var seg4 = (UInt16(sa[unsafe_offset=16]) << 8) | UInt16(sa[unsafe_offset=17])
+                var seg5 = (UInt16(sa[unsafe_offset=18]) << 8) | UInt16(sa[unsafe_offset=19])
+                var seg6 = (UInt16(sa[unsafe_offset=20]) << 8) | UInt16(sa[unsafe_offset=21])
+                var seg7 = (UInt16(sa[unsafe_offset=22]) << 8) | UInt16(sa[unsafe_offset=23])
                 var scope_id = (
-                    UInt32(sa[24])
-                    | (UInt32(sa[25]) << 8)
-                    | (UInt32(sa[26]) << 16)
-                    | (UInt32(sa[27]) << 24)
+                    UInt32(sa[unsafe_offset=24])
+                    | (UInt32(sa[unsafe_offset=25]) << 8)
+                    | (UInt32(sa[unsafe_offset=26]) << 16)
+                    | (UInt32(sa[unsafe_offset=27]) << 24)
                 )
                 results.append(
                     ResolvedAddr.from_v6(

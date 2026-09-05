@@ -28,7 +28,7 @@ some_ffi_call(p)           # if this raises, `buf` is freed on the unwind path
 ```
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.memory.alloc import alloc, dealloc, Layout, Allocation
 
 
@@ -69,11 +69,11 @@ struct Owned[T: AnyType](Movable):
             Layout[Self.T](count=count if count > 0 else 1, alignment=alignment)
         )
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Deallocate the storage. Compiler-checked: consumed exactly once."""
         dealloc(self._alloc^)
 
-    def ptr(mut self) -> UnsafePointer[Self.T, origin_of(self)]:
+    def ptr(mut self) -> Pointer[Self.T, origin_of(self)]:
         """Borrow a mutable pointer to the storage.
 
         The returned pointer's origin is tied to `self`, so the borrow keeps

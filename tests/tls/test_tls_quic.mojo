@@ -2,7 +2,7 @@
 
 from navette.tls import TlsBackend
 from tests._test_util import assert_equal_int
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 
 def test_quic_conn_read_hs_null_out_params_do_not_crash() raises:

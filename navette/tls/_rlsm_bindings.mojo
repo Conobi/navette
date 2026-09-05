@@ -3,64 +3,64 @@
 # Regenerate via: uv run python scripts/gen_ffi_bindings.py --schema crates/librustls-mojo/symbols.toml --out navette/tls/_rlsm_bindings.mojo
 
 from std.ffi import OwnedDLHandle
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 
 # -- Function-pointer aliases ----------------------------------------------
 
 comptime rlsm_noop_fn = def() abi("C") thin -> Int32
-comptime rlsm_last_error_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_last_error_fn = def(Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_client_config_new_fn = def() abi("C") thin -> Int32
-comptime rlsm_server_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_server_config_new_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_config_free_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_config_set_alpn_protocols_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_config_set_alpn_protocols_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_client_config_new_insecure_fn = def() abi("C") thin -> Int32
-comptime rlsm_tls_client_new_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_client_new_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_tls_server_new_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_tls_conn_free_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_tls_conn_read_tls_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_tls_conn_write_tls_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_tls_conn_read_plaintext_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_tls_conn_write_plaintext_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_read_tls_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_write_tls_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_read_plaintext_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_write_plaintext_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_tls_conn_is_handshaking_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_tls_conn_alpn_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_initial_keys_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) abi("C") thin -> Int32
-comptime rlsm_initial_keys_raw_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_keys_local_encrypt_fn = def(Int32, UInt64, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) abi("C") thin -> Int32
-comptime rlsm_keys_remote_decrypt_fn = def(Int32, UInt64, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_keys_local_header_protect_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_keys_remote_header_unprotect_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime rlsm_keys_batch_header_unprotect_fn = def(Int32, Int32, UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_keys_batch_decrypt_fn = def(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_keys_batch_header_protect_fn = def(Int32, Int32, UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_keys_batch_encrypt_fn = def(Int32, Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_tls_conn_alpn_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_initial_keys_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Int32) abi("C") thin -> Int32
+comptime rlsm_initial_keys_raw_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Int32, Pointer[UInt8, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_local_encrypt_fn = def(Int32, UInt64, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Int32) abi("C") thin -> Int32
+comptime rlsm_keys_remote_decrypt_fn = def(Int32, UInt64, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_keys_local_header_protect_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_keys_remote_header_unprotect_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_keys_batch_header_unprotect_fn = def(Int32, Int32, Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_batch_decrypt_fn = def(Int32, Int32, Pointer[UInt64, MutAnyOrigin], Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_batch_header_protect_fn = def(Int32, Int32, Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_keys_batch_encrypt_fn = def(Int32, Int32, Pointer[UInt64, MutAnyOrigin], Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_keys_tag_len_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_keys_free_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_test_keys_free_count_fn = def() abi("C") thin -> UInt64
 comptime rlsm_test_keys_free_reset_fn = def() abi("C") thin -> Int32
-comptime rlsm_aes_gcm_128_seal_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_aes_gcm_128_open_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_hmac_sha256_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_server_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UInt32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_client_config_new_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_client_config_new_insecure_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_client_config_with_ca_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_client_conn_new_fn = def(Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_server_conn_new_fn = def(Int32, Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_aes_gcm_128_seal_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_aes_gcm_128_open_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_hmac_sha256_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_config_new_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, UInt32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_config_new_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_config_new_insecure_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_config_with_ca_fn = def(Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_client_conn_new_fn = def(Int32, Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_new_fn = def(Int32, Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_free_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_quic_conn_write_hs_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_conn_read_hs_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[UInt64, MutAnyOrigin], UnsafePointer[UInt64, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_write_hs_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_read_hs_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[UInt64, MutAnyOrigin], Pointer[UInt64, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_alert_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_quic_conn_take_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_conn_take_next_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_take_keys_fn = def(Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_take_next_keys_fn = def(Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_is_handshaking_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_quic_conn_handshake_kind_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_quic_conn_transport_params_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_conn_alpn_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
-comptime rlsm_quic_server_conn_zero_rtt_keys_fn = def(Int32, UnsafePointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_transport_params_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_alpn_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_conn_zero_rtt_keys_fn = def(Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_zero_rtt_keys_fn = def(Int32, Pointer[Int32, MutAnyOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_is_early_data_accepted_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_quic_server_conn_replay_authenticator_fn = def(Int32, UnsafePointer[UInt8, MutAnyOrigin], UnsafePointer[UInt, MutAnyOrigin]) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_replay_authenticator_fn = def(Int32, Pointer[UInt8, MutAnyOrigin], Pointer[UInt, MutAnyOrigin]) abi("C") thin -> Int32
 
 # -- Loader helpers --------------------------------------------------------
 

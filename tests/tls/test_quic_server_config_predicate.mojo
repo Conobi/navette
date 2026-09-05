@@ -6,7 +6,7 @@ Covers:
     the Predicate variant
 """
 
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.headers import Headers
 from navette.tls.config import QuicServerConfig

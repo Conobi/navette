@@ -2,7 +2,7 @@
 #
 # Unit tests for HttpCoroClient (M6c).
 
-from std.memory import Span
+from std.collections import Span
 from navette.http.coro_client import HttpCoroClient
 from navette.http.session_slot import SessionSlot
 from navette.http.alt_svc import Origin, AltSvcEntry

@@ -6,7 +6,7 @@
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 from navette.h1.client import ClientConnection
 from navette.h1.config import ParseConfig
 from navette.http.body import BodyFrame

@@ -12,8 +12,8 @@ Buffer layout per slot (offsets from buf start):
     [100..)    packet data  (buf_size bytes)
 """
 
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle.proactor.completion import Completion
 
@@ -43,10 +43,10 @@ struct SendSlab(Movable):
         buf_size: Maximum packet data capacity (bytes after the header).
     """
 
-    var pool_ptr: UnsafePointer[NoneType, MutAnyOrigin]
+    var pool_ptr: Pointer[NoneType, MutAnyOrigin]
     var slot_idx: Int
     var completion: Completion
-    var buf: UnsafePointer[UInt8, MutAnyOrigin]
+    var buf: Pointer[UInt8, MutAnyOrigin]
     var buf_size: Int
 
     def __init__(out self, slot_idx: Int, buf_size: Int):
@@ -57,7 +57,7 @@ struct SendSlab(Movable):
             buf_size: Maximum packet data size in bytes.
         """
         var zero: Int = 0
-        self.pool_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+        self.pool_ptr = Pointer[NoneType, MutAnyOrigin](
             unsafe_from_address=zero
         )
         self.slot_idx = slot_idx
@@ -66,7 +66,7 @@ struct SendSlab(Movable):
         var total = _HEADER_SIZE + buf_size
         self.buf = _heap_alloc[UInt8](total).as_unsafe_any_origin()
         for i in range(total):
-            self.buf[i] = 0
+            self.buf[unsafe_offset=i] = 0
         self.buf_size = buf_size
 
     def __init__(out self, *, deinit take: Self):
@@ -77,21 +77,21 @@ struct SendSlab(Movable):
         self.buf = take.buf
         self.buf_size = take.buf_size
 
-    def msghdr_ptr(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def msghdr_ptr(self) -> Pointer[UInt8, MutAnyOrigin]:
         """Return a pointer to the msghdr region (offset 0)."""
         return self.buf
 
-    def iov_ptr(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def iov_ptr(self) -> Pointer[UInt8, MutAnyOrigin]:
         """Return a pointer to the iovec region (offset 56)."""
-        return self.buf + _MSGHDR_SIZE
+        return self.buf.unsafe_offset(_MSGHDR_SIZE)
 
-    def addr_ptr(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def addr_ptr(self) -> Pointer[UInt8, MutAnyOrigin]:
         """Return a pointer to the sockaddr region (offset 72)."""
-        return self.buf + _MSGHDR_SIZE + _IOVEC_SIZE
+        return self.buf.unsafe_offset(_.unsafe_offset(SGHDR_SIZE))+ _IOVEC_SIZE
 
-    def data_ptr(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def data_ptr(self) -> Pointer[UInt8, MutAnyOrigin]:
         """Return a pointer to the packet data region (offset 100)."""
-        return self.buf + _HEADER_SIZE
+        return self.buf.unsafe_offset(_HEADER_SIZE)
 
     def fill(mut self, data: List[UInt8], addr: List[UInt8]):
         """Fill the buffer with packet data and peer address, then wire
@@ -111,63 +111,63 @@ struct SendSlab(Movable):
         # Copy payload into the data region.
         var data_p = self.data_ptr()
         for i in range(data_len):
-            data_p[i] = data[i]
+            data_p[unsafe_offset=i] = data[i]
 
         # Copy peer address into the sockaddr region, zero-padded.
         var addr_p = self.addr_ptr()
         for i in range(_ADDR_SIZE):
             if i < addr_len:
-                addr_p[i] = addr[i]
+                addr_p[unsafe_offset=i] = addr[i]
             else:
-                addr_p[i] = 0
+                addr_p[unsafe_offset=i] = 0
 
         # Zero msghdr and iovec regions before wiring.
         var msghdr = self.msghdr_ptr()
         for i in range(_MSGHDR_SIZE):
-            msghdr[i] = 0
+            msghdr[unsafe_offset=i] = 0
         var iov = self.iov_ptr()
         for i in range(_IOVEC_SIZE):
-            iov[i] = 0
+            iov[unsafe_offset=i] = 0
 
         # msghdr offset 0 -- msg_name = pointer to addr region.
         var addr_ptr_val = UInt64(Int(addr_p))
-        var addr_ptr_bytes = UnsafePointer(to=addr_ptr_val).bitcast[UInt8]()
+        var addr_ptr_bytes = Pointer(to=addr_ptr_val).unsafe_bitcast[UInt8]()
         for i in range(8):
-            msghdr[i] = addr_ptr_bytes[i]
+            msghdr[unsafe_offset=i] = addr_ptr_bytes[unsafe_offset=i]
 
         # msghdr offset 8 -- msg_namelen = 28 (sockaddr_in6 size).
         var namelen = UInt32(_ADDR_SIZE)
-        var namelen_bytes = UnsafePointer(to=namelen).bitcast[UInt8]()
+        var namelen_bytes = Pointer(to=namelen).unsafe_bitcast[UInt8]()
         for i in range(4):
-            msghdr[8 + i] = namelen_bytes[i]
+            msghdr[unsafe_offset=8 + i] = namelen_bytes[unsafe_offset=i]
 
         # msghdr offset 16 -- msg_iov = pointer to iovec region.
         var iov_ptr_val = UInt64(Int(iov))
-        var iov_ptr_bytes = UnsafePointer(to=iov_ptr_val).bitcast[UInt8]()
+        var iov_ptr_bytes = Pointer(to=iov_ptr_val).unsafe_bitcast[UInt8]()
         for i in range(8):
-            msghdr[16 + i] = iov_ptr_bytes[i]
+            msghdr[unsafe_offset=16 + i] = iov_ptr_bytes[unsafe_offset=i]
 
         # msghdr offset 24 -- msg_iovlen = 1.
         var iovlen = UInt64(1)
-        var iovlen_bytes = UnsafePointer(to=iovlen).bitcast[UInt8]()
+        var iovlen_bytes = Pointer(to=iovlen).unsafe_bitcast[UInt8]()
         for i in range(8):
-            msghdr[24 + i] = iovlen_bytes[i]
+            msghdr[unsafe_offset=24 + i] = iovlen_bytes[unsafe_offset=i]
 
         # iov[0].iov_base = pointer to data region.
         var data_ptr_val = UInt64(Int(data_p))
-        var data_ptr_bytes = UnsafePointer(to=data_ptr_val).bitcast[UInt8]()
+        var data_ptr_bytes = Pointer(to=data_ptr_val).unsafe_bitcast[UInt8]()
         for i in range(8):
-            iov[i] = data_ptr_bytes[i]
+            iov[unsafe_offset=i] = data_ptr_bytes[unsafe_offset=i]
 
         # iov[0].iov_len = data_len.
         var iov_len = UInt64(data_len)
-        var iov_len_bytes = UnsafePointer(to=iov_len).bitcast[UInt8]()
+        var iov_len_bytes = Pointer(to=iov_len).unsafe_bitcast[UInt8]()
         for i in range(8):
-            iov[8 + i] = iov_len_bytes[i]
+            iov[unsafe_offset=8 + i] = iov_len_bytes[unsafe_offset=i]
 
     @staticmethod
     def _on_sendmsg_complete(
-        ctx: UnsafePointer[NoneType, MutAnyOrigin],
+        ctx: Pointer[NoneType, MutAnyOrigin],
         result: Int32,
         flags: UInt32,
     ):
@@ -182,17 +182,17 @@ struct SendSlab(Movable):
             result: io_uring CQE result (bytes sent or negative errno).
             flags: io_uring CQE flags (unused for sendmsg).
         """
-        var slab_ptr = UnsafePointer[SendSlab, MutAnyOrigin](
+        var slab_ptr = Pointer[SendSlab, MutAnyOrigin](
             unsafe_from_address=Int(ctx)
         )
-        var pool_ptr = UnsafePointer[SendSlabPool, MutAnyOrigin](
+        var pool_ptr = Pointer[SendSlabPool, MutAnyOrigin](
             unsafe_from_address=Int(slab_ptr[].pool_ptr)
         )
         pool_ptr[].release(slab_ptr[].slot_idx)
 
     def free_buf(mut self):
         """Free the contiguous buffer. Called during pool teardown."""
-        self.buf.free()
+        self.buf.unsafe_free()
 
 
 struct SendSlabPool(Movable):
@@ -210,7 +210,7 @@ struct SendSlabPool(Movable):
         in_flight: Number of currently acquired (in-use) slots.
     """
 
-    var _slots: List[UnsafePointer[SendSlab, MutAnyOrigin]]
+    var _slots: List[Pointer[SendSlab, MutAnyOrigin]]
     var _free: List[Int]
     var capacity: Int
     var in_flight: Int
@@ -223,7 +223,7 @@ struct SendSlabPool(Movable):
             buf_size: Maximum packet data size per slot (default 1500,
                      typical MTU for UDP datagrams).
         """
-        self._slots = List[UnsafePointer[SendSlab, MutAnyOrigin]]()
+        self._slots = List[Pointer[SendSlab, MutAnyOrigin]]()
         self._free = List[Int]()
         self.capacity = capacity
         self.in_flight = 0
@@ -231,7 +231,7 @@ struct SendSlabPool(Movable):
         for i in range(capacity):
             var slab = SendSlab(slot_idx=i, buf_size=buf_size)
             var slab_ptr = _heap_alloc[SendSlab](1).as_unsafe_any_origin()
-            slab_ptr.init_pointee_move(slab^)
+            slab_ptr.unsafe_write(slab^)
             self._slots.append(slab_ptr)
             self._free.append(i)
 
@@ -251,8 +251,8 @@ struct SendSlabPool(Movable):
         each slot's Completion.context to the slot's own heap address
         with the static callback wired in.
         """
-        var pool_addr = Int(UnsafePointer(to=self))
-        var pool_none_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+        var pool_addr = Int(Pointer(to=self))
+        var pool_none_ptr = Pointer[NoneType, MutAnyOrigin](
             unsafe_from_address=pool_addr
         )
 
@@ -260,7 +260,7 @@ struct SendSlabPool(Movable):
             var slab_ptr = self._slots[i]
             slab_ptr[].pool_ptr = pool_none_ptr
 
-            var slab_none_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+            var slab_none_ptr = Pointer[NoneType, MutAnyOrigin](
                 unsafe_from_address=Int(slab_ptr)
             )
             slab_ptr[].completion = Completion(
@@ -292,7 +292,7 @@ struct SendSlabPool(Movable):
         """Return True if at least one slot is free."""
         return len(self._free) > 0
 
-    def slot_ptr(self, idx: Int) -> UnsafePointer[SendSlab, MutAnyOrigin]:
+    def slot_ptr(self, idx: Int) -> Pointer[SendSlab, MutAnyOrigin]:
         """Return the heap pointer for slot `idx`.
 
         Args:
@@ -302,7 +302,7 @@ struct SendSlabPool(Movable):
 
     def completion_ptr(
         self, idx: Int
-    ) -> UnsafePointer[Completion, MutAnyOrigin]:
+    ) -> Pointer[Completion, MutAnyOrigin]:
         """Return a pointer to the Completion token for slot `idx`.
 
         Used by the proactor driver's submit_sendmsg call.
@@ -310,15 +310,15 @@ struct SendSlabPool(Movable):
         Args:
             idx: Slot index (0 <= idx < capacity).
         """
-        return UnsafePointer[Completion, MutAnyOrigin](
+        return Pointer[Completion, MutAnyOrigin](
             unsafe_from_address=Int(
-                UnsafePointer(to=self._slots[idx][].completion)
+                Pointer(to=self._slots[idx][].completion)
             )
         )
 
     def msghdr_for_submit(
         self, idx: Int
-    ) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    ) -> Pointer[UInt8, MutAnyOrigin]:
         """Return the msghdr pointer for slot `idx`, for submit_sendmsg.
 
         Args:
@@ -336,6 +336,6 @@ struct SendSlabPool(Movable):
         for i in range(len(self._slots)):
             var ptr = self._slots[i]
             ptr[].free_buf()
-            ptr.free()
+            ptr.unsafe_free()
         self._slots.clear()
         self._free.clear()

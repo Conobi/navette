@@ -19,7 +19,8 @@
 # + store-stub + FFI-rc seam directly.
 
 from std.collections import Optional
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig

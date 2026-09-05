@@ -3,8 +3,8 @@
 # HttpClient — sans-I/O unified HTTP client (M6a §6).
 
 from std.collections import Dict
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.http.alt_svc import Origin
 from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1, SLOT_H2, SLOT_H3
@@ -82,14 +82,14 @@ struct HttpClient(Movable):
         self._max_redirects = take._max_redirects
         self._retry_idempotent = take._retry_idempotent
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Free all heap-allocated session slots."""
         for kv in self._pool.items():
             ref slots = kv.value
             for i in range(len(slots)):
                 var p = slots[i].ptr()
-                p.destroy_pointee()
-                p.free()
+                p.unsafe_deinit_pointee()
+                p.unsafe_free()
 
     @staticmethod
     def default() -> Self:
@@ -125,7 +125,7 @@ struct HttpClient(Movable):
                 raise Error("HttpClient: max connections reached for origin")
 
         var ptr = _heap_alloc[SessionSlot](1).as_unsafe_any_origin()
-        ptr.init_pointee_move(slot^)
+        ptr.unsafe_write(slot^)
         var slot_ptr = SessionSlotPtr(UInt64(Int(ptr)))
         if origin not in self._pool:
             var slots = List[SessionSlotPtr]()
@@ -146,8 +146,8 @@ struct HttpClient(Movable):
                 for i in range(len(slots)):
                     var p = slots[i].ptr()
                     if p[].is_idle() and (now - p[].idle_since) > self._idle_timeout_ms:
-                        p.destroy_pointee()
-                        p.free()
+                        p.unsafe_deinit_pointee()
+                        p.unsafe_free()
                     else:
                         keep.append(SessionSlotPtr(other=slots[i]))
                 self._pool[Origin(other=origins[oi])] = keep^
@@ -193,7 +193,7 @@ struct HttpClient(Movable):
         # Route to the correct slot via handle mapping
         if hid in self._handle_slot:
             var addr = self._handle_slot[hid]
-            var p = UnsafePointer[SessionSlot, MutAnyOrigin](
+            var p = Pointer[SessionSlot, MutAnyOrigin](
                 unsafe_from_address=addr
             )
             p[].run_one(handle)

@@ -8,8 +8,9 @@
 # a bounded retire_queue.
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _cid_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _cid_alloc
 
 from navette.tls.lib import SharedLibrary
 
@@ -109,8 +110,8 @@ struct CidManager(Movable):
         _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
         self.server_secret = List[UInt8](capacity=32)
         for i in range(32):
-            self.server_secret.append(rbuf[i])
-        rbuf.free()
+            self.server_secret.append(rbuf[unsafe_offset=i])
+        rbuf.unsafe_free()
 
         # Build initial local CID entry (seq=0, Active) with a reset token.
         # Mark as advertised=True: the initial CID is conveyed in the handshake,
@@ -167,8 +168,8 @@ struct CidManager(Movable):
         _ = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
         var cid = List[UInt8](capacity=8)
         for i in range(8):
-            cid.append(buf[i])
-        buf.free()
+            cid.append(buf[unsafe_offset=i])
+        buf.unsafe_free()
         return cid^
 
     def generate_reset_token(self, cid: Span[UInt8, _]) raises -> List[UInt8]:
@@ -354,11 +355,11 @@ def _hmac_sha256_truncate16(
 
     var key_ptr = _cid_alloc[UInt8](len(key)).as_unsafe_any_origin()
     for i in range(len(key)):
-        key_ptr[i] = key[i]
+        key_ptr[unsafe_offset=i] = key[i]
 
     var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1)).as_unsafe_any_origin()
     for i in range(len(msg)):
-        msg_ptr[i] = msg[i]
+        msg_ptr[unsafe_offset=i] = msg[i]
 
     var out_ptr = _cid_alloc[UInt8](32).as_unsafe_any_origin()
 
@@ -370,19 +371,19 @@ def _hmac_sha256_truncate16(
 
     if rc != 0:
         var err = rlib[].last_error()
-        key_ptr.free()
-        msg_ptr.free()
-        out_ptr.free()
+        key_ptr.unsafe_free()
+        msg_ptr.unsafe_free()
+        out_ptr.unsafe_free()
         raise "HMAC-SHA256 failed: " + err
 
     # Truncate to first 16 bytes for the reset token.
     var token = List[UInt8](capacity=16)
     for i in range(16):
-        token.append(out_ptr[i])
+        token.append(out_ptr[unsafe_offset=i])
 
-    key_ptr.free()
-    msg_ptr.free()
-    out_ptr.free()
+    key_ptr.unsafe_free()
+    msg_ptr.unsafe_free()
+    out_ptr.unsafe_free()
     return token^
 
 

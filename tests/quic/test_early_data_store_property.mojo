@@ -6,7 +6,7 @@
 # integration-check script enforces that the name does not appear in any
 # non-test file.
 
-from std.memory import Span
+from std.collections import Span
 
 from navette.tls.early_data_store import (
     InMemoryEarlyDataStore, ReplayDecision, KeyTag,

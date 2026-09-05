@@ -22,7 +22,7 @@ delete this module and switch the consumers to the Boucle factories.
 """
 
 from std.ffi import external_call
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 
 from boucle.handle import RawHandle, OwnedHandle
@@ -54,7 +54,7 @@ def _setsockopt_int(
 ) raises:
     var optval_buf = Owned[Int32](1)
     var optval = optval_buf.ptr()
-    optval[0] = value
+    optval[unsafe_offset=0] = value
     var rc = external_call["setsockopt", Int32](
         fd, level, optname, optval, Int32(4),
     )
@@ -88,10 +88,10 @@ def _setsockopt_so_sndtimeo(fd: RawHandle, ms: Int) raises:
     var tv_buf = Owned[UInt8](16)
     var tv = tv_buf.ptr()
     for i in range(16):
-        tv[i] = UInt8(0)
-    var sec_ptr = tv.bitcast[Int64]()
+        tv[unsafe_offset=i] = UInt8(0)
+    var sec_ptr = tv.unsafe_bitcast[Int64]()
     sec_ptr[] = Int64(ms // 1000)
-    var usec_ptr = UnsafePointer[Int64, MutAnyOrigin](
+    var usec_ptr = Pointer[Int64, MutAnyOrigin](
         unsafe_from_address=Int(tv) + 8
     )
     usec_ptr[] = Int64((ms % 1000) * 1000)
@@ -131,11 +131,11 @@ def tcp_listener(port: Int, backlog: Int = 1024) raises -> OwnedHandle:
     var addr_buf = Owned[UInt8](Int(_SOCKADDR_IN6_SIZE))
     var addr = addr_buf.ptr()
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
-        addr[i] = 0
-    addr[0] = 10  # sin6_family = AF_INET6 (LE u16)
+        addr[unsafe_offset=i] = 0
+    addr[unsafe_offset=0] = 10  # sin6_family = AF_INET6 (LE u16)
     var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
-    addr[2] = UInt8(port_be & 0xFF)
-    addr[3] = UInt8((port_be >> 8) & 0xFF)
+    addr[unsafe_offset=2] = UInt8(port_be & 0xFF)
+    addr[unsafe_offset=3] = UInt8((port_be >> 8) & 0xFF)
 
     var rc = external_call["bind", Int32](
         handle.raw(), addr, _SOCKADDR_IN6_SIZE,
@@ -167,44 +167,44 @@ def tcp_v4_nonblocking() raises -> OwnedHandle:
     return OwnedHandle(raw=fd)
 
 
-def _pack_v4(addr: ResolvedAddr, dst: UnsafePointer[UInt8, MutAnyOrigin]) -> Int32:
+def _pack_v4(addr: ResolvedAddr, dst: Pointer[UInt8, MutAnyOrigin]) -> Int32:
     """Pack a `ResolvedAddr` (IPv4) into a `sockaddr_in` byte buffer."""
     # sockaddr_in (16 bytes): family(2 LE) port(2 BE) addr(4) zero(8)
     for i in range(Int(_SOCKADDR_IN_SIZE)):
-        dst[i] = UInt8(0)
-    dst[0] = UInt8(2)  # AF_INET (LE u16 lo byte)
+        dst[unsafe_offset=i] = UInt8(0)
+    dst[unsafe_offset=0] = UInt8(2)  # AF_INET (LE u16 lo byte)
     var port = Int(addr.v4.port)
-    dst[2] = UInt8((port >> 8) & 0xFF)
-    dst[3] = UInt8(port & 0xFF)
+    dst[unsafe_offset=2] = UInt8((port >> 8) & 0xFF)
+    dst[unsafe_offset=3] = UInt8(port & 0xFF)
     var oct = addr.v4.ip.octets
-    dst[4] = oct[0]
-    dst[5] = oct[1]
-    dst[6] = oct[2]
-    dst[7] = oct[3]
+    dst[unsafe_offset=4] = oct[0]
+    dst[unsafe_offset=5] = oct[1]
+    dst[unsafe_offset=6] = oct[2]
+    dst[unsafe_offset=7] = oct[3]
     return _SOCKADDR_IN_SIZE
 
 
-def _pack_v6(addr: ResolvedAddr, dst: UnsafePointer[UInt8, MutAnyOrigin]) -> Int32:
+def _pack_v6(addr: ResolvedAddr, dst: Pointer[UInt8, MutAnyOrigin]) -> Int32:
     """Pack a `ResolvedAddr` (IPv6) into a `sockaddr_in6` byte buffer."""
     # sockaddr_in6 (28 bytes): family(2 LE) port(2 BE) flowinfo(4) addr(16) scope_id(4)
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
-        dst[i] = UInt8(0)
-    dst[0] = UInt8(10)  # AF_INET6 (LE u16 lo byte)
+        dst[unsafe_offset=i] = UInt8(0)
+    dst[unsafe_offset=0] = UInt8(10)  # AF_INET6 (LE u16 lo byte)
     var port = Int(addr.v6.port)
-    dst[2] = UInt8((port >> 8) & 0xFF)
-    dst[3] = UInt8(port & 0xFF)
+    dst[unsafe_offset=2] = UInt8((port >> 8) & 0xFF)
+    dst[unsafe_offset=3] = UInt8(port & 0xFF)
     # 8 segments of 16 bits in network (big-endian) order at offset 8.
     var segs = addr.v6.ip.segments
     for i in range(8):
         var s = Int(segs[i])
-        dst[8 + 2 * i] = UInt8((s >> 8) & 0xFF)
-        dst[8 + 2 * i + 1] = UInt8(s & 0xFF)
+        dst[unsafe_offset=8 + 2 * i] = UInt8((s >> 8) & 0xFF)
+        dst[unsafe_offset=8 + 2 * i + 1] = UInt8(s & 0xFF)
     # scope_id at offset 24 (LE u32)
     var scope = Int(addr.v6.scope_id)
-    dst[24] = UInt8(scope & 0xFF)
-    dst[25] = UInt8((scope >> 8) & 0xFF)
-    dst[26] = UInt8((scope >> 16) & 0xFF)
-    dst[27] = UInt8((scope >> 24) & 0xFF)
+    dst[unsafe_offset=24] = UInt8(scope & 0xFF)
+    dst[unsafe_offset=25] = UInt8((scope >> 8) & 0xFF)
+    dst[unsafe_offset=26] = UInt8((scope >> 16) & 0xFF)
+    dst[unsafe_offset=27] = UInt8((scope >> 24) & 0xFF)
     return _SOCKADDR_IN6_SIZE
 
 
@@ -308,11 +308,11 @@ def udp_listener(port: Int) raises -> OwnedHandle:
     var addr_buf = Owned[UInt8](Int(_SOCKADDR_IN6_SIZE))
     var addr = addr_buf.ptr()
     for i in range(Int(_SOCKADDR_IN6_SIZE)):
-        addr[i] = 0
-    addr[0] = 10  # sin6_family = AF_INET6 (LE u16)
+        addr[unsafe_offset=i] = 0
+    addr[unsafe_offset=0] = 10  # sin6_family = AF_INET6 (LE u16)
     var port_be = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
-    addr[2] = UInt8(port_be & 0xFF)
-    addr[3] = UInt8((port_be >> 8) & 0xFF)
+    addr[unsafe_offset=2] = UInt8(port_be & 0xFF)
+    addr[unsafe_offset=3] = UInt8((port_be >> 8) & 0xFF)
 
     var rc = external_call["bind", Int32](
         handle.raw(), addr, _SOCKADDR_IN6_SIZE,

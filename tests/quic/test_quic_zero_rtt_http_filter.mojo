@@ -16,7 +16,8 @@ surface; the remaining test groups land alongside their integration.
 """
 
 from std.collections import Optional
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.h3.connection import H3Connection
 from navette.h3.early_data_filter_dispatch import (

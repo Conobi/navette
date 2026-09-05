@@ -8,9 +8,9 @@
 # Each config holds a SharedLibrary (ref-counted) so the underlying
 # RustlsLibrary stays alive as long as any config or connection exists.
 # Destructors call `rlsm_config_free`.
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
-from std.memory import Span
+from std.collections import Span
 
 from .lib import SharedLibrary
 from navette.tls.early_data_filter import (
@@ -50,7 +50,7 @@ struct TlsClientConfig(Movable):
         self._lib = take._lib^
         self._handle = take._handle
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self._handle > 0:
             _ = self._lib.inner_ptr()[].config_free(self._handle)
 
@@ -77,7 +77,7 @@ struct TlsClientConfig(Movable):
         var buf_ptr_buf = Owned[UInt8](len(buf))
         var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
-            buf_ptr[i] = buf[i]
+            buf_ptr[unsafe_offset=i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
@@ -111,12 +111,12 @@ struct TlsServerConfig(Movable):
         var cert_buf_buf = Owned[UInt8](cert_len)
         var cert_buf = cert_buf_buf.ptr()
         for i in range(cert_len):
-            cert_buf[i] = cert_pem[i]
+            cert_buf[unsafe_offset=i] = cert_pem[i]
 
         var key_buf_buf = Owned[UInt8](key_len)
         var key_buf = key_buf_buf.ptr()
         for i in range(key_len):
-            key_buf[i] = key_pem[i]
+            key_buf[unsafe_offset=i] = key_pem[i]
 
         var rlib = self._lib.inner_ptr()
         var handle = rlib[].server_config_new(
@@ -135,7 +135,7 @@ struct TlsServerConfig(Movable):
         self._lib = take._lib^
         self._handle = take._handle
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self._handle > 0:
             _ = self._lib.inner_ptr()[].config_free(self._handle)
 
@@ -162,7 +162,7 @@ struct TlsServerConfig(Movable):
         var buf_ptr_buf = Owned[UInt8](len(buf))
         var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
-            buf_ptr[i] = buf[i]
+            buf_ptr[unsafe_offset=i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
@@ -326,23 +326,23 @@ struct QuicServerConfig(Movable):
         var cert_buf_buf = Owned[UInt8](cert_len)
         var cert_buf = cert_buf_buf.ptr()
         for i in range(cert_len):
-            cert_buf[i] = cert_pem[i]
+            cert_buf[unsafe_offset=i] = cert_pem[i]
 
         var key_buf_buf = Owned[UInt8](key_len)
         var key_buf = key_buf_buf.ptr()
         for i in range(key_len):
-            key_buf[i] = key_pem[i]
+            key_buf[unsafe_offset=i] = key_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
         var alpn_buf_buf = Owned[UInt8](alpn_len)
         var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
-            alpn_buf[i] = alpn_bytes[i]
+            alpn_buf[unsafe_offset=i] = alpn_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_config_new(
             cert_buf, Int32(cert_len),
@@ -417,7 +417,7 @@ struct QuicServerConfig(Movable):
         self._early_data_filter = take._early_data_filter^
         self._early_data_predicate_fn = take._early_data_predicate_fn
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self._handle > 0:
             _ = self._lib.inner_ptr()[].config_free(self._handle)
 
@@ -461,11 +461,11 @@ struct QuicClientConfig(Movable):
         var alpn_buf_buf = Owned[UInt8](alpn_len)
         var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
-            alpn_buf[i] = alpn_bytes[i]
+            alpn_buf[unsafe_offset=i] = alpn_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
 
         var rlib = self._lib.inner_ptr()
         var rc: Int32
@@ -482,7 +482,7 @@ struct QuicClientConfig(Movable):
             var err = rlib[].last_error()
             self._handle = Int32(-1)
             raise "quic_client_config_new failed: " + err
-        self._handle = out_handle[0]
+        self._handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
 
@@ -508,18 +508,18 @@ struct QuicClientConfig(Movable):
         var ca_buf_buf = Owned[UInt8](ca_len)
         var ca_buf = ca_buf_buf.ptr()
         for i in range(ca_len):
-            ca_buf[i] = ca_pem[i]
+            ca_buf[unsafe_offset=i] = ca_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
         var alpn_buf_buf = Owned[UInt8](alpn_len)
         var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
-            alpn_buf[i] = alpn_bytes[i]
+            alpn_buf[unsafe_offset=i] = alpn_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
         var rlib = lib.inner_ptr()
         var rc = rlib[].quic_client_config_with_ca(
             ca_buf, Int32(ca_len),
@@ -539,7 +539,7 @@ struct QuicClientConfig(Movable):
         self._lib = take._lib^
         self._handle = take._handle
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self._handle > 0:
             _ = self._lib.inner_ptr()[].config_free(self._handle)
 

@@ -18,7 +18,8 @@
 # direct-buffer manipulation where the wire-format path requires
 # AEAD encryption that the F30 scenario harness already covers.
 
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary

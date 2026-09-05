@@ -636,8 +636,8 @@ struct H2Connection(Movable):
             return
         var remaining = n - count
         var ptr = self._inbuf.unsafe_ptr()
-        var src = (ptr + count).unsafe_mut_cast[False]().unsafe_origin_cast[ImmutAnyOrigin]()
-        memmove(dest=ptr, src=src, count=remaining)
+        var src = (ptr.unsafe_offset(count)).unsafe_mut_cast[False]().unsafe_origin_cast[ImmutAnyOrigin]()
+        unsafe_memmove(dest=ptr, src=src, count=remaining)
         self._inbuf.resize(unsafe_uninit_length=remaining)
 
     def _connection_error(mut self, mut events: List[H2Event], error_code: Int, message: String):

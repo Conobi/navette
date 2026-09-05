@@ -13,7 +13,8 @@
 #   2 = Application     (both directions; discarded at connection-close)
 #   3 = 0-RTT (server-side decrypt only; discarded at handshake-complete
 #       OR connection-close, whichever first — RFC 9001 §4.1.3)
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import SharedLibrary
@@ -70,7 +71,7 @@ struct PacketProtect(Movable):
         self.keys = take.keys^
         self._lib = take._lib^
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         for i in range(len(self.keys)):
             if self.keys[i] != Int32(-1):
                 _ = self._lib.inner_ptr()[].keys_free(self.keys[i])
@@ -138,7 +139,7 @@ struct PacketProtect(Movable):
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, out_handle)
 
@@ -169,7 +170,7 @@ struct PacketProtect(Movable):
         var dcid_owned = Owned[UInt8](dcid_len)
         var dcid_buf = dcid_owned.ptr()
         for i in range(dcid_len):
-            dcid_buf[i] = dcid[i]
+            dcid_buf[unsafe_offset=i] = dcid[i]
 
         var is_client_i32 = Int32(1) if is_client else Int32(0)
         var handle = self._lib.inner_ptr()[].initial_keys(
@@ -191,7 +192,7 @@ struct PacketProtect(Movable):
     def unprotect_header_ptr(
         self,
         level: Int,
-        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
         pkt_len: Int,
         pn_offset: Int,
     ) raises -> Tuple[UInt8, Int]:
@@ -213,17 +214,17 @@ struct PacketProtect(Movable):
         # Pass pointers directly into the packet buffer — no copies.
         var rc = self._lib.inner_ptr()[].keys_remote_header_unprotect(
             keys_handle,
-            pkt_ptr + pn_offset + _MAX_PN_LEN,  # sample (16 bytes, read-only)
+            pkt_ptr.unsafe_offse.unsafe_offset((pn_offset))+ _MAX_PN_LEN,  # sample (16 bytes, read-only)
             Int32(_HP_SAMPLE_LEN),
             pkt_ptr,                              # first_byte (modified in-place)
-            pkt_ptr + pn_offset,                  # pn_bytes (modified in-place)
+            pkt_ptr.unsafe_offset(pn_offset),                  # pn_bytes (modified in-place)
             Int32(_MAX_PN_LEN),
         )
 
         if rc < 0:
             raise "header unprotect failed: " + self._lib.inner_ptr()[].last_error()
 
-        var fb = pkt_ptr[0]
+        var fb = pkt_ptr[unsafe_offset=0]
         var pn_length = Int(fb & 0x03) + 1
         return Tuple[UInt8, Int](fb, pn_length)
 
@@ -245,7 +246,7 @@ struct PacketProtect(Movable):
         level: Int,
         pn: UInt64,
         header_len: Int,
-        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
         pkt_len: Int,
     ) raises -> Int:
         """Decrypt AEAD payload in-place. Zero-copy.
@@ -271,7 +272,7 @@ struct PacketProtect(Movable):
             pn,
             pkt_ptr,                 # header (AAD)
             Int32(header_len),
-            pkt_ptr + header_len,    # payload (decrypted in-place)
+            pkt_ptr.unsafe_offset(header_len),    # payload (decrypted in-place)
             Int32(payload_len),
         )
 
@@ -305,7 +306,7 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         pn: UInt64,
-        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
         header_len: Int,
         payload_len: Int,
         total_capacity: Int,
@@ -333,7 +334,7 @@ struct PacketProtect(Movable):
             pn,
             pkt_ptr,                 # header (AAD)
             Int32(header_len),
-            pkt_ptr + header_len,    # payload (encrypted in-place)
+            pkt_ptr.unsafe_offset(header_len),    # payload (encrypted in-place)
             Int32(payload_len),
             Int32(buf_capacity),
         )
@@ -359,11 +360,11 @@ struct PacketProtect(Movable):
         var buf_owned = Owned[UInt8](capacity)
         var buf = buf_owned.ptr()
         for i in range(header_len):
-            buf[i] = header[i]
+            buf[unsafe_offset=i] = header[i]
         for i in range(pt_len):
-            buf[header_len + i] = plaintext[i]
+            buf[unsafe_offset=header_len + i] = plaintext[i]
         for i in range(_AEAD_TAG_LEN):
-            buf[header_len + pt_len + i] = 0
+            buf[unsafe_offset=header_len + pt_len + i] = 0
 
         var ct_len = self.encrypt_payload_in_place(
             level, pn, buf, header_len, pt_len, capacity,
@@ -383,7 +384,7 @@ struct PacketProtect(Movable):
     def protect_header_ptr(
         self,
         level: Int,
-        pkt_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
         pkt_len: Int,
         pn_offset: Int,
         pn_length: Int,
@@ -399,10 +400,10 @@ struct PacketProtect(Movable):
 
         var rc = self._lib.inner_ptr()[].keys_local_header_protect(
             keys_handle,
-            pkt_ptr + pn_offset + _MAX_PN_LEN,  # sample
+            pkt_ptr.unsafe_offse.unsafe_offset((pn_offset))+ _MAX_PN_LEN,  # sample
             Int32(_HP_SAMPLE_LEN),
             pkt_ptr,                              # first_byte
-            pkt_ptr + pn_offset,                  # pn_bytes
+            pkt_ptr.unsafe_offset(pn_offset),                  # pn_bytes
             Int32(pn_length),
         )
 
@@ -431,11 +432,11 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
-        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
-        out_first_bytes: UnsafePointer[UInt8, MutAnyOrigin],
-        out_pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: Pointer[Int32, MutAnyOrigin],
+        pn_offsets: Pointer[Int32, MutAnyOrigin],
+        out_first_bytes: Pointer[UInt8, MutAnyOrigin],
+        out_pn_lengths: Pointer[Int32, MutAnyOrigin],
     ) raises -> Int:
         """Batch header unprotection for N packets at the same level.
 
@@ -461,11 +462,11 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
-        header_lens: UnsafePointer[Int32, MutAnyOrigin],
-        out_plaintext_lens: UnsafePointer[Int32, MutAnyOrigin],
+        packet_numbers: Pointer[UInt64, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: Pointer[Int32, MutAnyOrigin],
+        header_lens: Pointer[Int32, MutAnyOrigin],
+        out_plaintext_lens: Pointer[Int32, MutAnyOrigin],
     ) raises -> Int:
         """Batch AEAD decryption for N packets at the same level.
 
@@ -491,12 +492,12 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        header_lens: UnsafePointer[Int32, MutAnyOrigin],
-        payload_lens: UnsafePointer[Int32, MutAnyOrigin],
-        buf_capacities: UnsafePointer[Int32, MutAnyOrigin],
-        out_ciphertext_lens: UnsafePointer[Int32, MutAnyOrigin],
+        packet_numbers: Pointer[UInt64, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        header_lens: Pointer[Int32, MutAnyOrigin],
+        payload_lens: Pointer[Int32, MutAnyOrigin],
+        buf_capacities: Pointer[Int32, MutAnyOrigin],
+        out_ciphertext_lens: Pointer[Int32, MutAnyOrigin],
     ) raises -> Int:
         """Batch AEAD encryption for N packets at the same level.
 
@@ -523,11 +524,11 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
-        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
-        pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
-        out_results: UnsafePointer[Int32, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: Pointer[Int32, MutAnyOrigin],
+        pn_offsets: Pointer[Int32, MutAnyOrigin],
+        pn_lengths: Pointer[Int32, MutAnyOrigin],
+        out_results: Pointer[Int32, MutAnyOrigin],
     ) raises -> Int:
         """Batch header protection for N packets at the same level.
 

@@ -11,7 +11,7 @@
 
 from std.collections.dict import Dict
 from std.ffi import external_call
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 
 comptime PROFILE_ACCEPT: Bool = False
@@ -28,7 +28,7 @@ def monotonic_us() -> UInt64:
     on-build overhead budget.
     """
     var ts = InlineArray[Int64, 2](fill=0)
-    var ts_ptr = UnsafePointer(to=ts).bitcast[UInt8]()
+    var ts_ptr = Pointer(to=ts).unsafe_bitcast[UInt8]()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts_ptr)
     var tv_sec = UInt64(ts[0])
     var tv_nsec = UInt64(ts[1])

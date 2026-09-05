@@ -17,10 +17,10 @@
 #         if tls.wants_write():
 #             network_out = tls.drain_ciphertext()
 #             ... send to peer ...
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from .lib import SharedLibrary
 from .config import TlsClientConfig, TlsServerConfig
@@ -47,8 +47,8 @@ struct TlsConnection(Movable):
     var _lib: SharedLibrary
     var _handle: Int32
     var _ciphertext_out: List[UInt8]
-    var _ct_drain_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var _pt_drain_buf: UnsafePointer[UInt8, MutAnyOrigin]
+    var _ct_drain_buf: Pointer[UInt8, MutAnyOrigin]
+    var _pt_drain_buf: Pointer[UInt8, MutAnyOrigin]
     var _handshake_complete: Bool
 
     # -- Private constructor (used by factory methods) ------------------------
@@ -59,8 +59,8 @@ struct TlsConnection(Movable):
         _lib: SharedLibrary,
         _handle: Int32,
         var _ciphertext_out: List[UInt8],
-        _ct_drain_buf: UnsafePointer[UInt8, MutAnyOrigin],
-        _pt_drain_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        _ct_drain_buf: Pointer[UInt8, MutAnyOrigin],
+        _pt_drain_buf: Pointer[UInt8, MutAnyOrigin],
         _handshake_complete: Bool,
     ):
         self._lib = SharedLibrary(other=_lib)
@@ -80,11 +80,11 @@ struct TlsConnection(Movable):
         self._pt_drain_buf = take._pt_drain_buf
         self._handshake_complete = take._handshake_complete
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self._handle >= 0:
             _ = self._lib.inner_ptr()[].tls_conn_free(self._handle)
-        self._ct_drain_buf.free()
-        self._pt_drain_buf.free()
+        self._ct_drain_buf.unsafe_free()
+        self._pt_drain_buf.unsafe_free()
 
     # -- Construction ----------------------------------------------------------
 
@@ -110,14 +110,14 @@ struct TlsConnection(Movable):
         var name_len = len(name_bytes)
         var name_buf = _heap_alloc[UInt8](name_len).as_unsafe_any_origin()
         for i in range(name_len):
-            name_buf[i] = name_bytes[i]
+            name_buf[unsafe_offset=i] = name_bytes[i]
 
         var handle = rlib[].tls_client_new(
             config.handle(),
             name_buf,
             Int32(name_len),
         )
-        name_buf.free()
+        name_buf.unsafe_free()
 
         if handle < 0:
             raise "rlsm_tls_client_new failed: " + rlib[].last_error()
@@ -133,14 +133,14 @@ struct TlsConnection(Movable):
                     handle, init_ct_buf, Int32(_CIPHERTEXT_DRAIN_BUF_SIZE)
                 )
                 if dn < 0:
-                    init_ct_buf.free()
+                    init_ct_buf.unsafe_free()
                     raise "rlsm_tls_conn_write_tls failed: " + rlib[].last_error()
                 if dn == 0:
                     break
                 for di in range(Int(dn)):
-                    ct_out.append(init_ct_buf[di])
+                    ct_out.append(init_ct_buf[unsafe_offset=di])
         except e:
-            init_ct_buf.free()
+            init_ct_buf.unsafe_free()
             _ = rlib[].tls_conn_free(handle)
             raise e.copy()
 
@@ -236,7 +236,7 @@ struct TlsConnection(Movable):
             if n == 0:
                 break
             for i in range(Int(n)):
-                result.append(self._pt_drain_buf[i])
+                result.append(self._pt_drain_buf[unsafe_offset=i])
         return result^
 
     # -- Outbound: plaintext -> ciphertext -------------------------------------
@@ -295,15 +295,15 @@ struct TlsConnection(Movable):
         )
         if n < 0:
             var err = self._lib.inner_ptr()[].last_error()
-            buf.free()
+            buf.unsafe_free()
             raise "rlsm_tls_conn_alpn failed: " + err
         if n == 0:
-            buf.free()
+            buf.unsafe_free()
             return Optional[String](None)
         var s = String()
         for i in range(Int(n)):
-            s += chr(Int(buf[i]))
-        buf.free()
+            s += chr(Int(buf[unsafe_offset=i]))
+        buf.unsafe_free()
         return Optional[String](s^)
 
     # -- Internal --------------------------------------------------------------
@@ -324,5 +324,5 @@ struct TlsConnection(Movable):
             if n == 0:
                 break
             for i in range(Int(n)):
-                self._ciphertext_out.append(self._ct_drain_buf[i])
+                self._ciphertext_out.append(self._ct_drain_buf[unsafe_offset=i])
 

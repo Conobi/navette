@@ -2,7 +2,7 @@
 #
 # Tests for H2HandlerServer (M5.5 Tasks 4-7).
 
-from std.memory import Span
+from std.collections import Span
 
 from lib.http1.types import Header
 from lib.http2.connection import (

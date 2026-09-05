@@ -6,8 +6,9 @@
 #   cd ~/Projets/perso/navette && uv run mojo run -I . tests/test_interop_http09.mojo
 
 from std.collections import Optional
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig

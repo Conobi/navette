@@ -5,8 +5,9 @@
 # Mirrors src/h2/h2_handler_server.mojo patterns.
 
 from std.collections import Dict, Optional
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
@@ -125,7 +126,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _h3:      H3Connection
     var handler:  Self.H
     var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
-    var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled via the IdempotentOnly / Tuned
@@ -136,7 +137,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     # 0-RTT-arrived request, the dispatch helper takes the fail-closed
     # branch (a config-invariant violation; misconfig_fail_closed bumps).
     var _early_data_filter_ptr: Optional[
-        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        Pointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate fn, propagated from
@@ -151,9 +152,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         *,
         var quic: QuicConnection,
         var handler: Self.H,
-        profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]] = None,
+        profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]] = None,
         early_data_filter_ptr: Optional[
-            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            Pointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
@@ -176,15 +177,15 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._early_data_filter_ptr = take._early_data_filter_ptr
         self._early_data_predicate_fn = take._early_data_predicate_fn
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
         for i in range(len(keys)):
             try:
                 var p = self._streams[keys[i]].ptr()
-                p.destroy_pointee()
-                p.free()
+                p.unsafe_deinit_pointee()
+                p.unsafe_free()
             except:
                 pass
 
@@ -198,7 +199,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:
@@ -387,7 +388,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx.recv_body = body^
         ctx.resp_writer = resp^
         ctx.detached = detached
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._streams[Int(ev.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
 
     def _on_data(mut self, ev: H3Event) raises:
@@ -395,7 +396,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         var data_copy = List[UInt8](copy=ev.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
         if not ctx.detached:
@@ -403,16 +404,16 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)
             except:
                 pass
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         var sid = Int(ev.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         if ctx.request_ended:
-            ctx_ptr.init_pointee_move(ctx^)
+            ctx_ptr.unsafe_write(ctx^)
             return
         ctx.request_ended = True
         ctx.recv_body._set_end()
@@ -421,18 +422,18 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
             except:
                 pass
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
         var sid = Int(ev.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         var err = StreamError.rst_stream(UInt32(ev.error_code))
         self.handler.on_reset(err)
         _ = self._streams.pop(sid)
-        ctx_ptr.free()
+        ctx_ptr.unsafe_free()
 
     # --- Internal: response drain --------------------------------------------
 
@@ -446,13 +447,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             if sid not in self._streams:
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.take_pointee()
+            var ctx = ctx_ptr.unsafe_take_pointee()
             if ctx.response_ended:
-                ctx_ptr.init_pointee_move(ctx^)
+                ctx_ptr.unsafe_write(ctx^)
                 self._maybe_cleanup(sid)
                 continue
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.init_pointee_move(ctx^)
+                ctx_ptr.unsafe_write(ctx^)
                 continue
             # Send response headers
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -504,7 +505,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                         pass
                     ctx.response_ended = True
                     break
-            ctx_ptr.init_pointee_move(ctx^)
+            ctx_ptr.unsafe_write(ctx^)
             self._maybe_cleanup(sid)
 
     def _maybe_cleanup(mut self, sid: Int) raises:
@@ -514,8 +515,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
             _ = self._streams.pop(sid)
-            ctx_ptr.destroy_pointee()
-            ctx_ptr.free()
+            ctx_ptr.unsafe_deinit_pointee()
+            ctx_ptr.unsafe_free()
 
     # --- Out-of-band response injection (cross-transport wake) ---------------
 
@@ -565,7 +566,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         try:
             ctx.resp_writer.send_status(status^, headers^)
             if len(body) > 0:
@@ -575,4 +576,4 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 ctx.resp_writer.end()
         except:
             pass
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)

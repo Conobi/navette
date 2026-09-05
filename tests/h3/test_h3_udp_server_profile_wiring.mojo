@@ -34,7 +34,8 @@ handshake.
 """
 
 from std.collections import Optional
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.h3.connection import H3Event
 from navette.h3.h3_udp_server import H3UdpServer

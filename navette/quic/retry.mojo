@@ -3,7 +3,8 @@
 # RFC 9001 Section 8.1 (Retry), Appendix A.4 (integrity tag test vector).
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import SharedLibrary
@@ -15,42 +16,42 @@ from navette.tls.lib import SharedLibrary
 
 
 def _copy_span_to_ptr(
-    src: Span[UInt8, _], dst: UnsafePointer[UInt8, MutAnyOrigin], offset: Int
+    src: Span[UInt8, _], dst: Pointer[UInt8, MutAnyOrigin], offset: Int
 ) -> Int:
     """Copy span bytes into dst starting at offset. Returns new offset."""
     for i in range(len(src)):
-        dst[offset + i] = src[i]
+        dst[unsafe_offset=offset + i] = src[i]
     return offset + len(src)
 
 
 def _write_u64_be(
-    dst: UnsafePointer[UInt8, MutAnyOrigin], offset: Int, value: UInt64
+    dst: Pointer[UInt8, MutAnyOrigin], offset: Int, value: UInt64
 ) -> Int:
     """Write a UInt64 in big-endian at offset. Returns new offset."""
-    dst[offset + 0] = UInt8((value >> 56) & 0xFF)
-    dst[offset + 1] = UInt8((value >> 48) & 0xFF)
-    dst[offset + 2] = UInt8((value >> 40) & 0xFF)
-    dst[offset + 3] = UInt8((value >> 32) & 0xFF)
-    dst[offset + 4] = UInt8((value >> 24) & 0xFF)
-    dst[offset + 5] = UInt8((value >> 16) & 0xFF)
-    dst[offset + 6] = UInt8((value >> 8) & 0xFF)
-    dst[offset + 7] = UInt8(value & 0xFF)
+    dst[unsafe_offset=offset + 0] = UInt8((value >> 56) & 0xFF)
+    dst[unsafe_offset=offset + 1] = UInt8((value >> 48) & 0xFF)
+    dst[unsafe_offset=offset + 2] = UInt8((value >> 40) & 0xFF)
+    dst[unsafe_offset=offset + 3] = UInt8((value >> 32) & 0xFF)
+    dst[unsafe_offset=offset + 4] = UInt8((value >> 24) & 0xFF)
+    dst[unsafe_offset=offset + 5] = UInt8((value >> 16) & 0xFF)
+    dst[unsafe_offset=offset + 6] = UInt8((value >> 8) & 0xFF)
+    dst[unsafe_offset=offset + 7] = UInt8(value & 0xFF)
     return offset + 8
 
 
 def _read_u64_be(
-    src: UnsafePointer[UInt8, MutAnyOrigin], offset: Int
+    src: Pointer[UInt8, MutAnyOrigin], offset: Int
 ) -> UInt64:
     """Read a big-endian UInt64 from src at offset."""
     return (
-        (UInt64(src[offset + 0]) << 56)
-        | (UInt64(src[offset + 1]) << 48)
-        | (UInt64(src[offset + 2]) << 40)
-        | (UInt64(src[offset + 3]) << 32)
-        | (UInt64(src[offset + 4]) << 24)
-        | (UInt64(src[offset + 5]) << 16)
-        | (UInt64(src[offset + 6]) << 8)
-        | UInt64(src[offset + 7])
+        (UInt64(src[unsafe_offset=offset + 0]) << 56)
+        | (UInt64(src[unsafe_offset=offset + 1]) << 48)
+        | (UInt64(src[unsafe_offset=offset + 2]) << 40)
+        | (UInt64(src[unsafe_offset=offset + 3]) << 32)
+        | (UInt64(src[unsafe_offset=offset + 4]) << 24)
+        | (UInt64(src[unsafe_offset=offset + 5]) << 16)
+        | (UInt64(src[unsafe_offset=offset + 6]) << 8)
+        | UInt64(src[unsafe_offset=offset + 7])
     )
 
 
@@ -79,7 +80,7 @@ def generate_retry_token(
     var pt_len = 1 + len(orig_dcid) + 32 + 8
     var pt_buf = Owned[UInt8](pt_len)
     var pt_ptr = pt_buf.ptr()
-    pt_ptr[0] = UInt8(len(orig_dcid))
+    pt_ptr[unsafe_offset=0] = UInt8(len(orig_dcid))
     var off = 1
     off = _copy_span_to_ptr(orig_dcid, pt_ptr, off)
     off = _copy_span_to_ptr(client_addr_hash, pt_ptr, off)
@@ -102,7 +103,7 @@ def generate_retry_token(
     var aad_buf = Owned[UInt8](aad_len)
     var aad_ptr = aad_buf.ptr()
     for i in range(aad_len):
-        aad_ptr[i] = aad_bytes[i]
+        aad_ptr[unsafe_offset=i] = aad_bytes[i]
 
     # Output buffer: plaintext + 16-byte tag
     var out_cap = pt_len + 16
@@ -110,7 +111,7 @@ def generate_retry_token(
     var out_ptr = out_buf.ptr()
     var out_len_buf = Owned[Int32](1)
     var out_len_ptr = out_len_buf.ptr()
-    out_len_ptr[0] = Int32(0)
+    out_len_ptr[unsafe_offset=0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_seal(
         key_ptr,
@@ -172,19 +173,19 @@ def validate_retry_token(
     var nonce_buf = Owned[UInt8](12)
     var nonce_ptr = nonce_buf.ptr()
     for i in range(12):
-        nonce_ptr[i] = token[i]
+        nonce_ptr[unsafe_offset=i] = token[i]
 
     var ct_len = len(token) - 12
     var ct_buf = Owned[UInt8](ct_len)
     var ct_ptr = ct_buf.ptr()
     for i in range(ct_len):
-        ct_ptr[i] = token[12 + i]
+        ct_ptr[unsafe_offset=i] = token[12 + i]
 
     # Prepare key
     var key_buf = Owned[UInt8](16)
     var key_ptr = key_buf.ptr()
     for i in range(16):
-        key_ptr[i] = server_secret[i]
+        key_ptr[unsafe_offset=i] = server_secret[i]
 
     # Prepare AAD
     var aad_str = String("navette-retry-v1")
@@ -193,7 +194,7 @@ def validate_retry_token(
     var aad_buf = Owned[UInt8](aad_len)
     var aad_ptr = aad_buf.ptr()
     for i in range(aad_len):
-        aad_ptr[i] = aad_bytes[i]
+        aad_ptr[unsafe_offset=i] = aad_bytes[i]
 
     # Output buffer for plaintext (ct_len - 16 bytes)
     var pt_cap = ct_len - 16
@@ -204,7 +205,7 @@ def validate_retry_token(
     var out_ptr = out_buf.ptr()
     var out_len_buf = Owned[Int32](1)
     var out_len_ptr = out_len_buf.ptr()
-    out_len_ptr[0] = Int32(0)
+    out_len_ptr[unsafe_offset=0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_open(
         key_ptr,
@@ -272,44 +273,44 @@ def compute_retry_integrity_tag(
     # Fixed key: 0xbe0c690b9f66575a1d766b54e368c84e
     var key_buf = Owned[UInt8](16)
     var key_ptr = key_buf.ptr()
-    key_ptr[0] = 0xBE
-    key_ptr[1] = 0x0C
-    key_ptr[2] = 0x69
-    key_ptr[3] = 0x0B
-    key_ptr[4] = 0x9F
-    key_ptr[5] = 0x66
-    key_ptr[6] = 0x57
-    key_ptr[7] = 0x5A
-    key_ptr[8] = 0x1D
-    key_ptr[9] = 0x76
-    key_ptr[10] = 0x6B
-    key_ptr[11] = 0x54
-    key_ptr[12] = 0xE3
-    key_ptr[13] = 0x68
-    key_ptr[14] = 0xC8
-    key_ptr[15] = 0x4E
+    key_ptr[unsafe_offset=0] = 0xBE
+    key_ptr[unsafe_offset=1] = 0x0C
+    key_ptr[unsafe_offset=2] = 0x69
+    key_ptr[unsafe_offset=3] = 0x0B
+    key_ptr[unsafe_offset=4] = 0x9F
+    key_ptr[unsafe_offset=5] = 0x66
+    key_ptr[unsafe_offset=6] = 0x57
+    key_ptr[unsafe_offset=7] = 0x5A
+    key_ptr[unsafe_offset=8] = 0x1D
+    key_ptr[unsafe_offset=9] = 0x76
+    key_ptr[unsafe_offset=10] = 0x6B
+    key_ptr[unsafe_offset=11] = 0x54
+    key_ptr[unsafe_offset=12] = 0xE3
+    key_ptr[unsafe_offset=13] = 0x68
+    key_ptr[unsafe_offset=14] = 0xC8
+    key_ptr[unsafe_offset=15] = 0x4E
 
     # Fixed nonce: 0x461599d35d632bf2239825bb
     var nonce_buf = Owned[UInt8](12)
     var nonce_ptr = nonce_buf.ptr()
-    nonce_ptr[0] = 0x46
-    nonce_ptr[1] = 0x15
-    nonce_ptr[2] = 0x99
-    nonce_ptr[3] = 0xD3
-    nonce_ptr[4] = 0x5D
-    nonce_ptr[5] = 0x63
-    nonce_ptr[6] = 0x2B
-    nonce_ptr[7] = 0xF2
-    nonce_ptr[8] = 0x23
-    nonce_ptr[9] = 0x98
-    nonce_ptr[10] = 0x25
-    nonce_ptr[11] = 0xBB
+    nonce_ptr[unsafe_offset=0] = 0x46
+    nonce_ptr[unsafe_offset=1] = 0x15
+    nonce_ptr[unsafe_offset=2] = 0x99
+    nonce_ptr[unsafe_offset=3] = 0xD3
+    nonce_ptr[unsafe_offset=4] = 0x5D
+    nonce_ptr[unsafe_offset=5] = 0x63
+    nonce_ptr[unsafe_offset=6] = 0x2B
+    nonce_ptr[unsafe_offset=7] = 0xF2
+    nonce_ptr[unsafe_offset=8] = 0x23
+    nonce_ptr[unsafe_offset=9] = 0x98
+    nonce_ptr[unsafe_offset=10] = 0x25
+    nonce_ptr[unsafe_offset=11] = 0xBB
 
     # Build pseudo-Retry: orig_dcid_len (1) || orig_dcid || retry_packet_without_tag
     var aad_len = 1 + len(orig_dcid) + len(retry_packet_without_tag)
     var aad_buf = Owned[UInt8](aad_len)
     var aad_ptr = aad_buf.ptr()
-    aad_ptr[0] = UInt8(len(orig_dcid))
+    aad_ptr[unsafe_offset=0] = UInt8(len(orig_dcid))
     var off = 1
     off = _copy_span_to_ptr(orig_dcid, aad_ptr, off)
     off = _copy_span_to_ptr(retry_packet_without_tag, aad_ptr, off)
@@ -321,7 +322,7 @@ def compute_retry_integrity_tag(
     var out_ptr = out_buf.ptr()
     var out_len_buf = Owned[Int32](1)
     var out_len_ptr = out_len_buf.ptr()
-    out_len_ptr[0] = Int32(0)
+    out_len_ptr[unsafe_offset=0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_seal(
         key_ptr,

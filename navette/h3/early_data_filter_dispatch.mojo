@@ -36,7 +36,7 @@ unconditional pattern used by the existing
 """
 
 from std.collections import Optional
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from navette.h3.connection import H3Connection
 from navette.h3.error import H3_REQUEST_CANCELLED
@@ -126,10 +126,10 @@ def apply_early_data_filter(
     method_str: String,
     path_str: String,
     is_zero_rtt: Bool,
-    filter_ptr: Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]],
+    filter_ptr: Optional[Pointer[IdempotentOnlyFilter, MutAnyOrigin]],
     predicate_fn: Optional[EarlyDataPredicateFn],
     mut headers: Headers,
-    profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]],
+    profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]],
 ) raises -> FilterDispatchOutcome:
     """Consult the early-data filter or predicate for a request that
     may have arrived via 0-RTT.

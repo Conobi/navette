@@ -4,7 +4,7 @@
 # Exposes only the client-side API (no send_response, no next_request).
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.method import Method
 from navette.http.request import Request

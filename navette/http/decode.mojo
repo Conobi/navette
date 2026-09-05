@@ -5,7 +5,7 @@
 # librustls_mojo.so; split into its own shim
 # so a future zlib/brotli CVE is a `apt upgrade` away, not a Navette release.
 from std.ffi import OwnedDLHandle
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 
 # Typed FFI loaders auto-generated from crates/libcompress-mojo/symbols.toml
@@ -81,7 +81,7 @@ struct ContentDecoder(Movable):
 
     var _encoding: ContentEncoding
     var _lib: OwnedDLHandle
-    var _state: UnsafePointer[NoneType, MutAnyOrigin]
+    var _state: Pointer[NoneType, MutAnyOrigin]
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -157,7 +157,7 @@ struct ContentDecoder(Movable):
         self._lib = take._lib^
         self._state = take._state
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self._state:
             if self._encoding._tag == _ENC_GZIP:
                 load_lcm_gzip_free(self._lib)(self._state)
@@ -177,7 +177,7 @@ struct ContentDecoder(Movable):
                 out.append(data[i])
             return out^
 
-        var in_ptr = data.unsafe_ptr().bitcast[UInt8]().unsafe_mut_cast[True]().as_unsafe_any_origin()
+        var in_ptr = data.unsafe_ptr().unsafe_bitcast[UInt8]().unsafe_mut_cast[True]().as_unsafe_any_origin()
         var out_buf_owner = Owned[UInt8](_OUT_CAP)
         var out_buf = out_buf_owner.ptr()
         var n: Int64
@@ -196,7 +196,7 @@ struct ContentDecoder(Movable):
 
         var result = List[UInt8]()
         for i in range(Int(n)):
-            result.append(out_buf[i])
+            result.append(out_buf[unsafe_offset=i])
         return result^
 
     def finish(self) raises -> List[UInt8]:
@@ -226,5 +226,5 @@ struct ContentDecoder(Movable):
 
         var result = List[UInt8]()
         for i in range(Int(n)):
-            result.append(out_buf[i])
+            result.append(out_buf[unsafe_offset=i])
         return result^

@@ -16,7 +16,7 @@
 # with the conformance reference parser at conformance/lib/http1/.
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.method import Method
 from navette.http.status import StatusCode

@@ -6,8 +6,9 @@
 from std.collections import Dict
 from std.collections.deque import Deque
 from std.collections.optional import Optional
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
 from navette.h3.connection import H3Connection, H3Event
@@ -93,7 +94,7 @@ struct H3Session(Session):
         self._next_id = take._next_id
         self.received_goaway = take.received_goaway
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Free all heap-allocated client stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -101,8 +102,8 @@ struct H3Session(Session):
         for i in range(len(keys)):
             try:
                 var p = self._streams[keys[i]].ptr()
-                p.destroy_pointee()
-                p.free()
+                p.unsafe_deinit_pointee()
+                p.unsafe_free()
             except:
                 pass
 
@@ -172,7 +173,7 @@ struct H3Session(Session):
         # Allocate client context on heap
         var ctx_ptr = _heap_alloc[_H3ClientCtx](1).as_unsafe_any_origin()
         var ctx = _H3ClientCtx(handle_id=handle_id)
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._streams[Int(stream_id)] = PtrBox[_H3ClientCtx](ctx_ptr)
         self._handle_to_stream[Int(handle_id)] = Int(stream_id)
 
@@ -205,8 +206,8 @@ struct H3Session(Session):
         if ctx_ptr[].errored and not handle.is_complete():
             var ec = UInt32(ctx_ptr[].error_code)
             handle._set_error(StreamError.rst_stream(ec))
-            ctx_ptr.destroy_pointee()
-            ctx_ptr.free()
+            ctx_ptr.unsafe_deinit_pointee()
+            ctx_ptr.unsafe_free()
             try:
                 _ = self._streams.pop(stream_id)
                 _ = self._handle_to_stream.pop(hid)
@@ -216,7 +217,7 @@ struct H3Session(Session):
 
         # Happy path: response complete, not yet delivered
         if ctx_ptr[].status_code >= 0 and ctx_ptr[].complete and not handle.has_headers():
-            var ctx = ctx_ptr.take_pointee()
+            var ctx = ctx_ptr.unsafe_take_pointee()
             # Swap owned fields out of ctx so ctx can drop cleanly with empty fields
             var resp_headers = ctx.headers^
             ctx.headers = Headers()
@@ -239,7 +240,7 @@ struct H3Session(Session):
             # Remove from Dicts then free heap allocation; ctx drops with empty fields
             _ = self._streams.pop(stream_id)
             _ = self._handle_to_stream.pop(hid)
-            ctx_ptr.free()
+            ctx_ptr.unsafe_free()
 
     def capabilities(self) -> Capabilities:
         return Capabilities.for_h3()
@@ -281,8 +282,8 @@ struct H3Session(Session):
         for i in range(len(keys)):
             try:
                 var p = self._streams[keys[i]].ptr()
-                p.destroy_pointee()
-                p.free()
+                p.unsafe_deinit_pointee()
+                p.unsafe_free()
             except:
                 pass
 
@@ -320,12 +321,12 @@ struct H3Session(Session):
     def _on_response_headers(mut self, ev: H3Event) raises:
         """Parse :status and regular headers from HEADERS_RECEIVED event."""
         var sid = Int(ev.stream_id)
-        var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         for i in range(len(ev.fields)):
             var name = ev.fields[i].name
             var value = ev.fields[i].value
@@ -338,45 +339,45 @@ struct H3Session(Session):
                 ctx.headers.add(name, value)
         if ev.fin:
             ctx.complete = True
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
     def _on_response_data(mut self, ev: H3Event) raises:
         """Accumulate DATA_RECEIVED payload; mark complete on fin."""
         var sid = Int(ev.stream_id)
-        var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         for i in range(len(ev.data)):
             ctx.body_data.append(ev.data[i])
         if ev.fin:
             ctx.complete = True
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark stream complete."""
         var sid = Int(ev.stream_id)
-        var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.complete = True
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
         """STREAM_RESET: mark stream errored."""
         var sid = Int(ev.stream_id)
-        var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.errored = True
         ctx.error_code = ev.error_code
         ctx.complete = True
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)

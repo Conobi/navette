@@ -8,7 +8,7 @@
 # rather than in the C wrapper so a CLI or library user can override
 # without rebuilding the .so.
 from std.ffi import OwnedDLHandle
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 
 from navette.compress._lcm_bindings import (

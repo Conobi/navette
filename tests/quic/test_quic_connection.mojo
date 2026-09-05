@@ -9,8 +9,9 @@
 #     -D ASSERT=all tests/test_quic_connection.mojo
 
 from std.collections import Dict, Optional
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.python import Python, PythonObject
 
 from navette.tls.lib import TlsBackend, SharedLibrary

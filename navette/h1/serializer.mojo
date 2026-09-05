@@ -17,7 +17,7 @@
 #   * 304 MAY include a user-provided Content-Length but MUST NOT carry a
 #     body, so the serializer trusts the headers as-is and emits no body.
 
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.method import Method
 from navette.http.status import StatusCode

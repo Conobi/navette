@@ -15,7 +15,7 @@
 #   * serialize responses / requests / 1xx informationals into wire bytes.
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.method import Method
 from navette.http.status import StatusCode
@@ -76,7 +76,7 @@ def _compact_forward(mut buf: List[UInt8], cursor: Int):
         return
     var p = buf.unsafe_ptr()
     for i in range(keep):
-        p[i] = p[i + cursor]
+        p[unsafe_offset=i] = p[unsafe_offset=i + cursor]
     buf.resize(keep, UInt8(0))
 
 

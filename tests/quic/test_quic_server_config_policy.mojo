@@ -24,7 +24,7 @@ Both contradictory-kwargs messages include the stable substring
 refactors cannot silently break the operator-facing diagnostic.
 """
 
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.headers import Headers
 from navette.tls.lib import TlsBackend

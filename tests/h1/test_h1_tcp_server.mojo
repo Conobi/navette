@@ -13,8 +13,8 @@ and exits. Catches regressions in:
 No TLS setup needed — H1TcpServer is plaintext-only.
 """
 
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle.drivers.io_uring import IoUringDriver
 

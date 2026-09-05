@@ -4,7 +4,7 @@ Verifies acquire/release lifecycle, exhaustion semantics, and buffer
 pointer layout for the fixed-size slab pool used by proactor sendmsg.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from navette.h3.send_slab import SendSlab, SendSlabPool
 

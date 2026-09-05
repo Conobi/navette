@@ -6,7 +6,7 @@
 # principles (Mojo's String(Int) as the int-render oracle) — it does NOT share
 # code with navette/h1/serializer.mojo, so a serializer bug cannot hide in it.
 
-from std.memory import Span
+from std.collections import Span
 from navette.http import Method, StatusCode, Version, Headers, BodyFrame, Request, Response
 from navette.h1.serializer import serialize_response
 from navette.h1.connection import H1Connection

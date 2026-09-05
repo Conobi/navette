@@ -12,15 +12,15 @@ aliases the pointer; the unique owner is responsible for exactly-one
 `destroy_pointee()` + `free()` on the pointee+memory it manages.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from navette.util.null_ptr import null_ptr
 
 
 struct PtrBox[T: AnyType](Copyable, Movable):
-    var _ptr: UnsafePointer[Self.T, MutAnyOrigin]
+    var _ptr: Pointer[Self.T, MutAnyOrigin]
 
-    def __init__(out self, ptr: UnsafePointer[Self.T, MutAnyOrigin]):
+    def __init__(out self, ptr: Pointer[Self.T, MutAnyOrigin]):
         self._ptr = ptr
 
     @staticmethod
@@ -33,7 +33,7 @@ struct PtrBox[T: AnyType](Copyable, Movable):
     def __init__(out self, *, deinit take: Self):
         self._ptr = take._ptr
 
-    def ptr(self) -> UnsafePointer[Self.T, MutAnyOrigin]:
+    def ptr(self) -> Pointer[Self.T, MutAnyOrigin]:
         return self._ptr
 
     def is_some(self) -> Bool:

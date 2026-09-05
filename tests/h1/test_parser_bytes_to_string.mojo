@@ -6,7 +6,7 @@
 # invalid-UTF-8 String is never constructed. Also asserts the parser rejects
 # the same requests as before the optimization.
 
-from std.memory import Span
+from std.collections import Span
 from std.random import random_ui64, seed
 from navette.h1.parser import _bytes_to_string
 from navette.h1.connection import H1Connection

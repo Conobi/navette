@@ -14,7 +14,7 @@
 
 from std.collections.dict import Dict, KeyElement
 from std.collections.deque import Deque
-from std.memory import Span
+from std.collections import Span
 
 
 # ─────────────────────────────────────────────────────────────────────

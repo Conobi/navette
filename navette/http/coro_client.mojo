@@ -5,7 +5,7 @@
 # Wraps HttpClient with Alt-Svc integration and content decoding hooks.
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.alt_svc import Origin, AltSvcCache, AltSvcEntry, parse_alt_svc
 from navette.http.client import HttpClient
@@ -86,8 +86,8 @@ struct HttpCoroClient(Movable):
         if len(keep) > 0:
             self._client._pool[Origin(other=origin)] = keep^
         var slot_p = ptr.ptr()
-        var moved = slot_p.take_pointee()
-        slot_p.free()
+        var moved = slot_p.unsafe_take_pointee()
+        slot_p.unsafe_free()
         # Drop any handle-routing entries that pointed at the freed slot
         # so a future attach_session reusing the address cannot misroute.
         var stale_addr = Int(ptr.addr)

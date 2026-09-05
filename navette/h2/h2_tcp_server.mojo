@@ -50,8 +50,8 @@ After construction, the caller must:
   4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
 """
 
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.ffi import external_call
 
 from boucle.handle import RawHandle, OwnedHandle
@@ -79,24 +79,24 @@ def _peer_addr_from_fd(fd: Int32) -> String:
     var addr_buf = Owned[UInt8](128)
     var addr = addr_buf.ptr()
     for i in range(128):
-        addr[i] = UInt8(0)
+        addr[unsafe_offset=i] = UInt8(0)
 
     # addrlen is an in/out parameter for getpeername(2).
     var len_buf = Owned[Int32](1)
     var len_ptr = len_buf.ptr()
-    len_ptr[0] = Int32(128)
+    len_ptr[unsafe_offset=0] = Int32(128)
 
     var rc = external_call["getpeername", Int32](fd, addr, len_ptr)
     if rc < 0:
         return String("")
 
-    var family = Int(addr[0])  # sa_family low byte (LE u16)
+    var family = Int(addr[unsafe_offset=0])  # sa_family low byte (LE u16)
 
     if family == 2:  # AF_INET
         # sockaddr_in layout: family(2) port(2 BE) addr(4) zero(8)
         return (
-            String(Int(addr[4])) + "." + String(Int(addr[5])) + "."
-            + String(Int(addr[6])) + "." + String(Int(addr[7]))
+            String(Int(addr[unsafe_offset=4])) + "." + String(Int(addr[unsafe_offset=5])) + "."
+            + String(Int(addr[unsafe_offset=6])) + "." + String(Int(addr[unsafe_offset=7]))
         )
 
     if family == 10:  # AF_INET6
@@ -105,13 +105,13 @@ def _peer_addr_from_fd(fd: Int32) -> String:
         # bytes 18..19 = 0xFF, bytes 20..23 = IPv4 octets.
         var is_v4_mapped = True
         for i in range(10):
-            if addr[8 + i] != UInt8(0):
+            if addr[unsafe_offset=8 + i] != UInt8(0):
                 is_v4_mapped = False
                 break
-        if is_v4_mapped and addr[18] == UInt8(0xFF) and addr[19] == UInt8(0xFF):
+        if is_v4_mapped and addr[unsafe_offset=18] == UInt8(0xFF) and addr[unsafe_offset=19] == UInt8(0xFF):
             return (
-                String(Int(addr[20])) + "." + String(Int(addr[21])) + "."
-                + String(Int(addr[22])) + "." + String(Int(addr[23]))
+                String(Int(addr[unsafe_offset=20])) + "." + String(Int(addr[unsafe_offset=21])) + "."
+                + String(Int(addr[unsafe_offset=22])) + "." + String(Int(addr[unsafe_offset=23]))
             )
 
         # Full IPv6 — format as 8 colon-separated hex segments (no :: compression).
@@ -119,8 +119,8 @@ def _peer_addr_from_fd(fd: Int32) -> String:
         for i in range(8):
             if i > 0:
                 result += ":"
-            var hi = Int(addr[8 + 2 * i])
-            var lo = Int(addr[8 + 2 * i + 1])
+            var hi = Int(addr[unsafe_offset=8 + 2 * i])
+            var lo = Int(addr[unsafe_offset=8 + 2 * i + 1])
             var seg = (hi << 8) | lo
             # Format segment as lowercase hex (1-4 digits, no leading zeros).
             if seg == 0:
@@ -190,14 +190,14 @@ struct H2TcpConn[H: StreamHandler](Movable):
     var _closing: Bool
     var _recv_cmp: Completion
     var _send_cmp: Completion
-    var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
+    var _driver_ptr: Pointer[NoneType, MutAnyOrigin]
 
     def __init__(
         out self,
         var fd: OwnedHandle,
         var tls: TlsConnection,
         var http: H2HandlerServer[Self.H],
-        driver_ptr: UnsafePointer[NoneType, MutAnyOrigin],
+        driver_ptr: Pointer[NoneType, MutAnyOrigin],
     ):
         """Construct a new H2TcpConn.
 
@@ -250,8 +250,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
         Must be called after the H2TcpConn is at its final heap address
         (pointer stability guaranteed) and before any SQE submission.
         """
-        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self))
+        var self_ctx = Pointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
         )
         self._recv_cmp.context = self_ctx
         self._send_cmp.context = self_ctx
@@ -264,13 +264,13 @@ struct H2TcpConn[H: StreamHandler](Movable):
         """
         if self.recv_in_flight or self._closing:
             return
-        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+        var driver = Pointer[IoUringDriver, MutAnyOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
-        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._recv_cmp))
+        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._recv_cmp))
         )
-        var buf_ptr = UnsafePointer[UInt8, MutAnyOrigin](
+        var buf_ptr = Pointer[UInt8, MutAnyOrigin](
             unsafe_from_address=Int(self.recv_buf.unsafe_ptr())
         )
         driver[].submit_recv(
@@ -291,13 +291,13 @@ struct H2TcpConn[H: StreamHandler](Movable):
             return
         if len(self.send_buf) == 0:
             return
-        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+        var driver = Pointer[IoUringDriver, MutAnyOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
-        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._send_cmp))
+        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._send_cmp))
         )
-        var buf_ptr = UnsafePointer[UInt8, MutAnyOrigin](
+        var buf_ptr = Pointer[UInt8, MutAnyOrigin](
             unsafe_from_address=Int(self.send_buf.unsafe_ptr())
         )
         driver[].submit_send(
@@ -482,7 +482,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
 
 def _on_accept[H: StreamHandler](
-    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    ctx: Pointer[NoneType, MutAnyOrigin],
     result: Int32,
     flags: UInt32,
 ):
@@ -498,7 +498,7 @@ def _on_accept[H: StreamHandler](
         result: io_uring CQE result (accepted fd or negative errno).
         flags: io_uring CQE flags (unused for single-shot accept).
     """
-    var self_ptr = UnsafePointer[H2TcpServer[H], MutAnyOrigin](
+    var self_ptr = Pointer[H2TcpServer[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -508,7 +508,7 @@ def _on_accept[H: StreamHandler](
 
 
 def _on_recv[H: StreamHandler](
-    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    ctx: Pointer[NoneType, MutAnyOrigin],
     result: Int32,
     flags: UInt32,
 ):
@@ -522,7 +522,7 @@ def _on_recv[H: StreamHandler](
         result: io_uring CQE result (bytes received or negative errno).
         flags: io_uring CQE flags (unused for TCP recv).
     """
-    var self_ptr = UnsafePointer[H2TcpConn[H], MutAnyOrigin](
+    var self_ptr = Pointer[H2TcpConn[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -532,7 +532,7 @@ def _on_recv[H: StreamHandler](
 
 
 def _on_send[H: StreamHandler](
-    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    ctx: Pointer[NoneType, MutAnyOrigin],
     result: Int32,
     flags: UInt32,
 ):
@@ -546,7 +546,7 @@ def _on_send[H: StreamHandler](
         result: io_uring CQE result (bytes sent or negative errno).
         flags: io_uring CQE flags (unused for TCP send).
     """
-    var self_ptr = UnsafePointer[H2TcpConn[H], MutAnyOrigin](
+    var self_ptr = Pointer[H2TcpConn[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -578,12 +578,12 @@ struct H2TcpServer[H: StreamHandler](Movable):
     """
 
     var listen_handle: OwnedHandle
-    var connections: List[UnsafePointer[H2TcpConn[Self.H], MutAnyOrigin]]
+    var connections: List[Pointer[H2TcpConn[Self.H], MutAnyOrigin]]
     var make_handler: def () thin raises -> Self.H
     var _tls: TlsBackend
     var server_tls_config: TlsServerConfig
     var _accept_cmp: Completion
-    var _driver_ptr: UnsafePointer[NoneType, MutAnyOrigin]
+    var _driver_ptr: Pointer[NoneType, MutAnyOrigin]
     var _needs_accept_rearm: Bool
 
     def __init__(
@@ -605,7 +605,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
         """
         self.listen_handle = listen_handle^
-        self.connections = List[UnsafePointer[H2TcpConn[Self.H], MutAnyOrigin]]()
+        self.connections = List[Pointer[H2TcpConn[Self.H], MutAnyOrigin]]()
         self.make_handler = make_handler
         self._tls = tls^
         self.server_tls_config = server_tls_config^
@@ -627,12 +627,12 @@ struct H2TcpServer[H: StreamHandler](Movable):
         self._driver_ptr = take._driver_ptr
         self._needs_accept_rearm = take._needs_accept_rearm
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
         for i in range(len(self.connections)):
             var ptr = self.connections[i]
-            ptr.destroy_pointee()
-            ptr.free()
+            ptr.unsafe_deinit_pointee()
+            ptr.unsafe_free()
 
     # ── Lifecycle — wire_context / start ────────────────────────
 
@@ -642,8 +642,8 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Must be called after the H2TcpServer is at its final heap address
         (pointer stability guaranteed) and before any SQE submission.
         """
-        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self))
+        var self_ctx = Pointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
         )
         self._accept_cmp.context = self_ctx
 
@@ -656,11 +656,11 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Args:
             driver: The IoUringDriver to submit operations on.
         """
-        self._driver_ptr = UnsafePointer[NoneType, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=driver))
+        self._driver_ptr = Pointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=driver))
         )
-        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._accept_cmp))
+        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
         driver.submit_accept(self.listen_handle.raw(), cmp_ptr)
 
@@ -682,8 +682,8 @@ struct H2TcpServer[H: StreamHandler](Movable):
                 if i != last:
                     self.connections[i] = self.connections[last]
                 _ = self.connections.pop()
-                ptr.destroy_pointee()
-                ptr.free()
+                ptr.unsafe_deinit_pointee()
+                ptr.unsafe_free()
                 # Don't increment i — the swapped-in element needs checking.
             else:
                 i += 1
@@ -702,11 +702,11 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Called after each accept CQE (success or failure) to keep
         the server listening for new connections (single-shot model).
         """
-        var driver = UnsafePointer[IoUringDriver, MutAnyOrigin](
+        var driver = Pointer[IoUringDriver, MutAnyOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
-        var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._accept_cmp))
+        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
         driver[].submit_accept(self.listen_handle.raw(), cmp_ptr)
 
@@ -758,7 +758,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         )
 
         var conn_ptr = _heap_alloc[H2TcpConn[Self.H]](1).as_unsafe_any_origin()
-        conn_ptr.init_pointee_move(conn^)
+        conn_ptr.unsafe_write(conn^)
         conn_ptr[].wire_context()
         self.connections.append(conn_ptr)
 

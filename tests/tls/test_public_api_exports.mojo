@@ -10,7 +10,7 @@ generic functions verify the trait names resolve in a USE context,
 not just a re-export string match.
 """
 
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.headers import Headers
 from navette.tls import (

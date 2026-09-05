@@ -4,7 +4,7 @@
 # Verifies the full request-response round-trip through both adapters without
 # any raw H2Connection usage.  (M5.5 Task 11)
 
-from std.memory import Span
+from std.collections import Span
 
 from navette.http.handler import (
     StreamHandler,

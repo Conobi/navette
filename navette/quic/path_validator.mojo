@@ -12,8 +12,8 @@
 # PATH_CHALLENGE/RESPONSE frames and computes "now" timestamps.
 
 from std.ffi import external_call
-from std.memory import Span
-from std.memory.unsafe_pointer import alloc as _pv_alloc
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _pv_alloc
 
 
 # ── RFC 9000 limits ───────────────────────────────────────────────────────────
@@ -228,8 +228,8 @@ struct PathValidator(Movable):
         _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
         var token = List[UInt8](capacity=PATH_TOKEN_LEN)
         for i in range(PATH_TOKEN_LEN):
-            token.append(buf[i])
-        buf.free()
+            token.append(buf[unsafe_offset=i])
+        buf.unsafe_free()
         var token_copy = List[UInt8](copy=token)
         var chal = PathChallenge(token_copy^, target^, now_ns)
         self.pending.append(chal^)

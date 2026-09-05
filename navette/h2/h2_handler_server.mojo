@@ -5,8 +5,9 @@
 # lifecycle callbacks.
 
 from std.collections import Dict
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from .connection import (
     H2Connection,
@@ -124,7 +125,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._streams = take._streams^
         self._peer_addr = take._peer_addr^
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -132,8 +133,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         for i in range(len(keys)):
             try:
                 var p = self._streams[keys[i]].ptr()
-                p.destroy_pointee()
-                p.free()
+                p.unsafe_deinit_pointee()
+                p.unsafe_free()
             except:
                 pass
 
@@ -222,7 +223,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         ctx.resp_writer = resp^
         ctx.detached = detached
         ctx.request_ended = stream_ended
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
         # Store in streams dict.
         self._streams[stream_id] = PtrBox[_StreamCtx](ctx_ptr)
@@ -237,7 +238,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = self._streams[sid].ptr()
         # take_pointee moves the entire _StreamCtx out of the heap so we can
         # get mut borrows on body/resp without going through UnsafePointer.
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         # Push data into RecvBody
         if len(evt.data) > 0:
             var data_copy = evt.data.copy()
@@ -266,7 +267,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             if not ctx.detached:
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         # Move back into the heap
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         # Check if both sides are done — if so, free the context
         if evt.stream_ended:
             self._maybe_cleanup_stream(sid)
@@ -281,7 +282,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = self._streams[sid].ptr()
         var trailer_headers = headers_from_h2(evt.headers)
         # take_pointee to get mut access to recv_body/resp_writer
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
         # Notify handler that new body frames (trailers) are available
         if not ctx.detached:
@@ -292,7 +293,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             ctx.recv_body._set_end()
             if not ctx.detached:
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         # Trailers carry END_STREAM — check if both sides done
         self._maybe_cleanup_stream(sid)
 
@@ -307,13 +308,13 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         if ctx_ptr[].request_ended:
             return  # already ended (e.g. END_STREAM on HEADERS)
         # take_pointee to get mut access to body/resp
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
         if not ctx.detached:
             self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         # Move back into the heap
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         # Check if both sides done — if response already finished, free now
         self._maybe_cleanup_stream(sid)
 
@@ -323,13 +324,13 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         var err = StreamError.rst_stream(evt.error_code)
         ctx.recv_body._set_error(StreamError(other=err))
         self.handler.on_reset(err)
         # Free heap memory — both directions are dead after RST.
         # ctx was already taken out; just free the allocation.
-        ctx_ptr.free()
+        ctx_ptr.unsafe_free()
         # Remove from Dict.
         _ = self._streams.pop(sid)
 
@@ -340,8 +341,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = self._streams[stream_id].ptr()
         # Read through pointer — Bool is trivially copyable
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
-            ctx_ptr.destroy_pointee()
-            ctx_ptr.free()
+            ctx_ptr.unsafe_deinit_pointee()
+            ctx_ptr.unsafe_free()
             _ = self._streams.pop(stream_id)
 
     def _drain_responses(mut self) raises:
@@ -358,11 +359,11 @@ struct H2HandlerServer[H: StreamHandler](Movable):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
             # Use take_pointee to get mut access
-            var ctx = ctx_ptr.take_pointee()
+            var ctx = ctx_ptr.unsafe_take_pointee()
             var made_progress = False
             # Skip if response not started
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.init_pointee_move(ctx^)
+                ctx_ptr.unsafe_write(ctx^)
                 continue
             # Send response headers if not yet sent
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -405,6 +406,6 @@ struct H2HandlerServer[H: StreamHandler](Movable):
                     made_progress = True
                     break
             # Move back into the heap and maybe cleanup
-            ctx_ptr.init_pointee_move(ctx^)
+            ctx_ptr.unsafe_write(ctx^)
             if made_progress:
                 self._maybe_cleanup_stream(sid)

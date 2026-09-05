@@ -5,7 +5,8 @@
 #   uv run mojo run -I . -I conformance -D ASSERT=all tests/test_h3_e2e.mojo
 
 from std.collections.deque import Deque
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig

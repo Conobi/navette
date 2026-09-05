@@ -2,7 +2,7 @@
 #
 # Covers the 14 ACs that do not need FFI or connection state.
 
-from std.memory import Span
+from std.collections import Span
 from std.collections.dict import Dict
 
 from navette.tls.early_data_store import (

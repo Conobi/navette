@@ -10,7 +10,7 @@ Covers ACs:
 """
 
 from std.collections import Optional
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter,

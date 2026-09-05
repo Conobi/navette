@@ -12,7 +12,8 @@
 #     populated frees the prior handle before invoking FFI, regardless
 #     of FFI return code.
 
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary

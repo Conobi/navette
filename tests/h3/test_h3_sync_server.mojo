@@ -8,7 +8,8 @@
 # Run with:
 #   uv run mojo run -I . -I conformance tests/test_h3_sync_server.mojo
 
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig

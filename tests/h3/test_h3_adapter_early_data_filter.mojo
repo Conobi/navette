@@ -27,7 +27,8 @@ anti-replay test family; adapter-level coverage lives here.
 """
 
 from std.collections import Optional
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.error import H3_REQUEST_CANCELLED

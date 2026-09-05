@@ -13,8 +13,8 @@
 # rlsm_last_error helper. QUIC FFI symbols consolidated from
 # conformance/lib/rustls.mojo.
 from std.ffi import OwnedDLHandle
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.util.owned_alloc import Owned
 
 # Typed FFI loaders auto-generated from crates/librustls-mojo/symbols.toml.
@@ -215,9 +215,9 @@ struct RustlsLibrary(Movable):
     @always_inline
     def server_config_new(
         self,
-        cert_pem: UnsafePointer[UInt8, MutAnyOrigin],
+        cert_pem: Pointer[UInt8, MutAnyOrigin],
         cert_len: Int32,
-        key_pem: UnsafePointer[UInt8, MutAnyOrigin],
+        key_pem: Pointer[UInt8, MutAnyOrigin],
         key_len: Int32,
     ) -> Int32:
         """Create a TLS server config from a PEM cert chain and PEM private key.
@@ -241,7 +241,7 @@ struct RustlsLibrary(Movable):
     def tls_client_new(
         self,
         config_handle: Int32,
-        server_name: UnsafePointer[UInt8, MutAnyOrigin],
+        server_name: Pointer[UInt8, MutAnyOrigin],
         name_len: Int32,
     ) -> Int32:
         """Create a TLS client connection bound to `config_handle`.
@@ -274,7 +274,7 @@ struct RustlsLibrary(Movable):
     def tls_conn_read_tls(
         self,
         handle: Int32,
-        ciphertext: UnsafePointer[UInt8, MutAnyOrigin],
+        ciphertext: Pointer[UInt8, MutAnyOrigin],
         ct_len: Int32,
     ) -> Int32:
         """Feed received ciphertext into the rustls state machine.
@@ -290,7 +290,7 @@ struct RustlsLibrary(Movable):
     def tls_conn_write_tls(
         self,
         handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int32,
     ) -> Int32:
         """Drain pending ciphertext from rustls into `out_buf`.
@@ -308,7 +308,7 @@ struct RustlsLibrary(Movable):
     def tls_conn_read_plaintext(
         self,
         handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int32,
     ) -> Int32:
         """Read decrypted application data.
@@ -324,7 +324,7 @@ struct RustlsLibrary(Movable):
     def tls_conn_write_plaintext(
         self,
         handle: Int32,
-        data: UnsafePointer[UInt8, MutAnyOrigin],
+        data: Pointer[UInt8, MutAnyOrigin],
         data_len: Int32,
     ) -> Int32:
         """Write plaintext application data to be encrypted.
@@ -346,7 +346,7 @@ struct RustlsLibrary(Movable):
     def tls_conn_alpn(
         self,
         handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int32,
     ) -> Int32:
         """Get the negotiated ALPN protocol identifier.
@@ -364,7 +364,7 @@ struct RustlsLibrary(Movable):
     def config_set_alpn_protocols(
         self,
         config_handle: Int32,
-        protocols: UnsafePointer[UInt8, MutAnyOrigin],
+        protocols: Pointer[UInt8, MutAnyOrigin],
         protocols_len: Int32,
     ) -> Int32:
         """Set ALPN protocol preferences on a config handle.
@@ -382,7 +382,7 @@ struct RustlsLibrary(Movable):
     def initial_keys(
         self,
         version: Int32,
-        dcid: UnsafePointer[UInt8, MutAnyOrigin],
+        dcid: Pointer[UInt8, MutAnyOrigin],
         dcid_len: Int32,
         is_client: Int32,
     ) -> Int32:
@@ -404,9 +404,9 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         packet_number: UInt64,
-        header: UnsafePointer[UInt8, MutAnyOrigin],
+        header: Pointer[UInt8, MutAnyOrigin],
         header_len: Int32,
-        payload: UnsafePointer[UInt8, MutAnyOrigin],
+        payload: Pointer[UInt8, MutAnyOrigin],
         payload_len: Int32,
         buf_capacity: Int32,
     ) -> Int32:
@@ -422,9 +422,9 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         packet_number: UInt64,
-        header: UnsafePointer[UInt8, MutAnyOrigin],
+        header: Pointer[UInt8, MutAnyOrigin],
         header_len: Int32,
-        payload: UnsafePointer[UInt8, MutAnyOrigin],
+        payload: Pointer[UInt8, MutAnyOrigin],
         payload_len: Int32,
     ) -> Int32:
         """Decrypt payload in-place. Returns plaintext length or -1."""
@@ -438,10 +438,10 @@ struct RustlsLibrary(Movable):
     def keys_local_header_protect(
         self,
         keys_handle: Int32,
-        sample: UnsafePointer[UInt8, MutAnyOrigin],
+        sample: Pointer[UInt8, MutAnyOrigin],
         sample_len: Int32,
-        first_byte: UnsafePointer[UInt8, MutAnyOrigin],
-        pn_bytes: UnsafePointer[UInt8, MutAnyOrigin],
+        first_byte: Pointer[UInt8, MutAnyOrigin],
+        pn_bytes: Pointer[UInt8, MutAnyOrigin],
         pn_len: Int32,
     ) -> Int32:
         """Apply header protection (local/encrypt direction). Returns 0 or -1."""
@@ -454,10 +454,10 @@ struct RustlsLibrary(Movable):
     def keys_remote_header_unprotect(
         self,
         keys_handle: Int32,
-        sample: UnsafePointer[UInt8, MutAnyOrigin],
+        sample: Pointer[UInt8, MutAnyOrigin],
         sample_len: Int32,
-        first_byte: UnsafePointer[UInt8, MutAnyOrigin],
-        pn_bytes: UnsafePointer[UInt8, MutAnyOrigin],
+        first_byte: Pointer[UInt8, MutAnyOrigin],
+        pn_bytes: Pointer[UInt8, MutAnyOrigin],
         pn_len: Int32,
     ) -> Int32:
         """Remove header protection (remote/decrypt direction). Returns 0 or -1."""
@@ -471,11 +471,11 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         count: Int32,
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
-        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
-        out_first_bytes: UnsafePointer[UInt8, MutAnyOrigin],
-        out_pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: Pointer[Int32, MutAnyOrigin],
+        pn_offsets: Pointer[Int32, MutAnyOrigin],
+        out_first_bytes: Pointer[UInt8, MutAnyOrigin],
+        out_pn_lengths: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch header unprotection. Returns success count or -1."""
         return load_rlsm_keys_batch_header_unprotect(self._handle)(
@@ -489,11 +489,11 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         count: Int32,
-        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
-        header_lens: UnsafePointer[Int32, MutAnyOrigin],
-        out_plaintext_lens: UnsafePointer[Int32, MutAnyOrigin],
+        packet_numbers: Pointer[UInt64, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: Pointer[Int32, MutAnyOrigin],
+        header_lens: Pointer[Int32, MutAnyOrigin],
+        out_plaintext_lens: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch AEAD decryption. Returns success count or -1."""
         return load_rlsm_keys_batch_decrypt(self._handle)(
@@ -507,11 +507,11 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         count: Int32,
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: UnsafePointer[Int32, MutAnyOrigin],
-        pn_offsets: UnsafePointer[Int32, MutAnyOrigin],
-        pn_lengths: UnsafePointer[Int32, MutAnyOrigin],
-        out_results: UnsafePointer[Int32, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        packet_lens: Pointer[Int32, MutAnyOrigin],
+        pn_offsets: Pointer[Int32, MutAnyOrigin],
+        pn_lengths: Pointer[Int32, MutAnyOrigin],
+        out_results: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch header protection. Returns success count or -1."""
         return load_rlsm_keys_batch_header_protect(self._handle)(
@@ -525,12 +525,12 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         count: Int32,
-        packet_numbers: UnsafePointer[UInt64, MutAnyOrigin],
-        packet_ptrs: UnsafePointer[UnsafePointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        header_lens: UnsafePointer[Int32, MutAnyOrigin],
-        payload_lens: UnsafePointer[Int32, MutAnyOrigin],
-        buf_capacities: UnsafePointer[Int32, MutAnyOrigin],
-        out_ciphertext_lens: UnsafePointer[Int32, MutAnyOrigin],
+        packet_numbers: Pointer[UInt64, MutAnyOrigin],
+        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
+        header_lens: Pointer[Int32, MutAnyOrigin],
+        payload_lens: Pointer[Int32, MutAnyOrigin],
+        buf_capacities: Pointer[Int32, MutAnyOrigin],
+        out_ciphertext_lens: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Batch AEAD encryption. Returns success count or -1."""
         return load_rlsm_keys_batch_encrypt(self._handle)(
@@ -569,8 +569,8 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_client_config_new(
         self,
-        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        alpn_ptr: Pointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create a QUIC client TLS config with Mozilla WebPKI roots.
 
@@ -583,8 +583,8 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_client_config_new_insecure(
         self,
-        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        alpn_ptr: Pointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create a QUIC client TLS config that accepts ANY server cert.
 
@@ -599,11 +599,11 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_server_config_new(
         self,
-        cert_pem: UnsafePointer[UInt8, MutAnyOrigin], cert_len: Int32,
-        key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
-        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        cert_pem: Pointer[UInt8, MutAnyOrigin], cert_len: Int32,
+        key_pem:  Pointer[UInt8, MutAnyOrigin], key_len:  Int32,
+        alpn_ptr: Pointer[UInt8, MutAnyOrigin], alpn_len: Int32,
         max_early_data: UInt32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        out_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC server TLS config. Always-on TLS 1.3 session resumption
         (rustls aws_lc_rs Ticketer). max_early_data: 0 disables 0-RTT (default);
@@ -618,9 +618,9 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_client_config_with_ca(
         self,
-        ca_pem:   UnsafePointer[UInt8, MutAnyOrigin], ca_len:   Int32,
-        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        ca_pem:   Pointer[UInt8, MutAnyOrigin], ca_len:   Int32,
+        alpn_ptr: Pointer[UInt8, MutAnyOrigin], alpn_len: Int32,
+        out_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC client TLS config trusting ca_pem (for testing). Returns 0."""
         return load_rlsm_quic_client_config_with_ca(self._handle)(
@@ -632,9 +632,9 @@ struct RustlsLibrary(Movable):
         self,
         config_handle: Int32,
         version: Int32,
-        server_name: UnsafePointer[UInt8, MutAnyOrigin], name_len: Int32,
-        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        server_name: Pointer[UInt8, MutAnyOrigin], name_len: Int32,
+        tp: Pointer[UInt8, MutAnyOrigin], tp_len: Int32,
+        out_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC client connection. Returns 0 on success."""
         return load_rlsm_quic_client_conn_new(self._handle)(
@@ -646,8 +646,8 @@ struct RustlsLibrary(Movable):
         self,
         config_handle: Int32,
         version: Int32,
-        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        tp: Pointer[UInt8, MutAnyOrigin], tp_len: Int32,
+        out_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Create QUIC server connection. Returns 0 on success."""
         return load_rlsm_quic_server_conn_new(self._handle)(
@@ -663,10 +663,10 @@ struct RustlsLibrary(Movable):
     def quic_conn_write_hs(
         self,
         conn_handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: Pointer[UInt8, MutAnyOrigin],
         out_capacity: Int32,
-        out_written: UnsafePointer[Int32, MutAnyOrigin],
-        out_kc: UnsafePointer[UInt8, MutAnyOrigin],
+        out_written: Pointer[Int32, MutAnyOrigin],
+        out_kc: Pointer[UInt8, MutAnyOrigin],
     ) -> Int32:
         """Drain outgoing TLS bytes. out_kc: 0=none, 1=Handshake, 2=OneRtt. Returns 0."""
         return load_rlsm_quic_conn_write_hs(self._handle)(
@@ -677,10 +677,10 @@ struct RustlsLibrary(Movable):
     def quic_conn_read_hs(
         self,
         conn_handle: Int32,
-        data: UnsafePointer[UInt8, MutAnyOrigin],
+        data: Pointer[UInt8, MutAnyOrigin],
         data_len: Int32,
-        out_state_machine_us: UnsafePointer[UInt64, MutAnyOrigin] = null_ptr[UInt64, MutAnyOrigin](),
-        out_handle_lookup_us: UnsafePointer[UInt64, MutAnyOrigin] = null_ptr[UInt64, MutAnyOrigin](),
+        out_state_machine_us: Pointer[UInt64, MutAnyOrigin] = null_ptr[UInt64, MutAnyOrigin](),
+        out_handle_lookup_us: Pointer[UInt64, MutAnyOrigin] = null_ptr[UInt64, MutAnyOrigin](),
     ) -> Int32:
         """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success.
 
@@ -697,7 +697,7 @@ struct RustlsLibrary(Movable):
     def quic_conn_take_keys(
         self,
         conn_handle: Int32,
-        out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
+        out_keys_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Move pending Keys into Wave 1 KEYS_TABLE. Returns 0 on success."""
         return load_rlsm_quic_conn_take_keys(self._handle)(
@@ -718,9 +718,9 @@ struct RustlsLibrary(Movable):
     def quic_conn_transport_params(
         self,
         conn_handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: Pointer[UInt8, MutAnyOrigin],
         out_capacity: Int32,
-        out_written: UnsafePointer[Int32, MutAnyOrigin],
+        out_written: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Read peer transport params. Returns 0 (available), 1 (not yet), -1 (error)."""
         return load_rlsm_quic_conn_transport_params(self._handle)(
@@ -736,7 +736,7 @@ struct RustlsLibrary(Movable):
     def quic_server_conn_zero_rtt_keys(
         self,
         conn_handle: Int32,
-        out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
+        out_keys_handle: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """Fetch server-side 0-RTT decrypt keys into KEYS_TABLE.
 
@@ -757,8 +757,8 @@ struct RustlsLibrary(Movable):
     def quic_server_conn_replay_authenticator(
         self,
         conn_handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
-        out_len: UnsafePointer[UInt, MutAnyOrigin],
+        out_buf: Pointer[UInt8, MutAnyOrigin],
+        out_len: Pointer[UInt, MutAnyOrigin],
     ) -> Int32:
         """Fetch the 32-byte 0-RTT replay authenticator (ClientHello.random)
         captured by the shim on the first server-side `read_hs` call.
@@ -779,12 +779,12 @@ struct RustlsLibrary(Movable):
     @always_inline
     def aes_gcm_128_seal(
         self,
-        key: UnsafePointer[UInt8, MutAnyOrigin], key_len: Int32,
-        nonce: UnsafePointer[UInt8, MutAnyOrigin], nonce_len: Int32,
-        aad: UnsafePointer[UInt8, MutAnyOrigin], aad_len: Int32,
-        plaintext: UnsafePointer[UInt8, MutAnyOrigin], pt_len: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
-        out_len: UnsafePointer[Int32, MutAnyOrigin],
+        key: Pointer[UInt8, MutAnyOrigin], key_len: Int32,
+        nonce: Pointer[UInt8, MutAnyOrigin], nonce_len: Int32,
+        aad: Pointer[UInt8, MutAnyOrigin], aad_len: Int32,
+        plaintext: Pointer[UInt8, MutAnyOrigin], pt_len: Int32,
+        out_buf: Pointer[UInt8, MutAnyOrigin],
+        out_len: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """AES-GCM-128 encrypt. out_buf must hold pt_len + 16 bytes. Returns 0 or -1."""
         return load_rlsm_aes_gcm_128_seal(self._handle)(
@@ -795,12 +795,12 @@ struct RustlsLibrary(Movable):
     @always_inline
     def aes_gcm_128_open(
         self,
-        key: UnsafePointer[UInt8, MutAnyOrigin], key_len: Int32,
-        nonce: UnsafePointer[UInt8, MutAnyOrigin], nonce_len: Int32,
-        aad: UnsafePointer[UInt8, MutAnyOrigin], aad_len: Int32,
-        ciphertext: UnsafePointer[UInt8, MutAnyOrigin], ct_len: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
-        out_len: UnsafePointer[Int32, MutAnyOrigin],
+        key: Pointer[UInt8, MutAnyOrigin], key_len: Int32,
+        nonce: Pointer[UInt8, MutAnyOrigin], nonce_len: Int32,
+        aad: Pointer[UInt8, MutAnyOrigin], aad_len: Int32,
+        ciphertext: Pointer[UInt8, MutAnyOrigin], ct_len: Int32,
+        out_buf: Pointer[UInt8, MutAnyOrigin],
+        out_len: Pointer[Int32, MutAnyOrigin],
     ) -> Int32:
         """AES-GCM-128 decrypt. ct_len includes 16-byte tag. Returns 0 or -1."""
         return load_rlsm_aes_gcm_128_open(self._handle)(
@@ -821,9 +821,9 @@ struct RustlsLibrary(Movable):
     @always_inline
     def hmac_sha256(
         self,
-        key: UnsafePointer[UInt8, MutAnyOrigin], key_len: Int32,
-        msg: UnsafePointer[UInt8, MutAnyOrigin], msg_len: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        key: Pointer[UInt8, MutAnyOrigin], key_len: Int32,
+        msg: Pointer[UInt8, MutAnyOrigin], msg_len: Int32,
+        out_buf: Pointer[UInt8, MutAnyOrigin],
     ) -> Int32:
         """HMAC-SHA256. out_buf must hold 32 bytes. Returns 0 or -1."""
         return load_rlsm_hmac_sha256(self._handle)(
@@ -857,11 +857,11 @@ struct SharedLibrary(Copyable, Movable):
     the inner `RustlsLibrary` (and its `OwnedDLHandle`) is destroyed.
     """
 
-    var _ptr: UnsafePointer[_SharedLibraryInner, MutAnyOrigin]
+    var _ptr: Pointer[_SharedLibraryInner, MutAnyOrigin]
 
     def __init__(out self, var lib: RustlsLibrary):
         var p = _heap_alloc[_SharedLibraryInner](1).as_unsafe_any_origin()
-        p.init_pointee_move(_SharedLibraryInner(lib^))
+        p.unsafe_write(_SharedLibraryInner(lib^))
         self._ptr = p
 
     def __init__(out self, *, other: Self):
@@ -871,15 +871,15 @@ struct SharedLibrary(Copyable, Movable):
     def __init__(out self, *, deinit take: Self):
         self._ptr = take._ptr
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         self._ptr[].refcount -= 1
         if self._ptr[].refcount == 0:
-            self._ptr.destroy_pointee()
-            self._ptr.free()
+            self._ptr.unsafe_deinit_pointee()
+            self._ptr.unsafe_free()
 
     @always_inline
-    def inner_ptr(self) -> UnsafePointer[RustlsLibrary, MutAnyOrigin]:
-        return UnsafePointer(to=self._ptr[].lib).as_unsafe_any_origin()
+    def inner_ptr(self) -> Pointer[RustlsLibrary, MutAnyOrigin]:
+        return Pointer(to=self._ptr[].lib).as_unsafe_any_origin()
 
 
 # ── TlsBackend (public facade) ──────────────────────────────────────────────

@@ -21,7 +21,8 @@ Coverage scope:
 """
 
 from std.collections import Optional
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from boucle.stackful import CoroYielder
 

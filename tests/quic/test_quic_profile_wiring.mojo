@@ -5,7 +5,7 @@
 # compile, default to zero/null, and survive the move constructor.
 
 from std.testing import assert_equal, assert_true, assert_false
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.quic.connection import QuicConnection
 from navette.quic.profile import AcceptProfile
 

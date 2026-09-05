@@ -16,7 +16,7 @@ from navette.http.request import Request, RequestBody
 from navette.http.method import Method
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
-from std.memory import Span
+from std.collections import Span
 from tests._test_util import assert_true, assert_equal_int
 
 

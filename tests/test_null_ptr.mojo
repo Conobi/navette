@@ -1,5 +1,5 @@
 from navette.util.null_ptr import null_ptr
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.testing import assert_equal
 
 

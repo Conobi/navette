@@ -14,8 +14,9 @@
 # Run with:
 #   uv run mojo run -I . -I conformance tests/test_h3_streaming_server.mojo
 
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle.stackful import CoroYielder
 

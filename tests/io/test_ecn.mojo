@@ -5,8 +5,9 @@
 #   cd ~/Projets/perso/navette && uv run mojo run -I . -I conformance \
 #     -D ASSERT=all tests/test_ecn.mojo
 
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig

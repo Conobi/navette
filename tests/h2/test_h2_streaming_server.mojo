@@ -11,8 +11,9 @@
 #   uv run mojo run -I . -I conformance -I "$HOME/Projets/perso/boucle" \
 #       tests/test_h2_streaming_server.mojo
 
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from lib.http1.types import Header
 from lib.http2.connection import (

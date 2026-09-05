@@ -6,7 +6,7 @@ Internal module — no public API guarantees.
 """
 
 from std.ffi import external_call
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.io.file import FileHandle
 
 from navette.util.owned_alloc import Owned
@@ -317,9 +317,9 @@ def _random_txn_id() -> UInt16:
     """A random 16-bit DNS transaction id via getrandom(2) (anti-spoof)."""
     var buf = Owned[UInt8](2)
     var p = buf.ptr()
-    p[0] = UInt8(0); p[1] = UInt8(0)
+    p[unsafe_offset=0] = UInt8(0); p[unsafe_offset=1] = UInt8(0)
     _ = external_call["getrandom", Int](p, UInt64(2), UInt32(0))
-    return (UInt16(p[0]) << 8) | UInt16(p[1])
+    return (UInt16(p[unsafe_offset=0]) << 8) | UInt16(p[unsafe_offset=1])
 
 
 # ── clock helpers ──────────────────────────────────────────────────────────
@@ -330,8 +330,8 @@ def _monotonic_ms() -> UInt64:
     var ts_buf = Owned[UInt8](16)
     var ts = ts_buf.ptr()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts)
-    var sec = Int(ts.bitcast[Int64]()[])
-    var nsec_ptr = UnsafePointer[Int64, MutAnyOrigin](unsafe_from_address=Int(ts) + 8)
+    var sec = Int(ts.unsafe_bitcast[Int64]()[])
+    var nsec_ptr = Pointer[Int64, MutAnyOrigin](unsafe_from_address=Int(ts) + 8)
     var nsec = Int(nsec_ptr[])
     return UInt64(sec * 1000 + nsec // 1_000_000)
 
@@ -344,10 +344,10 @@ def _set_rcvtimeo(fd: Int32, ms: Int) raises:
     var tv_buf = Owned[UInt8](16)
     var tv = tv_buf.ptr()
     for i in range(16):
-        tv[i] = UInt8(0)
-    var sec_ptr = tv.bitcast[Int64]()
+        tv[unsafe_offset=i] = UInt8(0)
+    var sec_ptr = tv.unsafe_bitcast[Int64]()
     sec_ptr[] = Int64(ms // 1000)
-    var usec_ptr = UnsafePointer[Int64, MutAnyOrigin](unsafe_from_address=Int(tv) + 8)
+    var usec_ptr = Pointer[Int64, MutAnyOrigin](unsafe_from_address=Int(tv) + 8)
     usec_ptr[] = Int64((ms % 1000) * 1000)
     var rc = external_call["setsockopt", Int32](
         fd, _SOL_SOCKET, _SO_RCVTIMEO, tv, Int32(16)
@@ -362,7 +362,7 @@ def _send_dgram(fd: Int32, data: List[UInt8]) raises -> Int:
     var buf_owned = Owned[UInt8](n)
     var buf = buf_owned.ptr()
     for i in range(n):
-        buf[i] = data[i]
+        buf[unsafe_offset=i] = data[i]
     return external_call["send", Int](fd, buf, n, _MSG_NOSIGNAL)
 
 
@@ -374,7 +374,7 @@ def _recv_dgram(fd: Int32, max_n: Int) raises -> List[UInt8]:
     var out = List[UInt8]()
     if rc > 0:
         for i in range(rc):
-            out.append(buf[i])
+            out.append(buf[unsafe_offset=i])
     return out^
 
 
@@ -392,7 +392,7 @@ def _send_all_tcp(fd: Int32, data: List[UInt8]) raises -> Int:
         var buf_owned = Owned[UInt8](m)
         var buf = buf_owned.ptr()
         for i in range(m):
-            buf[i] = data[sent + i]
+            buf[unsafe_offset=i] = data[sent + i]
         var rc = external_call["send", Int](fd, buf, m, _MSG_NOSIGNAL)
         if rc <= 0:
             return sent
@@ -419,5 +419,5 @@ def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[UInt8]:
         if rc <= 0:
             break
         for i in range(rc):
-            out.append(buf[i])
+            out.append(buf[unsafe_offset=i])
     return out^

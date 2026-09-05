@@ -5,7 +5,8 @@
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
-from std.memory import Span, UnsafePointer
+from std.memory import Pointer
+from std.collections import Span
 
 from navette.quic.connection import (
     QuicConnection,
@@ -175,7 +176,7 @@ struct H3Connection(Movable):
     # SETTINGS frame is received with H3_DATAGRAM=1.
     var _local_h3_datagram_enabled:  Bool
     var _peer_h3_datagram_enabled:   Bool
-    var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
@@ -338,7 +339,7 @@ struct H3Connection(Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:

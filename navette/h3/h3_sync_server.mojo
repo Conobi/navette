@@ -11,8 +11,9 @@
 # rename pass can unify both names — out of scope here.
 
 from std.collections import Dict, Optional
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.sys.info import size_of
 
 from navette.quic.connection import QuicConnection
@@ -54,7 +55,7 @@ from navette.util.null_ptr import null_ptr
 # served by `src/h3/h3_streaming_server.mojo`.
 
 comptime H3BodyFn = def (
-    UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    Pointer[CoroStreamCtx, MutAnyOrigin]
 ) thin raises -> None
 
 
@@ -79,7 +80,7 @@ struct CoroStreamCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt64
-    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
+    var extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
@@ -89,7 +90,7 @@ struct CoroStreamCtx(Movable):
         var request: Request,
         caps: Capabilities,
         stream_id: UInt64,
-        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
+        extra_data: Pointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
@@ -137,10 +138,10 @@ def _check_stream_ctx_size():
 # ---------------------------------------------------------------------------
 
 
-def _free_stream(ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
+def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutAnyOrigin]):
     """Hard-destroy the CoroStreamCtx allocation."""
-    ctx_ptr.destroy_pointee()
-    ctx_ptr.free()
+    ctx_ptr.unsafe_deinit_pointee()
+    ctx_ptr.unsafe_free()
 
 
 # ---------------------------------------------------------------------------
@@ -157,36 +158,36 @@ struct CoroStreamCtxPool(Movable):
     owns initialisation/destruction of the pointee; the pool only
     manages the underlying memory."""
 
-    var _free: List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]
+    var _free: List[Pointer[CoroStreamCtx, MutAnyOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 16):
-        self._free = List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]()
+        self._free = List[Pointer[CoroStreamCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
     def __init__(out self, *, deinit take: Self):
         self._free = take._free^
         self._capacity = take._capacity
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         for i in range(len(self._free)):
-            self._free[i].free()
+            self._free[i].unsafe_free()
 
-    def acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
+    def acquire(mut self) raises -> Pointer[CoroStreamCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
         return _heap_alloc[CoroStreamCtx](1).as_unsafe_any_origin()
 
     def release(
-        mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+        mut self, ptr: Pointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
             self._free.append(ptr)
         else:
-            ptr.free()
+            ptr.unsafe_free()
 
     def idle_count(self) -> Int:
         return len(self._free)
@@ -212,7 +213,7 @@ struct H3CoroServer(Movable):
 
     var _h3: H3Connection
     var _body_fn: H3BodyFn
-    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
+    var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[List[UInt8]]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
@@ -223,7 +224,7 @@ struct H3CoroServer(Movable):
     # filter dispatch helper takes the fail-closed branch for 0-RTT
     # requests.
     var _early_data_filter_ptr: Optional[
-        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        Pointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate fn, propagated from
@@ -240,11 +241,11 @@ struct H3CoroServer(Movable):
         *,
         var quic: QuicConnection,
         body_fn: H3BodyFn,
-        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
         early_data_filter_ptr: Optional[
-            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            Pointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
@@ -269,7 +270,7 @@ struct H3CoroServer(Movable):
         self._early_data_filter_ptr = take._early_data_filter_ptr
         self._early_data_predicate_fn = take._early_data_predicate_fn
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -285,7 +286,7 @@ struct H3CoroServer(Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:
@@ -326,11 +327,11 @@ struct H3CoroServer(Movable):
         return sid in self._streams
 
     def _release_stream(
-        mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+        mut self, ctx_ptr: Pointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Destroy the CoroStreamCtx pointee and return its memory block to the
         per-connection pool (or free if over capacity)."""
-        ctx_ptr.destroy_pointee()
+        ctx_ptr.unsafe_deinit_pointee()
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self, now: UInt64) raises:
@@ -453,7 +454,7 @@ struct H3CoroServer(Movable):
         if self._h3._quic.zero_rtt_enabled:
             stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
             var _no_profile = Optional[
-                UnsafePointer[AcceptProfile, MutAnyOrigin]
+                Pointer[AcceptProfile, MutAnyOrigin]
             ](None)
             var outcome = apply_early_data_filter(
                 method_str,
@@ -490,7 +491,7 @@ struct H3CoroServer(Movable):
             ctx.recv_body._set_end()
             ctx.request_ended = True
 
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._streams[stream_id] = PtrBox[CoroStreamCtx](ctx_ptr)
 
         # Run handler synchronously — Path A simplification.
@@ -503,7 +504,7 @@ struct H3CoroServer(Movable):
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         var trailer_headers = Headers()
         for i in range(len(ev.fields)):
             var name = ev.fields[i].name
@@ -513,7 +514,7 @@ struct H3CoroServer(Movable):
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._maybe_cleanup_stream(sid)
 
     def _on_data(mut self, ev: H3Event) raises:
@@ -523,10 +524,10 @@ struct H3CoroServer(Movable):
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         var data_copy = List[UInt8](copy=ev.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark the body as ended."""
@@ -536,10 +537,10 @@ struct H3CoroServer(Movable):
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended:
             return
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
@@ -584,13 +585,13 @@ struct H3CoroServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.take_pointee()
+            var ctx = ctx_ptr.unsafe_take_pointee()
             if ctx.response_ended:
-                ctx_ptr.init_pointee_move(ctx^)
+                ctx_ptr.unsafe_write(ctx^)
                 self._maybe_cleanup_stream(sid)
                 continue
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.init_pointee_move(ctx^)
+                ctx_ptr.unsafe_write(ctx^)
                 continue
             # Send response headers
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -641,5 +642,5 @@ struct H3CoroServer(Movable):
                         pass
                     ctx.response_ended = True
                     break
-            ctx_ptr.init_pointee_move(ctx^)
+            ctx_ptr.unsafe_write(ctx^)
             self._maybe_cleanup_stream(sid)

@@ -7,10 +7,10 @@ needs (e.g. PtrBox.null, decoder-state sentinels) without changing pointer
 type or origin. @always_inline keeps the value identical (address 0).
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 
 @always_inline
-def null_ptr[T: AnyType, o: Origin]() -> UnsafePointer[T, o]:
+def null_ptr[T: AnyType, o: Origin]() -> Pointer[T, o]:
     var addr: Int = 0
-    return UnsafePointer[T, o](unsafe_from_address=addr)
+    return Pointer[T, o](unsafe_from_address=addr)

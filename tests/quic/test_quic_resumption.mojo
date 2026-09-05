@@ -11,8 +11,9 @@
 #   - E2E resumption: second conn against same ServerConfig yields kind==2
 #   - Double-count guard: _on_handshake_complete is idempotent
 
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary

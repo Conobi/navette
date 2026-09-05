@@ -3,7 +3,7 @@
 # Unit tests for ServerConnection (src/h1/server.mojo).
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.http import (
     Method,

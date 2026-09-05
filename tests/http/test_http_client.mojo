@@ -3,8 +3,9 @@
 # Unit tests for M6a HttpClient (pool, dispatch, convenience API).
 
 from std.collections.optional import Optional
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1
 from navette.http.handler import Capabilities, ALPN_H1, StreamHandler, RecvBody, ResponseWriter, StreamError
 from navette.http.request import Request, RequestBody

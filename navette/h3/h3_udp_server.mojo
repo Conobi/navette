@@ -56,8 +56,8 @@ After construction, the caller must:
 
 from std.collections import Optional
 from std.collections.dict import Dict
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle.handle import RawHandle, OwnedHandle
 from boucle.proactor.completion import Completion
@@ -108,17 +108,17 @@ comptime _BACKLOG_CAP_MULTIPLIER: Int = 2
 
 
 @always_inline
-def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
+def _read_u32_le(ptr: Pointer[UInt8, MutAnyOrigin]) -> UInt32:
     return (
-        UInt32(ptr[0])
-        | (UInt32(ptr[1]) << 8)
-        | (UInt32(ptr[2]) << 16)
-        | (UInt32(ptr[3]) << 24)
+        UInt32(ptr[unsafe_offset=0])
+        | (UInt32(ptr[unsafe_offset=1]) << 8)
+        | (UInt32(ptr[unsafe_offset=2]) << 16)
+        | (UInt32(ptr[unsafe_offset=3]) << 24)
     )
 
 
 def _sockaddr_to_path_key(
-    buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+    buf_ptr: Pointer[UInt8, MutAnyOrigin],
     addr_offset: Int,
     addr_len: Int,
 ) -> PathKey:
@@ -150,11 +150,11 @@ def _sockaddr_to_path_key(
 
     # sa_family is little-endian on Linux x86_64.
     var family = Int32(
-        Int(buf_ptr[addr_offset]) | (Int(buf_ptr[addr_offset + 1]) << 8)
+        Int(buf_ptr[unsafe_offset=addr_offset]) | (Int(buf_ptr[unsafe_offset=addr_offset + 1]) << 8)
     )
     # Port is network-order (big-endian).
-    var port_hi = UInt16(buf_ptr[addr_offset + 2])
-    var port_lo = UInt16(buf_ptr[addr_offset + 3])
+    var port_hi = UInt16(buf_ptr[unsafe_offset=addr_offset + 2])
+    var port_lo = UInt16(buf_ptr[unsafe_offset=addr_offset + 3])
     var port = (port_hi << 8) | port_lo
 
     if family == Int32(2):
@@ -162,10 +162,10 @@ def _sockaddr_to_path_key(
         if addr_len < 8:
             return PathKey.zero()
         return PathKey.from_v4(
-            buf_ptr[addr_offset + 4],
-            buf_ptr[addr_offset + 5],
-            buf_ptr[addr_offset + 6],
-            buf_ptr[addr_offset + 7],
+            buf_ptr[unsafe_offset=addr_offset + 4],
+            buf_ptr[unsafe_offset=addr_offset + 5],
+            buf_ptr[unsafe_offset=addr_offset + 6],
+            buf_ptr[unsafe_offset=addr_offset + 7],
             port,
         )
     elif family == Int32(10):
@@ -174,7 +174,7 @@ def _sockaddr_to_path_key(
             return PathKey.zero()
         var bytes = List[UInt8](capacity=16)
         for i in range(16):
-            bytes.append(buf_ptr[addr_offset + 8 + i])
+            bytes.append(buf_ptr[unsafe_offset=addr_offset + 8 + i])
         return PathKey(Int32(10), bytes^, port)
     else:
         return PathKey.zero()
@@ -193,16 +193,16 @@ struct PendingDatagram(Copyable, Movable):
     payload's first ~16 bytes (long-header or short-header).
     """
     var buf_id: UInt16
-    var buf_ptr: UnsafePointer[UInt8, MutAnyOrigin]
-    var payload_ptr: UnsafePointer[UInt8, MutAnyOrigin]
+    var buf_ptr: Pointer[UInt8, MutAnyOrigin]
+    var payload_ptr: Pointer[UInt8, MutAnyOrigin]
     var payload_len: Int
     var addr_offset: Int
     var addr_len: Int
     var dcid: List[UInt8]
 
     def __init__(out self, buf_id: UInt16,
-                 buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
-                 payload_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+                 buf_ptr: Pointer[UInt8, MutAnyOrigin],
+                 payload_ptr: Pointer[UInt8, MutAnyOrigin],
                  payload_len: Int, addr_offset: Int, addr_len: Int,
                  var dcid: List[UInt8]):
         self.buf_id = buf_id
@@ -312,14 +312,14 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     semantics (the underlying pointer was already trivially copied
     when the list grew).
     """
-    var h3: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]
+    var h3: Pointer[H3HandlerServer[Self.H], MutAnyOrigin]
     var addr: List[UInt8]
     var dcids: List[UInt64]
     var generation: UInt64
 
     def __init__(
         out self,
-        h3: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin],
+        h3: Pointer[H3HandlerServer[Self.H], MutAnyOrigin],
         var addr: List[UInt8],
         var dcids: List[UInt64],
         generation: UInt64,
@@ -409,8 +409,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _bufs_to_recycle: List[UInt16]
 
     # io_uring multishot recvmsg infrastructure.
-    var _pbuf_pool: UnsafePointer[UInt8, MutAnyOrigin]
-    var _msghdr_template: UnsafePointer[UInt8, MutAnyOrigin]
+    var _pbuf_pool: Pointer[UInt8, MutAnyOrigin]
+    var _msghdr_template: Pointer[UInt8, MutAnyOrigin]
     var _multishot_active: Bool
 
     # Owned Completions for recvmsg and timeout.
@@ -434,7 +434,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _needs_multishot_rearm: Bool
 
     # Periodic timeout for QUIC loss detection / idle close.
-    var _timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
+    var _timeout_ts: Pointer[UInt8, MutAnyOrigin]
 
     # PROFILE_ACCEPT counters (always present; dead-stripped when
     # PROFILE_ACCEPT=False at compile time).
@@ -484,15 +484,15 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self._pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_unsafe_any_origin()
         for i in range(PBUF_COUNT * PBUF_SIZE):
-            self._pbuf_pool[i] = 0
+            self._pbuf_pool[unsafe_offset=i] = 0
 
         self._msghdr_template = _heap_alloc[UInt8](_MSGHDR_SIZE).as_unsafe_any_origin()
         for i in range(_MSGHDR_SIZE):
-            self._msghdr_template[i] = 0
+            self._msghdr_template[unsafe_offset=i] = 0
         # msg_namelen at offset 8 = sizeof(sockaddr_in6). The kernel populates
         # the peer address in the provided buffer (controlled via iov_len=0
         # below — recvmsg-multishot ignores iov when buf-ring is in use).
-        self._msghdr_template[8] = 28
+        self._msghdr_template[unsafe_offset=8] = 28
         self._multishot_active = False
 
         # Completions — context set by wire_context() after heap allocation.
@@ -518,11 +518,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # 50ms periodic timeout — tv_sec=0, tv_nsec=50_000_000 LE.
         self._timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE).as_unsafe_any_origin()
         for i in range(_TIMESPEC_SIZE):
-            self._timeout_ts[i] = 0
-        self._timeout_ts[8] = 0x80
-        self._timeout_ts[9] = 0xF0
-        self._timeout_ts[10] = 0xFA
-        self._timeout_ts[11] = 0x02
+            self._timeout_ts[unsafe_offset=i] = 0
+        self._timeout_ts[unsafe_offset=8] = 0x80
+        self._timeout_ts[unsafe_offset=9] = 0xF0
+        self._timeout_ts[unsafe_offset=10] = 0xFA
+        self._timeout_ts[unsafe_offset=11] = 0x02
 
         self.profile = AcceptProfile()
 
@@ -552,7 +552,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._timeout_ts = take._timeout_ts
         self.profile = take.profile^
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Free heap allocations owned by the server.
 
         Walks any live `conn_slots`, destroying their pointees before
@@ -564,12 +564,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """
         for i in range(len(self.conn_slots)):
             var ptr = self.conn_slots[i].h3
-            ptr.destroy_pointee()
-            ptr.free()
+            ptr.unsafe_deinit_pointee()
+            ptr.unsafe_free()
         self._send_pool.teardown()
-        self._pbuf_pool.free()
-        self._msghdr_template.free()
-        self._timeout_ts.free()
+        self._pbuf_pool.unsafe_free()
+        self._msghdr_template.unsafe_free()
+        self._timeout_ts.unsafe_free()
 
     # ── Connection lookup ────────────────────────────────────────
 
@@ -623,8 +623,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
         (pointer stability guaranteed) and before any SQE submission.
         Also wires the SendSlabPool's per-slot backpointers.
         """
-        var self_ctx = UnsafePointer[NoneType, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self))
+        var self_ctx = Pointer[NoneType, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
         )
         self._recvmsg_cmp.context = self_ctx
         self._timeout_cmp.context = self_ctx
@@ -646,10 +646,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
         )
 
         # Submit multishot recvmsg.
-        var recvmsg_cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._recvmsg_cmp))
+        var recvmsg_cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._recvmsg_cmp))
         )
-        var msg_ptr = UnsafePointer[msghdr, MutAnyOrigin](
+        var msg_ptr = Pointer[msghdr, MutAnyOrigin](
             unsafe_from_address=Int(self._msghdr_template)
         )
         driver.submit_multishot_recvmsg(
@@ -658,10 +658,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._multishot_active = True
 
         # Submit initial timeout.
-        var timeout_cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._timeout_cmp))
+        var timeout_cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
         )
-        var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        var ts_ptr = Pointer[c_void, StaticConstantOrigin](
             unsafe_from_address=Int(self._timeout_ts)
         )
         driver.submit_timeout(ts_ptr, timeout_cmp_ptr)
@@ -700,12 +700,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         # 5. Re-arm multishot recvmsg if it ended.
         if self._needs_multishot_rearm:
-            var cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
+            var cmp_ptr = Pointer[Completion, MutAnyOrigin](
                 unsafe_from_address=Int(
-                    UnsafePointer(to=self._recvmsg_cmp)
+                    Pointer(to=self._recvmsg_cmp)
                 )
             )
-            var msg_ptr = UnsafePointer[msghdr, MutAnyOrigin](
+            var msg_ptr = Pointer[msghdr, MutAnyOrigin](
                 unsafe_from_address=Int(self._msghdr_template)
             )
             driver.submit_multishot_recvmsg(
@@ -718,11 +718,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
             self._needs_multishot_rearm = False
 
         # 6. Re-arm timeout.
-        var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
+        var ts_ptr = Pointer[c_void, StaticConstantOrigin](
             unsafe_from_address=Int(self._timeout_ts)
         )
-        var timeout_cmp_ptr = UnsafePointer[Completion, MutAnyOrigin](
-            unsafe_from_address=Int(UnsafePointer(to=self._timeout_cmp))
+        var timeout_cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
         )
         try:
             driver.submit_timeout(ts_ptr, timeout_cmp_ptr)
@@ -751,7 +751,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 break
             var slab = self._send_pool.slot_ptr(slot_idx)
             slab[].fill(pkt.data, pkt.addr)
-            var msg_ptr = UnsafePointer[msghdr, MutAnyOrigin](
+            var msg_ptr = Pointer[msghdr, MutAnyOrigin](
                 unsafe_from_address=Int(slab[].msghdr_ptr())
             )
             var cmp_ptr = self._send_pool.completion_ptr(slot_idx)
@@ -855,7 +855,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     def _construct_conn_handler(
         mut self, dcid: Span[UInt8, _], now: UInt64
-    ) raises -> UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]:
+    ) raises -> Pointer[H3HandlerServer[Self.H], MutAnyOrigin]:
         """Build a fresh per-connection `H3HandlerServer[H]` on the heap.
 
         Extracted from `_flush_impl`'s new-connection branch so tests can
@@ -916,7 +916,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             dcid,
             Span(dcid_copy),
             now,
-            UnsafePointer(to=self.profile),
+            Pointer(to=self.profile),
         )
 
         # Per-conn StreamHandler — produced by the user-supplied factory.
@@ -931,14 +931,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # so the pointer can be stored alongside the existing
         # `_early_data_store_ptr` shape.
         var early_data_filter_ptr_opt = Optional[
-            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            Pointer[IdempotentOnlyFilter, MutAnyOrigin]
         ](None)
         if self.server_config._early_data_filter is not None:
             var filter_ptr = rebind[
-                UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
-            ](UnsafePointer(to=self.server_config._early_data_filter.value()))
+                Pointer[IdempotentOnlyFilter, MutAnyOrigin]
+            ](Pointer(to=self.server_config._early_data_filter.value()))
             early_data_filter_ptr_opt = Optional[
-                UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+                Pointer[IdempotentOnlyFilter, MutAnyOrigin]
             ](filter_ptr)
 
         # Thread the policy's predicate-fn (if any) into the per-connection
@@ -1200,8 +1200,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
             if self.conn_slots[i].h3[].should_close():
                 var slot_h3 = self.conn_slots[i].h3
-                slot_h3.destroy_pointee()
-                slot_h3.free()
+                slot_h3.unsafe_deinit_pointee()
+                slot_h3.unsafe_free()
                 # Null out the field immediately so any later read on
                 # `conn_slots[i].h3` (before swap-and-pop overwrites
                 # the slot or `pop()` discards it) hits a clean null
@@ -1314,7 +1314,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
 
 def _on_recvmsg[H: StreamHandler](
-    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    ctx: Pointer[NoneType, MutAnyOrigin],
     result: Int32,
     flags: UInt32,
 ):
@@ -1330,7 +1330,7 @@ def _on_recvmsg[H: StreamHandler](
         result: io_uring CQE result (bytes received or negative errno).
         flags: io_uring CQE flags.
     """
-    var self_ptr = UnsafePointer[H3UdpServer[H], MutAnyOrigin](
+    var self_ptr = Pointer[H3UdpServer[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -1340,7 +1340,7 @@ def _on_recvmsg[H: StreamHandler](
 
 
 def _on_timeout[H: StreamHandler](
-    ctx: UnsafePointer[NoneType, MutAnyOrigin],
+    ctx: Pointer[NoneType, MutAnyOrigin],
     result: Int32,
     flags: UInt32,
 ):
@@ -1354,7 +1354,7 @@ def _on_timeout[H: StreamHandler](
         result: io_uring CQE result (negative errno on error).
         flags: io_uring CQE flags (unused for timeout).
     """
-    var self_ptr = UnsafePointer[H3UdpServer[H], MutAnyOrigin](
+    var self_ptr = Pointer[H3UdpServer[H], MutAnyOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:

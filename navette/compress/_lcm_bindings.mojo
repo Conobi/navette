@@ -3,20 +3,20 @@
 # Regenerate via: uv run python scripts/gen_ffi_bindings.py --schema crates/libcompress-mojo/symbols.toml --out navette/compress/_lcm_bindings.mojo
 
 from std.ffi import OwnedDLHandle
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 
 # -- Function-pointer aliases ----------------------------------------------
 
-comptime lcm_last_error_fn = def(UnsafePointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
-comptime lcm_gzip_init_fn = def(UInt64, UInt64, UInt32) abi("C") thin -> UnsafePointer[NoneType, MutAnyOrigin]
-comptime lcm_gzip_feed_fn = def(UnsafePointer[NoneType, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int, UnsafePointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
-comptime lcm_gzip_finish_fn = def(UnsafePointer[NoneType, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
-comptime lcm_gzip_free_fn = def(UnsafePointer[NoneType, MutAnyOrigin]) abi("C") thin -> None
-comptime lcm_br_init_fn = def(UInt64, UInt64, UInt32) abi("C") thin -> UnsafePointer[NoneType, MutAnyOrigin]
-comptime lcm_br_feed_fn = def(UnsafePointer[NoneType, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int, UnsafePointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
-comptime lcm_br_finish_fn = def(UnsafePointer[NoneType, MutAnyOrigin], UnsafePointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
-comptime lcm_br_free_fn = def(UnsafePointer[NoneType, MutAnyOrigin]) abi("C") thin -> None
+comptime lcm_last_error_fn = def(Pointer[UInt8, MutAnyOrigin], Int32) abi("C") thin -> Int32
+comptime lcm_gzip_init_fn = def(UInt64, UInt64, UInt32) abi("C") thin -> Pointer[NoneType, MutAnyOrigin]
+comptime lcm_gzip_feed_fn = def(Pointer[NoneType, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Int, Pointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
+comptime lcm_gzip_finish_fn = def(Pointer[NoneType, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
+comptime lcm_gzip_free_fn = def(Pointer[NoneType, MutAnyOrigin]) abi("C") thin -> None
+comptime lcm_br_init_fn = def(UInt64, UInt64, UInt32) abi("C") thin -> Pointer[NoneType, MutAnyOrigin]
+comptime lcm_br_feed_fn = def(Pointer[NoneType, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Int, Pointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
+comptime lcm_br_finish_fn = def(Pointer[NoneType, MutAnyOrigin], Pointer[UInt8, MutAnyOrigin], Int) abi("C") thin -> Int64
+comptime lcm_br_free_fn = def(Pointer[NoneType, MutAnyOrigin]) abi("C") thin -> None
 
 # -- Loader helpers --------------------------------------------------------
 

@@ -5,7 +5,7 @@
 # consult during connection establishment.
 
 from std.collections.dict import Dict, KeyElement
-from std.memory import Span
+from std.collections import Span
 
 
 struct Origin(Copyable, Movable, KeyElement):

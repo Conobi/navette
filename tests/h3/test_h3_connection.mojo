@@ -1,5 +1,5 @@
 # tests/test_h3_connection.mojo
-from std.memory import Span
+from std.collections import Span
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection

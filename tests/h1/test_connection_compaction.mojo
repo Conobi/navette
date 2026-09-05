@@ -5,7 +5,7 @@
 # forward copy (overlap-safe), reusing the backing allocation. >=1000 random
 # iterations + pinned boundaries; asserts buf == original data[cursor:len].
 
-from std.memory import Span
+from std.collections import Span
 from std.random import random_ui64, seed
 from navette.h1.connection import _compact_forward
 from navette.http import StatusCode, Version, Headers, Response

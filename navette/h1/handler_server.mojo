@@ -4,7 +4,7 @@
 # H1 ServerConnection. Owns the connection state machine and translates
 # lifecycle events into handler callbacks.
 
-from std.memory import Span
+from std.collections import Span
 from navette.h1.config import ParseConfig
 from navette.h1.server import ServerConnection
 from navette.http.body import BodyFrame

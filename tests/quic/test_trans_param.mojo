@@ -30,7 +30,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_TP_ACK_DELAY_EXP_RANGE,
     GUARD_TAG_TP_MAX_ACK_DELAY_RANGE,
 )
-from std.memory import Span
+from std.collections import Span
 from tests._test_util import assert_true
 
 

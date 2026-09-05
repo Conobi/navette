@@ -3,7 +3,7 @@
 # Tests for H2Session (M5.5 Tasks 8-9).
 
 from std.collections.deque import Deque
-from std.memory import Span
+from std.collections import Span
 
 from lib.http1.types import Header
 from lib.http2.connection import (

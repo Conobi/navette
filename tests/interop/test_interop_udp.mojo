@@ -101,8 +101,8 @@ def test_bind_and_sendto_recvfrom() raises:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 from std.ffi import external_call
-from std.memory.unsafe_pointer import alloc
-from std.memory import UnsafePointer
+from std.memory.alloc import unsafe_alloc as alloc
+from std.memory import Pointer
 
 
 def main() raises:

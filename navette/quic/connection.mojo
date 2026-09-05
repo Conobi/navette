@@ -13,7 +13,8 @@
 
 from std.collections import Dict, Optional
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 from navette.util.owned_alloc import Owned
 
 from navette.tls.lib import SharedLibrary
@@ -500,7 +501,7 @@ struct QuicConnection(Movable):
     # Iter 1 of recv_from_buffer does NOT reset profile_rustls_us_accum at
     # its top — it inherits the constructor's accumulator (zero for server,
     # Initial-key-derivation cost for client). Iter 2+ resets at top.
-    var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]]
     var profile_first_initial_us: UInt64
     var profile_rustls_us_accum: UInt64
     var profile_first_iter_done: Bool
@@ -574,7 +575,7 @@ struct QuicConnection(Movable):
     # tagged-variant wrapper when the public API exposes
     # `EarlyDataPolicy::Custom(store)`.
     var _early_data_store_ptr: Optional[
-        UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
+        Pointer[InMemoryEarlyDataStore, MutAnyOrigin]
     ]
 
     # Transient: the dispatch-loop space_idx of the packet currently
@@ -763,7 +764,7 @@ struct QuicConnection(Movable):
 
     # ── Destructor ───────────────────────────────────────────────────
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self.conn_handle >= 0:
             _ = self._lib.inner_ptr()[].quic_conn_free(self.conn_handle)
         # PacketProtect.__del__ handles key cleanup.
@@ -802,17 +803,17 @@ struct QuicConnection(Movable):
         var sni_buf_buf = Owned[UInt8](sni_len)
         var sni_buf = sni_buf_buf.ptr()
         for i in range(sni_len):
-            sni_buf[i] = sni_bytes[i]
+            sni_buf[unsafe_offset=i] = sni_bytes[i]
 
         var tp_len = len(tp_bytes)
         var tp_buf_buf = Owned[UInt8](tp_len)
         var tp_buf = tp_buf_buf.ptr()
         for i in range(tp_len):
-            tp_buf[i] = tp_bytes[i]
+            tp_buf[unsafe_offset=i] = tp_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
 
         var rlib = lib.inner_ptr()
         var rc = rlib[].quic_client_conn_new(
@@ -864,7 +865,7 @@ struct QuicConnection(Movable):
         orig_dcid: Span[UInt8, _],
         client_dcid: Span[UInt8, _],
         now: UInt64,
-        profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]] = None,
+        profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]] = None,
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
 
@@ -898,11 +899,11 @@ struct QuicConnection(Movable):
         var tp_buf_buf = Owned[UInt8](tp_len)
         var tp_buf = tp_buf_buf.ptr()
         for i in range(tp_len):
-            tp_buf[i] = tp_bytes[i]
+            tp_buf[unsafe_offset=i] = tp_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
 
         var rlib = lib.inner_ptr()
         # alloc_tls_handle_us bracket — rustls TLS session alloc FFI call.
@@ -1004,12 +1005,12 @@ struct QuicConnection(Movable):
         var buf_owned = Owned[UInt8](n)
         var buf = buf_owned.ptr()
         for i in range(n):
-            buf[i] = datagram[i]
+            buf[unsafe_offset=i] = datagram[i]
         self.recv_from_buffer(buf, n, now, ecn_mark)
 
     def recv_from_buffer(
         mut self,
-        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutAnyOrigin],
         buf_len: Int,
         now: UInt64,
         ecn_mark: UInt8 = UInt8(0),
@@ -1050,11 +1051,11 @@ struct QuicConnection(Movable):
             # Skip datagram-level zero padding (RFC 9000 §12.4).
             # A zero first byte is never a valid QUIC packet (long headers
             # require bit 7, short headers require bit 6).
-            if buf[offset] == 0:
+            if buf[unsafe_offset=offset] == 0:
                 break
 
             var remaining_len = buf_len - offset
-            var remaining_ptr = buf + offset
+            var remaining_ptr = buf.unsafe_offset(offset)
 
             # 2. Parse packet header from a Span backed by the caller's
             # buffer directly. The prior implementation copied
@@ -2630,7 +2631,7 @@ struct QuicConnection(Movable):
                     var data_buf_owned = Owned[UInt8](len(crypto_data))
                     var data_buf = data_buf_owned.ptr()
                     for i in range(len(crypto_data)):
-                        data_buf[i] = crypto_data[i]
+                        data_buf[unsafe_offset=i] = crypto_data[i]
                     var input_marshalling_us: UInt64 = 0
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
@@ -2655,8 +2656,8 @@ struct QuicConnection(Movable):
                                 self.conn_handle,
                                 data_buf,
                                 Int32(len(crypto_data)),
-                                UnsafePointer(to=out_sm_us),
-                                UnsafePointer(to=out_lookup_us),
+                                Pointer(to=out_sm_us),
+                                Pointer(to=out_lookup_us),
                             )
                         else:
                             rc = lib[].quic_conn_read_hs(
@@ -2718,8 +2719,8 @@ struct QuicConnection(Movable):
         var out_kc = out_kc_owned.ptr()
 
         while True:
-            out_written[0] = Int32(0)
-            out_kc[0] = UInt8(0)
+            out_written[unsafe_offset=0] = Int32(0)
+            out_kc[unsafe_offset=0] = UInt8(0)
 
             var t_start: UInt64 = 0
             comptime if PROFILE_ACCEPT:
@@ -2883,7 +2884,7 @@ struct QuicConnection(Movable):
         var tp_buf = tp_buf_owned.ptr()
         var tp_written_owned = Owned[Int32](1)
         var tp_written = tp_written_owned.ptr()
-        tp_written[0] = Int32(0)
+        tp_written[unsafe_offset=0] = Int32(0)
 
         var lib = self._lib.inner_ptr()
         var rc = lib[].quic_conn_transport_params(
@@ -3088,7 +3089,7 @@ struct QuicConnection(Movable):
                 var buf_ptr_owned = Owned[UInt8](len(pkt))
                 var buf_ptr = buf_ptr_owned.ptr()
                 for i in range(len(pkt)):
-                    buf_ptr[i] = pkt[i]
+                    buf_ptr[unsafe_offset=i] = pkt[i]
                 # The Owned wrapper frees `buf_ptr_owned` on every path —
                 # normal loop-iteration exit AND the per-packet raise
                 # unwind — so no `finally` free is needed. The except below
@@ -3193,7 +3194,7 @@ struct QuicConnection(Movable):
         return rlib[].quic_server_conn_replay_authenticator(
             self.conn_handle,
             out_buf.unsafe_ptr(),
-            UnsafePointer(to=out_len),
+            Pointer(to=out_len),
         )
 
     def _drive_replay_check_for_test(
@@ -4469,7 +4470,7 @@ def _generate_random_cid() raises -> List[UInt8]:
         raise "getrandom failed"
     var cid = List[UInt8](capacity=8)
     for i in range(8):
-        cid.append(buf[i])
+        cid.append(buf[unsafe_offset=i])
     # Keep buf_owned alive across the post-FFI `buf[i]` copy loop above.
     _ = buf_owned
     return cid^

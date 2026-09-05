@@ -3,7 +3,7 @@
 # Unit tests for the H1Connection state machine (src/h1/connection.mojo).
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.http import (
     Method,

@@ -9,7 +9,7 @@
 # Requires librustls_mojo.so built with `--features insecure`.
 from navette.tls import TlsBackend, TlsClientConfig, TlsServerConfig, TlsConnection
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
-from std.memory import Span
+from std.collections import Span
 from std.io.file import FileHandle
 
 
