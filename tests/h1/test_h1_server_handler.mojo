@@ -21,7 +21,7 @@ struct HelloHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(

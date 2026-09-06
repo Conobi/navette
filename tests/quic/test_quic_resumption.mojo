@@ -27,11 +27,18 @@ from tests._test_util import assert_true, assert_equal_int, load_test_cert, load
 def test_quic_handshake_kind_invalid_handle_returns_minus_one() raises:
     """An invalid conn handle must yield -1 with last_error set."""
     var tls = TlsBackend()
-    var rlib = tls.shared().inner_ptr()
+    # `shared` has to be a named binding that is still referenced after the
+    # FFI calls below. `inner_ptr()` hands back an untracked pointer, so the
+    # checker cannot see that those calls depend on it; left as a temporary,
+    # ASAP destruction closes the dylib on the very line that opens it and
+    # the symbol lookup aborts with "Dylib handle is null".
+    var shared = tls.shared()
+    var rlib = shared.inner_ptr()
     var rc = rlib[].quic_conn_handshake_kind(Int32(-99))
     assert_equal_int(Int(rc), -1, "invalid handle must return -1")
     var err = rlib[].last_error()
-    assert_true(len(err) > 0, "last_error must be set on invalid handle")
+    assert_true(Bool(err), "last_error must be set on invalid handle")
+    _ = shared.inner_ptr()  # anchor: keep the dylib open past the calls above
 
 
 def test_quic_handshake_kind_client_returns_minus_two() raises:
@@ -85,6 +92,11 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
     assert_equal_int(Int(k), -2, "client conn must return -2 from handshake_kind")
 
     _ = lib.quic_conn_free(conn_handle[0])
+    # `lib` is a `ref` through an untracked pointer, so the checker cannot
+    # see that any FFI call above depends on `shared`. Without this anchor
+    # ASAP destruction closes the dylib right after `inner_ptr()` and the
+    # first symbol lookup aborts with "Dylib handle is null".
+    _ = shared.inner_ptr()
     _ = alpn_owned
     _ = sni_owned
     _ = tp_owned
@@ -170,7 +182,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # into the same counters.
     var profile_heap = _heap_alloc[AcceptProfile](1)
     profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap.as_unsafe_any_origin()
+    var p_ptr = profile_heap
 
     var params = _resumption_params()
     var now = UInt64(1_000_000)
@@ -309,7 +321,7 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
     profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap.as_unsafe_any_origin()
+    var p_ptr = profile_heap
 
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
@@ -396,7 +408,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
     profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap.as_unsafe_any_origin()
+    var p_ptr = profile_heap
 
     var params = _resumption_params()
     var now = UInt64(3_000_000)

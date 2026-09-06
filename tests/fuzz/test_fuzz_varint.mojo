@@ -1,7 +1,7 @@
 # tests/fuzz/test_fuzz_varint.mojo
 #
 # Property-test fuzz: QUIC variable-length integers (RFC 9000 §16).
-# Oracle: conformance/lib/varint (independent reference impl, 65 LoC).
+# Oracle: conformance/oracle/varint (independent reference impl, 65 LoC).
 # Production: navette.quic.codec.varint_{encode,decode,len}
 #
 # Properties:
@@ -18,8 +18,8 @@ from tests.fuzz.lib.generators import random_bytes_geom
 from tests.fuzz.lib.corpus import load_corpus_dir, save_disagreement
 from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
-from lib.cursor import ByteReader as OracleReader, ByteWriter as OracleWriter
-from lib.varint import varint_encode as oracle_encode, varint_decode as oracle_decode
+from oracle.cursor import ByteReader as OracleReader, ByteWriter as OracleWriter
+from oracle.varint import varint_encode as oracle_encode, varint_decode as oracle_decode
 
 from navette.quic.codec import (
     varint_encode as prod_encode,

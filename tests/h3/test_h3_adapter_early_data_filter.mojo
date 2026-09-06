@@ -84,11 +84,11 @@ struct RecordingHandler(StreamHandler):
         self.last_early_data_header = String("")
         self.last_caps_is_early_data = False
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move-from ctor for trait-bound generic code."""
-        self.calls = take.calls
-        self.last_early_data_header = take.last_early_data_header^
-        self.last_caps_is_early_data = take.last_caps_is_early_data
+        self.calls = move.calls
+        self.last_early_data_header = move.last_early_data_header^
+        self.last_caps_is_early_data = move.last_caps_is_early_data
 
     def on_request(
         mut self,
@@ -161,7 +161,7 @@ def _make_server(
     stream.
 
     Caller MUST keep `filter` and `prof` alive past the server's
-    lifetime — they are stack-rooted UnsafePointer references.
+    lifetime — they are stack-rooted Pointer references.
     """
     var tp = default_transport_params()
     var dcid_a = List[UInt8]()
@@ -173,12 +173,14 @@ def _make_server(
     var quic = QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
     )
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var filter_ptr = Optional[
-        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
-    ](UnsafePointer(to=filter))
+        Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
+    ](Pointer(to=filter).unsafe_origin_cast[MutUntrackedOrigin]())
     return H3HandlerServer[RecordingHandler](
         quic=quic^,
         handler=RecordingHandler(),
@@ -498,8 +500,10 @@ def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
     var quic = QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), UInt64(1_000_000),
     )
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var server = H3HandlerServer[RecordingHandler](
         quic=quic^,
@@ -570,8 +574,10 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     var quic = QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), UInt64(1_000_000),
     )
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var server = H3HandlerServer[RecordingHandler](
         quic=quic^,

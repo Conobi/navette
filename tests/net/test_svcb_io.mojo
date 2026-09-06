@@ -19,15 +19,15 @@ struct _Bound(Copyable, Movable):
         self.tcp_fd = tcp_fd
         self.port = port
 
-    def __init__(out self, *, other: Self):
-        self.udp_fd = other.udp_fd
-        self.tcp_fd = other.tcp_fd
-        self.port = other.port
+    def __init__(out self, *, copy: Self):
+        self.udp_fd = copy.udp_fd
+        self.tcp_fd = copy.tcp_fd
+        self.port = copy.port
 
-    def __init__(out self, *, deinit take: Self):
-        self.udp_fd = take.udp_fd
-        self.tcp_fd = take.tcp_fd
-        self.port = take.port
+    def __init__(out self, *, deinit move: Self):
+        self.udp_fd = move.udp_fd
+        self.tcp_fd = move.tcp_fd
+        self.port = move.port
 
 
 def _loopback_sockaddr(port: Int) -> Owned[UInt8]:

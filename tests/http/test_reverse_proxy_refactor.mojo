@@ -36,7 +36,7 @@ struct BackendEcho(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -72,8 +72,8 @@ struct ProxyHandler[Backend: Session](StreamHandler):
     def __init__(out self, *, var backend: Self.Backend):
         self.backend = backend^
 
-    def __init__(out self, *, deinit take: Self):
-        self.backend = take.backend^
+    def __init__(out self, *, deinit move: Self):
+        self.backend = move.backend^
 
     def on_request(
         mut self,
@@ -88,17 +88,17 @@ struct ProxyHandler[Backend: Session](StreamHandler):
             raise Error("ProxyHandler: try_detach returned None")
         var detached = detached_opt.unsafe_take()
         var outbound = Request(
-            method=Method(other=req.method),
+            method=Method(copy=req.method),
             target=req.target,
-            headers=Headers(other=req.headers),
+            headers=Headers(copy=req.headers),
             body=RequestBody.stream(detached^),
         )
         var handle = self.backend.submit(outbound^)
         self.backend.run_one(handle)
         var backend_resp = handle^.take_response()
         resp.send_status(
-            StatusCode(other=backend_resp.status),
-            Headers(other=backend_resp.headers),
+            StatusCode(copy=backend_resp.status),
+            Headers(copy=backend_resp.headers),
         )
         resp.end()
 

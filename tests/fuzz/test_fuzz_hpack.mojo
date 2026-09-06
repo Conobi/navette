@@ -1,7 +1,7 @@
 # tests/fuzz/test_fuzz_hpack.mojo
 #
 # Property-test fuzz: HPACK decoder.
-# Oracle: conformance/lib/http2/hpack_oracle.HpackOracleDecoder (independent
+# Oracle: conformance/oracle/http2/hpack_oracle.HpackOracleDecoder (independent
 #         800-LoC impl, AC0b 3-divergences-named).
 # Production: navette.h2.hpack.HpackDecoder
 #
@@ -19,8 +19,8 @@ from tests.fuzz.lib.generators import random_bytes_geom, mutate
 from tests.fuzz.lib.corpus import load_corpus_dir, save_disagreement
 from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
-from lib.http2.hpack_oracle import HpackOracleDecoder
-from lib.http1.types import Header
+from oracle.http2.hpack_oracle import HpackOracleDecoder
+from oracle.http1.types import Header
 
 from navette.h2.hpack import HpackDecoder as ProdHpackDecoder, HpackEncoder as ProdHpackEncoder
 

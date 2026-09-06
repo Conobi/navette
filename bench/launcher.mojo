@@ -8,9 +8,10 @@
 # 500ms timeout. No module-level mutable vars needed.
 
 from std.ffi import external_call
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.util.owned_alloc import Owned
+from navette.util.null_ptr import null_ptr
 
 
 # ---------------------------------------------------------------------------
@@ -54,19 +55,19 @@ struct ProcessInfo(Copyable, Movable):
         self.restart_count = 0
         self.dead = False
 
-    def __init__(out self, *, other: Self):
-        self.pid = other.pid
-        self.server_type = String(copy=other.server_type)
-        self.worker_id = other.worker_id
-        self.restart_count = other.restart_count
-        self.dead = other.dead
+    def __init__(out self, *, copy: Self):
+        self.pid = copy.pid
+        self.server_type = String(copy=copy.server_type)
+        self.worker_id = copy.worker_id
+        self.restart_count = copy.restart_count
+        self.dead = copy.dead
 
-    def __init__(out self, *, deinit take: Self):
-        self.pid = take.pid
-        self.server_type = take.server_type^
-        self.worker_id = take.worker_id
-        self.restart_count = take.restart_count
-        self.dead = take.dead
+    def __init__(out self, *, deinit move: Self):
+        self.pid = move.pid
+        self.server_type = move.server_type^
+        self.worker_id = move.worker_id
+        self.restart_count = move.restart_count
+        self.dead = move.dead
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +91,14 @@ def _setenv(name: String, value: String):
     var name_buf_buf = Owned[UInt8](len(name_bytes) + 1)
     var name_buf = name_buf_buf.ptr()
     for i in range(len(name_bytes)):
-        name_buf[i] = name_bytes[i]
-    name_buf[len(name_bytes)] = 0
+        name_buf[unsafe_offset=i] = name_bytes[i]
+    name_buf[unsafe_offset=len(name_bytes)] = 0
 
     var val_buf_buf = Owned[UInt8](len(val_bytes) + 1)
     var val_buf = val_buf_buf.ptr()
     for i in range(len(val_bytes)):
-        val_buf[i] = val_bytes[i]
-    val_buf[len(val_bytes)] = 0
+        val_buf[unsafe_offset=i] = val_bytes[i]
+    val_buf[unsafe_offset=len(val_bytes)] = 0
 
     _ = external_call["setenv", Int32](name_buf, val_buf, Int32(1))
     # Keep buffers alive across the setenv FFI call above.
@@ -115,8 +116,8 @@ def _find_binary(name: String) raises -> String:
     var path_buf_buf = Owned[UInt8](len(docker_bytes) + 1)
     var path_buf = path_buf_buf.ptr()
     for i in range(len(docker_bytes)):
-        path_buf[i] = docker_bytes[i]
-    path_buf[len(docker_bytes)] = 0
+        path_buf[unsafe_offset=i] = docker_bytes[i]
+    path_buf[unsafe_offset=len(docker_bytes)] = 0
 
     var rc = external_call["access", Int32](path_buf, Int32(1))
     # Keep path_buf alive across the access FFI call above.
@@ -130,8 +131,8 @@ def _find_binary(name: String) raises -> String:
     var path_buf2_buf = Owned[UInt8](len(local_bytes) + 1)
     var path_buf2 = path_buf2_buf.ptr()
     for i in range(len(local_bytes)):
-        path_buf2[i] = local_bytes[i]
-    path_buf2[len(local_bytes)] = 0
+        path_buf2[unsafe_offset=i] = local_bytes[i]
+    path_buf2[unsafe_offset=len(local_bytes)] = 0
 
     var rc2 = external_call["access", Int32](path_buf2, Int32(1))
     # Keep path_buf2 alive across the access FFI call above.
@@ -170,14 +171,18 @@ def _spawn_worker(binary_path: String, server_type: String, worker_id: Int) rais
         var path_buf_buf = Owned[UInt8](len(path_bytes) + 1)
         var path_buf = path_buf_buf.ptr()
         for i in range(len(path_bytes)):
-            path_buf[i] = path_bytes[i]
-        path_buf[len(path_bytes)] = 0
+            path_buf[unsafe_offset=i] = path_bytes[i]
+        path_buf[unsafe_offset=len(path_bytes)] = 0
 
         # Build argv: [path, NULL]
-        var argv_buf = Owned[UnsafePointer[UInt8, MutAnyOrigin]](2)
+        var argv_buf = Owned[Pointer[UInt8, MutUntrackedOrigin]](2)
         var argv = argv_buf.ptr()
-        argv[0] = path_buf.as_unsafe_any_origin()
-        argv[1] = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
+        # `Owned.ptr()` hands back a pointer tracked to the buffer; the argv
+        # array is declared untracked because execv keeps it past that scope.
+        argv[unsafe_offset=0] = Pointer[UInt8, MutUntrackedOrigin](
+            unsafe_from_address=Int(path_buf)
+        )
+        argv[unsafe_offset=1] = null_ptr[UInt8, MutUntrackedOrigin]()
 
         _ = external_call["execv", Int32](path_buf, argv)
 
@@ -209,18 +214,18 @@ def _kill_children(children: List[ProcessInfo], sig: Int32):
             _ = external_call["kill", Int32](children[i].pid, sig)
 
 
-def _make_sigset(sig1: Int32, sig2: Int32) -> UnsafePointer[UInt8, MutAnyOrigin]:
+def _make_sigset(sig1: Int32, sig2: Int32) -> Pointer[UInt8, MutUntrackedOrigin]:
     """Create a sigset_t with sig1 and sig2 added."""
-    var ss = _heap_alloc[UInt8](SIGSET_SIZE).as_unsafe_any_origin()
+    var ss = _heap_alloc[UInt8](SIGSET_SIZE)
     # sigemptyset: zero all 128 bytes
     for i in range(SIGSET_SIZE):
-        ss[i] = 0
+        ss[unsafe_offset=i] = 0
     # sigaddset: set bit (sig - 1) in the bitmask
     # Signal N is bit (N-1) in the 1024-bit set.
     var bit1 = Int(sig1) - 1
-    ss[bit1 // 8] = ss[bit1 // 8] | UInt8(1 << (bit1 % 8))
+    ss[unsafe_offset=bit1 // 8] = ss[unsafe_offset=bit1 // 8] | UInt8(1 << (bit1 % 8))
     var bit2 = Int(sig2) - 1
-    ss[bit2 // 8] = ss[bit2 // 8] | UInt8(1 << (bit2 % 8))
+    ss[unsafe_offset=bit2 // 8] = ss[unsafe_offset=bit2 // 8] | UInt8(1 << (bit2 % 8))
     return ss
 
 
@@ -232,7 +237,7 @@ def _make_sigset(sig1: Int32, sig2: Int32) -> UnsafePointer[UInt8, MutAnyOrigin]
 def main() raises:
     # Block SIGTERM and SIGINT so they can be caught by sigtimedwait.
     var sigset = _make_sigset(SIGTERM, SIGINT)
-    var null_set = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
+    var null_set = null_ptr[UInt8, MutUntrackedOrigin]()
     _ = external_call["sigprocmask", Int32](SIG_BLOCK, sigset, null_set)
 
     # Read worker count from BENCH_WORKERS env (default: CPU count).
@@ -243,18 +248,18 @@ def main() raises:
     var env_buf_buf = Owned[UInt8](len(env_bytes) + 1)
     var env_buf = env_buf_buf.ptr()
     for i in range(len(env_bytes)):
-        env_buf[i] = env_bytes[i]
-    env_buf[len(env_bytes)] = 0
+        env_buf[unsafe_offset=i] = env_bytes[i]
+    env_buf[unsafe_offset=len(env_bytes)] = 0
 
-    var env_ptr = external_call["getenv", UnsafePointer[UInt8, MutAnyOrigin]](env_buf)
+    var env_ptr = external_call["getenv", Pointer[UInt8, MutUntrackedOrigin]](env_buf)
     # Keep env_buf alive across the getenv FFI call above.
     _ = env_buf_buf
 
     if Int(env_ptr) != 0:
         var val = 0
         var j = 0
-        while env_ptr[j] != 0 and j < 10:
-            var digit = Int(env_ptr[j]) - 48
+        while env_ptr[unsafe_offset=j] != 0 and j < 10:
+            var digit = Int(env_ptr[unsafe_offset=j]) - 48
             if digit >= 0 and digit <= 9:
                 val = val * 10 + digit
             j += 1
@@ -274,22 +279,22 @@ def main() raises:
     var proto_env_buf_buf = Owned[UInt8](len(proto_env_bytes) + 1)
     var proto_env_buf = proto_env_buf_buf.ptr()
     for i in range(len(proto_env_bytes)):
-        proto_env_buf[i] = proto_env_bytes[i]
-    proto_env_buf[len(proto_env_bytes)] = 0
+        proto_env_buf[unsafe_offset=i] = proto_env_bytes[i]
+    proto_env_buf[unsafe_offset=len(proto_env_bytes)] = 0
 
-    var proto_ptr = external_call["getenv", UnsafePointer[UInt8, MutAnyOrigin]](proto_env_buf)
+    var proto_ptr = external_call["getenv", Pointer[UInt8, MutUntrackedOrigin]](proto_env_buf)
     # Keep proto_env_buf alive across the getenv FFI call above.
     _ = proto_env_buf_buf
 
     var protocol_filter = String("")
     if Int(proto_ptr) != 0:
         var pf_len = 0
-        while proto_ptr[pf_len] != 0 and pf_len < 10:
+        while proto_ptr[unsafe_offset=pf_len] != 0 and pf_len < 10:
             pf_len += 1
         if pf_len > 0:
             var pf_bytes = List[UInt8]()
             for i in range(pf_len):
-                pf_bytes.append(proto_ptr[i])
+                pf_bytes.append(proto_ptr[unsafe_offset=i])
             protocol_filter = String(from_utf8=pf_bytes^)
 
     if protocol_filter:
@@ -338,14 +343,14 @@ def main() raises:
     var ts_buf = Owned[UInt8](TIMESPEC_SIZE)
     var ts = ts_buf.ptr()
     for i in range(TIMESPEC_SIZE):
-        ts[i] = 0
+        ts[unsafe_offset=i] = 0
     # tv_sec = 0, tv_nsec = 500_000_000 (500ms) = 0x1DCD6500 LE
-    ts[8] = 0x00
-    ts[9] = 0x65
-    ts[10] = 0xCD
-    ts[11] = 0x1D
+    ts[unsafe_offset=8] = 0x00
+    ts[unsafe_offset=9] = 0x65
+    ts[unsafe_offset=10] = 0xCD
+    ts[unsafe_offset=11] = 0x1D
 
-    var null_info = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(0))
+    var null_info = null_ptr[UInt8, MutUntrackedOrigin]()
     var shutdown = False
 
     while not shutdown:
@@ -361,13 +366,13 @@ def main() raises:
                 i += 1
                 continue
 
-            status_buf[0] = 0
+            status_buf[unsafe_offset=0] = 0
             var wpid = external_call["waitpid", Int32](
                 children[i].pid, status_buf, WNOHANG
             )
 
             if wpid > 0:
-                var exit_status = Int(status_buf[0])
+                var exit_status = Int(status_buf[unsafe_offset=0])
                 print(
                     "[launcher] "
                     + children[i].server_type
@@ -430,7 +435,7 @@ def main() raises:
     for i in range(len(children)):
         if children[i].dead:
             continue
-        status_buf[0] = 0
+        status_buf[unsafe_offset=0] = 0
         var wpid = external_call["waitpid", Int32](
             children[i].pid, status_buf, WNOHANG
         )
@@ -447,7 +452,7 @@ def main() raises:
                 children[i].pid, status_buf, Int32(0)
             )
 
-    sigset.free()
+    sigset.unsafe_free()
     # Keep Owned buffers alive across the monitor loop's FFI calls above.
     _ = ts_buf
     _ = status_buf_buf

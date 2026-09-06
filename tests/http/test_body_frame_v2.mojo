@@ -31,7 +31,7 @@ def test_existing_data_still_works() raises:
 
 def test_copy_preserves_error_variant() raises:
     var f = BodyFrame.error(StreamError.peer_closed())
-    var g = BodyFrame(other=f)
+    var g = BodyFrame(copy=f)
     assert_true(g.is_error(), "copy.is_error")
     assert_equal_int(g.error().kind, STREAM_ERR_PEER_CLOSED, "copy.kind")
 

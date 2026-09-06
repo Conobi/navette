@@ -24,10 +24,11 @@ from std.collections import Optional
 from std.memory import Pointer
 from std.collections import Span
 
-from boucle.stackful import CoroYielder
-
 from navette.h3.h3_handler_server import H3HandlerServer
-from navette.h3.h3_streaming_server import H3StreamingServer
+from navette.h3.h3_streaming_server import (
+    H3StreamingServer,
+    H3StreamingYielder,
+)
 from navette.h3.h3_sync_server import H3CoroServer, CoroStreamCtx
 from navette.http.handler import (
     Capabilities,
@@ -57,7 +58,7 @@ struct _NoopHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -135,12 +136,14 @@ def _make_cfg(lib: TlsBackend) raises -> QuicServerConfig:
 
 
 def _noop_body_fn(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     pass
 
 
-def _noop_streaming_handler(mut yld: CoroYielder) raises:
+def _noop_streaming_handler(mut yld: H3StreamingYielder) raises:
+    """Streaming handler that does nothing — these tests only assert that the
+    adapter stores the 0-RTT predicate, never that a request is served."""
     pass
 
 

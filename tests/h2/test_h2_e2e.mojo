@@ -36,8 +36,8 @@ struct _EchoHandler(StreamHandler):
     def __init__(out self):
         self._body_buf = List[UInt8]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._body_buf = take._body_buf^
+    def __init__(out self, *, deinit move: Self):
+        self._body_buf = move._body_buf^
 
     def on_request(
         mut self,

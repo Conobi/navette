@@ -5,8 +5,8 @@
 from std.collections.deque import Deque
 from std.collections import Span
 
-from lib.http1.types import Header
-from lib.http2.connection import (
+from oracle.http1.types import Header
+from oracle.http2.connection import (
     H2Connection,
     H2Config,
     H2Event,

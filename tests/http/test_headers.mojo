@@ -124,7 +124,7 @@ def test_copy() raises:
     """Headers is copyable."""
     var h = Headers()
     h.add("Host", "example.com")
-    var h2 = Headers(other=h)
+    var h2 = Headers(copy=h)
     assert_equal_int(len(h2), 1, "copy len")
     assert_equal_str(h2.get("host"), "example.com", "copy value")
 

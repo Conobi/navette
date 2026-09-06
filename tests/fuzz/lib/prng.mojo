@@ -15,8 +15,8 @@ struct SplitMix64(Copyable, Movable):
     def __init__(out self, seed: UInt64):
         self.state = seed
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state
 
     def next_u64(mut self) -> UInt64:
         self.state = self.state + UInt64(0x9E3779B97F4A7C15)

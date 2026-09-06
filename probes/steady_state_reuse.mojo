@@ -5,7 +5,7 @@
 # allocations (stable unsafe_ptr). Inbound reuse goes through _compact_forward;
 # outbound reuse through the clear()-based drain_into. Run under ASSERT=all.
 
-from std.memory import Span
+from std.collections import Span
 from navette.h1.connection import _compact_forward
 
 

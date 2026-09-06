@@ -1,13 +1,25 @@
-# bench/h3_server.mojo
+# bench/servers/h3_server.mojo
 #
 # HTTP/3 QUIC benchmark server for HttpArena on port 8443 (UDP).
 #
-# Uses boucle BatchCompletionLoop with multishot recvmsg and provided
-# buffer rings for high-performance UDP I/O.
+# Uses boucle's IoUringDriver with multishot recvmsg and classic
+# IORING_OP_PROVIDE_BUFFERS provided buffers for high-performance UDP I/O.
+#
+# Every operation carries its own `Completion`, whose address the kernel
+# returns as the CQE user_data. The singleton operations (multishot recvmsg,
+# the 50ms timer, buffer re-provision) each own a Completion on the server;
+# each in-flight sendmsg owns one on its heap-allocated `UdpTxSlot`, which is
+# how the completion finds the buffers to release. Nothing is dispatched on a
+# token any more.
+#
+# Submission is inline: SQEs land in the unsynced submission queue and are
+# flushed by the next `tick()`, so io_uring_enter still runs once per loop
+# iteration, exactly as the previous drain-after-poll structure did.
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.collections import Dict, InlineArray
 
 from navette.tls.lib import TlsBackend, SharedLibrary
@@ -29,18 +41,18 @@ from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
 from interop.udp import monotonic_us
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us as profile_monotonic_us
 
-from boucle import BatchCompletionLoop, BatchCompletionHandler
-from boucle.completion import IORING_CQE_F_BUFFER, IORING_CQE_F_MORE, IORING_CQE_BUFFER_SHIFT
-from boucle.ctypes import c_void
-from boucle.handle import RawHandle
+from boucle.proactor.completion import Completion
+from boucle.drivers.io_uring import IoUringDriver
+from boucle.socle.linux.raw import (
+    IORING_CQE_F_BUFFER,
+    IORING_CQE_F_MORE,
+    IORING_CQE_BUFFER_SHIFT,
+    msghdr,
+)
+from navette.util.null_ptr import null_ptr
 
 
 # ── constants ──────────────────────────────────────────────────────────
-
-comptime OP_RECVMSG: UInt8 = 0
-comptime OP_SENDMSG: UInt8 = 1
-comptime OP_TIMEOUT: UInt8 = 2
-comptime OP_PROVIDE_BUF: UInt8 = 3
 
 comptime DATAGRAM_BUF_SIZE: Int = 1500
 comptime ADDR_SIZE: Int = 28
@@ -54,9 +66,7 @@ comptime SO_REUSEPORT: Int32 = 15
 comptime IPPROTO_IPV6: Int32 = 41
 comptime IPV6_V6ONLY: Int32 = 26
 
-comptime _SUBMIT_SENDMSG: UInt8 = 1
-comptime _SUBMIT_TIMEOUT: UInt8 = 2
-
+comptime _SQ_ENTRIES: Int = 4096
 comptime PBUF_COUNT: Int = 1024
 comptime PBUF_SIZE: Int = 1600
 comptime PBUF_GROUP_ID: UInt16 = 0
@@ -95,18 +105,18 @@ comptime PROFILE_SIGTERM: Int32 = 15
 def _profile_signal_handler(signo: Int32):
     # Async-signal-safe: store `1` to the fixed-address flag word. No
     # allocation, no print, no Mojo runtime.
-    var p = UnsafePointer[Int32, MutAnyOrigin](
+    var p = Pointer[Int32, MutUntrackedOrigin](
         unsafe_from_address=PROFILE_FLAG_ADDR
     )
-    p[0] = Int32(1)
+    p[unsafe_offset=0] = Int32(1)
 
 
 def _profile_install_signal_handlers() raises:
     """Map the flag page and install SIGINT/SIGTERM handlers."""
-    var hint = UnsafePointer[NoneType, MutAnyOrigin](
+    var hint = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=PROFILE_FLAG_ADDR
     )
-    var mapped = external_call["mmap", UnsafePointer[NoneType, MutAnyOrigin]](
+    var mapped = external_call["mmap", Pointer[NoneType, MutUntrackedOrigin]](
         hint,
         Int(4096),
         PROFILE_PROT_RW,
@@ -119,39 +129,35 @@ def _profile_install_signal_handlers() raises:
         # address is already mapped (instead of silently clobbering), or
         # ENOMEM under low memory. Either way, we cannot use the flag page.
         raise "_profile_install_signal_handlers: mmap failed (address already in use or out of memory)"
-    var p = UnsafePointer[Int32, MutAnyOrigin](
+    var p = Pointer[Int32, MutUntrackedOrigin](
         unsafe_from_address=PROFILE_FLAG_ADDR
     )
-    p[0] = Int32(0)
+    p[unsafe_offset=0] = Int32(0)
 
     var fn_ptr: def(Int32) thin -> None = _profile_signal_handler
-    var fp_value = UnsafePointer(to=fn_ptr).bitcast[UInt64]()[0]
-    var handler_ptr = UnsafePointer[NoneType, MutAnyOrigin](
+    var fp_value = Pointer(to=fn_ptr).unsafe_bitcast[UInt64]()[]
+    var handler_ptr = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(fp_value)
     )
-    _ = external_call["signal", UnsafePointer[NoneType, MutAnyOrigin]](
+    _ = external_call["signal", Pointer[NoneType, MutUntrackedOrigin]](
         PROFILE_SIGINT, handler_ptr
     )
-    _ = external_call["signal", UnsafePointer[NoneType, MutAnyOrigin]](
+    _ = external_call["signal", Pointer[NoneType, MutUntrackedOrigin]](
         PROFILE_SIGTERM, handler_ptr
     )
 
 
 @always_inline
 def _profile_dump_pending() -> Bool:
-    var p = UnsafePointer[Int32, MutAnyOrigin](
+    var p = Pointer[Int32, MutUntrackedOrigin](
         unsafe_from_address=PROFILE_FLAG_ADDR
     )
-    return p[0] != Int32(0)
-
-
-def _encode_token(slot_idx: UInt64, op_kind: UInt8) -> UInt64:
-    return (slot_idx << 8) | UInt64(op_kind)
+    return p[unsafe_offset=0] != Int32(0)
 
 
 @always_inline
-def _read_u32_le(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> UInt32:
-    return UInt32(ptr[0]) | (UInt32(ptr[1]) << 8) | (UInt32(ptr[2]) << 16) | (UInt32(ptr[3]) << 24)
+def _read_u32_le(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> UInt32:
+    return UInt32(ptr[unsafe_offset=0]) | (UInt32(ptr[unsafe_offset=1]) << 8) | (UInt32(ptr[unsafe_offset=2]) << 16) | (UInt32(ptr[unsafe_offset=3]) << 24)
 
 
 def _zpad2_int(n: Int) -> String:
@@ -193,8 +199,8 @@ def _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
 
 struct PendingDatagram(Copyable, Movable):
     var buf_id: UInt16
-    var buf_ptr: UnsafePointer[UInt8, MutAnyOrigin]
-    var payload_ptr: UnsafePointer[UInt8, MutAnyOrigin]
+    var buf_ptr: Pointer[UInt8, MutUntrackedOrigin]
+    var payload_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var payload_len: Int
     var addr_offset: Int
     var addr_len: Int
@@ -204,8 +210,8 @@ struct PendingDatagram(Copyable, Movable):
     # and any computed `now - arrival_us` delta is meaningless.
     var arrival_us: UInt64
 
-    def __init__(out self, buf_id: UInt16, buf_ptr: UnsafePointer[UInt8, MutAnyOrigin],
-                 payload_ptr: UnsafePointer[UInt8, MutAnyOrigin], payload_len: Int,
+    def __init__(out self, buf_id: UInt16, buf_ptr: Pointer[UInt8, MutUntrackedOrigin],
+                 payload_ptr: Pointer[UInt8, MutUntrackedOrigin], payload_len: Int,
                  addr_offset: Int, addr_len: Int, var dcid: List[UInt8],
                  arrival_us: UInt64 = UInt64(0)):
         self.buf_id = buf_id
@@ -217,167 +223,194 @@ struct PendingDatagram(Copyable, Movable):
         self.dcid = dcid^
         self.arrival_us = arrival_us
 
-    def __init__(out self, *, other: Self):
-        self.buf_id = other.buf_id
-        self.buf_ptr = other.buf_ptr
-        self.payload_ptr = other.payload_ptr
-        self.payload_len = other.payload_len
-        self.addr_offset = other.addr_offset
-        self.addr_len = other.addr_len
-        self.dcid = List[UInt8](copy=other.dcid)
-        self.arrival_us = other.arrival_us
+    def __init__(out self, *, copy: Self):
+        self.buf_id = copy.buf_id
+        self.buf_ptr = copy.buf_ptr
+        self.payload_ptr = copy.payload_ptr
+        self.payload_len = copy.payload_len
+        self.addr_offset = copy.addr_offset
+        self.addr_len = copy.addr_len
+        self.dcid = List[UInt8](copy=copy.dcid)
+        self.arrival_us = copy.arrival_us
 
-    def __init__(out self, *, deinit take: Self):
-        self.buf_id = take.buf_id
-        self.buf_ptr = take.buf_ptr
-        self.payload_ptr = take.payload_ptr
-        self.payload_len = take.payload_len
-        self.addr_offset = take.addr_offset
-        self.addr_len = take.addr_len
-        self.dcid = take.dcid^
-        self.arrival_us = take.arrival_us
+    def __init__(out self, *, deinit move: Self):
+        self.buf_id = move.buf_id
+        self.buf_ptr = move.buf_ptr
+        self.payload_ptr = move.payload_ptr
+        self.payload_len = move.payload_len
+        self.addr_offset = move.addr_offset
+        self.addr_len = move.addr_len
+        self.dcid = move.dcid^
+        self.arrival_us = move.arrival_us
 
 
 # ── UdpTxSlot ─────────────────────────────────────────────────────────
 
 
 struct UdpTxSlot(Movable):
-    """Dynamically allocated send buffer set for a single sendmsg operation."""
+    """Buffers for a single sendmsg, plus the Completion it is submitted under.
 
-    var msghdr_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var iov_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var addr_buf: UnsafePointer[UInt8, MutAnyOrigin]
-    var data_buf: UnsafePointer[UInt8, MutAnyOrigin]
+    The slot is heap-allocated, so `cmp`'s address is stable for as long as
+    the kernel holds the operation. When the completion fires it hands this
+    slot straight back, and `_owner` leads from there to the server that
+    must release it -- no token, no side table.
+    """
+
+    var msghdr_buf: Pointer[UInt8, MutUntrackedOrigin]
+    var iov_buf: Pointer[UInt8, MutUntrackedOrigin]
+    var addr_buf: Pointer[UInt8, MutUntrackedOrigin]
+    var data_buf: Pointer[UInt8, MutUntrackedOrigin]
+    var cmp: Completion
+    var _owner: Pointer[NoneType, MutUntrackedOrigin]
 
     def __init__(out self, var data: List[UInt8], addr: List[UInt8]):
+        """Allocate and wire the msghdr/iovec/addr/data buffers.
+
+        Args:
+            data: Datagram payload, moved in and copied into `data_buf`.
+            addr: Peer sockaddr bytes, copied into `addr_buf`.
+        """
+        self.cmp = Completion(
+            invoke=_on_sendmsg, context=null_ptr[NoneType, MutUntrackedOrigin]()
+        )
+        self._owner = null_ptr[NoneType, MutUntrackedOrigin]()
         var data_len = len(data)
 
-        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE).as_unsafe_any_origin()
-        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE).as_unsafe_any_origin()
-        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE).as_unsafe_any_origin()
-        self.data_buf = _heap_alloc[UInt8](data_len).as_unsafe_any_origin()
+        self.msghdr_buf = _heap_alloc[UInt8](MSGHDR_SIZE)
+        self.iov_buf = _heap_alloc[UInt8](IOVEC_SIZE)
+        self.addr_buf = _heap_alloc[UInt8](ADDR_SIZE)
+        self.data_buf = _heap_alloc[UInt8](data_len)
 
         # Copy data
         for i in range(data_len):
-            self.data_buf[i] = data[i]
+            self.data_buf[unsafe_offset=i] = data[i]
 
         # Copy addr (up to ADDR_SIZE bytes)
         var addr_len = len(addr)
         for i in range(ADDR_SIZE):
             if i < addr_len:
-                self.addr_buf[i] = addr[i]
+                self.addr_buf[unsafe_offset=i] = addr[i]
             else:
-                self.addr_buf[i] = 0
+                self.addr_buf[unsafe_offset=i] = 0
 
         # Zero msghdr
         for i in range(MSGHDR_SIZE):
-            self.msghdr_buf[i] = 0
+            self.msghdr_buf[unsafe_offset=i] = 0
         # Zero iov
         for i in range(IOVEC_SIZE):
-            self.iov_buf[i] = 0
+            self.iov_buf[unsafe_offset=i] = 0
 
         var msghdr = self.msghdr_buf
 
         # offset 0: msg_name = addr_buf pointer
         var addr_ptr_val = UInt64(Int(self.addr_buf))
-        var addr_ptr_bytes = UnsafePointer(to=addr_ptr_val).bitcast[UInt8]()
+        var addr_ptr_bytes = Pointer(to=addr_ptr_val).unsafe_bitcast[UInt8]()
         for i in range(8):
-            msghdr[i] = addr_ptr_bytes[i]
+            msghdr[unsafe_offset=i] = addr_ptr_bytes[unsafe_offset=i]
 
         # offset 8: msg_namelen = 28
         var namelen = UInt32(ADDR_SIZE)
-        var namelen_bytes = UnsafePointer(to=namelen).bitcast[UInt8]()
+        var namelen_bytes = Pointer(to=namelen).unsafe_bitcast[UInt8]()
         for i in range(4):
-            msghdr[8 + i] = namelen_bytes[i]
+            msghdr[unsafe_offset=8 + i] = namelen_bytes[unsafe_offset=i]
 
         # offset 16: msg_iov = iov_buf pointer
         var iov_ptr_val = UInt64(Int(self.iov_buf))
-        var iov_ptr_bytes = UnsafePointer(to=iov_ptr_val).bitcast[UInt8]()
+        var iov_ptr_bytes = Pointer(to=iov_ptr_val).unsafe_bitcast[UInt8]()
         for i in range(8):
-            msghdr[16 + i] = iov_ptr_bytes[i]
+            msghdr[unsafe_offset=16 + i] = iov_ptr_bytes[unsafe_offset=i]
 
         # offset 24: msg_iovlen = 1
         var iovlen = UInt64(1)
-        var iovlen_bytes = UnsafePointer(to=iovlen).bitcast[UInt8]()
+        var iovlen_bytes = Pointer(to=iovlen).unsafe_bitcast[UInt8]()
         for i in range(8):
-            msghdr[24 + i] = iovlen_bytes[i]
+            msghdr[unsafe_offset=24 + i] = iovlen_bytes[unsafe_offset=i]
 
         # Wire iovec
         var iov = self.iov_buf
         var data_ptr_val = UInt64(Int(self.data_buf))
-        var data_ptr_bytes = UnsafePointer(to=data_ptr_val).bitcast[UInt8]()
+        var data_ptr_bytes = Pointer(to=data_ptr_val).unsafe_bitcast[UInt8]()
         for i in range(8):
-            iov[i] = data_ptr_bytes[i]
+            iov[unsafe_offset=i] = data_ptr_bytes[unsafe_offset=i]
 
         var iov_len = UInt64(data_len)
-        var iov_len_bytes = UnsafePointer(to=iov_len).bitcast[UInt8]()
+        var iov_len_bytes = Pointer(to=iov_len).unsafe_bitcast[UInt8]()
         for i in range(8):
-            iov[8 + i] = iov_len_bytes[i]
+            iov[unsafe_offset=8 + i] = iov_len_bytes[unsafe_offset=i]
 
-    def __init__(out self, *, deinit take: Self):
-        self.msghdr_buf = take.msghdr_buf
-        self.iov_buf = take.iov_buf
-        self.addr_buf = take.addr_buf
-        self.data_buf = take.data_buf
+    def __init__(out self, *, deinit move: Self):
+        """Move constructor."""
+        self.msghdr_buf = move.msghdr_buf
+        self.iov_buf = move.iov_buf
+        self.addr_buf = move.addr_buf
+        self.data_buf = move.data_buf
+        self.cmp = move.cmp^
+        self._owner = move._owner
+
+    def wire_context(mut self, owner: Pointer[NoneType, MutUntrackedOrigin]):
+        """Point `cmp` at this slot's final heap address.
+
+        Must run after the slot reaches its permanent address and before
+        the sendmsg SQE is queued.
+
+        Args:
+            owner: Type-erased pointer to the owning H3UdpHandler.
+        """
+        self.cmp.context = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
+        )
+        self._owner = owner
 
     def free(mut self):
         """Free all 4 heap buffers."""
-        self.msghdr_buf.free()
-        self.iov_buf.free()
-        self.addr_buf.free()
-        self.data_buf.free()
-
-
-# ── PendingSubmit ─────────────────────────────────────────────────────
-
-
-struct PendingSubmit(Copyable, Movable):
-    var kind: UInt8
-    var slot_idx: UInt64
-
-    def __init__(out self, kind: UInt8, slot_idx: UInt64):
-        self.kind = kind
-        self.slot_idx = slot_idx
-
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.slot_idx = other.slot_idx
-
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.slot_idx = take.slot_idx
+        self.msghdr_buf.unsafe_free()
+        self.iov_buf.unsafe_free()
+        self.addr_buf.unsafe_free()
+        self.data_buf.unsafe_free()
 
 
 # ── H3UdpHandler ─────────────────────────────────────────────────────
 
 
-struct H3UdpHandler(BatchCompletionHandler):
-    """BatchCompletionHandler for UDP-based H3 server using io_uring
-    with multishot recvmsg and provided buffer rings."""
+struct H3UdpHandler(Movable):
+    """UDP-based H3 benchmark server driven by io_uring completions.
+
+    Ingress is one multishot recvmsg over a classic provided-buffer group;
+    egress is one sendmsg per datagram, each owning its own `UdpTxSlot`.
+    The recvmsg, timer and buffer-re-provision operations each own a
+    Completion here, so the kernel routes their CQEs back by pointer.
+
+    Must be heap-allocated before use: those Completions and every
+    `UdpTxSlot._owner` store this struct's address, so it may not move
+    afterwards.
+    """
 
     var udp_fd: Int32
     var conn_dcid_map: Dict[UInt64, Int]
-    var conn_h3s: List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]
+    var conn_h3s: List[Pointer[H3HandlerServer[BenchHandler], MutUntrackedOrigin]]
     var conn_addrs: List[List[UInt8]]
     # Per-conn list of DCID-u64 keys we inserted into conn_dcid_map.
     # Used by _handle_timeout to remove ALL of a conn's entries on swap-and-pop
     # (B-permissive dual-DCID strategy: each conn has 2 entries — initial_dcid
     # AND local_cid).
     var conn_dcids: List[List[UInt64]]
-    var pbuf_pool: UnsafePointer[UInt8, MutAnyOrigin]
+    var pbuf_pool: Pointer[UInt8, MutUntrackedOrigin]
     var pending_rx: List[PendingDatagram]
     var multishot_active: Bool
     var consumed_bufs: List[UInt16]
-    var msghdr_template: UnsafePointer[UInt8, MutAnyOrigin]
-    var tx_slots: List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]
-    var tx_slot_tokens: List[UInt64]
-    var tx_slot_idx_by_token: Dict[UInt64, Int]
-    var next_tx_id: UInt64
-    var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
+    var msghdr_template: Pointer[UInt8, MutUntrackedOrigin]
+    var state_ptr: Pointer[BenchState, MutUntrackedOrigin]
     var tls_lib: SharedLibrary
     var server_config: QuicServerConfig
-    var timeout_ts: UnsafePointer[UInt8, MutAnyOrigin]
-    var pending_submits: List[PendingSubmit]
+    var timeout_ts: Pointer[UInt8, MutUntrackedOrigin]
+    # Completions for the three singleton operations. The multishot recvmsg
+    # fires `_recvmsg_cmp` once per datagram; `_provide_cmp` is shared by
+    # every buffer re-provision because that completion carries no state
+    # (its old token was decoded straight into a no-op branch).
+    var _recvmsg_cmp: Completion
+    var _timeout_cmp: Completion
+    var _provide_cmp: Completion
+    var _driver: Pointer[NoneType, MutUntrackedOrigin]
     # Plan B profile (always present; dead in off-build).
     var profile: AcceptProfile
     var last_flush_end_us: UInt64
@@ -399,49 +432,63 @@ struct H3UdpHandler(BatchCompletionHandler):
     def __init__(
         out self,
         udp_fd: Int32,
-        state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+        state_ptr: Pointer[BenchState, MutUntrackedOrigin],
         var tls_lib: SharedLibrary,
         var server_config: QuicServerConfig,
     ):
+        """Build the server with unwired Completions.
+
+        Args:
+            udp_fd: Bound dual-stack UDP socket.
+            state_ptr: Shared benchmark state (static cache + dataset).
+            tls_lib: The rustls shared library handle.
+            server_config: QUIC server config (certs + transport params).
+        """
         self.udp_fd = udp_fd
         self.conn_dcid_map = Dict[UInt64, Int]()
-        self.conn_h3s = List[UnsafePointer[H3HandlerServer[BenchHandler], MutAnyOrigin]]()
+        self.conn_h3s = List[Pointer[H3HandlerServer[BenchHandler], MutUntrackedOrigin]]()
         self.conn_addrs = List[List[UInt8]]()
         self.conn_dcids = List[List[UInt64]]()
-        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_unsafe_any_origin()
+        self.pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE)
         for i in range(PBUF_COUNT * PBUF_SIZE):
-            self.pbuf_pool[i] = 0
+            self.pbuf_pool[unsafe_offset=i] = 0
         self.pending_rx = List[PendingDatagram]()
         self.multishot_active = False
         self.consumed_bufs = List[UInt16]()
-        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE).as_unsafe_any_origin()
+        self.msghdr_template = _heap_alloc[UInt8](MSGHDR_SIZE)
         for i in range(MSGHDR_SIZE):
-            self.msghdr_template[i] = 0
+            self.msghdr_template[unsafe_offset=i] = 0
         # msg_namelen at offset 8 = 28 (sockaddr_in6 size) — kernel
         # needs this to populate the peer address in provided buffers.
-        self.msghdr_template[8] = 28
+        self.msghdr_template[unsafe_offset=8] = 28
         # msg_iovlen stays 0: for multishot recvmsg with provided buffers
         # the kernel ignores msg_iov, but import_iovec still validates
         # the pointer if iovlen > 0 — setting iovlen=1 with iov=NULL
         # causes EFAULT.
-        self.tx_slots = List[UnsafePointer[UdpTxSlot, MutAnyOrigin]]()
-        self.tx_slot_tokens = List[UInt64]()
-        self.tx_slot_idx_by_token = Dict[UInt64, Int]()
-        self.next_tx_id = UInt64(0)
         self.state_ptr = state_ptr
         self.tls_lib = tls_lib^
         self.server_config = server_config^
-        self.pending_submits = List[PendingSubmit]()
+        self._recvmsg_cmp = Completion(
+            invoke=_on_recvmsg, context=null_ptr[NoneType, MutUntrackedOrigin]()
+        )
+        self._timeout_cmp = Completion(
+            invoke=_on_timeout, context=null_ptr[NoneType, MutUntrackedOrigin]()
+        )
+        self._provide_cmp = Completion(
+            invoke=_on_provide_buf,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self._driver = null_ptr[NoneType, MutUntrackedOrigin]()
 
         # Allocate timeout timespec (16 bytes): 50ms = 50_000_000 ns LE.
-        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE).as_unsafe_any_origin()
+        self.timeout_ts = _heap_alloc[UInt8](TIMESPEC_SIZE)
         for i in range(TIMESPEC_SIZE):
-            self.timeout_ts[i] = 0
+            self.timeout_ts[unsafe_offset=i] = 0
         # tv_nsec at offset 8 = 50_000_000 = 0x02FAF080 LE
-        self.timeout_ts[8] = 0x80
-        self.timeout_ts[9] = 0xF0
-        self.timeout_ts[10] = 0xFA
-        self.timeout_ts[11] = 0x02
+        self.timeout_ts[unsafe_offset=8] = 0x80
+        self.timeout_ts[unsafe_offset=9] = 0xF0
+        self.timeout_ts[unsafe_offset=10] = 0xFA
+        self.timeout_ts[unsafe_offset=11] = 0x02
 
         self.profile = AcceptProfile()
         self.last_flush_end_us = UInt64(0)
@@ -455,39 +502,47 @@ struct H3UdpHandler(BatchCompletionHandler):
         # Q-IO-1 — per-wake CQE count (snapshot+reset by event loop).
         self.cqes_this_wake_count = UInt64(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.udp_fd = take.udp_fd
-        self.conn_dcid_map = take.conn_dcid_map^
-        self.conn_h3s = take.conn_h3s^
-        self.conn_addrs = take.conn_addrs^
-        self.conn_dcids = take.conn_dcids^
-        self.pbuf_pool = take.pbuf_pool
-        self.pending_rx = take.pending_rx^
-        self.multishot_active = take.multishot_active
-        self.consumed_bufs = take.consumed_bufs^
-        self.msghdr_template = take.msghdr_template
-        self.tx_slots = take.tx_slots^
-        self.tx_slot_tokens = take.tx_slot_tokens^
-        self.tx_slot_idx_by_token = take.tx_slot_idx_by_token^
-        self.next_tx_id = take.next_tx_id
-        self.state_ptr = take.state_ptr
-        self.tls_lib = take.tls_lib^
-        self.server_config = take.server_config^
-        self.timeout_ts = take.timeout_ts
-        self.pending_submits = take.pending_submits^
-        self.profile = take.profile^
-        self.last_flush_end_us = take.last_flush_end_us
-        self.enobufs_count = take.enobufs_count
-        self.multishot_term_count = take.multishot_term_count
-        self.quic_server_err_count = take.quic_server_err_count
-        self.h3_handler_err_count = take.h3_handler_err_count
-        self.feed_datagram_err_count = take.feed_datagram_err_count
-        self.quic_server_err_first = take.quic_server_err_first
-        self.cqes_this_wake_count = take.cqes_this_wake_count
+    def __init__(out self, *, deinit move: Self):
+        """Move constructor."""
+        self.udp_fd = move.udp_fd
+        self.conn_dcid_map = move.conn_dcid_map^
+        self.conn_h3s = move.conn_h3s^
+        self.conn_addrs = move.conn_addrs^
+        self.conn_dcids = move.conn_dcids^
+        self.pbuf_pool = move.pbuf_pool
+        self.pending_rx = move.pending_rx^
+        self.multishot_active = move.multishot_active
+        self.consumed_bufs = move.consumed_bufs^
+        self.msghdr_template = move.msghdr_template
+        self.state_ptr = move.state_ptr
+        self.tls_lib = move.tls_lib^
+        self.server_config = move.server_config^
+        self.timeout_ts = move.timeout_ts
+        self._recvmsg_cmp = move._recvmsg_cmp^
+        self._timeout_cmp = move._timeout_cmp^
+        self._provide_cmp = move._provide_cmp^
+        self._driver = move._driver
+        self.profile = move.profile^
+        self.last_flush_end_us = move.last_flush_end_us
+        self.enobufs_count = move.enobufs_count
+        self.multishot_term_count = move.multishot_term_count
+        self.quic_server_err_count = move.quic_server_err_count
+        self.h3_handler_err_count = move.h3_handler_err_count
+        self.feed_datagram_err_count = move.feed_datagram_err_count
+        self.quic_server_err_first = move.quic_server_err_first
+        self.cqes_this_wake_count = move.cqes_this_wake_count
 
     # --- Conn lookup ---
 
     def _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
+        """Map a DCID to a connection index.
+
+        Args:
+            dcid_u64: First 8 DCID bytes packed into a u64.
+
+        Returns:
+            The connection index, or -1 when the DCID is unknown.
+        """
         if dcid_u64 in self.conn_dcid_map:
             try:
                 return self.conn_dcid_map[dcid_u64]
@@ -495,47 +550,132 @@ struct H3UdpHandler(BatchCompletionHandler):
                 return -1
         return -1
 
-    # --- on_complete dispatch ---
+    # --- Lifecycle + submission ---
 
-    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
-        # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
-        # count CQEs drained per `loop.poll` cycle. Snapshot+reset happens
-        # in the event loop after `loop.poll` returns. Off-build path elides
-        # this branch entirely.
+    def wire_context(mut self):
+        """Point the three singleton Completions at this server's address."""
+        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
+        )
+        self._recvmsg_cmp.context = self_ctx
+        self._timeout_cmp.context = self_ctx
+        self._provide_cmp.context = self_ctx
+
+    def start(mut self, mut driver: IoUringDriver) raises:
+        """Record the driver, provide the buffer pool, arm recvmsg + timer.
+
+        Args:
+            driver: The io_uring driver every operation is queued on.
+        """
+        self._driver = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=driver))
+        )
+        # Register the provided-buffer pool with io_uring.
+        var provide_cmp = Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self._provide_cmp))
+        )
+        driver.provide_buffers(
+            self.pbuf_pool,
+            PBUF_SIZE,
+            PBUF_COUNT,
+            PBUF_GROUP_ID,
+            UInt16(0),
+            provide_cmp,
+        )
+        self._arm_recvmsg()
+        self._arm_timeout()
+
+    def _driver_ptr(self) -> Pointer[IoUringDriver, MutUntrackedOrigin]:
+        """Recover the typed driver pointer stored by `start()`."""
+        return Pointer[IoUringDriver, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._driver)
+        )
+
+    def _arm_recvmsg(mut self) raises:
+        """Arm the multishot recvmsg over the provided-buffer group."""
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self._recvmsg_cmp))
+        )
+        var msg_ptr = Pointer[msghdr, MutUntrackedOrigin](
+            unsafe_from_address=Int(self.msghdr_template)
+        )
+        self._driver_ptr()[].multishot_recvmsg(
+            self.udp_fd, msg_ptr, PBUF_GROUP_ID, cmp_ptr
+        )
+        self.multishot_active = True
+
+    def _arm_timeout(mut self) raises:
+        """Arm the 50ms periodic kernel timer."""
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
+        )
+        var ts_ptr = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(self.timeout_ts)
+        )
+        self._driver_ptr()[].timeout(ts_ptr, cmp_ptr)
+
+    def reprovide_consumed(mut self) raises:
+        """Hand every buffer drained this cycle back to the kernel.
+
+        One IORING_OP_PROVIDE_BUFFERS SQE per buffer, as before -- all of
+        them share `_provide_cmp` because the completion is a no-op.
+        """
+        var consumed = self.consumed_bufs^
+        self.consumed_bufs = List[UInt16]()
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self._provide_cmp))
+        )
+        for i in range(len(consumed)):
+            var bid = consumed[i]
+            var buf_base = self.pbuf_pool.unsafe_offset(Int(bid) * PBUF_SIZE)
+            # Kernel overwrites the buffer on recvmsg — no need to zero.
+            self._driver_ptr()[].provide_buffers(
+                buf_base, PBUF_SIZE, 1, PBUF_GROUP_ID, bid, cmp_ptr
+            )
+
+    def _profile_ptr(mut self) -> Pointer[AcceptProfile, MutUntrackedOrigin]:
+        """Return an untracked pointer to the embedded AcceptProfile.
+
+        `Pointer(to=self.profile)` carries a tracked origin, which the QUIC
+        and H3 constructors will not accept; they take an untracked one.
+
+        Returns:
+            The profile's address with an untracked mutable origin.
+        """
+        return Pointer[AcceptProfile, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self.profile))
+        )
+
+    def count_cqe(mut self):
+        """Count one dispatched completion for the per-wake histogram."""
         comptime if PROFILE_ACCEPT:
             self.cqes_this_wake_count = self.cqes_this_wake_count + UInt64(1)
-        try:
-            self._dispatch(token, result, flags)
-        except e:
-            print("h3-bench: on_complete error:", e)
 
     # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) — read
     # `cqes_this_wake_count` and reset it to zero, returning the snapshot.
-    # Method form (rather than direct field write through `loop._handler.<f>`)
-    # works around a Mojo 0.26.2 mojox ICE on `loop._handler.cqes_this_wake_count = 0`
-    # at the bench loop site (compiler crash via libstdc++ unwind, not a
+    # Method form (rather than a direct field write from the run loop) works
+    # around a Mojo mojox ICE on `<server>.cqes_this_wake_count = 0` at the
+    # bench loop site (compiler crash via libstdc++ unwind, not a
     # source-level error). Functionally equivalent.
     def snapshot_and_reset_cqes_per_wake(mut self) -> UInt64:
+        """Return the per-wake completion count and reset it to zero.
+
+        Returns:
+            Completions dispatched since the previous snapshot.
+        """
         var n = self.cqes_this_wake_count
         self.cqes_this_wake_count = UInt64(0)
         return n
 
-    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
-        var op_kind = UInt8(token & 0xFF)
-
-        if op_kind == OP_RECVMSG:
-            self._handle_recvmsg(result, flags)
-        elif op_kind == OP_SENDMSG:
-            var slot_idx = token >> 8
-            self._handle_sendmsg(slot_idx, result)
-        elif op_kind == OP_TIMEOUT:
-            self._handle_timeout(result)
-        elif op_kind == OP_PROVIDE_BUF:
-            pass  # provide_buffers completion — nothing to do
-
     # --- multishot recvmsg path ---
 
-    def _handle_recvmsg(mut self, result: Int32, flags: UInt32) raises:
+    def _handle_recvmsg(mut self, result: Int, flags: UInt32) raises:
+        """Buffer one received datagram for the next flush.
+
+        Args:
+            result: Bytes written by the kernel, or a negative errno.
+            flags: CQE flags carrying the buffer id and F_MORE.
+        """
         # Check if multishot is still active.
         if (flags & UInt32(IORING_CQE_F_MORE)) == 0:
             self.multishot_active = False
@@ -552,11 +692,11 @@ struct H3UdpHandler(BatchCompletionHandler):
 
         # Extract buffer ID from CQE flags.
         var buf_id = UInt16(flags >> UInt32(IORING_CQE_BUFFER_SHIFT))
-        var buf_ptr = self.pbuf_pool + Int(buf_id) * PBUF_SIZE
+        var buf_ptr = self.pbuf_pool.unsafe_offset(Int(buf_id) * PBUF_SIZE)
 
         # Parse io_uring_recvmsg_out header (16 bytes):
         # [namelen: u32][controllen: u32][payloadlen: u32][flags: u32]
-        if result < Int32(RECVMSG_OUT_HDR_SIZE):
+        if result < RECVMSG_OUT_HDR_SIZE:
             # Too short for header — return buffer.
             self.consumed_bufs.append(buf_id)
             return
@@ -575,9 +715,9 @@ struct H3UdpHandler(BatchCompletionHandler):
             # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
             self.profile.record_recvmsg_batch_size(1)
         var namelen = Int(_read_u32_le(buf_ptr))
-        var controllen = Int(_read_u32_le(buf_ptr + 4))
-        var payloadlen = Int(_read_u32_le(buf_ptr + 8))
-        var msg_flags = _read_u32_le(buf_ptr + 12)
+        var controllen = Int(_read_u32_le(buf_ptr.unsafe_offset(4)))
+        var payloadlen = Int(_read_u32_le(buf_ptr.unsafe_offset(8)))
+        var msg_flags = _read_u32_le(buf_ptr.unsafe_offset(12))
 
         # Check MSG_TRUNC (0x20) — drop truncated datagrams.
         if (msg_flags & UInt32(0x20)) != 0:
@@ -590,7 +730,7 @@ struct H3UdpHandler(BatchCompletionHandler):
 
         # Payload starts after header + name + control.
         var payload_offset = RECVMSG_OUT_HDR_SIZE + namelen + controllen
-        var payload_ptr = buf_ptr + payload_offset
+        var payload_ptr = buf_ptr.unsafe_offset(payload_offset)
 
         if payloadlen <= 0:
             self.consumed_bufs.append(buf_id)
@@ -599,7 +739,7 @@ struct H3UdpHandler(BatchCompletionHandler):
         # Extract DCID directly from the provided buffer — no copy.
         var dcid: List[UInt8]
         try:
-            dcid = extract_dcid(Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen))
+            dcid = extract_dcid(Span[UInt8](unsafe_ptr=payload_ptr, length=payloadlen))
         except:
             # Bad packet — return buffer.
             self.consumed_bufs.append(buf_id)
@@ -625,27 +765,32 @@ struct H3UdpHandler(BatchCompletionHandler):
             )
         )
 
-    # --- on_flush: batch process all pending datagrams ---
+    # --- flush: batch process all pending datagrams ---
 
-    def on_flush(mut self):
+    def flush(mut self):
+        """Process every datagram buffered since the last tick.
+
+        The run loop calls this once per tick, immediately after the driver
+        finishes dispatching completions -- the same point at which the
+        retired batch-completion loop invoked its flush hook.
+        """
         # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
         # bracket `_flush_impl` to histogram per-wake wall-clock duration.
         # Measures end-to-end `_flush_impl` time only (per-pkt loop + drain
-        # hook). Excludes CQE processing in `on_complete` (already finished
-        # before we arrive here) and SQE submissions in
-        # `_drain_pending_submits` (run in the event loop after this
-        # returns). Off-build path elides the brackets entirely.
+        # hook). Excludes completion dispatch, which has already finished by
+        # the time we arrive here. Off-build path elides the brackets.
         var t_flush_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
             t_flush_start = profile_monotonic_us()
         try:
             self._flush_impl()
         except e:
-            print("h3-bench: on_flush error:", e)
+            print("h3-bench: flush error:", e)
         comptime if PROFILE_ACCEPT:
             self.profile.record_flush_impl_us(profile_monotonic_us() - t_flush_start)
 
     def _flush_impl(mut self) raises:
+        """Route every buffered datagram to its connection and drain egress."""
         var t_busy_start = UInt64(0)
         var n_pkts_at_start = 0
         comptime if PROFILE_ACCEPT:
@@ -678,8 +823,8 @@ struct H3UdpHandler(BatchCompletionHandler):
             # packets create new conns. All other DCID-misses are dropped
             # silently (matches TQUIC, quiche, quic-go, aioquic).
             if conn_idx < 0:
-                var first_byte_span = Span[UInt8, MutAnyOrigin](
-                    ptr=pd.payload_ptr, length=pd.payload_len)
+                var first_byte_span = Span[UInt8](
+                    unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
                     self.consumed_bufs.append(pd.buf_id)
                     comptime if PROFILE_ACCEPT:
@@ -704,17 +849,17 @@ struct H3UdpHandler(BatchCompletionHandler):
                 try:
                     comptime if PROFILE_ACCEPT:
                         quic = QuicConnection.server(
-                            SharedLibrary(other=self.tls_lib),
+                            SharedLibrary(copy=self.tls_lib),
                             self.server_config,
                             tp,
                             Span(pd.dcid),
                             Span(dcid_copy),
                             now,
-                            UnsafePointer(to=self.profile),
+                            self._profile_ptr(),
                         )
                     else:
                         quic = QuicConnection.server(
-                            SharedLibrary(other=self.tls_lib),
+                            SharedLibrary(copy=self.tls_lib),
                             self.server_config,
                             tp,
                             Span(pd.dcid),
@@ -751,7 +896,7 @@ struct H3UdpHandler(BatchCompletionHandler):
                         h3 = H3HandlerServer[BenchHandler](
                             quic=quic^,
                             handler=handler^,
-                            profile_ptr=UnsafePointer(to=self.profile),
+                            profile_ptr=self._profile_ptr(),
                         )
                     else:
                         h3 = H3HandlerServer[BenchHandler](
@@ -767,13 +912,13 @@ struct H3UdpHandler(BatchCompletionHandler):
                         self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
-                var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1).as_unsafe_any_origin()
-                h3_ptr.init_pointee_move(h3^)
+                var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1)
+                h3_ptr.unsafe_write(h3^)
 
                 # Build address from buffer for the new connection.
                 var addr = List[UInt8](capacity=pd.addr_len)
                 for j in range(pd.addr_len):
-                    addr.append(pd.buf_ptr[pd.addr_offset + j])
+                    addr.append(pd.buf_ptr[unsafe_offset=pd.addr_offset + j])
 
                 conn_idx = len(self.conn_h3s)
                 self.conn_dcid_map[icid_u64] = conn_idx
@@ -809,7 +954,7 @@ struct H3UdpHandler(BatchCompletionHandler):
             # Update peer address.
             var addr_update = List[UInt8](capacity=pd.addr_len)
             for j in range(pd.addr_len):
-                addr_update.append(pd.buf_ptr[pd.addr_offset + j])
+                addr_update.append(pd.buf_ptr[unsafe_offset=pd.addr_offset + j])
             self.conn_addrs[conn_idx] = addr_update^
 
             comptime if PROFILE_ACCEPT:
@@ -878,49 +1023,49 @@ struct H3UdpHandler(BatchCompletionHandler):
             if len(pkt) == 0:
                 continue
 
-            var tx_id = self.next_tx_id
-            self.next_tx_id += 1
-            var token = _encode_token(tx_id, OP_SENDMSG)
-
             var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
 
-            var tx_ptr = _heap_alloc[UdpTxSlot](1).as_unsafe_any_origin()
-            tx_ptr.init_pointee_move(UdpTxSlot(pkt^, addr_copy))
-
-            var slot_idx = len(self.tx_slots)
-            self.tx_slots.append(tx_ptr)
-            self.tx_slot_tokens.append(token)
-            self.tx_slot_idx_by_token[token] = slot_idx
-
-            self.pending_submits.append(
-                PendingSubmit(kind=_SUBMIT_SENDMSG, slot_idx=tx_id)
+            var tx_ptr = _heap_alloc[UdpTxSlot](1)
+            tx_ptr.unsafe_write(UdpTxSlot(pkt^, addr_copy))
+            tx_ptr[].wire_context(
+                Pointer[NoneType, MutUntrackedOrigin](
+                    unsafe_from_address=Int(Pointer(to=self))
+                )
             )
+
+            var msg_ptr = Pointer[NoneType, MutUntrackedOrigin](
+                unsafe_from_address=Int(tx_ptr[].msghdr_buf)
+            )
+            var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=tx_ptr[].cmp))
+            )
+            try:
+                self._driver_ptr()[].sendmsg(self.udp_fd, msg_ptr, cmp_ptr)
+            except:
+                # Submission queue full even after the driver's own flush —
+                # drop the datagram rather than leak the slot. QUIC
+                # retransmits, which is what the old re-queue path relied on
+                # once the pending list grew unbounded.
+                tx_ptr[].free()
+                tx_ptr.unsafe_free()
 
     # --- sendmsg path ---
 
-    def _handle_sendmsg(mut self, tx_id: UInt64, result: Int32) raises:
-        # O(1) lookup via the token→idx map.
-        var token = _encode_token(tx_id, OP_SENDMSG)
-        if token not in self.tx_slot_idx_by_token:
-            return
-        var idx = self.tx_slot_idx_by_token[token]
+    def _handle_sendmsg(
+        mut self, slot: Pointer[UdpTxSlot, MutUntrackedOrigin], result: Int
+    ):
+        """Release the slot whose sendmsg just completed.
 
-        # Free the TX slot buffers and the slot-struct heap allocation.
-        var ptr = self.tx_slots[idx]
-        ptr[].free()
-        ptr.free()
+        The completion hands the slot back directly, so retiring it is one
+        free -- no token decode and no side table to keep consistent.
 
-        # Swap-and-pop. Update the dict for the slot that moves into
-        # position `idx`, and remove the entry for the freed token.
-        var last = len(self.tx_slots) - 1
-        if idx != last:
-            var moved_token = self.tx_slot_tokens[last]
-            self.tx_slots[idx] = self.tx_slots[last]
-            self.tx_slot_tokens[idx] = moved_token
-            self.tx_slot_idx_by_token[moved_token] = idx
-        _ = self.tx_slots.pop()
-        _ = self.tx_slot_tokens.pop()
-        _ = self.tx_slot_idx_by_token.pop(token)
+        Args:
+            slot: The UdpTxSlot the completed operation was submitted from.
+            result: Bytes sent, or a negative errno. QUIC handles loss, so a
+                    failed send needs nothing beyond releasing the slot.
+        """
+        slot[].free()
+        slot.unsafe_free()
 
         # Q7 H_C: 8-bucket sendmsg batch histogram. Mojo-net's sendmsg path is
         # per-packet (one CQE per datagram) — bucket-0-dominant histogram is
@@ -931,7 +1076,12 @@ struct H3UdpHandler(BatchCompletionHandler):
 
     # --- timeout path ---
 
-    def _handle_timeout(mut self, result: Int32) raises:
+    def _handle_timeout(mut self, result: Int) raises:
+        """Sweep every connection for retransmits and expiry, then re-arm.
+
+        Args:
+            result: Timer completion result (ignored; -ETIME is normal).
+        """
         var now = monotonic_us()
 
         # Drain all connections — they may have pending retransmissions.
@@ -949,8 +1099,8 @@ struct H3UdpHandler(BatchCompletionHandler):
                     if not self.conn_h3s[i][]._h3.is_established():
                         self.profile.record_handshake_timeout(UInt64(1))
                 var ptr = self.conn_h3s[i]
-                ptr.destroy_pointee()
-                ptr.free()
+                ptr.unsafe_deinit_pointee()
+                ptr.unsafe_free()
 
                 # B-permissive teardown: pop ALL of dying conn's DCID entries
                 # (typically 2: initial_dcid + local_cid). The pre-migration
@@ -981,9 +1131,7 @@ struct H3UdpHandler(BatchCompletionHandler):
             i += 1
 
         # Re-arm the 50ms timeout.
-        self.pending_submits.append(
-            PendingSubmit(kind=_SUBMIT_TIMEOUT, slot_idx=UInt64(0))
-        )
+        self._arm_timeout()
 
     def _write_profile_json_sidecar(self) raises:
         """Write profile JSON sidecar to bench/quic_perf/results/profile/.
@@ -999,22 +1147,22 @@ struct H3UdpHandler(BatchCompletionHandler):
         # tm_isdst — 9 Int32 fields = 36 bytes. Allocate 56 bytes to
         # cover tm_gmtoff + tm_zone tail (Linux extension).
         var now_t = external_call["time", Int64](
-            UnsafePointer[Int64, MutAnyOrigin](unsafe_from_address=Int(0))
+            Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=Int(0))
         )
         var t_buf = InlineArray[Int64, 1](fill=now_t)
         var tm_buf = InlineArray[UInt8, 56](fill=0)
-        var tm_ptr = UnsafePointer(to=tm_buf).bitcast[UInt8]()
-        var t_ptr = UnsafePointer(to=t_buf).bitcast[Int64]()
+        var tm_ptr = Pointer(to=tm_buf).unsafe_bitcast[UInt8]()
+        var t_ptr = Pointer(to=t_buf).unsafe_bitcast[Int64]()
         _ = external_call[
-            "gmtime_r", UnsafePointer[UInt8, MutAnyOrigin]
+            "gmtime_r", Pointer[UInt8, MutUntrackedOrigin]
         ](t_ptr, tm_ptr)
-        var tm_i32 = UnsafePointer(to=tm_buf).bitcast[Int32]()
-        var sec = Int(tm_i32[0])
-        var minu = Int(tm_i32[1])
-        var hour = Int(tm_i32[2])
-        var mday = Int(tm_i32[3])
-        var mon = Int(tm_i32[4]) + 1
-        var year = Int(tm_i32[5]) + 1900
+        var tm_i32 = Pointer(to=tm_buf).unsafe_bitcast[Int32]()
+        var sec = Int(tm_i32[unsafe_offset=0])
+        var minu = Int(tm_i32[unsafe_offset=1])
+        var hour = Int(tm_i32[unsafe_offset=2])
+        var mday = Int(tm_i32[unsafe_offset=3])
+        var mon = Int(tm_i32[unsafe_offset=4]) + 1
+        var year = Int(tm_i32[unsafe_offset=5]) + 1900
 
         # 2. Format yyyymmdd-hhmmss with zero-padding.
         var ts = (
@@ -1046,42 +1194,86 @@ struct H3UdpHandler(BatchCompletionHandler):
         print("h3-bench: profile sidecar written:", path)
 
 
-# ── _drain_pending_submits ───────────────────────────────────────────
+# ── Module-level completion callbacks ────────────────────────────────
 
 
-def _drain_pending_submits(mut loop: BatchCompletionLoop[H3UdpHandler]) raises:
-    var submits = loop._handler.pending_submits^
-    loop._handler.pending_submits = List[PendingSubmit]()
+def _on_recvmsg(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Multishot-recvmsg completion: context is the H3UdpHandler.
 
-    for i in range(len(submits)):
-        var s = submits[i].copy()
+    Args:
+        ctx: Type-erased pointer to the owning H3UdpHandler.
+        result: Bytes written into the provided buffer, or a negative errno.
+        flags: CQE flags carrying the buffer id and F_MORE.
+    """
+    var srv = Pointer[H3UdpHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    srv[].count_cqe()
+    try:
+        srv[]._handle_recvmsg(result, flags)
+    except e:
+        print("h3-bench: recvmsg completion error:", e)
 
-        if s.kind == _SUBMIT_SENDMSG:
-            # O(1) lookup via the token→idx map.
-            var tx_id = s.slot_idx
-            var token = _encode_token(tx_id, OP_SENDMSG)
-            if token not in loop._handler.tx_slot_idx_by_token:
-                continue
-            var tx_idx = loop._handler.tx_slot_idx_by_token[token]
-            var msghdr_addr = Int(loop._handler.tx_slots[tx_idx][].msghdr_buf)
-            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-                unsafe_from_address=msghdr_addr
-            )
-            try:
-                loop.submit_sendmsg(loop._handler.udp_fd, msghdr_ptr, token)
-            except:
-                loop._handler.pending_submits.append(s.copy())
 
-        elif s.kind == _SUBMIT_TIMEOUT:
-            var ts_addr = Int(loop._handler.timeout_ts)
-            var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-                unsafe_from_address=ts_addr
-            )
-            var token = _encode_token(UInt64(0), OP_TIMEOUT)
-            try:
-                loop.submit_timeout(ts_ptr, token)
-            except:
-                loop._handler.pending_submits.append(s.copy())
+def _on_timeout(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Periodic-timer completion: context is the H3UdpHandler.
+
+    Args:
+        ctx: Type-erased pointer to the owning H3UdpHandler.
+        result: Timer result (-ETIME on normal expiry).
+        flags: CQE flags (unused for timeouts).
+    """
+    var srv = Pointer[H3UdpHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    srv[].count_cqe()
+    try:
+        srv[]._handle_timeout(result)
+    except e:
+        print("h3-bench: timeout completion error:", e)
+
+
+def _on_provide_buf(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Buffer-provision completion. Nothing to retire; only counted.
+
+    Shared by the initial pool registration and every re-provision, since
+    none of them carry per-operation state.
+
+    Args:
+        ctx: Type-erased pointer to the owning H3UdpHandler.
+        result: Provision result (negative errno on failure).
+        flags: CQE flags (unused).
+    """
+    var srv = Pointer[H3UdpHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    srv[].count_cqe()
+
+
+def _on_sendmsg(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Sendmsg completion: context is the UdpTxSlot the send came from.
+
+    Args:
+        ctx: Type-erased pointer to the owning UdpTxSlot.
+        result: Bytes sent, or a negative errno.
+        flags: CQE flags (unused for sendmsg).
+    """
+    var slot = Pointer[UdpTxSlot, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    var srv = Pointer[H3UdpHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(slot[]._owner)
+    )
+    srv[].count_cqe()
+    srv[]._handle_sendmsg(slot, result)
 
 
 # UDP socket factory moved to src/io/udp_socket.mojo; bench uses it
@@ -1092,6 +1284,7 @@ def _drain_pending_submits(mut loop: BatchCompletionLoop[H3UdpHandler]) raises:
 
 
 def main() raises:
+    """Run the HTTP/3-over-QUIC benchmark server until killed."""
     # Load static files from STATIC_DIR env var (default /data/static).
     var static_dir_opt = getenv_opt("STATIC_DIR")
     var static_dir: String
@@ -1112,8 +1305,8 @@ def main() raises:
 
     # Heap-allocate combined bench state.
     var bstate = BenchState(static_cache=cache^, dataset=dataset^)
-    var state_ptr = _heap_alloc[BenchState](1).as_unsafe_any_origin()
-    state_ptr.init_pointee_move(bstate^)
+    var state_ptr = _heap_alloc[BenchState](1)
+    state_ptr.unsafe_write(bstate^)
 
     # Load TLS library and create server config.
     var certs_dir_opt = getenv_opt("CERTS_DIR")
@@ -1144,28 +1337,27 @@ def main() raises:
         prefix = ""
     print(prefix + "h3-bench: listening on https://[::]:" + String(port) + " (UDP/QUIC/H3)")
 
-    # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1, §5
-    # Lever A): runtime-configurable `wait_nr` for the io_uring
-    # `submit_and_wait` floor. Default 1 preserves existing behavior so
-    # off-knob baselines are bit-identical to pre-spec runs. Range
-    # [1, 256] — 1 matches the pre-T1 hardcoded site at line 1622; 256
-    # is a safe upper clamp (the SQ ring is 4096; setting wait_nr above
-    # the ring depth would deadlock the loop). T2 sweeps this knob to
-    # decide the optimum; T1 (instrumentation only) lands the knob.
+    # BENCH_WAIT_NR used to set the io_uring `submit_and_wait` completion
+    # floor. The driver only exposes wait/no-wait, which is a floor of 1 —
+    # the historical default, so unset and BENCH_WAIT_NR=1 runs are
+    # unchanged. Any other value is read and reported but cannot be
+    # honoured; say so rather than silently ignoring the knob.
     var wait_nr_opt = getenv_opt("BENCH_WAIT_NR")
-    var wait_nr_runtime: UInt32 = UInt32(1)
     if wait_nr_opt.__bool__():
+        var requested: Int
         try:
-            var parsed = Int(wait_nr_opt.value())
-            if parsed < 1:
-                parsed = 1
-            elif parsed > 256:
-                parsed = 256
-            wait_nr_runtime = UInt32(parsed)
+            requested = Int(wait_nr_opt.value())
         except:
-            print(prefix + "h3-bench: BENCH_WAIT_NR parse failed, using default 1")
-            wait_nr_runtime = UInt32(1)
-    print(prefix + "h3-bench: BENCH_WAIT_NR=" + String(wait_nr_runtime))
+            print(prefix + "h3-bench: BENCH_WAIT_NR parse failed, using 1")
+            requested = 1
+        if requested != 1:
+            print(
+                prefix
+                + "h3-bench: BENCH_WAIT_NR="
+                + String(requested)
+                + " unsupported (driver exposes wait/no-wait only); using 1"
+            )
+    print(prefix + "h3-bench: BENCH_WAIT_NR=1")
 
     # Plan B: install SIGINT/SIGTERM handler so that Ctrl-C / kill
     # triggers a profile dump + clean exit at the next flush boundary.
@@ -1173,39 +1365,26 @@ def main() raises:
     comptime if PROFILE_ACCEPT:
         _profile_install_signal_handlers()
 
-    # Build handler + loop.
+    # Build the io_uring driver and the heap-stable server. `start()`
+    # provides the buffer pool, arms the multishot recvmsg and arms the
+    # 50ms timer, in that order.
+    var driver = IoUringDriver(capacity=_SQ_ENTRIES)
+
     var handler = H3UdpHandler(
         udp_fd=udp_fd,
         state_ptr=state_ptr,
         tls_lib=tls.shared(),
         server_config=server_config^,
     )
-    var loop = BatchCompletionLoop[H3UdpHandler](handler^, sq_entries=4096)
-
-    # Register provided buffer pool with io_uring.
-    var provide_token = _encode_token(UInt64(0), OP_PROVIDE_BUF)
-    loop.provide_buffers(loop._handler.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID, UInt16(0), provide_token)
-
-    # Submit one multishot recvmsg using the msghdr template.
-    var msghdr_addr = Int(loop._handler.msghdr_template)
-    var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-        unsafe_from_address=msghdr_addr
-    )
-    var recvmsg_token = _encode_token(UInt64(0), OP_RECVMSG)
-    loop.submit_recvmsg_multishot(udp_fd, msghdr_ptr, PBUF_GROUP_ID, recvmsg_token)
-    loop._handler.multishot_active = True
-
-    # Submit initial timeout.
-    var ts_addr = Int(loop._handler.timeout_ts)
-    var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-        unsafe_from_address=ts_addr
-    )
-    loop.submit_timeout(ts_ptr, _encode_token(UInt64(0), OP_TIMEOUT))
+    var srv_ptr = _heap_alloc[H3UdpHandler](1)
+    srv_ptr.unsafe_write(handler^)
+    srv_ptr[].wire_context()
+    srv_ptr[].start(driver)
 
     # Event loop.
     while True:
-        # Q7 H_F: bracket the canonical io_uring park site (loop.poll calls
-        # BatchCompletionLoop._ring.submit_and_wait internally). Q-IO-1
+        # Q7 H_F: bracket the canonical io_uring park site (tick calls
+        # submit_and_wait internally). Q-IO-1
         # (spec 2026-05-05-shortconn-io-path-investigation §4.1) promoted
         # the bracket from total-only to total + 24-bucket pow2 histogram
         # (work happens inside `record_iouring_park_us`).
@@ -1213,49 +1392,36 @@ def main() raises:
         var t_park_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
             t_park_start = profile_monotonic_us()
-        # Q-IO-1: BENCH_WAIT_NR env-var runtime knob (parsed in main()).
-        # Default 1 = pre-spec hardcoded value. Range [1, 256].
-        loop.poll(wait_nr=wait_nr_runtime)
+        # `tick(wait=True)` is submit_and_wait(wait_nr=1) followed by
+        # completion dispatch — the same single io_uring_enter per iteration
+        # that the retired poll(wait_nr=1) performed.
+        _ = driver.tick(wait=True)
         comptime if PROFILE_ACCEPT:
-            loop._handler.profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
-            # Q-IO-1: snapshot+reset via method (Mojo 0.26.2 mojox ICEs on the
-            # equivalent direct field write `loop._handler.<field> = 0`).
-            var cqes_this_wake = loop._handler.snapshot_and_reset_cqes_per_wake()
-            loop._handler.profile.record_cqes_per_wake(cqes_this_wake)
+            srv_ptr[].profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
+            var cqes_this_wake = srv_ptr[].snapshot_and_reset_cqes_per_wake()
+            srv_ptr[].profile.record_cqes_per_wake(cqes_this_wake)
 
-        # Re-provide consumed buffers.
-        var consumed = loop._handler.consumed_bufs^
-        loop._handler.consumed_bufs = List[UInt16]()
-        for i in range(len(consumed)):
-            var bid = consumed[i]
-            var buf_base = loop._handler.pbuf_pool + Int(bid) * PBUF_SIZE
-            # Kernel overwrites the buffer on recvmsg — no need to zero.
-            var rprov_token = _encode_token(UInt64(bid), OP_PROVIDE_BUF)
-            loop.reprovide_buffer(buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid, rprov_token)
+        # Process the datagrams this tick buffered. Runs exactly where the
+        # retired batch loop's flush hook ran: after every completion for
+        # this wake, before any new SQE for this iteration.
+        srv_ptr[].flush()
 
-        # Re-arm multishot recvmsg if it ended.
-        if not loop._handler.multishot_active:
-            var ms_addr = Int(loop._handler.msghdr_template)
-            var ms_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-                unsafe_from_address=ms_addr
-            )
-            var ms_token = _encode_token(UInt64(0), OP_RECVMSG)
-            loop.submit_recvmsg_multishot(udp_fd, ms_ptr, PBUF_GROUP_ID, ms_token)
-            loop._handler.multishot_active = True
-
-        # Drain pending sendmsg/timeout submits.
+        # Re-provide consumed buffers, then re-arm the multishot if it
+        # ended. Both only queue SQEs; the next tick() submits them.
         # Q-IO-1 (spec 2026-05-05-shortconn-io-path-investigation §4.1) —
-        # bracket _drain_pending_submits to close the AC3 wall-clock budget
-        # (`park + flush_impl + drain_submits ≈ wall_clock`). Total-only;
-        # bucket emit deferred to T2 if AC3 fails.
+        # bracket the submission block to close the AC3 wall-clock budget
+        # (`park + flush_impl + submits ≈ wall_clock`). Total-only.
         var t_dsubmit_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
             t_dsubmit_start = profile_monotonic_us()
-        _drain_pending_submits(loop)
+        srv_ptr[].reprovide_consumed()
+        if not srv_ptr[].multishot_active:
+            srv_ptr[]._arm_recvmsg()
         comptime if PROFILE_ACCEPT:
-            loop._handler.profile.record_drain_submits_us(profile_monotonic_us() - t_dsubmit_start)
+            srv_ptr[].profile.record_drain_submits_us(profile_monotonic_us() - t_dsubmit_start)
 
         # Q7 H_A: 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
         # Plan: 2026-05-04-q7-cold-handshake-cpu-utilization-decomposition §3 T2.
         comptime if PROFILE_ACCEPT:
-            loop._handler.profile.tick_profile_gauges(profile_monotonic_us())
+            srv_ptr[].profile.tick_profile_gauges(profile_monotonic_us())
+        _ = sock

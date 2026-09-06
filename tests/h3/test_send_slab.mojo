@@ -136,7 +136,7 @@ def test_fill():
     # Verify msghdr.msg_name points at addr region.
     var msghdr_p = slab_ptr[].msghdr_ptr()
     var msg_name_val = UInt64(0)
-    var msg_name_bytes = UnsafePointer(to=msg_name_val).bitcast[UInt8]()
+    var msg_name_bytes = Pointer(to=msg_name_val).bitcast[UInt8]()
     for i in range(8):
         msg_name_bytes[i] = msghdr_p[i]
     debug_assert(
@@ -146,7 +146,7 @@ def test_fill():
 
     # Verify msghdr.msg_namelen = 28.
     var msg_namelen = UInt32(0)
-    var namelen_bytes = UnsafePointer(to=msg_namelen).bitcast[UInt8]()
+    var namelen_bytes = Pointer(to=msg_namelen).bitcast[UInt8]()
     for i in range(4):
         namelen_bytes[i] = msghdr_p[8 + i]
     debug_assert(

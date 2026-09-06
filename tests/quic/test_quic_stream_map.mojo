@@ -245,7 +245,7 @@ def test_set_peer_limits_does_not_lower_existing_fc_send() raises:
 
     # Manually elevate fc_send.limit to 2 MiB — HIGHER than the 1 MiB
     # `setup_peer_limits` will advertise as stream_fc_bidi_local.
-    var stream_boost = Stream(other=sm.streams[0])
+    var stream_boost = Stream(copy=sm.streams[0])
     assert_true(Bool(stream_boost.fc_send), "stream 0 has fc_send")
     var fc_boost = stream_boost.fc_send.value().copy()
     var ELEVATED: UInt64 = UInt64(2097152)  # 2 MiB

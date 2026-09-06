@@ -66,10 +66,10 @@ struct _TestConfigs(Movable):
             self._tls.shared(), Span(ca_bytes),
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self._tls = take._tls^
-        self.srv_cfg = take.srv_cfg^
-        self.cli_cfg = take.cli_cfg^
+    def __init__(out self, *, deinit move: Self):
+        self._tls = move._tls^
+        self.srv_cfg = move.srv_cfg^
+        self.cli_cfg = move.cli_cfg^
 
 
 def _pump_server_client[H: StreamHandler](
@@ -106,8 +106,8 @@ struct _FixedResponseHandler(StreamHandler):
     def __init__(out self, body: String):
         self._body = body
 
-    def __init__(out self, *, deinit take: Self):
-        self._body = take._body^
+    def __init__(out self, *, deinit move: Self):
+        self._body = move._body^
 
     def on_request(
         mut self, var req: Request, mut body: RecvBody, mut resp: ResponseWriter, caps: Capabilities

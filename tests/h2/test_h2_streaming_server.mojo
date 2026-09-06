@@ -15,8 +15,8 @@ from std.memory import Pointer
 from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from lib.http1.types import Header
-from lib.http2.connection import (
+from oracle.http1.types import Header
+from oracle.http2.connection import (
     H2Connection,
     H2Config,
     H2Event,
@@ -27,11 +27,10 @@ from lib.http2.connection import (
     H2_EVT_TRAILERS_RECEIVED,
 )
 
-from boucle.stackful import CoroYielder
-
 from navette.h2.h2_streaming_server import (
     H2StreamingServer,
     H2StreamingCtx,
+    H2StreamingYielder,
     H2StreamingHandlerFn,
     next_chunk,
     write_chunk,
@@ -89,7 +88,7 @@ def _pump(
         if len(s_out) > 0:
             var evts = client.receive_data(s_out)
             for k in range(len(evts)):
-                client_events.append(H2Event(other=evts[k]))
+                client_events.append(H2Event(copy=evts[k]))
         var c_out = client.data_to_send()
         if len(c_out) > 0:
             server.feed(Span(c_out))
@@ -97,14 +96,14 @@ def _pump(
 
 # ── Streaming handler bodies ─────────────────────────────────────────────────
 #
-# Each handler uses the CoroBody shape: fn(mut CoroYielder) raises -> None
-# (must be `fn`, not `def`, to match CoroBody function-pointer type)
-# ctx is accessed via yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
+# Each handler uses the H2StreamingHandlerFn shape:
+#   def (mut Yielder[H2StreamingState]) raises -> None
+# ctx is accessed through the typed state channel: yld.state()[]
 
 
-def _echo_body_streaming(mut yld: CoroYielder) raises:
+def _echo_body_streaming(mut yld: H2StreamingYielder) raises:
     """POST handler: reads all body chunks, responds with 200 + x-body-length header."""
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
 
     # Accumulate all body bytes
     var total_len = Int(0)
@@ -127,10 +126,10 @@ def _echo_body_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-def _trailer_check_streaming(mut yld: CoroYielder) raises:
+def _trailer_check_streaming(mut yld: H2StreamingYielder) raises:
     """POST with trailers: reads body + trailer, sets found_ptr[]=1 if trailer seen."""
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
-    var found_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var found_ptr = ctx_ptr[].extra_data.bitcast[Int]()
 
     # Consume body and trailers
     while True:
@@ -152,11 +151,11 @@ def _trailer_check_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-def _blocking_body_streaming(mut yld: CoroYielder) raises:
+def _blocking_body_streaming(mut yld: H2StreamingYielder) raises:
     """POST handler that suspends in next_chunk waiting for body.
     On cancellation (H2StreamCancelled), writes signal=42 to extra_data."""
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
-    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]()
 
     try:
         # This will suspend, then raise H2StreamCancelled when reset arrives
@@ -170,7 +169,7 @@ def _blocking_body_streaming(mut yld: CoroYielder) raises:
         signal_ptr[0] = Int(42)
 
 
-def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
+def _multi_chunk_concat_body(mut yld: H2StreamingYielder) raises:
     """POST handler: yield once to let multiple DATA frames queue into
     body_frame_ring before draining, then read chunks in arrival order
     and concatenate into extra_data (max 64 bytes).
@@ -179,15 +178,15 @@ def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     yield is what causes ≥2 frames to coexist in the ring at the moment
     next_chunk pops the first one. Without that, the server delivers
     one frame at a time and a LIFO pop hides itself."""
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
-    var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]()
     var written = Int(0)
     # Yield three times before reading so the adapter can deliver all
     # three DATA events into body_frame_ring while we're suspended —
     # this is what forces multiple frames to coexist when next_chunk pops.
-    yld.yield_to_caller()
-    yld.yield_to_caller()
-    yld.yield_to_caller()
+    yld.suspend()
+    yld.suspend()
+    yld.suspend()
     while True:
         var chunk_opt = next_chunk(ctx_ptr, yld)
         if not chunk_opt:
@@ -207,10 +206,10 @@ def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-def _cancel_signal_handler(mut yld: CoroYielder) raises:
+def _cancel_signal_handler(mut yld: H2StreamingYielder) raises:
     """Streaming handler for cancel test. Writes 99 to extra_data on cancellation."""
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
-    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]()
 
     try:
         # Will suspend here, then raise H2StreamCancelled when reset arrives
@@ -273,9 +272,9 @@ def test_h2_streaming_post_with_body() raises:
 
 def test_h2_streaming_trailers() raises:
     """POST with trailers → coroutine reads trailer header x-custom-trailer."""
-    var found_ptr = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var found_ptr = _heap_alloc[Int](1)
     found_ptr.init_pointee_move(Int(0))
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(found_ptr)
     )
 
@@ -319,9 +318,9 @@ def test_h2_streaming_trailers() raises:
 
 def test_h2_streaming_rst_stream() raises:
     """Client resets a stream → coroutine receives H2StreamCancelled, sets signal=42."""
-    var signal_ptr = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var signal_ptr = _heap_alloc[Int](1)
     signal_ptr.init_pointee_move(Int(0))
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(signal_ptr)
     )
 
@@ -368,9 +367,9 @@ def test_h2_streaming_cancel_via_rst_stream() raises:
     3. Handler catches H2StreamCancelled and writes signal=99 to extra_data.
     4. Assert: signal == 99.
     """
-    var signal_ptr = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var signal_ptr = _heap_alloc[Int](1)
     signal_ptr.init_pointee_move(Int(0))
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(signal_ptr)
     )
 
@@ -418,10 +417,10 @@ def test_h2_streaming_multi_chunk_body_fifo_order() raises:
     Caught a real bug where body_frame_ring.pop() (default = pop last)
     paired with append() to deliver multi-chunk POST bodies in REVERSE
     order — silent data corruption."""
-    var sink_ptr = _heap_alloc[UInt8](64).as_unsafe_any_origin()
+    var sink_ptr = _heap_alloc[UInt8](64)
     for i in range(64):
         sink_ptr[i] = UInt8(0)
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(sink_ptr)
     )
 

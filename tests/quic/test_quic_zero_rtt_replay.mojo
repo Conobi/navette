@@ -95,8 +95,10 @@ def test_replay_check_accept_transitions_to_1() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
 
     conn._drive_replay_check_for_test(
@@ -129,8 +131,10 @@ def test_replay_check_reject_duplicate_transitions_to_2() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
 
     conn._drive_replay_check_for_test(
@@ -198,8 +202,10 @@ def test_record_replay_methods_route_to_correct_buckets() raises:
         var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
         var conn = _make_server_conn(cfg, tls)
         var prof = AcceptProfile()
-        conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-            UnsafePointer(to=prof)
+        conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+            Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
         )
 
         conn._record_replay_accept()
@@ -326,8 +332,10 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    conn.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
 
     # First anomaly: FFI rc != 0 (no authenticator).
@@ -354,8 +362,10 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     # Second anomaly on a fresh conn: store raises.
     var conn2 = _make_server_conn(cfg, tls)
     var prof2 = AcceptProfile()
-    conn2.profile_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof2)
+    conn2.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof2).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     conn2._drive_replay_check_for_test(
         simulated_rc=Int32(0),

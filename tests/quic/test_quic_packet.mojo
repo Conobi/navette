@@ -25,7 +25,7 @@ from navette.quic.packet import (
     serialize_version_negotiation,
 )
 
-from lib.test_util import hex_decode, hex_encode, load_vectors
+from oracle.test_util import hex_decode, hex_encode, load_vectors
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

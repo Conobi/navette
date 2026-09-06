@@ -48,13 +48,13 @@ from interop.file_io import read_file
 
 
 def test_ptrbox_roundtrip() raises:
-    var p = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var p = _heap_alloc[Int](1)
     p.init_pointee_move(123)
     var box = PtrBox[Int](p)
     assert_true(box.is_some())
     assert_equal(box.ptr()[], 123)
 
-    var box2 = PtrBox[Int](other=box)
+    var box2 = PtrBox[Int](copy=box)
     assert_equal(box2.ptr()[], 123)
 
     var raw = box.ptr()
@@ -79,7 +79,7 @@ struct StubHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -121,7 +121,7 @@ def _push_fake_slot(
     conn_slots and would destroy_pointee+free a null h3).
     """
     var slot = ConnSlot[StubHandler](
-        null_ptr[H3HandlerServer[StubHandler], MutAnyOrigin](),
+        null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
         List[UInt8](),
         dcids.copy(),
         generation,

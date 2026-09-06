@@ -65,10 +65,10 @@ struct _TestConfigs(Movable):
             self._tls.shared(), Span(ca_bytes),
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self._tls = take._tls^
-        self.srv_cfg = take.srv_cfg^
-        self.cli_cfg = take.cli_cfg^
+    def __init__(out self, *, deinit move: Self):
+        self._tls = move._tls^
+        self.srv_cfg = move.srv_cfg^
+        self.cli_cfg = move.cli_cfg^
 
 
 def _pump_sync_client(
@@ -99,7 +99,7 @@ def _pump_sync_client(
 
 
 def _simple_get_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """Respond immediately with 200 OK + 'hello' body."""
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), Headers())
@@ -112,7 +112,7 @@ def _simple_get_body(
 
 
 def _path_echo_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """Respond with 200 OK and an x-path header echoing the request target.
     Used by the multi-stream test to verify each concurrent stream gets a
@@ -124,7 +124,7 @@ def _path_echo_body(
 
 
 def _error_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """Always raise — exercises the RST_STREAM-on-handler-error path."""
     raise Error("h3 handler error")
@@ -335,7 +335,7 @@ def test_h3_sync_error_propagation() raises:
 
 
 def _gate_probe_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """No-op handler for the zero-rtt gate test: deliberately neither
     sends nor ends the response, so the stream ctx (and its captured

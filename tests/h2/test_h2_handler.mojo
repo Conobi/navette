@@ -4,8 +4,8 @@
 
 from std.collections import Span
 
-from lib.http1.types import Header
-from lib.http2.connection import (
+from oracle.http1.types import Header
+from oracle.http2.connection import (
     H2Connection,
     H2Config,
     H2Event,
@@ -38,7 +38,7 @@ struct _DummyHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -94,11 +94,11 @@ struct _RecordingHandler(StreamHandler):
         self.request_count = 0
         self.request_end_count = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.got_method = take.got_method^
-        self.got_target = take.got_target^
-        self.request_count = take.request_count
-        self.request_end_count = take.request_end_count
+    def __init__(out self, *, deinit move: Self):
+        self.got_method = move.got_method^
+        self.got_target = move.got_target^
+        self.request_count = move.request_count
+        self.request_end_count = move.request_end_count
 
     def on_request(
         mut self,
@@ -161,14 +161,14 @@ struct _BodyRecordingHandler(StreamHandler):
         self.body_data = String("")
         self.got_trailers = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.got_method = take.got_method^
-        self.got_target = take.got_target^
-        self.request_count = take.request_count
-        self.request_end_count = take.request_end_count
-        self.body_available_count = take.body_available_count
-        self.body_data = take.body_data^
-        self.got_trailers = take.got_trailers
+    def __init__(out self, *, deinit move: Self):
+        self.got_method = move.got_method^
+        self.got_target = move.got_target^
+        self.request_count = move.request_count
+        self.request_end_count = move.request_end_count
+        self.body_available_count = move.body_available_count
+        self.body_data = move.body_data^
+        self.got_trailers = move.got_trailers
 
     def on_request(
         mut self,
@@ -491,9 +491,9 @@ struct _RespondingHandler(StreamHandler):
         self.request_count = 0
         self.request_end_count = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.request_count = take.request_count
-        self.request_end_count = take.request_end_count
+    def __init__(out self, *, deinit move: Self):
+        self.request_count = move.request_count
+        self.request_end_count = move.request_end_count
 
     def on_request(
         mut self,
@@ -554,10 +554,10 @@ struct _ResetRecordingHandler(StreamHandler):
         self.reset_count = 0
         self.reset_code = UInt32(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.request_count = take.request_count
-        self.reset_count = take.reset_count
-        self.reset_code = take.reset_code
+    def __init__(out self, *, deinit move: Self):
+        self.request_count = move.request_count
+        self.reset_count = move.reset_count
+        self.reset_code = move.reset_code
 
     def on_request(
         mut self,

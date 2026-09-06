@@ -47,9 +47,11 @@ name = "navette-bench-build"
 version = "0.0.0"
 requires-python = ">=3.11"
 dependencies = [
-    "mojox==0.2.0",
-    "mojo-compiler==1.0.0b2",
-    "mojo-compiler-mojo-libs==1.0.0b2",
+    # Track the root pyproject.toml: mojox 0.2.0 predates the Mojo 1.0.0
+    # toolchain and cannot drive the pinned compiler.
+    "mojox>=0.5",
+    "mojo-compiler==1.0.0",
+    "mojo-compiler-mojo-libs==1.0.0",
 ]
 
 [tool.uv]

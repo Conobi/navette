@@ -33,8 +33,8 @@ struct StubH3Handler(H3StreamExtension):
     def __init__(out self):
         self.seen = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.seen = take.seen
+    def __init__(out self, *, deinit move: Self):
+        self.seen = move.seen
 
     def on_h3_request(
         mut self,

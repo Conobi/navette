@@ -49,8 +49,8 @@ struct StubSession(Session):
     def __init__(out self):
         self.caps = Capabilities.for_h1()
 
-    def __init__(out self, *, deinit take: Self):
-        self.caps = take.caps^
+    def __init__(out self, *, deinit move: Self):
+        self.caps = move.caps^
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
         return RequestHandle(id=UInt64(0))
@@ -62,7 +62,7 @@ struct StubSession(Session):
         pass
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(other=self.caps)
+        return Capabilities(copy=self.caps)
 
     def alpn(self) -> Int:
         return self.caps.alpn

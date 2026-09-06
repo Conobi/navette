@@ -20,9 +20,9 @@ struct CorpusEntry(Copyable, Movable):
         self.bytes = bytes^
         self.name = name
 
-    def __init__(out self, *, deinit take: Self):
-        self.bytes = take.bytes^
-        self.name = take.name^
+    def __init__(out self, *, deinit move: Self):
+        self.bytes = move.bytes^
+        self.name = move.name^
 
 
 def _read_bytes(path: String) raises -> List[UInt8]:

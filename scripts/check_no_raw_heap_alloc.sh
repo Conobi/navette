@@ -46,8 +46,8 @@ fail=0
 for row in "${FILES[@]}"; do
   read -r f exp_call exp_imp <<<"$row"
   got_call=$(grep -cE '_heap_alloc\[' "$f" 2>/dev/null || true)
-  # raw allocator import (any alias): from std.memory.unsafe_pointer import ... alloc ...
-  got_imp=$(grep -cE 'from std\.memory\.unsafe_pointer import.*\balloc\b' "$f" 2>/dev/null || true)
+  # raw allocator import (any alias): from std.memory.alloc import ... unsafe_alloc ...
+  got_imp=$(grep -cE 'from std\.memory\.alloc import.*\bunsafe_alloc\b' "$f" 2>/dev/null || true)
   if [ "$got_call" -ne "$exp_call" ]; then
     echo "check_no_raw_heap_alloc: FAIL — $f: $got_call '_heap_alloc[' call(s), expected $exp_call" >&2
     fail=1
@@ -60,7 +60,6 @@ done
 
 if [ "$fail" -ne 0 ]; then
   echo "Migrated files must allocate via Owned[T] (navette/util/owned_alloc)." >&2
-  echo "See specs/2026-06-23-memory-alloc-adoption.md." >&2
   exit 1
 fi
 echo "check_no_raw_heap_alloc: PASS"

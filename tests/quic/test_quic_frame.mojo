@@ -99,7 +99,7 @@ def _hex_byte_value(b: UInt8) raises -> Int:
 def _hex_decode(hex_str: String) raises -> List[UInt8]:
     """Decode a hex string to bytes."""
     var result = List[UInt8]()
-    if len(hex_str) % 2 != 0:
+    if hex_str.byte_length() % 2 != 0:
         raise "hex string has odd length"
     var bs = hex_str.as_bytes()
     var i = 0

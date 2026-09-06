@@ -1,42 +1,59 @@
 #!/usr/bin/env bash
-# Fail if any example pyproject/lock regresses off the b2 toolchain or back to
-# the stale boucle rev. Guards the examples b2 migration.
-#   forbidden: mojo-compiler==1.0.0b1, boucle rev 27f8b3e…, mojox 0.2.0
-# The b2 baseline is: mojo-compiler==1.0.0b2, boucle cd91272…, mojox>=0.3.
-# grep (not rg): rg is absent on bash's PATH in CI; grep -En is the repo
-# convention already used by the other run_tests.sh gates.
+# Fail if a nested example project drifts off the parent's toolchain pins.
+#
+# The examples are separate uv projects so each can be built standalone, which
+# means their pins can rot independently -- and they did: they sat on a b2
+# compiler, a mojox 0.3/0.4 floor and a boucle rev from before that package was
+# reorganised, while the parent had moved on.
+#
+# This gate DERIVES the expected values from the parent pyproject.toml rather
+# than hardcoding a baseline. A hardcoded baseline is what let the drift happen:
+# the previous version of this script pinned the then-current toolchain as its
+# target, so it kept passing while the parent moved past it.
+#
+# grep (not rg): rg is absent on bash's PATH in CI; grep -En is the portable
+# convention used by the repo's other gates.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-STALE_BOUCLE='27f8b3e666de32d78458fd839377183624461e5e'
+PARENT=pyproject.toml
+want_compiler=$(grep -m1 -Eo 'mojo-compiler==[0-9][^"]*' "$PARENT")
+want_boucle=$(grep -m1 -Eo 'Conobi/boucle#[0-9a-f]{40}' uv.lock | cut -d'#' -f2)
+
+if [ -z "$want_compiler" ] || [ -z "$want_boucle" ]; then
+  echo "check_examples_pins: FAIL — cannot read parent pins from $PARENT / uv.lock" >&2
+  exit 2
+fi
+
 fail=0
-
 for pp in examples/*/pyproject.toml; do
-  h=$(grep -En "mojo-compiler==1\.0\.0b1|$STALE_BOUCLE" "$pp" 2>/dev/null || true)
-  if [ -n "$h" ]; then
-    echo "check_examples_pins: FAIL — $pp (b1 compiler / stale boucle rev):" >&2
-    echo "$h" >&2; fail=1
-  fi
-done
+  d=$(dirname "$pp")
 
-for lk in examples/*/uv.lock; do
-  h=$(grep -En "1\.0\.0b1|$STALE_BOUCLE" "$lk" 2>/dev/null || true)
-  if [ -n "$h" ]; then
-    echo "check_examples_pins: FAIL — $lk (b1 compiler / stale boucle rev):" >&2
-    echo "$h" >&2; fail=1
+  if ! grep -qF "$want_compiler" "$pp"; then
+    echo "check_examples_pins: FAIL — $pp does not pin $want_compiler" >&2
+    fail=1
   fi
-  # mojox runtime floor: 0.2.0 predates the b2 .mojoc toolchain; require >=0.3.
-  m=$(grep -A1 'name = "mojox"' "$lk" 2>/dev/null | grep -En 'version = "0\.2\.0"' || true)
-  if [ -n "$m" ]; then
-    echo "check_examples_pins: FAIL — $lk: mojox 0.2.0 (need >=0.3)" >&2
+  if ! grep -qF "$want_boucle" "$pp"; then
+    echo "check_examples_pins: FAIL — $pp does not pin boucle $want_boucle" >&2
+    fail=1
+  fi
+  # mojox-build reads its manifest from tool.mojox; tool.mojox-build is a dead
+  # table name that is silently ignored, so a `binaries` block under it never
+  # takes effect.
+  if grep -q '^\[tool\.mojox-build\]' "$pp"; then
+    echo "check_examples_pins: FAIL — $pp uses the dead [tool.mojox-build] table" >&2
+    fail=1
+  fi
+  want_ver="${want_compiler#mojo-compiler==}"
+  # Anchor on the lock's own `version = "..."` form: a plain substring match
+  # would accept `1.0.0b2` as satisfying `1.0.0`.
+  if [ -f "$d/uv.lock" ] && ! grep -qE "^version = \"${want_ver}\"$" "$d/uv.lock"; then
+    echo "check_examples_pins: FAIL — $d/uv.lock is stale; re-run 'uv lock' in $d" >&2
     fail=1
   fi
 done
 
-if [ "$fail" -ne 0 ]; then
-  echo "Examples must stay on the b2 toolchain (compiler 1.0.0b2, boucle cd91272, mojox>=0.3)." >&2
-  exit 1
-fi
+[ "$fail" -eq 0 ] || exit 1
 echo "check_examples_pins: PASS"

@@ -6,8 +6,8 @@ from std.memory import Pointer
 from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from lib.http1.types import Header
-from lib.http2.connection import (
+from oracle.http1.types import Header
+from oracle.http2.connection import (
     H2Connection,
     H2Config,
     H2Event,
@@ -66,7 +66,7 @@ def _do_preface(
 
 
 def _echo_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """Immediately send 200 OK with x-handler: echo."""
     var hdrs = Headers()
@@ -76,14 +76,14 @@ def _echo_body(
 
 
 def _raising_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """Always raise — exercises the RST_STREAM-on-handler-error path."""
     raise Error("handler error")
 
 
 def _noop_body(
-    ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
+    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
 ) raises:
     """Do nothing — used by tests where the handler isn't the focus."""
     pass
@@ -91,17 +91,17 @@ def _noop_body(
 
 # ---------------------------------------------------------------------------
 # Disabled — these tests exercise stackful-coroutine suspension behaviour
-# (yield_to_caller, resume_stream) that Path A intentionally drops.  They
-# will be re-added in a future sprint that introduces a streaming state
-# machine for handlers that need to await body data:
+# (suspend/resume of the per-stream handler) that Path A intentionally
+# drops.  They will be re-added if a streaming state machine is introduced
+# for handlers that need to await body data:
 #
 #   - test_body_yield (handler suspends until body arrives)
 #   - test_resume_stream (handler suspends pending external resumption)
 #
 # Their bodies (`_read_body_then_echo`, `_yield_for_external`,
-# `_check_error_body`) used `CoroYielder.yield_to_caller()`, which no
-# longer exists in the H2 server.  See plans/2026-04-27-h2-perf-roadmap-
-# sprint-sequence.md § Sprint 1 / Step 3.
+# `_check_error_body`) suspended the coroutine mid-request; the H2 sync
+# server has no suspension point at all.  Handlers that need one belong in
+# `navette/h2/h2_streaming_server.mojo`.
 
 
 # ---------------------------------------------------------------------------

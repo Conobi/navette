@@ -1,7 +1,7 @@
 # tests/fuzz/test_fuzz_h1_parser.mojo
 #
 # Property-test fuzz: HTTP/1.1 request parser.
-# Oracle: conformance/lib/http1/parser.parse_request (independent 300-LoC impl,
+# Oracle: conformance/oracle/http1/parser.parse_request (independent 300-LoC impl,
 #         cross-validated against h11/httptools at build time).
 # Production: navette.h1.parser.try_parse_request
 #
@@ -17,8 +17,8 @@ from tests.fuzz.lib.generators import random_bytes_geom, mutate
 from tests.fuzz.lib.corpus import load_corpus_dir, save_disagreement
 from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
-from lib.http1.parser import parse_request as oracle_parse_request
-from lib.http1.types import ParseConfig as OracleParseConfig
+from oracle.http1.parser import parse_request as oracle_parse_request
+from oracle.http1.types import ParseConfig as OracleParseConfig
 
 from navette.h1.parser import try_parse_request as prod_try_parse_request
 from navette.h1.config import ParseConfig as ProdParseConfig

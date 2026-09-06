@@ -145,7 +145,7 @@ def test_issue_new_cid(lib: SharedLibrary) raises:
     var entry_opt = mgr.issue_new_cid()
     assert_true(entry_opt.__bool__(), "issue_new_cid should return Some")
 
-    var entry = CidEntry(other=entry_opt.value())
+    var entry = CidEntry(copy=entry_opt.value())
     assert_equal_int(Int(entry.sequence), 1, "issued CID has seq=1")
     assert_equal_int(Int(entry.state), Int(CID_ACTIVE), "issued CID is Active")
     assert_equal_int(len(entry.cid), 8, "issued CID is 8 bytes")

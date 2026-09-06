@@ -4,9 +4,10 @@
 # Ported from tests/_h3_streaming_pending.mojo (stashed at e775866).
 #
 # API changes vs. stash:
-#   - Handlers use boucle CoroBody signature: fn(mut CoroYielder) raises -> None
-#   - ctx accessed via yld.user_data().bitcast[H3StreamingCtx, MutAnyOrigin]()
-#   - yield_to_caller() (not .suspend())
+#   - Handlers use the H3StreamingHandlerFn signature:
+#       def (mut Yielder[H3StreamingState]) raises -> None
+#   - ctx accessed through the typed state channel: yld.state()[]
+#   - yld.suspend() is the suspension primitive
 #   - raise Error("...") (not raise StreamError(...))
 #   - write_chunk / finish helpers (not resp_writer.write_body)
 #   - Server type is H3StreamingServer (not H3CoroServer)
@@ -18,8 +19,6 @@ from std.memory import Pointer
 from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle.stackful import CoroYielder
-
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
@@ -30,6 +29,7 @@ from navette.h3.connection import H3Connection, H3Event
 from navette.h3.h3_streaming_server import (
     H3StreamingServer,
     H3StreamingCtx,
+    H3StreamingYielder,
     H3StreamingHandlerFn,
     next_chunk,
     write_chunk,
@@ -82,10 +82,10 @@ struct _TestConfigs(Movable):
             self._tls.shared(), Span(ca_bytes),
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self._tls = take._tls^
-        self.srv_cfg = take.srv_cfg^
-        self.cli_cfg = take.cli_cfg^
+    def __init__(out self, *, deinit move: Self):
+        self._tls = move._tls^
+        self.srv_cfg = move.srv_cfg^
+        self.cli_cfg = move.cli_cfg^
 
 
 def _pump_streaming_client(
@@ -114,14 +114,14 @@ def _pump_streaming_client(
 
 # ── Streaming handler bodies ─────────────────────────────────────────────────
 #
-# Each handler uses the CoroBody shape: fn(mut CoroYielder) raises -> None
-# (must be `fn`, not `def`, to match the CoroBody function-pointer type)
-# ctx is accessed via yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
+# Each handler uses the H3StreamingHandlerFn shape:
+#   def (mut Yielder[H3StreamingState]) raises -> None
+# ctx is accessed through the typed state channel: yld.state()[]
 
 
-def _echo_body_streaming(mut yld: CoroYielder) raises:
+def _echo_body_streaming(mut yld: H3StreamingYielder) raises:
     """POST handler: reads all body chunks, responds with 200 + x-body-length header."""
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
 
     # Accumulate all body bytes
     var total_len = Int(0)
@@ -144,10 +144,10 @@ def _echo_body_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-def _trailer_check_streaming(mut yld: CoroYielder) raises:
+def _trailer_check_streaming(mut yld: H3StreamingYielder) raises:
     """POST with trailers: reads body + trailer, sets found_ptr[]=1 if trailer seen."""
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
-    var found_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var found_ptr = ctx_ptr[].extra_data.bitcast[Int]()
 
     # Consume body and trailers
     while True:
@@ -169,7 +169,7 @@ def _trailer_check_streaming(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
+def _multi_chunk_concat_body(mut yld: H3StreamingYielder) raises:
     """POST handler: yield several times to let multiple DATA frames queue
     into body_frame_ring before draining, then read chunks in arrival
     order and concatenate into extra_data (max 64 bytes).
@@ -177,14 +177,14 @@ def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     The pre-drain yields are what cause ≥2 frames to coexist in the ring
     at the moment next_chunk pops the first one. Without that, the
     adapter delivers one frame at a time and a LIFO pop hides itself."""
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
-    var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var sink_ptr = ctx_ptr[].extra_data.bitcast[UInt8]()
     var written = Int(0)
     # Yield several times before reading so the adapter can deliver
     # multiple DATA events into body_frame_ring while we're suspended.
-    yld.yield_to_caller()
-    yld.yield_to_caller()
-    yld.yield_to_caller()
+    yld.suspend()
+    yld.suspend()
+    yld.suspend()
     while True:
         var chunk_opt = next_chunk(ctx_ptr, yld)
         if not chunk_opt:
@@ -204,11 +204,11 @@ def _multi_chunk_concat_body(mut yld: CoroYielder) raises:
     finish(ctx_ptr, yld)
 
 
-def _blocking_body_streaming(mut yld: CoroYielder) raises:
+def _blocking_body_streaming(mut yld: H3StreamingYielder) raises:
     """POST handler that suspends in next_chunk waiting for body.
     On cancellation (H3StreamCancelled), writes signal=42 to extra_data."""
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
-    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]()
 
     try:
         # This will suspend, then raise H3StreamCancelled when reset arrives
@@ -279,9 +279,9 @@ def test_h3_streaming_post_with_body() raises:
 
 def test_h3_streaming_trailers() raises:
     """POST with trailers → coroutine reads trailer header x-custom-trailer."""
-    var found_ptr = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var found_ptr = _heap_alloc[Int](1)
     found_ptr.init_pointee_move(Int(0))
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(found_ptr)
     )
 
@@ -328,9 +328,9 @@ def test_h3_streaming_trailers() raises:
 
 def test_h3_streaming_rst_stream() raises:
     """Client resets a stream → coroutine receives H3StreamCancelled, sets signal=42."""
-    var signal_ptr = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var signal_ptr = _heap_alloc[Int](1)
     signal_ptr.init_pointee_move(Int(0))
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(signal_ptr)
     )
 
@@ -387,9 +387,9 @@ def test_h3_streaming_cancel_via_rst_stream() raises:
     5. Assert: stream is cleaned up (server._streams has zero entries) and
        signal == 99.
     """
-    var signal_ptr = _heap_alloc[Int](1).as_unsafe_any_origin()
+    var signal_ptr = _heap_alloc[Int](1)
     signal_ptr.init_pointee_move(Int(0))
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(signal_ptr)
     )
 
@@ -437,10 +437,10 @@ def test_h3_streaming_cancel_via_rst_stream() raises:
     print("  test_h3_streaming_cancel_via_rst_stream: PASS")
 
 
-def _cancel_signal_handler(mut yld: CoroYielder) raises:
+def _cancel_signal_handler(mut yld: H3StreamingYielder) raises:
     """Streaming handler for cancel test. Writes 99 to extra_data on cancellation."""
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
-    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
+    var signal_ptr = ctx_ptr[].extra_data.bitcast[Int]()
 
     try:
         # Will suspend here, then raise H3StreamCancelled when reset arrives
@@ -461,10 +461,10 @@ def test_h3_streaming_multi_chunk_body_fifo_order() raises:
     Caught a real bug where body_frame_ring.pop() (default = pop last)
     paired with append() to deliver multi-chunk POST bodies in REVERSE
     order — silent data corruption."""
-    var sink_ptr = _heap_alloc[UInt8](64).as_unsafe_any_origin()
+    var sink_ptr = _heap_alloc[UInt8](64)
     for i in range(64):
         sink_ptr[i] = UInt8(0)
-    var extra = UnsafePointer[NoneType, MutUntrackedOrigin](
+    var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(sink_ptr)
     )
 
@@ -521,7 +521,7 @@ def test_h3_streaming_multi_chunk_body_fifo_order() raises:
     print("  test_h3_streaming_multi_chunk_body_fifo_order: PASS")
 
 
-def _gate_probe_streaming(mut yld: CoroYielder) raises:
+def _gate_probe_streaming(mut yld: H3StreamingYielder) raises:
     """No-op streaming handler for the zero-rtt gate test: returns
     immediately (coro completes on first resume) without ending the
     response, so the stream ctx stays registered for assertions."""

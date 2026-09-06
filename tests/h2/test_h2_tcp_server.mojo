@@ -43,7 +43,7 @@ struct StubHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -109,7 +109,7 @@ def test_h2_tcp_server_init_and_tick() raises:
     srv_ptr[].wire_context()
 
     # -- 6. IoUringDriver + start (initial accept submission) --
-    var driver = IoUringDriver(sq_entries=64)
+    var driver = IoUringDriver(capacity=64)
     srv_ptr[].start(driver)
 
     # -- 7. One non-blocking tick — no client, accept stays pending --

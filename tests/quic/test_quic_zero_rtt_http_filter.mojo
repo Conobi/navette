@@ -61,20 +61,24 @@ def _splitmix64(mut state: UInt64) -> UInt64:
 
 def _make_filter_ptr_some(
     mut filter: IdempotentOnlyFilter,
-) -> Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]]:
+) -> Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]]:
     """Return Some(ptr) wrapping a stack-rooted filter. Caller MUST
     keep `filter` alive past the helper call."""
-    return Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](
-        UnsafePointer(to=filter)
+    return Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](
+        Pointer(to=filter).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
 
 
 def _make_profile_ptr_some(
     mut prof: AcceptProfile,
-) -> Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]:
+) -> Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]:
     """Return Some(ptr) wrapping a stack-rooted AcceptProfile."""
-    return Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    return Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
 
 
@@ -310,7 +314,7 @@ def test_stream_is_zero_rtt_false_at_default_construction() raises:
     var s = Stream(UInt64(0), True, False)
     assert_false(s.is_zero_rtt, String("base ctor must init is_zero_rtt=False"))
 
-    var s2 = Stream(other=s)
+    var s2 = Stream(copy=s)
     assert_false(s2.is_zero_rtt, String("copy ctor preserves False default"))
 
 
@@ -365,7 +369,7 @@ def test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet() raises:
 
     var key = Int(0)
     assert_true(key in conn.stream_map.streams, String("stream must be created"))
-    var s = Stream(other=conn.stream_map.streams[key])
+    var s = Stream(copy=conn.stream_map.streams[key])
     assert_true(
         s.is_zero_rtt,
         String("new stream from 0-RTT packet must be tagged"),
@@ -398,7 +402,7 @@ def test_stream_is_zero_rtt_false_from_1rtt_packet() raises:
 
     var key = Int(4)
     assert_true(key in conn.stream_map.streams, String("stream must be created"))
-    var s = Stream(other=conn.stream_map.streams[key])
+    var s = Stream(copy=conn.stream_map.streams[key])
     assert_false(
         s.is_zero_rtt,
         String("new stream from 1-RTT packet must not be tagged"),
@@ -431,7 +435,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     var sf1 = StreamFrame(UInt64(8), UInt64(0), p1, False)
     conn._handle_stream_frame(sf1)
     var key = Int(8)
-    var s1 = Stream(other=conn.stream_map.streams[key])
+    var s1 = Stream(copy=conn.stream_map.streams[key])
     assert_true(s1.is_zero_rtt, String("creation-time tag True"))
 
     # Subsequent frame on the SAME stream in 1-RTT — must NOT clear.
@@ -440,7 +444,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     p2.append(UInt8(0x42))
     var sf2 = StreamFrame(UInt64(8), UInt64(1), p2, False)
     conn._handle_stream_frame(sf2)
-    var s2 = Stream(other=conn.stream_map.streams[key])
+    var s2 = Stream(copy=conn.stream_map.streams[key])
     assert_true(
         s2.is_zero_rtt,
         String("subsequent 1-RTT frame must not clear the tag"),
@@ -578,7 +582,7 @@ def test_filter_helper_0rtt_filter_none_fails_closed() raises:
     var pp = _make_profile_ptr_some(prof)
     var headers = Headers()
     var none_ptr: Optional[
-        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
     ] = None
 
     var outcome = apply_early_data_filter(
@@ -642,7 +646,7 @@ def test_filter_helper_counter_mutual_exclusion() raises:
         if none_or_some == UInt64(0) and is_zr:
             # Mostly Some; rare None for fail-closed coverage when 0-RTT.
             var none_ptr: Optional[
-                UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+                Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
             ] = None
             _ = apply_early_data_filter(
                 method, String("/"), is_zr, none_ptr,
@@ -707,7 +711,7 @@ def test_send_425_emits_status_only_fin() raises:
     # `fin_offset` (frame-emission timestamp) is set only once
     # `make_frame` actually slices the FIN onto the wire, which
     # requires a flush pass that this test deliberately skips.
-    var s = Stream(other=h3._quic.stream_map.streams[Int(0)])
+    var s = Stream(copy=h3._quic.stream_map.streams[Int(0)])
     assert_true(
         s.send_buf is not None,
         String("send-side buffer must exist on the request stream"),

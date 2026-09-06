@@ -2,7 +2,7 @@
 #
 # Roundtrip fuzz: QPACK encoder + decoder.
 # Production: navette.h3.qpack.{QpackEncoder, QpackDecoder}
-# (No in-tree Mojo oracle for QPACK in v1; upgrade when conformance/lib/http3/
+# (No in-tree Mojo oracle for QPACK in v1; upgrade when conformance/oracle/http3/
 # qpack lands.)
 #
 # Properties:

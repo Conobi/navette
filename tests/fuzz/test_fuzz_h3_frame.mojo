@@ -3,7 +3,7 @@
 # Roundtrip fuzz: HTTP/3 frame codec.
 # Production: navette.h3.frame.{parse_h3_frame, H3RawFrame.encode}
 # (No in-tree Mojo oracle for H3 frames in v1; upgrade when
-# conformance/lib/http3/frame lands.)
+# conformance/oracle/http3/frame lands.)
 #
 # Properties:
 #   P1 (byte input): decoder must not crash on arbitrary bytes; either parses

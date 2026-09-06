@@ -2,7 +2,7 @@
 #
 # Roundtrip + structural-property fuzz: HTTP/2 frame codec.
 # Production: navette.h2.frame.{decode_frame, encode_frame}
-# (conformance/lib/http2/frame.mojo is a re-export, so no oracle disagreement.)
+# (conformance/oracle/http2/frame.mojo is a re-export, so no oracle disagreement.)
 #
 # Properties:
 #   P1 (byte input → structural): if decode_frame succeeds, the length field

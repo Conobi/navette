@@ -42,11 +42,13 @@ def test_dispatch_predicate_path_accept() raises:
     """Predicate variant, accept-returning predicate: outcome=proceed;
     Early-Data:1 injected; accept counter +=1."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](None)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](None)
     var pred_opt = Optional[EarlyDataPredicateFn](accept_all_predicate)
     var outcome = apply_early_data_filter(
         String("POST"), String("/x"),
@@ -67,11 +69,13 @@ def test_dispatch_predicate_path_reject() raises:
     """Predicate variant, reject-returning predicate: outcome=send_425;
     reject_425 counter +=1; user_raised counter unchanged."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](None)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](None)
     var pred_opt = Optional[EarlyDataPredicateFn](reject_all_predicate)
     var outcome = apply_early_data_filter(
         String("POST"), String("/x"),
@@ -92,11 +96,13 @@ def test_dispatch_predicate_raises_fail_closed() raises:
     user-raised-counter-routes-on-raise. Raising predicate: outcome=
     send_425; user_raised counter +=1; Early-Data:1 NOT injected."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](None)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](None)
     var pred_opt = Optional[EarlyDataPredicateFn](raising_predicate)
     var outcome = apply_early_data_filter(
         String("POST"), String("/x"),
@@ -117,13 +123,17 @@ def test_dispatch_filter_path_unchanged() raises:
     """Filter-only path: predicate_fn=None, filter_ptr=Some. Behaviour
     matches the legacy dispatch shape."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
     var f = IdempotentOnlyFilter()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](
-        UnsafePointer(to=f)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](
+        Pointer(to=f).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var pred_opt = Optional[EarlyDataPredicateFn](None)
     var outcome = apply_early_data_filter(
@@ -143,11 +153,13 @@ def test_dispatch_both_none_fail_closed() raises:
     """is_zero_rtt=True with both filter_ptr=None and predicate_fn=None:
     misconfig_fail_closed."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](None)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](None)
     var pred_opt = Optional[EarlyDataPredicateFn](None)
     var outcome = apply_early_data_filter(
         String("GET"), String("/x"),
@@ -165,11 +177,13 @@ def test_dispatch_1rtt_bypass() raises:
     """is_zero_rtt=False: helper short-circuits to proceed; bumps
     1rtt_bypassed regardless of predicate / filter presence."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](None)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](None)
     var pred_opt = Optional[EarlyDataPredicateFn](accept_all_predicate)
     var outcome = apply_early_data_filter(
         String("POST"), String("/x"),
@@ -190,13 +204,17 @@ def test_dispatch_predicate_takes_precedence_when_both_some() raises:
     asserts that if both ever appear, the predicate wins (the filter
     pointer is never dereferenced)."""
     var prof = AcceptProfile()
-    var prof_ptr = Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]](
-        UnsafePointer(to=prof)
+    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        Pointer(to=prof).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     var headers = Headers()
     var f = IdempotentOnlyFilter()
-    var filter_opt = Optional[UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]](
-        UnsafePointer(to=f)
+    var filter_opt = Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](
+        Pointer(to=f).unsafe_origin_cast[
+            MutUntrackedOrigin
+        ]()
     )
     # Predicate accepts POST (a method IdempotentOnlyFilter would reject)
     # — outcome must be proceed (predicate wins) AND accept counter +=1.

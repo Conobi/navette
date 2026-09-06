@@ -2607,7 +2607,7 @@ def test_batch_crypto_roundtrip() raises:
 
     # Build packet: 22-byte header + 32-byte PADDING + 16-byte tag space = 70 bytes
     # PN_OFFSET = 18, HEADER_LEN = 22 (18 + 4-byte PN)
-    var buf_ptr = _heap_alloc[UInt8](70).as_unsafe_any_origin()
+    var buf_ptr = _heap_alloc[UInt8](70)
     for i in range(70):
         buf_ptr[i] = UInt8(0)
 
@@ -2641,20 +2641,20 @@ def test_batch_crypto_roundtrip() raises:
     # Bytes 54-69: tag space (zeros)
 
     # Allocate parallel arrays on the heap
-    var pkt_ptrs   = _heap_alloc[UnsafePointer[UInt8, MutAnyOrigin]](1).as_unsafe_any_origin()
-    var pns        = _heap_alloc[UInt64](1).as_unsafe_any_origin()
-    var hdr_lens   = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var pay_lens   = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var capacities = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var pkt_lens   = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var pn_offsets = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var pn_lengths = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var pkt_ptrs   = _heap_alloc[Pointer[UInt8, MutUntrackedOrigin]](1)
+    var pns        = _heap_alloc[UInt64](1)
+    var hdr_lens   = _heap_alloc[Int32](1)
+    var pay_lens   = _heap_alloc[Int32](1)
+    var capacities = _heap_alloc[Int32](1)
+    var pkt_lens   = _heap_alloc[Int32](1)
+    var pn_offsets = _heap_alloc[Int32](1)
+    var pn_lengths = _heap_alloc[Int32](1)
 
-    var out_ct_lens  = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_results  = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_fb       = _heap_alloc[UInt8](1).as_unsafe_any_origin()
-    var out_pnl      = _heap_alloc[Int32](1).as_unsafe_any_origin()
-    var out_pt_lens  = _heap_alloc[Int32](1).as_unsafe_any_origin()
+    var out_ct_lens  = _heap_alloc[Int32](1)
+    var out_results  = _heap_alloc[Int32](1)
+    var out_fb       = _heap_alloc[UInt8](1)
+    var out_pnl      = _heap_alloc[Int32](1)
+    var out_pt_lens  = _heap_alloc[Int32](1)
 
     pkt_ptrs[0]   = buf_ptr
     pns[0]        = UInt64(0)
@@ -3924,11 +3924,11 @@ def test_path_validation_full_round_trip() raises:
 
     # PATH_RESPONSE with the matching token, arriving from addr_b.
     conn.on_path_response_received(
-        Span(token), PathKey(other=addr_b), UInt64(2000)
+        Span(token), PathKey(copy=addr_b), UInt64(2000)
     )
 
     # peer_addr swapped to addr_b.
-    var current_peer = PathKey(other=conn.peer_addr)
+    var current_peer = PathKey(copy=conn.peer_addr)
     assert_true(
         current_peer == addr_b,
         "peer_addr promoted to validated path",
@@ -3981,16 +3981,16 @@ def test_path_validation_rejects_wrong_addr() raises:
     )
     conn.bootstrap_peer_addr(addr_a^)
 
-    conn.start_path_challenge(PathKey(other=addr_b), UInt64(1000))
+    conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
     var token = List[UInt8](copy=conn.path_validator.pending[0].token)
 
     # Response carries the matching token but arrives from a third addr.
     conn.on_path_response_received(
-        Span(token), PathKey(other=addr_c), UInt64(2000)
+        Span(token), PathKey(copy=addr_c), UInt64(2000)
     )
 
     # peer_addr UNCHANGED — addr_a still the validated path.
-    var peer_now = PathKey(other=conn.peer_addr)
+    var peer_now = PathKey(copy=conn.peer_addr)
     var addr_a_cmp = PathKey.from_v4(
         UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
     )
@@ -4034,17 +4034,17 @@ def test_path_validation_defers_without_spare_cid() raises:
     )
     conn.bootstrap_peer_addr(addr_a^)
 
-    conn.start_path_challenge(PathKey(other=addr_b), UInt64(1000))
+    conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
     var token = List[UInt8](copy=conn.path_validator.pending[0].token)
 
     conn.on_path_response_received(
-        Span(token), PathKey(other=addr_b), UInt64(2000)
+        Span(token), PathKey(copy=addr_b), UInt64(2000)
     )
 
     # The matched challenge is REMOVED (validator's on_response is the
     # one that pops + marks `current`); CID rotation fails → peer_addr
     # does NOT swap.
-    var peer_now = PathKey(other=conn.peer_addr)
+    var peer_now = PathKey(copy=conn.peer_addr)
     var addr_a_cmp = PathKey.from_v4(
         UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
     )
@@ -4094,7 +4094,7 @@ def test_disable_active_migration_triggers_close() raises:
         "connection not closing before the ingress arrives",
     )
 
-    conn.on_ingress_from(PathKey(other=addr_b), 1200, UInt64(2000))
+    conn.on_ingress_from(PathKey(copy=addr_b), 1200, UInt64(2000))
 
     # Post-condition: CLOSING set, pending_close holds the right tag.
     assert_true(
@@ -4201,7 +4201,7 @@ def test_anti_amp_per_path_in_flusher() raises:
         UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
     )
     conn.bootstrap_peer_addr(addr_a^)
-    conn.start_path_challenge(PathKey(other=addr_b), UInt64(1000))
+    conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
 
     # Cold gate: 0 received → no budget. The validator's contract is to
     # refuse `n > 0` when bytes_received == 0 (budget = 3*0 - 0 = 0).
@@ -4212,7 +4212,7 @@ def test_anti_amp_per_path_in_flusher() raises:
 
     # Credit 1000 received bytes; budget = 3 * 1000 - 0 = 3000.
     conn.path_validator.record_received_bytes(
-        PathKey(other=addr_b), 1000
+        PathKey(copy=addr_b), 1000
     )
     assert_true(
         conn.can_send_to(addr_b, 3000),

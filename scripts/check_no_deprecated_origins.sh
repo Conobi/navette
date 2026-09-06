@@ -1,23 +1,38 @@
 #!/usr/bin/env bash
-# Fail if any deprecated Mojo 1.0.0b2 origin alias / cast method appears in
-# in-scope source. The b2 replacements are forwarding aliases / a pure method
-# rename, so these tokens must never reappear.
-#   as_any_origin -> as_unsafe_any_origin
-#   {,Immut,Mut}ExternalOrigin -> {,Immut,Mut}UntrackedOrigin
-# The *AnyOrigin family is NOT deprecated and must NOT be flagged.
+# Fail if a retired origin spelling reappears in in-scope Mojo source.
+#
+# Mojo 1.0.0 rejects `AnyOrigin` in a struct field outright: the claim "this may
+# alias any origin" makes the lifetime checker unsound, and the compiler's own
+# note points at `UntrackedOrigin` "if lifetime is managed explicitly", which is
+# the case for every raw pointer this codebase holds. The whole repo was
+# converted, so any reappearance is a regression.
+#
+#   as_any_origin           -> as_unsafe_any_origin   (b2 rename)
+#   *ExternalOrigin         -> *UntrackedOrigin       (b2 rename)
+#   *AnyOrigin              -> *UntrackedOrigin in fields, locals and returns
+#                              `Pointer[mut=True, T=..., origin=_]` in PARAMETERS,
+#                              where a wildcard is wanted and `MutUntrackedOrigin`
+#                              would wrongly reject a caller's tracked origin
+#   as_unsafe_any_origin()  -> drop it; `unsafe_alloc` already returns
+#                              MutUntrackedOrigin, and the result is
+#                              field-illegal
+#
 # grep (not rg): rg is absent on bash's PATH in CI; grep -rEn is the portable
-# convention already used by run_tests.sh's other gates.
+# convention used by the repo's other gates.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
-DIRS=(navette interop tests conformance examples bench)
-PAT='\b(as_any_origin|ExternalOrigin|ImmutExternalOrigin|MutExternalOrigin)\b'
+
+DIRS=(navette interop tests conformance examples bench probes)
+PAT='\b(as_any_origin|as_unsafe_any_origin|ExternalOrigin|ImmutExternalOrigin|MutExternalOrigin|AnyOrigin|ImmutAnyOrigin|MutAnyOrigin|MutUnsafeAnyOrigin|ImmutUnsafeAnyOrigin)\b'
+
 HITS=$(grep -rEn --include='*.mojo' "$PAT" "${DIRS[@]}" 2>/dev/null || true)
 if [ -n "$HITS" ]; then
-  echo "check_no_deprecated_origins: FAIL — deprecated b2 origin tokens found:" >&2
+  echo "check_no_deprecated_origins: FAIL — retired origin tokens found:" >&2
   echo "$HITS" >&2
-  echo "Rename: as_any_origin->as_unsafe_any_origin, *ExternalOrigin->*UntrackedOrigin" >&2
+  echo "Field/local/return: use *UntrackedOrigin." >&2
+  echo "Parameter: use Pointer[mut=True, T=..., origin=_] to accept any origin." >&2
   exit 1
 fi
 echo "check_no_deprecated_origins: PASS"

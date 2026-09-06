@@ -13,7 +13,7 @@ from navette.quic.retry import (
     validate_retry_token,
     compute_retry_integrity_tag,
 )
-from lib.test_util import hex_decode, hex_encode
+from oracle.test_util import hex_decode, hex_encode
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 

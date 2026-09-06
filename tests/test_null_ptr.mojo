@@ -10,12 +10,12 @@ struct Param[x: Int](Copyable, Movable):
 
 
 def test_null_ptr_addr_zero() raises:
-    assert_equal(Int(null_ptr[NoneType, MutAnyOrigin]()), 0)
-    assert_equal(Int(null_ptr[UInt8, MutAnyOrigin]()), 0)
-    assert_equal(Int(null_ptr[UInt64, MutAnyOrigin]()), 0)
     assert_equal(Int(null_ptr[NoneType, MutUntrackedOrigin]()), 0)
-    assert_equal(Int(null_ptr[Int, MutAnyOrigin]()), 0)        # PtrBox Self.T stand-in
-    assert_equal(Int(null_ptr[Param[3], MutAnyOrigin]()), 0)   # comptime-parameterized element
+    assert_equal(Int(null_ptr[UInt8, MutUntrackedOrigin]()), 0)
+    assert_equal(Int(null_ptr[UInt64, MutUntrackedOrigin]()), 0)
+    assert_equal(Int(null_ptr[NoneType, MutUntrackedOrigin]()), 0)
+    assert_equal(Int(null_ptr[Int, MutUntrackedOrigin]()), 0)        # PtrBox Self.T stand-in
+    assert_equal(Int(null_ptr[Param[3], MutUntrackedOrigin]()), 0)   # comptime-parameterized element
 
 
 def main() raises:

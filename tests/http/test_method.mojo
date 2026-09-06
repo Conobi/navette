@@ -108,7 +108,7 @@ def test_is_idempotent() raises:
 def test_copy() raises:
     """Method is copyable."""
     var m = Method.get()
-    var m2 = Method(other=m)
+    var m2 = Method(copy=m)
     assert_true(m == m2, "copy equal")
     assert_equal_str(String(m2), "GET", "copy str")
 

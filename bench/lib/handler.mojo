@@ -5,7 +5,7 @@
 
 from std.collections.optional import Optional
 from std.collections import Dict
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.http.handler import (
     ResponseWriter,
     RecvBody,
@@ -198,7 +198,7 @@ def _get_extension(path: String) -> String:
 # ---------------------------------------------------------------------------
 
 
-struct StaticEntry(Copyable, Movable, ImplicitlyDestructible):
+struct StaticEntry(Copyable, Movable, Deinitable):
     """Holds a static file's original bytes plus optional brotli/gzip variants."""
 
     var data: List[UInt8]
@@ -218,17 +218,17 @@ struct StaticEntry(Copyable, Movable, ImplicitlyDestructible):
         self.gz_data = gz_data^
         self.content_type = content_type^
 
-    def __init__(out self, *, other: Self):
-        self.data = other.data.copy()
-        self.br_data = other.br_data.copy()
-        self.gz_data = other.gz_data.copy()
-        self.content_type = other.content_type.copy()
+    def __init__(out self, *, copy: Self):
+        self.data = copy.data.copy()
+        self.br_data = copy.br_data.copy()
+        self.gz_data = copy.gz_data.copy()
+        self.content_type = copy.content_type.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.data = take.data^
-        self.br_data = take.br_data^
-        self.gz_data = take.gz_data^
-        self.content_type = take.content_type^
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data^
+        self.br_data = move.br_data^
+        self.gz_data = move.gz_data^
+        self.content_type = move.content_type^
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +301,7 @@ def _load_static_files(static_dir: String) -> Dict[String, StaticEntry]:
 # ---------------------------------------------------------------------------
 
 
-struct DatasetItem(Copyable, Movable, ImplicitlyDestructible):
+struct DatasetItem(Copyable, Movable, Deinitable):
     """One row from data/dataset.json with string fields pre-escaped.
 
     The renderer at request time only needs to memcpy these byte spans
@@ -340,25 +340,25 @@ struct DatasetItem(Copyable, Movable, ImplicitlyDestructible):
         self.tags_array = tags_array^
         self.rating_object = rating_object^
 
-    def __init__(out self, *, other: Self):
-        self.id = other.id
-        self.price = other.price
-        self.quantity = other.quantity
-        self.active = other.active
-        self.name_quoted = other.name_quoted.copy()
-        self.category_quoted = other.category_quoted.copy()
-        self.tags_array = other.tags_array.copy()
-        self.rating_object = other.rating_object.copy()
+    def __init__(out self, *, copy: Self):
+        self.id = copy.id
+        self.price = copy.price
+        self.quantity = copy.quantity
+        self.active = copy.active
+        self.name_quoted = copy.name_quoted.copy()
+        self.category_quoted = copy.category_quoted.copy()
+        self.tags_array = copy.tags_array.copy()
+        self.rating_object = copy.rating_object.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.id = take.id
-        self.price = take.price
-        self.quantity = take.quantity
-        self.active = take.active
-        self.name_quoted = take.name_quoted^
-        self.category_quoted = take.category_quoted^
-        self.tags_array = take.tags_array^
-        self.rating_object = take.rating_object^
+    def __init__(out self, *, deinit move: Self):
+        self.id = move.id
+        self.price = move.price
+        self.quantity = move.quantity
+        self.active = move.active
+        self.name_quoted = move.name_quoted^
+        self.category_quoted = move.category_quoted^
+        self.tags_array = move.tags_array^
+        self.rating_object = move.rating_object^
 
 
 # ---------------------------------------------------------------------------
@@ -483,9 +483,9 @@ struct BenchState(Movable):
         self.static_cache = static_cache^
         self.dataset = dataset^
 
-    def __init__(out self, *, deinit take: Self):
-        self.static_cache = take.static_cache^
-        self.dataset = take.dataset^
+    def __init__(out self, *, deinit move: Self):
+        self.static_cache = move.static_cache^
+        self.dataset = move.dataset^
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +541,7 @@ def handle_static(
     target: String,
     headers: Headers,
     mut resp: ResponseWriter,
-    state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+    state_ptr: Pointer[BenchState, MutUntrackedOrigin],
 ) raises:
     """Serve a file from the static cache for ``/static/<filename>``.
 
@@ -645,7 +645,7 @@ def _parse_json_path(target: String, mut count_out: Int, mut m_out: Int):
 def handle_json(
     target: String,
     mut resp: ResponseWriter,
-    state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+    state_ptr: Pointer[BenchState, MutUntrackedOrigin],
 ) raises:
     """GET /json/{count}?m=<m> -> application/json with computed totals."""
     var count: Int = -1
@@ -728,7 +728,7 @@ def _dispatch_request(
     target: String,
     headers: Headers,
     mut resp: ResponseWriter,
-    state_ptr: UnsafePointer[BenchState, MutAnyOrigin],
+    state_ptr: Pointer[BenchState, MutUntrackedOrigin],
 ) raises:
     """Route a request based on URL path prefix."""
     if _starts_with(target, String("/plaintext")):
@@ -751,13 +751,13 @@ def _dispatch_request(
 struct BenchHandler(StreamHandler):
     """StreamHandler that dispatches to benchmark endpoints."""
 
-    var state_ptr: UnsafePointer[BenchState, MutAnyOrigin]
+    var state_ptr: Pointer[BenchState, MutUntrackedOrigin]
 
-    def __init__(out self, state_ptr: UnsafePointer[BenchState, MutAnyOrigin]):
+    def __init__(out self, state_ptr: Pointer[BenchState, MutUntrackedOrigin]):
         self.state_ptr = state_ptr
 
-    def __init__(out self, *, deinit take: Self):
-        self.state_ptr = take.state_ptr
+    def __init__(out self, *, deinit move: Self):
+        self.state_ptr = move.state_ptr
 
     def on_request(
         mut self,
@@ -796,15 +796,15 @@ struct BenchHandler(StreamHandler):
 
 
 # ---------------------------------------------------------------------------
-# CoroBody functions for H2 and H3 coro servers
+# Body functions for the H2 and H3 sync (coro) servers
 # ---------------------------------------------------------------------------
 
 
 def bench_h2_body_fn(
-    ctx_ptr: UnsafePointer[H2CoroStreamCtx, MutAnyOrigin],
+    ctx_ptr: Pointer[H2CoroStreamCtx, MutUntrackedOrigin],
 ) raises:
     """H2BodyFn for H2CoroServer (Sprint 1 Path A — sync handler)."""
-    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_unsafe_any_origin()
+    var state_ptr = ctx_ptr[].extra_data.unsafe_bitcast[BenchState]()
     _dispatch_request(
         ctx_ptr[].request.target,
         ctx_ptr[].request.headers,
@@ -814,10 +814,10 @@ def bench_h2_body_fn(
 
 
 def bench_h3_body_fn(
-    ctx_ptr: UnsafePointer[H3CoroStreamCtx, MutAnyOrigin],
+    ctx_ptr: Pointer[H3CoroStreamCtx, MutUntrackedOrigin],
 ) raises:
     """H3BodyFn for H3CoroServer (Sprint 2A Path A — sync handler)."""
-    var state_ptr = ctx_ptr[].extra_data.bitcast[BenchState]().as_unsafe_any_origin()
+    var state_ptr = ctx_ptr[].extra_data.unsafe_bitcast[BenchState]()
     _dispatch_request(
         ctx_ptr[].request.target,
         ctx_ptr[].request.headers,

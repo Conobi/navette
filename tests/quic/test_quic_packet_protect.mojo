@@ -173,14 +173,15 @@ def test_install_is_free_first_when_slot_3_populated() raises:
     var rlib_pre = tls.shared().inner_ptr()
     _ = rlib_pre[].test_keys_free_reset()
 
-    # See ASAP-destruction note in test 1. Both `conn` and `protect` must
-    # live past install — Mojo's ASAP destructor for `protect` would
-    # otherwise re-free slot 3 (set to -1 by discard) on some code paths
-    # and double-count, masking the once-only invariant we're proving.
+    # `test_keys_free_count` is a PROCESS-WIDE counter, so every live
+    # object that frees a keys handle in its destructor contributes to it.
+    # `conn` carries its own Initial keys, so it must stay alive past the
+    # counter READ below -- not merely past `install` -- or its legitimate
+    # free lands in the count and the assertion reads 2. `protect` must
+    # likewise outlive the read: its destructor would re-free slot 3 on
+    # some paths and mask the once-only invariant being proven here.
     var ch = conn.conn_handle
     var installed = protect.install_zero_rtt_read_keys(ch)
-    _ = conn.is_server  # extend conn's lifetime past install
-    _ = protect.has_keys(0)  # extend protect's lifetime past install
     assert_true(
         not installed,
         "install must return False on a fresh non-resumed conn",
@@ -188,6 +189,8 @@ def test_install_is_free_first_when_slot_3_populated() raises:
 
     var rlib_post = tls.shared().inner_ptr()
     var c = rlib_post[].test_keys_free_count()
+    _ = conn.is_server  # keep conn alive past the counter read
+    _ = protect.has_keys(0)  # keep protect alive past the counter read
     assert_equal_int(
         Int(c), 1,
         "h_pre must be freed exactly once before FFI is invoked",
@@ -325,7 +328,7 @@ def test_discard_clears_slot_3_and_frees_handle() raises:
 
     var err = rlib[].last_error()
     assert_true(
-        len(err) == 0,
+        not err,
         "last_error must be empty on successful discard",
     )
     # Extend protect lifetime past the assertion section so ASAP-destruction

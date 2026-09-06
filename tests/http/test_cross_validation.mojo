@@ -1,7 +1,7 @@
 # tests/test_cross_validation.mojo
 #
 # Phase B Task 7 — Cross-validation between the conformance batch parser
-# (conformance/lib/http1) and the production incremental parser
+# (conformance/oracle/http1) and the production incremental parser
 # (src/h1/parser). Both parsers are fed the same RFC 9112 vectors and the
 # results are compared field-by-field. This is the proof that the new
 # incremental parser exposed by H1Connection produces results identical
@@ -16,15 +16,15 @@ from std.collections.optional import Optional
 from std.python import Python, PythonObject
 
 # Conformance (batch / one-shot) parser.
-from lib.test_util import load_vectors, hex_decode
-from lib.http1.types import (
+from oracle.test_util import load_vectors, hex_decode
+from oracle.http1.types import (
     ParseConfig as CParseConfig,
     ParsedRequest,
     ParsedResponse,
     Header as CHeader,
 )
-from lib.http1.parser import parse_request as batch_parse_request
-from lib.http1.response import parse_response as batch_parse_response
+from oracle.http1.parser import parse_request as batch_parse_request
+from oracle.http1.response import parse_response as batch_parse_response
 
 # Production (incremental) parser — call directly so we don't have to
 # reason about H1Connection lifecycle (HTTP/1.0 close, error phase, etc.).
@@ -182,21 +182,21 @@ struct CrossStats(Copyable, Movable):
         self.prod_only = 0
         self.field_mismatch = 0
 
-    def __init__(out self, *, other: Self):
-        self.total = other.total
-        self.matched = other.matched
-        self.skipped = other.skipped
-        self.batch_only = other.batch_only
-        self.prod_only = other.prod_only
-        self.field_mismatch = other.field_mismatch
+    def __init__(out self, *, copy: Self):
+        self.total = copy.total
+        self.matched = copy.matched
+        self.skipped = copy.skipped
+        self.batch_only = copy.batch_only
+        self.prod_only = copy.prod_only
+        self.field_mismatch = copy.field_mismatch
 
-    def __init__(out self, *, deinit take: Self):
-        self.total = take.total
-        self.matched = take.matched
-        self.skipped = take.skipped
-        self.batch_only = take.batch_only
-        self.prod_only = take.prod_only
-        self.field_mismatch = take.field_mismatch
+    def __init__(out self, *, deinit move: Self):
+        self.total = move.total
+        self.matched = move.matched
+        self.skipped = move.skipped
+        self.batch_only = move.batch_only
+        self.prod_only = move.prod_only
+        self.field_mismatch = move.field_mismatch
 
 
 def _compare_request(
@@ -431,7 +431,7 @@ def _cross_request_file(path: String, mut stats: CrossStats) raises:
         # have to reason about connection-level state.
         var prod_result = try_parse_request(wire, 0, 0, ParseConfig())
 
-        if len(prod_result.error) > 0:
+        if prod_result.error:
             print(
                 "BATCH_ONLY ["
                 + vec_id
@@ -490,7 +490,7 @@ def _cross_response_file(path: String, mut stats: CrossStats) raises:
             wire, 0, 0, method_obj^, ParseConfig()
         )
 
-        if len(prod_result.error) > 0:
+        if prod_result.error:
             print(
                 "BATCH_ONLY ["
                 + vec_id

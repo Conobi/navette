@@ -2,7 +2,7 @@
 #
 # Unit tests for H2 pseudo-header translation functions.
 
-from lib.http1.types import Header
+from oracle.http1.types import Header
 from navette.http.method import Method
 from navette.http.version import Version
 from navette.http.headers import Headers

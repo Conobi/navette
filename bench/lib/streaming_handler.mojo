@@ -5,21 +5,19 @@
 # (H2 variant) to demonstrate end-to-end streaming on both protocols with one
 # shared handler body.
 #
-# The handler shape is boucle's CoroBody: `fn(mut yld) raises -> None` with
-# ctx accessed via yld.user_data(). H2 and H3 streaming ctx are protocol-
-# specific structs (H2StreamingCtx vs H3StreamingCtx), so we provide two
-# thin entry-point fns; the body logic is identical structurally but the
-# ctx pointer types differ.
-#
-# Note: H2 streaming server doesn't exist yet (Phase 2 work). Imports for it
-# will be added by Phase 2 Task 2.4 alongside `llm_stream_h2_handler`.
+# The handler shape is boucle's `CoroutineBody[State]`:
+#   def (mut Yielder[State]) raises -> None
+# with the per-stream ctx reached through the typed state channel,
+# `yld.state()[]`. H2 and H3 streaming ctx are protocol-specific structs
+# (H2StreamingCtx vs H3StreamingCtx) and therefore instantiate the coroutine
+# at different State types, so we provide two thin entry points; the body
+# logic is structurally identical.
 
-from std.memory import UnsafePointer
-
-from boucle.stackful import CoroYielder
+from std.memory import Pointer
 
 from navette.h3.h3_streaming_server import (
     H3StreamingCtx,
+    H3StreamingYielder,
     next_chunk as h3_next_chunk,
     write_chunk as h3_write_chunk,
     finish as h3_finish,
@@ -27,6 +25,7 @@ from navette.h3.h3_streaming_server import (
 
 from navette.h2.h2_streaming_server import (
     H2StreamingCtx,
+    H2StreamingYielder,
     next_chunk as h2_next_chunk,
     write_chunk as h2_write_chunk,
     finish as h2_finish,
@@ -37,17 +36,18 @@ comptime LLM_TOKEN_COUNT: Int = 64
 comptime LLM_TOKEN_BYTES: String = "data: token-emitted\n\n"
 
 
-def llm_stream_h3_handler(mut yld: CoroYielder) raises:
+def llm_stream_h3_handler(mut yld: H3StreamingYielder) raises:
     """LLM-stream demo handler for H3.
 
-    Extracts H3StreamingCtx from the CoroYielder user_data, sends HTTP 200
+    Reads the H3StreamingCtx pointer from the coroutine's typed state, sends
+    HTTP 200
     response headers (content-type: text/event-stream), then emits
     LLM_TOKEN_COUNT chunks of LLM_TOKEN_BYTES via h3_write_chunk. Each chunk
     is a complete SSE event. Calls h3_finish() to signal end-of-stream.
 
     Any incoming request body is ignored (GET or POST both work).
     """
-    var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
 
     # Drain any request body (ignore it — demo only cares about streaming out)
     while True:
@@ -76,14 +76,14 @@ def llm_stream_h3_handler(mut yld: CoroYielder) raises:
     h3_finish(ctx_ptr, yld)
 
 
-def llm_stream_h2_handler(mut yld: CoroYielder) raises:
+def llm_stream_h2_handler(mut yld: H2StreamingYielder) raises:
     """LLM-stream demo handler for H2.
 
     Mirrors llm_stream_h3_handler with H2StreamingCtx substitution. Sends
     HTTP 200 + SSE headers, then emits LLM_TOKEN_COUNT chunks of
     LLM_TOKEN_BYTES via h2_write_chunk + h2_finish.
     """
-    var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
+    var ctx_ptr = yld.state()[]
 
     # Send response headers: 200 OK + SSE content-type
     from navette.http.headers import Headers

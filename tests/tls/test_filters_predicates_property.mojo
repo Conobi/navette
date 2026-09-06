@@ -57,7 +57,7 @@ def test_idempotency_key_referentially_transparent() raises:
         var m = _draw_method(state)
         var path = String("/path/") + String(_splitmix64(state) % UInt64(100))
         var h1 = _draw_headers(state)
-        var h2 = Headers(other=h1)
+        var h2 = Headers(copy=h1)
         var d1 = idempotency_key_predicate(m, path, h1)
         var d2 = idempotency_key_predicate(m, path, h2)
         assert_true(
@@ -74,7 +74,7 @@ def test_unauth_only_referentially_transparent() raises:
         var m = _draw_method(state)
         var path = String("/path/") + String(_splitmix64(state) % UInt64(100))
         var h1 = _draw_headers(state)
-        var h2 = Headers(other=h1)
+        var h2 = Headers(copy=h1)
         var d1 = unauthenticated_only_predicate(m, path, h1)
         var d2 = unauthenticated_only_predicate(m, path, h2)
         assert_true(

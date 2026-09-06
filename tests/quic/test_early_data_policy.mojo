@@ -186,7 +186,7 @@ def test_policy_copyable() raises:
         global_window_max_accepts=UInt32(456),
     )
     var src = EarlyDataPolicy.tuned(cfg)
-    var dst = EarlyDataPolicy(other=src)
+    var dst = EarlyDataPolicy(copy=src)
     assert_true(dst.is_tuned(), String("copy of Tuned must be Tuned"))
     var dst_sc = dst.store_config().value().copy()
     assert_true(
@@ -214,7 +214,7 @@ def test_policy_copy_preserves_predicate_fn() raises:
     """Copy-ctor preserves variant + fn pointer for the Predicate
     variant — extends the policy-copyable invariant."""
     var src = EarlyDataPolicy.predicate(my_test_policy_predicate)
-    var dst = EarlyDataPolicy(other=src)
+    var dst = EarlyDataPolicy(copy=src)
     assert_true(dst.is_predicate(), String("copy of Predicate must be Predicate"))
     var d = dst.predicate_fn().value()(String("GET"), String("/x"), Headers())
     assert_true(d.is_accept(), String("copied fn must call correctly"))

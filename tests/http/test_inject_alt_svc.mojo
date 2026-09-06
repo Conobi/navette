@@ -17,8 +17,8 @@ def test_inject_seeds_h3_entry() raises:
             max_age_secs=UInt(3600), persist=False,
         )
     )
-    client.inject_alt_svc_entries(Origin(other=origin), entries^, UInt(1000))
-    var got = client.lookup_alt_svc(Origin(other=origin), UInt(1500))
+    client.inject_alt_svc_entries(Origin(copy=origin), entries^, UInt(1000))
+    var got = client.lookup_alt_svc(Origin(copy=origin), UInt(1500))
     assert_equal_int(len(got), 1, "seeded entry count")
     assert_equal_str(got[0].protocol, String("h3"), "seeded entry protocol")
     # Verify at least one entry has protocol == "h3" (mirrors _cache_has_h3 check).
@@ -40,9 +40,9 @@ def test_inject_respects_expiry() raises:
             max_age_secs=UInt(30), persist=False,
         )
     )
-    client.inject_alt_svc_entries(Origin(other=origin), entries^, UInt(1000))
+    client.inject_alt_svc_entries(Origin(copy=origin), entries^, UInt(1000))
     # received_at + max_age_secs = 1000 + 30 = 1030; 1030 > 1030 is False -> expired
-    var got = client.lookup_alt_svc(Origin(other=origin), UInt(1030))
+    var got = client.lookup_alt_svc(Origin(copy=origin), UInt(1030))
     assert_equal_int(len(got), 0, "expired entry count")
 
 

@@ -48,7 +48,7 @@ struct StubHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -116,7 +116,7 @@ def test_h3_udp_server_init_and_tick() raises:
     srv_ptr[].wire_context()
 
     # -- 6. IoUringDriver + start (BufRing, multishot recvmsg, timeout) --
-    var driver = IoUringDriver(sq_entries=64)
+    var driver = IoUringDriver(capacity=64)
     srv_ptr[].start(driver)
 
     # -- 7. One tick — timeout CQE fires after 50ms --

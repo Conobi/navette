@@ -29,12 +29,12 @@ struct CountingHandler(StreamHandler):
         self.on_send_drained_count = 0
         self.on_reset_count = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.on_request_count = take.on_request_count
-        self.on_body_available_count = take.on_body_available_count
-        self.on_request_end_count = take.on_request_end_count
-        self.on_send_drained_count = take.on_send_drained_count
-        self.on_reset_count = take.on_reset_count
+    def __init__(out self, *, deinit move: Self):
+        self.on_request_count = move.on_request_count
+        self.on_body_available_count = move.on_body_available_count
+        self.on_request_end_count = move.on_request_end_count
+        self.on_send_drained_count = move.on_send_drained_count
+        self.on_reset_count = move.on_reset_count
 
     def on_request(
         mut self,

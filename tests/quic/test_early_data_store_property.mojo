@@ -160,7 +160,7 @@ struct BruteForceReplayStore(Movable):
                 else:
                     break
         var fresh = _BruteEntry(
-            key=KeyTag(other=key),
+            key=KeyTag(copy=key),
             first_seen_ms=now_unix_ms,
             attempt_count=UInt32(1),
             referenced=False,

@@ -80,7 +80,7 @@ def test_str() raises:
 def test_copy() raises:
     """StatusCode is copyable."""
     var s = StatusCode(200)
-    var s2 = StatusCode(other=s)
+    var s2 = StatusCode(copy=s)
     assert_true(s == s2, "copy equal")
 
 

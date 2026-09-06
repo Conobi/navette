@@ -13,9 +13,9 @@ struct ObserveResult(Copyable, Movable):
         self.agreed = agreed
         self.detail = detail
 
-    def __init__(out self, *, deinit take: Self):
-        self.agreed = take.agreed
-        self.detail = take.detail^
+    def __init__(out self, *, deinit move: Self):
+        self.agreed = move.agreed
+        self.detail = move.detail^
 
 
 struct FuzzReport(Movable):
@@ -34,13 +34,13 @@ struct FuzzReport(Movable):
         self.disagreements = 0
         self.first_disagreement = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.harness = take.harness^
-        self.seed = take.seed
-        self.iters = take.iters
-        self.observed = take.observed
-        self.disagreements = take.disagreements
-        self.first_disagreement = take.first_disagreement^
+    def __init__(out self, *, deinit move: Self):
+        self.harness = move.harness^
+        self.seed = move.seed
+        self.iters = move.iters
+        self.observed = move.observed
+        self.disagreements = move.disagreements
+        self.first_disagreement = move.first_disagreement^
 
     def observe(mut self, result: ObserveResult):
         self.observed += 1
