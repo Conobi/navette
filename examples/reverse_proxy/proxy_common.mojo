@@ -96,17 +96,17 @@ struct PendingSubmit(Copyable, Movable):
         self.conn_id = conn_id
         self.op_kind = op_kind
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.fd = other.fd
-        self.conn_id = other.conn_id
-        self.op_kind = other.op_kind
+    def __init__(out self, *, copy: Self):
+        self.kind = copy.kind
+        self.fd = copy.fd
+        self.conn_id = copy.conn_id
+        self.op_kind = copy.op_kind
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.fd = take.fd
-        self.conn_id = take.conn_id
-        self.op_kind = take.op_kind
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.fd = move.fd
+        self.conn_id = move.conn_id
+        self.op_kind = move.op_kind
 
 
 # ---------------------------------------------------------------------------
@@ -155,17 +155,17 @@ struct ConnSendState(Movable):
         self.client_recv_in_flight = False
         self.backend_recv_in_flight = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.client_recv_buf = take.client_recv_buf^
-        self.backend_recv_buf = take.backend_recv_buf^
-        self.client_send_buf = take.client_send_buf^
-        self.backend_send_buf = take.backend_send_buf^
-        self.client_send_pending = take.client_send_pending^
-        self.backend_send_pending = take.backend_send_pending^
-        self.client_send_in_flight = take.client_send_in_flight
-        self.backend_send_in_flight = take.backend_send_in_flight
-        self.client_recv_in_flight = take.client_recv_in_flight
-        self.backend_recv_in_flight = take.backend_recv_in_flight
+    def __init__(out self, *, deinit move: Self):
+        self.client_recv_buf = move.client_recv_buf^
+        self.backend_recv_buf = move.backend_recv_buf^
+        self.client_send_buf = move.client_send_buf^
+        self.backend_send_buf = move.backend_send_buf^
+        self.client_send_pending = move.client_send_pending^
+        self.backend_send_pending = move.backend_send_pending^
+        self.client_send_in_flight = move.client_send_in_flight
+        self.backend_send_in_flight = move.backend_send_in_flight
+        self.client_recv_in_flight = move.client_recv_in_flight
+        self.backend_recv_in_flight = move.backend_recv_in_flight
 
 
 # ---------------------------------------------------------------------------

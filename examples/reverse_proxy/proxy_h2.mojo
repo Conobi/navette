@@ -21,13 +21,15 @@
 
 from std.collections import Dict
 from std.collections.optional import Optional
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.h2.h2_session import H2Session
 from navette.h2.h2_streaming_server import (
     H2StreamingServer,
     H2StreamingCtx,
+    H2StreamingYielder,
     next_chunk,
 )
 from navette.http import (
@@ -42,8 +44,6 @@ from navette.http import (
 from navette.http.request import RequestBody
 from navette.http.session import RequestHandle
 from navette.tls import TlsConnection
-
-from boucle.stackful import CoroYielder
 
 from proxy_common import (
     ConnSendState,
@@ -110,13 +110,13 @@ struct _BackendWork(Copyable, Movable):
         self.client_stream_id = client_stream_id
         self.request_addr = request_addr
 
-    def __init__(out self, *, other: Self):
-        self.client_stream_id = other.client_stream_id
-        self.request_addr = other.request_addr
+    def __init__(out self, *, copy: Self):
+        self.client_stream_id = copy.client_stream_id
+        self.request_addr = copy.request_addr
 
-    def __init__(out self, *, deinit take: Self):
-        self.client_stream_id = take.client_stream_id
-        self.request_addr = take.request_addr
+    def __init__(out self, *, deinit move: Self):
+        self.client_stream_id = move.client_stream_id
+        self.request_addr = move.request_addr
 
     def request_ptr(self) -> UnsafePointer[Request, MutAnyOrigin]:
         return UnsafePointer[Request, MutAnyOrigin](
@@ -160,11 +160,11 @@ struct ProxyShared(Movable):
         self.handle_to_stream = Dict[Int, Int]()
         self.failed_streams = Dict[Int, Bool]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.pending_backend = take.pending_backend^
-        self.completed_responses = take.completed_responses^
-        self.handle_to_stream = take.handle_to_stream^
-        self.failed_streams = take.failed_streams^
+    def __init__(out self, *, deinit move: Self):
+        self.pending_backend = move.pending_backend^
+        self.completed_responses = move.completed_responses^
+        self.handle_to_stream = move.handle_to_stream^
+        self.failed_streams = move.failed_streams^
 
     def __del__(deinit self):
         """Free any remaining heap-allocated Requests / Responses if the
@@ -194,7 +194,7 @@ struct ProxyShared(Movable):
 # ---------------------------------------------------------------------------
 
 
-def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
+def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
     """Per-stream coroutine body for the H2 reverse proxy.
 
     Lifecycle:
@@ -206,8 +206,9 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
          read the completed response from ProxyShared and forward it to
          the client through the streaming-ctx's resp_writer.
     """
-    # Recover ctx + ProxyShared pointers from the coro's user_data.
-    var ctx_ptr = yielder.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
+    # Recover the ctx from the coroutine's typed state, then the ProxyShared
+    # pointer the adapter stashed in ctx.extra_data.
+    var ctx_ptr = yielder.state()[]
     var proxy_ptr = UnsafePointer[ProxyShared, MutAnyOrigin](
         unsafe_from_address=Int(ctx_ptr[].extra_data)
     )
@@ -248,7 +249,7 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
         method=Method.custom(String(ctx_ptr[].request.method)),
         target=ctx_ptr[].request.target.copy(),
         version=Version.http_2(),
-        headers=Headers(other=ctx_ptr[].request.headers),
+        headers=Headers(copy=ctx_ptr[].request.headers),
         body=req_body^,
     )
 
@@ -264,7 +265,7 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
     proxy_ptr[].pending_backend.append(work^)
 
     # Yield — the driver will submit, await the response, and resume us.
-    yielder.yield_to_caller()
+    yielder.suspend()
 
     # --- Step 3: forward backend response ---
     if stream_id not in proxy_ptr[].completed_responses:
@@ -338,7 +339,7 @@ def proxy_h2_stream_body(mut yielder: CoroYielder) raises -> None:
     # _drain_responses pass picks it up and emits HEADERS / DATA frames.
     var ctx3 = ctx_ptr.take_pointee()
     ctx3.resp_writer.send_status(
-        StatusCode(other=response.status), resp_headers^
+        StatusCode(copy=response.status), resp_headers^
     )
     if len(resp_body) > 0:
         _ = ctx3.resp_writer.try_send_body(BodyFrame.data(resp_body^))
@@ -364,7 +365,7 @@ struct H2ProxyState(Movable):
 
     var client_h2: H2StreamingServer
     var backend_session: H2Session
-    var shared_ptr: UnsafePointer[ProxyShared, MutAnyOrigin]
+    var shared_ptr: Pointer[ProxyShared, MutUntrackedOrigin]
     var backend_handles: Dict[Int, UInt64]
     var sub_phase: UInt8
 
@@ -372,20 +373,25 @@ struct H2ProxyState(Movable):
         out self,
         var client_h2: H2StreamingServer,
         var backend_session: H2Session,
-        shared_ptr: UnsafePointer[ProxyShared, MutAnyOrigin],
+        shared_ptr: Pointer[mut=True, T=ProxyShared, origin=_],
     ):
         self.client_h2 = client_h2^
         self.backend_session = backend_session^
-        self.shared_ptr = shared_ptr
+        # Re-anchor to MutUntrackedOrigin: AnyOrigin is banned in struct
+        # fields, and the pointee is a heap allocation this struct owns and
+        # frees in __del__, so no tracked origin applies.
+        self.shared_ptr = Pointer[ProxyShared, MutUntrackedOrigin](
+            unsafe_from_address=Int(shared_ptr)
+        )
         self.backend_handles = Dict[Int, UInt64]()
         self.sub_phase = H2_SUB_BACKEND_H2_PREFACE
 
-    def __init__(out self, *, deinit take: Self):
-        self.client_h2 = take.client_h2^
-        self.backend_session = take.backend_session^
-        self.shared_ptr = take.shared_ptr
-        self.backend_handles = take.backend_handles^
-        self.sub_phase = take.sub_phase
+    def __init__(out self, *, deinit move: Self):
+        self.client_h2 = move.client_h2^
+        self.backend_session = move.backend_session^
+        self.shared_ptr = move.shared_ptr
+        self.backend_handles = move.backend_handles^
+        self.sub_phase = move.sub_phase
 
     def __del__(deinit self):
         # Free the heap-allocated ProxyShared and any orphaned RequestHandles.

@@ -16,7 +16,7 @@
 #   there.
 
 from std.collections.optional import Optional
-from std.memory import Span
+from std.collections import Span
 
 from navette.h1 import ParseConfig, ServerConnection, H1Session
 from navette.http import (
@@ -116,12 +116,12 @@ struct H1ProxyState(Movable):
         self.headers_committed = False
         self.sub_phase = H1_SUB_READING_REQUEST
 
-    def __init__(out self, *, deinit take: Self):
-        self.client_http = take.client_http^
-        self.backend_session = take.backend_session^
-        self.backend_request_handle = take.backend_request_handle^
-        self.headers_committed = take.headers_committed
-        self.sub_phase = take.sub_phase
+    def __init__(out self, *, deinit move: Self):
+        self.client_http = move.client_http^
+        self.backend_session = move.backend_session^
+        self.backend_request_handle = move.backend_request_handle^
+        self.headers_committed = move.headers_committed
+        self.sub_phase = move.sub_phase
 
 
 def h1_proxy_state_new() raises -> H1ProxyState:
@@ -186,7 +186,7 @@ def h1_handle_client_recv(
     client_fd: Int32,
     backend_fd: Int32,
     conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Drive client-side TLS recv, feed plaintext into the H1 server parser,
     and submit the parsed request to the backend H1 session if a full
@@ -266,7 +266,7 @@ def h1_handle_backend_connect(
     client_fd: Int32,
     backend_fd: Int32,
     conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Handle completion of the BACKEND_CONNECT op. On success, drains the
     pre-staged ClientHello from `backend_tls` and stages it for SEND."""
@@ -317,7 +317,7 @@ def h1_handle_backend_recv(
     client_fd: Int32,
     backend_fd: Int32,
     conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Drive backend-side TLS recv, feed plaintext into the backend
     H1Session, and once a complete response is extracted, rewrite it and
@@ -428,7 +428,7 @@ def h1_handle_backend_send(
     client_fd: Int32,
     backend_fd: Int32,
     conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Flush backend-side ciphertext. On completion, either chain pending
     bytes or transition into the appropriate read phase.
@@ -490,7 +490,7 @@ def h1_handle_client_send(
     mut closed: Bool,
     client_fd: Int32,
     conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Flush client-side ciphertext. On completion, either chain pending
     bytes, transition to the keep-alive loop, or close the connection.

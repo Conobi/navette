@@ -5,25 +5,25 @@
 # Design philosophy (mirrors proxy_h2.mojo's reuse-first approach):
 #   We do NOT reimplement QUIC / H3 / QPACK. We EMBED navette's
 #   `H3UdpServer[ForwardingHandler]` inside the proxy and drive it from the
-#   proxy's existing io_uring `CompletionLoop` — NOT via `serve_forever`
-#   (which owns its own loop). The proxy's `ProxyHandler.on_complete`
-#   dispatches by token: tagged H3 tokens go to the embedded server,
-#   everything else stays on the existing TCP paths.
+#   proxy's existing `IoUringDriver`, sharing one ring with the TCP paths.
+#   The embedded server owns the Completions for its own UDP operations, so
+#   its completions never reach the proxy's dispatch at all; the proxy only
+#   ticks the driver and calls `H3UdpServer.flush` each round.
 #
 #   Each inbound H3 request is forwarded to the SAME TCP backend machinery
 #   proxy_h1 uses — an `H1Session` per in-flight request over its own
 #   backend TCP + TLS connection. When the backend response (or a 502 on
 #   connect failure) is ready, the driver calls the additive navette hook
 #   `H3UdpServer.inject_response(conn_id, sid, ...)`, which stages the
-#   response into the open stream's `ResponseWriter`; the next `on_flush`
+#   response into the open stream's `ResponseWriter`; the next `flush`
 #   tick emits it over QPACK/H3.
 #
 # Why a deferred-response hook is required (the H2 parallel):
 #   In the sync H3 model the `StreamHandler` is handed a borrowed
 #   `ResponseWriter` per callback; the surviving per-stream writer lives
 #   inside `H3HandlerServer`'s private stream context. A backend TCP
-#   completion fires on a DIFFERENT token with NO `StreamHandler` callback
-#   to write through. proxy_h2 solved the same wall with the additive
+#   completion fires on a DIFFERENT Completion with NO `StreamHandler`
+#   callback to write through. proxy_h2 solved the same wall with the additive
 #   `H2StreamingServer.resume_stream`; H3 gets the additive sync analog
 #   `H3UdpServer.inject_response` / `has_stream` plus the `caps.conn_id` /
 #   `caps.stream_id` surfacing.
@@ -35,30 +35,22 @@
 #   requests in its own `_pending` list; the driver drains them per tick by
 #   walking the server's public `conn_slots[i].h3[].handler`. The backend
 #   registry + backend-TLS config addresses live on `ProxyHandler`
-#   (`H3BackendRegistry`), stable inside the loop — not in a global.
+#   (`H3BackendRegistry`), at a stable heap address — not in a global.
 #
 # MODULE BOUNDARY:
-#   This file holds the loop-agnostic building blocks. The loop-typed glue
-#   (bootstrap, per-tick drain, SQE submission) lives in main.mojo, where
-#   `ProxyHandler` / `CompletionLoop[ProxyHandler]` are in scope — exactly
-#   as `_drain_pending_submits` already does for the TCP paths. This keeps
+#   This file holds the driver-agnostic building blocks. The driver-typed
+#   glue (bootstrap, per-tick drain, SQE submission, and the `Completion`
+#   blocks each backend round-trip is routed by) lives in main.mojo, where
+#   `ProxyHandler` and the `IoUringDriver` are in scope — exactly as
+#   `ProxyHandler.drain_submits` already does for the TCP paths. This keeps
 #   proxy_h3 free of a circular import on main.mojo.
-#
-# Token namespace (collision-free; the dispatch lives in main._dispatch):
-#   bit 63 (H3_TOKEN_TAG)         — H3 frontend: UDP recvmsg / sendmsg /
-#                                   timeout / provide-buf. Stripped before
-#                                   forwarding to `_h3.on_complete`.
-#   bit 62 (H3_BACKEND_TOKEN_TAG) — H3 backend TCP: connect / recv / send,
-#                                   carrying a synthetic backend conn id in
-#                                   the high bits and an OP_BACKEND_* kind
-#                                   in the low byte (proxy_common encoding).
-#   The proxy's own TCP tokens carry neither tag and decode unchanged.
 
 from std.collections import Dict
 from std.collections.optional import Optional
 from std.ffi import external_call
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.h1 import H1Session
 from navette.http import (
@@ -107,28 +99,7 @@ from proxy_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Token-namespace tags
-# ---------------------------------------------------------------------------
-
-
-comptime H3_TOKEN_TAG: UInt64 = UInt64(1) << 63
-"""High-bit tag marking a token as belonging to the embedded H3 frontend
-(UDP recvmsg / sendmsg / timeout / provide-buf). ORed in before submission;
-stripped before forwarding to `H3UdpServer.on_complete`."""
-
-comptime H3_BACKEND_TOKEN_TAG: UInt64 = UInt64(1) << 62
-"""Tag marking a token as an H3-backend TCP op (connect / recv / send for
-the per-request `H1Session` round-trip). Carries a synthetic backend conn
-id in the high bits and an `OP_BACKEND_*` kind in the low byte."""
-
-
 comptime _VIA_H3: String = "3 mojo-proxy"
-
-
-def h3_encode_backend_token(backend_conn_id: UInt64, op_kind: UInt8) -> UInt64:
-    """Encode an H3-backend TCP token: tag | (conn_id << 8) | op_kind."""
-    return H3_BACKEND_TOKEN_TAG | (backend_conn_id << 8) | UInt64(op_kind)
 
 
 # H3-backend sub-phases (within the backend round-trip).
@@ -151,8 +122,8 @@ struct _PendingForward(Copyable, Movable):
     The handler runs inside the H3 server's flush pass and cannot submit
     io_uring ops directly (the proxy loop holds a borrow on itself), so it
     parks the snapshot on its own `_pending` list; the driver's per-tick
-    `h3_collect_forwards` walks every connection's handler, drains them,
-    opens a backend TCP conn, and queues the SUBMIT_CONNECT.
+    `ProxyHandler.collect_h3_forwards` walks every connection's handler,
+    drains them, opens a backend TCP conn, and submits the connect.
 
     The request is heap-allocated (so it survives the handler→driver hop)
     and addressed by `request_addr`. The struct stays `Copyable` because
@@ -170,15 +141,15 @@ struct _PendingForward(Copyable, Movable):
         self.h3_sid = h3_sid
         self.request_addr = request_addr
 
-    def __init__(out self, *, other: Self):
-        self.quic_conn_id = other.quic_conn_id
-        self.h3_sid = other.h3_sid
-        self.request_addr = other.request_addr
+    def __init__(out self, *, copy: Self):
+        self.quic_conn_id = copy.quic_conn_id
+        self.h3_sid = copy.h3_sid
+        self.request_addr = copy.request_addr
 
-    def __init__(out self, *, deinit take: Self):
-        self.quic_conn_id = take.quic_conn_id
-        self.h3_sid = take.h3_sid
-        self.request_addr = take.request_addr
+    def __init__(out self, *, deinit move: Self):
+        self.quic_conn_id = move.quic_conn_id
+        self.h3_sid = move.h3_sid
+        self.request_addr = move.request_addr
 
     def request_ptr(self) -> UnsafePointer[Request, MutAnyOrigin]:
         return UnsafePointer[Request, MutAnyOrigin](
@@ -231,15 +202,15 @@ struct ForwardingHandler(StreamHandler):
         self._captured = False
         self._pending = List[_PendingForward]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._quic_conn_id = take._quic_conn_id
-        self._h3_sid = take._h3_sid
-        self._method = take._method^
-        self._target = take._target^
-        self._headers = take._headers^
-        self._body = take._body^
-        self._captured = take._captured
-        self._pending = take._pending^
+    def __init__(out self, *, deinit move: Self):
+        self._quic_conn_id = move._quic_conn_id
+        self._h3_sid = move._h3_sid
+        self._method = move._method^
+        self._target = move._target^
+        self._headers = move._headers^
+        self._body = move._body^
+        self._captured = move._captured
+        self._pending = move._pending^
 
     def on_request(
         mut self,
@@ -306,11 +277,11 @@ struct ForwardingHandler(StreamHandler):
             method=Method.custom(self._method.copy()),
             target=self._target.copy(),
             version=Version.http_1_1(),
-            headers=Headers(other=self._headers),
+            headers=Headers(copy=self._headers),
             body=req_body^,
         )
 
-        var req_heap = _heap_alloc[Request](1).as_unsafe_any_origin()
+        var req_heap = _heap_alloc[Request](1)
         req_heap.init_pointee_move(request^)
 
         self._pending.append(
@@ -408,18 +379,18 @@ struct H3BackendConn(Movable):
         self.phase = _H3B_CONNECTING
         self.responded = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.backend_conn_id = take.backend_conn_id
-        self.quic_conn_id = take.quic_conn_id
-        self.h3_sid = take.h3_sid
-        self.backend_handle = take.backend_handle^
-        self.backend_addr_stor = take.backend_addr_stor
-        self.backend_tls = take.backend_tls^
-        self.session = take.session^
-        self.send_state = take.send_state^
-        self.handle = take.handle^
-        self.phase = take.phase
-        self.responded = take.responded
+    def __init__(out self, *, deinit move: Self):
+        self.backend_conn_id = move.backend_conn_id
+        self.quic_conn_id = move.quic_conn_id
+        self.h3_sid = move.h3_sid
+        self.backend_handle = move.backend_handle^
+        self.backend_addr_stor = move.backend_addr_stor
+        self.backend_tls = move.backend_tls^
+        self.session = move.session^
+        self.send_state = move.send_state^
+        self.handle = move.handle^
+        self.phase = move.phase
+        self.responded = move.responded
 
 
 # ---------------------------------------------------------------------------
@@ -457,13 +428,13 @@ struct H3BackendRegistry(Movable):
         self.backends = Dict[UInt64, UInt64]()
         self.next_backend_id = UInt64(1)
 
-    def __init__(out self, *, deinit take: Self):
-        self.backend_addr = take.backend_addr
-        self.backend_host = take.backend_host^
-        self.h1_client_config_addr = take.h1_client_config_addr
-        self.tls_shared_addr = take.tls_shared_addr
-        self.backends = take.backends^
-        self.next_backend_id = take.next_backend_id
+    def __init__(out self, *, deinit move: Self):
+        self.backend_addr = move.backend_addr
+        self.backend_host = move.backend_host^
+        self.h1_client_config_addr = move.h1_client_config_addr
+        self.tls_shared_addr = move.tls_shared_addr
+        self.backends = move.backends^
+        self.next_backend_id = move.next_backend_id
 
     def __del__(deinit self):
         """Free any live backend conns if the proxy is torn down mid-flight."""
@@ -565,7 +536,7 @@ struct H3BackendRegistry(Movable):
         )
         bconn.handle = Optional[RequestHandle](handle^)
 
-        var bptr = _heap_alloc[H3BackendConn](1).as_unsafe_any_origin()
+        var bptr = _heap_alloc[H3BackendConn](1)
         bptr.init_pointee_move(bconn^)
         self.backends[backend_conn_id] = UInt64(Int(bptr))
         return backend_conn_id
@@ -579,14 +550,19 @@ struct H3BackendRegistry(Movable):
 
     def backend_addr_ptr(
         self, backend_conn_id: UInt64
-    ) raises -> UnsafePointer[Int8, StaticConstantOrigin]:
+    ) raises -> Pointer[UInt8, ImmStaticOrigin]:
         """Pointer to a backend conn's stable, heap-stored `backend_addr_stor`
         (the connect target; outlives the in-flight connect). Null if
-        absent."""
+        absent.
+
+        The type mirrors `SocketAddrStorV4.addr_unsafe_ptr`, which is also
+        exactly what the driver's `connect` takes for its sockaddr.
+        """
         var ptr = self.backend_ptr(backend_conn_id)
         if Int(ptr) == 0:
-            return UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=Int(0)
+            var null_addr: Int = 0
+            return Pointer[UInt8, ImmStaticOrigin](
+                unsafe_from_address=null_addr
             )
         return ptr[].backend_addr_stor.addr_unsafe_ptr()
 
@@ -644,15 +620,16 @@ def h3_inject_502(
 # Each handler takes `mut h3` (for response injection), `mut registry` (for
 # the backend-conn lookup + teardown), and the synthetic `backend_conn_id`,
 # and returns the list of `PendingSubmit`s the caller must issue (the caller
-# resolves buffer pointers from the registry and tags tokens). Backend conns
-# that complete or fail are freed here; the returned list is empty then.
+# resolves buffer pointers from the registry and attaches the round-trip's
+# `Completion`). Backend conns that complete or fail are freed here; the
+# returned list is empty then.
 
 
 def h3_handle_backend_connect(
     mut h3: H3UdpServer[ForwardingHandler],
     mut registry: H3BackendRegistry,
     backend_conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Backend TCP connect completed. On success drain the pre-staged
     ClientHello and stage it for SEND. On failure inject a 502 into the H3
@@ -685,7 +662,7 @@ def h3_handle_backend_recv(
     mut h3: H3UdpServer[ForwardingHandler],
     mut registry: H3BackendRegistry,
     backend_conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Drive backend TLS recv + the `H1Session` response parse. On a
     complete response, inject it into the open H3 stream and tear the
@@ -775,7 +752,7 @@ def h3_handle_backend_recv(
 
     var quic_conn_id = ptr[].quic_conn_id
     var h3_sid = ptr[].h3_sid
-    var status = StatusCode(other=response.status)
+    var status = StatusCode(copy=response.status)
     ptr[].responded = True
 
     if h3.has_stream(quic_conn_id, h3_sid):
@@ -790,7 +767,7 @@ def h3_handle_backend_send(
     mut h3: H3UdpServer[ForwardingHandler],
     mut registry: H3BackendRegistry,
     backend_conn_id: UInt64,
-    result: Int32,
+    result: Int,
 ) raises -> List[PendingSubmit]:
     """Backend ciphertext flushed. Chain pending bytes or transition to
     reading the backend response."""

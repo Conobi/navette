@@ -15,8 +15,9 @@
 #   $ ./h2_client https://example.com/
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.collections.optional import Optional
 
 from navette.tls import TlsBackend, TlsClientConfig, TlsConnection
@@ -53,7 +54,7 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
 
     # Build sockaddr_in (16 bytes) inline in a heap buffer.
     # Layout: sin_family(2) | sin_port(2) | sin_addr(4) | sin_zero(8)
-    var addr = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var addr = _heap_alloc[UInt8](16)
     for i in range(16):
         addr[i] = 0
 
@@ -102,7 +103,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
         remaining.append(data[i])
     while len(remaining) > 0:
         var m = len(remaining)
-        var buf = _heap_alloc[UInt8](m).as_unsafe_any_origin()
+        var buf = _heap_alloc[UInt8](m)
         for i in range(m):
             buf[i] = remaining[i]
         var rc = external_call["send", Int](fd, buf, m, Int32(0))
@@ -116,7 +117,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
 
 
 def _recv_some(fd: Int32) raises -> List[UInt8]:
-    var buf = _heap_alloc[UInt8](_RECV_BUF).as_unsafe_any_origin()
+    var buf = _heap_alloc[UInt8](_RECV_BUF)
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
     var result = List[UInt8]()
     if rc > 0:
@@ -239,7 +240,7 @@ def main() raises:
         # Reconstruct body bytes from frames
         var body_str = String()
         for i in range(len(resp.body)):
-            var frame = BodyFrame(other=resp.body[i])
+            var frame = BodyFrame(copy=resp.body[i])
             if frame.is_data():
                 for bi in range(len(frame.data())):
                     body_str += chr(Int(frame.data()[bi]))

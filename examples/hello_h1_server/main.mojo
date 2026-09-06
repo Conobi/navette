@@ -22,8 +22,8 @@ Expected: `HTTP/1.1 200 OK` with `Hello, H1!\\n` body.
 """
 
 from std.ffi import external_call
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.h1.config import ParseConfig
 from navette.h1.h1_tcp_server import H1TcpServer
@@ -44,20 +44,20 @@ from navette.runtime.socket_helpers import tcp_listener
 
 def _getenv_int(name: String, default: Int) -> Int:
     """Read an integer environment variable; fall back to default if unset/invalid."""
-    var nbuf = _heap_alloc[UInt8](len(name) + 1)
+    var nbuf = _heap_alloc[UInt8](name.byte_length() + 1)
     var name_bytes = name.as_bytes()
     for i in range(len(name_bytes)):
-        nbuf[i] = name_bytes[i]
-    nbuf[len(name_bytes)] = 0
+        nbuf[unsafe_offset=i] = name_bytes[i]
+    nbuf[unsafe_offset= len(name_bytes)] = 0
     var ptr_int = external_call["getenv", Int](nbuf)
-    nbuf.free()
+    nbuf.unsafe_free()
     if ptr_int == 0:
         return default
-    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var ptr = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=ptr_int)
     var s = String()
     var i = 0
-    while ptr[i] != 0:
-        s += chr(Int(ptr[i]))
+    while ptr[unsafe_offset=i] != 0:
+        s += chr(Int(ptr[unsafe_offset=i]))
         i += 1
     try:
         return atol(s)
@@ -69,7 +69,7 @@ struct HelloHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -127,13 +127,13 @@ def main() raises:
     )
 
     var srv_ptr = _heap_alloc[H1TcpServer[HelloHandler]](1)
-    srv_ptr.init_pointee_move(server^)
+    srv_ptr.unsafe_write(server^)
     srv_ptr[].wire_context()
 
-    var driver = IoUringDriver(sq_entries=4096)
+    var driver = IoUringDriver(capacity=4096)
     srv_ptr[].start(driver)
 
     print("hello_h1_server: serving")
     while True:
-        driver.tick(wait=True)
+        _ = driver.tick(wait=True)
         srv_ptr[].reap_closed()

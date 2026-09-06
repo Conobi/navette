@@ -6,21 +6,29 @@ requires-python = ">=3.11"
 dependencies = [
     "navette",
     "boucle",
-    "mojox>=0.3",
-    "mojo-compiler==1.0.0b2",
+    "mojox>=0.5",
+    "mojo-compiler==1.0.0",
+]
+
+[dependency-groups]
+# Developer toolchain: mojo-lsp-server, mojo-lldb, lldb-dap and the mblack
+# formatter. Not the compiler -- mojo-compiler above provides that.
+dev = [
+    "mojo==1.0.0",
 ]
 
 [build-system]
 requires = [
-    "mojox-build>=0.4",
-    "mojo-compiler==1.0.0b2",
-    "mojo-compiler-mojo-libs==1.0.0b2",
+    "mojox-build>=0.5",
+    "mojox-core>=0.5",
+    "mojo-compiler==1.0.0",
+    "mojo-compiler-mojo-libs==1.0.0",
     "navette",
     "boucle",
 ]
 build-backend = "mojox_build"
 
-[tool.mojox-build]
+[tool.mojox]
 packages = []
 binaries = [
     { source = "main.mojo", name = "hello_h1_server" },
@@ -31,4 +39,4 @@ prerelease = "allow"
 
 [tool.uv.sources]
 navette     = { path = "../..", editable = true }
-boucle      = { git = "ssh://git@github.com/Conobi/boucle.git", rev = "cd91272af9e3a3c5038563d8fb0f6965365ac42a" }
+boucle      = { git = "https://github.com/Conobi/boucle", rev = "4195dc7a640608551803d5bb423b248a7963d73d" }

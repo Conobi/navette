@@ -4,7 +4,27 @@
 # advertises both `h2` and `http/1.1`; once the client TLS handshake
 # completes, the negotiated ALPN selects which proxy variant
 # (`proxy_h1` or `proxy_h2`) drives the rest of the connection. Both
-# variants share the same accept / TLS / send-state plumbing.
+# variants share the same accept / TLS / send-state plumbing. An H3/QUIC
+# frontend (`proxy_h3`) rides the same ring and forwards each request to the
+# H1 backend over its own TCP round-trip.
+#
+# Event model
+#
+#   One `IoUringDriver` drives everything. Every operation carries its own
+#   `Completion`, whose pointer the kernel hands back as the SQE user_data,
+#   so the driver routes each CQE directly to the code that submitted it —
+#   there is no token, no central dispatch switch, and no retry queue for
+#   operations the submission queue could not take (the driver flushes and
+#   retries, raising only if the queue is still full).
+#
+#   A completion callback still cannot submit: it has no driver reference.
+#   It queues a `PendingSubmit` and `_run_tick` issues the SQEs after the
+#   tick, which is also what keeps the per-tick ordering stable.
+#
+#   Because a `Completion` pointer lives in the ring until its CQE arrives,
+#   nothing that owns one is freed the moment it is closed. Connections and
+#   H3-backend op blocks are marked, then reaped by `ProxyHandler.reap()` on
+#   the first tick where they have no operation in flight.
 #
 # Build + run
 #
@@ -33,8 +53,9 @@
 
 from std.collections.optional import Optional
 from std.ffi import external_call
-from std.memory import Span, UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.http.session import RequestHandle
 from navette.tls import (
@@ -46,8 +67,8 @@ from navette.tls import (
 )
 from navette.tls.config import QuicServerConfig
 
-from boucle import CompletionLoop, CompletionHandler
-from boucle.ctypes import c_void
+from boucle.drivers.io_uring import IoUringDriver
+from boucle.proactor.completion import Completion
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
@@ -55,18 +76,8 @@ from boucle.net.options import Backlog
 
 from navette.runtime.socket_helpers import tcp_v4_nonblocking, udp_listener
 from navette.quic.trans_param import default_transport_params
-from navette.h3.h3_udp_server import (
-    H3UdpServer,
-    PBUF_SIZE,
-    PBUF_COUNT,
-    PBUF_GROUP_ID,
-    OP_PROVIDE_BUF,
-    OP_RECVMSG,
-    OP_SENDMSG,
-    OP_TIMEOUT,
-    PendingSubmit as H3PendingSubmit,
-    _encode_token as h3_encode_token,
-)
+from navette.util.null_ptr import null_ptr
+from navette.h3.h3_udp_server import H3UdpServer
 
 from proxy_common import (
     ConnSendState,
@@ -90,7 +101,6 @@ from proxy_common import (
     _CERT_DIR,
     _RECV_BUF_SIZE,
     _read_file,
-    encode_token,
     queue_client_recv,
     rewrite_request_headers,
     stage_backend_send,
@@ -119,9 +129,6 @@ from proxy_h2 import (
 from proxy_h3 import (
     ForwardingHandler,
     H3BackendRegistry,
-    H3_TOKEN_TAG,
-    H3_BACKEND_TOKEN_TAG,
-    h3_encode_backend_token,
     h3_handle_backend_connect,
     h3_handle_backend_recv,
     h3_handle_backend_send,
@@ -136,20 +143,20 @@ from proxy_h3 import (
 
 def _getenv_str(name: String, default: String) -> String:
     """Read a string environment variable; fall back to default if unset."""
-    var nbuf = _heap_alloc[UInt8](len(name) + 1)
+    var nbuf = _heap_alloc[UInt8](name.byte_length() + 1)
     var name_bytes = name.as_bytes()
     for i in range(len(name_bytes)):
-        nbuf[i] = name_bytes[i]
-    nbuf[len(name_bytes)] = 0
+        nbuf[unsafe_offset=i] = name_bytes[i]
+    nbuf[unsafe_offset= len(name_bytes)] = 0
     var ptr_int = external_call["getenv", Int](nbuf)
-    nbuf.free()
+    nbuf.unsafe_free()
     if ptr_int == 0:
         return default
-    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var ptr = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=ptr_int)
     var s = String()
     var i = 0
-    while ptr[i] != 0:
-        s += chr(Int(ptr[i]))
+    while ptr[unsafe_offset=i] != 0:
+        s += chr(Int(ptr[unsafe_offset=i]))
         i += 1
     return s^
 
@@ -158,7 +165,7 @@ def _getenv_int(name: String, default: Int) -> Int:
     """Read an integer environment variable; fall back to default if
     unset / invalid."""
     var s = _getenv_str(name, String(""))
-    if len(s) == 0:
+    if not s:
         return default
     try:
         return atol(s)
@@ -204,10 +211,10 @@ struct ProxyVariant(Movable):
         self.h1_state = h1_state^
         self.h2_state = h2_state^
 
-    def __init__(out self, *, deinit take: Self):
-        self.tag = take.tag
-        self.h1_state = take.h1_state^
-        self.h2_state = take.h2_state^
+    def __init__(out self, *, deinit move: Self):
+        self.tag = move.tag
+        self.h1_state = move.h1_state^
+        self.h2_state = move.h2_state^
 
     @staticmethod
     def handshaking() -> Self:
@@ -257,12 +264,26 @@ struct ProxyConnection(Movable):
     Owns both halves of the proxied connection: the client-side TLS
     connection + (post-ALPN) variant state, and the backend-side TCP
     handle + TLS connection. Stored heap-allocated and accessed via
-    `UnsafePointer` so that addresses inside (recv/send buffers, the
-    backend addr storage) remain stable while io_uring ops are in flight.
+    `Pointer` so that addresses inside (recv/send buffers, the backend
+    addr storage, and the five owned `Completion`s) remain stable while
+    io_uring ops are in flight.
 
     `variant` starts as `ProxyVariant.handshaking()`; the client TLS
     handshake completion handler reads the negotiated ALPN and replaces
     it with either an H1 or H2 state in-place.
+
+    Each of the five operation kinds this connection can have in the ring
+    (client recv/send, backend connect/recv/send) owns one `Completion`;
+    the driver routes a CQE straight back here through the SQE user_data,
+    so there is no token to decode and no central switch. `owner` points
+    at the `ProxyHandler` that owns this connection, which is how a
+    callback reaches the shared TLS configs and the submit queue.
+
+    Teardown is two-phase, exactly as in `navette/h1/h1_tcp_server.mojo`:
+    `closed` marks the connection for teardown and `ProxyHandler.reap()`
+    frees the heap slot only once every in-flight operation has reported
+    back. Freeing eagerly would hand a still-queued SQE a dangling
+    `Completion` pointer.
     """
 
     var conn_id: UInt64
@@ -275,6 +296,19 @@ struct ProxyConnection(Movable):
     var send_state: ConnSendState
     var variant: ProxyVariant
     var closed: Bool
+    # True between the connect SQE and its CQE. The other four op kinds
+    # already have their in-flight flags inside `send_state`.
+    var connect_in_flight: Bool
+    # True once both sockets have been shut down; keeps `_close_connection`
+    # idempotent when several handlers ask to close the same connection.
+    var shutdown_done: Bool
+    # Type-erased pointer to the owning `ProxyHandler`.
+    var owner: Pointer[NoneType, MutUntrackedOrigin]
+    var client_recv_cmp: Completion
+    var client_send_cmp: Completion
+    var backend_connect_cmp: Completion
+    var backend_recv_cmp: Completion
+    var backend_send_cmp: Completion
 
     def __init__(
         out self,
@@ -285,6 +319,9 @@ struct ProxyConnection(Movable):
         var client_tls: TlsConnection,
         var backend_tls: TlsConnection,
     ):
+        """Build a connection whose Completions carry their callbacks but
+        no context yet — call `wire_context` once the record sits at its
+        final heap address."""
         self.conn_id = conn_id
         self.client_handle = client_handle^
         self.backend_handle = backend_handle^
@@ -295,18 +332,418 @@ struct ProxyConnection(Movable):
         self.send_state = ConnSendState()
         self.variant = ProxyVariant.handshaking()
         self.closed = False
+        self.connect_in_flight = False
+        self.shutdown_done = False
+        self.owner = null_ptr[NoneType, MutUntrackedOrigin]()
+        self.client_recv_cmp = Completion(
+            invoke=_on_client_recv,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self.client_send_cmp = Completion(
+            invoke=_on_client_send,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self.backend_connect_cmp = Completion(
+            invoke=_on_backend_connect,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self.backend_recv_cmp = Completion(
+            invoke=_on_backend_recv,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self.backend_send_cmp = Completion(
+            invoke=_on_backend_send,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
 
-    def __init__(out self, *, deinit take: Self):
-        self.conn_id = take.conn_id
-        self.client_handle = take.client_handle^
-        self.backend_handle = take.backend_handle^
-        self.backend_addr_stor = take.backend_addr_stor
-        self.client_tls = take.client_tls^
-        self.backend_tls = take.backend_tls^
-        self.phase = take.phase
-        self.send_state = take.send_state^
-        self.variant = take.variant^
-        self.closed = take.closed
+    def __init__(out self, *, deinit move: Self):
+        """Move constructor."""
+        self.conn_id = move.conn_id
+        self.client_handle = move.client_handle^
+        self.backend_handle = move.backend_handle^
+        self.backend_addr_stor = move.backend_addr_stor
+        self.client_tls = move.client_tls^
+        self.backend_tls = move.backend_tls^
+        self.phase = move.phase
+        self.send_state = move.send_state^
+        self.variant = move.variant^
+        self.closed = move.closed
+        self.connect_in_flight = move.connect_in_flight
+        self.shutdown_done = move.shutdown_done
+        self.owner = move.owner
+        self.client_recv_cmp = move.client_recv_cmp^
+        self.client_send_cmp = move.client_send_cmp^
+        self.backend_connect_cmp = move.backend_connect_cmp^
+        self.backend_recv_cmp = move.backend_recv_cmp^
+        self.backend_send_cmp = move.backend_send_cmp^
+
+    def wire_context(mut self, owner: Pointer[NoneType, MutUntrackedOrigin]):
+        """Point every Completion at this record's final heap address and
+        record the owning handler.
+
+        Must run after the `ProxyConnection` has been written to its heap
+        slot (pointer stability) and before any SQE referencing it.
+
+        Args:
+            owner: Type-erased pointer to the owning `ProxyHandler`.
+        """
+        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
+        )
+        self.owner = owner
+        self.client_recv_cmp.context = self_ctx
+        self.client_send_cmp.context = self_ctx
+        self.backend_connect_cmp.context = self_ctx
+        self.backend_recv_cmp.context = self_ctx
+        self.backend_send_cmp.context = self_ctx
+
+    def cmp_ptr(mut self, op_kind: UInt8) -> Pointer[
+        Completion, MutUntrackedOrigin
+    ]:
+        """Return the Completion this connection uses for `op_kind`.
+
+        Taking the address inside the owning struct is the codegen-safe
+        form; reaching a field through a chain of getters mis-lowers in
+        Mojo 1.0.0b1.
+
+        Args:
+            op_kind: One of the `OP_*` constants from `proxy_common`.
+
+        Returns:
+            Pointer to the matching owned Completion. `OP_CLIENT_RECV` is
+            the fallback for an unknown kind, which cannot occur — every
+            call site passes an op kind this connection submits.
+        """
+        if op_kind == OP_CLIENT_SEND:
+            return Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self.client_send_cmp))
+            )
+        if op_kind == OP_BACKEND_CONNECT:
+            return Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self.backend_connect_cmp))
+            )
+        if op_kind == OP_BACKEND_RECV:
+            return Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self.backend_recv_cmp))
+            )
+        if op_kind == OP_BACKEND_SEND:
+            return Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self.backend_send_cmp))
+            )
+        return Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self.client_recv_cmp))
+        )
+
+    def clear_in_flight(mut self, op_kind: UInt8):
+        """Mark the operation of kind `op_kind` as no longer in the ring.
+
+        Called from the completion callback before any handler runs, so a
+        connection that is already closed (and therefore skips its handler)
+        still drains and becomes reapable.
+
+        Args:
+            op_kind: One of the `OP_*` constants from `proxy_common`.
+        """
+        if op_kind == OP_CLIENT_RECV:
+            self.send_state.client_recv_in_flight = False
+        elif op_kind == OP_CLIENT_SEND:
+            self.send_state.client_send_in_flight = False
+        elif op_kind == OP_BACKEND_CONNECT:
+            self.connect_in_flight = False
+        elif op_kind == OP_BACKEND_RECV:
+            self.send_state.backend_recv_in_flight = False
+        elif op_kind == OP_BACKEND_SEND:
+            self.send_state.backend_send_in_flight = False
+
+    def is_drained(self) -> Bool:
+        """Return True once the connection is closed and the ring holds no
+        further reference to it, i.e. the heap slot is safe to free."""
+        return (
+            self.closed
+            and not self.connect_in_flight
+            and not self.send_state.client_recv_in_flight
+            and not self.send_state.client_send_in_flight
+            and not self.send_state.backend_recv_in_flight
+            and not self.send_state.backend_send_in_flight
+        )
+
+
+# ---------------------------------------------------------------------------
+# Per-connection completion callbacks
+# ---------------------------------------------------------------------------
+#
+# One free function per operation kind, because a `CompletionFn` takes only
+# the context pointer: the op kind has to be baked into the callback rather
+# than decoded from a token. Each recovers the `ProxyConnection` from the
+# context, then the owning `ProxyHandler` from `conn.owner`, and hands both
+# to the single dispatcher.
+
+
+def _run_conn_completion(
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
+    op_kind: UInt8,
+    label: String,
+):
+    """Shared body of the five per-connection completion callbacks.
+
+    Args:
+        ctx: Type-erased pointer to the owning `ProxyConnection`.
+        result: Kernel result for the completed operation.
+        op_kind: Which `OP_*` operation this completion belongs to.
+        label: Op name used when reporting a handler error.
+    """
+    var conn = Pointer[ProxyConnection, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    conn[].clear_in_flight(op_kind)
+    var handler = Pointer[ProxyHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(conn[].owner)
+    )
+    try:
+        handler[]._dispatch_conn(conn, op_kind, result)
+    except e:
+        print("proxy: " + label + " completion error:", e)
+
+
+def _on_client_recv(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Client-side recv CQE: bytes read from the client socket."""
+    _run_conn_completion(ctx, result, OP_CLIENT_RECV, String("client-recv"))
+
+
+def _on_client_send(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Client-side send CQE: ciphertext flushed to the client socket."""
+    _run_conn_completion(ctx, result, OP_CLIENT_SEND, String("client-send"))
+
+
+def _on_backend_connect(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Backend connect CQE: upstream TCP connect settled (or was refused)."""
+    _run_conn_completion(
+        ctx, result, OP_BACKEND_CONNECT, String("backend-connect")
+    )
+
+
+def _on_backend_recv(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Backend recv CQE: bytes read from the upstream socket."""
+    _run_conn_completion(ctx, result, OP_BACKEND_RECV, String("backend-recv"))
+
+
+def _on_backend_send(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Backend send CQE: ciphertext flushed to the upstream socket."""
+    _run_conn_completion(ctx, result, OP_BACKEND_SEND, String("backend-send"))
+
+
+def _on_accept(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """Listener accept CQE: `result` is the new client fd, or a negative
+    errno. The listener owns a single Completion because exactly one accept
+    is ever in flight — each CQE re-arms the next one.
+
+    Args:
+        ctx: Type-erased pointer to the owning `ProxyHandler`.
+        result: New client fd, or negative errno.
+        flags: io_uring CQE flags (unused for accept).
+    """
+    var handler = Pointer[ProxyHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    try:
+        handler[]._handle_accept(result)
+    except e:
+        print("proxy: accept completion error:", e)
+
+
+# ---------------------------------------------------------------------------
+# H3BackendOps — Completions for one H3-backend TCP round-trip
+# ---------------------------------------------------------------------------
+
+
+struct H3BackendOps(Movable):
+    """The three Completions driving one H3-request-to-H1-backend trip.
+
+    Deliberately NOT stored inside `proxy_h3`'s `H3BackendConn`: the
+    registry frees a backend conn the moment its response (or its 502) has
+    been injected into the H3 stream, which can happen while another
+    operation on that same conn is still queued in the ring. Under the old
+    token model a late CQE for a freed conn was harmlessly ignored; a
+    `Completion` embedded in the freed block would instead be dereferenced.
+    Keeping the Completions on their own heap block preserves exactly the
+    old tolerance — `ProxyHandler.reap()` frees the block once the registry
+    entry is gone AND no operation is still in flight.
+    """
+
+    var owner: Pointer[NoneType, MutUntrackedOrigin]
+    var backend_conn_id: UInt64
+    var connect_in_flight: Bool
+    var recv_in_flight: Bool
+    var send_in_flight: Bool
+    var connect_cmp: Completion
+    var recv_cmp: Completion
+    var send_cmp: Completion
+
+    def __init__(out self, backend_conn_id: UInt64):
+        """Build the op block for `backend_conn_id` with unwired contexts.
+
+        Args:
+            backend_conn_id: Synthetic id of the backend conn in the
+                `H3BackendRegistry`.
+        """
+        self.owner = null_ptr[NoneType, MutUntrackedOrigin]()
+        self.backend_conn_id = backend_conn_id
+        self.connect_in_flight = False
+        self.recv_in_flight = False
+        self.send_in_flight = False
+        self.connect_cmp = Completion(
+            invoke=_on_h3_backend_connect,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self.recv_cmp = Completion(
+            invoke=_on_h3_backend_recv,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+        self.send_cmp = Completion(
+            invoke=_on_h3_backend_send,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
+
+    def __init__(out self, *, deinit move: Self):
+        """Move constructor."""
+        self.owner = move.owner
+        self.backend_conn_id = move.backend_conn_id
+        self.connect_in_flight = move.connect_in_flight
+        self.recv_in_flight = move.recv_in_flight
+        self.send_in_flight = move.send_in_flight
+        self.connect_cmp = move.connect_cmp^
+        self.recv_cmp = move.recv_cmp^
+        self.send_cmp = move.send_cmp^
+
+    def wire_context(mut self, owner: Pointer[NoneType, MutUntrackedOrigin]):
+        """Point the three Completions at this block's heap address.
+
+        Args:
+            owner: Type-erased pointer to the owning `ProxyHandler`.
+        """
+        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
+        )
+        self.owner = owner
+        self.connect_cmp.context = self_ctx
+        self.recv_cmp.context = self_ctx
+        self.send_cmp.context = self_ctx
+
+    def cmp_ptr(mut self, op_kind: UInt8) -> Pointer[
+        Completion, MutUntrackedOrigin
+    ]:
+        """Return the Completion used for `op_kind` on this backend trip.
+
+        Args:
+            op_kind: `OP_BACKEND_CONNECT`, `OP_BACKEND_RECV`, or
+                `OP_BACKEND_SEND`.
+
+        Returns:
+            Pointer to the matching owned Completion; the connect
+            Completion is the fallback for an unknown kind.
+        """
+        if op_kind == OP_BACKEND_RECV:
+            return Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self.recv_cmp))
+            )
+        if op_kind == OP_BACKEND_SEND:
+            return Pointer[Completion, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self.send_cmp))
+            )
+        return Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self.connect_cmp))
+        )
+
+    def set_in_flight(mut self, op_kind: UInt8, value: Bool):
+        """Record whether the `op_kind` operation is currently in the ring.
+
+        Args:
+            op_kind: One of the three backend `OP_*` constants.
+            value: True on submit, False when its CQE arrives.
+        """
+        if op_kind == OP_BACKEND_CONNECT:
+            self.connect_in_flight = value
+        elif op_kind == OP_BACKEND_RECV:
+            self.recv_in_flight = value
+        elif op_kind == OP_BACKEND_SEND:
+            self.send_in_flight = value
+
+    def is_idle(self) -> Bool:
+        """Return True when none of the three operations is in the ring."""
+        return (
+            not self.connect_in_flight
+            and not self.recv_in_flight
+            and not self.send_in_flight
+        )
+
+
+def _run_h3_backend_completion(
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
+    op_kind: UInt8,
+    label: String,
+):
+    """Shared body of the three H3-backend completion callbacks.
+
+    Args:
+        ctx: Type-erased pointer to the owning `H3BackendOps` block.
+        result: Kernel result for the completed operation.
+        op_kind: Which backend `OP_*` operation completed.
+        label: Op name used when reporting a handler error.
+    """
+    var ops = Pointer[H3BackendOps, MutUntrackedOrigin](
+        unsafe_from_address=Int(ctx)
+    )
+    ops[].set_in_flight(op_kind, False)
+    var handler = Pointer[ProxyHandler, MutUntrackedOrigin](
+        unsafe_from_address=Int(ops[].owner)
+    )
+    try:
+        handler[]._dispatch_h3_backend(
+            ops[].backend_conn_id, op_kind, result
+        )
+    except e:
+        print("proxy: h3 " + label + " completion error:", e)
+
+
+def _on_h3_backend_connect(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """H3-backend connect CQE for one forwarded H3 request."""
+    _run_h3_backend_completion(
+        ctx, result, OP_BACKEND_CONNECT, String("backend-connect")
+    )
+
+
+def _on_h3_backend_recv(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """H3-backend recv CQE for one forwarded H3 request."""
+    _run_h3_backend_completion(
+        ctx, result, OP_BACKEND_RECV, String("backend-recv")
+    )
+
+
+def _on_h3_backend_send(
+    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
+):
+    """H3-backend send CQE for one forwarded H3 request."""
+    _run_h3_backend_completion(
+        ctx, result, OP_BACKEND_SEND, String("backend-send")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -314,22 +751,32 @@ struct ProxyConnection(Movable):
 # ---------------------------------------------------------------------------
 
 
-struct ProxyHandler(CompletionHandler):
-    """Single-threaded unified reverse-proxy handler.
+struct ProxyHandler(Movable):
+    """Single-threaded unified reverse-proxy state.
 
     Owns the listener fd, rustls lib + three configs (one server with
     dual-ALPN, two clients each pinned to one ALPN), the list of in-flight
-    connections, and the queue of I/O ops to submit after `poll()`.
+    connections, and the queue of I/O ops to submit after each driver tick.
 
     The actual per-variant work lives in `proxy_h1` / `proxy_h2`
-    free functions; this handler is just the dispatch + TLS-handshake
+    free functions; this struct is just the dispatch + TLS-handshake
     completion driver.
+
+    It is no longer a `CompletionHandler`: boucle routes each CQE straight
+    to the `Completion` its SQE carried, so there is no single entry point
+    receiving every completion and no token to decode. What is left of the
+    old central switch is `_dispatch_conn`, which the five per-connection
+    callbacks funnel into once they have recovered their connection.
+
+    The handler must live at a stable heap address for the whole run — the
+    Completions on every connection and on the embedded H3 server point
+    back at it.
     """
 
     var listener_fd: Int32
     # Heap-allocated ProxyConnection pointers (see proxy_h1's notes on
     # stable addresses across `List` reallocations).
-    var connections: List[UnsafePointer[ProxyConnection, MutAnyOrigin]]
+    var connections: List[Pointer[ProxyConnection, MutUntrackedOrigin]]
     var next_conn_id: UInt64
     var tls: TlsBackend
     var server_tls_config: TlsServerConfig
@@ -339,19 +786,26 @@ struct ProxyHandler(CompletionHandler):
     var h2_backend_addr: SocketAddrV4
     var backend_host: String
     var pending_submits: List[PendingSubmit]
-    # H3-backend TCP follow-up ops queued from on_complete; drained post-poll
-    # by `_drain_h3_backend_submits` against the H3 backend-conn registry
-    # (these conn_ids are synthetic and do NOT live in `self.connections`).
+    # H3-backend TCP follow-up ops queued from a completion callback;
+    # drained after the tick by `drain_h3_backend_submits` against the H3
+    # backend-conn registry (these conn_ids are synthetic and do NOT live
+    # in `self.connections`).
     var h3_backend_submits: List[PendingSubmit]
+    # One heap-allocated Completion block per live H3-backend round-trip.
+    # Kept out of `H3BackendRegistry` so it can outlive the backend conn —
+    # see `H3BackendOps`.
+    var h3_backend_ops: List[Pointer[H3BackendOps, MutUntrackedOrigin]]
     # H3-backend registry: per-request backend conns + the backend dial
     # target + the (addresses of the) long-lived TLS configs. Owned here so
     # there is no module-level global (Mojo 1.0.0b1 forbids those).
     var h3_backends: H3BackendRegistry
-    # Embedded H3/QUIC frontend, driven from this same CompletionLoop via
-    # the H3-tagged tokens (see _dispatch). Declared LAST and moved into the
-    # loop before any QUIC connection exists, so the pointer the H3 server's
-    # per-conn handlers take to `self.profile` stays stable (the struct does
-    # not move again after the handler^ move into CompletionLoop).
+    # The listener's own Completion. Exactly one accept is in flight at a
+    # time (each accept CQE re-arms the next), so one Completion suffices.
+    var _accept_cmp: Completion
+    # Embedded H3/QUIC frontend, driven off the same IoUringDriver through
+    # its own Completions. Declared LAST and heap-allocated together with
+    # this struct before any QUIC connection exists, so the pointer the H3
+    # server's per-conn handlers take to `self.profile` stays stable.
     var _h3: H3UdpServer[ForwardingHandler]
 
     def __init__(
@@ -367,9 +821,12 @@ struct ProxyHandler(CompletionHandler):
         var h3_backends: H3BackendRegistry,
         var h3: H3UdpServer[ForwardingHandler],
     ):
+        """Assemble the proxy state. The accept Completion carries its
+        callback but no context — call `wire_context` once this struct is
+        at its final heap address."""
         self.listener_fd = listener_fd
         self.connections = List[
-            UnsafePointer[ProxyConnection, MutAnyOrigin]
+            Pointer[ProxyConnection, MutUntrackedOrigin]
         ]()
         self.next_conn_id = 1
         self.tls = tls^
@@ -381,41 +838,93 @@ struct ProxyHandler(CompletionHandler):
         self.backend_host = backend_host
         self.pending_submits = List[PendingSubmit]()
         self.h3_backend_submits = List[PendingSubmit]()
+        self.h3_backend_ops = List[
+            Pointer[H3BackendOps, MutUntrackedOrigin]
+        ]()
         self.h3_backends = h3_backends^
+        self._accept_cmp = Completion(
+            invoke=_on_accept,
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
+        )
         self._h3 = h3^
 
-    def __init__(out self, *, deinit take: Self):
-        self.listener_fd = take.listener_fd
-        self.connections = take.connections^
-        self.next_conn_id = take.next_conn_id
-        self.tls = take.tls^
-        self.server_tls_config = take.server_tls_config^
-        self.h1_client_tls_config = take.h1_client_tls_config^
-        self.h2_client_tls_config = take.h2_client_tls_config^
-        self.h1_backend_addr = take.h1_backend_addr
-        self.h2_backend_addr = take.h2_backend_addr
-        self.backend_host = take.backend_host^
-        self.pending_submits = take.pending_submits^
-        self.h3_backend_submits = take.h3_backend_submits^
-        self.h3_backends = take.h3_backends^
-        self._h3 = take._h3^
+    def __init__(out self, *, deinit move: Self):
+        """Move constructor."""
+        self.listener_fd = move.listener_fd
+        self.connections = move.connections^
+        self.next_conn_id = move.next_conn_id
+        self.tls = move.tls^
+        self.server_tls_config = move.server_tls_config^
+        self.h1_client_tls_config = move.h1_client_tls_config^
+        self.h2_client_tls_config = move.h2_client_tls_config^
+        self.h1_backend_addr = move.h1_backend_addr
+        self.h2_backend_addr = move.h2_backend_addr
+        self.backend_host = move.backend_host^
+        self.pending_submits = move.pending_submits^
+        self.h3_backend_submits = move.h3_backend_submits^
+        self.h3_backend_ops = move.h3_backend_ops^
+        self.h3_backends = move.h3_backends^
+        self._accept_cmp = move._accept_cmp^
+        self._h3 = move._h3^
+
+    # --- Lifecycle ------------------------------------------------------
+
+    def wire_context(mut self):
+        """Point the accept Completion (and the embedded H3 server's own
+        Completions) at their final heap addresses.
+
+        Must run after this struct has been written to its heap slot and
+        before `start`, which is the first thing to submit an SQE.
+        """
+        self._accept_cmp.context = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self))
+        )
+        self._h3.wire_context()
+
+    def start(mut self, mut driver: IoUringDriver) raises:
+        """Submit the proxy's initial operations: the first TCP accept and
+        the embedded H3 server's bootstrap (buf-ring registration, multishot
+        recvmsg, periodic timeout).
+
+        Args:
+            driver: The io_uring driver every operation is submitted on.
+        """
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=self._accept_cmp))
+        )
+        driver.accept(self.listener_fd, cmp_ptr)
+        self._h3.start(driver)
+
+    def flush_h3(mut self, mut driver: IoUringDriver) raises:
+        """Run the embedded H3 server's per-tick batch flush.
+
+        `H3UdpServer.flush` subsumes what the token-era driver did by hand:
+        it demuxes the datagrams buffered by the recvmsg callback, runs the
+        `ForwardingHandler` callbacks, submits egress sendmsg SQEs from its
+        own slab pool, recycles buf-ring buffers, and re-arms both the
+        multishot recvmsg and the periodic timeout.
+
+        Args:
+            driver: The io_uring driver every operation is submitted on.
+        """
+        self._h3.flush(driver)
 
     # --- H3 backend config publication ----------------------------------
 
     def publish_h3_backend_config_addrs(mut self):
-        """Publish the stable in-loop addresses of `tls` + `h1_client_tls_config`
-        to the H3 backend registry so `open_backend` can build backend TLS
+        """Publish the stable addresses of `tls` + `h1_client_tls_config` to
+        the H3 backend registry so `open_backend` can build backend TLS
         connections. Taken from `self` (a clean field lvalue) rather than
-        through `loop._handler.<field>` — the address-of of a field reached
-        across the loop's handler getter mis-lowers in Mojo 1.0.0b1; taking it
-        from inside the owning struct is the codegen-safe form. Call once,
-        after the handler has been moved into the loop (so the addresses point
-        at the final, stable copies)."""
+        through a chain of getters — the address-of of a field reached across
+        an accessor mis-lowers in Mojo 1.0.0b1; taking it from inside the
+        owning struct is the codegen-safe form. Call once, after the handler
+        has been written to its heap slot (so the addresses point at the
+        final, stable copies)."""
         self.h3_backends.tls_shared_addr = UInt64(
-            Int(UnsafePointer(to=self.tls))
+            Int(Pointer(to=self.tls))
         )
         self.h3_backends.h1_client_config_addr = UInt64(
-            Int(UnsafePointer(to=self.h1_client_tls_config))
+            Int(Pointer(to=self.h1_client_tls_config))
         )
 
     # --- Connection lookup ----------------------------------------------
@@ -427,79 +936,76 @@ struct ProxyHandler(CompletionHandler):
                 return i
         return -1
 
-    # --- on_complete dispatch -------------------------------------------
+    # --- Completion dispatch --------------------------------------------
 
-    def on_complete(mut self, token: UInt64, result: Int32, flags: UInt32):
-        try:
-            self._dispatch(token, result, flags)
-        except e:
-            print("proxy: on_complete error:", e)
+    def _dispatch_conn(
+        mut self,
+        ptr: Pointer[ProxyConnection, MutUntrackedOrigin],
+        op_kind: UInt8,
+        result: Int,
+    ) raises:
+        """Run one TCP-proxy completion against its connection.
 
-    def _dispatch(mut self, token: UInt64, result: Int32, flags: UInt32) raises:
-        # H3 frontend tokens (UDP recvmsg / sendmsg / timeout / provide-buf):
-        # strip the tag and hand straight to the embedded H3 server. The CQE
-        # `flags` MUST be forwarded verbatim: the multishot recvmsg path reads
-        # the provided-buffer id (flags >> IORING_CQE_BUFFER_SHIFT) and the
-        # IORING_CQE_F_MORE / F_BUFFER bits out of it. Dropping flags (passing
-        # 0) silently discards every inbound datagram → QUIC handshake stalls.
-        if (token & H3_TOKEN_TAG) != 0:
-            self._h3.on_complete(token & ~H3_TOKEN_TAG, result, flags)
+        Reached from the five per-connection callbacks, which have already
+        recovered the connection from the Completion context and cleared the
+        matching in-flight flag. That replaces the token-era `_find_index`
+        lookup: the driver hands the connection back directly.
+
+        A completion for a connection already marked closed is a no-op — it
+        is the late CQE of an operation that was still queued when the
+        connection was torn down. The connection is left in `connections`
+        for `reap()` to free once every such CQE has landed.
+
+        Args:
+            ptr: The connection this completion belongs to.
+            op_kind: Which `OP_*` operation completed.
+            result: Kernel result for the operation.
+        """
+        if ptr[].closed:
             return
-
-        # H3 backend TCP tokens (per-request H1Session round-trip): decode the
-        # synthetic backend conn id + op kind and run the H3 backend handler,
-        # then issue any follow-up SQEs it queued.
-        if (token & H3_BACKEND_TOKEN_TAG) != 0:
-            self._dispatch_h3_backend(token, result)
-            return
-
-        var op_kind = UInt8(token & 0xFF)
-        var conn_id = token >> 8
-
-        if op_kind == OP_ACCEPT:
-            self._handle_accept(result)
-            return
-
-        var idx = self._find_index(conn_id)
-        if idx < 0:
-            return  # stale completion for closed connection
 
         # While the variant is still "handshaking" we're driving the
         # client-side TLS handshake; once the handshake settles we
         # construct the matching variant and from then on everything
         # routes through the proxy_h1 / proxy_h2 free functions.
-        if self.connections[idx][].variant.is_handshaking():
-            self._drive_client_tls_handshake(idx, op_kind, result)
-            if not self.connections[idx][].closed:
-                self._maybe_finalize_handshake(idx)
-            if self.connections[idx][].closed:
-                self._close_connection(idx)
+        if ptr[].variant.is_handshaking():
+            self._drive_client_tls_handshake(ptr, op_kind, result)
+            if not ptr[].closed:
+                self._maybe_finalize_handshake(ptr)
+            if ptr[].closed:
+                self._close_connection(ptr)
             return
 
-        if self.connections[idx][].variant.is_h1():
-            self._dispatch_h1(idx, op_kind, result)
-        elif self.connections[idx][].variant.is_h2():
-            self._dispatch_h2(idx, op_kind, result)
+        if ptr[].variant.is_h1():
+            self._dispatch_h1(ptr, op_kind, result)
+        elif ptr[].variant.is_h2():
+            self._dispatch_h2(ptr, op_kind, result)
 
-        if self.connections[idx][].closed:
-            self._close_connection(idx)
+        if ptr[].closed:
+            self._close_connection(ptr)
 
     # --- H3 backend dispatch --------------------------------------------
 
-    def _dispatch_h3_backend(mut self, token: UInt64, result: Int32) raises:
+    def _dispatch_h3_backend(
+        mut self, backend_conn_id: UInt64, op_kind: UInt8, result: Int
+    ) raises:
         """Route an H3-backend TCP completion to its handler and queue the
         follow-up ops into `h3_backend_submits`.
 
         The handlers take a `mut self._h3` (so a complete response or a 502
         injects straight into the owning H3 stream) and the synthetic
         backend conn id; they return the recv/send ops to issue next. Buffer
-        pointers are resolved post-poll in `_drain_h3_backend_submits` from
-        the backend-conn registry.
-        """
-        var untagged = token & ~H3_BACKEND_TOKEN_TAG
-        var op_kind = UInt8(untagged & 0xFF)
-        var backend_conn_id = untagged >> 8
+        pointers are resolved after the tick in `drain_h3_backend_submits`
+        from the backend-conn registry, which returns a null pointer for a
+        conn that has already been freed — the handlers are therefore safe
+        to call for a late completion.
 
+        Args:
+            backend_conn_id: Synthetic id of the backend conn, read off the
+                `H3BackendOps` block the completion belonged to.
+            op_kind: Which backend `OP_*` operation completed.
+            result: Kernel result for the operation.
+        """
         if op_kind == OP_BACKEND_CONNECT:
             var subs = h3_handle_backend_connect(
                 self._h3, self.h3_backends, backend_conn_id, result
@@ -518,13 +1024,21 @@ struct ProxyHandler(CompletionHandler):
 
     # --- Accept handling ------------------------------------------------
 
-    def _handle_accept(mut self, result: Int32) raises:
+    def _handle_accept(mut self, result: Int) raises:
+        """Admit one accepted client: build its TLS halves, heap-allocate the
+        `ProxyConnection`, wire its Completions, queue the first client recv,
+        and re-arm the listener.
+
+        Args:
+            result: The accept CQE result — the new client fd, or a negative
+                errno (in which case only the re-arm happens).
+        """
         if result < 0:
             print("proxy: accept failed:", result)
             self._queue_accept()
             return
 
-        var client_fd = result
+        var client_fd = Int32(result)
         var conn_id = self.next_conn_id
         self.next_conn_id += 1
 
@@ -560,24 +1074,32 @@ struct ProxyHandler(CompletionHandler):
 
         # Heap-allocate so the address is stable across any `connections`
         # List reallocations (io_uring ops read/write into buffers held
-        # inside the pointee, so the pointee must not move).
-        var conn_ptr = _heap_alloc[ProxyConnection](1).as_unsafe_any_origin()
-        conn_ptr.init_pointee_move(conn^)
+        # inside the pointee AND the pointee owns the five Completions the
+        # ring dereferences, so it must not move).
+        var conn_ptr = _heap_alloc[ProxyConnection](1)
+        conn_ptr.unsafe_write(conn^)
+        conn_ptr[].wire_context(
+            Pointer[NoneType, MutUntrackedOrigin](
+                unsafe_from_address=Int(Pointer(to=self))
+            )
+        )
         self.connections.append(conn_ptr)
-        var idx = len(self.connections) - 1
 
         # Kick off the TLS handshake by reading the first client bytes.
         queue_client_recv(
-            self.connections[idx][].send_state,
+            conn_ptr[].send_state,
             self.pending_submits,
-            self.connections[idx][].client_handle.raw(),
-            self.connections[idx][].conn_id,
+            conn_ptr[].client_handle.raw(),
+            conn_ptr[].conn_id,
         )
 
         # Re-arm accept for the next client.
         self._queue_accept()
 
     def _queue_accept(mut self):
+        """Queue the listener re-arm. Like every other submission it goes
+        through `pending_submits` and is issued after the tick, never from
+        inside a completion callback."""
         self.pending_submits.append(
             PendingSubmit(
                 kind=SUBMIT_ACCEPT,
@@ -590,18 +1112,23 @@ struct ProxyHandler(CompletionHandler):
     # --- Pre-ALPN TLS-handshake driver ----------------------------------
 
     def _drive_client_tls_handshake(
-        mut self, idx: Int, op_kind: UInt8, result: Int32,
+        mut self,
+        ptr: Pointer[ProxyConnection, MutUntrackedOrigin],
+        op_kind: UInt8,
+        result: Int,
     ) raises:
         """Drive the client-side TLS handshake to completion.
 
         During the handshake phase, only CLIENT_RECV and CLIENT_SEND
         ops are valid. Each RECV feeds bytes into rustls; each SEND
         confirms a ciphertext flush so we can chain pending bytes.
-        """
-        var ptr = self.connections[idx]
 
+        Args:
+            ptr: The connection whose handshake is being driven.
+            op_kind: Which `OP_*` operation completed.
+            result: Kernel result for the operation.
+        """
         if op_kind == OP_CLIENT_RECV:
-            ptr[].send_state.client_recv_in_flight = False
             if result <= 0:
                 ptr[].closed = True
                 return
@@ -630,7 +1157,6 @@ struct ProxyHandler(CompletionHandler):
                     ptr[].conn_id,
                 )
         elif op_kind == OP_CLIENT_SEND:
-            ptr[].send_state.client_send_in_flight = False
             if result < 0:
                 ptr[].closed = True
                 return
@@ -663,13 +1189,17 @@ struct ProxyHandler(CompletionHandler):
                     ptr[].conn_id,
                 )
 
-    def _maybe_finalize_handshake(mut self, idx: Int) raises:
+    def _maybe_finalize_handshake(
+        mut self, ptr: Pointer[ProxyConnection, MutUntrackedOrigin]
+    ) raises:
         """If the client TLS handshake has completed, read the negotiated
         ALPN, materialize the matching variant, rebuild the backend TLS
         connection against the ALPN-pinned client config, and kick off
         the backend connect.
+
+        Args:
+            ptr: The connection whose handshake may have settled.
         """
-        var ptr = self.connections[idx]
         if ptr[].client_tls.is_handshaking():
             return
 
@@ -793,9 +1323,19 @@ struct ProxyHandler(CompletionHandler):
     # --- Variant dispatch ----------------------------------------------
 
     def _dispatch_h1(
-        mut self, idx: Int, op_kind: UInt8, result: Int32
+        mut self,
+        ptr: Pointer[ProxyConnection, MutUntrackedOrigin],
+        op_kind: UInt8,
+        result: Int,
     ) raises:
-        var ptr = self.connections[idx]
+        """Run one completion through the `proxy_h1` handlers and queue the
+        follow-up ops they return.
+
+        Args:
+            ptr: The H1 connection this completion belongs to.
+            op_kind: Which `OP_*` operation completed.
+            result: Kernel result for the operation.
+        """
         var client_fd = ptr[].client_handle.raw()
         var backend_fd = ptr[].backend_handle.raw()
         var conn_id = ptr[].conn_id
@@ -869,12 +1409,28 @@ struct ProxyHandler(CompletionHandler):
             self.pending_submits.extend(subs^)
 
     def _dispatch_h2(
-        mut self, idx: Int, op_kind: UInt8, result: Int32
+        mut self,
+        ptr: Pointer[ProxyConnection, MutUntrackedOrigin],
+        op_kind: UInt8,
+        result: Int,
     ) raises:
-        var ptr = self.connections[idx]
+        """Run one completion through the `proxy_h2` handlers and queue the
+        follow-up ops they return.
+
+        `proxy_h2`'s handlers still take the kernel result as `Int32` (the
+        `proxy_h1` / `proxy_h3` sides have already moved to `Int`); the
+        narrowing is exact — the value originates from io_uring's `cqe.res`,
+        which is a 32-bit signed field.
+
+        Args:
+            ptr: The H2 connection this completion belongs to.
+            op_kind: Which `OP_*` operation completed.
+            result: Kernel result for the operation.
+        """
         var client_fd = ptr[].client_handle.raw()
         var backend_fd = ptr[].backend_handle.raw()
         var conn_id = ptr[].conn_id
+        var result32 = Int32(result)
 
         if op_kind == OP_CLIENT_RECV:
             var subs = h2_handle_client_recv(
@@ -887,7 +1443,7 @@ struct ProxyHandler(CompletionHandler):
                 client_fd,
                 backend_fd,
                 conn_id,
-                result,
+                result32,
             )
             self.pending_submits.extend(subs^)
         elif op_kind == OP_CLIENT_SEND:
@@ -899,7 +1455,7 @@ struct ProxyHandler(CompletionHandler):
                 ptr[].closed,
                 client_fd,
                 conn_id,
-                result,
+                result32,
             )
             self.pending_submits.extend(subs^)
         elif op_kind == OP_BACKEND_CONNECT:
@@ -913,7 +1469,7 @@ struct ProxyHandler(CompletionHandler):
                 client_fd,
                 backend_fd,
                 conn_id,
-                result,
+                result32,
             )
             self.pending_submits.extend(subs^)
         elif op_kind == OP_BACKEND_RECV:
@@ -927,7 +1483,7 @@ struct ProxyHandler(CompletionHandler):
                 client_fd,
                 backend_fd,
                 conn_id,
-                result,
+                result32,
             )
             self.pending_submits.extend(subs^)
         elif op_kind == OP_BACKEND_SEND:
@@ -940,320 +1496,322 @@ struct ProxyHandler(CompletionHandler):
                 client_fd,
                 backend_fd,
                 conn_id,
-                result,
+                result32,
             )
             self.pending_submits.extend(subs^)
 
     # --- Close helper ---------------------------------------------------
 
-    def _close_connection(mut self, idx: Int) raises:
-        """Drop the connection: shutdown + close both sockets, run the
-        ProxyConnection destructor, and free the heap slot.
+    def _close_connection(
+        mut self, ptr: Pointer[ProxyConnection, MutUntrackedOrigin]
+    ) raises:
+        """Begin teardown of a connection: mark it closed and shut down both
+        sockets. The heap slot itself is freed by `reap()`.
 
-        We shutdown(SHUT_RDWR) + close BEFORE destroy_pointee because
-        close() alone is not enough to trigger TCP teardown when io_uring
-        still holds references to the fd (in-flight or recently-completed
-        submissions). Empirically, without the explicit shutdown the
-        backend TCP connection stays in ESTABLISHED state after the proxy
-        finishes a request, blocking the backend's accept loop in its
-        previous handle_connection's recv() call and starving every
-        subsequent connection. The shutdown(SHUT_RDWR) sends FIN
-        synchronously; close() reclaims the fd.
+        We shutdown(SHUT_RDWR) both fds immediately because close() alone is
+        not enough to trigger TCP teardown when io_uring still holds
+        references to the fd (in-flight or recently-completed submissions).
+        Empirically, without the explicit shutdown the backend TCP
+        connection stays in ESTABLISHED state after the proxy finishes a
+        request, blocking the backend's accept loop in its previous
+        handle_connection's recv() call and starving every subsequent
+        connection. The shutdown(SHUT_RDWR) sends FIN synchronously.
+
+        Under the token model the record was destroyed here and a later CQE
+        for it was ignored because the token no longer resolved. A
+        `Completion` is the SQE's user_data, so destroying the record here
+        would leave the ring pointing at freed memory. Instead the record
+        stays alive, refuses further work (`closed`), and `reap()` frees it
+        on the first tick where nothing is in flight — the same two-phase
+        close `navette/h1/h1_tcp_server.mojo` uses. `OwnedHandle.__del__`
+        still reclaims both fds, one tick later.
+
+        Args:
+            ptr: The connection to tear down. Idempotent.
         """
-        var ptr = self.connections[idx]
         ptr[].closed = True
+        if ptr[].shutdown_done:
+            return
+        ptr[].shutdown_done = True
         var client_fd = ptr[].client_handle.raw()
         var backend_fd = ptr[].backend_handle.raw()
-        # Explicit shutdown(SHUT_RDWR) before letting RAII close the fds:
-        # close() alone can leave the peer in ESTABLISHED if io_uring still
-        # holds references; FIN must be sent synchronously to unblock the
-        # backend's accept loop. OwnedHandle.__del__ (via destroy_pointee
-        # below) reclaims each fd.
         _ = external_call["shutdown", Int32](client_fd, Int32(2))
         _ = external_call["shutdown", Int32](backend_fd, Int32(2))
-        var last = len(self.connections) - 1
-        if idx != last:
-            self.connections[idx] = self.connections[last]
-        _ = self.connections.pop()
-        ptr.destroy_pointee()
-        ptr.free()
 
+    # --- Post-tick submission drains ------------------------------------
 
-# ---------------------------------------------------------------------------
-# _drain_pending_submits — post-poll drain into the loop
-# ---------------------------------------------------------------------------
+    def drain_submits(mut self, mut driver: IoUringDriver) raises:
+        """Submit every op queued by this tick's completions, then clear the
+        queue.
 
+        Each op is submitted with the Completion its connection owns for
+        that op kind, so the driver can route the CQE straight back without
+        a token. Ops for a connection that closed earlier in the same tick
+        are dropped — the old code got that for free because closing removed
+        the connection from `connections` immediately.
 
-def _drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """Submit all queued ops from the handler, then clear the queue."""
-    var submits = loop._handler.pending_submits^
-    loop._handler.pending_submits = List[PendingSubmit]()
+        Args:
+            driver: The io_uring driver every operation is submitted on.
+        """
+        var submits = self.pending_submits^
+        self.pending_submits = List[PendingSubmit]()
 
-    for i in range(len(submits)):
-        var s = submits[i].copy()
-        var token = encode_token(s.conn_id, s.op_kind)
+        for i in range(len(submits)):
+            var s = submits[i].copy()
 
-        if s.kind == SUBMIT_ACCEPT:
-            loop.submit_accept(s.fd, token)
-        elif s.kind == SUBMIT_RECV:
-            var idx = loop._handler._find_index(s.conn_id)
+            if s.kind == SUBMIT_ACCEPT:
+                var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
+                    unsafe_from_address=Int(Pointer(to=self._accept_cmp))
+                )
+                driver.accept(s.fd, cmp_ptr)
+                continue
+
+            var idx = self._find_index(s.conn_id)
             if idx < 0:
                 continue
-            var raw_addr: Int
-            if s.op_kind == OP_CLIENT_RECV:
-                raw_addr = Int(
-                    loop._handler.connections[idx][].send_state.client_recv_buf.unsafe_ptr()
-                )
-            else:
-                raw_addr = Int(
-                    loop._handler.connections[idx][].send_state.backend_recv_buf.unsafe_ptr()
-                )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
-        elif s.kind == SUBMIT_SEND:
-            var idx = loop._handler._find_index(s.conn_id)
-            if idx < 0:
+            var conn = self.connections[idx]
+            if conn[].closed:
                 continue
-            var n: Int
-            var raw_addr: Int
-            if s.op_kind == OP_CLIENT_SEND:
-                n = len(
-                    loop._handler.connections[idx][].send_state.client_send_buf
+            var cmp_ptr = conn[].cmp_ptr(s.op_kind)
+
+            if s.kind == SUBMIT_RECV:
+                var raw_addr: Int
+                if s.op_kind == OP_CLIENT_RECV:
+                    raw_addr = Int(
+                        conn[].send_state.client_recv_buf.unsafe_ptr()
+                    )
+                else:
+                    raw_addr = Int(
+                        conn[].send_state.backend_recv_buf.unsafe_ptr()
+                    )
+                var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
+                    unsafe_from_address=raw_addr
+                )
+                driver.recv(
+                    s.fd, buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
+                )
+            elif s.kind == SUBMIT_SEND:
+                var n: Int
+                var raw_addr: Int
+                if s.op_kind == OP_CLIENT_SEND:
+                    n = len(conn[].send_state.client_send_buf)
+                    if n == 0:
+                        continue
+                    raw_addr = Int(
+                        conn[].send_state.client_send_buf.unsafe_ptr()
+                    )
+                else:
+                    n = len(conn[].send_state.backend_send_buf)
+                    if n == 0:
+                        continue
+                    raw_addr = Int(
+                        conn[].send_state.backend_send_buf.unsafe_ptr()
+                    )
+                var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
+                    unsafe_from_address=raw_addr
+                )
+                driver.send(s.fd, buf_ptr, UInt32(n), cmp_ptr)
+            elif s.kind == SUBMIT_CONNECT:
+                var addr_ptr = conn[].backend_addr_stor.addr_unsafe_ptr()
+                var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
+                driver.connect(s.fd, addr_ptr, addr_len, cmp_ptr)
+                conn[].connect_in_flight = True
+
+    def _find_h3_ops(self, backend_conn_id: UInt64) -> Int:
+        """Return the index of the `H3BackendOps` block for
+        `backend_conn_id`, or -1."""
+        for i in range(len(self.h3_backend_ops)):
+            if self.h3_backend_ops[i][].backend_conn_id == backend_conn_id:
+                return i
+        return -1
+
+    def collect_h3_forwards(mut self, mut driver: IoUringDriver) raises:
+        """Walk every live H3 connection's `ForwardingHandler`, drain its
+        captured requests, open a backend TCP+TLS+`H1Session` for each, and
+        submit the backend connect.
+
+        Called each tick after `flush_h3`, which is what runs the handler
+        callbacks that populate `_pending`. The per-conn handler is reached
+        via the H3 server's public `conn_slots[i].h3[].handler` — there is no
+        module-level global to bridge the factory to the driver (Mojo 1.0.0b1
+        forbids globals).
+
+        Args:
+            driver: The io_uring driver every operation is submitted on.
+        """
+        var n_conns = len(self._h3.conn_slots)
+        for ci in range(n_conns):
+            if ci >= len(self._h3.conn_slots):
+                break
+            # conn_slots[ci].h3 is a Pointer[H3HandlerServer]; bind it to a
+            # local pointer first (avoid a deep chained mutable place-expr)
+            # and deref to reach the per-conn handler.
+            var h3_ptr = self._h3.conn_slots[ci].h3
+            var forwards = h3_ptr[].handler.take_pending()
+            for fi in range(len(forwards)):
+                var fwd = forwards[fi].copy()
+                var backend_conn_id = self.h3_backends.open_backend(fwd^)
+                var fd = self.h3_backends.backend_fd(backend_conn_id)
+                if fd < 0:
+                    continue
+                # Use the conn's stable, heap-stored addr (outlives the
+                # in-flight connect), not a stack temporary.
+                var addr_ptr = self.h3_backends.backend_addr_ptr(
+                    backend_conn_id
+                )
+                if Int(addr_ptr) == 0:
+                    continue
+                var ops_ptr = _heap_alloc[H3BackendOps](1)
+                ops_ptr.unsafe_write(H3BackendOps(backend_conn_id))
+                ops_ptr[].wire_context(
+                    Pointer[NoneType, MutUntrackedOrigin](
+                        unsafe_from_address=Int(Pointer(to=self))
+                    )
+                )
+                self.h3_backend_ops.append(ops_ptr)
+                var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
+                driver.connect(
+                    fd,
+                    addr_ptr,
+                    addr_len,
+                    ops_ptr[].cmp_ptr(OP_BACKEND_CONNECT),
+                )
+                ops_ptr[].set_in_flight(OP_BACKEND_CONNECT, True)
+
+    def drain_h3_backend_submits(
+        mut self, mut driver: IoUringDriver
+    ) raises:
+        """Issue the H3-backend recv/send SQEs queued by the backend
+        handlers. Buffer pointers come from the backend-conn registry (these
+        conn_ids are synthetic and absent from `self.connections`) and the
+        Completions from the matching `H3BackendOps` block.
+
+        Args:
+            driver: The io_uring driver every operation is submitted on.
+        """
+        var submits = self.h3_backend_submits^
+        self.h3_backend_submits = List[PendingSubmit]()
+
+        for i in range(len(submits)):
+            var s = submits[i].copy()
+            var backend_conn_id = s.conn_id
+            var ops_idx = self._find_h3_ops(backend_conn_id)
+            if ops_idx < 0:
+                continue
+            var ops = self.h3_backend_ops[ops_idx]
+            var cmp_ptr = ops[].cmp_ptr(s.op_kind)
+            if s.kind == SUBMIT_RECV:
+                var raw_addr = self.h3_backends.backend_recv_buf_addr(
+                    backend_conn_id
+                )
+                if raw_addr == 0:
+                    continue
+                var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
+                    unsafe_from_address=raw_addr
+                )
+                driver.recv(
+                    s.fd, buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
+                )
+                ops[].set_in_flight(s.op_kind, True)
+            elif s.kind == SUBMIT_SEND:
+                var n = self.h3_backends.backend_send_buf_len(
+                    backend_conn_id
                 )
                 if n == 0:
                     continue
-                raw_addr = Int(
-                    loop._handler.connections[idx][].send_state.client_send_buf.unsafe_ptr()
+                var raw_addr = self.h3_backends.backend_send_buf_addr(
+                    backend_conn_id
                 )
-            else:
-                n = len(
-                    loop._handler.connections[idx][].send_state.backend_send_buf
-                )
-                if n == 0:
+                if raw_addr == 0:
                     continue
-                raw_addr = Int(
-                    loop._handler.connections[idx][].send_state.backend_send_buf.unsafe_ptr()
+                var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
+                    unsafe_from_address=raw_addr
                 )
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
+                driver.send(s.fd, buf_ptr, UInt32(n), cmp_ptr)
+                ops[].set_in_flight(s.op_kind, True)
+
+    # --- Reaping --------------------------------------------------------
+
+    def reap(mut self) raises:
+        """Free every heap block the ring no longer points at.
+
+        Two sweeps, both swap-and-pop:
+
+        1. `ProxyConnection`s that are closed and have no operation left in
+           flight. Their destructor closes both fds.
+        2. `H3BackendOps` blocks whose backend conn has already been freed
+           by `proxy_h3` and which have no operation left in flight.
+
+        Called once per tick, after the submission drains, so a block whose
+        last op was submitted this tick is not reaped underneath the ring.
+        """
+        var i = 0
+        while i < len(self.connections):
+            if self.connections[i][].is_drained():
+                var ptr = self.connections[i]
+                var last = len(self.connections) - 1
+                if i != last:
+                    self.connections[i] = self.connections[last]
+                _ = self.connections.pop()
+                ptr.unsafe_deinit_pointee()
+                ptr.unsafe_free()
+                # Don't advance — the swapped-in element needs checking.
+            else:
+                i += 1
+
+        var j = 0
+        while j < len(self.h3_backend_ops):
+            var ops = self.h3_backend_ops[j]
+            var conn_ptr = self.h3_backends.backend_ptr(
+                ops[].backend_conn_id
             )
-            loop.submit_send(s.fd, buf_ptr, UInt(n), token)
-        elif s.kind == SUBMIT_CONNECT:
-            var idx = loop._handler._find_index(s.conn_id)
-            if idx < 0:
-                continue
-            var addr_ptr = (
-                loop._handler.connections[idx][].backend_addr_stor.addr_unsafe_ptr()
-            )
-            var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
-            loop.submit_connect(s.fd, addr_ptr, addr_len, token)
+            if Int(conn_ptr) == 0 and ops[].is_idle():
+                var last = len(self.h3_backend_ops) - 1
+                if j != last:
+                    self.h3_backend_ops[j] = self.h3_backend_ops[last]
+                _ = self.h3_backend_ops.pop()
+                ops.unsafe_deinit_pointee()
+                ops.unsafe_free()
+            else:
+                j += 1
 
 
 # ---------------------------------------------------------------------------
-# H3 frontend + backend glue (loop-typed; lives here so proxy_h3 stays free
-# of a circular import on ProxyHandler / CompletionLoop[ProxyHandler]).
+# _run_tick — one event-loop iteration
 # ---------------------------------------------------------------------------
 
 
-def h3_collect_forwards(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """Walk every live H3 connection's `ForwardingHandler`, drain its
-    captured requests, open a backend TCP+TLS+`H1Session` for each, and
-    submit the SUBMIT_CONNECT. Called each tick after `_h3.on_flush()` (the
-    flush is what runs the handler callbacks that populate `_pending`).
+def _run_tick(
+    handler: Pointer[ProxyHandler, MutUntrackedOrigin],
+    mut driver: IoUringDriver,
+) raises:
+    """One event-loop iteration: tick the ring, then run the embedded H3
+    server's batch flush, then drain both the TCP proxy paths and the H3
+    backend follow-ups, then reap whatever the ring has finished with.
 
-    The handler is reached via the H3 server's public
-    `conn_slots[i].h3[].handler` — there is no module-level global to bridge
-    the factory to the driver (Mojo 1.0.0b1 forbids globals).
-    """
-    var n_conns = len(loop._handler._h3.conn_slots)
-    for ci in range(n_conns):
-        if ci >= len(loop._handler._h3.conn_slots):
-            break
-        # conn_slots[ci].h3 is an UnsafePointer[H3HandlerServer]; bind it to
-        # a local pointer first (avoid a deep chained mutable place-expr) and
-        # deref to reach the per-conn handler and drain its captured requests.
-        var h3_ptr = loop._handler._h3.conn_slots[ci].h3
-        var forwards = h3_ptr[].handler.take_pending()
-        for fi in range(len(forwards)):
-            var fwd = forwards[fi].copy()
-            var backend_conn_id = loop._handler.h3_backends.open_backend(fwd^)
-            var fd = loop._handler.h3_backends.backend_fd(backend_conn_id)
-            if fd < 0:
-                continue
-            var token = h3_encode_backend_token(
-                backend_conn_id, OP_BACKEND_CONNECT
-            )
-            # Use the conn's stable, heap-stored addr (outlives the in-flight
-            # connect), not a stack temporary.
-            var addr_ptr = loop._handler.h3_backends.backend_addr_ptr(
-                backend_conn_id
-            )
-            if Int(addr_ptr) == 0:
-                continue
-            var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
-            loop.submit_connect(fd, addr_ptr, addr_len, token)
-
-
-def _drain_h3_backend_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """Issue the H3-backend recv/send SQEs queued by the backend handlers.
-    Buffer pointers come from the backend-conn registry (these conn_ids are
-    synthetic and absent from `self.connections`)."""
-    var submits = loop._handler.h3_backend_submits^
-    loop._handler.h3_backend_submits = List[PendingSubmit]()
-
-    for i in range(len(submits)):
-        var s = submits[i].copy()
-        var backend_conn_id = s.conn_id
-        var token = h3_encode_backend_token(backend_conn_id, s.op_kind)
-        if s.kind == SUBMIT_RECV:
-            var raw_addr = loop._handler.h3_backends.backend_recv_buf_addr(
-                backend_conn_id
-            )
-            if raw_addr == 0:
-                continue
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            loop.submit_recv(s.fd, buf_ptr, UInt(_RECV_BUF_SIZE), token)
-        elif s.kind == SUBMIT_SEND:
-            var n = loop._handler.h3_backends.backend_send_buf_len(
-                backend_conn_id
-            )
-            if n == 0:
-                continue
-            var raw_addr = loop._handler.h3_backends.backend_send_buf_addr(
-                backend_conn_id
-            )
-            if raw_addr == 0:
-                continue
-            var buf_ptr = UnsafePointer[Int8, StaticConstantOrigin](
-                unsafe_from_address=raw_addr
-            )
-            loop.submit_send(s.fd, buf_ptr, UInt(n), token)
-
-
-def h3_bootstrap(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """Bootstrap the embedded H3 server against the proxy's CompletionLoop:
-    register the provided-buffer pool, submit the initial multishot recvmsg,
-    and submit the initial periodic timeout. Direct port of `serve_forever`'s
-    bootstrap, with every token ORed with `H3_TOKEN_TAG`.
-    """
-    var provide_token = H3_TOKEN_TAG | h3_encode_token(
-        UInt64(0), OP_PROVIDE_BUF
-    )
-    loop.provide_buffers(
-        loop._handler._h3.pbuf_pool, PBUF_SIZE, PBUF_COUNT, PBUF_GROUP_ID,
-        UInt16(0), provide_token,
-    )
-
-    var msghdr_addr = Int(loop._handler._h3.msghdr_template)
-    var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-        unsafe_from_address=msghdr_addr
-    )
-    var recvmsg_token = H3_TOKEN_TAG | h3_encode_token(UInt64(0), OP_RECVMSG)
-    loop.submit_recvmsg_multishot(
-        loop._handler._h3.udp_handle.raw(), msghdr_ptr, PBUF_GROUP_ID,
-        recvmsg_token,
-    )
-    loop._handler._h3.multishot_active = True
-
-    var ts_addr = Int(loop._handler._h3.timeout_ts)
-    var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-        unsafe_from_address=ts_addr
-    )
-    loop.submit_timeout(
-        ts_ptr, H3_TOKEN_TAG | h3_encode_token(UInt64(0), OP_TIMEOUT)
-    )
-
-
-def h3_post_poll(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """Per-tick H3 housekeeping: re-provide buffers consumed during this
-    batch and re-arm the multishot recvmsg if it ended. Call AFTER
-    `_h3.on_flush()`.
-    """
-    var consumed = loop._handler._h3.consumed_bufs^
-    loop._handler._h3.consumed_bufs = List[UInt16]()
-    for i in range(len(consumed)):
-        var bid = consumed[i]
-        var buf_base = loop._handler._h3.pbuf_pool + Int(bid) * PBUF_SIZE
-        loop.reprovide_buffer(
-            buf_base, PBUF_SIZE, PBUF_GROUP_ID, bid,
-            H3_TOKEN_TAG | h3_encode_token(UInt64(bid), OP_PROVIDE_BUF),
-        )
-
-    if not loop._handler._h3.multishot_active:
-        var ms_addr = Int(loop._handler._h3.msghdr_template)
-        var ms_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-            unsafe_from_address=ms_addr
-        )
-        loop.submit_recvmsg_multishot(
-            loop._handler._h3.udp_handle.raw(), ms_ptr, PBUF_GROUP_ID,
-            H3_TOKEN_TAG | h3_encode_token(UInt64(0), OP_RECVMSG),
-        )
-        loop._handler._h3.multishot_active = True
-
-
-def h3_drain_pending_submits(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """Drain the embedded H3 server's `pending_submits` (sendmsg / timeout)
-    into the proxy loop. Port of navette's `drain_pending_submits`, tagging
-    every token with `H3_TOKEN_TAG`. Call each tick after `h3_post_poll`.
-    """
-    var submits = loop._handler._h3.pending_submits^
-    loop._handler._h3.pending_submits = List[H3PendingSubmit]()
-
-    for i in range(len(submits)):
-        var s = submits[i].copy()
-        if s.kind == OP_SENDMSG:
-            var tx_id = s.slot_idx
-            var inner = h3_encode_token(tx_id, OP_SENDMSG)
-            if inner not in loop._handler._h3.tx_slot_idx_by_token:
-                continue
-            var tx_idx = loop._handler._h3.tx_slot_idx_by_token[inner]
-            var msghdr_addr = Int(
-                loop._handler._h3.tx_slots[tx_idx][].msghdr_buf
-            )
-            var msghdr_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-                unsafe_from_address=msghdr_addr
-            )
-            try:
-                loop.submit_sendmsg(
-                    loop._handler._h3.udp_handle.raw(),
-                    msghdr_ptr,
-                    H3_TOKEN_TAG | inner,
-                )
-            except:
-                loop._handler._h3.pending_submits.append(s.copy())
-        elif s.kind == OP_TIMEOUT:
-            var ts_addr = Int(loop._handler._h3.timeout_ts)
-            var ts_ptr = UnsafePointer[c_void, StaticConstantOrigin](
-                unsafe_from_address=ts_addr
-            )
-            var inner = h3_encode_token(s.slot_idx, OP_TIMEOUT)
-            try:
-                loop.submit_timeout(ts_ptr, H3_TOKEN_TAG | inner)
-            except:
-                loop._handler._h3.pending_submits.append(s.copy())
-
-
-def _run_tick(mut loop: CompletionLoop[ProxyHandler]) raises:
-    """One event-loop iteration: poll the ring, then run the embedded H3
-    server's batch flush + per-tick housekeeping, then drain both the TCP
-    proxy paths and the H3 backend follow-ups.
+    The ordering is the token era's, minus the steps `H3UdpServer.flush`
+    now performs itself (buffer re-provisioning, multishot re-arm, and the
+    H3 sendmsg/timeout submissions that used to be a hand-drained pending
+    queue). `tick(wait=True)` is the old `poll(wait_nr=1)`: one
+    io_uring_enter that submits everything queued and blocks for at least
+    one completion, then fires each CQE's Completion. Handlers still cannot
+    submit from inside a callback — they queue into `pending_submits` and
+    the drains below issue the SQEs — so `reap()` is safe here: every
+    submission for this tick has already happened.
 
     Extracted from `main`'s `while True` so the loop body lowers as its own
-    small codegen unit rather than inflating `main`. `on_flush` also runs
-    the `ForwardingHandler` callbacks, which park forwarded requests for
-    `h3_collect_forwards` to turn into backend connects.
+    small codegen unit rather than inflating `main`.
+
+    Args:
+        handler: The heap-stable proxy state.
+        driver: The io_uring driver every operation is submitted on.
     """
-    loop.poll(wait_nr=1)
-    loop._handler._h3.on_flush()
-    h3_collect_forwards(loop)
-    h3_post_poll(loop)
-    h3_drain_pending_submits(loop)
-    _drain_pending_submits(loop)
-    _drain_h3_backend_submits(loop)
+    _ = driver.tick(wait=True)
+    handler[].flush_h3(driver)
+    handler[].collect_h3_forwards(driver)
+    handler[].drain_submits(driver)
+    handler[].drain_h3_backend_submits(driver)
+    handler[].reap()
 
 
 # ---------------------------------------------------------------------------
@@ -1310,10 +1868,10 @@ struct _Upstream(Movable):
         self.host = host^
         self.port = port
 
-    def __init__(out self, *, deinit take: Self):
-        self.octets = take.octets^
-        self.host = take.host^
-        self.port = take.port
+    def __init__(out self, *, deinit move: Self):
+        self.octets = move.octets^
+        self.host = move.host^
+        self.port = move.port
 
 
 def _parse_upstream(spec: String) raises -> _Upstream:
@@ -1357,7 +1915,7 @@ def _parse_upstream(spec: String) raises -> _Upstream:
         port_str += chr(Int(b[i]))
         i += 1
 
-    if len(host) == 0 or len(port_str) == 0:
+    if not host or port_str.byte_length() == 0:
         raise String(
             "upstream must be host:port (e.g. 127.0.0.1:9443), got: "
         ) + spec
@@ -1428,17 +1986,17 @@ def main() raises:
         ai += 1
 
     var h1_backend_addr = SocketAddrV4(
-        connect_octets[0],
-        connect_octets[1],
-        connect_octets[2],
-        connect_octets[3],
+        UInt8(connect_octets[0]),
+        UInt8(connect_octets[1]),
+        UInt8(connect_octets[2]),
+        UInt8(connect_octets[3]),
         port=h1_backend_port,
     )
     var h2_backend_addr = SocketAddrV4(
-        connect_octets[0],
-        connect_octets[1],
-        connect_octets[2],
-        connect_octets[3],
+        UInt8(connect_octets[0]),
+        UInt8(connect_octets[1]),
+        UInt8(connect_octets[2]),
+        UInt8(connect_octets[3]),
         port=h2_backend_port,
     )
 
@@ -1493,7 +2051,7 @@ def main() raises:
 
     var h3_server = H3UdpServer[ForwardingHandler](
         h3_sock^,
-        TlsBackend(other=tls),
+        TlsBackend(copy=tls),
         h3_quic_config^,
         h3_tp^,
         make_forwarding_handler,
@@ -1501,7 +2059,9 @@ def main() raises:
 
     # Listening socket (IPv4 TCP, non-blocking).
     var listener = Socket.tcp_v4()
-    var bind_addr = SocketAddrV4(0, 0, 0, 0, port=listen_port)
+    var bind_addr = SocketAddrV4(
+        UInt8(0), UInt8(0), UInt8(0), UInt8(0), port=listen_port
+    )
     listener.bind(bind_addr)
     listener.listen(Backlog.DEFAULT)
     var listener_fd = listener.raw()
@@ -1537,29 +2097,34 @@ def main() raises:
         h3_backends=h3_registry^,
         h3=h3_server^,
     )
-    # sq_entries bumped from 256 to 4096: the H3 path adds provide_buffers
-    # (1024) + multishot recvmsg + timeout + per-stream sendmsg on top of the
-    # TCP accept/recv/send/connect ops; 256 would overflow under load.
-    var loop = CompletionLoop[ProxyHandler](handler^, sq_entries=4096)
+    # Capacity bumped from 256 to 4096: the H3 path adds a 1024-entry
+    # provided-buffer ring + multishot recvmsg + timeout + per-stream sendmsg
+    # on top of the TCP accept/recv/send/connect ops; 256 would overflow
+    # under load.
+    var driver = IoUringDriver(capacity=4096)
+
+    # The handler must not move again: every Completion the ring holds
+    # points either at it or at a record that stores its address. Heap it,
+    # then wire the contexts.
+    var handler_ptr = _heap_alloc[ProxyHandler](1)
+    handler_ptr.unsafe_write(handler^)
+    handler_ptr[].wire_context()
 
     # Now that the handler (and its `tls` + `h1_client_tls_config`) lives at
-    # a stable address inside the loop, publish those addresses to the H3
-    # backend registry so `open_backend` can build backend TLS connections.
-    loop._handler.publish_h3_backend_config_addrs()
+    # a stable address, publish those addresses to the H3 backend registry so
+    # `open_backend` can build backend TLS connections.
+    handler_ptr[].publish_h3_backend_config_addrs()
 
-    # Submit the initial accept.
-    loop.submit_accept(listener_fd, encode_token(LISTENER_CONN_ID, OP_ACCEPT))
-
-    # Bootstrap the embedded H3 server (provide-buffers + multishot recvmsg +
-    # periodic timeout), all on H3-tagged tokens.
-    h3_bootstrap(loop)
+    # Submit the initial accept plus the embedded H3 server's bootstrap
+    # (buf-ring registration + multishot recvmsg + periodic timeout).
+    handler_ptr[].start(driver)
 
     # Event loop. Drain queued submissions from the handler after every
-    # poll() tick — handlers cannot submit from inside on_complete
-    # because the trait signature does not give them a loop reference.
-    # The per-tick body is extracted into `_run_tick` to keep `main`'s
-    # codegen unit small (large monolithic `main` bodies that mix the
-    # generic loop with many free-function calls stress the lowering pass).
+    # tick — handlers still cannot submit from inside a completion callback,
+    # because a callback has no driver reference. The per-tick body is
+    # extracted into `_run_tick` to keep `main`'s codegen unit small (large
+    # monolithic `main` bodies that mix the driver with many free-function
+    # calls stress the lowering pass).
     while True:
-        _run_tick(loop)
+        _run_tick(handler_ptr, driver)
         _ = listener  # anchor: keep listener fd alive for io_uring

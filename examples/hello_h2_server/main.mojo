@@ -41,69 +41,69 @@ from navette.runtime.socket_helpers import tcp_listener
 from navette.tls import TlsBackend, TlsServerConfig
 
 from std.ffi import external_call
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.collections.optional import Optional
 
 
 def _getenv_opt(name: String) -> Optional[String]:
     """Read environment variable; return None if unset."""
-    var nbuf = _heap_alloc[UInt8](len(name) + 1)
+    var nbuf = _heap_alloc[UInt8](name.byte_length() + 1)
     var name_bytes = name.as_bytes()
     for i in range(len(name_bytes)):
-        nbuf[i] = name_bytes[i]
-    nbuf[len(name_bytes)] = 0
+        nbuf[unsafe_offset=i] = name_bytes[i]
+    nbuf[unsafe_offset= len(name_bytes)] = 0
     var ptr_int = external_call["getenv", Int](nbuf)
-    nbuf.free()
+    nbuf.unsafe_free()
     if ptr_int == 0:
         return None
-    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var ptr = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=ptr_int)
     var s = String()
     var i = 0
-    while ptr[i] != 0:
-        s += chr(Int(ptr[i]))
+    while ptr[unsafe_offset=i] != 0:
+        s += chr(Int(ptr[unsafe_offset=i]))
         i += 1
     return Optional(s^)
 
 
 def _read_file(path: String) raises -> List[UInt8]:
     """Read entire file via open/fstat64/pread64/close (Linux x86_64)."""
-    var pbuf = _heap_alloc[UInt8](len(path) + 1)
+    var pbuf = _heap_alloc[UInt8](path.byte_length() + 1)
     var path_bytes = path.as_bytes()
     for i in range(len(path_bytes)):
-        pbuf[i] = path_bytes[i]
-    pbuf[len(path_bytes)] = 0
+        pbuf[unsafe_offset=i] = path_bytes[i]
+    pbuf[unsafe_offset= len(path_bytes)] = 0
     var fd = external_call["open", Int32](pbuf, Int32(0), Int32(0))  # O_RDONLY
-    pbuf.free()
+    pbuf.unsafe_free()
     if fd < 0:
         raise "_read_file: open failed for " + path
-    var statbuf = _heap_alloc[UInt8](144).as_unsafe_any_origin()
+    var statbuf = _heap_alloc[UInt8](144)
     var fstat_rc = external_call["fstat64", Int32](fd, statbuf)
     if fstat_rc < 0:
         _ = external_call["close", Int32](fd)
-        statbuf.free()
+        statbuf.unsafe_free()
         raise "_read_file: fstat64 failed"
     var file_size: Int = 0
     for i in range(8):
-        file_size |= Int(statbuf[48 + i]) << (i * 8)
-    statbuf.free()
+        file_size |= Int(statbuf[unsafe_offset= 48 + i]) << (i * 8)
+    statbuf.unsafe_free()
     var result = List[UInt8](capacity=file_size)
     var chunk_size = 65536
-    var buf = _heap_alloc[UInt8](chunk_size).as_unsafe_any_origin()
+    var buf = _heap_alloc[UInt8](chunk_size)
     var offset = 0
     while offset < file_size:
         var to_read = min(chunk_size, file_size - offset)
         var n = external_call["pread64", Int](Int32(fd), buf, to_read, offset)
         if n < 0:
-            buf.free()
+            buf.unsafe_free()
             _ = external_call["close", Int32](fd)
             raise "_read_file: pread64 failed"
         if n == 0:
             break
         for i in range(n):
-            result.append(buf[i])
+            result.append(buf[unsafe_offset=i])
         offset += n
-    buf.free()
+    buf.unsafe_free()
     _ = external_call["close", Int32](fd)
     return result^
 
@@ -112,7 +112,7 @@ struct HelloHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -190,18 +190,18 @@ def main() raises:
     var server = H2TcpServer[HelloHandler](
         sock^,
         make_hello_handler,
-        TlsBackend(other=tls),
+        TlsBackend(copy=tls),
         server_config^,
     )
 
     var srv_ptr = _heap_alloc[H2TcpServer[HelloHandler]](1)
-    srv_ptr.init_pointee_move(server^)
+    srv_ptr.unsafe_write(server^)
     srv_ptr[].wire_context()
 
-    var driver = IoUringDriver(sq_entries=4096)
+    var driver = IoUringDriver(capacity=4096)
     srv_ptr[].start(driver)
 
     print("hello_h2_server: serving")
     while True:
-        driver.tick(wait=True)
+        _ = driver.tick(wait=True)
         srv_ptr[].reap_closed()

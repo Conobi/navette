@@ -54,8 +54,9 @@
 #   fetch -w "\n%{http_code} %{size_download}B via %{alpn} in %{time_total}ms\n" https://1.1.1.1/
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.collections.optional import Optional
 from std.os.env import getenv
 from std.os import makedirs
@@ -97,7 +98,7 @@ comptime _MAX_REDIRECTS: Int = 10
 def _monotonic_ms() -> UInt64:
     """Get monotonic time in milliseconds via clock_gettime."""
     # struct timespec { time_t tv_sec; long tv_nsec; }  — 16 bytes on x86_64
-    var ts = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var ts = _heap_alloc[UInt8](16)
     _ = external_call["clock_gettime", Int32](
         Int32(1),  # CLOCK_MONOTONIC
         ts,
@@ -121,7 +122,7 @@ def _realtime_secs() -> UInt:
     across process restarts (monotonic clocks reset on reboot and can't
     be persisted).
     """
-    var ts = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var ts = _heap_alloc[UInt8](16)
     _ = external_call["clock_gettime", Int32](
         Int32(0),  # CLOCK_REALTIME
         ts,
@@ -172,7 +173,7 @@ def _udp_send(fd: Int32, data: List[UInt8]) raises:
     """Send a single UDP datagram."""
     if len(data) == 0:
         return
-    var buf = _heap_alloc[UInt8](len(data)).as_unsafe_any_origin()
+    var buf = _heap_alloc[UInt8](len(data))
     for i in range(len(data)):
         buf[i] = data[i]
     var rc = external_call["send", Int](fd, buf, len(data), Int32(0))
@@ -183,7 +184,7 @@ def _udp_send(fd: Int32, data: List[UInt8]) raises:
 
 def _udp_recv(fd: Int32) raises -> List[UInt8]:
     """Receive a single UDP datagram (non-blocking attempt with MSG_DONTWAIT)."""
-    var buf = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
+    var buf = _heap_alloc[UInt8](65536)
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0x40))  # MSG_DONTWAIT
     var result = List[UInt8]()
     if rc > 0:
@@ -204,7 +205,7 @@ def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
     `external_call`, we can't distinguish a real socket error from a
     benign timeout; the deadline catches both.
     """
-    var buf = _heap_alloc[UInt8](65536).as_unsafe_any_origin()
+    var buf = _heap_alloc[UInt8](65536)
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0))
     var result = List[UInt8]()
     if rc > 0:
@@ -224,7 +225,7 @@ def _set_recv_timeout_ms(fd: Int32, ms: Int) raises:
     enforce a wall-clock deadline.
     """
     # struct timeval { time_t tv_sec; suseconds_t tv_usec; }  — 16 bytes on x86_64.
-    var tv = _heap_alloc[UInt8](16).as_unsafe_any_origin()
+    var tv = _heap_alloc[UInt8](16)
     for i in range(16):
         tv[i] = UInt8(0)
     var sec_ptr = tv.bitcast[Int64]()
@@ -248,7 +249,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
         remaining.append(data[i])
     while len(remaining) > 0:
         var m = len(remaining)
-        var buf = _heap_alloc[UInt8](m).as_unsafe_any_origin()
+        var buf = _heap_alloc[UInt8](m)
         for i in range(m):
             buf[i] = remaining[i]
         var rc = external_call["send", Int](fd, buf, m, Int32(0))
@@ -262,7 +263,7 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
 
 
 def _recv_some(fd: Int32) raises -> List[UInt8]:
-    var buf = _heap_alloc[UInt8](_RECV_BUF).as_unsafe_any_origin()
+    var buf = _heap_alloc[UInt8](_RECV_BUF)
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
     var result = List[UInt8]()
     if rc > 0:
@@ -331,21 +332,21 @@ struct CliArgs(Movable):
         self.silent = False
         self.insecure = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.url = take.url^
-        self.method = take.method^
-        self.headers = take.headers^
-        self.body = take.body^
-        self.verbose = take.verbose
-        self.head_only = take.head_only
-        self.follow_redirects = take.follow_redirects
-        self.compressed = take.compressed
-        self.force_h1 = take.force_h1
-        self.force_h2 = take.force_h2
-        self.force_h3 = take.force_h3
-        self.write_format = take.write_format^
-        self.silent = take.silent
-        self.insecure = take.insecure
+    def __init__(out self, *, deinit move: Self):
+        self.url = move.url^
+        self.method = move.method^
+        self.headers = move.headers^
+        self.body = move.body^
+        self.verbose = move.verbose
+        self.head_only = move.head_only
+        self.follow_redirects = move.follow_redirects
+        self.compressed = move.compressed
+        self.force_h1 = move.force_h1
+        self.force_h2 = move.force_h2
+        self.force_h3 = move.force_h3
+        self.write_format = move.write_format^
+        self.silent = move.silent
+        self.insecure = move.insecure
 
 
 def _parse_args() raises -> CliArgs:
@@ -394,11 +395,11 @@ def _parse_args() raises -> CliArgs:
             result.url = arg
         i += 1
 
-    if len(result.url) == 0:
+    if not result.url:
         raise "Usage: fetch [OPTIONS] <URL>\nTry: fetch -v https://1.1.1.1/cdn-cgi/trace"
 
-    if len(result.method) == 0:
-        if len(result.body) > 0:
+    if not result.method:
+        if result.body:
             result.method = "POST"
         elif result.head_only:
             result.method = "HEAD"
@@ -530,7 +531,7 @@ def _build_request(args: CliArgs, parsed: ParsedUrl) raises -> Request:
             hdrs.add(name, value)
 
     var body: RequestBody
-    if len(args.body) > 0:
+    if args.body:
         var body_bytes = List[UInt8]()
         body_bytes.extend(args.body.as_bytes())
         body = RequestBody.buffered(body_bytes^)
@@ -550,9 +551,9 @@ struct _CachePaths(Movable):
         self.dir = dir
         self.file = file
 
-    def __init__(out self, *, deinit take: Self):
-        self.dir = take.dir^
-        self.file = take.file^
+    def __init__(out self, *, deinit move: Self):
+        self.dir = move.dir^
+        self.file = move.file^
 
 
 def _alt_svc_cache_paths() -> _CachePaths:
@@ -563,7 +564,7 @@ def _alt_svc_cache_paths() -> _CachePaths:
     is unset.
     """
     var home = getenv("HOME", "")
-    if len(home) > 0:
+    if home:
         var dir = home + "/.cache/mojo-fetch"
         return _CachePaths(dir=dir, file=dir + "/alt_svc.txt")
     return _CachePaths(dir=String("/tmp"), file=String("/tmp/mojo-fetch-alt-svc.txt"))
@@ -636,7 +637,7 @@ def _print_alt_svc_if_verbose(
     for i in range(len(entries)):
         ref e = entries[i]
         var hp: String
-        if len(e.host) == 0:
+        if not e.host:
             hp = ":" + String(Int(e.port))
         else:
             hp = e.host + ":" + String(Int(e.port))
@@ -661,12 +662,12 @@ struct FetchResult(Movable):
         self.t_tls = t_tls
         self.t_total = t_total
 
-    def __init__(out self, *, deinit take: Self):
-        self.resp = take.resp^
-        self.alpn = take.alpn^
-        self.t_connect = take.t_connect
-        self.t_tls = take.t_tls
-        self.t_total = take.t_total
+    def __init__(out self, *, deinit move: Self):
+        self.resp = move.resp^
+        self.alpn = move.alpn^
+        self.t_connect = move.t_connect
+        self.t_tls = move.t_tls
+        self.t_total = move.t_total
 
 
 def _h3_default_params() -> TransportParams:
@@ -747,22 +748,22 @@ def _request_via_h3(
     var origin = parsed.to_origin()
     var session = H3Session(quic=quic^)
     client.attach_session(
-        Origin(other=origin), SessionSlot.from_h3(session^),
+        Origin(copy=origin), SessionSlot.from_h3(session^),
     )
 
     if args.verbose:
         print("> " + args.method + " " + parsed.path + " h3")
 
-    var handle = client.submit(Origin(other=origin), req^)
+    var handle = client.submit(Origin(copy=origin), req^)
 
     # Pump until response.
     for _ in range(_MAX_ITERS):
         now = _monotonic_ms() * UInt64(1000)
-        var out_dgs = client.drain_datagrams(Origin(other=origin), now)
+        var out_dgs = client.drain_datagrams(Origin(copy=origin), now)
         for i in range(len(out_dgs)):
             _udp_send(sock.raw(), out_dgs[i])
 
-        client.run_one(Origin(other=origin), handle)
+        client.run_one(Origin(copy=origin), handle)
         if handle.is_complete():
             break
 
@@ -770,7 +771,7 @@ def _request_via_h3(
         if len(dgram) > 0:
             now = _monotonic_ms() * UInt64(1000)
             client.feed_datagram(
-                Span(dgram), Origin(other=origin), now,
+                Span(dgram), Origin(copy=origin), now,
             )
 
     if not handle.is_complete():
@@ -778,7 +779,7 @@ def _request_via_h3(
     var resp = handle^.take_response()
 
     var now_uint = _realtime_secs()
-    client.update_alt_svc(Origin(other=origin), resp, now_uint)
+    client.update_alt_svc(Origin(copy=origin), resp, now_uint)
     _print_alt_svc_if_verbose(client, origin, now_uint, args.verbose)
 
     var t_total = _monotonic_ms()
@@ -815,25 +816,25 @@ def _request_via_plain_tcp(
 
     var origin = parsed.to_origin()
     var session = H1Session()
-    client.attach_session(Origin(other=origin), SessionSlot.from_h1(session^))
-    var handle = client.submit(Origin(other=origin), req^)
+    client.attach_session(Origin(copy=origin), SessionSlot.from_h1(session^))
+    var handle = client.submit(Origin(copy=origin), req^)
 
     for _ in range(_MAX_ITERS):
-        var dgs = client.drain_datagrams(Origin(other=origin), UInt64(0))
+        var dgs = client.drain_datagrams(Origin(copy=origin), UInt64(0))
         for i in range(len(dgs)):
             _send_all(sock.raw(), dgs[i])
-        client.run_one(Origin(other=origin), handle)
+        client.run_one(Origin(copy=origin), handle)
         if handle.is_complete():
             break
         var data = _recv_some(sock.raw())
         if len(data) > 0:
-            client.feed_datagram(Span(data), Origin(other=origin), UInt64(0))
+            client.feed_datagram(Span(data), Origin(copy=origin), UInt64(0))
     if not handle.is_complete():
         raise "response not received (timeout)"
     var resp = handle^.take_response()
 
     var now_uint = _realtime_secs()
-    client.update_alt_svc(Origin(other=origin), resp, now_uint)
+    client.update_alt_svc(Origin(copy=origin), resp, now_uint)
     _print_alt_svc_if_verbose(client, origin, now_uint, args.verbose)
 
     var t_total = _monotonic_ms()
@@ -897,23 +898,23 @@ def _request_via_tcp(
     if alpn_str == "h2":
         var session = H2Session()
         client.attach_session(
-            Origin(other=origin), SessionSlot.from_h2(session^),
+            Origin(copy=origin), SessionSlot.from_h2(session^),
         )
     else:
         var session = H1Session()
         client.attach_session(
-            Origin(other=origin), SessionSlot.from_h1(session^),
+            Origin(copy=origin), SessionSlot.from_h1(session^),
         )
 
-    var handle = client.submit(Origin(other=origin), req^)
+    var handle = client.submit(Origin(copy=origin), req^)
 
     for _ in range(_MAX_ITERS):
-        var dgs = client.drain_datagrams(Origin(other=origin), UInt64(0))
+        var dgs = client.drain_datagrams(Origin(copy=origin), UInt64(0))
         for i in range(len(dgs)):
             tls.send_data(Span(dgs[i]))
         _tls_send(sock.raw(), tls)
 
-        client.run_one(Origin(other=origin), handle)
+        client.run_one(Origin(copy=origin), handle)
         if handle.is_complete():
             break
         if handle.is_errored():
@@ -922,7 +923,7 @@ def _request_via_tcp(
         var plaintext = _tls_recv(sock.raw(), tls)
         if len(plaintext) > 0:
             client.feed_datagram(
-                Span(plaintext), Origin(other=origin), UInt64(0),
+                Span(plaintext), Origin(copy=origin), UInt64(0),
             )
 
     if handle.is_errored():
@@ -932,7 +933,7 @@ def _request_via_tcp(
     var resp = handle^.take_response()
 
     var now_uint = _realtime_secs()
-    client.update_alt_svc(Origin(other=origin), resp, now_uint)
+    client.update_alt_svc(Origin(copy=origin), resp, now_uint)
     _print_alt_svc_if_verbose(client, origin, now_uint, args.verbose)
 
     var t_total = _monotonic_ms()
@@ -1026,14 +1027,14 @@ def main() raises:
     # 6. Content-Encoding decoding
     var body_bytes = List[UInt8]()
     for i in range(len(resp.body)):
-        var frame = BodyFrame(other=resp.body[i])
+        var frame = BodyFrame(copy=resp.body[i])
         if frame.is_data():
             ref data = frame.data()
             for bi in range(len(data)):
                 body_bytes.append(data[bi])
 
     var content_encoding = resp.headers.get("content-encoding")
-    if args.compressed and len(content_encoding) > 0 and content_encoding != "identity":
+    if args.compressed and content_encoding and content_encoding != "identity":
         if args.verbose:
             print("* Decoding content-encoding: " + content_encoding)
         var enc = ContentEncoding.from_header(content_encoding)
@@ -1057,7 +1058,7 @@ def main() raises:
         print(body_str)
 
     # 8. -w format output
-    if len(args.write_format) > 0:
+    if args.write_format:
         var out = _expand_write_format(
             args.write_format,
             Int(resp.status.code()),

@@ -7,7 +7,7 @@ Demonstrates the full navette library surface:
   * `quic_server_config_new`  — builds a rustls server config from PEM
   * `default_transport_params` — sane QUIC transport params for v1
   * `H3UdpServer[HelloHandler]` — the generic server
-  * `serve_forever`            — bootstraps io_uring + runs the loop
+  * the tick/flush loop        — drives io_uring directly
 
 # Build + run
 
@@ -35,12 +35,12 @@ With `h2load` from nghttp2:
 You should see 4× 200 responses with "Hello, H3!" payloads.
 """
 
-from std.memory import Span
+from std.collections import Span
 from std.io.file import open as open_file
 from std.os.env import getenv
 from std.sys import stderr
 
-from navette.h3.h3_udp_server import H3UdpServer, serve_forever
+from navette.h3.h3_udp_server import H3UdpServer
 from navette.http.handler import (
     StreamHandler,
     Request,
@@ -56,6 +56,8 @@ from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls import EarlyDataPolicy, TlsBackend
 from navette.tls.config import QuicServerConfig
+from boucle.drivers.io_uring import IoUringDriver
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 
 # ── Hello handler ────────────────────────────────────────────────────────────
@@ -67,7 +69,7 @@ struct HelloHandler(StreamHandler):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def on_request(
@@ -171,6 +173,16 @@ def main() raises:
 
     var tp = default_transport_params()
     var server = H3UdpServer[HelloHandler](
-        sock^, TlsBackend(other=tls), config^, tp^, make_hello_handler,
+        sock^, TlsBackend(copy=tls), config^, tp^, make_hello_handler,
     )
-    serve_forever(server^)
+    # The server's Completions store a context pointer to the server itself,
+    # so it must sit at a stable address before `wire_context()` runs.
+    var srv_ptr = _heap_alloc[H3UdpServer[HelloHandler]](1)
+    srv_ptr.unsafe_write(server^)
+    srv_ptr[].wire_context()
+
+    var driver = IoUringDriver(capacity=256)
+    srv_ptr[].start(driver)
+    while True:
+        _ = driver.tick(wait=True)
+        srv_ptr[].flush(driver)
