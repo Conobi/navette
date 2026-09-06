@@ -72,10 +72,10 @@ struct DataPayload(Movable):
         self.padding_length = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.data = take.data^
-        self.padding_length = take.padding_length
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data^
+        self.padding_length = move.padding_length
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -134,14 +134,14 @@ struct HeadersPayload(Movable):
         self.weight = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.headers_block = take.headers_block^
-        self.padding_length = take.padding_length
-        self.priority_present = take.priority_present
-        self.exclusive = take.exclusive
-        self.stream_dependency = take.stream_dependency
-        self.weight = take.weight
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.headers_block = move.headers_block^
+        self.padding_length = move.padding_length
+        self.priority_present = move.priority_present
+        self.exclusive = move.exclusive
+        self.stream_dependency = move.stream_dependency
+        self.weight = move.weight
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -208,14 +208,14 @@ struct PriorityPayload(Movable):
         self.weight = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.exclusive = take.exclusive
-        self.stream_dependency = take.stream_dependency
-        self.weight = take.weight
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.exclusive = move.exclusive
+        self.stream_dependency = move.stream_dependency
+        self.weight = move.weight
+        self.error = move.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return not self.error
 
 
 def decode_priority_payload(frame: Frame) -> PriorityPayload:
@@ -253,9 +253,9 @@ struct RstStreamPayload(Movable):
         self.error_code = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.error_code = take.error_code
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.error_code = move.error_code
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -298,13 +298,13 @@ struct Setting(Copyable, Movable):
         self.id = id
         self.value = value
 
-    def __init__(out self, *, other: Self):
-        self.id = other.id
-        self.value = other.value
+    def __init__(out self, *, copy: Self):
+        self.id = copy.id
+        self.value = copy.value
 
-    def __init__(out self, *, deinit take: Self):
-        self.id = take.id
-        self.value = take.value
+    def __init__(out self, *, deinit move: Self):
+        self.id = move.id
+        self.value = move.value
 
 
 struct SettingsPayload(Movable):
@@ -319,10 +319,10 @@ struct SettingsPayload(Movable):
         self.ack = False
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.settings = take.settings^
-        self.ack = take.ack
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.settings = move.settings^
+        self.ack = move.ack
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -379,14 +379,14 @@ struct PushPromisePayload(Movable):
         self.padding_length = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.promised_stream_id = take.promised_stream_id
-        self.headers_block = take.headers_block^
-        self.padding_length = take.padding_length
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.promised_stream_id = move.promised_stream_id
+        self.headers_block = move.headers_block^
+        self.padding_length = move.padding_length
+        self.error = move.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return not self.error
 
 
 def decode_push_promise_payload(frame: Frame) -> PushPromisePayload:
@@ -447,10 +447,10 @@ struct PingPayload(Movable):
         self.ack = False
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.opaque_data = take.opaque_data^
-        self.ack = take.ack
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.opaque_data = move.opaque_data^
+        self.ack = move.ack
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -494,11 +494,11 @@ struct GoawayPayload(Movable):
         self.debug_data = List[UInt8]()
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.last_stream_id = take.last_stream_id
-        self.error_code = take.error_code
-        self.debug_data = take.debug_data^
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.last_stream_id = move.last_stream_id
+        self.error_code = move.error_code
+        self.debug_data = move.debug_data^
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -542,9 +542,9 @@ struct WindowUpdatePayload(Movable):
         self.window_increment = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.window_increment = take.window_increment
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.window_increment = move.window_increment
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -583,9 +583,9 @@ struct ContinuationPayload(Movable):
         self.headers_block = List[UInt8]()
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.headers_block = take.headers_block^
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.headers_block = move.headers_block^
+        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0

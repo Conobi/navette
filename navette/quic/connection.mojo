@@ -270,21 +270,21 @@ struct SentStreamFrame(Copyable, Movable):
         self.fin = False
         self.cid_seq = UInt64(0)
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.stream_id = other.stream_id
-        self.offset = other.offset
-        self.length = other.length
-        self.fin = other.fin
-        self.cid_seq = other.cid_seq
+    def __init__(out self, *, copy: Self):
+        self.kind = copy.kind
+        self.stream_id = copy.stream_id
+        self.offset = copy.offset
+        self.length = copy.length
+        self.fin = copy.fin
+        self.cid_seq = copy.cid_seq
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.stream_id = take.stream_id
-        self.offset = take.offset
-        self.length = take.length
-        self.fin = take.fin
-        self.cid_seq = take.cid_seq
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.stream_id = move.stream_id
+        self.offset = move.offset
+        self.length = move.length
+        self.fin = move.fin
+        self.cid_seq = move.cid_seq
 
 
 # ── QuicEvent ────────────────────────────────────────────────────────
@@ -327,23 +327,23 @@ struct QuicEvent(Copyable, Movable):
         self.final_size = UInt64(0)
         self.datagram_payload = List[UInt8]()
 
-    def __init__(out self, *, other: Self):
-        self.type_id = other.type_id
-        self.error_code = other.error_code
-        self.reason = other.reason
-        self.transport_params = other.transport_params.copy()
-        self.stream_id = other.stream_id
-        self.final_size = other.final_size
-        self.datagram_payload = List[UInt8](copy=other.datagram_payload)
+    def __init__(out self, *, copy: Self):
+        self.type_id = copy.type_id
+        self.error_code = copy.error_code
+        self.reason = copy.reason
+        self.transport_params = copy.transport_params.copy()
+        self.stream_id = copy.stream_id
+        self.final_size = copy.final_size
+        self.datagram_payload = List[UInt8](copy=copy.datagram_payload)
 
-    def __init__(out self, *, deinit take: Self):
-        self.type_id = take.type_id
-        self.error_code = take.error_code
-        self.reason = take.reason^
-        self.transport_params = take.transport_params^
-        self.stream_id = take.stream_id
-        self.final_size = take.final_size
-        self.datagram_payload = take.datagram_payload^
+    def __init__(out self, *, deinit move: Self):
+        self.type_id = move.type_id
+        self.error_code = move.error_code
+        self.reason = move.reason^
+        self.transport_params = move.transport_params^
+        self.stream_id = move.stream_id
+        self.final_size = move.final_size
+        self.datagram_payload = move.datagram_payload^
 
     @staticmethod
     def handshake_complete() -> QuicEvent:
@@ -359,7 +359,7 @@ struct QuicEvent(Copyable, Movable):
     @staticmethod
     def peer_transport_params(params: TransportParams) -> QuicEvent:
         var ev = QuicEvent(QuicEvent.PEER_TRANSPORT_PARAMS)
-        ev.transport_params = TransportParams(other=params)
+        ev.transport_params = TransportParams(copy=params)
         return ev^
 
     @staticmethod
@@ -501,7 +501,7 @@ struct QuicConnection(Movable):
     # Iter 1 of recv_from_buffer does NOT reset profile_rustls_us_accum at
     # its top — it inherits the constructor's accumulator (zero for server,
     # Initial-key-derivation cost for client). Iter 2+ resets at top.
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
     var profile_first_initial_us: UInt64
     var profile_rustls_us_accum: UInt64
     var profile_first_iter_done: Bool
@@ -575,7 +575,7 @@ struct QuicConnection(Movable):
     # tagged-variant wrapper when the public API exposes
     # `EarlyDataPolicy::Custom(store)`.
     var _early_data_store_ptr: Optional[
-        Pointer[InMemoryEarlyDataStore, MutAnyOrigin]
+        Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
     ]
 
     # Transient: the dispatch-loop space_idx of the packet currently
@@ -592,65 +592,65 @@ struct QuicConnection(Movable):
 
     # ── Move constructor ─────────────────────────────────────────────
 
-    def __init__(out self, *, deinit take: Self):
-        self.is_server = take.is_server
-        self.state = take.state
-        self.spaces = take.spaces^
-        self.crypto_streams = take.crypto_streams^
-        self.recovery = take.recovery^
-        self.protect = take.protect^
-        self.conn_handle = take.conn_handle
-        self._lib = take._lib^
-        self.local_params = take.local_params^
-        self.peer_params = take.peer_params^
-        self.local_cid = take.local_cid^
-        self.peer_cid = take.peer_cid^
-        self.initial_dcid = take.initial_dcid^
-        self.bytes_received = take.bytes_received
-        self.bytes_sent = take.bytes_sent
-        self.events = take.events^
-        self.pending_close = take.pending_close^
-        self.close_timer = take.close_timer
-        self.drain_timer = take.drain_timer
-        self.idle_timer = take.idle_timer
-        self.handshake_confirmed = take.handshake_confirmed
-        self.current_level = take.current_level
-        self.send_handshake_done = take.send_handshake_done
-        self.last_ack_eliciting_send_time = take.last_ack_eliciting_send_time
-        self.stream_map = take.stream_map^
-        self.cid_mgr = take.cid_mgr^
-        self.path_validator = take.path_validator^
-        self.pending_path_responses = take.pending_path_responses^
-        self.pending_outbound_datagrams = take.pending_outbound_datagrams^
-        self.peer_addr = take.peer_addr^
-        self._current_recv_addr = take._current_recv_addr^
-        self.initial_cids_emitted = take.initial_cids_emitted
-        self.app_frames_sent = take.app_frames_sent^
-        self.ecn_state = take.ecn_state
-        self.ecn_probe_pkts_needed = take.ecn_probe_pkts_needed
-        self.ecn_probe_pkts_sent = take.ecn_probe_pkts_sent
-        self.ecn_probe_first_pn = take.ecn_probe_first_pn
-        self.profile_ptr = take.profile_ptr
-        self.profile_first_initial_us = take.profile_first_initial_us
-        self.profile_rustls_us_accum = take.profile_rustls_us_accum
-        self.profile_first_iter_done = take.profile_first_iter_done
-        self.fresh_conn_ffi_us_total = take.fresh_conn_ffi_us_total
-        self.read_hs_call_count = take.read_hs_call_count
-        self.read_hs_input_marshalling_us_total = take.read_hs_input_marshalling_us_total
-        self.read_hs_state_machine_us_total = take.read_hs_state_machine_us_total
-        self.read_hs_output_alloc_us_total = take.read_hs_output_alloc_us_total
-        self.read_hs_output_marshalling_us_total = take.read_hs_output_marshalling_us_total
-        self.accept_us = take.accept_us
-        self.hs_cpu_us_total = take.hs_cpu_us_total
-        self.hs_wait_us_total = take.hs_wait_us_total
-        self.zero_rtt_enabled = take.zero_rtt_enabled
-        self.zero_rtt_buffer = take.zero_rtt_buffer^
-        self.zero_rtt_buffer_bytes = take.zero_rtt_buffer_bytes
-        self._draining_zero_rtt = take._draining_zero_rtt
-        self._zero_rtt_replay_decision = take._zero_rtt_replay_decision
-        self._zero_rtt_now_ms_override = take._zero_rtt_now_ms_override^
-        self._early_data_store_ptr = take._early_data_store_ptr^
-        self._current_space_idx = take._current_space_idx
+    def __init__(out self, *, deinit move: Self):
+        self.is_server = move.is_server
+        self.state = move.state
+        self.spaces = move.spaces^
+        self.crypto_streams = move.crypto_streams^
+        self.recovery = move.recovery^
+        self.protect = move.protect^
+        self.conn_handle = move.conn_handle
+        self._lib = move._lib^
+        self.local_params = move.local_params^
+        self.peer_params = move.peer_params^
+        self.local_cid = move.local_cid^
+        self.peer_cid = move.peer_cid^
+        self.initial_dcid = move.initial_dcid^
+        self.bytes_received = move.bytes_received
+        self.bytes_sent = move.bytes_sent
+        self.events = move.events^
+        self.pending_close = move.pending_close^
+        self.close_timer = move.close_timer
+        self.drain_timer = move.drain_timer
+        self.idle_timer = move.idle_timer
+        self.handshake_confirmed = move.handshake_confirmed
+        self.current_level = move.current_level
+        self.send_handshake_done = move.send_handshake_done
+        self.last_ack_eliciting_send_time = move.last_ack_eliciting_send_time
+        self.stream_map = move.stream_map^
+        self.cid_mgr = move.cid_mgr^
+        self.path_validator = move.path_validator^
+        self.pending_path_responses = move.pending_path_responses^
+        self.pending_outbound_datagrams = move.pending_outbound_datagrams^
+        self.peer_addr = move.peer_addr^
+        self._current_recv_addr = move._current_recv_addr^
+        self.initial_cids_emitted = move.initial_cids_emitted
+        self.app_frames_sent = move.app_frames_sent^
+        self.ecn_state = move.ecn_state
+        self.ecn_probe_pkts_needed = move.ecn_probe_pkts_needed
+        self.ecn_probe_pkts_sent = move.ecn_probe_pkts_sent
+        self.ecn_probe_first_pn = move.ecn_probe_first_pn
+        self.profile_ptr = move.profile_ptr
+        self.profile_first_initial_us = move.profile_first_initial_us
+        self.profile_rustls_us_accum = move.profile_rustls_us_accum
+        self.profile_first_iter_done = move.profile_first_iter_done
+        self.fresh_conn_ffi_us_total = move.fresh_conn_ffi_us_total
+        self.read_hs_call_count = move.read_hs_call_count
+        self.read_hs_input_marshalling_us_total = move.read_hs_input_marshalling_us_total
+        self.read_hs_state_machine_us_total = move.read_hs_state_machine_us_total
+        self.read_hs_output_alloc_us_total = move.read_hs_output_alloc_us_total
+        self.read_hs_output_marshalling_us_total = move.read_hs_output_marshalling_us_total
+        self.accept_us = move.accept_us
+        self.hs_cpu_us_total = move.hs_cpu_us_total
+        self.hs_wait_us_total = move.hs_wait_us_total
+        self.zero_rtt_enabled = move.zero_rtt_enabled
+        self.zero_rtt_buffer = move.zero_rtt_buffer^
+        self.zero_rtt_buffer_bytes = move.zero_rtt_buffer_bytes
+        self._draining_zero_rtt = move._draining_zero_rtt
+        self._zero_rtt_replay_decision = move._zero_rtt_replay_decision
+        self._zero_rtt_now_ms_override = move._zero_rtt_now_ms_override^
+        self._early_data_store_ptr = move._early_data_store_ptr^
+        self._current_space_idx = move._current_space_idx
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -678,8 +678,8 @@ struct QuicConnection(Movable):
         self.recovery = Recovery()
         self.protect = PacketProtect(lib)
         self.conn_handle = conn_handle
-        self._lib = SharedLibrary(other=lib)
-        self.local_params = TransportParams(other=local_params)
+        self._lib = SharedLibrary(copy=lib)
+        self.local_params = TransportParams(copy=local_params)
         self.peer_params = None
         self.local_cid = List[UInt8](copy=local_cid)
         self.peer_cid = List[UInt8](copy=peer_cid)
@@ -765,9 +765,31 @@ struct QuicConnection(Movable):
     # ── Destructor ───────────────────────────────────────────────────
 
     def __deinit__(deinit self):
+        """Free the rustls QUIC connection handle.
+
+        A destructor may not raise. `quic_conn_free` can, but only from
+        the symbol lookup — an unknown handle returns -1 on the Rust
+        side and that status is already discarded. A lookup failure
+        means the loaded librustls_mojo.so does not export
+        `rlsm_quic_conn_free`, so the connection cannot be reached;
+        swallowing it leaks one QUIC_CONN_TABLE entry (and the TLS
+        session it holds) instead of aborting the process while a
+        connection closes. `deinit self` consumes the connection, so
+        this runs once per handle and cannot double free.
+
+        Key material is not touched here: `PacketProtect`'s own
+        destructor frees the keys handles.
+        """
         if self.conn_handle >= 0:
-            _ = self._lib.inner_ptr()[].quic_conn_free(self.conn_handle)
-        # PacketProtect.__del__ handles key cleanup.
+            try:
+                _ = self._lib.inner_ptr()[].quic_conn_free(self.conn_handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     # ── Static factory methods ───────────────────────────────────────
 
@@ -791,7 +813,7 @@ struct QuicConnection(Movable):
 
         # 2. Serialize local transport params.
         var tp_writer = ByteWriter()
-        var params_copy = TransportParams(other=local_params)
+        var params_copy = TransportParams(copy=local_params)
         params_copy.initial_scid = List[UInt8](copy=local_cid)
         _apply_m3c_defaults(params_copy)
         serialize_transport_params(params_copy, tp_writer)
@@ -830,7 +852,7 @@ struct QuicConnection(Movable):
             var err = rlib[].last_error()
             raise "quic_client_conn_new failed: " + err
 
-        var conn_handle = out_handle[0]
+        var conn_handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
 
@@ -865,7 +887,7 @@ struct QuicConnection(Movable):
         orig_dcid: Span[UInt8, _],
         client_dcid: Span[UInt8, _],
         now: UInt64,
-        profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]] = None,
+        profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
 
@@ -883,7 +905,7 @@ struct QuicConnection(Movable):
 
         # 2. Serialize local transport params.
         var tp_writer = ByteWriter()
-        var params_copy = TransportParams(other=local_params)
+        var params_copy = TransportParams(copy=local_params)
         params_copy.initial_scid = List[UInt8](copy=local_cid)
         _apply_m3c_defaults(params_copy)
         # Server sets original_dcid to prove it received the client's Initial.
@@ -925,7 +947,7 @@ struct QuicConnection(Movable):
             var err = rlib[].last_error()
             raise "quic_server_conn_new failed: " + err
 
-        var conn_handle = out_handle[0]
+        var conn_handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
 
@@ -976,11 +998,16 @@ struct QuicConnection(Movable):
         # `MutAnyOrigin` so the pointer can be stored in the connection's
         # erased field (matches the existing `profile_ptr` shape).
         if config._early_data_store is not None:
-            var store_ptr = rebind[
-                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
-            ](UnsafePointer(to=config._early_data_store.value()))
+            # The connection keeps this alias for its whole lifetime, past what
+            # the checker can see of `config._early_data_store`; the field is
+            # untracked, so the reinterpretation is stated explicitly.
+            var store_ptr = (
+                Pointer(to=config._early_data_store.value())
+                .unsafe_mut_cast[True]()
+                .unsafe_origin_cast[MutUntrackedOrigin]()
+            )
             conn._early_data_store_ptr = Optional[
-                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
+                Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
             ](store_ptr)
 
         comptime if PROFILE_ACCEPT:
@@ -1010,7 +1037,7 @@ struct QuicConnection(Movable):
 
     def recv_from_buffer(
         mut self,
-        buf: Pointer[UInt8, MutAnyOrigin],
+        buf: Pointer[mut=True, T=UInt8, origin=_],
         buf_len: Int,
         now: UInt64,
         ecn_mark: UInt8 = UInt8(0),
@@ -1061,17 +1088,16 @@ struct QuicConnection(Movable):
             # buffer directly. The prior implementation copied
             # `remaining_ptr[0..remaining_len]` into a `List[UInt8]` to
             # construct a Span — once per coalesced QUIC packet. Eliminated
-            # via `Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len)`
+            # via `Span(unsafe_ptr=remaining_ptr, length=remaining_len)`
             # since `parse_packet_header` only reads the buffer.
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     ph_header_parse_us = monotonic_us()
             var header_result = parse_packet_header(
-                Span[UInt8, MutAnyOrigin](ptr=remaining_ptr, length=remaining_len),
+                Span(unsafe_ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
             )
             var header = header_result[0].copy()
-            var header_end = header_result[1]
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     ph_header_parse_us = monotonic_us() - ph_header_parse_us
@@ -1134,8 +1160,8 @@ struct QuicConnection(Movable):
                         space_idx = ZERO_RTT_SPACE_IDX
                     else:
                         if not self._draining_zero_rtt:
-                            var pkt_bytes = Span[UInt8, MutAnyOrigin](
-                                ptr=remaining_ptr,
+                            var pkt_bytes = Span(
+                                unsafe_ptr=remaining_ptr,
                                 length=skip,
                             )
                             _ = self._buffer_zero_rtt_or_drop(pkt_bytes)
@@ -1174,8 +1200,8 @@ struct QuicConnection(Movable):
                         self._zero_rtt_replay_decision = UInt8(2)
                         self._record_replay_reject_no_authenticator()
                     else:
-                        var auth_span = Span[UInt8, MutAnyOrigin](
-                            ptr=auth_buf.unsafe_ptr(), length=32,
+                        var auth_span = Span(
+                            unsafe_ptr=auth_buf.unsafe_ptr(), length=32,
                         )
                         var now_ms: UInt64
                         if self._zero_rtt_now_ms_override is not None:
@@ -1310,7 +1336,7 @@ struct QuicConnection(Movable):
                 var truncated_pn = UInt64(0)
                 for i in range(pn_length):
                     truncated_pn = (truncated_pn << 8) | UInt64(
-                        pkt_ptr[header.pn_offset + i]
+                        pkt_ptr[unsafe_offset=header.pn_offset + i]
                     )
                 var largest = UInt64(0)
                 if self.spaces[pn_space_idx].largest_recv_pn >= 0:
@@ -1337,13 +1363,13 @@ struct QuicConnection(Movable):
                 # caller's buffer directly. The prior implementation copied
                 # `pkt_ptr[header_len .. header_len+plaintext_len]` into a
                 # `List[UInt8]` — once per coalesced QUIC packet. Eliminated
-                # via `Span[UInt8, MutAnyOrigin](ptr=pkt_ptr+header_len, length=plaintext_len)`
+                # via `Span(unsafe_ptr=pkt_ptr+header_len, length=plaintext_len)`
                 # since ByteReader / parse_frames are generic over origin.
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us()
                 var reader = ByteReader(
-                    Span[UInt8, MutAnyOrigin](ptr=pkt_ptr + header_len, length=plaintext_len)
+                    Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
                 )
                 # F10 — RFC 9000 §12.4: any parse failure inside a packet
                 # already authenticated by AEAD is FRAME_ENCODING_ERROR.
@@ -1504,7 +1530,7 @@ struct QuicConnection(Movable):
                 self.events.append(QuicEvent.stream_opened(new_ids[i]))
                 var nkey = Int(new_ids[i])
                 if nkey in self.stream_map.streams:
-                    var s = Stream(other=self.stream_map.streams[nkey])
+                    var s = Stream(copy=self.stream_map.streams[nkey])
                     s.is_zero_rtt = is_zr
                     self.stream_map.streams[nkey] = s^
 
@@ -1745,7 +1771,7 @@ struct QuicConnection(Movable):
         must issue a NEW_CONNECTION_ID before the migration can complete.
         """
         var maybe = self.path_validator.on_response(
-            data, PathKey(other=from_addr), now
+            data, PathKey(copy=from_addr), now
         )
         if not Bool(maybe):
             return  # silent drop — RFC 9000 §8.2 token/addr mismatch.
@@ -1839,7 +1865,7 @@ struct QuicConnection(Movable):
         on rapid-fire packets from the same unvalidated address.
         """
         for i in range(len(self.path_validator.pending)):
-            var t = PathKey(other=self.path_validator.pending[i].target)
+            var t = PathKey(copy=self.path_validator.pending[i].target)
             if t == target:
                 return True
         return False
@@ -1919,7 +1945,7 @@ struct QuicConnection(Movable):
                 # Active migration allowed: initiate path validation for
                 # the new addr unless we already have a challenge in
                 # flight for it.
-                var probe = PathKey(other=from_addr)
+                var probe = PathKey(copy=from_addr)
                 if not self.has_pending_path_challenge(probe):
                     self.start_path_challenge(probe^, now)
 
@@ -2265,7 +2291,7 @@ struct QuicConnection(Movable):
         # `on_path_response_received` per the §8.2 edge case.
         if frame.is_path_response():
             ref data = frame.as_path_data()
-            var from_addr = PathKey(other=self._current_recv_addr)
+            var from_addr = PathKey(copy=self._current_recv_addr)
             self.on_path_response_received(Span(data), from_addr^, now)
             return
 
@@ -2441,7 +2467,7 @@ struct QuicConnection(Movable):
             var pn_key = lost_pns[i]
             if pn_key in self.spaces[space_idx].sent_packets:
                 var lost_pkt = SentPacket(
-                    other=self.spaces[space_idx].sent_packets[pn_key]
+                    copy=self.spaces[space_idx].sent_packets[pn_key]
                 )
                 # Decrement ECT(0) in-flight on loss.
                 if lost_pkt.ecn_mark == ECN_ECT0:
@@ -2745,8 +2771,8 @@ struct QuicConnection(Movable):
                 var err = lib[].last_error()
                 raise "quic_conn_write_hs failed: " + err
 
-            var kc = out_kc[0]
-            var written = Int(out_written[0])
+            var kc = out_kc[unsafe_offset=0]
+            var written = Int(out_written[unsafe_offset=0])
 
             # The data output in this write_hs call belongs to the CURRENT
             # level (before any key change). Capture it first, then install
@@ -2759,14 +2785,14 @@ struct QuicConnection(Movable):
                 var target_level = self.current_level
                 var tls_data = List[UInt8](capacity=written)
                 for i in range(written):
-                    tls_data.append(out_buf[i])
+                    tls_data.append(out_buf[unsafe_offset=i])
                 self.crypto_streams[target_level].write(Span(tls_data))
 
             # Now handle key change AFTER writing data.
             if kc != UInt8(0):
                 var keys_handle_buf_owned = Owned[Int32](1)
                 var keys_handle_buf = keys_handle_buf_owned.ptr()
-                keys_handle_buf[0] = Int32(-1)
+                keys_handle_buf[unsafe_offset=0] = Int32(-1)
 
                 var t_start: UInt64 = 0
                 comptime if PROFILE_ACCEPT:
@@ -2787,7 +2813,7 @@ struct QuicConnection(Movable):
                     var err = lib[].last_error()
                     raise "quic_conn_take_keys failed: " + err
 
-                var new_keys = keys_handle_buf[0]
+                var new_keys = keys_handle_buf[unsafe_offset=0]
                 # Keep keys_handle_buf alive across the post-FFI `[0]` read.
                 _ = keys_handle_buf_owned
 
@@ -2894,11 +2920,11 @@ struct QuicConnection(Movable):
             tp_written,
         )
 
-        if rc == Int32(0) and Int(tp_written[0]) > 0:
-            var tp_len = Int(tp_written[0])
+        if rc == Int32(0) and Int(tp_written[unsafe_offset=0]) > 0:
+            var tp_len = Int(tp_written[unsafe_offset=0])
             var tp_bytes = List[UInt8](capacity=tp_len)
             for i in range(tp_len):
-                tp_bytes.append(tp_buf[i])
+                tp_bytes.append(tp_buf[unsafe_offset=i])
             # Keep the out-buffers alive across the post-FFI reads above
             # (tp_written[0] and the tp_buf[i] copy loop).
             _ = tp_written_owned
@@ -2931,7 +2957,7 @@ struct QuicConnection(Movable):
                     self.close_transport(UInt64(0x08), String(e), now)
                     return
 
-            self.peer_params = TransportParams(other=peer_tp)
+            self.peer_params = TransportParams(copy=peer_tp)
             self.events.append(QuicEvent.peer_transport_params(peer_tp))
 
             # Propagate peer limits into StreamMap and CidManager.
@@ -3015,7 +3041,7 @@ struct QuicConnection(Movable):
 
         self.protect.discard_keys(1)
 
-    def _discard_zero_rtt_keys(mut self):
+    def _discard_zero_rtt_keys(mut self) raises:
         """RFC 9001 §4.1.3 — discard server-side 0-RTT decrypt keys at
         handshake-complete.
 
@@ -3189,13 +3215,21 @@ struct QuicConnection(Movable):
 
         `out_len` is `*mut usize` on the Rust side; the wrapper passes
         Mojo's `UInt` (which is `usize`-sized on all supported targets).
+
+        Resolving the symbol can raise; that is reported as -1, the same
+        anomaly code the Rust side uses, so the caller's fail-closed
+        branch treats an unreachable authenticator exactly like an
+        unavailable one instead of unwinding out of the 0-RTT path.
         """
         var rlib = self._lib.inner_ptr()
-        return rlib[].quic_server_conn_replay_authenticator(
-            self.conn_handle,
-            out_buf.unsafe_ptr(),
-            Pointer(to=out_len),
-        )
+        try:
+            return rlib[].quic_server_conn_replay_authenticator(
+                self.conn_handle,
+                out_buf.unsafe_ptr(),
+                Pointer(to=out_len),
+            )
+        except:
+            return Int32(-1)
 
     def _drive_replay_check_for_test(
         mut self,
@@ -3219,7 +3253,7 @@ struct QuicConnection(Movable):
         this method is callable only from `tests/` — production callers
         must take the integration path.
 
-        Parameters:
+        Args:
             simulated_rc: FFI return code to simulate (0=success,
                 1=no authenticator captured, -1=anomaly). rc != 0
                 takes the no_authenticator branch.
@@ -3508,7 +3542,7 @@ struct QuicConnection(Movable):
         # 1. NEW_CONNECTION_ID frames for unadvertised local CIDs.
         var pending_new = self.cid_mgr.pending_new_cid_entries()
         for i in range(len(pending_new)):
-            var entry = CidEntry(other=pending_new[i])
+            var entry = CidEntry(copy=pending_new[i])
             var ncid = NewConnectionIdFrame()
             ncid.sequence = entry.sequence
             ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
@@ -3874,7 +3908,7 @@ struct QuicConnection(Movable):
         var records = self.app_frames_sent[pn].copy()
         _ = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
-            var rec = SentStreamFrame(other=records[i])
+            var rec = SentStreamFrame(copy=records[i])
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
@@ -3928,7 +3962,7 @@ struct QuicConnection(Movable):
         var records = self.app_frames_sent[pn].copy()
         _ = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
-            var rec = SentStreamFrame(other=records[i])
+            var rec = SentStreamFrame(copy=records[i])
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:

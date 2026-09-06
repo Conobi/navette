@@ -85,19 +85,19 @@ struct RecvBuf(Copyable, Movable):
         else:
             self.max_gaps = UInt64(64)
 
-    def __init__(out self, *, other: Self):
-        self.seg_offsets = List[UInt64](copy=other.seg_offsets)
-        self.seg_data = List[List[UInt8]](copy=other.seg_data)
-        self.read_offset = other.read_offset
-        self.max_gaps = other.max_gaps
-        self.total_received = other.total_received
+    def __init__(out self, *, copy: Self):
+        self.seg_offsets = List[UInt64](copy=copy.seg_offsets)
+        self.seg_data = List[List[UInt8]](copy=copy.seg_data)
+        self.read_offset = copy.read_offset
+        self.max_gaps = copy.max_gaps
+        self.total_received = copy.total_received
 
-    def __init__(out self, *, deinit take: Self):
-        self.seg_offsets = take.seg_offsets^
-        self.seg_data = take.seg_data^
-        self.read_offset = take.read_offset
-        self.max_gaps = take.max_gaps
-        self.total_received = take.total_received
+    def __init__(out self, *, deinit move: Self):
+        self.seg_offsets = move.seg_offsets^
+        self.seg_data = move.seg_data^
+        self.read_offset = move.read_offset
+        self.max_gaps = move.max_gaps
+        self.total_received = move.total_received
 
     def _seg_end(self, i: Int) -> UInt64:
         """Return the exclusive end offset of segment i."""
@@ -426,23 +426,23 @@ struct SendBuf(Copyable, Movable):
         self.fin_offset = None
         self.fin_acked = False
 
-    def __init__(out self, *, other: Self):
-        self.data = List[UInt8](copy=other.data)
-        self.offset = other.offset
-        self.unsent_offset = other.unsent_offset
-        self.acked_offset = other.acked_offset
-        self.fin = other.fin
-        self.fin_offset = Optional[UInt64](copy=other.fin_offset)
-        self.fin_acked = other.fin_acked
+    def __init__(out self, *, copy: Self):
+        self.data = List[UInt8](copy=copy.data)
+        self.offset = copy.offset
+        self.unsent_offset = copy.unsent_offset
+        self.acked_offset = copy.acked_offset
+        self.fin = copy.fin
+        self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
+        self.fin_acked = copy.fin_acked
 
-    def __init__(out self, *, deinit take: Self):
-        self.data = take.data^
-        self.offset = take.offset
-        self.unsent_offset = take.unsent_offset
-        self.acked_offset = take.acked_offset
-        self.fin = take.fin
-        self.fin_offset = take.fin_offset^
-        self.fin_acked = take.fin_acked
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data^
+        self.offset = move.offset
+        self.unsent_offset = move.unsent_offset
+        self.acked_offset = move.acked_offset
+        self.fin = move.fin
+        self.fin_offset = move.fin_offset^
+        self.fin_acked = move.fin_acked
 
     def write(mut self, new_data: Span[UInt8, _], set_fin: Bool) raises:
         """Append data to the outgoing buffer and optionally set the FIN flag."""
@@ -649,55 +649,55 @@ struct Stream(Copyable, Movable):
         self.incremental = False
         self.is_zero_rtt = False
 
-    def __init__(out self, *, other: Self):
-        self.id = other.id
-        self.is_bidi = other.is_bidi
-        self.is_local = other.is_local
-        self.send_state = Optional[UInt8](copy=other.send_state)
-        self.recv_state = Optional[UInt8](copy=other.recv_state)
-        self.send_buf = Optional[SendBuf](copy=other.send_buf)
-        self.recv_buf = Optional[RecvBuf](copy=other.recv_buf)
-        self.fc_send = Optional[FlowControl](copy=other.fc_send)
-        self.fc_recv = Optional[FlowControl](copy=other.fc_recv)
-        self.fin_offset = Optional[UInt64](copy=other.fin_offset)
-        self.recv_highest_offset = other.recv_highest_offset
-        self.send_fin_offset = Optional[UInt64](copy=other.send_fin_offset)
-        self.reset_error = Optional[UInt64](copy=other.reset_error)
-        self.stop_error = Optional[UInt64](copy=other.stop_error)
-        self.needs_max_stream_data = other.needs_max_stream_data
-        self.needs_reset_stream = other.needs_reset_stream
-        self.needs_stop_sending = other.needs_stop_sending
-        self.reset_stream_final_size = other.reset_stream_final_size
-        self.reset_stream_error = other.reset_stream_error
-        self.stop_sending_error = other.stop_sending_error
-        self.urgency = other.urgency
-        self.incremental = other.incremental
-        self.is_zero_rtt = other.is_zero_rtt
+    def __init__(out self, *, copy: Self):
+        self.id = copy.id
+        self.is_bidi = copy.is_bidi
+        self.is_local = copy.is_local
+        self.send_state = Optional[UInt8](copy=copy.send_state)
+        self.recv_state = Optional[UInt8](copy=copy.recv_state)
+        self.send_buf = Optional[SendBuf](copy=copy.send_buf)
+        self.recv_buf = Optional[RecvBuf](copy=copy.recv_buf)
+        self.fc_send = Optional[FlowControl](copy=copy.fc_send)
+        self.fc_recv = Optional[FlowControl](copy=copy.fc_recv)
+        self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
+        self.recv_highest_offset = copy.recv_highest_offset
+        self.send_fin_offset = Optional[UInt64](copy=copy.send_fin_offset)
+        self.reset_error = Optional[UInt64](copy=copy.reset_error)
+        self.stop_error = Optional[UInt64](copy=copy.stop_error)
+        self.needs_max_stream_data = copy.needs_max_stream_data
+        self.needs_reset_stream = copy.needs_reset_stream
+        self.needs_stop_sending = copy.needs_stop_sending
+        self.reset_stream_final_size = copy.reset_stream_final_size
+        self.reset_stream_error = copy.reset_stream_error
+        self.stop_sending_error = copy.stop_sending_error
+        self.urgency = copy.urgency
+        self.incremental = copy.incremental
+        self.is_zero_rtt = copy.is_zero_rtt
 
-    def __init__(out self, *, deinit take: Self):
-        self.id = take.id
-        self.is_bidi = take.is_bidi
-        self.is_local = take.is_local
-        self.send_state = take.send_state^
-        self.recv_state = take.recv_state^
-        self.send_buf = take.send_buf^
-        self.recv_buf = take.recv_buf^
-        self.fc_send = take.fc_send^
-        self.fc_recv = take.fc_recv^
-        self.fin_offset = take.fin_offset^
-        self.recv_highest_offset = take.recv_highest_offset
-        self.send_fin_offset = take.send_fin_offset^
-        self.reset_error = take.reset_error^
-        self.stop_error = take.stop_error^
-        self.needs_max_stream_data = take.needs_max_stream_data
-        self.needs_reset_stream = take.needs_reset_stream
-        self.needs_stop_sending = take.needs_stop_sending
-        self.reset_stream_final_size = take.reset_stream_final_size
-        self.reset_stream_error = take.reset_stream_error
-        self.stop_sending_error = take.stop_sending_error
-        self.urgency = take.urgency
-        self.incremental = take.incremental
-        self.is_zero_rtt = take.is_zero_rtt
+    def __init__(out self, *, deinit move: Self):
+        self.id = move.id
+        self.is_bidi = move.is_bidi
+        self.is_local = move.is_local
+        self.send_state = move.send_state^
+        self.recv_state = move.recv_state^
+        self.send_buf = move.send_buf^
+        self.recv_buf = move.recv_buf^
+        self.fc_send = move.fc_send^
+        self.fc_recv = move.fc_recv^
+        self.fin_offset = move.fin_offset^
+        self.recv_highest_offset = move.recv_highest_offset
+        self.send_fin_offset = move.send_fin_offset^
+        self.reset_error = move.reset_error^
+        self.stop_error = move.stop_error^
+        self.needs_max_stream_data = move.needs_max_stream_data
+        self.needs_reset_stream = move.needs_reset_stream
+        self.needs_stop_sending = move.needs_stop_sending
+        self.reset_stream_final_size = move.reset_stream_final_size
+        self.reset_stream_error = move.reset_stream_error
+        self.stop_sending_error = move.stop_sending_error
+        self.urgency = move.urgency
+        self.incremental = move.incremental
+        self.is_zero_rtt = move.is_zero_rtt
 
     # ── Factory methods ───────────────────────────────────────────────────────
 

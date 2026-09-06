@@ -54,16 +54,16 @@ struct Recovery(Movable):
             self.cc = CcController.new_dummy(max_datagram_size)
         self.pacer = Pacer.new(max_datagram_size)
 
-    def __init__(out self, *, deinit take: Self):
-        self.smoothed_rtt = take.smoothed_rtt
-        self.rttvar = take.rttvar
-        self.min_rtt = take.min_rtt
-        self.latest_rtt = take.latest_rtt
-        self.bytes_in_flight = take.bytes_in_flight
-        self.pto_count = take.pto_count
-        self.has_rtt_sample = take.has_rtt_sample
-        self.cc = take.cc
-        self.pacer = take.pacer
+    def __init__(out self, *, deinit move: Self):
+        self.smoothed_rtt = move.smoothed_rtt
+        self.rttvar = move.rttvar
+        self.min_rtt = move.min_rtt
+        self.latest_rtt = move.latest_rtt
+        self.bytes_in_flight = move.bytes_in_flight
+        self.pto_count = move.pto_count
+        self.has_rtt_sample = move.has_rtt_sample
+        self.cc = move.cc
+        self.pacer = move.pacer
 
     # ── RTT estimation (RFC 9002 §5) ────────────────────────────────────
 

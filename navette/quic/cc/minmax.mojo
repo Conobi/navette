@@ -13,13 +13,13 @@ struct MinMaxSample(Copyable, Movable):
         self.t = t
         self.v = v
 
-    def __init__(out self, *, other: Self):
-        self.t = other.t
-        self.v = other.v
+    def __init__(out self, *, copy: Self):
+        self.t = copy.t
+        self.v = copy.v
 
-    def __init__(out self, *, deinit take: Self):
-        self.t = take.t
-        self.v = take.v
+    def __init__(out self, *, deinit move: Self):
+        self.t = move.t
+        self.v = move.v
 
 
 struct MinMax(Copyable, Movable):
@@ -37,21 +37,21 @@ struct MinMax(Copyable, Movable):
     def __init__(out self, window_us: UInt64):
         self.window_us = window_us
         var sentinel = MinMaxSample(t=UInt64(0), v=UInt64.MAX)
-        self.s0 = MinMaxSample(other=sentinel)
-        self.s1 = MinMaxSample(other=sentinel)
-        self.s2 = MinMaxSample(other=sentinel)
+        self.s0 = MinMaxSample(copy=sentinel)
+        self.s1 = MinMaxSample(copy=sentinel)
+        self.s2 = MinMaxSample(copy=sentinel)
 
-    def __init__(out self, *, other: Self):
-        self.window_us = other.window_us
-        self.s0 = MinMaxSample(other=other.s0)
-        self.s1 = MinMaxSample(other=other.s1)
-        self.s2 = MinMaxSample(other=other.s2)
+    def __init__(out self, *, copy: Self):
+        self.window_us = copy.window_us
+        self.s0 = MinMaxSample(copy=copy.s0)
+        self.s1 = MinMaxSample(copy=copy.s1)
+        self.s2 = MinMaxSample(copy=copy.s2)
 
-    def __init__(out self, *, deinit take: Self):
-        self.window_us = take.window_us
-        self.s0 = take.s0^
-        self.s1 = take.s1^
-        self.s2 = take.s2^
+    def __init__(out self, *, deinit move: Self):
+        self.window_us = move.window_us
+        self.s0 = move.s0^
+        self.s1 = move.s1^
+        self.s2 = move.s2^
 
     def running_min(mut self, win: UInt64, t: UInt64, meas: UInt64) -> UInt64:
         """Update filter with measurement `meas` at time `t`. Returns current minimum.
@@ -69,8 +69,8 @@ struct MinMax(Copyable, Movable):
             return meas
         # Full-window rotation: s0 sample older than win.
         if t >= self.s0.t + win:
-            self.s0 = MinMaxSample(other=self.s1)
-            self.s1 = MinMaxSample(other=self.s2)
+            self.s0 = MinMaxSample(copy=self.s1)
+            self.s1 = MinMaxSample(copy=self.s2)
             self.s2 = MinMaxSample(t=t, v=meas)
             # If new s0 is also expired, reset all to current measurement.
             if t >= self.s0.t + win:

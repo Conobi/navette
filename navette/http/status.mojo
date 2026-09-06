@@ -14,13 +14,13 @@ struct StatusCode(Copyable, Movable, Writable):
         """Construct a StatusCode from a numeric code."""
         self._code = UInt16(code)
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
-        self._code = other._code
+        self._code = copy._code
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self._code = take._code
+        self._code = move._code
 
     # --- Accessors ---
 

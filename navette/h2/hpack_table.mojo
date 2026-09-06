@@ -176,10 +176,10 @@ struct DynamicTable(Movable):
         self.max_size = max_size
         self.current_size = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.entries = take.entries^
-        self.max_size = take.max_size
-        self.current_size = take.current_size
+    def __init__(out self, *, deinit move: Self):
+        self.entries = move.entries^
+        self.max_size = move.max_size
+        self.current_size = move.current_size
 
     def insert(mut self, name: String, value: String):
         """Insert at front. Evict from back until current_size <= max_size."""

@@ -1,4 +1,4 @@
-"""svcb.mojo — DNS HTTPS/SVCB (RFC 9460 type-65) discovery over UDP/53.
+"""DNS HTTPS/SVCB (RFC 9460 type-65) discovery over UDP/53.
 
 `resolve_https_rr(host, *, timeout_ms)` queries the system resolver for the type-65
 HTTPS resource record, parses the `alpn` SvcParam, and returns the preferred ServiceMode
@@ -53,17 +53,17 @@ struct HttpsRecord(Copyable, Movable):
         self.target = target^
         self.priority = priority
 
-    def __init__(out self, *, other: Self):
-        self.alpns = other.alpns.copy()
-        self.ttl = other.ttl
-        self.target = other.target.copy()
-        self.priority = other.priority
+    def __init__(out self, *, copy: Self):
+        self.alpns = copy.alpns.copy()
+        self.ttl = copy.ttl
+        self.target = copy.target.copy()
+        self.priority = copy.priority
 
-    def __init__(out self, *, deinit take: Self):
-        self.alpns = take.alpns^
-        self.ttl = take.ttl
-        self.target = take.target^
-        self.priority = take.priority
+    def __init__(out self, *, deinit move: Self):
+        self.alpns = move.alpns^
+        self.ttl = move.ttl
+        self.target = move.target^
+        self.priority = move.priority
 
 
 struct _Answer(Copyable, Movable):
@@ -76,13 +76,13 @@ struct _Answer(Copyable, Movable):
         self.kind = kind
         self.record = record^
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.record = other.record.copy()
+    def __init__(out self, *, copy: Self):
+        self.kind = copy.kind
+        self.record = copy.record.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.record = take.record^
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.record = move.record^
 
 
 def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:

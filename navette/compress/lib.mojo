@@ -12,7 +12,7 @@ from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 
 from navette.compress._lcm_bindings import (
-    load_lcm_last_error,
+    call_lcm_last_error,
 )
 
 
@@ -97,20 +97,20 @@ struct CompressLibrary(Movable):
     def __init__(out self, path: String) raises:
         self._handle = OwnedDLHandle(path)
 
-    def __init__(out self, *, deinit take: Self):
-        self._handle = take._handle^
+    def __init__(out self, *, deinit move: Self):
+        self._handle = move._handle^
 
-    def last_error(self) -> String:
+    def last_error(self) raises -> String:
         """Retrieve the last libcompress-mojo error message.
 
         Returns an empty string if no error is set.
         """
         var buf_owner = Owned[UInt8](512)
         var buf = buf_owner.ptr()
-        var n = load_lcm_last_error(self._handle)(buf, Int32(512))
+        var n = call_lcm_last_error(self._handle, buf, Int32(512))
         if n <= 0:
             return String("")
         var msg = String()
         for i in range(Int(n - 1)):
-            msg += chr(Int(buf[i]))
+            msg += chr(Int(buf[unsafe_offset=i]))
         return msg^

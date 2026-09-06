@@ -61,15 +61,15 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle.handle import RawHandle, OwnedHandle
 from boucle.proactor.completion import Completion
-from boucle.proactor.bufring import BufRing
+from boucle.drivers.bufring import BufRing
 from boucle.drivers.io_uring import IoUringDriver
-from boucle._sys.linux.raw import (
+from boucle.socle.linux.raw import (
     msghdr,
     IORING_CQE_F_BUFFER,
     IORING_CQE_F_MORE,
     IORING_CQE_BUFFER_SHIFT,
 )
-from boucle._sys.linux.raw.ctypes import c_void
+from boucle.socle.linux.raw.ctypes import c_void
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
@@ -108,7 +108,7 @@ comptime _BACKLOG_CAP_MULTIPLIER: Int = 2
 
 
 @always_inline
-def _read_u32_le(ptr: Pointer[UInt8, MutAnyOrigin]) -> UInt32:
+def _read_u32_le(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> UInt32:
     return (
         UInt32(ptr[unsafe_offset=0])
         | (UInt32(ptr[unsafe_offset=1]) << 8)
@@ -118,7 +118,7 @@ def _read_u32_le(ptr: Pointer[UInt8, MutAnyOrigin]) -> UInt32:
 
 
 def _sockaddr_to_path_key(
-    buf_ptr: Pointer[UInt8, MutAnyOrigin],
+    buf_ptr: Pointer[mut=True, T=UInt8, origin=_],
     addr_offset: Int,
     addr_len: Int,
 ) -> PathKey:
@@ -193,16 +193,16 @@ struct PendingDatagram(Copyable, Movable):
     payload's first ~16 bytes (long-header or short-header).
     """
     var buf_id: UInt16
-    var buf_ptr: Pointer[UInt8, MutAnyOrigin]
-    var payload_ptr: Pointer[UInt8, MutAnyOrigin]
+    var buf_ptr: Pointer[UInt8, MutUntrackedOrigin]
+    var payload_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var payload_len: Int
     var addr_offset: Int
     var addr_len: Int
     var dcid: List[UInt8]
 
     def __init__(out self, buf_id: UInt16,
-                 buf_ptr: Pointer[UInt8, MutAnyOrigin],
-                 payload_ptr: Pointer[UInt8, MutAnyOrigin],
+                 buf_ptr: Pointer[UInt8, MutUntrackedOrigin],
+                 payload_ptr: Pointer[UInt8, MutUntrackedOrigin],
                  payload_len: Int, addr_offset: Int, addr_len: Int,
                  var dcid: List[UInt8]):
         self.buf_id = buf_id
@@ -213,23 +213,23 @@ struct PendingDatagram(Copyable, Movable):
         self.addr_len = addr_len
         self.dcid = dcid^
 
-    def __init__(out self, *, other: Self):
-        self.buf_id = other.buf_id
-        self.buf_ptr = other.buf_ptr
-        self.payload_ptr = other.payload_ptr
-        self.payload_len = other.payload_len
-        self.addr_offset = other.addr_offset
-        self.addr_len = other.addr_len
-        self.dcid = List[UInt8](copy=other.dcid)
+    def __init__(out self, *, copy: Self):
+        self.buf_id = copy.buf_id
+        self.buf_ptr = copy.buf_ptr
+        self.payload_ptr = copy.payload_ptr
+        self.payload_len = copy.payload_len
+        self.addr_offset = copy.addr_offset
+        self.addr_len = copy.addr_len
+        self.dcid = List[UInt8](copy=copy.dcid)
 
-    def __init__(out self, *, deinit take: Self):
-        self.buf_id = take.buf_id
-        self.buf_ptr = take.buf_ptr
-        self.payload_ptr = take.payload_ptr
-        self.payload_len = take.payload_len
-        self.addr_offset = take.addr_offset
-        self.addr_len = take.addr_len
-        self.dcid = take.dcid^
+    def __init__(out self, *, deinit move: Self):
+        self.buf_id = move.buf_id
+        self.buf_ptr = move.buf_ptr
+        self.payload_ptr = move.payload_ptr
+        self.payload_len = move.payload_len
+        self.addr_offset = move.addr_offset
+        self.addr_len = move.addr_len
+        self.dcid = move.dcid^
 
 
 # ── Egress packet (queued for flush submission) ─────────────────────────────
@@ -265,11 +265,11 @@ struct EgressPacket(Movable):
         self.addr = addr^
         self.conn_idx = conn_idx
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.data = take.data^
-        self.addr = take.addr^
-        self.conn_idx = take.conn_idx
+        self.data = move.data^
+        self.addr = move.addr^
+        self.conn_idx = move.conn_idx
 
 
 # ── Connection slot + DCID demux entry ──────────────────────────────────────
@@ -289,13 +289,13 @@ struct _DcidEntry(Copyable, Movable):
         self.idx = idx
         self.generation = generation
 
-    def __init__(out self, *, other: Self):
-        self.idx = other.idx
-        self.generation = other.generation
+    def __init__(out self, *, copy: Self):
+        self.idx = copy.idx
+        self.generation = copy.generation
 
-    def __init__(out self, *, deinit take: Self):
-        self.idx = take.idx
-        self.generation = take.generation
+    def __init__(out self, *, deinit move: Self):
+        self.idx = move.idx
+        self.generation = move.generation
 
 
 struct ConnSlot[H: StreamHandler](Copyable, Movable):
@@ -312,14 +312,14 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     semantics (the underlying pointer was already trivially copied
     when the list grew).
     """
-    var h3: Pointer[H3HandlerServer[Self.H], MutAnyOrigin]
+    var h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
     var addr: List[UInt8]
     var dcids: List[UInt64]
     var generation: UInt64
 
     def __init__(
         out self,
-        h3: Pointer[H3HandlerServer[Self.H], MutAnyOrigin],
+        h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin],
         var addr: List[UInt8],
         var dcids: List[UInt64],
         generation: UInt64,
@@ -329,17 +329,17 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.dcids = dcids^
         self.generation = generation
 
-    def __init__(out self, *, other: Self):
-        self.h3 = other.h3
-        self.addr = List[UInt8](copy=other.addr)
-        self.dcids = List[UInt64](copy=other.dcids)
-        self.generation = other.generation
+    def __init__(out self, *, copy: Self):
+        self.h3 = copy.h3
+        self.addr = List[UInt8](copy=copy.addr)
+        self.dcids = List[UInt64](copy=copy.dcids)
+        self.generation = copy.generation
 
-    def __init__(out self, *, deinit take: Self):
-        self.h3 = take.h3
-        self.addr = take.addr^
-        self.dcids = take.dcids^
-        self.generation = take.generation
+    def __init__(out self, *, deinit move: Self):
+        self.h3 = move.h3
+        self.addr = move.addr^
+        self.dcids = move.dcids^
+        self.generation = move.generation
 
 
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
@@ -409,8 +409,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _bufs_to_recycle: List[UInt16]
 
     # io_uring multishot recvmsg infrastructure.
-    var _pbuf_pool: Pointer[UInt8, MutAnyOrigin]
-    var _msghdr_template: Pointer[UInt8, MutAnyOrigin]
+    var _pbuf_pool: Pointer[UInt8, MutUntrackedOrigin]
+    var _msghdr_template: Pointer[UInt8, MutUntrackedOrigin]
     var _multishot_active: Bool
 
     # Owned Completions for recvmsg and timeout.
@@ -434,7 +434,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _needs_multishot_rearm: Bool
 
     # Periodic timeout for QUIC loss detection / idle close.
-    var _timeout_ts: Pointer[UInt8, MutAnyOrigin]
+    var _timeout_ts: Pointer[UInt8, MutUntrackedOrigin]
 
     # PROFILE_ACCEPT counters (always present; dead-stripped when
     # PROFILE_ACCEPT=False at compile time).
@@ -482,11 +482,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self._bufs_to_recycle = List[UInt16]()
 
-        self._pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE).as_unsafe_any_origin()
+        self._pbuf_pool = _heap_alloc[UInt8](PBUF_COUNT * PBUF_SIZE)
         for i in range(PBUF_COUNT * PBUF_SIZE):
             self._pbuf_pool[unsafe_offset=i] = 0
 
-        self._msghdr_template = _heap_alloc[UInt8](_MSGHDR_SIZE).as_unsafe_any_origin()
+        self._msghdr_template = _heap_alloc[UInt8](_MSGHDR_SIZE)
         for i in range(_MSGHDR_SIZE):
             self._msghdr_template[unsafe_offset=i] = 0
         # msg_namelen at offset 8 = sizeof(sockaddr_in6). The kernel populates
@@ -498,11 +498,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # Completions — context set by wire_context() after heap allocation.
         self._recvmsg_cmp = Completion(
             invoke=_on_recvmsg[Self.H],
-            context=null_ptr[NoneType, MutAnyOrigin](),
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
         self._timeout_cmp = Completion(
             invoke=_on_timeout[Self.H],
-            context=null_ptr[NoneType, MutAnyOrigin](),
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
 
         # Slab pool — 256 slots, PBUF_SIZE bytes max per packet.
@@ -516,7 +516,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._needs_multishot_rearm = False
 
         # 50ms periodic timeout — tv_sec=0, tv_nsec=50_000_000 LE.
-        self._timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE).as_unsafe_any_origin()
+        self._timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE)
         for i in range(_TIMESPEC_SIZE):
             self._timeout_ts[unsafe_offset=i] = 0
         self._timeout_ts[unsafe_offset=8] = 0x80
@@ -526,31 +526,31 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self.profile = AcceptProfile()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.udp_handle = take.udp_handle^
-        self.transport_params = take.transport_params^
-        self.make_handler = take.make_handler
-        self.conn_slots = take.conn_slots^
-        self.conn_dcid_map = take.conn_dcid_map^
-        self.next_generation = take.next_generation
-        self._tls = take._tls^
-        self.server_config = take.server_config^
-        self.pending_rx = take.pending_rx^
-        self._inflight_bufs = take._inflight_bufs^
-        self._bufs_to_recycle = take._bufs_to_recycle^
-        self._pbuf_pool = take._pbuf_pool
-        self._msghdr_template = take._msghdr_template
-        self._multishot_active = take._multishot_active
-        self._recvmsg_cmp = take._recvmsg_cmp^
-        self._timeout_cmp = take._timeout_cmp^
-        self._send_pool = take._send_pool^
-        self._bufring = take._bufring^
-        self._egress_backlog = take._egress_backlog^
-        self._inject_egress = take._inject_egress^
-        self._needs_multishot_rearm = take._needs_multishot_rearm
-        self._timeout_ts = take._timeout_ts
-        self.profile = take.profile^
+        self.udp_handle = move.udp_handle^
+        self.transport_params = move.transport_params^
+        self.make_handler = move.make_handler
+        self.conn_slots = move.conn_slots^
+        self.conn_dcid_map = move.conn_dcid_map^
+        self.next_generation = move.next_generation
+        self._tls = move._tls^
+        self.server_config = move.server_config^
+        self.pending_rx = move.pending_rx^
+        self._inflight_bufs = move._inflight_bufs^
+        self._bufs_to_recycle = move._bufs_to_recycle^
+        self._pbuf_pool = move._pbuf_pool
+        self._msghdr_template = move._msghdr_template
+        self._multishot_active = move._multishot_active
+        self._recvmsg_cmp = move._recvmsg_cmp^
+        self._timeout_cmp = move._timeout_cmp^
+        self._send_pool = move._send_pool^
+        self._bufring = move._bufring^
+        self._egress_backlog = move._egress_backlog^
+        self._inject_egress = move._inject_egress^
+        self._needs_multishot_rearm = move._needs_multishot_rearm
+        self._timeout_ts = move._timeout_ts
+        self.profile = move.profile^
 
     def __deinit__(deinit self):
         """Free heap allocations owned by the server.
@@ -623,7 +623,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         (pointer stability guaranteed) and before any SQE submission.
         Also wires the SendSlabPool's per-slot backpointers.
         """
-        var self_ctx = Pointer[NoneType, MutAnyOrigin](
+        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self))
         )
         self._recvmsg_cmp.context = self_ctx
@@ -646,25 +646,25 @@ struct H3UdpServer[H: StreamHandler](Movable):
         )
 
         # Submit multishot recvmsg.
-        var recvmsg_cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var recvmsg_cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._recvmsg_cmp))
         )
-        var msg_ptr = Pointer[msghdr, MutAnyOrigin](
+        var msg_ptr = Pointer[msghdr, MutUntrackedOrigin](
             unsafe_from_address=Int(self._msghdr_template)
         )
-        driver.submit_multishot_recvmsg(
+        driver.multishot_recvmsg(
             self.udp_handle.raw(), msg_ptr, PBUF_GROUP_ID, recvmsg_cmp_ptr
         )
         self._multishot_active = True
 
         # Submit initial timeout.
-        var timeout_cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var timeout_cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
         )
-        var ts_ptr = Pointer[c_void, StaticConstantOrigin](
+        var ts_ptr = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(self._timeout_ts)
         )
-        driver.submit_timeout(ts_ptr, timeout_cmp_ptr)
+        driver.timeout(ts_ptr, timeout_cmp_ptr)
 
     def flush(mut self, mut driver: IoUringDriver) raises:
         """Process buffered ingress, submit egress, recycle buffers.
@@ -700,15 +700,15 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         # 5. Re-arm multishot recvmsg if it ended.
         if self._needs_multishot_rearm:
-            var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+            var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
                 unsafe_from_address=Int(
                     Pointer(to=self._recvmsg_cmp)
                 )
             )
-            var msg_ptr = Pointer[msghdr, MutAnyOrigin](
+            var msg_ptr = Pointer[msghdr, MutUntrackedOrigin](
                 unsafe_from_address=Int(self._msghdr_template)
             )
-            driver.submit_multishot_recvmsg(
+            driver.multishot_recvmsg(
                 self.udp_handle.raw(),
                 msg_ptr,
                 PBUF_GROUP_ID,
@@ -718,14 +718,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
             self._needs_multishot_rearm = False
 
         # 6. Re-arm timeout.
-        var ts_ptr = Pointer[c_void, StaticConstantOrigin](
+        var ts_ptr = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(self._timeout_ts)
         )
-        var timeout_cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var timeout_cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
         )
         try:
-            driver.submit_timeout(ts_ptr, timeout_cmp_ptr)
+            driver.timeout(ts_ptr, timeout_cmp_ptr)
         except:
             pass  # SQ full — will retry next tick.
 
@@ -751,12 +751,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 break
             var slab = self._send_pool.slot_ptr(slot_idx)
             slab[].fill(pkt.data, pkt.addr)
-            var msg_ptr = Pointer[msghdr, MutAnyOrigin](
+            var msg_ptr = Pointer[NoneType, MutUntrackedOrigin](
                 unsafe_from_address=Int(slab[].msghdr_ptr())
             )
             var cmp_ptr = self._send_pool.completion_ptr(slot_idx)
             try:
-                driver.submit_sendmsg(
+                driver.sendmsg(
                     self.udp_handle.raw(), msg_ptr, cmp_ptr
                 )
             except:
@@ -770,7 +770,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     # ── Ingress (recvmsg multishot) ──────────────────────────────
 
-    def _handle_recvmsg_impl(mut self, result: Int32, flags: UInt32) raises:
+    def _handle_recvmsg_impl(mut self, result: Int, flags: UInt32) raises:
         """Process a single recvmsg CQE — parse the datagram and buffer
         it into pending_rx for flush() processing.
 
@@ -798,18 +798,18 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # Extract buffer ID from CQE flags and mark it userspace-owned.
         var buf_id = UInt16(flags >> UInt32(IORING_CQE_BUFFER_SHIFT))
         self._acquire_buf(buf_id)
-        var buf_ptr = self._pbuf_pool + Int(buf_id) * PBUF_SIZE
+        var buf_ptr = self._pbuf_pool.unsafe_offset(Int(buf_id) * PBUF_SIZE)
 
         # Parse the io_uring_recvmsg_out 16-byte header:
         #   [namelen: u32][controllen: u32][payloadlen: u32][flags: u32]
-        if result < Int32(_RECVMSG_OUT_HDR_SIZE):
+        if result < _RECVMSG_OUT_HDR_SIZE:
             self._release_buf(buf_id)
             return
 
         var namelen = Int(_read_u32_le(buf_ptr))
-        var controllen = Int(_read_u32_le(buf_ptr + 4))
-        var payloadlen = Int(_read_u32_le(buf_ptr + 8))
-        var msg_flags = _read_u32_le(buf_ptr + 12)
+        var controllen = Int(_read_u32_le(buf_ptr.unsafe_offset(4)))
+        var payloadlen = Int(_read_u32_le(buf_ptr.unsafe_offset(8)))
+        var msg_flags = _read_u32_le(buf_ptr.unsafe_offset(12))
 
         # MSG_TRUNC (0x20) — drop truncated datagrams (PBUF_SIZE was too
         # small for the datagram).
@@ -823,7 +823,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         # Payload starts after header + name + control.
         var payload_offset = _RECVMSG_OUT_HDR_SIZE + namelen + controllen
-        var payload_ptr = buf_ptr + payload_offset
+        var payload_ptr = buf_ptr.unsafe_offset(payload_offset)
 
         if payloadlen <= 0:
             self._release_buf(buf_id)
@@ -833,7 +833,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         var dcid: List[UInt8]
         try:
             dcid = extract_dcid(
-                Span[UInt8, MutAnyOrigin](ptr=payload_ptr, length=payloadlen)
+                Span[UInt8, MutUntrackedOrigin](unsafe_ptr=payload_ptr, length=payloadlen)
             )
         except:
             self._release_buf(buf_id)
@@ -855,7 +855,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     def _construct_conn_handler(
         mut self, dcid: Span[UInt8, _], now: UInt64
-    ) raises -> Pointer[H3HandlerServer[Self.H], MutAnyOrigin]:
+    ) raises -> Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]:
         """Build a fresh per-connection `H3HandlerServer[H]` on the heap.
 
         Extracted from `_flush_impl`'s new-connection branch so tests can
@@ -916,7 +916,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
             dcid,
             Span(dcid_copy),
             now,
-            Pointer(to=self.profile),
+            # The connection stores this alias for its whole lifetime, which
+            # outlives what the checker can see of `self.profile`; the field is
+            # untracked, so the hand-off is explicit rather than implied.
+            Pointer(to=self.profile).unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
         # Per-conn StreamHandler — produced by the user-supplied factory.
@@ -927,36 +930,38 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # `QuicConnection.server` promotes the `_early_data_store`
         # reference — the pointer is valid for the connection's lifetime
         # because `self.server_config` outlives every connection here.
-        # `rebind` lifts the inferred config-bound origin to `MutAnyOrigin`
+        # `rebind` lifts the inferred config-bound origin to `MutUntrackedOrigin`
         # so the pointer can be stored alongside the existing
         # `_early_data_store_ptr` shape.
         var early_data_filter_ptr_opt = Optional[
-            Pointer[IdempotentOnlyFilter, MutAnyOrigin]
+            Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
         ](None)
         if self.server_config._early_data_filter is not None:
             var filter_ptr = rebind[
-                Pointer[IdempotentOnlyFilter, MutAnyOrigin]
+                Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
             ](Pointer(to=self.server_config._early_data_filter.value()))
             early_data_filter_ptr_opt = Optional[
-                Pointer[IdempotentOnlyFilter, MutAnyOrigin]
+                Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
             ](filter_ptr)
 
         # Thread the policy's predicate-fn (if any) into the per-connection
         # adapter ctor. The fn-pointer is Optional[EarlyDataPredicateFn] —
-        # trivially copyable in Mojo 1.0.0b1 — so no pointer-lifetime
+        # trivially copyable in Mojo 1.0.0 — so no pointer-lifetime
         # threading is needed (unlike the IdempotentOnlyFilter struct above).
         var predicate_fn_opt = self.server_config._early_data_predicate_fn
 
         var h3 = H3HandlerServer[Self.H](
             quic=quic^,
             handler=handler^,
-            profile_ptr=UnsafePointer(to=self.profile),
+            profile_ptr=Pointer(to=self.profile).unsafe_origin_cast[
+                MutUntrackedOrigin
+            ](),
             early_data_filter_ptr=early_data_filter_ptr_opt,
             predicate_fn=predicate_fn_opt,
         )
 
-        var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1).as_unsafe_any_origin()
-        h3_ptr.init_pointee_move(h3^)
+        var h3_ptr = _heap_alloc[H3HandlerServer[Self.H]](1)
+        h3_ptr.unsafe_write(h3^)
         return h3_ptr
 
     # ── Ingress flush ───────────────────────────────────────────
@@ -980,8 +985,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # RFC 9000 §12.4: only long-header Initial packets create new
             # conns. All other DCID-misses are dropped silently.
             if conn_idx < 0:
-                var first_byte_span = Span[UInt8, MutAnyOrigin](
-                    ptr=pd.payload_ptr, length=pd.payload_len)
+                var first_byte_span = Span[UInt8, MutUntrackedOrigin](
+                    unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
                     self._release_buf(pd.buf_id)
                     continue
@@ -990,7 +995,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 # New conn — drive QuicConnection.server() and wrap in
                 # H3HandlerServer via the extracted constructor (which wires
                 # the accept-profile pointer through both layers).
-                var h3_ptr: UnsafePointer[H3HandlerServer[Self.H], MutAnyOrigin]
+                var h3_ptr: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
                 try:
                     h3_ptr = self._construct_conn_handler(Span(pd.dcid), now)
                 except e:
@@ -1022,7 +1027,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 # sendmsg msg_name.
                 var addr = List[UInt8](capacity=pd.addr_len)
                 for j in range(pd.addr_len):
-                    addr.append(pd.buf_ptr[pd.addr_offset + j])
+                    addr.append(pd.buf_ptr[unsafe_offset=pd.addr_offset + j])
 
                 conn_idx = len(self.conn_slots)
                 var gen = self.next_generation
@@ -1066,7 +1071,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # credits per-path bytes_received for the unvalidated case.
             try:
                 self.conn_slots[conn_idx].h3[].on_ingress_from(
-                    PathKey(other=from_path), pd.payload_len, now
+                    PathKey(copy=from_path), pd.payload_len, now
                 )
             except e:
                 print("H3UdpServer: on_ingress_from error:", e)
@@ -1077,7 +1082,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # the coalesced packets in this datagram all see the same
             # cursor.
             self.conn_slots[conn_idx].h3[].set_current_recv_addr(
-                PathKey(other=from_path)
+                PathKey(copy=from_path)
             )
 
             # Feed datagram into the QuicConnection.
@@ -1098,7 +1103,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # decides where to listen).
             var addr_update = List[UInt8](capacity=pd.addr_len)
             for j in range(pd.addr_len):
-                addr_update.append(pd.buf_ptr[pd.addr_offset + j])
+                addr_update.append(pd.buf_ptr[unsafe_offset=pd.addr_offset + j])
             self.conn_slots[conn_idx].addr = addr_update^
 
             # Egress — drain QUIC + H3 packets and queue sendmsg submits.
@@ -1175,7 +1180,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 target_key, pkt_len
             )
 
-    def _handle_timeout_impl(mut self, result: Int32) raises:
+    def _handle_timeout_impl(mut self, result: Int) raises:
         """Periodic timeout — advance each conn's QUIC clock, drain
         any pending retransmissions, and remove conns that signal
         `should_close()` (idle timeout or graceful close).
@@ -1207,7 +1212,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 # the slot or `pop()` discards it) hits a clean null
                 # rather than a dangling pointer.
                 self.conn_slots[i].h3 = null_ptr[
-                    H3HandlerServer[Self.H], MutAnyOrigin
+                    H3HandlerServer[Self.H], MutUntrackedOrigin
                 ]()
 
                 # B-permissive teardown: pop ALL of dying conn's DCID
@@ -1314,8 +1319,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
 
 def _on_recvmsg[H: StreamHandler](
-    ctx: Pointer[NoneType, MutAnyOrigin],
-    result: Int32,
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
     flags: UInt32,
 ):
     """Multishot recvmsg CQE callback. Buffers received packet into
@@ -1330,7 +1335,7 @@ def _on_recvmsg[H: StreamHandler](
         result: io_uring CQE result (bytes received or negative errno).
         flags: io_uring CQE flags.
     """
-    var self_ptr = Pointer[H3UdpServer[H], MutAnyOrigin](
+    var self_ptr = Pointer[H3UdpServer[H], MutUntrackedOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -1340,8 +1345,8 @@ def _on_recvmsg[H: StreamHandler](
 
 
 def _on_timeout[H: StreamHandler](
-    ctx: Pointer[NoneType, MutAnyOrigin],
-    result: Int32,
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
     flags: UInt32,
 ):
     """Periodic timeout CQE callback. Walks connections, drains egress,
@@ -1354,7 +1359,7 @@ def _on_timeout[H: StreamHandler](
         result: io_uring CQE result (negative errno on error).
         flags: io_uring CQE flags (unused for timeout).
     """
-    var self_ptr = Pointer[H3UdpServer[H], MutAnyOrigin](
+    var self_ptr = Pointer[H3UdpServer[H], MutUntrackedOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:

@@ -14,13 +14,17 @@
 #   SYS_getdents64 = 217
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as alloc
 from std.collections import Optional
 from std.os import mkdir
 
 # ── open flags (x86_64 Linux) ─────────────────────────────────────────────────
 
+# `openat` with AT_FDCWD is exactly `open`; the bare name collides with
+# the stdlib's own `open` declaration inside FileHandle.
+comptime AT_FDCWD: Int32 = -100
 comptime O_RDONLY: Int32 = 0
 comptime O_WRONLY: Int32 = 1
 comptime O_CREAT: Int32 = 64
@@ -35,24 +39,24 @@ comptime MODE_755: Int32 = 493
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 
-def _to_cstr(s: String) -> UnsafePointer[UInt8, MutAnyOrigin]:
+def _to_cstr(s: String) -> Pointer[UInt8, MutUntrackedOrigin]:
     """Allocate a null-terminated C string from a Mojo String.
     Caller must call .free() on the returned pointer."""
     var slen = s.byte_length()
-    var buf = alloc[UInt8](slen + 1).as_unsafe_any_origin()
+    var buf = alloc[UInt8](slen + 1)
     var bytes = s.as_bytes()
     for i in range(slen):
-        buf[i] = bytes[i]
-    buf[slen] = 0
+        buf[unsafe_offset=i] = bytes[i]
+    buf[unsafe_offset=slen] = 0
     return buf
 
 
-def _ptr_to_string(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> String:
+def _ptr_to_string(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> String:
     """Read a null-terminated C string into a Mojo String."""
     var result = String()
     var i = 0
-    while ptr[i] != 0:
-        result += chr(Int(ptr[i]))
+    while ptr[unsafe_offset=i] != 0:
+        result += chr(Int(ptr[unsafe_offset=i]))
         i += 1
     return result^
 
@@ -63,42 +67,42 @@ def _ptr_to_string(ptr: UnsafePointer[UInt8, MutAnyOrigin]) -> String:
 def read_file(path: String) raises -> List[UInt8]:
     """Read entire file via open/fstat/read/close."""
     var pbuf = _to_cstr(path)
-    var fd = external_call["open", Int32](pbuf, O_RDONLY, Int32(0))
-    pbuf.free()
+    var fd = external_call["openat", Int32](AT_FDCWD, pbuf, O_RDONLY, Int32(0))
+    pbuf.unsafe_free()
     if fd < 0:
         raise "read_file: open failed for " + path
 
     # fstat64 — struct stat on x86_64 is 144 bytes; st_size is 8 bytes at offset 48
-    var statbuf = alloc[UInt8](144).as_unsafe_any_origin()
+    var statbuf = alloc[UInt8](144)
     var fstat_rc = external_call["fstat64", Int32](fd, statbuf)
     if fstat_rc < 0:
         _ = external_call["close", Int32](fd)
-        statbuf.free()
+        statbuf.unsafe_free()
         raise "read_file: fstat64 failed"
 
     var file_size: Int = 0
     for i in range(8):
-        file_size |= Int(statbuf[48 + i]) << (i * 8)
-    statbuf.free()
+        file_size |= Int(statbuf[unsafe_offset=48 + i]) << (i * 8)
+    statbuf.unsafe_free()
 
     # Read in 65536-byte chunks via pread64
     var result = List[UInt8](capacity=file_size)
     var chunk_size = 65536
-    var buf = alloc[UInt8](chunk_size).as_unsafe_any_origin()
+    var buf = alloc[UInt8](chunk_size)
     var offset = 0
     while offset < file_size:
         var to_read = min(chunk_size, file_size - offset)
         var n = external_call["pread64", Int](Int32(fd), buf, to_read, offset)
         if n < 0:
-            buf.free()
+            buf.unsafe_free()
             _ = external_call["close", Int32](fd)
             raise "read_file: pread64 failed"
         if n == 0:
             break
         for i in range(n):
-            result.append(buf[i])
+            result.append(buf[unsafe_offset=i])
         offset += n
-    buf.free()
+    buf.unsafe_free()
     _ = external_call["close", Int32](fd)
     return result^
 
@@ -119,26 +123,26 @@ def write_file(path: String, data: Span[UInt8, _]) raises:
 
     var pbuf = _to_cstr(path)
     # O_WRONLY | O_CREAT | O_TRUNC = 1 | 64 | 512 = 577
-    var fd = external_call["open", Int32](pbuf, Int32(577), MODE_644)
-    pbuf.free()
+    var fd = external_call["openat", Int32](AT_FDCWD, pbuf, Int32(577), MODE_644)
+    pbuf.unsafe_free()
     if fd < 0:
         raise "write_file: open failed for " + path
 
     var total = len(data)
     var chunk_size = 65536
-    var buf = alloc[UInt8](chunk_size).as_unsafe_any_origin()
+    var buf = alloc[UInt8](chunk_size)
     var offset = 0
     while offset < total:
         var to_write = min(chunk_size, total - offset)
         for i in range(to_write):
-            buf[i] = data[offset + i]
+            buf[unsafe_offset=i] = data[offset + i]
         var n = external_call["pwrite64", Int](Int32(fd), buf, to_write, offset)
         if n <= 0:
-            buf.free()
+            buf.unsafe_free()
             _ = external_call["close", Int32](fd)
             raise "write_file: pwrite64 failed (returned " + String(n) + ")"
         offset += n
-    buf.free()
+    buf.unsafe_free()
     _ = external_call["close", Int32](fd)
 
 
@@ -179,18 +183,18 @@ def list_dir(path: String) raises -> List[String]:
     Skips '.' and '..'."""
     var pbuf = _to_cstr(path)
     # O_RDONLY | O_DIRECTORY = 0 | 65536 = 65536
-    var fd = external_call["open", Int32](pbuf, O_DIRECTORY, Int32(0))
-    pbuf.free()
+    var fd = external_call["openat", Int32](AT_FDCWD, pbuf, O_DIRECTORY, Int32(0))
+    pbuf.unsafe_free()
     if fd < 0:
         raise "list_dir: open failed for " + path
 
-    var buf = alloc[UInt8](4096).as_unsafe_any_origin()
+    var buf = alloc[UInt8](4096)
     var names = List[String]()
 
     while True:
         var nread = external_call["getdents64", Int](Int32(fd), buf, Int(4096))
         if nread < 0:
-            buf.free()
+            buf.unsafe_free()
             _ = external_call["close", Int32](fd)
             raise "list_dir: getdents64 failed"
         if nread == 0:
@@ -203,17 +207,17 @@ def list_dir(path: String) raises -> List[String]:
             #   u16 d_reclen  @ 16
             #   u8  d_type    @ 18
             #   char d_name[] @ 19
-            var reclen = Int(buf[off + 16]) | (Int(buf[off + 17]) << 8)
+            var reclen = Int(buf[unsafe_offset=off + 16]) | (Int(buf[unsafe_offset=off + 17]) << 8)
             var name = String()
             var j = 0
-            while buf[off + 19 + j] != 0:
-                name += chr(Int(buf[off + 19 + j]))
+            while buf[unsafe_offset=off + 19 + j] != 0:
+                name += chr(Int(buf[unsafe_offset=off + 19 + j]))
                 j += 1
             if name != "." and name != "..":
                 names.append(name)
             off += reclen
 
-    buf.free()
+    buf.unsafe_free()
     _ = external_call["close", Int32](fd)
     return names^
 
@@ -222,10 +226,10 @@ def getenv(name: String) raises -> String:
     """Read environment variable. Raises if not set."""
     var nbuf = _to_cstr(name)
     var ptr_int = external_call["getenv", Int](nbuf)
-    nbuf.free()
+    nbuf.unsafe_free()
     if ptr_int == 0:
         raise "getenv: variable not set: " + name
-    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var ptr = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=ptr_int)
     return _ptr_to_string(ptr)
 
 
@@ -233,10 +237,10 @@ def getenv_opt(name: String) -> Optional[String]:
     """Read environment variable. Returns None if not set."""
     var nbuf = _to_cstr(name)
     var ptr_int = external_call["getenv", Int](nbuf)
-    nbuf.free()
+    nbuf.unsafe_free()
     if ptr_int == 0:
         return None
-    var ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=ptr_int)
+    var ptr = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=ptr_int)
     return Optional(_ptr_to_string(ptr))
 
 
@@ -245,16 +249,18 @@ def setenv(name: String, value: String) raises:
     var nbuf = _to_cstr(name)
     var vbuf = _to_cstr(value)
     var rc = external_call["setenv", Int32](nbuf, vbuf, Int32(1))
-    nbuf.free()
-    vbuf.free()
+    nbuf.unsafe_free()
+    vbuf.unsafe_free()
     if rc != 0:
         raise "setenv: failed to set variable: " + name
 
 
 def basename(url_path: String) -> String:
     """Extract filename from URL path (last component after '/')."""
-    var n = len(url_path)
     var path_bytes = url_path.as_bytes()
+    # The scan and the slice below both index `path_bytes`, so the count has to
+    # be the byte count -- measuring the String would disagree on non-ASCII.
+    var n = len(path_bytes)
     var last_slash = -1
     for i in range(n):
         if path_bytes[i] == UInt8(ord("/")):

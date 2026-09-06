@@ -4,7 +4,7 @@
 # Sans-I/O: receive_data(bytes) -> List[H2Event], data_to_send() -> List[UInt8].
 
 from std.collections import Dict
-from std.memory import memmove
+from std.memory import unsafe_memmove
 
 from .frame import (
     Frame,
@@ -109,23 +109,23 @@ struct H2Config(Copyable, Movable):
         self.header_table_size = UInt32(DEFAULT_HEADER_TABLE_SIZE)
         self.enable_connect_protocol = False
 
-    def __init__(out self, *, other: Self):
-        self.client_side = other.client_side
-        self.initial_window_size = other.initial_window_size
-        self.max_concurrent_streams = other.max_concurrent_streams
-        self.max_frame_size = other.max_frame_size
-        self.max_header_list_size = other.max_header_list_size
-        self.header_table_size = other.header_table_size
-        self.enable_connect_protocol = other.enable_connect_protocol
+    def __init__(out self, *, copy: Self):
+        self.client_side = copy.client_side
+        self.initial_window_size = copy.initial_window_size
+        self.max_concurrent_streams = copy.max_concurrent_streams
+        self.max_frame_size = copy.max_frame_size
+        self.max_header_list_size = copy.max_header_list_size
+        self.header_table_size = copy.header_table_size
+        self.enable_connect_protocol = copy.enable_connect_protocol
 
-    def __init__(out self, *, deinit take: Self):
-        self.client_side = take.client_side
-        self.initial_window_size = take.initial_window_size
-        self.max_concurrent_streams = take.max_concurrent_streams
-        self.max_frame_size = take.max_frame_size
-        self.max_header_list_size = take.max_header_list_size
-        self.header_table_size = take.header_table_size
-        self.enable_connect_protocol = take.enable_connect_protocol
+    def __init__(out self, *, deinit move: Self):
+        self.client_side = move.client_side
+        self.initial_window_size = move.initial_window_size
+        self.max_concurrent_streams = move.max_concurrent_streams
+        self.max_frame_size = move.max_frame_size
+        self.max_header_list_size = move.max_header_list_size
+        self.header_table_size = move.header_table_size
+        self.enable_connect_protocol = move.enable_connect_protocol
 
 
 # ---------------------------------------------------------------------------
@@ -166,23 +166,23 @@ struct H2Settings(Copyable, Movable):
         s.enable_connect_protocol = config.enable_connect_protocol
         return s^
 
-    def __init__(out self, *, other: Self):
-        self.header_table_size = other.header_table_size
-        self.enable_push = other.enable_push
-        self.max_concurrent_streams = other.max_concurrent_streams
-        self.initial_window_size = other.initial_window_size
-        self.max_frame_size = other.max_frame_size
-        self.max_header_list_size = other.max_header_list_size
-        self.enable_connect_protocol = other.enable_connect_protocol
+    def __init__(out self, *, copy: Self):
+        self.header_table_size = copy.header_table_size
+        self.enable_push = copy.enable_push
+        self.max_concurrent_streams = copy.max_concurrent_streams
+        self.initial_window_size = copy.initial_window_size
+        self.max_frame_size = copy.max_frame_size
+        self.max_header_list_size = copy.max_header_list_size
+        self.enable_connect_protocol = copy.enable_connect_protocol
 
-    def __init__(out self, *, deinit take: Self):
-        self.header_table_size = take.header_table_size
-        self.enable_push = take.enable_push
-        self.max_concurrent_streams = take.max_concurrent_streams
-        self.initial_window_size = take.initial_window_size
-        self.max_frame_size = take.max_frame_size
-        self.max_header_list_size = take.max_header_list_size
-        self.enable_connect_protocol = take.enable_connect_protocol
+    def __init__(out self, *, deinit move: Self):
+        self.header_table_size = move.header_table_size
+        self.enable_push = move.enable_push
+        self.max_concurrent_streams = move.max_concurrent_streams
+        self.initial_window_size = move.initial_window_size
+        self.max_frame_size = move.max_frame_size
+        self.max_header_list_size = move.max_header_list_size
+        self.enable_connect_protocol = move.enable_connect_protocol
 
 
 # ---------------------------------------------------------------------------
@@ -230,29 +230,29 @@ struct H2Event(Copyable, Movable):
         self.flow_controlled_length = 0
         self.message = String("")
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.stream_id = other.stream_id
-        self.headers = other.headers.copy()
-        self.data = other.data.copy()
-        self.error_code = other.error_code
-        self.stream_ended = other.stream_ended
-        self.last_stream_id = other.last_stream_id
-        self.window_increment = other.window_increment
-        self.flow_controlled_length = other.flow_controlled_length
-        self.message = other.message
+    def __init__(out self, *, copy: Self):
+        self.kind = copy.kind
+        self.stream_id = copy.stream_id
+        self.headers = copy.headers.copy()
+        self.data = copy.data.copy()
+        self.error_code = copy.error_code
+        self.stream_ended = copy.stream_ended
+        self.last_stream_id = copy.last_stream_id
+        self.window_increment = copy.window_increment
+        self.flow_controlled_length = copy.flow_controlled_length
+        self.message = copy.message
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.stream_id = take.stream_id
-        self.headers = take.headers^
-        self.data = take.data^
-        self.error_code = take.error_code
-        self.stream_ended = take.stream_ended
-        self.last_stream_id = take.last_stream_id
-        self.window_increment = take.window_increment
-        self.flow_controlled_length = take.flow_controlled_length
-        self.message = take.message^
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.stream_id = move.stream_id
+        self.headers = move.headers^
+        self.data = move.data^
+        self.error_code = move.error_code
+        self.stream_ended = move.stream_ended
+        self.last_stream_id = move.last_stream_id
+        self.window_increment = move.window_increment
+        self.flow_controlled_length = move.flow_controlled_length
+        self.message = move.message^
 
     @staticmethod
     def settings_acknowledged() -> Self:
@@ -415,25 +415,25 @@ struct StreamState(Copyable, Movable):
         self.headers_end_stream = False
         self.data_received = False
 
-    def __init__(out self, *, other: Self):
-        self.lifecycle = other.lifecycle
-        self.send_window = other.send_window
-        self.recv_window = other.recv_window
-        self.recv_window_consumed = other.recv_window_consumed
-        self.expects_continuation = other.expects_continuation
-        self.header_block_buffer = other.header_block_buffer.copy()
-        self.headers_end_stream = other.headers_end_stream
-        self.data_received = other.data_received
+    def __init__(out self, *, copy: Self):
+        self.lifecycle = copy.lifecycle
+        self.send_window = copy.send_window
+        self.recv_window = copy.recv_window
+        self.recv_window_consumed = copy.recv_window_consumed
+        self.expects_continuation = copy.expects_continuation
+        self.header_block_buffer = copy.header_block_buffer.copy()
+        self.headers_end_stream = copy.headers_end_stream
+        self.data_received = copy.data_received
 
-    def __init__(out self, *, deinit take: Self):
-        self.lifecycle = take.lifecycle
-        self.send_window = take.send_window
-        self.recv_window = take.recv_window
-        self.recv_window_consumed = take.recv_window_consumed
-        self.expects_continuation = take.expects_continuation
-        self.header_block_buffer = take.header_block_buffer^
-        self.headers_end_stream = take.headers_end_stream
-        self.data_received = take.data_received
+    def __init__(out self, *, deinit move: Self):
+        self.lifecycle = move.lifecycle
+        self.send_window = move.send_window
+        self.recv_window = move.recv_window
+        self.recv_window_consumed = move.recv_window_consumed
+        self.expects_continuation = move.expects_continuation
+        self.header_block_buffer = move.header_block_buffer^
+        self.headers_end_stream = move.headers_end_stream
+        self.data_received = move.data_received
 
 
 # ---------------------------------------------------------------------------
@@ -448,13 +448,13 @@ struct PendingDataChunk(Copyable, Movable):
         self.data = data^
         self.end_stream = end_stream
 
-    def __init__(out self, *, other: Self):
-        self.data = other.data.copy()
-        self.end_stream = other.end_stream
+    def __init__(out self, *, copy: Self):
+        self.data = copy.data.copy()
+        self.end_stream = copy.end_stream
 
-    def __init__(out self, *, deinit take: Self):
-        self.data = take.data^
-        self.end_stream = take.end_stream
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data^
+        self.end_stream = move.end_stream
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +496,7 @@ struct H2Connection(Movable):
     var _pending_data: Dict[Int, List[PendingDataChunk]]
 
     def __init__(out self, *, client_side: Bool, config: H2Config = H2Config()):
-        self._config = H2Config(other=config)
+        self._config = H2Config(copy=config)
         self._config.client_side = client_side
         self._state = CONN_IDLE
         self._client_side = client_side
@@ -524,28 +524,28 @@ struct H2Connection(Movable):
         self._closed_stream_count = 0
         self._pending_data = Dict[Int, List[PendingDataChunk]]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._config = take._config^
-        self._state = take._state
-        self._client_side = take._client_side
-        self._local_settings = take._local_settings^
-        self._remote_settings = take._remote_settings^
-        self._settings_acked = take._settings_acked
-        self._inbuf = take._inbuf^
-        self._outbuf = take._outbuf^
-        self._streams = take._streams^
-        self._next_stream_id = take._next_stream_id
-        self._last_recv_stream_id = take._last_recv_stream_id
-        self._active_stream_count = take._active_stream_count
-        self._send_window = take._send_window
-        self._recv_window = take._recv_window
-        self._recv_window_consumed = take._recv_window_consumed
-        self._hpack_encoder = take._hpack_encoder^
-        self._hpack_decoder = take._hpack_decoder^
-        self._expecting_continuation_for = take._expecting_continuation_for
-        self._client_magic_validated = take._client_magic_validated
-        self._closed_stream_count = take._closed_stream_count
-        self._pending_data = take._pending_data^
+    def __init__(out self, *, deinit move: Self):
+        self._config = move._config^
+        self._state = move._state
+        self._client_side = move._client_side
+        self._local_settings = move._local_settings^
+        self._remote_settings = move._remote_settings^
+        self._settings_acked = move._settings_acked
+        self._inbuf = move._inbuf^
+        self._outbuf = move._outbuf^
+        self._streams = move._streams^
+        self._next_stream_id = move._next_stream_id
+        self._last_recv_stream_id = move._last_recv_stream_id
+        self._active_stream_count = move._active_stream_count
+        self._send_window = move._send_window
+        self._recv_window = move._recv_window
+        self._recv_window_consumed = move._recv_window_consumed
+        self._hpack_encoder = move._hpack_encoder^
+        self._hpack_decoder = move._hpack_decoder^
+        self._expecting_continuation_for = move._expecting_continuation_for
+        self._client_magic_validated = move._client_magic_validated
+        self._closed_stream_count = move._closed_stream_count
+        self._pending_data = move._pending_data^
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""
@@ -575,10 +575,10 @@ struct H2Connection(Movable):
         return self._next_stream_id
 
     def local_settings(self) -> H2Settings:
-        return H2Settings(other=self._local_settings)
+        return H2Settings(copy=self._local_settings)
 
     def remote_settings(self) -> H2Settings:
-        return H2Settings(other=self._remote_settings)
+        return H2Settings(copy=self._remote_settings)
 
     def peer_max_concurrent_streams_raw(self) -> UInt32:
         """Return the peer's SETTINGS_MAX_CONCURRENT_STREAMS without copying.
@@ -1104,7 +1104,7 @@ struct H2Connection(Movable):
             if stalled:
                 new_queue.append(PendingDataChunk(stall_remainder^, stall_end_stream))
             while idx < len(queue):
-                new_queue.append(PendingDataChunk(other=queue[idx]))
+                new_queue.append(PendingDataChunk(copy=queue[idx]))
                 idx += 1
             self._pending_data[sid] = new_queue^
         self._streams[sid] = stream^
@@ -1348,7 +1348,7 @@ struct H2Connection(Movable):
             if decode_error.byte_length() > 0:
                 self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                 return
-            var s = StreamState(other=stream)
+            var s = StreamState(copy=stream)
             if s.lifecycle == STREAM_HALF_CLOSED_LOCAL:
                 s.lifecycle = STREAM_CLOSED
                 self._active_stream_count -= 1
@@ -1358,7 +1358,7 @@ struct H2Connection(Movable):
             events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
         else:
             # CONTINUATION assembly for trailers
-            var s = StreamState(other=stream)
+            var s = StreamState(copy=stream)
             s.header_block_buffer.extend(Span(hp.headers_block))
             s.expects_continuation = True
             s.headers_end_stream = True  # already validated above

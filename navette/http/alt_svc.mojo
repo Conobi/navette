@@ -20,15 +20,15 @@ struct Origin(Copyable, Movable, KeyElement):
         self.host = host
         self.port = port
 
-    def __init__(out self, *, other: Self):
-        self.scheme = other.scheme.copy()
-        self.host = other.host.copy()
-        self.port = other.port
+    def __init__(out self, *, copy: Self):
+        self.scheme = copy.scheme.copy()
+        self.host = copy.host.copy()
+        self.port = copy.port
 
-    def __init__(out self, *, deinit take: Self):
-        self.scheme = take.scheme^
-        self.host = take.host^
-        self.port = take.port
+    def __init__(out self, *, deinit move: Self):
+        self.scheme = move.scheme^
+        self.host = move.host^
+        self.port = move.port
 
     def __hash__(self) -> UInt64:
         return hash(self.scheme) ^ hash(self.host) ^ UInt64(self.port)
@@ -68,19 +68,19 @@ struct AltSvcEntry(Copyable, Movable):
         self.max_age_secs = max_age_secs
         self.persist = persist
 
-    def __init__(out self, *, other: Self):
-        self.protocol = other.protocol.copy()
-        self.host = other.host.copy()
-        self.port = other.port
-        self.max_age_secs = other.max_age_secs
-        self.persist = other.persist
+    def __init__(out self, *, copy: Self):
+        self.protocol = copy.protocol.copy()
+        self.host = copy.host.copy()
+        self.port = copy.port
+        self.max_age_secs = copy.max_age_secs
+        self.persist = copy.persist
 
-    def __init__(out self, *, deinit take: Self):
-        self.protocol = take.protocol^
-        self.host = take.host^
-        self.port = take.port
-        self.max_age_secs = take.max_age_secs
-        self.persist = take.persist
+    def __init__(out self, *, deinit move: Self):
+        self.protocol = move.protocol^
+        self.host = move.host^
+        self.port = move.port
+        self.max_age_secs = move.max_age_secs
+        self.persist = move.persist
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +214,7 @@ def _parse_one_entry(entry: String) raises -> AltSvcEntry:
     while psi < close_quote:
         port_str += chr(Int(bytes[psi]))
         psi += 1
-    if len(port_str) == 0:
+    if not port_str:
         raise Error("parse_alt_svc: empty port in: " + s)
     var port = UInt16(atol(port_str))
 
@@ -235,7 +235,7 @@ def _parse_one_entry(entry: String) raises -> AltSvcEntry:
     while pidx < len(params):
         var param = _strip_ws(params[pidx])
         pidx += 1
-        if len(param) == 0:
+        if not param:
             continue
         var pbytes = param.as_bytes()
         var pn = len(pbytes)
@@ -289,9 +289,9 @@ struct AltSvcCache(Movable):
         self._entries = Dict[Origin, List[AltSvcEntry]]()
         self._received_at = Dict[Origin, UInt]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._entries = take._entries^
-        self._received_at = take._received_at^
+    def __init__(out self, *, deinit move: Self):
+        self._entries = move._entries^
+        self._received_at = move._received_at^
 
     def insert(
         mut self,
@@ -303,7 +303,7 @@ struct AltSvcCache(Movable):
         `received_at` is the wall-clock time (seconds since some epoch the
         caller controls) when the Alt-Svc header was received; lookup uses
         it together with each entry's max_age_secs to compute expiry."""
-        self._entries[Origin(other=origin)] = entries^
+        self._entries[Origin(copy=origin)] = entries^
         self._received_at[origin^] = received_at
 
     def lookup(self, origin: Origin, now: UInt) raises -> List[AltSvcEntry]:
@@ -316,20 +316,20 @@ struct AltSvcCache(Movable):
         ref entries = self._entries[origin]
         for i in range(len(entries)):
             if received_at + entries[i].max_age_secs > now:
-                out.append(AltSvcEntry(other=entries[i]))
+                out.append(AltSvcEntry(copy=entries[i]))
         return out^
 
     def clear(mut self, origin: Origin) raises:
         """Drop all entries for `origin`, regardless of expiry."""
         if origin in self._entries:
-            _ = self._entries.pop(Origin(other=origin))
-            _ = self._received_at.pop(Origin(other=origin))
+            _ = self._entries.pop(Origin(copy=origin))
+            _ = self._received_at.pop(Origin(copy=origin))
 
     def clear_expired(mut self, now: UInt) raises:
         """Prune origins for which every entry has expired at `now`."""
         var to_drop = List[Origin]()
         for kv in self._entries.items():
-            var origin_copy = Origin(other=kv.key)
+            var origin_copy = Origin(copy=kv.key)
             var received_at = self._received_at[kv.key]
             var any_live = False
             ref entries = kv.value
@@ -340,8 +340,8 @@ struct AltSvcCache(Movable):
             if not any_live:
                 to_drop.append(origin_copy^)
         for j in range(len(to_drop)):
-            _ = self._entries.pop(Origin(other=to_drop[j]))
-            _ = self._received_at.pop(Origin(other=to_drop[j]))
+            _ = self._entries.pop(Origin(copy=to_drop[j]))
+            _ = self._received_at.pop(Origin(copy=to_drop[j]))
 
     def dump(self) raises -> String:
         """Serialize the cache to a tab-delimited text representation.
@@ -365,7 +365,7 @@ struct AltSvcCache(Movable):
                 if i > 0:
                     value = value + ", "
                 value = value + e.protocol + "=\""
-                if len(e.host) > 0:
+                if e.host:
                     value = value + e.host
                 value = value + ":" + String(Int(e.port)) + "\""
                 value = value + "; ma=" + String(Int(e.max_age_secs))
@@ -433,7 +433,7 @@ struct AltSvcCache(Movable):
             var live = List[AltSvcEntry]()
             for j in range(len(entries)):
                 if received_at + entries[j].max_age_secs > now:
-                    live.append(AltSvcEntry(other=entries[j]))
+                    live.append(AltSvcEntry(copy=entries[j]))
             if len(live) == 0:
                 return
             var origin = Origin(
@@ -441,7 +441,7 @@ struct AltSvcCache(Movable):
                 host=fields[1].copy(),
                 port=port,
             )
-            self.insert(Origin(other=origin), live^, received_at)
+            self.insert(Origin(copy=origin), live^, received_at)
         except:
             # Malformed record; skip silently — best-effort load.
             return
@@ -458,7 +458,7 @@ def parse_alt_svc(value: String) raises -> List[AltSvcEntry]:
     Raises on malformed input: missing `=`, missing quotes, missing port,
     non-integer `ma` / `persist` values."""
     var s = _strip_ws(value)
-    if s == String("clear") or len(s) == 0:
+    if s == String("clear") or not s:
         return List[AltSvcEntry]()
     var entry_strs = _split_top_level(s, UInt8(44))   # ','
     var out = List[AltSvcEntry]()

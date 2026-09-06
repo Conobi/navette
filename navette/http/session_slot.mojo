@@ -45,12 +45,12 @@ struct SessionSlot(Movable):
         self.h3 = h3^
         self.idle_since = idle_since
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.h1 = take.h1^
-        self.h2 = take.h2^
-        self.h3 = take.h3^
-        self.idle_since = take.idle_since
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.h1 = move.h1^
+        self.h2 = move.h2^
+        self.h3 = move.h3^
+        self.idle_since = move.idle_since
 
     @staticmethod
     def from_h1(var session: H1Session) -> Self:
@@ -206,13 +206,13 @@ struct SessionSlotPtr(Copyable, Movable):
     def __init__(out self, addr: UInt64):
         self.addr = addr
 
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
+    def __init__(out self, *, copy: Self):
+        self.addr = copy.addr
 
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
+    def __init__(out self, *, deinit move: Self):
+        self.addr = move.addr
 
-    def ptr(self) -> Pointer[SessionSlot, MutAnyOrigin]:
-        return Pointer[SessionSlot, MutAnyOrigin](
+    def ptr(self) -> Pointer[SessionSlot, MutUntrackedOrigin]:
+        return Pointer[SessionSlot, MutUntrackedOrigin](
             unsafe_from_address=Int(self.addr)
         )

@@ -126,38 +126,38 @@ struct StreamMap(Movable):
         self.streams_blocked_at_bidi = UInt64(0)
         self.streams_blocked_at_uni = UInt64(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.streams = take.streams^
-        self.is_server = take.is_server
-        self.conn_fc_recv = take.conn_fc_recv^
-        self.conn_fc_send = take.conn_fc_send^
-        self.local_max_streams_bidi = take.local_max_streams_bidi
-        self.local_max_streams_uni = take.local_max_streams_uni
-        self.peer_max_streams_bidi = take.peer_max_streams_bidi
-        self.peer_max_streams_uni = take.peer_max_streams_uni
-        self.local_opened_bidi = take.local_opened_bidi
-        self.local_opened_uni = take.local_opened_uni
-        self.peer_opened_bidi = take.peer_opened_bidi
-        self.peer_opened_uni = take.peer_opened_uni
-        self.peer_completed_bidi = take.peer_completed_bidi
-        self.peer_completed_uni = take.peer_completed_uni
-        self.initial_max_streams_bidi = take.initial_max_streams_bidi
-        self.initial_max_streams_uni = take.initial_max_streams_uni
-        self.local_stream_fc_window_bidi_local = take.local_stream_fc_window_bidi_local
-        self.local_stream_fc_window_bidi_remote = take.local_stream_fc_window_bidi_remote
-        self.local_stream_fc_window_uni = take.local_stream_fc_window_uni
-        self.peer_stream_fc_limit_bidi_local = take.peer_stream_fc_limit_bidi_local
-        self.peer_stream_fc_limit_bidi_remote = take.peer_stream_fc_limit_bidi_remote
-        self.peer_stream_fc_limit_uni = take.peer_stream_fc_limit_uni
-        self.sendable_ids = take.sendable_ids^
-        self.send_index = take.send_index
-        self.needs_max_data = take.needs_max_data
-        self.needs_max_streams_bidi = take.needs_max_streams_bidi
-        self.needs_max_streams_uni = take.needs_max_streams_uni
-        self.needs_streams_blocked_bidi = take.needs_streams_blocked_bidi
-        self.needs_streams_blocked_uni = take.needs_streams_blocked_uni
-        self.streams_blocked_at_bidi = take.streams_blocked_at_bidi
-        self.streams_blocked_at_uni = take.streams_blocked_at_uni
+    def __init__(out self, *, deinit move: Self):
+        self.streams = move.streams^
+        self.is_server = move.is_server
+        self.conn_fc_recv = move.conn_fc_recv^
+        self.conn_fc_send = move.conn_fc_send^
+        self.local_max_streams_bidi = move.local_max_streams_bidi
+        self.local_max_streams_uni = move.local_max_streams_uni
+        self.peer_max_streams_bidi = move.peer_max_streams_bidi
+        self.peer_max_streams_uni = move.peer_max_streams_uni
+        self.local_opened_bidi = move.local_opened_bidi
+        self.local_opened_uni = move.local_opened_uni
+        self.peer_opened_bidi = move.peer_opened_bidi
+        self.peer_opened_uni = move.peer_opened_uni
+        self.peer_completed_bidi = move.peer_completed_bidi
+        self.peer_completed_uni = move.peer_completed_uni
+        self.initial_max_streams_bidi = move.initial_max_streams_bidi
+        self.initial_max_streams_uni = move.initial_max_streams_uni
+        self.local_stream_fc_window_bidi_local = move.local_stream_fc_window_bidi_local
+        self.local_stream_fc_window_bidi_remote = move.local_stream_fc_window_bidi_remote
+        self.local_stream_fc_window_uni = move.local_stream_fc_window_uni
+        self.peer_stream_fc_limit_bidi_local = move.peer_stream_fc_limit_bidi_local
+        self.peer_stream_fc_limit_bidi_remote = move.peer_stream_fc_limit_bidi_remote
+        self.peer_stream_fc_limit_uni = move.peer_stream_fc_limit_uni
+        self.sendable_ids = move.sendable_ids^
+        self.send_index = move.send_index
+        self.needs_max_data = move.needs_max_data
+        self.needs_max_streams_bidi = move.needs_max_streams_bidi
+        self.needs_max_streams_uni = move.needs_max_streams_uni
+        self.needs_streams_blocked_bidi = move.needs_streams_blocked_bidi
+        self.needs_streams_blocked_uni = move.needs_streams_blocked_uni
+        self.streams_blocked_at_bidi = move.streams_blocked_at_bidi
+        self.streams_blocked_at_uni = move.streams_blocked_at_uni
 
     # ── Handshake completion ─────────────────────────────────────────────────
 
@@ -201,7 +201,7 @@ struct StreamMap(Movable):
             var sid = stream_ids[i]
             if sid not in self.streams:
                 continue
-            var stream = Stream(other=self.streams[sid])
+            var stream = Stream(copy=self.streams[sid])
             if not stream.fc_send:
                 continue
             # Pick the matching peer limit for this stream's direction.
@@ -364,7 +364,7 @@ struct StreamMap(Movable):
         """Get a copy of the stream. Raises if not found."""
         if stream_id not in self.streams:
             raise "stream not found: id=" + String(stream_id)
-        return Stream(other=self.streams[stream_id])
+        return Stream(copy=self.streams[stream_id])
 
     def set_stream(mut self, stream_id: Int, var stream: Stream):
         """Update (replace) a stream in the Dict."""
@@ -377,7 +377,7 @@ struct StreamMap(Movable):
         if stream_id not in self.streams:
             return False
 
-        var s = Stream(other=self.streams[stream_id])
+        var s = Stream(copy=self.streams[stream_id])
         if not s.is_fully_closed():
             return False
 

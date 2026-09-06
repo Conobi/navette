@@ -39,10 +39,10 @@ struct RequestBody(Movable):
         self._bytes = _bytes^
         self._stream = _stream^
 
-    def __init__(out self, *, deinit take: Self):
-        self._tag = take._tag
-        self._bytes = take._bytes^
-        self._stream = take._stream^
+    def __init__(out self, *, deinit move: Self):
+        self._tag = move._tag
+        self._bytes = move._bytes^
+        self._stream = move._stream^
 
     @staticmethod
     def buffered(var bytes: List[UInt8]) -> Self:
@@ -122,13 +122,13 @@ struct Request(Movable):
         self.headers = headers^
         self.body = body^
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.method = take.method^
-        self.target = take.target^
-        self.version = take.version^
-        self.headers = take.headers^
-        self.body = take.body^
+        self.method = move.method^
+        self.target = move.target^
+        self.version = move.version^
+        self.headers = move.headers^
+        self.body = move.body^
 
     def clone(self) raises -> Self:
         """Deep-copy this Request. Raises if the body is a stream — streams
@@ -142,10 +142,10 @@ struct Request(Movable):
         else:
             body_clone = self.body._clone_buffered()
         return Self(
-            method=Method(other=self.method),
+            method=Method(copy=self.method),
             target=self.target,
-            version=Version(other=self.version),
-            headers=Headers(other=self.headers),
+            version=Version(copy=self.version),
+            headers=Headers(copy=self.headers),
             body=body_clone^,
         )
 

@@ -7,12 +7,16 @@ requires-python = ">=3.11"
 dependencies = [
     "boucle @ git+https://github.com/Conobi/boucle",
     "mojox>=0.5",
-    "mojo-compiler==1.0.0b2",
-    "mojo-compiler-mojo-libs==1.0.0b2",
+    "mojo-compiler==1.0.0",
+    "mojo-compiler-mojo-libs==1.0.0",
 ]
 
 [dependency-groups]
 dev = [
+    # Developer toolchain: mojo-lsp-server, mojo-lldb, lldb-dap and the mblack
+    # formatter. Not the compiler -- mojo-compiler above provides that.
+    "mojo==1.0.0",
+    # Python reference implementations, used as conformance oracles.
     "aioquic>=1.3.0",
     "cryptography>=44.0",
     "h11>=0.16.0",
@@ -28,8 +32,8 @@ dev = [
 requires = [
     "mojox-build>=0.5",
     "mojox-core>=0.5",
-    "mojo-compiler==1.0.0b2",
-    "mojo-compiler-mojo-libs==1.0.0b2",
+    "mojo-compiler==1.0.0",
+    "mojo-compiler-mojo-libs==1.0.0",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
     # the project's runtime deps, so boucle is pinned here too.
@@ -42,7 +46,12 @@ build-backend = "mojox_build"
 [tool.mojox]
 packages = ["navette"]
 test-parallel = true
-test-roots = ["tests"]
+test-roots = ["tests", "conformance/tests"]
+# The conformance suite checks navette against reference implementations kept
+# in `conformance/oracle`. That package is only importable with `conformance`
+# on the include path; mojox appends these flags to each run-test command
+# before the source file, which is where `mojo run` still honours them.
+flags = ["-I", "conformance", "-I", "examples/reverse_proxy"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
 # uv-installed deps (boucle) resolve without manual flags.
 
@@ -127,6 +136,6 @@ native-libs = [
 pythonpath = ["."]
 
 [tool.uv]
-# 1.0.0b1 is a pre-release; allow uv to pick it up by default for this project.
+# mojo-compiler-mojo-libs still ships as a pre-release; allow uv to select it.
 prerelease = "allow"
 

@@ -11,7 +11,8 @@
 #   LD_LIBRARY_PATH=lib uv run mojo build -I . interop/client.mojo -o /tmp/interop-client
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer
+from std.collections import Span
 from navette.util.owned_alloc import Owned
 
 from navette.tls.lib import TlsBackend
@@ -33,12 +34,12 @@ def _split_spaces(s: String) raises -> List[String]:
     var s_bytes = s.as_bytes()
     for i in range(len(s_bytes)):
         if s_bytes[i] == UInt8(ord(" ")):
-            if len(current) > 0:
+            if current:
                 parts.append(current)
                 current = String()
         else:
             current += chr(Int(s_bytes[i]))
-    if len(current) > 0:
+    if current:
         parts.append(current)
     return parts^
 
@@ -118,7 +119,7 @@ def _send_datagrams(fd: Int32, datagrams: List[List[UInt8]]) raises:
             var buf_owner = Owned[UInt8](dlen)
             var buf = buf_owner.ptr()
             for j in range(dlen):
-                buf[j] = datagrams[i][j]
+                buf[unsafe_offset=j] = datagrams[i][j]
             _ = external_call["send", Int](fd, buf, dlen, Int32(0))
 
 
@@ -132,7 +133,7 @@ def _recv_datagram(fd: Int32) raises -> List[UInt8]:
         return List[UInt8]()
     var result = List[UInt8](capacity=n)
     for i in range(n):
-        result.append(buf[i])
+        result.append(buf[unsafe_offset=i])
     return result^
 
 

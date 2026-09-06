@@ -46,17 +46,17 @@ struct Headers(Copyable, Movable, Sized):
         self._values = List[String]()
         self._auto_content_type = False
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
-        self._names = other._names.copy()
-        self._values = other._values.copy()
-        self._auto_content_type = other._auto_content_type
+        self._names = copy._names.copy()
+        self._values = copy._values.copy()
+        self._auto_content_type = copy._auto_content_type
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self._names = take._names^
-        self._values = take._values^
-        self._auto_content_type = take._auto_content_type
+        self._names = move._names^
+        self._values = move._values^
+        self._auto_content_type = move._auto_content_type
 
     # --- Size ---
 

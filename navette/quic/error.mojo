@@ -17,21 +17,21 @@ struct QuicTransportError(Copyable, Movable, Writable):
         self.frame_type = frame_type
         self.reason = reason
 
-    def __init__(out self, *, other: Self):
-        self.code = other.code
-        self.frame_type = other.frame_type
-        self.reason = other.reason
+    def __init__(out self, *, copy: Self):
+        self.code = copy.code
+        self.frame_type = copy.frame_type
+        self.reason = copy.reason
 
-    def __init__(out self, *, deinit take: Self):
-        self.code = take.code
-        self.frame_type = take.frame_type
-        self.reason = take.reason^
+    def __init__(out self, *, deinit move: Self):
+        self.code = move.code
+        self.frame_type = move.frame_type
+        self.reason = move.reason^
 
     def write_to[W: Writer](self, mut writer: W):
         writer.write("QuicTransportError(")
         writer.write(hex(Int(self.code)))
         writer.write(")")
-        if len(self.reason) > 0:
+        if self.reason:
             writer.write(": ")
             writer.write(self.reason)
 

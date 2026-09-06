@@ -74,21 +74,21 @@ struct PreferredAddress(Copyable, Movable):
         self.cid = cid.copy()
         self.stateless_reset_token = stateless_reset_token.copy()
 
-    def __init__(out self, *, other: Self):
-        self.ipv4_address = other.ipv4_address.copy()
-        self.ipv4_port = other.ipv4_port
-        self.ipv6_address = other.ipv6_address.copy()
-        self.ipv6_port = other.ipv6_port
-        self.cid = other.cid.copy()
-        self.stateless_reset_token = other.stateless_reset_token.copy()
+    def __init__(out self, *, copy: Self):
+        self.ipv4_address = copy.ipv4_address.copy()
+        self.ipv4_port = copy.ipv4_port
+        self.ipv6_address = copy.ipv6_address.copy()
+        self.ipv6_port = copy.ipv6_port
+        self.cid = copy.cid.copy()
+        self.stateless_reset_token = copy.stateless_reset_token.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.ipv4_address = take.ipv4_address^
-        self.ipv4_port = take.ipv4_port
-        self.ipv6_address = take.ipv6_address^
-        self.ipv6_port = take.ipv6_port
-        self.cid = take.cid^
-        self.stateless_reset_token = take.stateless_reset_token^
+    def __init__(out self, *, deinit move: Self):
+        self.ipv4_address = move.ipv4_address^
+        self.ipv4_port = move.ipv4_port
+        self.ipv6_address = move.ipv6_address^
+        self.ipv6_port = move.ipv6_port
+        self.cid = move.cid^
+        self.stateless_reset_token = move.stateless_reset_token^
 
 
 # ── TransportParams ──────────────────────────────────────────────────
@@ -141,47 +141,47 @@ struct TransportParams(Copyable, Movable):
         self.max_datagram_frame_size = MAX_DATAGRAM_FRAME_SIZE_DISABLED
         self.unknown = Dict[Int, List[UInt8]]()
 
-    def __init__(out self, *, other: Self):
-        self.original_dcid = other.original_dcid.copy()
-        self.max_idle_timeout = other.max_idle_timeout
-        self.stateless_reset_token = other.stateless_reset_token.copy()
-        self.max_udp_payload_size = other.max_udp_payload_size
-        self.initial_max_data = other.initial_max_data
-        self.initial_max_stream_data_bidi_local = other.initial_max_stream_data_bidi_local
-        self.initial_max_stream_data_bidi_remote = other.initial_max_stream_data_bidi_remote
-        self.initial_max_stream_data_uni = other.initial_max_stream_data_uni
-        self.initial_max_streams_bidi = other.initial_max_streams_bidi
-        self.initial_max_streams_uni = other.initial_max_streams_uni
-        self.ack_delay_exponent = other.ack_delay_exponent
-        self.max_ack_delay = other.max_ack_delay
-        self.disable_active_migration = other.disable_active_migration
-        self.preferred_address = other.preferred_address.copy()
-        self.active_connection_id_limit = other.active_connection_id_limit
-        self.initial_scid = other.initial_scid.copy()
-        self.retry_scid = other.retry_scid.copy()
-        self.max_datagram_frame_size = other.max_datagram_frame_size
-        self.unknown = other.unknown.copy()
+    def __init__(out self, *, copy: Self):
+        self.original_dcid = copy.original_dcid.copy()
+        self.max_idle_timeout = copy.max_idle_timeout
+        self.stateless_reset_token = copy.stateless_reset_token.copy()
+        self.max_udp_payload_size = copy.max_udp_payload_size
+        self.initial_max_data = copy.initial_max_data
+        self.initial_max_stream_data_bidi_local = copy.initial_max_stream_data_bidi_local
+        self.initial_max_stream_data_bidi_remote = copy.initial_max_stream_data_bidi_remote
+        self.initial_max_stream_data_uni = copy.initial_max_stream_data_uni
+        self.initial_max_streams_bidi = copy.initial_max_streams_bidi
+        self.initial_max_streams_uni = copy.initial_max_streams_uni
+        self.ack_delay_exponent = copy.ack_delay_exponent
+        self.max_ack_delay = copy.max_ack_delay
+        self.disable_active_migration = copy.disable_active_migration
+        self.preferred_address = copy.preferred_address.copy()
+        self.active_connection_id_limit = copy.active_connection_id_limit
+        self.initial_scid = copy.initial_scid.copy()
+        self.retry_scid = copy.retry_scid.copy()
+        self.max_datagram_frame_size = copy.max_datagram_frame_size
+        self.unknown = copy.unknown.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.original_dcid = take.original_dcid^
-        self.max_idle_timeout = take.max_idle_timeout
-        self.stateless_reset_token = take.stateless_reset_token^
-        self.max_udp_payload_size = take.max_udp_payload_size
-        self.initial_max_data = take.initial_max_data
-        self.initial_max_stream_data_bidi_local = take.initial_max_stream_data_bidi_local
-        self.initial_max_stream_data_bidi_remote = take.initial_max_stream_data_bidi_remote
-        self.initial_max_stream_data_uni = take.initial_max_stream_data_uni
-        self.initial_max_streams_bidi = take.initial_max_streams_bidi
-        self.initial_max_streams_uni = take.initial_max_streams_uni
-        self.ack_delay_exponent = take.ack_delay_exponent
-        self.max_ack_delay = take.max_ack_delay
-        self.disable_active_migration = take.disable_active_migration
-        self.preferred_address = take.preferred_address^
-        self.active_connection_id_limit = take.active_connection_id_limit
-        self.initial_scid = take.initial_scid^
-        self.retry_scid = take.retry_scid^
-        self.max_datagram_frame_size = take.max_datagram_frame_size
-        self.unknown = take.unknown^
+    def __init__(out self, *, deinit move: Self):
+        self.original_dcid = move.original_dcid^
+        self.max_idle_timeout = move.max_idle_timeout
+        self.stateless_reset_token = move.stateless_reset_token^
+        self.max_udp_payload_size = move.max_udp_payload_size
+        self.initial_max_data = move.initial_max_data
+        self.initial_max_stream_data_bidi_local = move.initial_max_stream_data_bidi_local
+        self.initial_max_stream_data_bidi_remote = move.initial_max_stream_data_bidi_remote
+        self.initial_max_stream_data_uni = move.initial_max_stream_data_uni
+        self.initial_max_streams_bidi = move.initial_max_streams_bidi
+        self.initial_max_streams_uni = move.initial_max_streams_uni
+        self.ack_delay_exponent = move.ack_delay_exponent
+        self.max_ack_delay = move.max_ack_delay
+        self.disable_active_migration = move.disable_active_migration
+        self.preferred_address = move.preferred_address^
+        self.active_connection_id_limit = move.active_connection_id_limit
+        self.initial_scid = move.initial_scid^
+        self.retry_scid = move.retry_scid^
+        self.max_datagram_frame_size = move.max_datagram_frame_size
+        self.unknown = move.unknown^
 
 
 # ── Defaults ─────────────────────────────────────────────────────────

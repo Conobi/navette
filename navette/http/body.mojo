@@ -52,19 +52,19 @@ struct BodyFrame(Copyable, Movable):
 
     # --- Copy / Move ---
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
-        self._tag = other._tag
-        self._data = other._data.copy()
-        self._headers = Headers(other=other._headers)
-        self._error = other._error.copy()
+        self._tag = copy._tag
+        self._data = copy._data.copy()
+        self._headers = Headers(copy=copy._headers)
+        self._error = copy._error.copy()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self._tag = take._tag
-        self._data = take._data^
-        self._headers = take._headers^
-        self._error = take._error^
+        self._tag = move._tag
+        self._data = move._data^
+        self._headers = move._headers^
+        self._error = move._error^
 
     # --- Factory methods ---
 

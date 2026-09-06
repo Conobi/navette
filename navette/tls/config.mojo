@@ -37,7 +37,7 @@ struct TlsClientConfig(Movable):
             insecure: If True, use a config that accepts any certificate.
                       Requires librustls_mojo.so built with --features insecure.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
         var rlib = self._lib.inner_ptr()
         if insecure:
             self._handle = rlib[].client_config_new_insecure()
@@ -46,13 +46,36 @@ struct TlsClientConfig(Movable):
         if self._handle < 0:
             raise "rlsm_client_config_new failed: " + rlib[].last_error()
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
 
     def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:
@@ -103,7 +126,7 @@ struct TlsServerConfig(Movable):
         FFI call and freed before returning, so the caller's spans only
         need to be valid for the duration of `__init__`.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
@@ -131,13 +154,36 @@ struct TlsServerConfig(Movable):
             raise "rlsm_server_config_new failed: " + rlib[].last_error()
         self._handle = handle
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
 
     def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:
@@ -225,7 +271,7 @@ struct QuicServerConfig(Movable):
             cert_pem: PEM-encoded certificate chain bytes.
             key_pem: PEM-encoded private-key bytes.
             alpn: ALPN protocol id (default "h3").
-            max_early_data: legacy 0-RTT enable knob, kept for
+            max_early_data: Legacy 0-RTT enable knob, kept for
                 backward compatibility with existing callers. `None`
                 (omitted) defers entirely to `policy`. `UInt32(0)`
                 explicitly disables 0-RTT (rejection mode);
@@ -234,7 +280,7 @@ struct QuicServerConfig(Movable):
                 into the Optional; bare integer literals do not —
                 pass `UInt32(...)`. Prefer the `policy=` kwarg for
                 new code.
-            policy: public `EarlyDataPolicy` ctor kwarg (default
+            policy: Public `EarlyDataPolicy` ctor kwarg (default
                 `None`, meaning "kwarg omitted; honor the legacy
                 `max_early_data` reading unchanged"). When the caller
                 supplies a non-None policy, it overrides the legacy
@@ -318,7 +364,7 @@ struct QuicServerConfig(Movable):
         else:
             effective_max_early_data = UInt32(0)
 
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
@@ -360,7 +406,7 @@ struct QuicServerConfig(Movable):
             self._early_data_filter = None
             self._early_data_predicate_fn = None
             raise "quic_server_config_new failed: " + err
-        self._handle = out_handle[0]
+        self._handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above
         # (origin-tie should suffice; defensive against ASAP free).
         _ = out_handle_buf
@@ -409,17 +455,40 @@ struct QuicServerConfig(Movable):
             )
             self._early_data_predicate_fn = None
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
-        self._max_early_data = take._max_early_data
-        self._early_data_store = take._early_data_store^
-        self._early_data_filter = take._early_data_filter^
-        self._early_data_predicate_fn = take._early_data_predicate_fn
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
+        self._max_early_data = move._max_early_data
+        self._early_data_store = move._early_data_store^
+        self._early_data_filter = move._early_data_filter^
+        self._early_data_predicate_fn = move._early_data_predicate_fn
 
     def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:
@@ -454,7 +523,7 @@ struct QuicClientConfig(Movable):
             insecure: If True, accept any server certificate.
                       Requires librustls_mojo.so built with --features insecure.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
@@ -488,7 +557,7 @@ struct QuicClientConfig(Movable):
 
     def __init__(out self, *, _lib: SharedLibrary, _handle: Int32):
         """Private constructor for static factory methods."""
-        self._lib = SharedLibrary(other=_lib)
+        self._lib = SharedLibrary(copy=_lib)
         self._handle = _handle
 
     @staticmethod
@@ -530,18 +599,41 @@ struct QuicClientConfig(Movable):
         if rc != 0:
             var err = rlib[].last_error()
             raise "quic_client_config_with_ca failed: " + err
-        var handle = out_handle[0]
+        var handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
         return QuicClientConfig(_lib=lib, _handle=handle)
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
 
     def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:

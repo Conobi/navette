@@ -1,4 +1,4 @@
-"""owned_alloc.mojo — `Owned[T]`, a RAII owner over `memory.alloc.Allocation[T]`.
+"""`Owned[T]`, a RAII owner over `memory.alloc.Allocation[T]`.
 
 `Owned[T]` wraps the b2 `Allocation[T]` handle in an *implicitly*-destructible
 struct. Because a plain struct's `__del__` runs on **every** path — normal
@@ -8,7 +8,7 @@ without the per-error-path `dealloc` bookkeeping that the bare
 compiler-checked inside `__del__` (the `Allocation` is consumed exactly once),
 so the safety guarantee is preserved while the call sites stay mechanical.
 
-This replaces the raw `std.memory.unsafe_pointer.alloc` (`_heap_alloc`) +
+This replaces the raw `std.memory.alloc.unsafe_alloc` (`_heap_alloc`) +
 manual `.free()` pattern, whose `.free()` was silently skipped on any
 intervening `raise` (a latent leak-on-error). With `Owned[T]` that free is
 automatic on the raise path too.

@@ -132,11 +132,11 @@ struct IdempotentOnlyFilter(EarlyDataFilter):
         """Default constructor — no state to initialise."""
         pass
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy-like constructor for trait-bound generic code; stateless."""
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move-from constructor for trait-bound generic code; stateless."""
         pass
 

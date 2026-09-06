@@ -106,13 +106,13 @@ struct _H3StreamCtx(Movable):
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.recv_body = take.recv_body^
-        self.resp_writer = take.resp_writer^
-        self.detached = take.detached
-        self.request_ended = take.request_ended
-        self.response_ended = take.response_ended
-        self.headers_sent = take.headers_sent
+    def __init__(out self, *, deinit move: Self):
+        self.recv_body = move.recv_body^
+        self.resp_writer = move.resp_writer^
+        self.detached = move.detached
+        self.request_ended = move.request_ended
+        self.response_ended = move.response_ended
+        self.headers_sent = move.headers_sent
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _h3:      H3Connection
     var handler:  Self.H
     var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled via the IdempotentOnly / Tuned
@@ -137,7 +137,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     # 0-RTT-arrived request, the dispatch helper takes the fail-closed
     # branch (a config-invariant violation; misconfig_fail_closed bumps).
     var _early_data_filter_ptr: Optional[
-        Pointer[IdempotentOnlyFilter, MutAnyOrigin]
+        Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
     ]
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate fn, propagated from
@@ -152,9 +152,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         *,
         var quic: QuicConnection,
         var handler: Self.H,
-        profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]] = None,
+        profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         early_data_filter_ptr: Optional[
-            Pointer[IdempotentOnlyFilter, MutAnyOrigin]
+            Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
@@ -169,13 +169,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
 
-    def __init__(out self, *, deinit take: Self):
-        self._h3 = take._h3^
-        self.handler = take.handler^
-        self._streams = take._streams^
-        self.profile_ptr = take.profile_ptr
-        self._early_data_filter_ptr = take._early_data_filter_ptr
-        self._early_data_predicate_fn = take._early_data_predicate_fn
+    def __init__(out self, *, deinit move: Self):
+        self._h3 = move._h3^
+        self.handler = move.handler^
+        self._streams = move._streams^
+        self.profile_ptr = move.profile_ptr
+        self._early_data_filter_ptr = move._early_data_filter_ptr
+        self._early_data_predicate_fn = move._early_data_predicate_fn
 
     def __deinit__(deinit self):
         var keys = List[Int]()
@@ -199,7 +199,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: Pointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutUntrackedOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:
@@ -383,7 +383,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
         var detached = body._state == 3
 
-        var ctx_ptr = _heap_alloc[_H3StreamCtx](1).as_unsafe_any_origin()
+        var ctx_ptr = _heap_alloc[_H3StreamCtx](1)
         var ctx = _H3StreamCtx()
         ctx.recv_body = body^
         ctx.resp_writer = resp^
@@ -429,7 +429,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        # Taken out of the slot purely so it is destroyed; nothing below
+        # reads it, and nothing it owns is touched before the block ends.
+        _ = ctx_ptr.unsafe_take_pointee()
         var err = StreamError.rst_stream(UInt32(ev.error_code))
         self.handler.on_reset(err)
         _ = self._streams.pop(sid)

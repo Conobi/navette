@@ -42,17 +42,17 @@ struct H3StreamCtx(Copyable, Movable):
         self.settings_seen = settings_seen
         self.first_frame_seen = first_frame_seen
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.headers_seen = other.headers_seen
-        self.settings_seen = other.settings_seen
-        self.first_frame_seen = other.first_frame_seen
+    def __init__(out self, *, copy: Self):
+        self.kind = copy.kind
+        self.headers_seen = copy.headers_seen
+        self.settings_seen = copy.settings_seen
+        self.first_frame_seen = copy.first_frame_seen
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.headers_seen = take.headers_seen
-        self.settings_seen = take.settings_seen
-        self.first_frame_seen = take.first_frame_seen
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.headers_seen = move.headers_seen
+        self.settings_seen = move.settings_seen
+        self.first_frame_seen = move.first_frame_seen
 
 
 def predicate_f31_data_before_headers(frame_type: UInt64, ctx: H3StreamCtx) -> Optional[GuardVerdict]:

@@ -14,13 +14,13 @@ struct CryptoFragment(Copyable, Movable):
         self.offset = offset
         self.data = List[UInt8](copy=data)
 
-    def __init__(out self, *, other: Self):
-        self.offset = other.offset
-        self.data = List[UInt8](copy=other.data)
+    def __init__(out self, *, copy: Self):
+        self.offset = copy.offset
+        self.data = List[UInt8](copy=copy.data)
 
-    def __init__(out self, *, deinit take: Self):
-        self.offset = take.offset
-        self.data = take.data^
+    def __init__(out self, *, deinit move: Self):
+        self.offset = move.offset
+        self.data = move.data^
 
 
 struct CryptoStream(Copyable, Movable):
@@ -37,19 +37,19 @@ struct CryptoStream(Copyable, Movable):
         self.send_offset = UInt64(0)
         self.send_buf = List[UInt8]()
 
-    def __init__(out self, *, other: Self):
-        self.recv_offset = other.recv_offset
-        self.recv_buf = List[UInt8](copy=other.recv_buf)
-        self.pending_fragments = List[CryptoFragment](copy=other.pending_fragments)
-        self.send_offset = other.send_offset
-        self.send_buf = List[UInt8](copy=other.send_buf)
+    def __init__(out self, *, copy: Self):
+        self.recv_offset = copy.recv_offset
+        self.recv_buf = List[UInt8](copy=copy.recv_buf)
+        self.pending_fragments = List[CryptoFragment](copy=copy.pending_fragments)
+        self.send_offset = copy.send_offset
+        self.send_buf = List[UInt8](copy=copy.send_buf)
 
-    def __init__(out self, *, deinit take: Self):
-        self.recv_offset = take.recv_offset
-        self.recv_buf = take.recv_buf^
-        self.pending_fragments = take.pending_fragments^
-        self.send_offset = take.send_offset
-        self.send_buf = take.send_buf^
+    def __init__(out self, *, deinit move: Self):
+        self.recv_offset = move.recv_offset
+        self.recv_buf = move.recv_buf^
+        self.pending_fragments = move.pending_fragments^
+        self.send_offset = move.send_offset
+        self.send_buf = move.send_buf^
 
     def receive(mut self, offset: UInt64, data: Span[UInt8, _]) raises:
         """Reassemble incoming CRYPTO frame data at the given offset."""
@@ -102,7 +102,7 @@ struct CryptoStream(Copyable, Movable):
                     var new_frags = List[CryptoFragment]()
                     for k in range(len(self.pending_fragments)):
                         if k != i:
-                            new_frags.append(CryptoFragment(other=self.pending_fragments[k]))
+                            new_frags.append(CryptoFragment(copy=self.pending_fragments[k]))
                     self.pending_fragments = new_frags^
                     merged = True
                     break

@@ -119,19 +119,19 @@ struct H1Connection(Movable):
         self._is_http10 = False
         self._pending_method = Optional[Method]()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self._inbound_buf = take._inbound_buf^
-        self._outbound_buf = take._outbound_buf^
-        self._phase = take._phase
-        self._keep_alive = take._keep_alive
-        self._config = take._config^
-        self._last_scanned = take._last_scanned
-        self._inbound_cursor = take._inbound_cursor
-        self._messages_parsed = take._messages_parsed
-        self._version_seen = take._version_seen
-        self._is_http10 = take._is_http10
-        self._pending_method = take._pending_method^
+        self._inbound_buf = move._inbound_buf^
+        self._outbound_buf = move._outbound_buf^
+        self._phase = move._phase
+        self._keep_alive = move._keep_alive
+        self._config = move._config^
+        self._last_scanned = move._last_scanned
+        self._inbound_cursor = move._inbound_cursor
+        self._messages_parsed = move._messages_parsed
+        self._version_seen = move._version_seen
+        self._is_http10 = move._is_http10
+        self._pending_method = move._pending_method^
 
     # --- Inbound API ---
 
@@ -193,7 +193,7 @@ struct H1Connection(Movable):
 
         # Track the in-flight method so the matching response can suppress
         # the body when the request was HEAD.
-        self._pending_method = Optional[Method](Method(other=req.method))
+        self._pending_method = Optional[Method](Method(copy=req.method))
 
         if not self._keep_alive:
             self._phase = PHASE_MUST_CLOSE
@@ -215,7 +215,7 @@ struct H1Connection(Movable):
         if self._phase != PHASE_IDLE:
             return Optional[Response]()
 
-        var method_for_parser = Method(other=request_method)
+        var method_for_parser = Method(copy=request_method)
         var result = try_parse_response(
             self._inbound_buf,
             self._inbound_cursor,
@@ -224,7 +224,7 @@ struct H1Connection(Movable):
             self._config,
         )
 
-        if len(result.error) > 0:
+        if result.error:
             self._phase = PHASE_ERROR
             return Optional[Response]()
 

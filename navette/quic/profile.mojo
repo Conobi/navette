@@ -19,7 +19,7 @@ comptime _CLOCK_MONOTONIC: Int32 = 1
 
 
 def monotonic_us() -> UInt64:
-    """clock_gettime(CLOCK_MONOTONIC) → microseconds. Sans-I/O.
+    """`clock_gettime(CLOCK_MONOTONIC)` in microseconds. Sans-I/O.
 
     Uses a stack-allocated InlineArray[Int64, 2] for the timespec to avoid
     the heap-alloc + free that previously fired on every call. On-build
@@ -43,7 +43,7 @@ struct AcceptProfile(Copyable, Movable):
     per_pkt_total_buckets, hs_latency_us). Each `=` or pass-by-value
     triggers a deep copy of those lists — silently expensive on hot
     paths. Production code threads `AcceptProfile` exclusively via
-    `UnsafePointer[AcceptProfile, MutAnyOrigin]` (see QuicConnection
+    `UnsafePointer[AcceptProfile, MutUntrackedOrigin]` (see QuicConnection
     .profile_ptr and H3UdpHandler.profile). Do NOT copy.
     """
 

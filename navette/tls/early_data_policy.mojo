@@ -64,17 +64,17 @@ struct EarlyDataPolicy(Copyable, Movable):
         self._store_config = default_early_data_store_config()
         self._predicate_fn = Optional[EarlyDataPredicateFn](None)
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy-construct from another policy; preserves variant + config + predicate-fn."""
-        self._kind = other._kind
-        self._store_config = other._store_config.copy()
-        self._predicate_fn = other._predicate_fn
+        self._kind = copy._kind
+        self._store_config = copy._store_config.copy()
+        self._predicate_fn = copy._predicate_fn
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move-construct; preserves variant + config + predicate-fn."""
-        self._kind = take._kind
-        self._store_config = take._store_config.copy()
-        self._predicate_fn = take._predicate_fn
+        self._kind = move._kind
+        self._store_config = move._store_config.copy()
+        self._predicate_fn = move._predicate_fn
 
     @staticmethod
     def off() -> Self:

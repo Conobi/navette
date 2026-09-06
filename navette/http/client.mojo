@@ -73,14 +73,14 @@ struct HttpClient(Movable):
         self._max_redirects = max_redirects
         self._retry_idempotent = retry_idempotent
 
-    def __init__(out self, *, deinit take: Self):
-        self._pool = take._pool^
-        self._handle_slot = take._handle_slot^
-        self._max_conns_h1 = take._max_conns_h1
-        self._max_conns_mux = take._max_conns_mux
-        self._idle_timeout_ms = take._idle_timeout_ms
-        self._max_redirects = take._max_redirects
-        self._retry_idempotent = take._retry_idempotent
+    def __init__(out self, *, deinit move: Self):
+        self._pool = move._pool^
+        self._handle_slot = move._handle_slot^
+        self._max_conns_h1 = move._max_conns_h1
+        self._max_conns_mux = move._max_conns_mux
+        self._idle_timeout_ms = move._idle_timeout_ms
+        self._max_redirects = move._max_redirects
+        self._retry_idempotent = move._retry_idempotent
 
     def __deinit__(deinit self):
         """Free all heap-allocated session slots."""
@@ -124,7 +124,7 @@ struct HttpClient(Movable):
             if len(existing) >= max_conns:
                 raise Error("HttpClient: max connections reached for origin")
 
-        var ptr = _heap_alloc[SessionSlot](1).as_unsafe_any_origin()
+        var ptr = _heap_alloc[SessionSlot](1)
         ptr.unsafe_write(slot^)
         var slot_ptr = SessionSlotPtr(UInt64(Int(ptr)))
         if origin not in self._pool:
@@ -138,7 +138,7 @@ struct HttpClient(Movable):
         """Evict sessions idle longer than timeout."""
         var origins = List[Origin]()
         for kv in self._pool.items():
-            origins.append(Origin(other=kv.key))
+            origins.append(Origin(copy=kv.key))
         for oi in range(len(origins)):
             try:
                 ref slots = self._pool[origins[oi]]
@@ -149,8 +149,8 @@ struct HttpClient(Movable):
                         p.unsafe_deinit_pointee()
                         p.unsafe_free()
                     else:
-                        keep.append(SessionSlotPtr(other=slots[i]))
-                self._pool[Origin(other=origins[oi])] = keep^
+                        keep.append(SessionSlotPtr(copy=slots[i]))
+                self._pool[Origin(copy=origins[oi])] = keep^
             except:
                 pass
 
@@ -193,7 +193,7 @@ struct HttpClient(Movable):
         # Route to the correct slot via handle mapping
         if hid in self._handle_slot:
             var addr = self._handle_slot[hid]
-            var p = Pointer[SessionSlot, MutAnyOrigin](
+            var p = Pointer[SessionSlot, MutUntrackedOrigin](
                 unsafe_from_address=addr
             )
             p[].run_one(handle)
@@ -248,7 +248,7 @@ struct HttpClient(Movable):
             # 307/308: preserve method + body
             if original.body.is_stream():
                 raise Error("HttpClient: cannot follow 307/308 redirect with stream body")
-            new_method = Method(other=original.method)
+            new_method = Method(copy=original.method)
             if original.body.is_buffered():
                 new_body = original.body._clone_buffered()
             else:
@@ -261,7 +261,7 @@ struct HttpClient(Movable):
         else:
             target = location
         # Build new headers — drop Authorization for security
-        var hdrs = Headers(other=original.headers)
+        var hdrs = Headers(copy=original.headers)
         hdrs.remove("authorization")
         return Request(method=new_method^, target=target, headers=hdrs^, body=new_body^)
 

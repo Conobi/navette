@@ -40,10 +40,10 @@ struct H1HandlerServer[H: StreamHandler](Movable):
         self.handler = handler^
         self._peer_addr = peer_addr^
 
-    def __init__(out self, *, deinit take: Self):
-        self._conn = take._conn^
-        self.handler = take.handler^
-        self._peer_addr = take._peer_addr^
+    def __init__(out self, *, deinit move: Self):
+        self._conn = move._conn^
+        self.handler = move.handler^
+        self._peer_addr = move._peer_addr^
 
     # --- Transport bridging API ---
 
@@ -108,7 +108,7 @@ struct H1HandlerServer[H: StreamHandler](Movable):
         var info_headers = resp_writer._take_informational_headers()
         var ii = 0
         while ii < len(info_statuses):
-            self._conn.send_informational(info_statuses[ii].copy(), Headers(other=info_headers[ii]))
+            self._conn.send_informational(info_statuses[ii].copy(), Headers(copy=info_headers[ii]))
             ii += 1
 
         var status_opt = resp_writer._take_status()

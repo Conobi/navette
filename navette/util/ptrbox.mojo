@@ -1,5 +1,5 @@
 """PtrBox[T] — typed, Copyable+Movable wrapper around a heap-allocated
-UnsafePointer[T, MutAnyOrigin].
+UnsafePointer[T, MutUntrackedOrigin].
 
 Replaces the scattered `UInt64`-as-address pattern previously used in h2/h3
 session and server adapters (`_ClientStreamPtr`, `_StreamPtr`,
@@ -18,22 +18,22 @@ from navette.util.null_ptr import null_ptr
 
 
 struct PtrBox[T: AnyType](Copyable, Movable):
-    var _ptr: Pointer[Self.T, MutAnyOrigin]
+    var _ptr: Pointer[Self.T, MutUntrackedOrigin]
 
-    def __init__(out self, ptr: Pointer[Self.T, MutAnyOrigin]):
+    def __init__(out self, ptr: Pointer[Self.T, MutUntrackedOrigin]):
         self._ptr = ptr
 
     @staticmethod
     def null() -> Self:
-        return PtrBox[Self.T](null_ptr[Self.T, MutAnyOrigin]())
+        return PtrBox[Self.T](null_ptr[Self.T, MutUntrackedOrigin]())
 
-    def __init__(out self, *, other: Self):
-        self._ptr = other._ptr
+    def __init__(out self, *, copy: Self):
+        self._ptr = copy._ptr
 
-    def __init__(out self, *, deinit take: Self):
-        self._ptr = take._ptr
+    def __init__(out self, *, deinit move: Self):
+        self._ptr = move._ptr
 
-    def ptr(self) -> Pointer[Self.T, MutAnyOrigin]:
+    def ptr(self) -> Pointer[Self.T, MutUntrackedOrigin]:
         return self._ptr
 
     def is_some(self) -> Bool:

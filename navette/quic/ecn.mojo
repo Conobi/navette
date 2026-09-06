@@ -37,15 +37,15 @@ struct EcnCounts(Copyable, Movable):
         self.ect1 = ect1
         self.ce = ce
 
-    def __init__(out self, *, other: Self):
-        self.ect0 = other.ect0
-        self.ect1 = other.ect1
-        self.ce = other.ce
+    def __init__(out self, *, copy: Self):
+        self.ect0 = copy.ect0
+        self.ect1 = copy.ect1
+        self.ce = copy.ce
 
-    def __init__(out self, *, deinit take: Self):
-        self.ect0 = take.ect0
-        self.ect1 = take.ect1
-        self.ce = take.ce
+    def __init__(out self, *, deinit move: Self):
+        self.ect0 = move.ect0
+        self.ect1 = move.ect1
+        self.ce = move.ce
 
     def total(self) -> UInt64:
         """Sum of all three codepoint counts."""

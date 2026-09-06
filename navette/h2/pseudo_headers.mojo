@@ -135,13 +135,13 @@ def request_to_h2_headers(req: Request) raises -> List[Header]:
     # :scheme from x-h2-scheme or default "https" (skip for CONNECT)
     if not req.method.is_connect():
         var scheme = req.headers.get("x-h2-scheme")
-        if len(scheme) == 0:
+        if not scheme:
             scheme = "https"
         result.append(Header(":scheme", scheme))
 
     # :authority from host header
     var host = req.headers.get("host")
-    if len(host) > 0:
+    if host:
         result.append(Header(":authority", host))
 
     # Regular headers, skipping host and x-h2-scheme

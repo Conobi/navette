@@ -3,6 +3,8 @@
 # RFC 9204 (QPACK), RFC 7541 Appendix B (Huffman table)
 
 
+from navette.util.byte_string import bytes_to_string
+
 struct QpackStaticEntry(Copyable, Movable):
     var name: String
     var value: String
@@ -837,7 +839,7 @@ def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeRes
     if h_bit:
         return _StrDecodeResult(huffman_decode(raw), pos)
     else:
-        var s = String(unsafe_from_utf8=raw)
+        var s = bytes_to_string(raw^)
         return _StrDecodeResult(s, pos)
 
 
@@ -868,7 +870,7 @@ def _qpack_decode_string_with_tables(
     if h_bit:
         return _StrDecodeResult(_huffman_decode_with_tables(raw, trie, fast), pos)
     else:
-        var s = String(unsafe_from_utf8=raw)
+        var s = bytes_to_string(raw^)
         return _StrDecodeResult(s, pos)
 
 
@@ -1070,7 +1072,7 @@ struct QpackDecoder(Copyable, Movable):
                 if name_huffman:
                     field_name = _huffman_decode_with_tables(name_raw, trie, fast)
                 else:
-                    field_name = String(unsafe_from_utf8=name_raw)
+                    field_name = bytes_to_string(name_raw^)
                 var vr = _qpack_decode_string_with_tables(data, pos, trie, fast)
                 var value = vr.value
                 pos = vr.new_offset

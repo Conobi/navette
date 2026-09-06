@@ -1,3 +1,4 @@
+*.mojoc
 # Mojo
 *.mojopkg
 __pycache__/

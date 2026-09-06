@@ -1,11 +1,12 @@
-"""navette runtime — socket setup helpers.
+"""Runtime helpers for socket setup.
 
 Thin wrappers over the Linux socket syscalls the example servers use to
 create listeners and client connections (`tcp_listener`, `udp_listener`,
 `tcp_connect`, `udp_connect`, `tcp_v4_nonblocking`).
 
-The event loop itself is boucle's `CompletionLoop` / `BatchCompletionLoop`,
-which the H1/H2/H3 server runtimes drive directly.
+The event loop itself is boucle's `WatchLoop` (or the lower-level
+`boucle.proactor.CompletionLoop`), which the H1/H2/H3 server runtimes drive
+directly.
 """
 
 from .socket_helpers import (

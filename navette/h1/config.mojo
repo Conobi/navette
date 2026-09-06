@@ -1,7 +1,7 @@
 # src/h1/config.mojo
 #
 # Parser configuration — strictness flags and limits.
-# Migrated from conformance/lib/http1/types.mojo.
+# Migrated from conformance/oracle/http1/types.mojo.
 
 
 struct ParserStrictness(Copyable, Movable):
@@ -85,60 +85,60 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_lenient_keep_alive = allow_lenient_keep_alive
         self.allow_prefix_crlf = allow_prefix_crlf
 
-    def __init__(out self, *, other: Self):
-        self.allow_bare_lf = other.allow_bare_lf
-        self.allow_bare_cr_in_value = other.allow_bare_cr_in_value
-        self.allow_http_09 = other.allow_http_09
-        self.allow_nonstandard_version = other.allow_nonstandard_version
-        self.allow_multiple_spaces = other.allow_multiple_spaces
-        self.allow_obs_fold = other.allow_obs_fold
-        self.allow_space_before_colon = other.allow_space_before_colon
-        self.allow_header_value_ctl = other.allow_header_value_ctl
-        self.allow_target_ctl = other.allow_target_ctl
-        self.ignore_invalid_header_names = other.ignore_invalid_header_names
-        self.allow_non_chunked_te = other.allow_non_chunked_te
-        self.allow_chunk_extensions = other.allow_chunk_extensions
-        self.allow_cl_leading_zeros = other.allow_cl_leading_zeros
-        self.allow_duplicate_cl = other.allow_duplicate_cl
-        self.allow_missing_host_11 = other.allow_missing_host_11
-        self.allow_duplicate_host = other.allow_duplicate_host
-        self.allow_multiple_spaces_in_status_line = other.allow_multiple_spaces_in_status_line
-        self.allow_space_before_first_header = other.allow_space_before_first_header
-        self.allow_missing_crlf_after_chunk = other.allow_missing_crlf_after_chunk
-        self.allow_missing_reason_sp = other.allow_missing_reason_sp
-        self.allow_response_cl_te = other.allow_response_cl_te
-        self.allow_data_after_close = other.allow_data_after_close
-        self.allow_lenient_keep_alive = other.allow_lenient_keep_alive
-        self.allow_prefix_crlf = other.allow_prefix_crlf
+    def __init__(out self, *, copy: Self):
+        self.allow_bare_lf = copy.allow_bare_lf
+        self.allow_bare_cr_in_value = copy.allow_bare_cr_in_value
+        self.allow_http_09 = copy.allow_http_09
+        self.allow_nonstandard_version = copy.allow_nonstandard_version
+        self.allow_multiple_spaces = copy.allow_multiple_spaces
+        self.allow_obs_fold = copy.allow_obs_fold
+        self.allow_space_before_colon = copy.allow_space_before_colon
+        self.allow_header_value_ctl = copy.allow_header_value_ctl
+        self.allow_target_ctl = copy.allow_target_ctl
+        self.ignore_invalid_header_names = copy.ignore_invalid_header_names
+        self.allow_non_chunked_te = copy.allow_non_chunked_te
+        self.allow_chunk_extensions = copy.allow_chunk_extensions
+        self.allow_cl_leading_zeros = copy.allow_cl_leading_zeros
+        self.allow_duplicate_cl = copy.allow_duplicate_cl
+        self.allow_missing_host_11 = copy.allow_missing_host_11
+        self.allow_duplicate_host = copy.allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = copy.allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = copy.allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = copy.allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = copy.allow_missing_reason_sp
+        self.allow_response_cl_te = copy.allow_response_cl_te
+        self.allow_data_after_close = copy.allow_data_after_close
+        self.allow_lenient_keep_alive = copy.allow_lenient_keep_alive
+        self.allow_prefix_crlf = copy.allow_prefix_crlf
 
-    def __init__(out self, *, deinit take: Self):
-        self.allow_bare_lf = take.allow_bare_lf
-        self.allow_bare_cr_in_value = take.allow_bare_cr_in_value
-        self.allow_http_09 = take.allow_http_09
-        self.allow_nonstandard_version = take.allow_nonstandard_version
-        self.allow_multiple_spaces = take.allow_multiple_spaces
-        self.allow_obs_fold = take.allow_obs_fold
-        self.allow_space_before_colon = take.allow_space_before_colon
-        self.allow_header_value_ctl = take.allow_header_value_ctl
-        self.allow_target_ctl = take.allow_target_ctl
-        self.ignore_invalid_header_names = take.ignore_invalid_header_names
-        self.allow_non_chunked_te = take.allow_non_chunked_te
-        self.allow_chunk_extensions = take.allow_chunk_extensions
-        self.allow_cl_leading_zeros = take.allow_cl_leading_zeros
-        self.allow_duplicate_cl = take.allow_duplicate_cl
-        self.allow_missing_host_11 = take.allow_missing_host_11
-        self.allow_duplicate_host = take.allow_duplicate_host
-        self.allow_multiple_spaces_in_status_line = take.allow_multiple_spaces_in_status_line
-        self.allow_space_before_first_header = take.allow_space_before_first_header
-        self.allow_missing_crlf_after_chunk = take.allow_missing_crlf_after_chunk
-        self.allow_missing_reason_sp = take.allow_missing_reason_sp
-        self.allow_response_cl_te = take.allow_response_cl_te
-        self.allow_data_after_close = take.allow_data_after_close
-        self.allow_lenient_keep_alive = take.allow_lenient_keep_alive
-        self.allow_prefix_crlf = take.allow_prefix_crlf
+    def __init__(out self, *, deinit move: Self):
+        self.allow_bare_lf = move.allow_bare_lf
+        self.allow_bare_cr_in_value = move.allow_bare_cr_in_value
+        self.allow_http_09 = move.allow_http_09
+        self.allow_nonstandard_version = move.allow_nonstandard_version
+        self.allow_multiple_spaces = move.allow_multiple_spaces
+        self.allow_obs_fold = move.allow_obs_fold
+        self.allow_space_before_colon = move.allow_space_before_colon
+        self.allow_header_value_ctl = move.allow_header_value_ctl
+        self.allow_target_ctl = move.allow_target_ctl
+        self.ignore_invalid_header_names = move.ignore_invalid_header_names
+        self.allow_non_chunked_te = move.allow_non_chunked_te
+        self.allow_chunk_extensions = move.allow_chunk_extensions
+        self.allow_cl_leading_zeros = move.allow_cl_leading_zeros
+        self.allow_duplicate_cl = move.allow_duplicate_cl
+        self.allow_missing_host_11 = move.allow_missing_host_11
+        self.allow_duplicate_host = move.allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = move.allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = move.allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = move.allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = move.allow_missing_reason_sp
+        self.allow_response_cl_te = move.allow_response_cl_te
+        self.allow_data_after_close = move.allow_data_after_close
+        self.allow_lenient_keep_alive = move.allow_lenient_keep_alive
+        self.allow_prefix_crlf = move.allow_prefix_crlf
 
     def copy(self) -> Self:
-        return Self(other=self)
+        return Self(copy=self)
 
 
 def strict_mode() -> ParserStrictness:
@@ -222,23 +222,23 @@ struct ParseConfig(Copyable, Movable):
         self.max_chunk_size = max_chunk_size
         self.max_body_size = max_body_size
 
-    def __init__(out self, *, other: Self):
-        self.strictness = ParserStrictness(other=other.strictness)
-        self.max_request_line = other.max_request_line
-        self.max_header_count = other.max_header_count
-        self.max_header_size = other.max_header_size
-        self.max_headers_total = other.max_headers_total
-        self.max_chunk_size = other.max_chunk_size
-        self.max_body_size = other.max_body_size
+    def __init__(out self, *, copy: Self):
+        self.strictness = ParserStrictness(copy=copy.strictness)
+        self.max_request_line = copy.max_request_line
+        self.max_header_count = copy.max_header_count
+        self.max_header_size = copy.max_header_size
+        self.max_headers_total = copy.max_headers_total
+        self.max_chunk_size = copy.max_chunk_size
+        self.max_body_size = copy.max_body_size
 
-    def __init__(out self, *, deinit take: Self):
-        self.strictness = take.strictness^
-        self.max_request_line = take.max_request_line
-        self.max_header_count = take.max_header_count
-        self.max_header_size = take.max_header_size
-        self.max_headers_total = take.max_headers_total
-        self.max_chunk_size = take.max_chunk_size
-        self.max_body_size = take.max_body_size
+    def __init__(out self, *, deinit move: Self):
+        self.strictness = move.strictness^
+        self.max_request_line = move.max_request_line
+        self.max_header_count = move.max_header_count
+        self.max_header_size = move.max_header_size
+        self.max_headers_total = move.max_headers_total
+        self.max_chunk_size = move.max_chunk_size
+        self.max_body_size = move.max_body_size
 
     def copy(self) -> Self:
-        return Self(other=self)
+        return Self(copy=self)

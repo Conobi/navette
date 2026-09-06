@@ -49,17 +49,17 @@ struct PathKey(Copyable, Movable):
         self.addr = addr^
         self.port = port
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor — deep-copies the address buffer."""
-        self.family = other.family
-        self.addr = List[UInt8](copy=other.addr)
-        self.port = other.port
+        self.family = copy.family
+        self.addr = List[UInt8](copy=copy.addr)
+        self.port = copy.port
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor — transfers ownership of the address buffer."""
-        self.family = take.family
-        self.addr = take.addr^
-        self.port = take.port
+        self.family = move.family
+        self.addr = move.addr^
+        self.port = move.port
 
     def __eq__(self, other: Self) -> Bool:
         """Byte-exact equality across family, addr, port."""
@@ -140,23 +140,23 @@ struct PathChallenge(Copyable, Movable):
         self.bytes_received = Int64(0)
         self.bytes_sent = Int64(0)
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor — deep-copies the token + target buffers."""
-        self.token = List[UInt8](copy=other.token)
-        self.target = PathKey(other=other.target)
-        self.sent_at_ns = other.sent_at_ns
-        self.attempts = other.attempts
-        self.bytes_received = other.bytes_received
-        self.bytes_sent = other.bytes_sent
+        self.token = List[UInt8](copy=copy.token)
+        self.target = PathKey(copy=copy.target)
+        self.sent_at_ns = copy.sent_at_ns
+        self.attempts = copy.attempts
+        self.bytes_received = copy.bytes_received
+        self.bytes_sent = copy.bytes_sent
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor — transfers token + target ownership."""
-        self.token = take.token^
-        self.target = take.target^
-        self.sent_at_ns = take.sent_at_ns
-        self.attempts = take.attempts
-        self.bytes_received = take.bytes_received
-        self.bytes_sent = take.bytes_sent
+        self.token = move.token^
+        self.target = move.target^
+        self.sent_at_ns = move.sent_at_ns
+        self.attempts = move.attempts
+        self.bytes_received = move.bytes_received
+        self.bytes_sent = move.bytes_sent
 
 
 # ── ValidatedPath — a successfully validated peer path ────────────────────────
@@ -177,15 +177,15 @@ struct ValidatedPath(Copyable, Movable):
         self.addr = addr^
         self.validated_at_ns = validated_at_ns
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor — deep-copies the address."""
-        self.addr = PathKey(other=other.addr)
-        self.validated_at_ns = other.validated_at_ns
+        self.addr = PathKey(copy=copy.addr)
+        self.validated_at_ns = copy.validated_at_ns
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor — transfers the address."""
-        self.addr = take.addr^
-        self.validated_at_ns = take.validated_at_ns
+        self.addr = move.addr^
+        self.validated_at_ns = move.validated_at_ns
 
 
 # ── PathValidator — per-connection path validation state machine ──────────────
@@ -208,10 +208,10 @@ struct PathValidator(Movable):
         self.current = Optional[ValidatedPath](None)
         self.pending = List[PathChallenge]()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor — transfers ownership of current + pending."""
-        self.current = take.current^
-        self.pending = take.pending^
+        self.current = move.current^
+        self.pending = move.pending^
 
     def start_challenge(
         mut self,
@@ -224,7 +224,7 @@ struct PathValidator(Movable):
         PATH_CHALLENGE frame and emit it. The token is drawn from
         getrandom(2) — same primitive used by CidManager.generate_cid.
         """
-        var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN).as_unsafe_any_origin()
+        var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN)
         _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
         var token = List[UInt8](capacity=PATH_TOKEN_LEN)
         for i in range(PATH_TOKEN_LEN):
@@ -251,7 +251,7 @@ struct PathValidator(Movable):
         """
         var match_idx: Int = -1
         for i in range(len(self.pending)):
-            var p_target = PathKey(other=self.pending[i].target)
+            var p_target = PathKey(copy=self.pending[i].target)
             if not (p_target == from_addr):
                 continue
             if len(self.pending[i].token) != len(token):
@@ -267,14 +267,14 @@ struct PathValidator(Movable):
         if match_idx < 0:
             return Optional[ValidatedPath](None)
         # Pop the matched challenge; preserve order of the rest.
-        var matched_target = PathKey(other=self.pending[match_idx].target)
+        var matched_target = PathKey(copy=self.pending[match_idx].target)
         var new_pending = List[PathChallenge]()
         for j in range(len(self.pending)):
             if j != match_idx:
-                new_pending.append(PathChallenge(other=self.pending[j]))
+                new_pending.append(PathChallenge(copy=self.pending[j]))
         self.pending = new_pending^
         var vp = ValidatedPath(matched_target^, now_ns)
-        var vp_copy = ValidatedPath(other=vp)
+        var vp_copy = ValidatedPath(copy=vp)
         self.current = Optional[ValidatedPath](vp_copy^)
         return Optional[ValidatedPath](vp^)
 
@@ -286,7 +286,7 @@ struct PathValidator(Movable):
         constrained and is not tracked here.
         """
         for i in range(len(self.pending)):
-            var t = PathKey(other=self.pending[i].target)
+            var t = PathKey(copy=self.pending[i].target)
             if t == target:
                 self.pending[i].bytes_sent += Int64(n)
                 return
@@ -300,7 +300,7 @@ struct PathValidator(Movable):
         site whenever a UDP datagram arrives from an unvalidated path.
         """
         for i in range(len(self.pending)):
-            var t = PathKey(other=self.pending[i].target)
+            var t = PathKey(copy=self.pending[i].target)
             if t == target:
                 self.pending[i].bytes_received += Int64(n)
                 return
@@ -318,7 +318,7 @@ struct PathValidator(Movable):
         is responsible for starting a challenge first); returns True.
         """
         for i in range(len(self.pending)):
-            var t = PathKey(other=self.pending[i].target)
+            var t = PathKey(copy=self.pending[i].target)
             if t == target:
                 var budget = (
                     ANTI_AMP_FACTOR * self.pending[i].bytes_received
@@ -339,5 +339,5 @@ struct PathValidator(Movable):
         for i in range(len(self.pending)):
             var age = now_ns - self.pending[i].sent_at_ns
             if age < threshold:
-                kept.append(PathChallenge(other=self.pending[i]))
+                kept.append(PathChallenge(copy=self.pending[i]))
         self.pending = kept^

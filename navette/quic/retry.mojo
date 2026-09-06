@@ -16,7 +16,9 @@ from navette.tls.lib import SharedLibrary
 
 
 def _copy_span_to_ptr(
-    src: Span[UInt8, _], dst: Pointer[UInt8, MutAnyOrigin], offset: Int
+    src: Span[UInt8, _],
+    dst: Pointer[mut=True, T=UInt8, origin=_],
+    offset: Int,
 ) -> Int:
     """Copy span bytes into dst starting at offset. Returns new offset."""
     for i in range(len(src)):
@@ -25,7 +27,7 @@ def _copy_span_to_ptr(
 
 
 def _write_u64_be(
-    dst: Pointer[UInt8, MutAnyOrigin], offset: Int, value: UInt64
+    dst: Pointer[mut=True, T=UInt8, origin=_], offset: Int, value: UInt64
 ) -> Int:
     """Write a UInt64 in big-endian at offset. Returns new offset."""
     dst[unsafe_offset=offset + 0] = UInt8((value >> 56) & 0xFF)
@@ -40,7 +42,7 @@ def _write_u64_be(
 
 
 def _read_u64_be(
-    src: Pointer[UInt8, MutAnyOrigin], offset: Int
+    src: Pointer[mut=True, T=UInt8, origin=_], offset: Int
 ) -> UInt64:
     """Read a big-endian UInt64 from src at offset."""
     return (
@@ -84,7 +86,7 @@ def generate_retry_token(
     var off = 1
     off = _copy_span_to_ptr(orig_dcid, pt_ptr, off)
     off = _copy_span_to_ptr(client_addr_hash, pt_ptr, off)
-    off = _write_u64_be(pt_ptr, off, now)
+    _ = _write_u64_be(pt_ptr, off, now)
 
     # Generate 12-byte random nonce via getrandom(2).
     var nonce_buf = Owned[UInt8](12)
@@ -130,14 +132,14 @@ def generate_retry_token(
         var err = rlib[].last_error()
         raise "AES-GCM-128 seal failed: " + err
 
-    var ct_len = Int(out_len_ptr[0])
+    var ct_len = Int(out_len_ptr[unsafe_offset=0])
 
     # Build token: nonce (12) || ciphertext+tag
     var token = List[UInt8](capacity=12 + ct_len)
     for i in range(12):
-        token.append(nonce_ptr[i])
+        token.append(nonce_ptr[unsafe_offset=i])
     for i in range(ct_len):
-        token.append(out_ptr[i])
+        token.append(out_ptr[unsafe_offset=i])
 
     # Keep the post-FFI-read buffers alive through their last reads above.
     _ = nonce_buf
@@ -224,25 +226,25 @@ def validate_retry_token(
         var err = rlib[].last_error()
         raise "token authentication failed: " + err
 
-    var pt_len = Int(out_len_ptr[0])
+    var pt_len = Int(out_len_ptr[unsafe_offset=0])
 
     # Parse plaintext: dcid_len (1) || dcid || addr_hash (32) || timestamp (8)
     if pt_len < 1 + 0 + 32 + 8:
         raise "decrypted token plaintext too short"
 
-    var dcid_len = Int(out_ptr[0])
+    var dcid_len = Int(out_ptr[unsafe_offset=0])
     if 1 + dcid_len + 32 + 8 != pt_len:
         raise "token plaintext length mismatch"
 
     # Extract orig_dcid
     var orig_dcid = List[UInt8](capacity=dcid_len)
     for i in range(dcid_len):
-        orig_dcid.append(out_ptr[1 + i])
+        orig_dcid.append(out_ptr[unsafe_offset=1 + i])
 
     # Verify addr_hash
     var hash_offset = 1 + dcid_len
     for i in range(32):
-        if out_ptr[hash_offset + i] != client_addr_hash[i]:
+        if out_ptr[unsafe_offset=hash_offset + i] != client_addr_hash[i]:
             raise "token address hash mismatch"
 
     # Verify timestamp
@@ -313,7 +315,7 @@ def compute_retry_integrity_tag(
     aad_ptr[unsafe_offset=0] = UInt8(len(orig_dcid))
     var off = 1
     off = _copy_span_to_ptr(orig_dcid, aad_ptr, off)
-    off = _copy_span_to_ptr(retry_packet_without_tag, aad_ptr, off)
+    _ = _copy_span_to_ptr(retry_packet_without_tag, aad_ptr, off)
 
     # Empty plaintext, output is just the 16-byte tag
     var empty_buf = Owned[UInt8](1)  # dummy, not used
@@ -341,13 +343,13 @@ def compute_retry_integrity_tag(
         var err = rlib[].last_error()
         raise "Retry integrity tag computation failed: " + err
 
-    var tag_len = Int(out_len_ptr[0])
+    var tag_len = Int(out_len_ptr[unsafe_offset=0])
     if tag_len != 16:
         raise "expected 16-byte tag, got " + String(tag_len)
 
     var tag = List[UInt8](capacity=16)
     for i in range(16):
-        tag.append(out_ptr[i])
+        tag.append(out_ptr[unsafe_offset=i])
 
     # Keep the post-FFI-read output buffers alive through their last reads above.
     _ = out_buf

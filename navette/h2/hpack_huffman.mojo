@@ -24,10 +24,10 @@ struct _TrieNode(Copyable, Movable):
         self.right = -1
         self.symbol = -1
 
-    def __init__(out self, *, deinit take: Self):
-        self.left = take.left
-        self.right = take.right
-        self.symbol = take.symbol
+    def __init__(out self, *, deinit move: Self):
+        self.left = move.left
+        self.right = move.right
+        self.symbol = move.symbol
 
     def __init__(out self, *, imm copy: Self):
         self.left = copy.left
@@ -56,10 +56,10 @@ struct HuffmanCodec(Movable):
         self._init_codes()
         self._build_trie()
 
-    def __init__(out self, *, deinit take: Self):
-        self.codes = take.codes^
-        self.code_lengths = take.code_lengths^
-        self._trie = take._trie^
+    def __init__(out self, *, deinit move: Self):
+        self.codes = move.codes^
+        self.code_lengths = move.code_lengths^
+        self._trie = move._trie^
 
     def _init_codes(mut self):
         """Populate all 257 Huffman codes from RFC 7541 Appendix B."""

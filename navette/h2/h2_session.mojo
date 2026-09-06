@@ -63,14 +63,14 @@ struct _ClientCtx(Movable):
         self.errored = False
         self.error_code = UInt32(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.handle_id = take.handle_id
-        self.status_code = take.status_code
-        self.headers = take.headers^
-        self.body_data = take.body_data^
-        self.complete = take.complete
-        self.errored = take.errored
-        self.error_code = take.error_code
+    def __init__(out self, *, deinit move: Self):
+        self.handle_id = move.handle_id
+        self.status_code = move.status_code
+        self.headers = move.headers^
+        self.body_data = move.body_data^
+        self.complete = move.complete
+        self.errored = move.errored
+        self.error_code = move.error_code
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +114,12 @@ struct H2Session(Session):
         self._handle_to_stream = Dict[Int, Int]()
         self._flush_outbound()
 
-    def __init__(out self, *, deinit take: Self):
-        self._conn = take._conn^
-        self._outbuf = take._outbuf^
-        self._next_handle_id = take._next_handle_id
-        self._stream_ctxs = take._stream_ctxs^
-        self._handle_to_stream = take._handle_to_stream^
+    def __init__(out self, *, deinit move: Self):
+        self._conn = move._conn^
+        self._outbuf = move._outbuf^
+        self._next_handle_id = move._next_handle_id
+        self._stream_ctxs = move._stream_ctxs^
+        self._handle_to_stream = move._handle_to_stream^
 
     def __deinit__(deinit self):
         """Free all heap-allocated client stream contexts."""
@@ -154,7 +154,7 @@ struct H2Session(Session):
         # Flush pending frames to outbuf
         self._flush_outbound()
         # Allocate client context on heap
-        var ctx_ptr = _heap_alloc[_ClientCtx](1).as_unsafe_any_origin()
+        var ctx_ptr = _heap_alloc[_ClientCtx](1)
         var ctx = _ClientCtx(handle_id=handle_id)
         ctx_ptr.unsafe_write(ctx^)
         self._stream_ctxs[Int(stream_id)] = PtrBox[_ClientCtx](ctx_ptr)
@@ -177,7 +177,7 @@ struct H2Session(Session):
         # Look up the per-stream context
         var ctx_wrap: PtrBox[_ClientCtx]
         try:
-            ctx_wrap = PtrBox[_ClientCtx](other=self._stream_ctxs[stream_id])
+            ctx_wrap = PtrBox[_ClientCtx](copy=self._stream_ctxs[stream_id])
         except:
             return
         var ctx_ptr = ctx_wrap.ptr()
@@ -311,7 +311,7 @@ struct H2Session(Session):
     def _dispatch_client_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events for client-side processing."""
         for i in range(len(events)):
-            var evt = H2Event(other=events[i])
+            var evt = H2Event(copy=events[i])
             if evt.kind == H2_EVT_RESPONSE_RECEIVED:
                 self._on_response_received(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
@@ -326,7 +326,7 @@ struct H2Session(Session):
     def _on_response_received(mut self, evt: H2Event) raises:
         """Handle RESPONSE_RECEIVED: extract :status and headers, store on ctx."""
         var sid = Int(evt.stream_id)
-        var ctx_ptr: Pointer[_ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
@@ -335,7 +335,7 @@ struct H2Session(Session):
         var resp = response_from_h2_headers(evt.headers)
         var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.status_code = Int(resp.status.code())
-        ctx.headers = Headers(other=resp.headers)
+        ctx.headers = Headers(copy=resp.headers)
         if evt.stream_ended:
             ctx.complete = True
         ctx_ptr.unsafe_write(ctx^)
@@ -343,7 +343,7 @@ struct H2Session(Session):
     def _on_data_received(mut self, evt: H2Event) raises:
         """Handle DATA_RECEIVED: append data to ctx, acknowledge for flow control."""
         var sid = Int(evt.stream_id)
-        var ctx_ptr: Pointer[_ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
@@ -365,7 +365,7 @@ struct H2Session(Session):
     def _on_trailers_received(mut self, evt: H2Event) raises:
         """Handle TRAILERS_RECEIVED: trailers imply stream ended."""
         var sid = Int(evt.stream_id)
-        var ctx_ptr: Pointer[_ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
@@ -377,7 +377,7 @@ struct H2Session(Session):
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """Handle STREAM_ENDED: mark ctx complete."""
         var sid = Int(evt.stream_id)
-        var ctx_ptr: Pointer[_ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
@@ -389,7 +389,7 @@ struct H2Session(Session):
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET: mark ctx errored."""
         var sid = Int(evt.stream_id)
-        var ctx_ptr: Pointer[_ClientCtx, MutAnyOrigin]
+        var ctx_ptr: Pointer[_ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:

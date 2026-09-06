@@ -22,9 +22,9 @@ struct ClientConnection(Movable):
         """Build a fresh client connection in the IDLE phase."""
         self._inner = H1Connection(config^)
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self._inner = take._inner^
+        self._inner = move._inner^
 
     # --- Outbound API (client sends requests) ---
 

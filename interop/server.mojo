@@ -9,8 +9,9 @@
 # Deferred (exit 127): retry, http3.
 
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory import Pointer
+from std.collections import Span
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.collections import Optional
 
 from navette.tls.lib import TlsBackend
@@ -131,7 +132,7 @@ def main() raises:
 
     # Connection state — parallel lists.
     var conn_keys = List[String]()
-    var conn_ptrs = List[Optional[UnsafePointer[QuicConnection, MutAnyOrigin]]]()
+    var conn_ptrs = List[Optional[Pointer[QuicConnection, MutUntrackedOrigin]]]()
     var conn_addrs = List[List[UInt8]]()
 
     # Per-stream request buffers: indexed by (conn_index * 65536 + stream_id).
@@ -177,8 +178,8 @@ def main() raises:
                     var client_dcid = List[UInt8](copy=dcid)
                     var params = default_transport_params()
 
-                    var conn_ptr = _heap_alloc[QuicConnection](1).as_unsafe_any_origin()
-                    conn_ptr.init_pointee_move(
+                    var conn_ptr = _heap_alloc[QuicConnection](1)
+                    conn_ptr.unsafe_write(
                         QuicConnection.server(
                             tls.shared(), server_config, params,
                             Span(orig_dcid), Span(client_dcid), now,
@@ -276,9 +277,9 @@ def main() raises:
 
             # Check if connection is closed and clean up.
             if cp[].is_closed():
-                cp.destroy_pointee()
-                cp.free()
-                conn_ptrs[ci] = Optional[UnsafePointer[QuicConnection, MutAnyOrigin]]()
+                cp.unsafe_deinit_pointee()
+                cp.unsafe_free()
+                conn_ptrs[ci] = Optional[Pointer[QuicConnection, MutUntrackedOrigin]]()
 
         # Check if all connections are closed (and we had at least one).
         # For the interop runner, we just keep listening.

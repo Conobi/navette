@@ -48,13 +48,13 @@ struct _Name(Copyable, Movable):
         self.value = value^
         self.next_off = next_off
 
-    def __init__(out self, *, other: Self):
-        self.value = other.value.copy()
-        self.next_off = other.next_off
+    def __init__(out self, *, copy: Self):
+        self.value = copy.value.copy()
+        self.next_off = copy.next_off
 
-    def __init__(out self, *, deinit take: Self):
-        self.value = take.value^
-        self.next_off = take.next_off
+    def __init__(out self, *, deinit move: Self):
+        self.value = move.value^
+        self.next_off = move.next_off
 
 
 # ── _Deadline struct ───────────────────────────────────────────────────────
@@ -68,11 +68,11 @@ struct _Deadline(Copyable, Movable):
     def __init__(out self, *, _expires_ms: UInt64):
         self._expires_ms = _expires_ms
 
-    def __init__(out self, *, other: Self):
-        self._expires_ms = other._expires_ms
+    def __init__(out self, *, copy: Self):
+        self._expires_ms = copy._expires_ms
 
-    def __init__(out self, *, deinit take: Self):
-        self._expires_ms = take._expires_ms
+    def __init__(out self, *, deinit move: Self):
+        self._expires_ms = move._expires_ms
 
     @staticmethod
     def from_timeout_ms(ms: UInt) -> Self:
@@ -331,7 +331,7 @@ def _monotonic_ms() -> UInt64:
     var ts = ts_buf.ptr()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts)
     var sec = Int(ts.unsafe_bitcast[Int64]()[])
-    var nsec_ptr = Pointer[Int64, MutAnyOrigin](unsafe_from_address=Int(ts) + 8)
+    var nsec_ptr = Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=Int(ts) + 8)
     var nsec = Int(nsec_ptr[])
     return UInt64(sec * 1000 + nsec // 1_000_000)
 
@@ -347,7 +347,7 @@ def _set_rcvtimeo(fd: Int32, ms: Int) raises:
         tv[unsafe_offset=i] = UInt8(0)
     var sec_ptr = tv.unsafe_bitcast[Int64]()
     sec_ptr[] = Int64(ms // 1000)
-    var usec_ptr = Pointer[Int64, MutAnyOrigin](unsafe_from_address=Int(tv) + 8)
+    var usec_ptr = Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=Int(tv) + 8)
     usec_ptr[] = Int64((ms % 1000) * 1000)
     var rc = external_call["setsockopt", Int32](
         fd, _SOL_SOCKET, _SO_RCVTIMEO, tv, Int32(16)

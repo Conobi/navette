@@ -47,8 +47,8 @@ struct TlsConnection(Movable):
     var _lib: SharedLibrary
     var _handle: Int32
     var _ciphertext_out: List[UInt8]
-    var _ct_drain_buf: Pointer[UInt8, MutAnyOrigin]
-    var _pt_drain_buf: Pointer[UInt8, MutAnyOrigin]
+    var _ct_drain_buf: Pointer[UInt8, MutUntrackedOrigin]
+    var _pt_drain_buf: Pointer[UInt8, MutUntrackedOrigin]
     var _handshake_complete: Bool
 
     # -- Private constructor (used by factory methods) ------------------------
@@ -59,11 +59,11 @@ struct TlsConnection(Movable):
         _lib: SharedLibrary,
         _handle: Int32,
         var _ciphertext_out: List[UInt8],
-        _ct_drain_buf: Pointer[UInt8, MutAnyOrigin],
-        _pt_drain_buf: Pointer[UInt8, MutAnyOrigin],
+        _ct_drain_buf: Pointer[UInt8, MutUntrackedOrigin],
+        _pt_drain_buf: Pointer[UInt8, MutUntrackedOrigin],
         _handshake_complete: Bool,
     ):
-        self._lib = SharedLibrary(other=_lib)
+        self._lib = SharedLibrary(copy=_lib)
         self._handle = _handle
         self._ciphertext_out = _ciphertext_out^
         self._ct_drain_buf = _ct_drain_buf
@@ -72,19 +72,43 @@ struct TlsConnection(Movable):
 
     # -- Move / Destroy --------------------------------------------------------
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
-        self._ciphertext_out = take._ciphertext_out^
-        self._ct_drain_buf = take._ct_drain_buf
-        self._pt_drain_buf = take._pt_drain_buf
-        self._handshake_complete = take._handshake_complete
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
+        self._ciphertext_out = move._ciphertext_out^
+        self._ct_drain_buf = move._ct_drain_buf
+        self._pt_drain_buf = move._pt_drain_buf
+        self._handshake_complete = move._handshake_complete
 
     def __deinit__(deinit self):
+        """Free the rustls connection handle and the two drain buffers.
+
+        A destructor may not raise. `tls_conn_free` can, but only from
+        the symbol lookup — the Rust side answers an unknown handle with
+        -1, a status already discarded here. A lookup failure means the
+        loaded librustls_mojo.so does not export `rlsm_tls_conn_free`,
+        so the connection this object owns cannot be reached at all;
+        swallowing it leaks one entry in the Rust CONN_TABLE rather than
+        killing the process mid-teardown. `deinit self` consumes the
+        connection, so this runs once per handle and cannot double free.
+
+        The two `unsafe_free` calls sit outside the guarded region on
+        purpose: they are Mojo-side allocations owned outright by this
+        struct, they cannot fail, and they must happen even when the FFI
+        handle could not be released.
+        """
         if self._handle >= 0:
-            _ = self._lib.inner_ptr()[].tls_conn_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].tls_conn_free(self._handle)
+            except:
+                pass
         self._ct_drain_buf.unsafe_free()
         self._pt_drain_buf.unsafe_free()
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     # -- Construction ----------------------------------------------------------
 
@@ -108,7 +132,7 @@ struct TlsConnection(Movable):
         var rlib = lib.inner_ptr()
         var name_bytes = server_name.as_bytes()
         var name_len = len(name_bytes)
-        var name_buf = _heap_alloc[UInt8](name_len).as_unsafe_any_origin()
+        var name_buf = _heap_alloc[UInt8](name_len)
         for i in range(name_len):
             name_buf[unsafe_offset=i] = name_bytes[i]
 
@@ -126,7 +150,7 @@ struct TlsConnection(Movable):
         # We allocate the ciphertext drain buffer here and reuse it as the
         # struct's pre-allocated buffer (no double allocation).
         var ct_out = List[UInt8]()
-        var init_ct_buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_unsafe_any_origin()
+        var init_ct_buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE)
         try:
             while True:
                 var dn = rlib[].tls_conn_write_tls(
@@ -149,7 +173,7 @@ struct TlsConnection(Movable):
             _handle=handle,
             _ciphertext_out=ct_out^,
             _ct_drain_buf=init_ct_buf,
-            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_unsafe_any_origin(),
+            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE),
             _handshake_complete=False,
         )
 
@@ -172,8 +196,8 @@ struct TlsConnection(Movable):
             _lib=lib,
             _handle=handle,
             _ciphertext_out=List[UInt8](),
-            _ct_drain_buf=_heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE).as_unsafe_any_origin(),
-            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE).as_unsafe_any_origin(),
+            _ct_drain_buf=_heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE),
+            _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE),
             _handshake_complete=False,
         )
 
@@ -289,7 +313,7 @@ struct TlsConnection(Movable):
         "h3"). The Rust FFI returns -1 if it would have to truncate, so
         any -1 here is a real error rather than silent data loss.
         """
-        var buf = _heap_alloc[UInt8](_ALPN_BUF_SIZE).as_unsafe_any_origin()
+        var buf = _heap_alloc[UInt8](_ALPN_BUF_SIZE)
         var n = self._lib.inner_ptr()[].tls_conn_alpn(
             self._handle, buf, Int32(_ALPN_BUF_SIZE)
         )

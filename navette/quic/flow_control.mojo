@@ -35,21 +35,21 @@ struct FlowControl(Copyable, Movable):
         self.max_window = max_window if max_window > 0 else window
         self.blocked_at = UInt64(0)
 
-    def __init__(out self, *, other: Self):
-        self.received = other.received
-        self.consumed = other.consumed
-        self.limit = other.limit
-        self.window = other.window
-        self.max_window = other.max_window
-        self.blocked_at = other.blocked_at
+    def __init__(out self, *, copy: Self):
+        self.received = copy.received
+        self.consumed = copy.consumed
+        self.limit = copy.limit
+        self.window = copy.window
+        self.max_window = copy.max_window
+        self.blocked_at = copy.blocked_at
 
-    def __init__(out self, *, deinit take: Self):
-        self.received = take.received
-        self.consumed = take.consumed
-        self.limit = take.limit
-        self.window = take.window
-        self.max_window = take.max_window
-        self.blocked_at = take.blocked_at
+    def __init__(out self, *, deinit move: Self):
+        self.received = move.received
+        self.consumed = move.consumed
+        self.limit = move.limit
+        self.window = move.window
+        self.max_window = move.max_window
+        self.blocked_at = move.blocked_at
 
     def should_update(self) -> Bool:
         """True when remaining credit (limit - consumed) < window/3.

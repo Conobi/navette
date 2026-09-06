@@ -16,13 +16,13 @@ struct Priority(Copyable, Movable):
         self.urgency = urgency
         self.incremental = incremental
 
-    def __init__(out self, *, other: Self):
-        self.urgency = other.urgency
-        self.incremental = other.incremental
+    def __init__(out self, *, copy: Self):
+        self.urgency = copy.urgency
+        self.incremental = copy.incremental
 
-    def __init__(out self, *, deinit take: Self):
-        self.urgency = take.urgency
-        self.incremental = take.incremental
+    def __init__(out self, *, deinit move: Self):
+        self.urgency = move.urgency
+        self.incremental = move.incremental
 
     @staticmethod
     def default() -> Self:

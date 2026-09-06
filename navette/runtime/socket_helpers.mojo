@@ -91,7 +91,7 @@ def _setsockopt_so_sndtimeo(fd: RawHandle, ms: Int) raises:
         tv[unsafe_offset=i] = UInt8(0)
     var sec_ptr = tv.unsafe_bitcast[Int64]()
     sec_ptr[] = Int64(ms // 1000)
-    var usec_ptr = Pointer[Int64, MutAnyOrigin](
+    var usec_ptr = Pointer[Int64, MutUntrackedOrigin](
         unsafe_from_address=Int(tv) + 8
     )
     usec_ptr[] = Int64((ms % 1000) * 1000)
@@ -167,7 +167,9 @@ def tcp_v4_nonblocking() raises -> OwnedHandle:
     return OwnedHandle(raw=fd)
 
 
-def _pack_v4(addr: ResolvedAddr, dst: Pointer[UInt8, MutAnyOrigin]) -> Int32:
+def _pack_v4(
+    addr: ResolvedAddr, dst: Pointer[mut=True, T=UInt8, origin=_]
+) -> Int32:
     """Pack a `ResolvedAddr` (IPv4) into a `sockaddr_in` byte buffer."""
     # sockaddr_in (16 bytes): family(2 LE) port(2 BE) addr(4) zero(8)
     for i in range(Int(_SOCKADDR_IN_SIZE)):
@@ -184,7 +186,9 @@ def _pack_v4(addr: ResolvedAddr, dst: Pointer[UInt8, MutAnyOrigin]) -> Int32:
     return _SOCKADDR_IN_SIZE
 
 
-def _pack_v6(addr: ResolvedAddr, dst: Pointer[UInt8, MutAnyOrigin]) -> Int32:
+def _pack_v6(
+    addr: ResolvedAddr, dst: Pointer[mut=True, T=UInt8, origin=_]
+) -> Int32:
     """Pack a `ResolvedAddr` (IPv6) into a `sockaddr_in6` byte buffer."""
     # sockaddr_in6 (28 bytes): family(2 LE) port(2 BE) flowinfo(4) addr(16) scope_id(4)
     for i in range(Int(_SOCKADDR_IN6_SIZE)):

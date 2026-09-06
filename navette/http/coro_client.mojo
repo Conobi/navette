@@ -50,9 +50,9 @@ struct HttpCoroClient(Movable):
         )
         self._alt_svc = AltSvcCache()
 
-    def __init__(out self, *, deinit take: Self):
-        self._client = take._client^
-        self._alt_svc = take._alt_svc^
+    def __init__(out self, *, deinit move: Self):
+        self._client = move._client^
+        self._alt_svc = move._alt_svc^
 
     # --- Session management ---
 
@@ -74,17 +74,17 @@ struct HttpCoroClient(Movable):
         """
         if origin not in self._client._pool:
             raise Error("HttpCoroClient.detach_session: no session for origin")
-        var slots = self._client._pool.pop(Origin(other=origin))
+        var slots = self._client._pool.pop(Origin(copy=origin))
         if len(slots) == 0:
             raise Error("HttpCoroClient.detach_session: empty slot list for origin")
         # Pull the first slot, then re-insert the remainder so the pool
         # state is consistent before we touch the heap allocation.
-        var ptr = SessionSlotPtr(other=slots[0])
+        var ptr = SessionSlotPtr(copy=slots[0])
         var keep = List[SessionSlotPtr]()
         for i in range(1, len(slots)):
-            keep.append(SessionSlotPtr(other=slots[i]))
+            keep.append(SessionSlotPtr(copy=slots[i]))
         if len(keep) > 0:
-            self._client._pool[Origin(other=origin)] = keep^
+            self._client._pool[Origin(copy=origin)] = keep^
         var slot_p = ptr.ptr()
         var moved = slot_p.unsafe_take_pointee()
         slot_p.unsafe_free()
@@ -194,7 +194,7 @@ struct HttpCoroClient(Movable):
         """Parse Alt-Svc header from response and cache entries."""
         if resp.headers.has("alt-svc"):
             var value = resp.headers.get("alt-svc")
-            if len(value) > 0:
+            if value:
                 var entries = parse_alt_svc(value)
                 self._alt_svc.insert(origin^, entries^, now)
 

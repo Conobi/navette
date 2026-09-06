@@ -84,15 +84,15 @@ struct KeyTag(Copyable, Movable, KeyElement):
     def __init__(out self):
         self.bytes = InlineArray[UInt8, 32](fill=UInt8(0))
 
-    def __init__(out self, *, other: Self):
+    def __init__(out self, *, copy: Self):
         self.bytes = InlineArray[UInt8, 32](fill=UInt8(0))
         for i in range(32):
-            self.bytes[i] = other.bytes[i]
+            self.bytes[i] = copy.bytes[i]
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         self.bytes = InlineArray[UInt8, 32](fill=UInt8(0))
         for i in range(32):
-            self.bytes[i] = take.bytes[i]
+            self.bytes[i] = move.bytes[i]
 
     @staticmethod
     def from_span(src: Span[UInt8, _]) raises -> Self:
@@ -222,7 +222,7 @@ trait EarlyDataStore(Movable):
     """Anti-replay store for 0-RTT acceptance.
 
     Implementations MUST be safe for single-thread cooperative-yield
-    access (boucle.stackful). They MUST NOT block, MUST NOT perform
+    access (boucle.coroutine). They MUST NOT block, MUST NOT perform
     I/O on the hot path, and MUST be amortised O(1) in per-call
     wall-clock cost under steady-state arrival.
 
@@ -288,11 +288,11 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
         self._global_window = Deque[UInt64]()
         self._config = config.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self._entries = take._entries^
-        self._lru = take._lru^
-        self._global_window = take._global_window^
-        self._config = take._config.copy()
+    def __init__(out self, *, deinit move: Self):
+        self._entries = move._entries^
+        self._lru = move._lru^
+        self._global_window = move._global_window^
+        self._config = move._config.copy()
 
     def check_and_record(
         mut self,
@@ -337,7 +337,7 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
                 # TTL expired — treat as fresh authenticator.
                 entry.first_seen_ms = now_unix_ms
                 entry.attempt_count = UInt32(1)
-                self._entries[KeyTag(other=key)] = entry^
+                self._entries[KeyTag(copy=key)] = entry^
                 self._touch_lru(key)
                 self._global_window.append(now_unix_ms)
                 return ReplayDecision.accept()
@@ -346,7 +346,7 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
             if entry.attempt_count < UInt32(0xFFFFFFFF):
                 entry.attempt_count = entry.attempt_count + UInt32(1)
             var saved_count = entry.attempt_count
-            self._entries[KeyTag(other=key)] = entry^
+            self._entries[KeyTag(copy=key)] = entry^
             self._touch_lru(key)
             if saved_count > self._config.per_key_max_attempts:
                 return ReplayDecision.per_key_quota_exhausted()
@@ -360,7 +360,7 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
             attempt_count=UInt32(1),
             referenced=False,
         )
-        self._entries[KeyTag(other=key)] = fresh^
+        self._entries[KeyTag(copy=key)] = fresh^
         self._lru.append(key^)
         self._global_window.append(now_unix_ms)
         return ReplayDecision.accept()
@@ -380,7 +380,7 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
             return
         var entry = self._entries[key].copy()
         entry.referenced = True
-        self._entries[KeyTag(other=key)] = entry^
+        self._entries[KeyTag(copy=key)] = entry^
 
     def _evict_lru(mut self) raises:
         """Evict one entry via second-chance (CLOCK).
@@ -409,7 +409,7 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
             var entry = self._entries[tag].copy()
             if entry.referenced:
                 entry.referenced = False
-                self._entries[KeyTag(other=tag)] = entry^
+                self._entries[KeyTag(copy=tag)] = entry^
                 self._lru.append(tag^)
                 continue
             _ = self._entries.pop(tag)

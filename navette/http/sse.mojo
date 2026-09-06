@@ -28,17 +28,17 @@ struct ServerSentEvent(Copyable, Movable):
         self.id = Optional[String]()
         self.retry = Optional[UInt]()
 
-    def __init__(out self, *, other: Self):
-        self.event = other.event
-        self.data = other.data.copy()
-        self.id = other.id
-        self.retry = other.retry
+    def __init__(out self, *, copy: Self):
+        self.event = copy.event
+        self.data = copy.data.copy()
+        self.id = copy.id
+        self.retry = copy.retry
 
-    def __init__(out self, *, deinit take: Self):
-        self.event = take.event^
-        self.data = take.data^
-        self.id = take.id^
-        self.retry = take.retry^
+    def __init__(out self, *, deinit move: Self):
+        self.event = move.event^
+        self.data = move.data^
+        self.id = move.id^
+        self.retry = move.retry^
 
 
 from navette.http.body import BodyFrame
@@ -65,10 +65,10 @@ struct EventStreamReader(Movable):
         self._buffer = List[UInt8]()
         self._body_ended = False
 
-    def __init__(out self, *, deinit take: Self):
-        self._body = take._body^
-        self._buffer = take._buffer^
-        self._body_ended = take._body_ended
+    def __init__(out self, *, deinit move: Self):
+        self._body = move._body^
+        self._buffer = move._buffer^
+        self._body_ended = move._body_ended
 
     def is_end(self) -> Bool:
         """True once the underlying body is terminated AND the parse buffer
@@ -217,7 +217,7 @@ def _parse_event_bytes(bytes: List[UInt8]) raises -> ServerSentEvent:
         if field_name == String("event"):
             event.event = Optional[String](value^)
         elif field_name == String("data"):
-            if len(event.data) > 0:
+            if event.data:
                 event.data += String("\n")
             event.data += value
         elif field_name == String("id"):
@@ -291,7 +291,7 @@ def try_write_event(
         buf += String("\n")
 
     # data: lines — split on '\n' so each chunk becomes its own "data:" line.
-    if len(event.data) > 0:
+    if event.data:
         var data_bytes = event.data.as_bytes()
         var n = len(data_bytes)
         var start = 0

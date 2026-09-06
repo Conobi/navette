@@ -17,8 +17,8 @@ per-connection Completions with inline submission.
     │  H2TcpConn[H]                       (per-connection)
     │  ├─ _on_recv  → tls.receive_data → tls.drain_plaintext → h2.feed
     │  │              → h2.drain → tls.send_data → tls.drain_ciphertext
-    │  │              → _stage_send → inline submit_send
-    │  └─ _on_send  → handle partial, drain pending, inline submit_recv
+    │  │              → _stage_send → inline send
+    │  └─ _on_send  → handle partial, drain pending, inline recv
     │
     │  All submissions inline via stored IoUringDriver pointer
     │
@@ -190,14 +190,14 @@ struct H2TcpConn[H: StreamHandler](Movable):
     var _closing: Bool
     var _recv_cmp: Completion
     var _send_cmp: Completion
-    var _driver_ptr: Pointer[NoneType, MutAnyOrigin]
+    var _driver_ptr: Pointer[NoneType, MutUntrackedOrigin]
 
     def __init__(
         out self,
         var fd: OwnedHandle,
         var tls: TlsConnection,
         var http: H2HandlerServer[Self.H],
-        driver_ptr: Pointer[NoneType, MutAnyOrigin],
+        driver_ptr: Pointer[NoneType, MutUntrackedOrigin],
     ):
         """Construct a new H2TcpConn.
 
@@ -225,11 +225,11 @@ struct H2TcpConn[H: StreamHandler](Movable):
         self._closing = False
         self._recv_cmp = Completion(
             invoke=_on_recv[Self.H],
-            context=null_ptr[NoneType, MutAnyOrigin](),
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
         self._send_cmp = Completion(
             invoke=_on_send[Self.H],
-            context=null_ptr[NoneType, MutAnyOrigin](),
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
         self._driver_ptr = driver_ptr
 
@@ -250,7 +250,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
         Must be called after the H2TcpConn is at its final heap address
         (pointer stability guaranteed) and before any SQE submission.
         """
-        var self_ctx = Pointer[NoneType, MutAnyOrigin](
+        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self))
         )
         self._recv_cmp.context = self_ctx
@@ -264,16 +264,16 @@ struct H2TcpConn[H: StreamHandler](Movable):
         """
         if self.recv_in_flight or self._closing:
             return
-        var driver = Pointer[IoUringDriver, MutAnyOrigin](
+        var driver = Pointer[IoUringDriver, MutUntrackedOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
-        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._recv_cmp))
         )
-        var buf_ptr = Pointer[UInt8, MutAnyOrigin](
+        var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
             unsafe_from_address=Int(self.recv_buf.unsafe_ptr())
         )
-        driver[].submit_recv(
+        driver[].recv(
             self.fd.raw(), buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
         )
         # Set after successful submit — if submit raises (SQ full), the
@@ -291,16 +291,16 @@ struct H2TcpConn[H: StreamHandler](Movable):
             return
         if len(self.send_buf) == 0:
             return
-        var driver = Pointer[IoUringDriver, MutAnyOrigin](
+        var driver = Pointer[IoUringDriver, MutUntrackedOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
-        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._send_cmp))
         )
-        var buf_ptr = Pointer[UInt8, MutAnyOrigin](
+        var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
             unsafe_from_address=Int(self.send_buf.unsafe_ptr())
         )
-        driver[].submit_send(
+        driver[].send(
             self.fd.raw(), buf_ptr, UInt32(len(self.send_buf)), cmp_ptr
         )
         # Set after successful submit — if submit raises (SQ full), the
@@ -341,7 +341,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
     # ── Recv (ciphertext → TLS → plaintext → H2) ────────────────
 
-    def _handle_recv_impl(mut self, result: Int32) raises:
+    def _handle_recv_impl(mut self, result: Int) raises:
         """Process a recv CQE -- feed ciphertext through TLS+H2, emit responses.
 
         Preserves the exact TLS+H2 processing pipeline:
@@ -425,7 +425,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
     # ── Send ─────────────────────────────────────────────────────
 
-    def _handle_send_impl(mut self, result: Int32) raises:
+    def _handle_send_impl(mut self, result: Int) raises:
         """Process a send CQE -- handle partial sends, promote pending data.
 
         On successful full send, promotes any pending data and re-submits.
@@ -482,8 +482,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
 
 def _on_accept[H: StreamHandler](
-    ctx: Pointer[NoneType, MutAnyOrigin],
-    result: Int32,
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
     flags: UInt32,
 ):
     """Accept CQE callback. Casts context to H2TcpServer and delegates
@@ -498,7 +498,7 @@ def _on_accept[H: StreamHandler](
         result: io_uring CQE result (accepted fd or negative errno).
         flags: io_uring CQE flags (unused for single-shot accept).
     """
-    var self_ptr = Pointer[H2TcpServer[H], MutAnyOrigin](
+    var self_ptr = Pointer[H2TcpServer[H], MutUntrackedOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -508,8 +508,8 @@ def _on_accept[H: StreamHandler](
 
 
 def _on_recv[H: StreamHandler](
-    ctx: Pointer[NoneType, MutAnyOrigin],
-    result: Int32,
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
     flags: UInt32,
 ):
     """Recv CQE callback. Casts context to H2TcpConn and delegates
@@ -522,7 +522,7 @@ def _on_recv[H: StreamHandler](
         result: io_uring CQE result (bytes received or negative errno).
         flags: io_uring CQE flags (unused for TCP recv).
     """
-    var self_ptr = Pointer[H2TcpConn[H], MutAnyOrigin](
+    var self_ptr = Pointer[H2TcpConn[H], MutUntrackedOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -532,8 +532,8 @@ def _on_recv[H: StreamHandler](
 
 
 def _on_send[H: StreamHandler](
-    ctx: Pointer[NoneType, MutAnyOrigin],
-    result: Int32,
+    ctx: Pointer[NoneType, MutUntrackedOrigin],
+    result: Int,
     flags: UInt32,
 ):
     """Send CQE callback. Casts context to H2TcpConn and delegates
@@ -546,7 +546,7 @@ def _on_send[H: StreamHandler](
         result: io_uring CQE result (bytes sent or negative errno).
         flags: io_uring CQE flags (unused for TCP send).
     """
-    var self_ptr = Pointer[H2TcpConn[H], MutAnyOrigin](
+    var self_ptr = Pointer[H2TcpConn[H], MutUntrackedOrigin](
         unsafe_from_address=Int(ctx)
     )
     try:
@@ -578,12 +578,12 @@ struct H2TcpServer[H: StreamHandler](Movable):
     """
 
     var listen_handle: OwnedHandle
-    var connections: List[Pointer[H2TcpConn[Self.H], MutAnyOrigin]]
+    var connections: List[Pointer[H2TcpConn[Self.H], MutUntrackedOrigin]]
     var make_handler: def () thin raises -> Self.H
     var _tls: TlsBackend
     var server_tls_config: TlsServerConfig
     var _accept_cmp: Completion
-    var _driver_ptr: Pointer[NoneType, MutAnyOrigin]
+    var _driver_ptr: Pointer[NoneType, MutUntrackedOrigin]
     var _needs_accept_rearm: Bool
 
     def __init__(
@@ -605,27 +605,27 @@ struct H2TcpServer[H: StreamHandler](Movable):
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
         """
         self.listen_handle = listen_handle^
-        self.connections = List[Pointer[H2TcpConn[Self.H], MutAnyOrigin]]()
+        self.connections = List[Pointer[H2TcpConn[Self.H], MutUntrackedOrigin]]()
         self.make_handler = make_handler
         self._tls = tls^
         self.server_tls_config = server_tls_config^
         self._accept_cmp = Completion(
             invoke=_on_accept[Self.H],
-            context=null_ptr[NoneType, MutAnyOrigin](),
+            context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
-        self._driver_ptr = null_ptr[NoneType, MutAnyOrigin]()
+        self._driver_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.listen_handle = take.listen_handle^
-        self.connections = take.connections^
-        self.make_handler = take.make_handler
-        self._tls = take._tls^
-        self.server_tls_config = take.server_tls_config^
-        self._accept_cmp = take._accept_cmp^
-        self._driver_ptr = take._driver_ptr
-        self._needs_accept_rearm = take._needs_accept_rearm
+        self.listen_handle = move.listen_handle^
+        self.connections = move.connections^
+        self.make_handler = move.make_handler
+        self._tls = move._tls^
+        self.server_tls_config = move.server_tls_config^
+        self._accept_cmp = move._accept_cmp^
+        self._driver_ptr = move._driver_ptr
+        self._needs_accept_rearm = move._needs_accept_rearm
 
     def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
@@ -642,7 +642,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Must be called after the H2TcpServer is at its final heap address
         (pointer stability guaranteed) and before any SQE submission.
         """
-        var self_ctx = Pointer[NoneType, MutAnyOrigin](
+        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self))
         )
         self._accept_cmp.context = self_ctx
@@ -656,13 +656,13 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Args:
             driver: The IoUringDriver to submit operations on.
         """
-        self._driver_ptr = Pointer[NoneType, MutAnyOrigin](
+        self._driver_ptr = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=driver))
         )
-        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
-        driver.submit_accept(self.listen_handle.raw(), cmp_ptr)
+        driver.accept(self.listen_handle.raw(), cmp_ptr)
 
     def reap_closed(mut self):
         """Sweep the connection list and free any fully-drained connections.
@@ -702,17 +702,17 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Called after each accept CQE (success or failure) to keep
         the server listening for new connections (single-shot model).
         """
-        var driver = Pointer[IoUringDriver, MutAnyOrigin](
+        var driver = Pointer[IoUringDriver, MutUntrackedOrigin](
             unsafe_from_address=Int(self._driver_ptr)
         )
-        var cmp_ptr = Pointer[Completion, MutAnyOrigin](
+        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
-        driver[].submit_accept(self.listen_handle.raw(), cmp_ptr)
+        driver[].accept(self.listen_handle.raw(), cmp_ptr)
 
     # ── Accept ───────────────────────────────────────────────────
 
-    def _handle_accept_impl(mut self, result: Int32) raises:
+    def _handle_accept_impl(mut self, result: Int) raises:
         """Handle an accepted TCP connection.
 
         Creates a new H2TcpConn with owned Completions, wires its
@@ -741,7 +741,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
                 self._needs_accept_rearm = True
             return
 
-        var client_fd = result
+        var client_fd = Int32(result)
         var peer_addr = _peer_addr_from_fd(client_fd)
 
         var handle = OwnedHandle(raw=client_fd)
@@ -757,7 +757,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             driver_ptr=self._driver_ptr,
         )
 
-        var conn_ptr = _heap_alloc[H2TcpConn[Self.H]](1).as_unsafe_any_origin()
+        var conn_ptr = _heap_alloc[H2TcpConn[Self.H]](1)
         conn_ptr.unsafe_write(conn^)
         conn_ptr[].wire_context()
         self.connections.append(conn_ptr)

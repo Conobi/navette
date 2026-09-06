@@ -52,14 +52,14 @@ struct H1Session(Session):
         self._inflight_method = Optional[Method]()
         self._streaming = False
 
-    def __init__(out self, *, deinit take: Self):
-        self._conn = take._conn^
-        self._outbuf = take._outbuf^
-        self._next_id = take._next_id
-        self._pending_handle_id = take._pending_handle_id
-        self._has_inflight = take._has_inflight
-        self._inflight_method = take._inflight_method^
-        self._streaming = take._streaming
+    def __init__(out self, *, deinit move: Self):
+        self._conn = move._conn^
+        self._outbuf = move._outbuf^
+        self._next_id = move._next_id
+        self._pending_handle_id = move._pending_handle_id
+        self._has_inflight = move._has_inflight
+        self._inflight_method = move._inflight_method^
+        self._streaming = move._streaming
 
     # --- Session trait API ---
 
@@ -67,17 +67,17 @@ struct H1Session(Session):
         if self._has_inflight:
             raise Error("H1Session.submit: H1 has only one in-flight request per connection")
         self._next_id += UInt64(1)
-        self._inflight_method = Optional[Method](Method(other=req.method))
+        self._inflight_method = Optional[Method](Method(copy=req.method))
         if req.body.is_stream():
             # Streaming body: send headers only with Transfer-Encoding: chunked.
             # Replace the stream body with empty so send_request serializes
             # headers without a Content-Length, then body comes via feed_body.
             req.headers.add("Transfer-Encoding", "chunked")
             var stream_req = Request(
-                method=Method(other=req.method),
+                method=Method(copy=req.method),
                 target=req.target,
-                version=Version(other=req.version),
-                headers=Headers(other=req.headers),
+                version=Version(copy=req.version),
+                headers=Headers(copy=req.headers),
                 body=RequestBody.empty(),
             )
             self._conn.send_request(stream_req^)
@@ -101,7 +101,7 @@ struct H1Session(Session):
             return
         var method_opt = self._inflight_method^
         var method = method_opt.take()
-        var resp_opt = self._conn.next_response(Method(other=method))
+        var resp_opt = self._conn.next_response(Method(copy=method))
         if not Bool(resp_opt):
             # Response not yet available — restore the method for the next
             # poll attempt and bail out.

@@ -81,21 +81,21 @@ struct H2FrameConfig(Copyable, Movable):
         self.max_settings_per_frame = max_settings_per_frame
         self.max_header_block_size = max_header_block_size
 
-    def __init__(out self, *, other: Self):
-        self.allow_oversized_frame = other.allow_oversized_frame
-        self.allow_nonzero_padding = other.allow_nonzero_padding
-        self.allow_settings_flood = other.allow_settings_flood
-        self.max_frame_size = other.max_frame_size
-        self.max_settings_per_frame = other.max_settings_per_frame
-        self.max_header_block_size = other.max_header_block_size
+    def __init__(out self, *, copy: Self):
+        self.allow_oversized_frame = copy.allow_oversized_frame
+        self.allow_nonzero_padding = copy.allow_nonzero_padding
+        self.allow_settings_flood = copy.allow_settings_flood
+        self.max_frame_size = copy.max_frame_size
+        self.max_settings_per_frame = copy.max_settings_per_frame
+        self.max_header_block_size = copy.max_header_block_size
 
-    def __init__(out self, *, deinit take: Self):
-        self.allow_oversized_frame = take.allow_oversized_frame
-        self.allow_nonzero_padding = take.allow_nonzero_padding
-        self.allow_settings_flood = take.allow_settings_flood
-        self.max_frame_size = take.max_frame_size
-        self.max_settings_per_frame = take.max_settings_per_frame
-        self.max_header_block_size = take.max_header_block_size
+    def __init__(out self, *, deinit move: Self):
+        self.allow_oversized_frame = move.allow_oversized_frame
+        self.allow_nonzero_padding = move.allow_nonzero_padding
+        self.allow_settings_flood = move.allow_settings_flood
+        self.max_frame_size = move.max_frame_size
+        self.max_settings_per_frame = move.max_settings_per_frame
+        self.max_header_block_size = move.max_header_block_size
 
 
 def h2_strict_config() -> H2FrameConfig:
@@ -159,25 +159,25 @@ struct Frame(Copyable, Movable):
         self.error_code = H2_NO_ERROR
         self.error_scope = SCOPE_NONE
 
-    def __init__(out self, *, other: Self):
-        self.length = other.length
-        self.frame_type = other.frame_type
-        self.flags = other.flags
-        self.stream_id = other.stream_id
-        self.payload = other.payload.copy()
-        self.error = other.error
-        self.error_code = other.error_code
-        self.error_scope = other.error_scope
+    def __init__(out self, *, copy: Self):
+        self.length = copy.length
+        self.frame_type = copy.frame_type
+        self.flags = copy.flags
+        self.stream_id = copy.stream_id
+        self.payload = copy.payload.copy()
+        self.error = copy.error
+        self.error_code = copy.error_code
+        self.error_scope = copy.error_scope
 
-    def __init__(out self, *, deinit take: Self):
-        self.length = take.length
-        self.frame_type = take.frame_type
-        self.flags = take.flags
-        self.stream_id = take.stream_id
-        self.payload = take.payload^
-        self.error = take.error^
-        self.error_code = take.error_code
-        self.error_scope = take.error_scope
+    def __init__(out self, *, deinit move: Self):
+        self.length = move.length
+        self.frame_type = move.frame_type
+        self.flags = move.flags
+        self.stream_id = move.stream_id
+        self.payload = move.payload^
+        self.error = move.error^
+        self.error_code = move.error_code
+        self.error_scope = move.error_scope
 
     def ok(self) -> Bool:
         """Returns True if the frame decoded without error."""

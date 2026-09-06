@@ -65,7 +65,7 @@ def idempotency_key_predicate(
         or method == "DELETE"
     ):
         var key = headers.get(String("idempotency-key"))
-        if len(key) > 0:
+        if key:
             return FilterDecision.accept()
     return FilterDecision.reject_425()
 

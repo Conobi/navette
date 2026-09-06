@@ -13,7 +13,7 @@
 #
 # The parser implements the security invariants and the 9-step body length
 # determination algorithm from RFC 9112 Section 6. Validation logic is shared
-# with the conformance reference parser at conformance/lib/http1/.
+# with the conformance reference parser at conformance/oracle/http1/.
 
 from std.collections.optional import Optional
 from std.collections import Span
@@ -607,17 +607,17 @@ struct ParseResult(Movable):
         self.new_last_scanned = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.request = take.request^
-        self.response = take.response^
-        self.bytes_consumed = take.bytes_consumed
-        self.new_last_scanned = take.new_last_scanned
-        self.error = take.error^
+        self.request = move.request^
+        self.response = move.response^
+        self.bytes_consumed = move.bytes_consumed
+        self.new_last_scanned = move.new_last_scanned
+        self.error = move.error^
 
     def ok(self) -> Bool:
         """Return True if no parse error was recorded."""
-        return len(self.error) == 0
+        return not self.error
 
     def has_request(self) -> Bool:
         """Return True if a complete request was parsed."""
@@ -1025,7 +1025,7 @@ def try_parse_response(
     var pos = sl_end + sl_skip
     var hdr_result = _parse_headers(buf, pos, config)
     var hdr_error = hdr_result[2]
-    if len(hdr_error) > 0:
+    if hdr_error:
         result.error = hdr_error^
         return result^
     var headers = hdr_result[0].copy()
@@ -1145,7 +1145,7 @@ def try_parse_response(
 
             var chunk_result = _decode_chunked(buf, body_start, config)
             var chunk_err = chunk_result[3]
-            if len(chunk_err) > 0:
+            if chunk_err:
                 if _is_incomplete_chunk_error(chunk_err):
                     result.new_last_scanned = header_end
                     return result^

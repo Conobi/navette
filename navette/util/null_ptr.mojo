@@ -1,4 +1,4 @@
-"""null_ptr[T, o]() — a genuine NULL (address 0) UnsafePointer.
+"""`null_ptr[T, o]()` — a genuine NULL (address 0) `Pointer`.
 
 b2 added a compile-time non-null assertion on the IntLiteral
 `unsafe_from_address` overload, rejecting a literal 0. Routing the address

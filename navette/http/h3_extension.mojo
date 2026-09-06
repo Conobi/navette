@@ -28,9 +28,9 @@ struct H3Context(Movable):
         self._stream_id = stream_id
         self._datagram_recv_queue = Deque[List[UInt8]]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._stream_id = take._stream_id
-        self._datagram_recv_queue = take._datagram_recv_queue^
+    def __init__(out self, *, deinit move: Self):
+        self._stream_id = move._stream_id
+        self._datagram_recv_queue = move._datagram_recv_queue^
 
     def stream_id(self) -> UInt64:
         return self._stream_id

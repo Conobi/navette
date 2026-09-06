@@ -13,10 +13,10 @@ struct Header(Copyable, Movable):
         self.name = name
         self.value = value
 
-    def __init__(out self, *, other: Self):
-        self.name = other.name
-        self.value = other.value
+    def __init__(out self, *, copy: Self):
+        self.name = copy.name
+        self.value = copy.value
 
-    def __init__(out self, *, deinit take: Self):
-        self.name = take.name^
-        self.value = take.value^
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.value = move.value^

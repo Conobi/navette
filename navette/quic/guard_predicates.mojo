@@ -61,13 +61,13 @@ struct GuardVerdict(Copyable, Movable):
         self.error_code = error_code
         self.tag = tag
 
-    def __init__(out self, *, other: Self):
-        self.error_code = other.error_code
-        self.tag = other.tag
+    def __init__(out self, *, copy: Self):
+        self.error_code = copy.error_code
+        self.tag = copy.tag
 
-    def __init__(out self, *, deinit take: Self):
-        self.error_code = take.error_code
-        self.tag = take.tag
+    def __init__(out self, *, deinit move: Self):
+        self.error_code = move.error_code
+        self.tag = move.tag
 
 
 struct QuicResetCtx(Copyable, Movable):
@@ -82,15 +82,15 @@ struct QuicResetCtx(Copyable, Movable):
         self.local_uni_opened = local_uni_opened
         self.local_bidi_opened = local_bidi_opened
 
-    def __init__(out self, *, other: Self):
-        self.stream_id = other.stream_id
-        self.local_uni_opened = other.local_uni_opened
-        self.local_bidi_opened = other.local_bidi_opened
+    def __init__(out self, *, copy: Self):
+        self.stream_id = copy.stream_id
+        self.local_uni_opened = copy.local_uni_opened
+        self.local_bidi_opened = copy.local_bidi_opened
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.local_uni_opened = take.local_uni_opened
-        self.local_bidi_opened = take.local_bidi_opened
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.local_uni_opened = move.local_uni_opened
+        self.local_bidi_opened = move.local_bidi_opened
 
 
 struct QuicStopSendingCtx(Copyable, Movable):
@@ -105,15 +105,15 @@ struct QuicStopSendingCtx(Copyable, Movable):
         self.local_uni_opened = local_uni_opened
         self.local_bidi_opened = local_bidi_opened
 
-    def __init__(out self, *, other: Self):
-        self.stream_id = other.stream_id
-        self.local_uni_opened = other.local_uni_opened
-        self.local_bidi_opened = other.local_bidi_opened
+    def __init__(out self, *, copy: Self):
+        self.stream_id = copy.stream_id
+        self.local_uni_opened = copy.local_uni_opened
+        self.local_bidi_opened = copy.local_bidi_opened
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.local_uni_opened = take.local_uni_opened
-        self.local_bidi_opened = take.local_bidi_opened
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.local_uni_opened = move.local_uni_opened
+        self.local_bidi_opened = move.local_bidi_opened
 
 
 def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdict]:
@@ -187,15 +187,15 @@ struct MaxStreamDataCtx(Copyable, Movable):
         self.exists = exists
         self.has_send_side = has_send_side
 
-    def __init__(out self, *, other: Self):
-        self.stream_id = other.stream_id
-        self.exists = other.exists
-        self.has_send_side = other.has_send_side
+    def __init__(out self, *, copy: Self):
+        self.stream_id = copy.stream_id
+        self.exists = copy.exists
+        self.has_send_side = copy.has_send_side
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.exists = take.exists
-        self.has_send_side = take.has_send_side
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.exists = move.exists
+        self.has_send_side = move.has_send_side
 
 
 def predicate_f18_f19_max_stream_data(

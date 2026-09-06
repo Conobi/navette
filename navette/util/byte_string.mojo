@@ -1,0 +1,76 @@
+"""Adopt arbitrary header octets into a String without forging invalid UTF-8.
+
+SECURITY INVARIANT (shared with `navette.h1.parser._bytes_to_string`):
+`String(unsafe_from_utf8=...)` is reached ONLY for all-ASCII input.
+
+The name reads like a validation-free constructor, but its UTF-8 check is a
+`debug_assert`: it is live under `-D ASSERT=all` -- which is exactly mojox's
+dev and test profile -- and compiled out otherwise. So handing it a non-ASCII
+byte run has two failure modes, neither acceptable in a networking stack:
+
+  * under the test profile, the process ABORTS;
+  * under a release profile, the String silently holds invalid UTF-8, and any
+    later operation that assumes validity inherits the problem.
+
+That matters because header octets are not ASCII by contract. RFC 7541 (HPACK)
+and RFC 9204 (QPACK) impose no character restriction on field values at the
+codec layer, and RFC 9110 explicitly admits `obs-text` (0x80-0xFF) in a field
+value. A peer may therefore send bytes that are perfectly legal HTTP and not
+valid UTF-8 -- so this cannot be treated as a malformed-input case and rejected.
+
+Resolution: transcode. Bytes 0x00-0x7F are copied verbatim; a byte >= 0x80 is
+emitted as the two-byte UTF-8 encoding of the code point of the same value,
+i.e. the octet string is read as Latin-1. The result is always valid UTF-8 and
+round-trips back to the original octets through `_string_to_bytes`. This
+mirrors, byte for byte, what the HTTP/1.1 parser has always done.
+"""
+
+from std.collections import Span
+
+
+def bytes_to_string(var data: List[UInt8]) -> String:
+    """Adopt `data` as a String, transcoding any high bytes as Latin-1.
+
+    Args:
+        data: The raw octets, consumed.
+
+    Returns:
+        A String that is always valid UTF-8. For all-ASCII input the bytes are
+        adopted directly; otherwise each byte >= 0x80 becomes the two-byte
+        UTF-8 encoding of the code point with that value.
+    """
+    for i in range(len(data)):
+        if data[i] >= UInt8(0x80):
+            # Non-ASCII present: transcode. Building per byte is slower than a
+            # bulk adopt, which is why the all-ASCII path above is checked
+            # first -- it is the overwhelmingly common case.
+            var out = String()
+            for j in range(len(data)):
+                out += chr(Int(data[j]))
+            return out^
+    return String(unsafe_from_utf8=data^)
+
+
+def string_to_bytes(s: String) -> List[UInt8]:
+    """Recover the original octets from a String built by `bytes_to_string`.
+
+    Args:
+        s: A String produced by `bytes_to_string`.
+
+    Returns:
+        The octet sequence that was passed in. Code points U+0080-U+00FF are
+        folded back to their single-byte value; everything else is copied as
+        its UTF-8 bytes.
+    """
+    var out = List[UInt8]()
+    for cp in s.codepoints():
+        var v = Int(cp)
+        if v <= 0xFF:
+            out.append(UInt8(v))
+        else:
+            # Not producible by bytes_to_string, but keep the function total
+            # rather than silently truncating.
+            var enc = String(cp).as_bytes()
+            for i in range(len(enc)):
+                out.append(enc[i])
+    return out^

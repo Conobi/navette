@@ -40,10 +40,10 @@ struct Response(Movable):
         self.headers = headers^
         self.body = body^
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.status = take.status^
-        self.reason = take.reason^
-        self.version = take.version^
-        self.headers = take.headers^
-        self.body = take.body^
+        self.status = move.status^
+        self.reason = move.reason^
+        self.version = move.version^
+        self.headers = move.headers^
+        self.body = move.body^

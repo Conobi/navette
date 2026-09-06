@@ -35,13 +35,13 @@ struct Method(Copyable, Movable, Writable):
 
     # --- Copy / Move ---
 
-    def __init__(out self, *, other: Self):
-        self._tag = other._tag
-        self._custom = other._custom
+    def __init__(out self, *, copy: Self):
+        self._tag = copy._tag
+        self._custom = copy._custom
 
-    def __init__(out self, *, deinit take: Self):
-        self._tag = take._tag
-        self._custom = take._custom^
+    def __init__(out self, *, deinit move: Self):
+        self._tag = move._tag
+        self._custom = move._custom^
 
     # --- Factory methods ---
 

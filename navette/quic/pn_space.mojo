@@ -24,11 +24,11 @@ struct EncryptionLevel(ImplicitlyCopyable, Equatable):
     def __init__(out self, value: UInt8):
         self._value = value
 
-    def __init__(out self, *, other: Self):
-        self._value = other._value
+    def __init__(out self, *, copy: Self):
+        self._value = copy._value
 
-    def __init__(out self, *, deinit take: Self):
-        self._value = take._value
+    def __init__(out self, *, deinit move: Self):
+        self._value = move._value
 
     def __eq__(self, other: Self) -> Bool:
         return self._value == other._value
@@ -78,13 +78,13 @@ struct AckRangeEntry(ImplicitlyCopyable):
         self.start = start
         self.end = end
 
-    def __init__(out self, *, other: Self):
-        self.start = other.start
-        self.end = other.end
+    def __init__(out self, *, copy: Self):
+        self.start = copy.start
+        self.end = copy.end
 
-    def __init__(out self, *, deinit take: Self):
-        self.start = take.start
-        self.end = take.end
+    def __init__(out self, *, deinit move: Self):
+        self.start = move.start
+        self.end = move.end
 
 
 # ── SentPacket ───────────────────────────────────────────────────────
@@ -118,23 +118,23 @@ struct SentPacket(Copyable, Movable):
         self.frames = List[Frame](copy=frames)
         self.ecn_mark = ecn_mark
 
-    def __init__(out self, *, other: Self):
-        self.pn = other.pn
-        self.time_sent = other.time_sent
-        self.ack_eliciting = other.ack_eliciting
-        self.in_flight = other.in_flight
-        self.size = other.size
-        self.frames = List[Frame](copy=other.frames)
-        self.ecn_mark = other.ecn_mark
+    def __init__(out self, *, copy: Self):
+        self.pn = copy.pn
+        self.time_sent = copy.time_sent
+        self.ack_eliciting = copy.ack_eliciting
+        self.in_flight = copy.in_flight
+        self.size = copy.size
+        self.frames = List[Frame](copy=copy.frames)
+        self.ecn_mark = copy.ecn_mark
 
-    def __init__(out self, *, deinit take: Self):
-        self.pn = take.pn
-        self.time_sent = take.time_sent
-        self.ack_eliciting = take.ack_eliciting
-        self.in_flight = take.in_flight
-        self.size = take.size
-        self.frames = take.frames^
-        self.ecn_mark = take.ecn_mark
+    def __init__(out self, *, deinit move: Self):
+        self.pn = move.pn
+        self.time_sent = move.time_sent
+        self.ack_eliciting = move.ack_eliciting
+        self.in_flight = move.in_flight
+        self.size = move.size
+        self.frames = move.frames^
+        self.ecn_mark = move.ecn_mark
 
 
 # ── PacketNumberSpace ────────────────────────────────────────────────
@@ -175,39 +175,39 @@ struct PacketNumberSpace(Copyable, Movable):
         self.pn_skip_rng  = UInt64(0)
         self.pn_skip_next = UInt64(0xFFFFFFFFFFFFFFFF)
 
-    def __init__(out self, *, other: Self):
-        self.level = EncryptionLevel(other=other.level)
-        self.next_pn = other.next_pn
-        self.largest_recv_pn = other.largest_recv_pn
-        self.largest_acked_pn = other.largest_acked_pn
-        self.ack_ranges = List[AckRangeEntry](copy=other.ack_ranges)
-        self.ack_eliciting_since_last_ack = other.ack_eliciting_since_last_ack
-        self.ack_needed = other.ack_needed
-        self.sent_packets = other.sent_packets.copy()
-        self.keys_handle = other.keys_handle
-        self.last_ae_acked_time_sent = other.last_ae_acked_time_sent
-        self.recv_ecn = EcnCounts(other=other.recv_ecn)
-        self.last_ack_ecn = EcnCounts(other=other.last_ack_ecn)
-        self.ect0_in_flight = other.ect0_in_flight
-        self.pn_skip_rng  = other.pn_skip_rng
-        self.pn_skip_next = other.pn_skip_next
+    def __init__(out self, *, copy: Self):
+        self.level = EncryptionLevel(copy=copy.level)
+        self.next_pn = copy.next_pn
+        self.largest_recv_pn = copy.largest_recv_pn
+        self.largest_acked_pn = copy.largest_acked_pn
+        self.ack_ranges = List[AckRangeEntry](copy=copy.ack_ranges)
+        self.ack_eliciting_since_last_ack = copy.ack_eliciting_since_last_ack
+        self.ack_needed = copy.ack_needed
+        self.sent_packets = copy.sent_packets.copy()
+        self.keys_handle = copy.keys_handle
+        self.last_ae_acked_time_sent = copy.last_ae_acked_time_sent
+        self.recv_ecn = EcnCounts(copy=copy.recv_ecn)
+        self.last_ack_ecn = EcnCounts(copy=copy.last_ack_ecn)
+        self.ect0_in_flight = copy.ect0_in_flight
+        self.pn_skip_rng  = copy.pn_skip_rng
+        self.pn_skip_next = copy.pn_skip_next
 
-    def __init__(out self, *, deinit take: Self):
-        self.level = take.level
-        self.next_pn = take.next_pn
-        self.largest_recv_pn = take.largest_recv_pn
-        self.largest_acked_pn = take.largest_acked_pn
-        self.ack_ranges = take.ack_ranges^
-        self.ack_eliciting_since_last_ack = take.ack_eliciting_since_last_ack
-        self.ack_needed = take.ack_needed
-        self.sent_packets = take.sent_packets^
-        self.keys_handle = take.keys_handle
-        self.last_ae_acked_time_sent = take.last_ae_acked_time_sent
-        self.recv_ecn = take.recv_ecn^
-        self.last_ack_ecn = take.last_ack_ecn^
-        self.ect0_in_flight = take.ect0_in_flight
-        self.pn_skip_rng  = take.pn_skip_rng
-        self.pn_skip_next = take.pn_skip_next
+    def __init__(out self, *, deinit move: Self):
+        self.level = move.level
+        self.next_pn = move.next_pn
+        self.largest_recv_pn = move.largest_recv_pn
+        self.largest_acked_pn = move.largest_acked_pn
+        self.ack_ranges = move.ack_ranges^
+        self.ack_eliciting_since_last_ack = move.ack_eliciting_since_last_ack
+        self.ack_needed = move.ack_needed
+        self.sent_packets = move.sent_packets^
+        self.keys_handle = move.keys_handle
+        self.last_ae_acked_time_sent = move.last_ae_acked_time_sent
+        self.recv_ecn = move.recv_ecn^
+        self.last_ack_ecn = move.last_ack_ecn^
+        self.ect0_in_flight = move.ect0_in_flight
+        self.pn_skip_rng  = move.pn_skip_rng
+        self.pn_skip_next = move.pn_skip_next
 
     # ── PN allocation ────────────────────────────────────────────────
 
@@ -306,7 +306,7 @@ struct PacketNumberSpace(Copyable, Movable):
                 var new_ranges = List[AckRangeEntry]()
                 for i in range(len(self.ack_ranges)):
                     if i != nxt:
-                        new_ranges.append(AckRangeEntry(other=self.ack_ranges[i]))
+                        new_ranges.append(AckRangeEntry(copy=self.ack_ranges[i]))
                 self.ack_ranges = new_ranges^
 
         # Check merge with the range above (higher .end, at idx-1).
@@ -322,16 +322,16 @@ struct PacketNumberSpace(Copyable, Movable):
                     var new_ranges = List[AckRangeEntry]()
                     for i in range(len(self.ack_ranges)):
                         if i != idx:
-                            new_ranges.append(AckRangeEntry(other=self.ack_ranges[i]))
+                            new_ranges.append(AckRangeEntry(copy=self.ack_ranges[i]))
                     self.ack_ranges = new_ranges^
 
     def _sort_ack_ranges(mut self):
         """Sort ack_ranges by .end descending (insertion sort, small list)."""
         for i in range(1, len(self.ack_ranges)):
-            var key = AckRangeEntry(other=self.ack_ranges[i])
+            var key = AckRangeEntry(copy=self.ack_ranges[i])
             var j = i - 1
             while j >= 0 and self.ack_ranges[j].end < key.end:
-                self.ack_ranges[j + 1] = AckRangeEntry(other=self.ack_ranges[j])
+                self.ack_ranges[j + 1] = AckRangeEntry(copy=self.ack_ranges[j])
                 j -= 1
             self.ack_ranges[j + 1] = key
 
@@ -375,7 +375,7 @@ struct PacketNumberSpace(Copyable, Movable):
 
     def on_packet_sent(mut self, pkt: SentPacket):
         """Record a sent packet for ACK/loss tracking."""
-        self.sent_packets[Int(pkt.pn)] = SentPacket(other=pkt)
+        self.sent_packets[Int(pkt.pn)] = SentPacket(copy=pkt)
 
     # ── ACK processing ───────────────────────────────────────────────
 
@@ -428,7 +428,7 @@ struct PacketNumberSpace(Copyable, Movable):
         for i in range(len(acked_pns)):
             var key = acked_pns[i]
             if key in self.sent_packets:
-                acked.append(SentPacket(other=self.sent_packets[key]))
+                acked.append(SentPacket(copy=self.sent_packets[key]))
                 _ = self.sent_packets.pop(key)
 
         return acked^
@@ -443,7 +443,7 @@ struct PacketNumberSpace(Copyable, Movable):
         for key in self.sent_packets.keys():
             keys.append(key)
         for i in range(len(keys)):
-            result.append(SentPacket(other=self.sent_packets[keys[i]]))
+            result.append(SentPacket(copy=self.sent_packets[keys[i]]))
             _ = self.sent_packets.pop(keys[i])
         self.keys_handle = Int32(-1)
         return result^

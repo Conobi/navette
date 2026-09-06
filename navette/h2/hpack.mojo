@@ -7,6 +7,7 @@ from .header import Header
 from .hpack_integer import encode_integer, decode_integer
 from .hpack_huffman import HuffmanCodec
 from .hpack_table import StaticTable, DynamicTable
+from navette.util.byte_string import bytes_to_string
 
 
 struct HpackConfig(Copyable, Movable):
@@ -29,17 +30,17 @@ struct HpackConfig(Copyable, Movable):
         self.max_integer_value = max_integer_value
         self.use_huffman = use_huffman
 
-    def __init__(out self, *, other: Self):
-        self.max_header_table_size = other.max_header_table_size
-        self.max_header_list_size = other.max_header_list_size
-        self.max_integer_value = other.max_integer_value
-        self.use_huffman = other.use_huffman
+    def __init__(out self, *, copy: Self):
+        self.max_header_table_size = copy.max_header_table_size
+        self.max_header_list_size = copy.max_header_list_size
+        self.max_integer_value = copy.max_integer_value
+        self.use_huffman = copy.use_huffman
 
-    def __init__(out self, *, deinit take: Self):
-        self.max_header_table_size = take.max_header_table_size
-        self.max_header_list_size = take.max_header_list_size
-        self.max_integer_value = take.max_integer_value
-        self.use_huffman = take.use_huffman
+    def __init__(out self, *, deinit move: Self):
+        self.max_header_table_size = move.max_header_table_size
+        self.max_header_list_size = move.max_header_list_size
+        self.max_integer_value = move.max_integer_value
+        self.use_huffman = move.use_huffman
 
 
 struct HpackEncoder(Movable):
@@ -55,15 +56,15 @@ struct HpackEncoder(Movable):
         self.static_table = StaticTable()
         self.dynamic_table = DynamicTable(config.max_header_table_size)
         self.huffman = HuffmanCodec()
-        self.config = HpackConfig(other=config)
+        self.config = HpackConfig(copy=config)
         self._pending_table_size = -1
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         self.static_table = StaticTable()
-        self.dynamic_table = take.dynamic_table^
-        self.huffman = take.huffman^
-        self.config = take.config^
-        self._pending_table_size = take._pending_table_size
+        self.dynamic_table = move.dynamic_table^
+        self.huffman = move.huffman^
+        self.config = move.config^
+        self._pending_table_size = move._pending_table_size
 
     def encode(mut self, headers: List[Header]) -> List[UInt8]:
         """Encode headers into HPACK wire bytes. Updates dynamic table."""
@@ -165,13 +166,13 @@ struct HpackDecoder(Movable):
         self.static_table = StaticTable()
         self.dynamic_table = DynamicTable(config.max_header_table_size)
         self.huffman = HuffmanCodec()
-        self.config = HpackConfig(other=config)
+        self.config = HpackConfig(copy=config)
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         self.static_table = StaticTable()
-        self.dynamic_table = take.dynamic_table^
-        self.huffman = take.huffman^
-        self.config = take.config^
+        self.dynamic_table = move.dynamic_table^
+        self.huffman = move.huffman^
+        self.config = move.config^
 
     def decode(
         mut self, wire: List[UInt8]
@@ -350,10 +351,10 @@ struct HpackDecoder(Movable):
             var huff_result = self.huffman.decode(raw)
             if huff_result[1].byte_length() > 0:
                 return (String(""), 0, huff_result[1])
-            var s = String(unsafe_from_utf8=huff_result[0])
+            var s = bytes_to_string(huff_result[0].copy())
             return (s^, consumed, String(""))
         else:
             var raw = List[UInt8](capacity=str_len)
             raw.extend(Span(wire)[data_start:data_end])
-            var s = String(unsafe_from_utf8=raw)
+            var s = bytes_to_string(raw^)
             return (s^, consumed, String(""))

@@ -48,19 +48,19 @@ struct CidEntry(Copyable, Movable):
         self.state = state
         self.advertised = advertised
 
-    def __init__(out self, *, other: Self):
-        self.cid = List[UInt8](copy=other.cid)
-        self.sequence = other.sequence
-        self.reset_token = List[UInt8](copy=other.reset_token)
-        self.state = other.state
-        self.advertised = other.advertised
+    def __init__(out self, *, copy: Self):
+        self.cid = List[UInt8](copy=copy.cid)
+        self.sequence = copy.sequence
+        self.reset_token = List[UInt8](copy=copy.reset_token)
+        self.state = copy.state
+        self.advertised = copy.advertised
 
-    def __init__(out self, *, deinit take: Self):
-        self.cid = take.cid^
-        self.sequence = take.sequence
-        self.reset_token = take.reset_token^
-        self.state = take.state
-        self.advertised = take.advertised
+    def __init__(out self, *, deinit move: Self):
+        self.cid = move.cid^
+        self.sequence = move.sequence
+        self.reset_token = move.reset_token^
+        self.state = move.state
+        self.advertised = move.advertised
 
 
 # ── CidManager ────────────────────────────────────────────────────────────────
@@ -103,10 +103,10 @@ struct CidManager(Movable):
             local_active_limit: Our active_connection_id_limit transport parameter.
             peer_active_limit:  Peer's active_connection_id_limit transport parameter.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         # Generate 32-byte server_secret via getrandom(2).
-        var rbuf = _cid_alloc[UInt8](32).as_unsafe_any_origin()
+        var rbuf = _cid_alloc[UInt8](32)
         _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
         self.server_secret = List[UInt8](capacity=32)
         for i in range(32):
@@ -146,25 +146,25 @@ struct CidManager(Movable):
         self.retire_queue_cap = Int(peer_active_limit * UInt64(8))
         self.highest_retire_prior_to = UInt64(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.local_cids = take.local_cids^
-        self.local_next_seq = take.local_next_seq
-        self.local_retire_prior_to = take.local_retire_prior_to
-        self.remote_cids = take.remote_cids^
-        self.remote_active_cid_seq = take.remote_active_cid_seq
-        self.local_active_limit = take.local_active_limit
-        self.peer_active_limit = take.peer_active_limit
-        self.retire_queue = take.retire_queue^
-        self.retire_queue_cap = take.retire_queue_cap
-        self.highest_retire_prior_to = take.highest_retire_prior_to
-        self._lib = take._lib^
-        self.server_secret = take.server_secret^
+    def __init__(out self, *, deinit move: Self):
+        self.local_cids = move.local_cids^
+        self.local_next_seq = move.local_next_seq
+        self.local_retire_prior_to = move.local_retire_prior_to
+        self.remote_cids = move.remote_cids^
+        self.remote_active_cid_seq = move.remote_active_cid_seq
+        self.local_active_limit = move.local_active_limit
+        self.peer_active_limit = move.peer_active_limit
+        self.retire_queue = move.retire_queue^
+        self.retire_queue_cap = move.retire_queue_cap
+        self.highest_retire_prior_to = move.highest_retire_prior_to
+        self._lib = move._lib^
+        self.server_secret = move.server_secret^
 
     # ── CID generation ────────────────────────────────────────────────────────
 
     def generate_cid(mut self) raises -> List[UInt8]:
         """Generate an 8-byte random connection ID via getrandom(2)."""
-        var buf = _cid_alloc[UInt8](8).as_unsafe_any_origin()
+        var buf = _cid_alloc[UInt8](8)
         _ = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
         var cid = List[UInt8](capacity=8)
         for i in range(8):
@@ -191,7 +191,7 @@ struct CidManager(Movable):
         var token = _hmac_sha256_truncate16(self._lib, Span(self.server_secret), Span(new_cid))
         var entry = CidEntry(new_cid, self.local_next_seq, token, CID_ACTIVE)
         self.local_next_seq += UInt64(1)
-        var entry_copy = CidEntry(other=entry)
+        var entry_copy = CidEntry(copy=entry)
         self.local_cids.append(entry_copy^)
         return entry^
 
@@ -321,7 +321,7 @@ struct CidManager(Movable):
         var result = List[CidEntry]()
         for i in range(len(self.local_cids)):
             if self.local_cids[i].state == CID_ACTIVE and not self.local_cids[i].advertised:
-                result.append(CidEntry(other=self.local_cids[i]))
+                result.append(CidEntry(copy=self.local_cids[i]))
         return result^
 
     def mark_advertised(mut self, sequence: UInt64):
@@ -353,15 +353,15 @@ def _hmac_sha256_truncate16(
     """
     var rlib = lib.inner_ptr()
 
-    var key_ptr = _cid_alloc[UInt8](len(key)).as_unsafe_any_origin()
+    var key_ptr = _cid_alloc[UInt8](len(key))
     for i in range(len(key)):
         key_ptr[unsafe_offset=i] = key[i]
 
-    var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1)).as_unsafe_any_origin()
+    var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1))
     for i in range(len(msg)):
         msg_ptr[unsafe_offset=i] = msg[i]
 
-    var out_ptr = _cid_alloc[UInt8](32).as_unsafe_any_origin()
+    var out_ptr = _cid_alloc[UInt8](32)
 
     var rc = rlib[].hmac_sha256(
         key_ptr, Int32(len(key)),

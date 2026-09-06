@@ -5,7 +5,7 @@
 #   client sends: GET /path\r\n   (with FIN)
 #   server sends: <file bytes>   (with FIN)
 
-from std.memory import Span
+from std.collections import Span
 from navette.quic.connection import QuicConnection
 from interop.file_io import read_file
 

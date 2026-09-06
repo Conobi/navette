@@ -95,25 +95,25 @@ struct H3Event(Copyable, Movable):
         self.reason = String("")
         self.last_stream_id = UInt64(0)
 
-    def __init__(out self, *, other: Self):
-        self.kind = other.kind
-        self.stream_id = other.stream_id
-        self.fields = List[QpackHeaderField](copy=other.fields)
-        self.data = List[UInt8](copy=other.data)
-        self.fin = other.fin
-        self.error_code = other.error_code
-        self.reason = other.reason
-        self.last_stream_id = other.last_stream_id
+    def __init__(out self, *, copy: Self):
+        self.kind = copy.kind
+        self.stream_id = copy.stream_id
+        self.fields = List[QpackHeaderField](copy=copy.fields)
+        self.data = List[UInt8](copy=copy.data)
+        self.fin = copy.fin
+        self.error_code = copy.error_code
+        self.reason = copy.reason
+        self.last_stream_id = copy.last_stream_id
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.stream_id = take.stream_id
-        self.fields = take.fields^
-        self.data = take.data^
-        self.fin = take.fin
-        self.error_code = take.error_code
-        self.reason = take.reason^
-        self.last_stream_id = take.last_stream_id
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.stream_id = move.stream_id
+        self.fields = move.fields^
+        self.data = move.data^
+        self.fin = move.fin
+        self.error_code = move.error_code
+        self.reason = move.reason^
+        self.last_stream_id = move.last_stream_id
 
 
 # ---------------------------------------------------------------------------
@@ -131,15 +131,15 @@ struct _H3StreamBuf(Copyable, Movable):
         self.type_byte = Optional[UInt8]()
         self.is_uni = False
 
-    def __init__(out self, *, other: Self):
-        self.buf = List[UInt8](copy=other.buf)
-        self.type_byte = other.type_byte.copy()
-        self.is_uni = other.is_uni
+    def __init__(out self, *, copy: Self):
+        self.buf = List[UInt8](copy=copy.buf)
+        self.type_byte = copy.type_byte.copy()
+        self.is_uni = copy.is_uni
 
-    def __init__(out self, *, deinit take: Self):
-        self.buf = take.buf^
-        self.type_byte = take.type_byte^
-        self.is_uni = take.is_uni
+    def __init__(out self, *, deinit move: Self):
+        self.buf = move.buf^
+        self.type_byte = move.type_byte^
+        self.is_uni = move.is_uni
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ struct H3Connection(Movable):
     # SETTINGS frame is received with H3_DATAGRAM=1.
     var _local_h3_datagram_enabled:  Bool
     var _peer_h3_datagram_enabled:   Bool
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutAnyOrigin]]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
@@ -201,28 +201,28 @@ struct H3Connection(Movable):
         self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
 
-    def __init__(out self, *, deinit take: Self):
-        self._quic = take._quic^
-        self._is_server = take._is_server
-        self._stream_bufs = take._stream_bufs^
-        self._h3_events = take._h3_events^
-        self._local_ctrl_sid = take._local_ctrl_sid^
-        self._local_qenc_sid = take._local_qenc_sid^
-        self._local_qdec_sid = take._local_qdec_sid^
-        self._init_done = take._init_done
-        self._peer_ctrl_sid = take._peer_ctrl_sid^
-        self._peer_qenc_sid = take._peer_qenc_sid^
-        self._peer_qdec_sid = take._peer_qdec_sid^
-        self._peer_ctrl_first_frame_seen = take._peer_ctrl_first_frame_seen
-        self._peer_ctrl_settings = take._peer_ctrl_settings
-        self._goaway_sent = take._goaway_sent^
-        self._peer_goaway_sid = take._peer_goaway_sid^
-        self._enc = take._enc^
-        self._dec = take._dec^
-        self._request_headers_seen = take._request_headers_seen^
-        self._local_h3_datagram_enabled = take._local_h3_datagram_enabled
-        self._peer_h3_datagram_enabled = take._peer_h3_datagram_enabled
-        self.profile_ptr = take.profile_ptr
+    def __init__(out self, *, deinit move: Self):
+        self._quic = move._quic^
+        self._is_server = move._is_server
+        self._stream_bufs = move._stream_bufs^
+        self._h3_events = move._h3_events^
+        self._local_ctrl_sid = move._local_ctrl_sid^
+        self._local_qenc_sid = move._local_qenc_sid^
+        self._local_qdec_sid = move._local_qdec_sid^
+        self._init_done = move._init_done
+        self._peer_ctrl_sid = move._peer_ctrl_sid^
+        self._peer_qenc_sid = move._peer_qenc_sid^
+        self._peer_qdec_sid = move._peer_qdec_sid^
+        self._peer_ctrl_first_frame_seen = move._peer_ctrl_first_frame_seen
+        self._peer_ctrl_settings = move._peer_ctrl_settings
+        self._goaway_sent = move._goaway_sent^
+        self._peer_goaway_sid = move._peer_goaway_sid^
+        self._enc = move._enc^
+        self._dec = move._dec^
+        self._request_headers_seen = move._request_headers_seen^
+        self._local_h3_datagram_enabled = move._local_h3_datagram_enabled
+        self._peer_h3_datagram_enabled = move._peer_h3_datagram_enabled
+        self.profile_ptr = move.profile_ptr
 
     @staticmethod
     def server(var quic: QuicConnection) raises -> H3Connection:
@@ -308,7 +308,7 @@ struct H3Connection(Movable):
         (handshake seeding) or `on_path_response_received` (post-migration
         promotion); both live on the QUIC layer.
         """
-        return PathKey(other=self._quic.peer_addr)
+        return PathKey(copy=self._quic.peer_addr)
 
     def _is_peer_initiated(self, stream_id: UInt64) -> Bool:
         if self._is_server:
@@ -323,10 +323,10 @@ struct H3Connection(Movable):
         """Return the next pending H3Event, or None if the queue is empty."""
         if len(self._h3_events) == 0:
             return Optional[H3Event]()
-        var ev = H3Event(other=self._h3_events[0])
+        var ev = H3Event(copy=self._h3_events[0])
         var rest = List[H3Event]()
         for i in range(1, len(self._h3_events)):
-            rest.append(H3Event(other=self._h3_events[i]))
+            rest.append(H3Event(copy=self._h3_events[i]))
         self._h3_events = rest^
         return Optional[H3Event](ev^)
 
@@ -339,7 +339,7 @@ struct H3Connection(Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: Pointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutUntrackedOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:

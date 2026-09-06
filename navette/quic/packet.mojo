@@ -32,11 +32,11 @@ struct PacketType(ImplicitlyCopyable, Equatable):
     def __init__(out self, value: UInt8):
         self._value = value
 
-    def __init__(out self, *, other: Self):
-        self._value = other._value
+    def __init__(out self, *, copy: Self):
+        self._value = copy._value
 
-    def __init__(out self, *, deinit take: Self):
-        self._value = take._value
+    def __init__(out self, *, deinit move: Self):
+        self._value = move._value
 
     def __eq__(self, other: Self) -> Bool:
         return self._value == other._value
@@ -99,29 +99,29 @@ struct PacketHeader(Copyable, Movable):
         self.supported_versions = List[UInt32]()
         self.retry_integrity_tag = List[UInt8]()
 
-    def __init__(out self, *, other: Self):
-        self.is_long_header = other.is_long_header
-        self.packet_type = other.packet_type
-        self.version = other.version
-        self.dcid = List[UInt8](copy=other.dcid)
-        self.scid = List[UInt8](copy=other.scid)
-        self.token = List[UInt8](copy=other.token)
-        self.payload_length = other.payload_length
-        self.pn_offset = other.pn_offset
-        self.supported_versions = List[UInt32](copy=other.supported_versions)
-        self.retry_integrity_tag = List[UInt8](copy=other.retry_integrity_tag)
+    def __init__(out self, *, copy: Self):
+        self.is_long_header = copy.is_long_header
+        self.packet_type = copy.packet_type
+        self.version = copy.version
+        self.dcid = List[UInt8](copy=copy.dcid)
+        self.scid = List[UInt8](copy=copy.scid)
+        self.token = List[UInt8](copy=copy.token)
+        self.payload_length = copy.payload_length
+        self.pn_offset = copy.pn_offset
+        self.supported_versions = List[UInt32](copy=copy.supported_versions)
+        self.retry_integrity_tag = List[UInt8](copy=copy.retry_integrity_tag)
 
-    def __init__(out self, *, deinit take: Self):
-        self.is_long_header = take.is_long_header
-        self.packet_type = take.packet_type
-        self.version = take.version
-        self.dcid = take.dcid^
-        self.scid = take.scid^
-        self.token = take.token^
-        self.payload_length = take.payload_length
-        self.pn_offset = take.pn_offset
-        self.supported_versions = take.supported_versions^
-        self.retry_integrity_tag = take.retry_integrity_tag^
+    def __init__(out self, *, deinit move: Self):
+        self.is_long_header = move.is_long_header
+        self.packet_type = move.packet_type
+        self.version = move.version
+        self.dcid = move.dcid^
+        self.scid = move.scid^
+        self.token = move.token^
+        self.payload_length = move.payload_length
+        self.pn_offset = move.pn_offset
+        self.supported_versions = move.supported_versions^
+        self.retry_integrity_tag = move.retry_integrity_tag^
 
 
 # --- Fast-path DCID inspection (server demux helpers) ---

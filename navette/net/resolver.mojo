@@ -1,4 +1,4 @@
-"""resolver.mojo — DNS resolution via getaddrinfo(3).
+"""DNS resolution via getaddrinfo(3).
 
 `resolve_host(host, port)` returns a list of `ResolvedAddr` — a small
 tagged union over `SocketAddrV4` / `SocketAddrV6` — for `host:port`,
@@ -50,7 +50,7 @@ def _monotonic_secs() -> Int:
 
 
 @always_inline
-def _read_u64_le(p: Pointer[UInt8, MutAnyOrigin], offset: Int) -> UInt64:
+def _read_u64_le(p: Pointer[UInt8, MutUntrackedOrigin], offset: Int) -> UInt64:
     """Read 8 bytes little-endian from `p[offset..offset+8]`."""
     var v = UInt64(0)
     for i in range(8):
@@ -81,10 +81,10 @@ struct ResolvedAddr(Copyable, Movable):
         self.v4 = v4
         self.v6 = v6
 
-    def __init__(out self, *, deinit take: Self):
-        self.family = take.family
-        self.v4 = take.v4
-        self.v6 = take.v6
+    def __init__(out self, *, deinit move: Self):
+        self.family = move.family
+        self.v4 = move.v4
+        self.v6 = move.v6
 
     @staticmethod
     def from_v4(v4: SocketAddrV4) -> Self:
@@ -118,7 +118,7 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     RFC 6724 preference order — typically IPv6 first, then IPv4. Raises
     on empty host, getaddrinfo failure, or zero AF_INET/AF_INET6 nodes.
     """
-    if len(host) == 0:
+    if not host:
         raise "resolve_host: empty host"
 
     var dotted = IpAddrV4.parse(host)
@@ -158,7 +158,7 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     out_res[unsafe_offset=0] = UInt64(0)
     var rc = external_call["getaddrinfo", Int32](
         host_cstr,
-        null_ptr[UInt8, MutAnyOrigin](),  # service = NULL
+        null_ptr[UInt8, MutUntrackedOrigin](),  # service = NULL
         hints,
         out_res,
     )
@@ -173,7 +173,7 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
     var results = List[ResolvedAddr]()
     var node = head
     while node != UInt64(0):
-        var np = Pointer[UInt8, MutAnyOrigin](
+        var np = Pointer[UInt8, MutUntrackedOrigin](
             unsafe_from_address=Int(node)
         )
         # addrinfo offsets (Linux x86_64):
@@ -185,7 +185,7 @@ def resolve_host(host: String, port: Int) raises -> List[ResolvedAddr]:
         var ai_next = _read_u64_le(np, 40)
 
         if ai_addr != UInt64(0) and (fam == _AF_INET or fam == _AF_INET6):
-            var sa = Pointer[UInt8, MutAnyOrigin](
+            var sa = Pointer[UInt8, MutUntrackedOrigin](
                 unsafe_from_address=Int(ai_addr)
             )
             if fam == _AF_INET:
@@ -244,9 +244,9 @@ struct _CacheEntry(Copyable, Movable):
         self.addrs = addrs^
         self.expires_secs = expires_secs
 
-    def __init__(out self, *, deinit take: Self):
-        self.addrs = take.addrs^
-        self.expires_secs = take.expires_secs
+    def __init__(out self, *, deinit move: Self):
+        self.addrs = move.addrs^
+        self.expires_secs = move.expires_secs
 
 
 struct Resolver(Movable):
@@ -267,9 +267,9 @@ struct Resolver(Movable):
         self.ttl_secs = ttl_secs
         self.cache = Dict[String, _CacheEntry]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.ttl_secs = take.ttl_secs
-        self.cache = take.cache^
+    def __init__(out self, *, deinit move: Self):
+        self.ttl_secs = move.ttl_secs
+        self.cache = move.cache^
 
     def resolve(mut self, host: String, port: Int) raises -> List[ResolvedAddr]:
         """Resolve `host:port`, consulting + populating the TTL cache."""

@@ -65,16 +65,39 @@ struct PacketProtect(Movable):
         self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
         self.keys.append(Int32(-1))
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
-    def __init__(out self, *, deinit take: Self):
-        self.keys = take.keys^
-        self._lib = take._lib^
+    def __init__(out self, *, deinit move: Self):
+        self.keys = move.keys^
+        self._lib = move._lib^
 
     def __deinit__(deinit self):
+        """Free every installed keys handle.
+
+        A destructor may not raise. `keys_free` can, but only from the
+        symbol lookup — an unknown handle returns -1 on the Rust side
+        and that status is already discarded. A lookup failure means the
+        loaded librustls_mojo.so does not export `rlsm_keys_free`, so
+        none of the handles can be reached; swallowing it leaks up to
+        four KEYS_TABLE entries (AEAD keys and header-protection masks)
+        rather than aborting the process during connection teardown.
+
+        The guard is inside the loop, not around it, so a failure on one
+        encryption level still lets the others be freed. `deinit self`
+        consumes the object and each slot is visited once, so no handle
+        can be freed twice.
+        """
         for i in range(len(self.keys)):
             if self.keys[i] != Int32(-1):
-                _ = self._lib.inner_ptr()[].keys_free(self.keys[i])
+                try:
+                    _ = self._lib.inner_ptr()[].keys_free(self.keys[i])
+                except:
+                    pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     # -- Key management --------------------------------------------------------
 
@@ -96,7 +119,7 @@ struct PacketProtect(Movable):
             return False
         return self.keys[level] != Int32(-1)
 
-    def discard_keys(mut self, level: Int):
+    def discard_keys(mut self, level: Int) raises:
         """Free and remove keys at the given encryption level."""
         if level < 0 or level >= 4:
             return
@@ -144,7 +167,7 @@ struct PacketProtect(Movable):
         var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, out_handle)
 
         if rc == Int32(0):
-            var kh = out_handle[0]
+            var kh = out_handle[unsafe_offset=0]
             # Keep out_handle_buf alive through the post-FFI read above.
             _ = out_handle_buf
             self.keys[ZERO_RTT_KEY_SLOT_IDX] = kh
@@ -192,7 +215,7 @@ struct PacketProtect(Movable):
     def unprotect_header_ptr(
         self,
         level: Int,
-        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
         pkt_len: Int,
         pn_offset: Int,
     ) raises -> Tuple[UInt8, Int]:
@@ -212,12 +235,19 @@ struct PacketProtect(Movable):
             raise "packet too short for header unprotection"
 
         # Pass pointers directly into the packet buffer — no copies.
+        # rustls reads and writes several regions of this one packet buffer
+        # through separate pointers. Mojo 1.0.0 rejects two mutable pointers
+        # with the same tracked origin in one call, so the buffer is handed
+        # over untracked: the aliasing is intended and confined to C. The
+        # `pkt_ptr` parameter keeps the caller's buffer borrowed for this
+        # whole method, which spans the synchronous call below.
+        var raw = pkt_ptr.unsafe_origin_cast[MutUntrackedOrigin]()
         var rc = self._lib.inner_ptr()[].keys_remote_header_unprotect(
             keys_handle,
-            pkt_ptr.unsafe_offse.unsafe_offset((pn_offset))+ _MAX_PN_LEN,  # sample (16 bytes, read-only)
+            raw.unsafe_offset(pn_offset + _MAX_PN_LEN),  # sample (16B, read-only)
             Int32(_HP_SAMPLE_LEN),
-            pkt_ptr,                              # first_byte (modified in-place)
-            pkt_ptr.unsafe_offset(pn_offset),                  # pn_bytes (modified in-place)
+            raw,                                  # first_byte (modified in-place)
+            raw.unsafe_offset(pn_offset),         # pn_bytes (modified in-place)
             Int32(_MAX_PN_LEN),
         )
 
@@ -246,7 +276,7 @@ struct PacketProtect(Movable):
         level: Int,
         pn: UInt64,
         header_len: Int,
-        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
         pkt_len: Int,
     ) raises -> Int:
         """Decrypt AEAD payload in-place. Zero-copy.
@@ -267,12 +297,19 @@ struct PacketProtect(Movable):
 
         var payload_len = pkt_len - header_len
 
+        # rustls reads and writes several regions of this one packet buffer
+        # through separate pointers. Mojo 1.0.0 rejects two mutable pointers
+        # with the same tracked origin in one call, so the buffer is handed
+        # over untracked: the aliasing is intended and confined to C. The
+        # `pkt_ptr` parameter keeps the caller's buffer borrowed for this
+        # whole method, which spans the synchronous call below.
+        var raw = pkt_ptr.unsafe_origin_cast[MutUntrackedOrigin]()
         var rc = self._lib.inner_ptr()[].keys_remote_decrypt(
             keys_handle,
             pn,
-            pkt_ptr,                 # header (AAD)
+            raw,                                  # header (AAD)
             Int32(header_len),
-            pkt_ptr.unsafe_offset(header_len),    # payload (decrypted in-place)
+            raw.unsafe_offset(header_len),        # payload (decrypted in-place)
             Int32(payload_len),
         )
 
@@ -306,7 +343,7 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         pn: UInt64,
-        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
         header_len: Int,
         payload_len: Int,
         total_capacity: Int,
@@ -329,12 +366,19 @@ struct PacketProtect(Movable):
 
         var buf_capacity = total_capacity - header_len
 
+        # rustls reads and writes several regions of this one packet buffer
+        # through separate pointers. Mojo 1.0.0 rejects two mutable pointers
+        # with the same tracked origin in one call, so the buffer is handed
+        # over untracked: the aliasing is intended and confined to C. The
+        # `pkt_ptr` parameter keeps the caller's buffer borrowed for this
+        # whole method, which spans the synchronous call below.
+        var raw = pkt_ptr.unsafe_origin_cast[MutUntrackedOrigin]()
         var rc = self._lib.inner_ptr()[].keys_local_encrypt(
             keys_handle,
             pn,
-            pkt_ptr,                 # header (AAD)
+            raw,                                  # header (AAD)
             Int32(header_len),
-            pkt_ptr.unsafe_offset(header_len),    # payload (encrypted in-place)
+            raw.unsafe_offset(header_len),        # payload (encrypted in-place)
             Int32(payload_len),
             Int32(buf_capacity),
         )
@@ -373,7 +417,7 @@ struct PacketProtect(Movable):
         # Copy ciphertext (without header) to result.
         var result = List[UInt8](capacity=ct_len)
         for i in range(ct_len):
-            result.append(buf[header_len + i])
+            result.append(buf[unsafe_offset=header_len + i])
 
         # Keep buf_owned alive through the post-FFI read above.
         _ = buf_owned
@@ -384,7 +428,7 @@ struct PacketProtect(Movable):
     def protect_header_ptr(
         self,
         level: Int,
-        pkt_ptr: Pointer[UInt8, MutAnyOrigin],
+        pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
         pkt_len: Int,
         pn_offset: Int,
         pn_length: Int,
@@ -398,12 +442,19 @@ struct PacketProtect(Movable):
         if pn_offset + _MAX_PN_LEN + _HP_SAMPLE_LEN > pkt_len:
             raise "packet too short for header protection"
 
+        # rustls reads and writes several regions of this one packet buffer
+        # through separate pointers. Mojo 1.0.0 rejects two mutable pointers
+        # with the same tracked origin in one call, so the buffer is handed
+        # over untracked: the aliasing is intended and confined to C. The
+        # `pkt_ptr` parameter keeps the caller's buffer borrowed for this
+        # whole method, which spans the synchronous call below.
+        var raw = pkt_ptr.unsafe_origin_cast[MutUntrackedOrigin]()
         var rc = self._lib.inner_ptr()[].keys_local_header_protect(
             keys_handle,
-            pkt_ptr.unsafe_offse.unsafe_offset((pn_offset))+ _MAX_PN_LEN,  # sample
+            raw.unsafe_offset(pn_offset + _MAX_PN_LEN),  # sample
             Int32(_HP_SAMPLE_LEN),
-            pkt_ptr,                              # first_byte
-            pkt_ptr.unsafe_offset(pn_offset),                  # pn_bytes
+            raw,                                  # first_byte
+            raw.unsafe_offset(pn_offset),         # pn_bytes
             Int32(pn_length),
         )
 
@@ -432,11 +483,11 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: Pointer[Int32, MutAnyOrigin],
-        pn_offsets: Pointer[Int32, MutAnyOrigin],
-        out_first_bytes: Pointer[UInt8, MutAnyOrigin],
-        out_pn_lengths: Pointer[Int32, MutAnyOrigin],
+        packet_ptrs: Pointer[mut=True, T=Pointer[UInt8, MutUntrackedOrigin], origin=_],
+        packet_lens: Pointer[mut=True, T=Int32, origin=_],
+        pn_offsets: Pointer[mut=True, T=Int32, origin=_],
+        out_first_bytes: Pointer[mut=True, T=UInt8, origin=_],
+        out_pn_lengths: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int:
         """Batch header unprotection for N packets at the same level.
 
@@ -462,11 +513,11 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_numbers: Pointer[UInt64, MutAnyOrigin],
-        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: Pointer[Int32, MutAnyOrigin],
-        header_lens: Pointer[Int32, MutAnyOrigin],
-        out_plaintext_lens: Pointer[Int32, MutAnyOrigin],
+        packet_numbers: Pointer[mut=True, T=UInt64, origin=_],
+        packet_ptrs: Pointer[mut=True, T=Pointer[UInt8, MutUntrackedOrigin], origin=_],
+        packet_lens: Pointer[mut=True, T=Int32, origin=_],
+        header_lens: Pointer[mut=True, T=Int32, origin=_],
+        out_plaintext_lens: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int:
         """Batch AEAD decryption for N packets at the same level.
 
@@ -492,12 +543,12 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_numbers: Pointer[UInt64, MutAnyOrigin],
-        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        header_lens: Pointer[Int32, MutAnyOrigin],
-        payload_lens: Pointer[Int32, MutAnyOrigin],
-        buf_capacities: Pointer[Int32, MutAnyOrigin],
-        out_ciphertext_lens: Pointer[Int32, MutAnyOrigin],
+        packet_numbers: Pointer[mut=True, T=UInt64, origin=_],
+        packet_ptrs: Pointer[mut=True, T=Pointer[UInt8, MutUntrackedOrigin], origin=_],
+        header_lens: Pointer[mut=True, T=Int32, origin=_],
+        payload_lens: Pointer[mut=True, T=Int32, origin=_],
+        buf_capacities: Pointer[mut=True, T=Int32, origin=_],
+        out_ciphertext_lens: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int:
         """Batch AEAD encryption for N packets at the same level.
 
@@ -524,11 +575,11 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         count: Int,
-        packet_ptrs: Pointer[Pointer[UInt8, MutAnyOrigin], MutAnyOrigin],
-        packet_lens: Pointer[Int32, MutAnyOrigin],
-        pn_offsets: Pointer[Int32, MutAnyOrigin],
-        pn_lengths: Pointer[Int32, MutAnyOrigin],
-        out_results: Pointer[Int32, MutAnyOrigin],
+        packet_ptrs: Pointer[mut=True, T=Pointer[UInt8, MutUntrackedOrigin], origin=_],
+        packet_lens: Pointer[mut=True, T=Int32, origin=_],
+        pn_offsets: Pointer[mut=True, T=Int32, origin=_],
+        pn_lengths: Pointer[mut=True, T=Int32, origin=_],
+        out_results: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int:
         """Batch header protection for N packets at the same level.
 

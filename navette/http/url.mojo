@@ -18,11 +18,11 @@ struct ParsedUrl(Movable):
         self.port = port
         self.path = path
 
-    def __init__(out self, *, deinit take: Self):
-        self.scheme = take.scheme^
-        self.host = take.host^
-        self.port = take.port
-        self.path = take.path^
+    def __init__(out self, *, deinit move: Self):
+        self.scheme = move.scheme^
+        self.host = move.host^
+        self.port = move.port
+        self.path = move.path^
 
     def to_origin(self) -> Origin:
         return Origin(scheme=self.scheme, host=self.host, port=self.port)
@@ -146,7 +146,7 @@ def parse_url(url: String) raises -> ParsedUrl:
             while ai < an:
                 port_str += chr(Int(auth_bytes[ai]))
                 ai += 1
-            if len(port_str) > 0:
+            if port_str:
                 port = UInt16(atol(port_str))
             else:
                 port = _default_port(scheme)

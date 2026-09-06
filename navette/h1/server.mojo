@@ -24,9 +24,9 @@ struct ServerConnection(Movable):
         """Build a fresh server connection in the IDLE phase."""
         self._inner = H1Connection(config^)
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self._inner = take._inner^
+        self._inner = move._inner^
 
     # --- Inbound API (server reads requests) ---
 

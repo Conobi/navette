@@ -33,15 +33,15 @@ struct MockServer[H: StreamHandler](Movable):
         self.handler = handler^
         self.caps = Capabilities.for_h1()
 
-    def __init__(out self, *, deinit take: Self):
-        self.handler = take.handler^
-        self.caps = take.caps^
+    def __init__(out self, *, deinit move: Self):
+        self.handler = move.handler^
+        self.caps = move.caps^
 
     def dispatch(mut self, var req: Request) raises -> Response:
         var body = RecvBody()
         body._set_end()  # mock has no streaming inbound bodies in v1
         var resp_writer = ResponseWriter()
-        self.handler.on_request(req^, body, resp_writer, Capabilities(other=self.caps))
+        self.handler.on_request(req^, body, resp_writer, Capabilities(copy=self.caps))
         # Drain captured status/headers into a Response. Body frames are
         # accessible via _pop_body_frame; the mock discards them since
         # Response.body is List[BodyFrame] and trait conformance tests only
@@ -71,10 +71,10 @@ struct MockSession[H: StreamHandler](Session):
         self._next_id = UInt64(0)
         self._pending = Optional[Request]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._server = take._server^
-        self._next_id = take._next_id
-        self._pending = take._pending^
+    def __init__(out self, *, deinit move: Self):
+        self._server = move._server^
+        self._next_id = move._next_id
+        self._pending = move._pending^
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
         self._next_id += UInt64(1)
@@ -98,7 +98,7 @@ struct MockSession[H: StreamHandler](Session):
         handle._mark_complete()
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(other=self._server.caps)
+        return Capabilities(copy=self._server.caps)
 
     def alpn(self) -> Int:
         return self._server.caps.alpn
