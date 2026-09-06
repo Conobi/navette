@@ -5,8 +5,8 @@
 # self-signed cert, materialises Handshake (kc=1) and 1-RTT (kc=2) key handles,
 # and performs four AEAD encrypt/decrypt cross-checks to verify the key pairs are
 # correct complements.
-from lib.test_util import assert_true, assert_equal
-from lib.rustls import RustlsLibrary
+from oracle.test_util import assert_true, assert_equal
+from oracle.rustls import RustlsLibrary
 from std.python import Python, PythonObject
 from navette.util.owned_alloc import Owned
 
@@ -246,8 +246,8 @@ def main() raises:
 
     var cert_bytes = py_bytes_to_mojo(cert_pem_py)
     var key_bytes  = py_bytes_to_mojo(key_pem_py)
-    var cert_ptr = cert_bytes.unsafe_ptr().as_unsafe_any_origin()
-    var key_ptr  = key_bytes.unsafe_ptr().as_unsafe_any_origin()
+    var cert_ptr = cert_bytes.unsafe_ptr()
+    var key_ptr  = key_bytes.unsafe_ptr()
     var cert_len = Int32(len(cert_bytes))
     var key_len  = Int32(len(key_bytes))
 

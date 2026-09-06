@@ -7,8 +7,8 @@
 # flow_controlled_length) are pre-materialized into
 # conformance/vectors/rfc9113/h2_states.json by
 # conformance/scripts/oracle_h1_h2_states.py.
-from lib.test_util import assert_true, assert_equal
-from lib.http2.connection import (
+from oracle.test_util import assert_true, assert_equal
+from oracle.http2.connection import (
     H2Config,
     H2Event,
     H2_EVT_REQUEST_RECEIVED,
@@ -21,9 +21,9 @@ from lib.http2.connection import (
     STREAM_CLOSED,
     H2Connection,
 )
-from lib.http2.frame import H2_NO_ERROR, H2_CANCEL
-from lib.stateful_vectors import load_states, py_field_str
-from lib.http1.types import Header
+from oracle.http2.frame import H2_NO_ERROR, H2_CANCEL
+from oracle.stateful_vectors import load_states, py_field_str
+from oracle.http1.types import Header
 from std.python import Python, PythonObject
 
 
@@ -31,7 +31,7 @@ def test_cross_roundtrip_headers_match(states: PythonObject) raises:
     """Our H2Connection and Python h2 produce matching request headers."""
     var oracle = states["roundtrip"]
     var err = py_field_str(oracle, "error")
-    assert_true(len(err) == 0, "oracle no error: " + err)
+    assert_true(not err, "oracle no error: " + err)
 
     var client = H2Connection(client_side=True)
     client.initiate_connection()
@@ -89,7 +89,7 @@ def test_cross_data_flow_controlled_length(states: PythonObject) raises:
     """DataReceived flow_controlled_length matches Python h2."""
     var oracle = states["stream_data_100_A"]
     var err = py_field_str(oracle, "error")
-    assert_true(len(err) == 0, "oracle no error: " + err)
+    assert_true(not err, "oracle no error: " + err)
 
     var client = H2Connection(client_side=True)
     client.initiate_connection()
@@ -143,7 +143,7 @@ def test_cross_response_round_trip(states: PythonObject) raises:
     """
     var oracle = states["roundtrip"]
     var err = py_field_str(oracle, "error")
-    assert_true(len(err) == 0, "oracle no error: " + err)
+    assert_true(not err, "oracle no error: " + err)
 
     var client = H2Connection(client_side=True)
     client.initiate_connection()
@@ -202,7 +202,7 @@ def test_cross_response_round_trip(states: PythonObject) raises:
 
 
 def main() raises:
-    var states = load_states("vectors/rfc9113/h2_states.json")
+    var states = load_states("conformance/vectors/rfc9113/h2_states.json")
     test_cross_roundtrip_headers_match(states)
     test_cross_data_flow_controlled_length(states)
     test_cross_response_round_trip(states)

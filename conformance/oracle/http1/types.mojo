@@ -1,4 +1,4 @@
-# conformance/lib/http1/types.mojo
+# conformance/oracle/http1/types.mojo
 #
 # Data types for the HTTP/1.1 request parser.
 
@@ -86,57 +86,57 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_lenient_keep_alive = allow_lenient_keep_alive
         self.allow_prefix_crlf = allow_prefix_crlf
 
-    def __init__(out self, *, other: Self):
-        self.allow_bare_lf = other.allow_bare_lf
-        self.allow_bare_cr_in_value = other.allow_bare_cr_in_value
-        self.allow_http_09 = other.allow_http_09
-        self.allow_nonstandard_version = other.allow_nonstandard_version
-        self.allow_multiple_spaces = other.allow_multiple_spaces
-        self.allow_obs_fold = other.allow_obs_fold
-        self.allow_space_before_colon = other.allow_space_before_colon
-        self.allow_header_value_ctl = other.allow_header_value_ctl
-        self.allow_target_ctl = other.allow_target_ctl
-        self.ignore_invalid_header_names = other.ignore_invalid_header_names
-        self.allow_non_chunked_te = other.allow_non_chunked_te
-        self.allow_chunk_extensions = other.allow_chunk_extensions
-        self.allow_cl_leading_zeros = other.allow_cl_leading_zeros
-        self.allow_duplicate_cl = other.allow_duplicate_cl
-        self.allow_missing_host_11 = other.allow_missing_host_11
-        self.allow_duplicate_host = other.allow_duplicate_host
-        self.allow_multiple_spaces_in_status_line = other.allow_multiple_spaces_in_status_line
-        self.allow_space_before_first_header = other.allow_space_before_first_header
-        self.allow_missing_crlf_after_chunk = other.allow_missing_crlf_after_chunk
-        self.allow_missing_reason_sp = other.allow_missing_reason_sp
-        self.allow_response_cl_te = other.allow_response_cl_te
-        self.allow_data_after_close = other.allow_data_after_close
-        self.allow_lenient_keep_alive = other.allow_lenient_keep_alive
-        self.allow_prefix_crlf = other.allow_prefix_crlf
+    def __init__(out self, *, copy: Self):
+        self.allow_bare_lf = copy.allow_bare_lf
+        self.allow_bare_cr_in_value = copy.allow_bare_cr_in_value
+        self.allow_http_09 = copy.allow_http_09
+        self.allow_nonstandard_version = copy.allow_nonstandard_version
+        self.allow_multiple_spaces = copy.allow_multiple_spaces
+        self.allow_obs_fold = copy.allow_obs_fold
+        self.allow_space_before_colon = copy.allow_space_before_colon
+        self.allow_header_value_ctl = copy.allow_header_value_ctl
+        self.allow_target_ctl = copy.allow_target_ctl
+        self.ignore_invalid_header_names = copy.ignore_invalid_header_names
+        self.allow_non_chunked_te = copy.allow_non_chunked_te
+        self.allow_chunk_extensions = copy.allow_chunk_extensions
+        self.allow_cl_leading_zeros = copy.allow_cl_leading_zeros
+        self.allow_duplicate_cl = copy.allow_duplicate_cl
+        self.allow_missing_host_11 = copy.allow_missing_host_11
+        self.allow_duplicate_host = copy.allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = copy.allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = copy.allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = copy.allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = copy.allow_missing_reason_sp
+        self.allow_response_cl_te = copy.allow_response_cl_te
+        self.allow_data_after_close = copy.allow_data_after_close
+        self.allow_lenient_keep_alive = copy.allow_lenient_keep_alive
+        self.allow_prefix_crlf = copy.allow_prefix_crlf
 
-    def __init__(out self, *, deinit take: Self):
-        self.allow_bare_lf = take.allow_bare_lf
-        self.allow_bare_cr_in_value = take.allow_bare_cr_in_value
-        self.allow_http_09 = take.allow_http_09
-        self.allow_nonstandard_version = take.allow_nonstandard_version
-        self.allow_multiple_spaces = take.allow_multiple_spaces
-        self.allow_obs_fold = take.allow_obs_fold
-        self.allow_space_before_colon = take.allow_space_before_colon
-        self.allow_header_value_ctl = take.allow_header_value_ctl
-        self.allow_target_ctl = take.allow_target_ctl
-        self.ignore_invalid_header_names = take.ignore_invalid_header_names
-        self.allow_non_chunked_te = take.allow_non_chunked_te
-        self.allow_chunk_extensions = take.allow_chunk_extensions
-        self.allow_cl_leading_zeros = take.allow_cl_leading_zeros
-        self.allow_duplicate_cl = take.allow_duplicate_cl
-        self.allow_missing_host_11 = take.allow_missing_host_11
-        self.allow_duplicate_host = take.allow_duplicate_host
-        self.allow_multiple_spaces_in_status_line = take.allow_multiple_spaces_in_status_line
-        self.allow_space_before_first_header = take.allow_space_before_first_header
-        self.allow_missing_crlf_after_chunk = take.allow_missing_crlf_after_chunk
-        self.allow_missing_reason_sp = take.allow_missing_reason_sp
-        self.allow_response_cl_te = take.allow_response_cl_te
-        self.allow_data_after_close = take.allow_data_after_close
-        self.allow_lenient_keep_alive = take.allow_lenient_keep_alive
-        self.allow_prefix_crlf = take.allow_prefix_crlf
+    def __init__(out self, *, deinit move: Self):
+        self.allow_bare_lf = move.allow_bare_lf
+        self.allow_bare_cr_in_value = move.allow_bare_cr_in_value
+        self.allow_http_09 = move.allow_http_09
+        self.allow_nonstandard_version = move.allow_nonstandard_version
+        self.allow_multiple_spaces = move.allow_multiple_spaces
+        self.allow_obs_fold = move.allow_obs_fold
+        self.allow_space_before_colon = move.allow_space_before_colon
+        self.allow_header_value_ctl = move.allow_header_value_ctl
+        self.allow_target_ctl = move.allow_target_ctl
+        self.ignore_invalid_header_names = move.ignore_invalid_header_names
+        self.allow_non_chunked_te = move.allow_non_chunked_te
+        self.allow_chunk_extensions = move.allow_chunk_extensions
+        self.allow_cl_leading_zeros = move.allow_cl_leading_zeros
+        self.allow_duplicate_cl = move.allow_duplicate_cl
+        self.allow_missing_host_11 = move.allow_missing_host_11
+        self.allow_duplicate_host = move.allow_duplicate_host
+        self.allow_multiple_spaces_in_status_line = move.allow_multiple_spaces_in_status_line
+        self.allow_space_before_first_header = move.allow_space_before_first_header
+        self.allow_missing_crlf_after_chunk = move.allow_missing_crlf_after_chunk
+        self.allow_missing_reason_sp = move.allow_missing_reason_sp
+        self.allow_response_cl_te = move.allow_response_cl_te
+        self.allow_data_after_close = move.allow_data_after_close
+        self.allow_lenient_keep_alive = move.allow_lenient_keep_alive
+        self.allow_prefix_crlf = move.allow_prefix_crlf
 
 
 def strict_mode() -> ParserStrictness:
@@ -243,29 +243,29 @@ struct ParsedRequest(Copyable, Movable):
         self.error = String("")
         self.bytes_consumed = 0
 
-    def __init__(out self, *, other: Self):
-        self.method = other.method
-        self.target = other.target
-        self.version = other.version
-        self.headers = other.headers.copy()
-        self.trailers = other.trailers.copy()
-        self.body = other.body.copy()
-        self.error = other.error
-        self.bytes_consumed = other.bytes_consumed
+    def __init__(out self, *, copy: Self):
+        self.method = copy.method
+        self.target = copy.target
+        self.version = copy.version
+        self.headers = copy.headers.copy()
+        self.trailers = copy.trailers.copy()
+        self.body = copy.body.copy()
+        self.error = copy.error
+        self.bytes_consumed = copy.bytes_consumed
 
-    def __init__(out self, *, deinit take: Self):
-        self.method = take.method^
-        self.target = take.target^
-        self.version = take.version^
-        self.headers = take.headers^
-        self.trailers = take.trailers^
-        self.body = take.body^
-        self.error = take.error^
-        self.bytes_consumed = take.bytes_consumed
+    def __init__(out self, *, deinit move: Self):
+        self.method = move.method^
+        self.target = move.target^
+        self.version = move.version^
+        self.headers = move.headers^
+        self.trailers = move.trailers^
+        self.body = move.body^
+        self.error = move.error^
+        self.bytes_consumed = move.bytes_consumed
 
     def ok(self) -> Bool:
         """Returns True if parsing succeeded (no error)."""
-        return len(self.error) == 0
+        return not self.error
 
 
 struct ParsedResponse(Copyable, Movable):
@@ -293,32 +293,32 @@ struct ParsedResponse(Copyable, Movable):
         self.upgrade = False
         self.bytes_consumed = 0
 
-    def __init__(out self, *, other: Self):
-        self.status_code = other.status_code
-        self.reason = other.reason
-        self.version = other.version
-        self.headers = other.headers.copy()
-        self.trailers = other.trailers.copy()
-        self.body = other.body.copy()
-        self.error = other.error
-        self.body_terminated_by_close = other.body_terminated_by_close
-        self.upgrade = other.upgrade
-        self.bytes_consumed = other.bytes_consumed
+    def __init__(out self, *, copy: Self):
+        self.status_code = copy.status_code
+        self.reason = copy.reason
+        self.version = copy.version
+        self.headers = copy.headers.copy()
+        self.trailers = copy.trailers.copy()
+        self.body = copy.body.copy()
+        self.error = copy.error
+        self.body_terminated_by_close = copy.body_terminated_by_close
+        self.upgrade = copy.upgrade
+        self.bytes_consumed = copy.bytes_consumed
 
-    def __init__(out self, *, deinit take: Self):
-        self.status_code = take.status_code
-        self.reason = take.reason^
-        self.version = take.version^
-        self.headers = take.headers^
-        self.trailers = take.trailers^
-        self.body = take.body^
-        self.error = take.error^
-        self.body_terminated_by_close = take.body_terminated_by_close
-        self.upgrade = take.upgrade
-        self.bytes_consumed = take.bytes_consumed
+    def __init__(out self, *, deinit move: Self):
+        self.status_code = move.status_code
+        self.reason = move.reason^
+        self.version = move.version^
+        self.headers = move.headers^
+        self.trailers = move.trailers^
+        self.body = move.body^
+        self.error = move.error^
+        self.body_terminated_by_close = move.body_terminated_by_close
+        self.upgrade = move.upgrade
+        self.bytes_consumed = move.bytes_consumed
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return not self.error
 
 
 struct ChunkedResult(Movable):
@@ -334,14 +334,14 @@ struct ChunkedResult(Movable):
         self.error = String("")
         self.bytes_consumed = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.body = take.body^
-        self.trailers = take.trailers^
-        self.error = take.error^
-        self.bytes_consumed = take.bytes_consumed
+    def __init__(out self, *, deinit move: Self):
+        self.body = move.body^
+        self.trailers = move.trailers^
+        self.error = move.error^
+        self.bytes_consumed = move.bytes_consumed
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return not self.error
 
 
 struct ConnectionState(Copyable, Movable):
@@ -359,22 +359,22 @@ struct ConnectionState(Copyable, Movable):
         self.informational_count = 0
         self.version = String("")
 
-    def __init__(out self, *, other: Self):
-        self.phase = other.phase
-        self.keep_alive = other.keep_alive
-        self.messages_parsed = other.messages_parsed
-        self.informational_count = other.informational_count
-        self.version = other.version
+    def __init__(out self, *, copy: Self):
+        self.phase = copy.phase
+        self.keep_alive = copy.keep_alive
+        self.messages_parsed = copy.messages_parsed
+        self.informational_count = copy.informational_count
+        self.version = copy.version
 
-    def __init__(out self, *, deinit take: Self):
-        self.phase = take.phase
-        self.keep_alive = take.keep_alive
-        self.messages_parsed = take.messages_parsed
-        self.informational_count = take.informational_count
-        self.version = take.version^
+    def __init__(out self, *, deinit move: Self):
+        self.phase = move.phase
+        self.keep_alive = move.keep_alive
+        self.messages_parsed = move.messages_parsed
+        self.informational_count = move.informational_count
+        self.version = move.version^
 
     def copy(self) -> Self:
-        return Self(other=self)
+        return Self(copy=self)
 
 
 struct ConnectionResult(Movable):
@@ -392,12 +392,12 @@ struct ConnectionResult(Movable):
         self.trailing_data = List[UInt8]()
         self.error = String("")
 
-    def __init__(out self, *, deinit take: Self):
-        self.request_messages = take.request_messages^
-        self.response_messages = take.response_messages^
-        self.state = take.state^
-        self.trailing_data = take.trailing_data^
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.request_messages = move.request_messages^
+        self.response_messages = move.response_messages^
+        self.state = move.state^
+        self.trailing_data = move.trailing_data^
+        self.error = move.error^
 
     def ok(self) -> Bool:
-        return len(self.error) == 0
+        return not self.error

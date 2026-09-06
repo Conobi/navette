@@ -1,4 +1,4 @@
-# conformance/lib/http2/hpack_oracle.mojo
+# conformance/oracle/http2/hpack_oracle.mojo
 #
 # Independent HPACK encoder + decoder for RFC 7541.
 # Used as the defect-orthogonal oracle for tests/fuzz/test_fuzz_hpack.mojo.
@@ -42,7 +42,37 @@
 # If you edit either this file or navette/h2/hpack*.mojo, re-verify (a)/(b)/(c)
 # still hold.
 
-from lib.http1.types import Header
+from oracle.http1.types import Header
+
+
+def _adopt_octets(var data: List[UInt8]) -> String:
+    """Adopt decoded field octets as a String without forging invalid UTF-8.
+
+    `String(unsafe_from_utf8=...)` validates under `-D ASSERT=all` (the test
+    profile) and aborts, and RFC 9110 permits `obs-text` (0x80-0xFF) in a field
+    value, so raw adoption is not safe for arbitrary input. Bytes >= 0x80 are
+    read as Latin-1 and emitted as their two-byte UTF-8 encoding.
+
+    This intentionally duplicates `navette.util.byte_string.bytes_to_string`
+    rather than importing it: the oracle stays an independent implementation,
+    and only the octet REPRESENTATION is deliberately kept identical so the
+    differential compares decode logic.
+
+    Args:
+        data: The raw octets, consumed.
+
+    Returns:
+        A String that is always valid UTF-8.
+    """
+    for i in range(len(data)):
+        if data[i] >= UInt8(0x80):
+            var out = String()
+            for j in range(len(data)):
+                out += chr(Int(data[j]))
+            return out^
+    return String(unsafe_from_utf8=data^)
+
+
 
 
 # ============================================================================
@@ -60,10 +90,10 @@ struct _IntDecodeResult(Copyable, Movable):
         self.consumed = consumed
         self.error = error
 
-    def __init__(out self, *, deinit take: Self):
-        self.value = take.value
-        self.consumed = take.consumed
-        self.error = take.error^
+    def __init__(out self, *, deinit move: Self):
+        self.value = move.value
+        self.consumed = move.consumed
+        self.error = move.error^
 
 
 def _max_prefix(prefix_bits: Int) -> UInt64:
@@ -136,9 +166,9 @@ struct _StaticEntry(Copyable, Movable):
         self.name = name
         self.value = value
 
-    def __init__(out self, *, deinit take: Self):
-        self.name = take.name^
-        self.value = take.value^
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.value = move.value^
 
 
 def _static_table() -> List[_StaticEntry]:
@@ -491,10 +521,10 @@ struct _TrieNode(Copyable, Movable):
         self.left = -1
         self.right = -1
 
-    def __init__(out self, *, deinit take: Self):
-        self.symbol = take.symbol
-        self.left = take.left
-        self.right = take.right
+    def __init__(out self, *, deinit move: Self):
+        self.symbol = move.symbol
+        self.left = move.left
+        self.right = move.right
 
 
 def _build_trie() -> List[_TrieNode]:
@@ -538,9 +568,9 @@ struct _DynEntry(Copyable, Movable):
         self.name = name
         self.value = value
 
-    def __init__(out self, *, deinit take: Self):
-        self.name = take.name^
-        self.value = take.value^
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.value = move.value^
 
 
 struct _DynamicTable(Copyable, Movable):
@@ -553,10 +583,10 @@ struct _DynamicTable(Copyable, Movable):
         self.byte_size = 0
         self.max_byte_size = max_size
 
-    def __init__(out self, *, deinit take: Self):
-        self.entries = take.entries^
-        self.byte_size = take.byte_size
-        self.max_byte_size = take.max_byte_size
+    def __init__(out self, *, deinit move: Self):
+        self.entries = move.entries^
+        self.byte_size = move.byte_size
+        self.max_byte_size = move.max_byte_size
 
     def insert(mut self, name: String, value: String):
         var entry_size = name.byte_length() + value.byte_length() + 32
@@ -601,9 +631,9 @@ struct HpackOracleConfig(Copyable, Movable):
         self.max_header_table_size = max_table
         self.max_header_list_size = max_list
 
-    def __init__(out self, *, deinit take: Self):
-        self.max_header_table_size = take.max_header_table_size
-        self.max_header_list_size = take.max_header_list_size
+    def __init__(out self, *, deinit move: Self):
+        self.max_header_table_size = move.max_header_table_size
+        self.max_header_list_size = move.max_header_list_size
 
 
 struct HpackOracleDecoder(Movable):
@@ -616,10 +646,10 @@ struct HpackOracleDecoder(Movable):
         self.trie = _build_trie()
         self.config = config.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.dyn = take.dyn^
-        self.trie = take.trie^
-        self.config = take.config^
+    def __init__(out self, *, deinit move: Self):
+        self.dyn = move.dyn^
+        self.trie = move.trie^
+        self.config = move.config^
 
     def decode(mut self, wire: List[UInt8]) -> Tuple[List[Header], String]:
         """Decode an HPACK header block. Returns (headers, error).
@@ -755,13 +785,13 @@ struct HpackOracleDecoder(Movable):
             var decoded = self._huffman_decode(raw)
             if decoded[1].byte_length() > 0:
                 return (String(""), 0, decoded[1])
-            var s = String(unsafe_from_utf8=decoded[0])
+            var s = _adopt_octets(decoded[0].copy())
             return (s^, consumed, String(""))
         else:
             var raw = List[UInt8](capacity=str_len)
             for i in range(data_start, data_end):
                 raw.append(wire[i])
-            var s = String(unsafe_from_utf8=raw)
+            var s = _adopt_octets(raw^)
             return (s^, consumed, String(""))
 
     def _huffman_decode(self, encoded: List[UInt8]) -> Tuple[List[UInt8], String]:

@@ -1,8 +1,8 @@
 # conformance/tests/test_h2_connection.mojo
 #
 # HC-4a: HTTP/2 connection state machine tests.
-from lib.test_util import assert_true, assert_equal, hex_decode, hex_encode
-from lib.http2.connection import (
+from oracle.test_util import assert_true, assert_equal, hex_decode, hex_encode
+from oracle.http2.connection import (
     H2Config,
     H2Settings,
     H2Event,
@@ -23,7 +23,7 @@ from lib.http2.connection import (
     _append_setting,
     SETTINGS_INITIAL_WINDOW_SIZE,
 )
-from lib.http2.frame import (
+from oracle.http2.frame import (
     Frame,
     encode_frame,
     H2_NO_ERROR,
@@ -174,7 +174,7 @@ def test_client_preface() raises:
     assert_true(len(data) >= 24, "client preface >= 24 bytes")
     var magic = String("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
     var mb = magic.as_bytes()
-    for i in range(len(magic)):
+    for i in range(magic.byte_length()):
         assert_equal(Int(data[i]), Int(mb[i]), "magic byte " + String(i))
     # Bytes 24+ must be a SETTINGS frame (type=4, stream_id=0, no ACK)
     assert_true(len(data) >= 33, "client preface has SETTINGS frame")

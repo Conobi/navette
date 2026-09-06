@@ -10,10 +10,10 @@
 # For accept vectors, all three must agree on method, target, version,
 # headers. For reject vectors, our parser must reject. Oracles may disagree
 # (they are lenient), so disagreements are logged but do not cause failure.
-from lib.test_util import load_vectors, hex_decode, assert_true
-from lib.http1.types import ParseConfig, Header, ParsedRequest
-from lib.http1.parser import parse_request
-from lib.stateful_vectors import load_states, py_has_key, py_field_str, py_field_bool
+from oracle.test_util import load_vectors, hex_decode, assert_true
+from oracle.http1.types import ParseConfig, Header, ParsedRequest
+from oracle.http1.parser import parse_request
+from oracle.stateful_vectors import load_states, py_has_key, py_field_str, py_field_bool
 from std.python import Python, PythonObject
 
 
@@ -200,17 +200,17 @@ def main() raises:
     var builtins = Python.import_module("builtins")
 
     # Load pre-materialized oracle states (replaces live h11/httptools).
-    var states = load_states("vectors/rfc9112/h11_request_states.json")
+    var states = load_states("conformance/vectors/rfc9112/h11_request_states.json")
 
     # ===== Phase 1: Vector-based cross-validation =====
     print("=== Phase 1: Vector-based cross-validation ===")
 
     var files = List[String]()
-    files.append("vectors/rfc9112/request_line.json")
-    files.append("vectors/rfc9112/headers.json")
-    files.append("vectors/rfc9112/content_length.json")
-    files.append("vectors/rfc9112/chunked.json")
-    files.append("vectors/rfc9112/host.json")
+    files.append("conformance/vectors/rfc9112/request_line.json")
+    files.append("conformance/vectors/rfc9112/headers.json")
+    files.append("conformance/vectors/rfc9112/content_length.json")
+    files.append("conformance/vectors/rfc9112/chunked.json")
+    files.append("conformance/vectors/rfc9112/host.json")
 
     var total_vectors = 0
     var accept_agree = 0

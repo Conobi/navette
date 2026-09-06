@@ -1,6 +1,6 @@
 # conformance/tests/test_cursor.mojo
-from lib.cursor import ByteWriter, ByteReader
-from lib.test_util import assert_true, assert_equal
+from oracle.cursor import ByteWriter, ByteReader
+from oracle.test_util import assert_true, assert_equal
 
 
 def test_write_read_u8() raises:

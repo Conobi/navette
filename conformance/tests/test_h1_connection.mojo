@@ -1,9 +1,9 @@
 # conformance/tests/test_h1_connection.mojo
 #
 # HC-2b: Multi-message connection lifecycle compliance tests.
-from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
-from lib.http1.types import ParseConfig, ParserStrictness, Header, ParsedRequest, ParsedResponse, ConnectionState, ConnectionResult
-from lib.http1.connection import parse_messages
+from oracle.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
+from oracle.http1.types import ParseConfig, ParserStrictness, Header, ParsedRequest, ParsedResponse, ConnectionState, ConnectionResult
+from oracle.http1.connection import parse_messages
 from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
@@ -178,7 +178,7 @@ def check_request_message(
         )
         if _has_key(exp, "reason"):
             var reason = String(exp["reason"])
-            if len(reason) > 0 and not _str_contains(msg.error, reason):
+            if reason and not _str_contains(msg.error, reason):
                 print(
                     "    WARNING: " + prefix + ": error '" + msg.error
                     + "' does not contain expected reason '" + reason + "'"
@@ -243,7 +243,7 @@ def check_response_message(
         )
         if _has_key(exp, "reason"):
             var reason = String(exp["reason"])
-            if len(reason) > 0 and not _str_contains(msg.error, reason):
+            if reason and not _str_contains(msg.error, reason):
                 print(
                     "    WARNING: " + prefix + ": error '" + msg.error
                     + "' does not contain expected reason '" + reason + "'"
@@ -386,11 +386,11 @@ def check_connection_result(
     check_connection_state(result, exp_conn, vid)
 
     # Check trailing data (when expected)
-    if len(exp_trailing_hex) > 0:
+    if exp_trailing_hex:
         check_trailing_data(result, exp_trailing_hex, vid)
     elif _has_key(exp_conn, "trailing_data_hex"):
         var conn_trailing = String(exp_conn["trailing_data_hex"])
-        if len(conn_trailing) > 0:
+        if conn_trailing:
             check_trailing_data(result, conn_trailing, vid)
         else:
             # Expect empty trailing data
@@ -400,9 +400,9 @@ def check_connection_result(
             )
 
     # Check error (when expected)
-    if len(exp_error) > 0:
+    if exp_error:
         assert_true(
-            len(result.error) > 0,
+            Bool(result.error),
             vid + ": expected error but result.error is empty",
         )
         if not _str_contains(result.error, exp_error):
@@ -550,13 +550,13 @@ def main() raises:
     var severe_count = 0
 
     var files = List[String]()
-    files.append("vectors/rfc9112/connection_keepalive.json")
-    files.append("vectors/rfc9112/connection_close.json")
-    files.append("vectors/rfc9112/connection_upgrade.json")
-    files.append("vectors/rfc9112/connection_informational.json")
-    files.append("vectors/rfc9112/connection_pipeline.json")
-    files.append("vectors/rfc9112/connection_error.json")
-    files.append("vectors/security/connection_smuggling.json")
+    files.append("conformance/vectors/rfc9112/connection_keepalive.json")
+    files.append("conformance/vectors/rfc9112/connection_close.json")
+    files.append("conformance/vectors/rfc9112/connection_upgrade.json")
+    files.append("conformance/vectors/rfc9112/connection_informational.json")
+    files.append("conformance/vectors/rfc9112/connection_pipeline.json")
+    files.append("conformance/vectors/rfc9112/connection_error.json")
+    files.append("conformance/vectors/security/connection_smuggling.json")
 
     for fi in range(len(files)):
         var path = files[fi]

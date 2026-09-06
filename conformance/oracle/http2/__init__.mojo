@@ -1,4 +1,4 @@
-# conformance/lib/http2/__init__.mojo
+# conformance/oracle/http2/__init__.mojo
 # Re-exports from navette.h2 + local oracles.
 from navette.h2.frame import (
     H2_NO_ERROR,

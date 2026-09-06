@@ -4,14 +4,14 @@
 # Layer 1: RFC 7541 Appendix C.2-C.6 story vectors.
 # Layer 2: hpack-test-case stories from multiple implementations.
 
-from lib.test_util import (
+from oracle.test_util import (
     load_vectors,
     hex_decode,
     assert_true,
     assert_equal,
 )
-from lib.http1.types import Header
-from lib.http2.hpack import HpackDecoder, HpackConfig
+from oracle.http1.types import Header
+from oracle.http2.hpack import HpackDecoder, HpackConfig
 from std.python import Python, PythonObject
 
 
@@ -31,7 +31,7 @@ def _has_key(obj: PythonObject, key: String) -> Bool:
 
 def run_rfc_c2_vectors() raises:
     """C.2: individual header field representation examples."""
-    var vectors = load_vectors("vectors/rfc7541/c2_header_field.json")
+    var vectors = load_vectors("conformance/vectors/rfc7541/c2_header_field.json")
     var builtins = Python.import_module("builtins")
     var count = Int(py=builtins.len(vectors))
 
@@ -43,7 +43,7 @@ def run_rfc_c2_vectors() raises:
         var decoder = HpackDecoder()
         var result = decoder.decode(wire)
         assert_true(
-            len(result[1]) == 0,
+            not result[1],
             vid + ": decode error: " + result[1],
         )
 
@@ -152,7 +152,7 @@ def run_rfc_story(
         var wire = hex_decode(String(tc["wire_hex"]))
         var result = decoder.decode(wire)
         assert_true(
-            len(result[1]) == 0,
+            not result[1],
             story_name
             + " case "
             + String(i)
@@ -286,7 +286,7 @@ def run_rfc_story_with_table_size(
         var wire = hex_decode(String(tc["wire_hex"]))
         var result = decoder.decode(wire)
         assert_true(
-            len(result[1]) == 0,
+            not result[1],
             story_name
             + " case "
             + String(i)
@@ -423,7 +423,7 @@ def run_external_story(
         var wire = hex_decode(String(tc["wire"]))
         var result = decoder.decode(wire)
         assert_true(
-            len(result[1]) == 0,
+            not result[1],
             story_name
             + " case "
             + String(i)
@@ -523,26 +523,26 @@ def main() raises:
 
     # C.3: request examples without Huffman
     run_rfc_story(
-        "vectors/rfc7541/c3_request_no_huffman.json",
+        "conformance/vectors/rfc7541/c3_request_no_huffman.json",
         "C.3-request-no-huffman",
     )
 
     # C.4: request examples with Huffman
     run_rfc_story(
-        "vectors/rfc7541/c4_request_huffman.json",
+        "conformance/vectors/rfc7541/c4_request_huffman.json",
         "C.4-request-huffman",
     )
 
     # C.5: response examples without Huffman (table size 256)
     run_rfc_story_with_table_size(
-        "vectors/rfc7541/c5_response_no_huffman.json",
+        "conformance/vectors/rfc7541/c5_response_no_huffman.json",
         "C.5-response-no-huffman",
         256,
     )
 
     # C.6: response examples with Huffman (table size 256)
     run_rfc_story_with_table_size(
-        "vectors/rfc7541/c6_response_huffman.json",
+        "conformance/vectors/rfc7541/c6_response_huffman.json",
         "C.6-response-huffman",
         256,
     )
@@ -565,7 +565,7 @@ def main() raises:
     print("")
     print("=== Layer 2: hpack-test-case external stories ===")
 
-    var stories_base = "vectors/hpack-stories"
+    var stories_base = "conformance/vectors/hpack-stories"
     var os_mod = Python.import_module("os")
 
     if not Bool(os_mod.path.isdir(stories_base)):

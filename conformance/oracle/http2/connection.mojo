@@ -1,4 +1,4 @@
-# conformance/lib/http2/connection.mojo — re-exports from navette.h2.connection
+# conformance/oracle/http2/connection.mojo — re-exports from navette.h2.connection
 from navette.h2.connection import (
     H2Config,
     H2Settings,

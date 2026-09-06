@@ -1,4 +1,4 @@
-# conformance/lib/http1/response.mojo
+# conformance/oracle/http1/response.mojo
 #
 # HTTP/1.1 response parser per RFC 9112.
 
@@ -174,7 +174,7 @@ def parse_response(
 
     var header_result = _parse_headers(wire, pos, config)
     var hdr_error = header_result[2]
-    if len(hdr_error) > 0:
+    if hdr_error:
         result.error = hdr_error
         return result^
     var body_start = header_result[1]
@@ -264,7 +264,7 @@ def parse_response(
                 ri += 1
 
             var chunk_result = decode_chunked(remaining, config)
-            if len(chunk_result.error) > 0:
+            if chunk_result.error:
                 result.error = chunk_result.error
                 return result^
 

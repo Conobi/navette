@@ -1,15 +1,15 @@
 # conformance/tests/test_hpack_oracle_self.mojo
 #
-# AC0 — cross-validate the independent HPACK oracle (conformance/lib/http2/
+# AC0 — cross-validate the independent HPACK oracle (conformance/oracle/http2/
 # hpack_oracle.mojo) against RFC 7541 §C example wires.
 #
 # The "raw_data_stories" sidecar field is permanently empty in the baked
 # hpack_states.json fixture, so the inline RFC §C vectors are the PRIMARY
 # AC0 gate, not a fallback.
 
-from lib.http2.hpack_oracle import HpackOracleDecoder, HpackOracleConfig
-from lib.http1.types import Header
-from lib.test_util import hex_decode, assert_true, assert_equal
+from oracle.http2.hpack_oracle import HpackOracleDecoder, HpackOracleConfig
+from oracle.http1.types import Header
+from oracle.test_util import hex_decode, assert_true, assert_equal
 
 
 def _wire(s: String) raises -> List[UInt8]:

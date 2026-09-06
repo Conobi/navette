@@ -1,10 +1,11 @@
-# conformance/lib/rustls.mojo
+# conformance/oracle/rustls.mojo
 #
 # RAII wrapper around librustls_mojo.so for use in conformance tests.
 # Loads the shared library via OwnedDLHandle and exposes typed Mojo
 # functions for the rlsm_* C FFI symbols.
 from std.ffi import OwnedDLHandle
-from std.memory import UnsafePointer
+from std.memory import Pointer
+from navette.tls.lib import _open_librustls
 from navette.util.owned_alloc import Owned
 
 
@@ -13,11 +14,28 @@ struct RustlsLibrary(Movable):
 
     var _handle: OwnedDLHandle
 
-    def __init__(out self, path: String = "../lib/librustls_mojo.so") raises:
+    def __init__(out self) raises:
+        """Open the shim through navette's shared search order.
+
+        Delegates to `_open_librustls()` so the oracle resolves the same
+        way the library under test does -- bare soname first (RUNPATH /
+        `LD_LIBRARY_PATH` / `ld.so.cache`), then CWD-relative
+        `lib/librustls_mojo.so`. A literal relative path would bind the
+        oracle to one particular working directory; conformance targets
+        run from the project root, not from `conformance/`.
+        """
+        self._handle = _open_librustls()
+
+    def __init__(out self, path: String) raises:
+        """Open the shim from an explicit path, bypassing the search order.
+
+        Args:
+            path: Filesystem path (or soname) handed straight to `dlopen`.
+        """
         self._handle = OwnedDLHandle(path)
 
-    def __init__(out self, *, deinit take: Self):
-        self._handle = take._handle^
+    def __init__(out self, *, deinit move: Self):
+        self._handle = move._handle^
 
     # -- Error retrieval -------------------------------------------------------
 
@@ -35,7 +53,7 @@ struct RustlsLibrary(Movable):
         # Build the String byte-by-byte (safe for Mojo 0.26.2).
         var msg = String()
         for i in range(Int(n - 1)):
-            msg += chr(Int(buf[i]))
+            msg += chr(Int(buf[unsafe_offset=i]))
         # Keep buf alive across the FFI call + the post-FFI byte reads above.
         _ = buf_owned
         return msg^
@@ -46,15 +64,15 @@ struct RustlsLibrary(Movable):
     def initial_keys_raw(
         self,
         version: Int32,
-        dcid: UnsafePointer[UInt8, MutAnyOrigin],
+        dcid: Pointer[mut=True, T=UInt8, origin=_],
         dcid_len: Int32,
         is_client: Int32,
-        out_key: UnsafePointer[UInt8, MutAnyOrigin],
-        out_key_len: UnsafePointer[Int32, MutAnyOrigin],
-        out_iv: UnsafePointer[UInt8, MutAnyOrigin],
-        out_iv_len: UnsafePointer[Int32, MutAnyOrigin],
-        out_hp: UnsafePointer[UInt8, MutAnyOrigin],
-        out_hp_len: UnsafePointer[Int32, MutAnyOrigin],
+        out_key: Pointer[mut=True, T=UInt8, origin=_],
+        out_key_len: Pointer[mut=True, T=Int32, origin=_],
+        out_iv: Pointer[mut=True, T=UInt8, origin=_],
+        out_iv_len: Pointer[mut=True, T=Int32, origin=_],
+        out_hp: Pointer[mut=True, T=UInt8, origin=_],
+        out_hp_len: Pointer[mut=True, T=Int32, origin=_],
     ) -> Int32:
         """Derive raw QUIC Initial key material (key, IV, HP key).
 
@@ -79,7 +97,7 @@ struct RustlsLibrary(Movable):
     def initial_keys(
         self,
         version: Int32,
-        dcid: UnsafePointer[UInt8, MutAnyOrigin],
+        dcid: Pointer[mut=True, T=UInt8, origin=_],
         dcid_len: Int32,
         is_client: Int32,
     ) -> Int32:
@@ -101,9 +119,9 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         packet_number: UInt64,
-        header: UnsafePointer[UInt8, MutAnyOrigin],
+        header: Pointer[mut=True, T=UInt8, origin=_],
         header_len: Int32,
-        payload: UnsafePointer[UInt8, MutAnyOrigin],
+        payload: Pointer[mut=True, T=UInt8, origin=_],
         payload_len: Int32,
         buf_capacity: Int32,
     ) -> Int32:
@@ -119,9 +137,9 @@ struct RustlsLibrary(Movable):
         self,
         keys_handle: Int32,
         packet_number: UInt64,
-        header: UnsafePointer[UInt8, MutAnyOrigin],
+        header: Pointer[mut=True, T=UInt8, origin=_],
         header_len: Int32,
-        payload: UnsafePointer[UInt8, MutAnyOrigin],
+        payload: Pointer[mut=True, T=UInt8, origin=_],
         payload_len: Int32,
     ) -> Int32:
         """Decrypt payload in-place. Returns plaintext length or -1."""
@@ -141,10 +159,10 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_server_config_new(
         self,
-        cert_pem: UnsafePointer[UInt8, MutAnyOrigin], cert_len: Int32,
-        key_pem:  UnsafePointer[UInt8, MutAnyOrigin], key_len:  Int32,
-        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        cert_pem: Pointer[mut=True, T=UInt8, origin=_], cert_len: Int32,
+        key_pem:  Pointer[mut=True, T=UInt8, origin=_], key_len:  Int32,
+        alpn_ptr: Pointer[mut=True, T=UInt8, origin=_], alpn_len: Int32,
+        out_handle: Pointer[mut=True, T=Int32, origin=_],
         max_early_data: UInt32 = UInt32(0),
     ) -> Int32:
         """Create QUIC server TLS config. Returns 0 on success.
@@ -161,9 +179,9 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_client_config_with_ca(
         self,
-        ca_pem:   UnsafePointer[UInt8, MutAnyOrigin], ca_len:   Int32,
-        alpn_ptr: UnsafePointer[UInt8, MutAnyOrigin], alpn_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        ca_pem:   Pointer[mut=True, T=UInt8, origin=_], ca_len:   Int32,
+        alpn_ptr: Pointer[mut=True, T=UInt8, origin=_], alpn_len: Int32,
+        out_handle: Pointer[mut=True, T=Int32, origin=_],
     ) -> Int32:
         """Create QUIC client TLS config trusting ca_pem (test helper). Returns 0."""
         return self._handle.call["rlsm_quic_client_config_with_ca", Int32](
@@ -177,9 +195,9 @@ struct RustlsLibrary(Movable):
         self,
         config_handle: Int32,
         version: Int32,
-        server_name: UnsafePointer[UInt8, MutAnyOrigin], name_len: Int32,
-        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        server_name: Pointer[mut=True, T=UInt8, origin=_], name_len: Int32,
+        tp: Pointer[mut=True, T=UInt8, origin=_], tp_len: Int32,
+        out_handle: Pointer[mut=True, T=Int32, origin=_],
     ) -> Int32:
         """Create QUIC client connection. Returns 0 on success."""
         return self._handle.call["rlsm_quic_client_conn_new", Int32](
@@ -191,8 +209,8 @@ struct RustlsLibrary(Movable):
         self,
         config_handle: Int32,
         version: Int32,
-        tp: UnsafePointer[UInt8, MutAnyOrigin], tp_len: Int32,
-        out_handle: UnsafePointer[Int32, MutAnyOrigin],
+        tp: Pointer[mut=True, T=UInt8, origin=_], tp_len: Int32,
+        out_handle: Pointer[mut=True, T=Int32, origin=_],
     ) -> Int32:
         """Create QUIC server connection. Returns 0 on success."""
         return self._handle.call["rlsm_quic_server_conn_new", Int32](
@@ -210,10 +228,10 @@ struct RustlsLibrary(Movable):
     def quic_conn_write_hs(
         self,
         conn_handle: Int32,
-        out_buf: UnsafePointer[UInt8, MutAnyOrigin],
+        out_buf: Pointer[mut=True, T=UInt8, origin=_],
         out_capacity: Int32,
-        out_written: UnsafePointer[Int32, MutAnyOrigin],
-        out_kc: UnsafePointer[UInt8, MutAnyOrigin],
+        out_written: Pointer[mut=True, T=Int32, origin=_],
+        out_kc: Pointer[mut=True, T=UInt8, origin=_],
     ) -> Int32:
         """Drain outgoing TLS bytes. out_kc: 0=none, 1=Handshake, 2=OneRtt. Returns 0."""
         return self._handle.call["rlsm_quic_conn_write_hs", Int32](
@@ -224,10 +242,10 @@ struct RustlsLibrary(Movable):
     def quic_conn_read_hs(
         self,
         conn_handle: Int32,
-        data: UnsafePointer[UInt8, MutAnyOrigin],
+        data: Pointer[mut=True, T=UInt8, origin=_],
         data_len: Int32,
-        out_state_machine_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](unsafe_from_address=Int(0)),
-        out_handle_lookup_us: UnsafePointer[UInt64, MutAnyOrigin] = UnsafePointer[UInt64, MutAnyOrigin](unsafe_from_address=Int(0)),
+        out_state_machine_us: Pointer[mut=True, T=UInt64, origin=_] = Pointer[UInt64, MutUntrackedOrigin](unsafe_from_address=Int(0)),
+        out_handle_lookup_us: Pointer[mut=True, T=UInt64, origin=_] = Pointer[UInt64, MutUntrackedOrigin](unsafe_from_address=Int(0)),
     ) -> Int32:
         """Feed CRYPTO frame payload to TLS state machine. Returns 0 on success.
 
@@ -244,7 +262,7 @@ struct RustlsLibrary(Movable):
     def quic_conn_take_keys(
         self,
         conn_handle: Int32,
-        out_keys_handle: UnsafePointer[Int32, MutAnyOrigin],
+        out_keys_handle: Pointer[mut=True, T=Int32, origin=_],
     ) -> Int32:
         """Move pending Keys into Wave 1 KEYS_TABLE. Returns 0 on success."""
         return self._handle.call["rlsm_quic_conn_take_keys", Int32](

@@ -4,14 +4,14 @@
 # Validates encode, decode, roundtrip for all single-byte values,
 # known RFC strings, padding edge cases, empty input, and random
 # anti-cheat sequences.
-from lib.test_util import (
+from oracle.test_util import (
     hex_decode,
     hex_encode,
     assert_true,
     assert_equal,
     assert_bytes_equal,
 )
-from lib.http2.hpack_huffman import HuffmanCodec
+from oracle.http2.hpack_huffman import HuffmanCodec
 from std.time import perf_counter_ns
 
 
@@ -66,7 +66,7 @@ def main() raises:
         var decoded = dec_result[0].copy()
         var err = dec_result[1].copy()
         assert_true(
-            len(err) == 0,
+            not err,
             "decode error for byte "
             + String(byte_val)
             + ": "
@@ -100,7 +100,7 @@ def main() raises:
     var www_encoded = codec.encode(www_input)
     assert_bytes_equal(www_encoded, www_expected, "encode www.example.com")
     var www_dec = codec.decode(www_encoded)
-    assert_true(len(www_dec[1]) == 0, "decode www.example.com error: " + www_dec[1])
+    assert_true(not www_dec[1], "decode www.example.com error: " + www_dec[1])
     assert_bytes_equal(www_dec[0], www_input, "roundtrip www.example.com")
     print("  [PASS] www.example.com")
 
@@ -110,7 +110,7 @@ def main() raises:
     var nc_encoded = codec.encode(nc_input)
     assert_bytes_equal(nc_encoded, nc_expected, "encode no-cache")
     var nc_dec = codec.decode(nc_encoded)
-    assert_true(len(nc_dec[1]) == 0, "decode no-cache error: " + nc_dec[1])
+    assert_true(not nc_dec[1], "decode no-cache error: " + nc_dec[1])
     assert_bytes_equal(nc_dec[0], nc_input, "roundtrip no-cache")
     print("  [PASS] no-cache")
 
@@ -120,7 +120,7 @@ def main() raises:
     var ck_encoded = codec.encode(ck_input)
     assert_bytes_equal(ck_encoded, ck_expected, "encode custom-key")
     var ck_dec = codec.decode(ck_encoded)
-    assert_true(len(ck_dec[1]) == 0, "decode custom-key error: " + ck_dec[1])
+    assert_true(not ck_dec[1], "decode custom-key error: " + ck_dec[1])
     assert_bytes_equal(ck_dec[0], ck_input, "roundtrip custom-key")
     print("  [PASS] custom-key")
 
@@ -130,7 +130,7 @@ def main() raises:
     var cv_encoded = codec.encode(cv_input)
     assert_bytes_equal(cv_encoded, cv_expected, "encode custom-value")
     var cv_dec = codec.decode(cv_encoded)
-    assert_true(len(cv_dec[1]) == 0, "decode custom-value error: " + cv_dec[1])
+    assert_true(not cv_dec[1], "decode custom-value error: " + cv_dec[1])
     assert_bytes_equal(cv_dec[0], cv_input, "roundtrip custom-value")
     print("  [PASS] custom-value")
 
@@ -140,7 +140,7 @@ def main() raises:
     var s302_encoded = codec.encode(s302_input)
     assert_bytes_equal(s302_encoded, s302_expected, "encode 302")
     var s302_dec = codec.decode(s302_encoded)
-    assert_true(len(s302_dec[1]) == 0, "decode 302 error: " + s302_dec[1])
+    assert_true(not s302_dec[1], "decode 302 error: " + s302_dec[1])
     assert_bytes_equal(s302_dec[0], s302_input, "roundtrip 302")
     print("  [PASS] 302")
 
@@ -150,7 +150,7 @@ def main() raises:
     var priv_encoded = codec.encode(priv_input)
     assert_bytes_equal(priv_encoded, priv_expected, "encode private")
     var priv_dec = codec.decode(priv_encoded)
-    assert_true(len(priv_dec[1]) == 0, "decode private error: " + priv_dec[1])
+    assert_true(not priv_dec[1], "decode private error: " + priv_dec[1])
     assert_bytes_equal(priv_dec[0], priv_input, "roundtrip private")
     print("  [PASS] private")
 
@@ -160,7 +160,7 @@ def main() raises:
     var date_encoded = codec.encode(date_input)
     assert_bytes_equal(date_encoded, date_expected, "encode date string")
     var date_dec = codec.decode(date_encoded)
-    assert_true(len(date_dec[1]) == 0, "decode date error: " + date_dec[1])
+    assert_true(not date_dec[1], "decode date error: " + date_dec[1])
     assert_bytes_equal(date_dec[0], date_input, "roundtrip date string")
     print("  [PASS] Mon, 21 Oct 2013 20:13:21 GMT")
 
@@ -170,7 +170,7 @@ def main() raises:
     var url_encoded = codec.encode(url_input)
     assert_bytes_equal(url_encoded, url_expected, "encode URL")
     var url_dec = codec.decode(url_encoded)
-    assert_true(len(url_dec[1]) == 0, "decode URL error: " + url_dec[1])
+    assert_true(not url_dec[1], "decode URL error: " + url_dec[1])
     assert_bytes_equal(url_dec[0], url_input, "roundtrip URL")
     print("  [PASS] https://www.example.com")
 
@@ -181,7 +181,7 @@ def main() raises:
     var empty_encoded = codec.encode(empty_input)
     assert_equal(len(empty_encoded), 0, "encode empty length")
     var empty_dec = codec.decode(empty_encoded)
-    assert_true(len(empty_dec[1]) == 0, "decode empty error: " + empty_dec[1])
+    assert_true(not empty_dec[1], "decode empty error: " + empty_dec[1])
     assert_equal(len(empty_dec[0]), 0, "decode empty length")
     print("  [PASS] empty input")
 
@@ -197,7 +197,7 @@ def main() raises:
     bad_pad_data.append(UInt8(0x18))  # 'a' code with zero padding
     var bad_pad_result = codec.decode(bad_pad_data)
     assert_true(
-        len(bad_pad_result[1]) > 0,
+        Bool(bad_pad_result[1]),
         "expected error for non-1 padding bits, got none",
     )
     print("  [PASS] non-1 padding bits detected")
@@ -222,7 +222,7 @@ def main() raises:
     long_pad.append(UInt8(0xFF))
     var long_pad_result = codec.decode(long_pad)
     assert_true(
-        len(long_pad_result[1]) > 0,
+        Bool(long_pad_result[1]),
         "expected error for >7 bits padding, got none",
     )
     print("  [PASS] >7 bits of padding detected")
@@ -233,7 +233,7 @@ def main() raises:
     valid_a.append(UInt8(0x1F))  # 'a' with proper 1-padding
     var valid_a_result = codec.decode(valid_a)
     assert_true(
-        len(valid_a_result[1]) == 0,
+        not valid_a_result[1],
         "decode of 'a' with valid padding failed: " + valid_a_result[1],
     )
     assert_equal(len(valid_a_result[0]), 1, "decode 'a' length")
@@ -268,7 +268,7 @@ def main() raises:
         var dec_err = dec[1].copy()
 
         assert_true(
-            len(dec_err) == 0,
+            not dec_err,
             "random roundtrip #"
             + String(ri)
             + " decode error: "

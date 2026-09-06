@@ -1,4 +1,4 @@
-# conformance/lib/http1/connection.mojo
+# conformance/oracle/http1/connection.mojo
 #
 # HTTP/1.1 connection lifecycle state machine (Pattern D: functional).
 
@@ -78,7 +78,7 @@ def step_request(
     var new_pos = start + result.bytes_consumed
 
     # Set version from first message
-    if new_state.messages_parsed == 0 and len(new_state.version) == 0:
+    if new_state.messages_parsed == 0 and not new_state.version:
         new_state.version = result.version
         if result.version == "1.0":
             new_state.keep_alive = False
@@ -148,7 +148,7 @@ def step_response(
         return (new_state^, result^, new_pos, String(""))
 
     # Set version from first final message
-    if new_state.messages_parsed == 0 and len(new_state.version) == 0:
+    if new_state.messages_parsed == 0 and not new_state.version:
         new_state.version = result.version
         if result.version == "1.0":
             new_state.keep_alive = False
@@ -205,7 +205,7 @@ def parse_messages(
             state = step[0].copy()
             var new_pos = step[2]
             var step_error = step[3]
-            if len(step_error) > 0:
+            if step_error:
                 result.error = step_error
                 break
             result.request_messages.append(step[1].copy())
@@ -218,7 +218,7 @@ def parse_messages(
             state = step[0].copy()
             var new_pos = step[2]
             var step_error = step[3]
-            if len(step_error) > 0:
+            if step_error:
                 result.error = step_error
                 break
             var status_code = step[1].status_code

@@ -1,4 +1,4 @@
-# conformance/lib/http1/_helpers.mojo
+# conformance/oracle/http1/_helpers.mojo
 #
 # Shared utility functions for HTTP/1.1 request and response parsers.
 

@@ -5,11 +5,12 @@ def hex_decode(s: String) raises -> List[UInt8]:
     """Decode a hex string like '7fff' into bytes."""
     var result = List[UInt8]()
     var hex_str = s
-    if len(hex_str) % 2 != 0:
-        raise "hex string must have even length, got: " + hex_str
-
-    # Convert string to bytes first
     var bytes = hex_str.as_bytes()
+    # The decode loop reads `bytes[i]` and `bytes[i + 1]`, so it is the BYTE
+    # count that has to be even -- measuring the string itself would disagree
+    # with the loop on any non-ASCII input.
+    if len(bytes) % 2 != 0:
+        raise "hex string must have even length, got: " + hex_str
 
     var i = 0
     while i < len(bytes):

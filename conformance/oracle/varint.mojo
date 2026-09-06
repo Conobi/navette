@@ -1,5 +1,5 @@
-# conformance/lib/varint.mojo
-from lib.cursor import ByteWriter, ByteReader
+# conformance/oracle/varint.mojo
+from oracle.cursor import ByteWriter, ByteReader
 
 
 def varint_size(value: UInt64) -> Int:

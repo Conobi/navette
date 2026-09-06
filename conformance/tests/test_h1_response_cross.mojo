@@ -6,10 +6,10 @@
 # longer imported at test runtime. Oracle outputs are pre-materialized into
 # conformance/vectors/rfc9112/h11_response_states.json by
 # conformance/scripts/oracle_h1_h2_states.py and loaded here.
-from lib.test_util import load_vectors, hex_decode, assert_true, assert_equal
-from lib.http1.types import ParseConfig, ParsedResponse
-from lib.http1.response import parse_response
-from lib.stateful_vectors import load_states, py_has_key, py_field_str, py_field_int, py_field_bool
+from oracle.test_util import load_vectors, hex_decode, assert_true, assert_equal
+from oracle.http1.types import ParseConfig, ParsedResponse
+from oracle.http1.response import parse_response
+from oracle.stateful_vectors import load_states, py_has_key, py_field_str, py_field_int, py_field_bool
 from std.python import Python, PythonObject
 
 
@@ -49,7 +49,7 @@ def _oracle_body_from_hex(oracle: PythonObject) -> List[UInt8]:
         if not py_has_key(oracle, "body_hex"):
             return result^
         var body_hex = py_field_str(oracle, "body_hex")
-        if len(body_hex) == 0:
+        if not body_hex:
             return result^
         result = hex_decode(body_hex)
     except:
@@ -235,17 +235,17 @@ def main() raises:
 
     var builtins = Python.import_module("builtins")
 
-    var states = load_states("vectors/rfc9112/h11_response_states.json")
+    var states = load_states("conformance/vectors/rfc9112/h11_response_states.json")
 
     print("=== Phase 1: Vector-based response cross-validation ===")
 
     var files = List[String]()
-    files.append("vectors/rfc9112/response_status.json")
-    files.append("vectors/rfc9112/response_body.json")
-    files.append("vectors/rfc9112/response_head.json")
-    files.append("vectors/rfc9112/response_informational.json")
-    files.append("vectors/rfc9112/response_no_body.json")
-    files.append("vectors/rfc9112/response_framing.json")
+    files.append("conformance/vectors/rfc9112/response_status.json")
+    files.append("conformance/vectors/rfc9112/response_body.json")
+    files.append("conformance/vectors/rfc9112/response_head.json")
+    files.append("conformance/vectors/rfc9112/response_informational.json")
+    files.append("conformance/vectors/rfc9112/response_no_body.json")
+    files.append("conformance/vectors/rfc9112/response_framing.json")
 
     var total_vectors = 0
     var accept_agree = 0

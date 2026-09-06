@@ -13,8 +13,8 @@
 #
 # Path B (aioquic) is still imported at test time and is pre-materialized
 # the same way. Path C (rustls FFI) is the system-under-test.
-from lib.test_util import load_vectors, assert_true, hex_decode, hex_encode
-from lib.rustls import RustlsLibrary
+from oracle.test_util import load_vectors, assert_true, hex_decode, hex_encode
+from oracle.rustls import RustlsLibrary
 from navette.util.owned_alloc import Owned
 from std.python import Python, PythonObject
 
@@ -220,7 +220,7 @@ def main() raises:
 
     var lib = RustlsLibrary()
 
-    var vectors = load_vectors("vectors/rfc9001/initial_keys.json")
+    var vectors = load_vectors("conformance/vectors/rfc9001/initial_keys.json")
     var n = Int(py=len(vectors))
     assert_true(
         n >= 2,

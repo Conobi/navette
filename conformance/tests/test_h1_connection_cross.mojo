@@ -10,10 +10,10 @@
 #
 # Disagreements are logged as warnings, not hard failures, since h11 may
 # handle edge cases differently.
-from lib.test_util import load_vectors, hex_decode, assert_true, assert_equal
-from lib.http1.types import ParseConfig, ConnectionResult
-from lib.http1.connection import parse_messages
-from lib.stateful_vectors import load_states, py_has_key, py_field_str, py_field_int, py_field_bool
+from oracle.test_util import load_vectors, hex_decode, assert_true, assert_equal
+from oracle.http1.types import ParseConfig, ConnectionResult
+from oracle.http1.connection import parse_messages
+from oracle.stateful_vectors import load_states, py_has_key, py_field_str, py_field_int, py_field_bool
 from std.python import Python, PythonObject
 
 
@@ -210,17 +210,17 @@ def main() raises:
 
     var builtins = Python.import_module("builtins")
 
-    var states = load_states("vectors/rfc9112/h11_connection_states.json")
+    var states = load_states("conformance/vectors/rfc9112/h11_connection_states.json")
 
     print("=== Phase 1: Vector-based connection cross-validation ===")
 
     var files = List[String]()
-    files.append("vectors/rfc9112/connection_keepalive.json")
-    files.append("vectors/rfc9112/connection_close.json")
-    files.append("vectors/rfc9112/connection_upgrade.json")
-    files.append("vectors/rfc9112/connection_informational.json")
-    files.append("vectors/rfc9112/connection_pipeline.json")
-    files.append("vectors/rfc9112/connection_error.json")
+    files.append("conformance/vectors/rfc9112/connection_keepalive.json")
+    files.append("conformance/vectors/rfc9112/connection_close.json")
+    files.append("conformance/vectors/rfc9112/connection_upgrade.json")
+    files.append("conformance/vectors/rfc9112/connection_informational.json")
+    files.append("conformance/vectors/rfc9112/connection_pipeline.json")
+    files.append("conformance/vectors/rfc9112/connection_error.json")
 
     var total_vectors = 0
     var agree_count = 0

@@ -46,7 +46,7 @@ To be populated as they land.
    the input bytes to `conformance/fuzz/corpus/<harness>/<seed>-<hash>.bin`.
 2. Open the `.txt` sidecar to read both observations.
 3. Decide whether the production stack is wrong (file a regression test + fix
-   in `navette/`), the oracle is wrong (fix in `conformance/lib/`), or the RFC
+   in `navette/`), the oracle is wrong (fix in `conformance/oracle/`), or the RFC
    is ambiguous (extend this file's entry with the spec citation, leave both
    stacks as-is).
 4. Once triaged, remove the skip-by-prefix entry and re-run the harness to

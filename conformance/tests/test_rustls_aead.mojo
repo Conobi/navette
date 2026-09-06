@@ -2,16 +2,16 @@
 #
 # AEAD encrypt/decrypt roundtrip via librustls_mojo.so.
 # Tests: correctness, handle-after-free rejection, nonce reuse, rough throughput.
-from lib.test_util import assert_true, assert_equal
-from lib.rustls import RustlsLibrary
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from oracle.test_util import assert_true, assert_equal
+from oracle.rustls import RustlsLibrary
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.util.owned_alloc import Owned
 from std.time import perf_counter_ns
 
 
-def _alloc_dcid() -> UnsafePointer[UInt8, MutAnyOrigin]:
+def _alloc_dcid() -> Pointer[UInt8, MutUntrackedOrigin]:
     """Allocate and fill the RFC 9001 A.1 DCID (8394c8f03e515708)."""
-    var dcid = _heap_alloc[UInt8](8).as_unsafe_any_origin()
+    var dcid = _heap_alloc[UInt8](8)
     dcid[0] = 0x83
     dcid[1] = 0x94
     dcid[2] = 0xC8
@@ -23,9 +23,9 @@ def _alloc_dcid() -> UnsafePointer[UInt8, MutAnyOrigin]:
     return dcid
 
 
-def _alloc_header() -> UnsafePointer[UInt8, MutAnyOrigin]:
+def _alloc_header() -> Pointer[UInt8, MutUntrackedOrigin]:
     """Allocate a dummy 4-byte QUIC Long Header."""
-    var header = _heap_alloc[UInt8](4).as_unsafe_any_origin()
+    var header = _heap_alloc[UInt8](4)
     header[0] = 0xC0
     header[1] = 0x00
     header[2] = 0x00

@@ -2,9 +2,9 @@
 #
 # Verify rlsm_initial_keys_raw (librustls_mojo.so) produces correct
 # QUIC Initial keys for RFC 9001 Appendix A.1 test vectors.
-from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_bytes_equal
-from lib.rustls import RustlsLibrary
-from std.memory import UnsafePointer
+from oracle.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_bytes_equal
+from oracle.rustls import RustlsLibrary
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 from std.python import PythonObject
 
@@ -101,7 +101,7 @@ def main() raises:
     var lib = RustlsLibrary()
 
     # Load vectors
-    var vectors = load_vectors("vectors/rfc9001/initial_protection.json")
+    var vectors = load_vectors("conformance/vectors/rfc9001/initial_protection.json")
     assert_true(
         len(vectors) >= 2,
         "expected at least 2 initial_protection vectors, got " + String(Int(py=len(vectors))),

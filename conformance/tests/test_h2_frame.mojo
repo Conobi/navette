@@ -3,7 +3,7 @@
 # HC-3a: HTTP/2 frame codec compliance tests.
 # Loads vectors from rfc9113/frame_*.json and security/h2_frame_abuse.json,
 # validates decode, field checks, error codes/scopes, and encode roundtrips.
-from lib.test_util import (
+from oracle.test_util import (
     load_vectors,
     hex_decode,
     hex_encode,
@@ -11,7 +11,7 @@ from lib.test_util import (
     assert_equal,
     assert_bytes_equal,
 )
-from lib.http2.frame import (
+from oracle.http2.frame import (
     Frame,
     H2FrameConfig,
     decode_frame,
@@ -153,18 +153,18 @@ def main() raises:
 
     # ---- Vector files to load ----
     var files = List[String]()
-    files.append("vectors/rfc9113/frame_data.json")
-    files.append("vectors/rfc9113/frame_headers.json")
-    files.append("vectors/rfc9113/frame_settings.json")
-    files.append("vectors/rfc9113/frame_goaway.json")
-    files.append("vectors/rfc9113/frame_window_update.json")
-    files.append("vectors/rfc9113/frame_rst_stream.json")
-    files.append("vectors/rfc9113/frame_priority.json")
-    files.append("vectors/rfc9113/frame_push_promise.json")
-    files.append("vectors/rfc9113/frame_ping.json")
-    files.append("vectors/rfc9113/frame_continuation.json")
-    files.append("vectors/rfc9113/frame_error.json")
-    files.append("vectors/security/h2_frame_abuse.json")
+    files.append("conformance/vectors/rfc9113/frame_data.json")
+    files.append("conformance/vectors/rfc9113/frame_headers.json")
+    files.append("conformance/vectors/rfc9113/frame_settings.json")
+    files.append("conformance/vectors/rfc9113/frame_goaway.json")
+    files.append("conformance/vectors/rfc9113/frame_window_update.json")
+    files.append("conformance/vectors/rfc9113/frame_rst_stream.json")
+    files.append("conformance/vectors/rfc9113/frame_priority.json")
+    files.append("conformance/vectors/rfc9113/frame_push_promise.json")
+    files.append("conformance/vectors/rfc9113/frame_ping.json")
+    files.append("conformance/vectors/rfc9113/frame_continuation.json")
+    files.append("conformance/vectors/rfc9113/frame_error.json")
+    files.append("conformance/vectors/security/h2_frame_abuse.json")
 
     for fi in range(len(files)):
         var path = files[fi]
@@ -289,13 +289,13 @@ def main() raises:
             frame.payload.append(UInt8(0))
             frame.payload.append(UInt8(2))  # promised_stream_id=2 (even)
             # Add some header block bytes
-            var extra = 3 + Int(t >> UInt(ftype * 4)) % 10
+            var extra = 3 + Int(t >> Int(ftype * 4)) % 10
             for j in range(extra):
                 frame.payload.append(UInt8(j % 256))
         else:
             # DATA (0), HEADERS (1), CONTINUATION (9): variable payload
             frame.payload = List[UInt8]()
-            var rand_len = 5 + Int(t >> UInt(ftype * 4)) % 20
+            var rand_len = 5 + Int(t >> Int(ftype * 4)) % 20
             for j in range(rand_len):
                 frame.payload.append(UInt8(j % 256))
 

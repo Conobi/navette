@@ -1,4 +1,4 @@
-# conformance/lib/http1/parser.mojo
+# conformance/oracle/http1/parser.mojo
 #
 # HTTP/1.1 request parser per RFC 9112.
 
@@ -168,7 +168,7 @@ def parse_request(
 
     var header_result = _parse_headers(wire, pos, config)
     var hdr_error = header_result[2]
-    if len(hdr_error) > 0:
+    if hdr_error:
         result.error = hdr_error
         return result^
     pos = header_result[1]
@@ -262,7 +262,7 @@ def parse_request(
             ri += 1
 
         var chunk_result = decode_chunked(remaining, config)
-        if len(chunk_result.error) > 0:
+        if chunk_result.error:
             result.error = chunk_result.error
             return result^
         # Copy decoded body bytes

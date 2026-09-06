@@ -1,4 +1,4 @@
-# conformance/lib/http1/chunked.mojo
+# conformance/oracle/http1/chunked.mojo
 #
 # Chunked transfer encoding codec per RFC 9112 section 7.
 

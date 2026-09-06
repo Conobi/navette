@@ -4,7 +4,7 @@
 # Loads vectors/rfc9000/packet_header.json and cross-checks the
 # Mojo parse_packet_header implementation against expected fields.
 
-from lib.test_util import hex_decode, hex_encode, load_vectors, assert_true, assert_equal
+from oracle.test_util import hex_decode, hex_encode, load_vectors, assert_true, assert_equal
 from std.python import Python, PythonObject
 from navette.quic.packet import parse_packet_header, PacketType, PacketHeader
 
@@ -42,7 +42,7 @@ def main() raises:
         _sentinel_ok = True
     assert_true(_sentinel_ok, "assertions are not firing")
 
-    var vectors = load_vectors("vectors/rfc9000/packet_header.json")
+    var vectors = load_vectors("conformance/vectors/rfc9000/packet_header.json")
     var builtins = Python.import_module("builtins")
     var count = Int(py=builtins.len(vectors))
     assert_true(count >= 18, "expected at least 18 header vectors, got " + String(count))

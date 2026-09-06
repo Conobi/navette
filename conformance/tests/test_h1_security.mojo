@@ -1,9 +1,9 @@
 # conformance/tests/test_h1_security.mojo
 #
 # Security vector tests with tier-based assertion gates.
-from lib.test_util import load_vectors, hex_decode, assert_true, assert_equal
-from lib.http1.types import ParseConfig
-from lib.http1.parser import parse_request
+from oracle.test_util import load_vectors, hex_decode, assert_true, assert_equal
+from oracle.http1.types import ParseConfig
+from oracle.http1.parser import parse_request
 from std.python import Python, PythonObject
 
 
@@ -17,9 +17,9 @@ def main() raises:
     assert_true(_sentinel_ok, "assertions are not firing")
 
     var security_files = List[String]()
-    security_files.append("vectors/security/smuggling_cl_te.json")
-    security_files.append("vectors/security/smuggling_te.json")
-    security_files.append("vectors/security/header_injection.json")
+    security_files.append("conformance/vectors/security/smuggling_cl_te.json")
+    security_files.append("conformance/vectors/security/smuggling_te.json")
+    security_files.append("conformance/vectors/security/header_injection.json")
 
     var total = 0
     var severe_count = 0
@@ -54,7 +54,7 @@ def main() raises:
                 var has_notes = False
                 try:
                     var notes = String(v["notes"])
-                    has_notes = len(notes) > 0
+                    has_notes = notes.byte_length() > 0
                 except:
                     has_notes = False
                 if not has_notes:

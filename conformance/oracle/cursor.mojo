@@ -1,4 +1,4 @@
-# conformance/lib/cursor.mojo
+# conformance/oracle/cursor.mojo
 
 
 struct ByteWriter:

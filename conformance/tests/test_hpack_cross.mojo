@@ -22,10 +22,10 @@
 # Phase 3 (random stories, both directions) iterates a deterministic set
 # baked into the JSON sidecar — no per-run PRNG.
 
-from lib.test_util import hex_decode, hex_encode, assert_true, assert_equal
-from lib.http1.types import Header
-from lib.http2.hpack import HpackEncoder, HpackDecoder, HpackConfig
-from lib.stateful_vectors import load_states, py_has_key
+from oracle.test_util import hex_decode, hex_encode, assert_true, assert_equal
+from oracle.http1.types import Header
+from oracle.http2.hpack import HpackEncoder, HpackDecoder, HpackConfig
+from oracle.stateful_vectors import load_states, py_has_key
 from std.python import Python, PythonObject
 
 
@@ -82,7 +82,7 @@ def run_phase1_our_encode_vs_baked(states: PythonObject) raises -> Int:
             # Verify our wire decodes correctly with our decoder.
             var dec = decoder_self.decode(wire)
             assert_true(
-                len(dec[1]) == 0,
+                not dec[1],
                 "phase1 " + fname + " case " + String(i) + " self-decode error: " + dec[1],
             )
             assert_equal(
@@ -137,7 +137,7 @@ def run_phase2_baked_py_encode_our_decode(states: PythonObject) raises -> Int:
             var wire = hex_decode(wire_hex)
             var result = decoder.decode(wire)
             assert_true(
-                len(result[1]) == 0,
+                not result[1],
                 "phase2 " + fname + " case " + String(i) + " decode error: " + result[1],
             )
             var expected = _py_headers_to_mojo(all_headers[i])
@@ -191,7 +191,7 @@ def run_phase3_baked_random_cross(states: PythonObject) raises:
             var wire = encoder.encode(canonical)
             var dec = dec_self.decode(wire)
             assert_true(
-                len(dec[1]) == 0,
+                not dec[1],
                 "phase3 story " + String(si) + " block " + String(bi)
                 + " self-decode error: " + dec[1],
             )
@@ -221,7 +221,7 @@ def run_phase3_baked_random_cross(states: PythonObject) raises:
             var wire = hex_decode(String(py_wires[bi]))
             var result = decoder.decode(wire)
             assert_true(
-                len(result[1]) == 0,
+                not result[1],
                 "phase3 story " + String(si) + " dir-B block " + String(bi)
                 + " decode error: " + result[1],
             )
@@ -273,7 +273,7 @@ def main() raises:
         sentinel_ok = True
     assert_true(sentinel_ok, "assertions are not firing")
 
-    var states = load_states("vectors/rfc7541/hpack_states.json")
+    var states = load_states("conformance/vectors/rfc7541/hpack_states.json")
 
     print("=== HPACK Cross-Validation Tests (pre-materialized) ===")
     print("")

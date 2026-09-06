@@ -9,16 +9,16 @@ where Huffman strategy is irrelevant, and for the name-reference case where
 pylsqpack and our encoder use the same encoding).
 """
 from navette.h3.qpack import QpackDecoder, QpackEncoder, QpackHeaderField
-from tests._test_util import assert_true, assert_equal_int
+from oracle.test_util import assert_true, assert_equal
 
 
 def hex_to_bytes(h: String) raises -> List[UInt8]:
     """Convert a hex string to bytes."""
-    if len(h) % 2 != 0:
+    if h.byte_length() % 2 != 0:
         raise "hex_to_bytes: odd-length hex string"
     var result = List[UInt8]()
     var bv = h.as_bytes()
-    for i in range(0, len(h), 2):
+    for i in range(0, h.byte_length(), 2):
         var hi = bv[i]
         var lo = bv[i + 1]
         var val = Int(0)
@@ -44,9 +44,9 @@ def hex_to_bytes(h: String) raises -> List[UInt8]:
 
 def assert_bytes_equal(actual: List[UInt8], expected: List[UInt8], label: String) raises:
     """Assert two byte sequences are identical."""
-    assert_equal_int(len(actual), len(expected), label + " length")
+    assert_equal(len(actual), len(expected), label + " length")
     for i in range(len(expected)):
-        assert_equal_int(Int(actual[i]), Int(expected[i]), label + " byte[" + String(i) + "]")
+        assert_equal(Int(actual[i]), Int(expected[i]), label + " byte[" + String(i) + "]")
 
 
 def test_cross_decode_get_slash() raises:
@@ -57,7 +57,7 @@ def test_cross_decode_get_slash() raises:
     var wire = hex_to_bytes("0000d1c1d750882f91d35d055c87a7")
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 4, "decoded header count")
+    assert_equal(len(headers), 4, "decoded header count")
     assert_true(headers[0].name == ":method", "h0.name")
     assert_true(headers[0].value == "GET", "h0.value")
     assert_true(headers[1].name == ":path", "h1.name")
@@ -77,7 +77,7 @@ def test_cross_decode_post_upload() raises:
     var wire = hex_to_bytes("0000d4518562dae838e4d750882f91d35d055c87a7eec4")
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 6, "decoded header count")
+    assert_equal(len(headers), 6, "decoded header count")
     assert_true(headers[0].name == ":method", "h0.name")
     assert_true(headers[0].value == "POST", "h0.value")
     assert_true(headers[1].name == ":path", "h1.name")
@@ -104,7 +104,7 @@ def test_cross_decode_200_ok() raises:
     var wire = hex_to_bytes(oracle_hex)
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 3, "decoded header count")
+    assert_equal(len(headers), 3, "decoded header count")
     assert_true(headers[0].name == ":status", "h0.name")
     assert_true(headers[0].value == "200", "h0.value")
     assert_true(headers[1].name == "content-type", "h1.name")
@@ -131,7 +131,7 @@ def test_cross_decode_404() raises:
     var wire = hex_to_bytes(oracle_hex)
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 1, "decoded header count")
+    assert_equal(len(headers), 1, "decoded header count")
     assert_true(headers[0].name == ":status", "h0.name")
     assert_true(headers[0].value == "404", "h0.value")
     # Encode direction (fully indexed)
@@ -151,7 +151,7 @@ def test_cross_decode_custom_literal() raises:
     var wire = hex_to_bytes("0000d12f04f2b12d424f4ad3947216cf86a7d771d1697f")
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 2, "decoded header count")
+    assert_equal(len(headers), 2, "decoded header count")
     assert_true(headers[0].name == ":method", "h0.name")
     assert_true(headers[0].value == "GET", "h0.value")
     assert_true(headers[1].name == "x-custom-header", "h1.name")
@@ -160,7 +160,7 @@ def test_cross_decode_custom_literal() raises:
 
 
 def test_cross_decode_patch_name_ref() raises:
-    """Oracle: :method PATCH + :path /api (§4.5.4 literal with name ref).
+    """Oracle: :method PATCH + :path /api (RFC 9204 sec 4.5.4 literal with name ref).
     encoded_hex: 00005f00055041544348518360759b
     Decode oracle bytes → verify both headers.
     Also verify encoder output for :method PATCH matches oracle's first field
@@ -171,32 +171,32 @@ def test_cross_decode_patch_name_ref() raises:
     var wire = hex_to_bytes(oracle_hex)
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 2, "decoded header count")
+    assert_equal(len(headers), 2, "decoded header count")
     assert_true(headers[0].name == ":method", "h0.name")
     assert_true(headers[0].value == "PATCH", "h0.value")
     assert_true(headers[1].name == ":path", "h1.name")
     assert_true(headers[1].value == "/api", "h1.value")
-    # Encode direction: verify §4.5.4 header byte and index bytes for :method PATCH
+    # Encode direction: verify RFC 9204 sec 4.5.4 header byte and index bytes for :method PATCH
     # (first 10 bytes match oracle exactly for use_huffman=False)
     var enc = QpackEncoder(False)
     var fields = List[QpackHeaderField]()
     fields.append(QpackHeaderField(":method", "PATCH"))
     var encoded = enc.encode(fields)
-    assert_equal_int(Int(encoded[2]), 0x5F, "§4.5.4 first byte: N=0 T=1 index=15 multi-byte")
-    assert_equal_int(Int(encoded[3]), 0x00, "§4.5.4 second byte: remainder=0")
-    assert_equal_int(Int(encoded[4]), 0x05, "value H=0 length=5")
+    assert_equal(Int(encoded[2]), 0x5F, "RFC 9204 sec 4.5.4 first byte: N=0 T=1 index=15 multi-byte")
+    assert_equal(Int(encoded[3]), 0x00, "RFC 9204 sec 4.5.4 second byte: remainder=0")
+    assert_equal(Int(encoded[4]), 0x05, "value H=0 length=5")
     print("  test_cross_decode_patch_name_ref: PASS")
 
 
 def test_cross_decode_huffman() raises:
     """Oracle: GET / + :authority www.example.com with Huffman.
     encoded_hex: 0000d1c1d7508cf1e3c2e5f23a6ba0ab90f4ff
-    Decode oracle bytes (Huffman value in §4.5.4 field) → verify all 4 headers.
+    Decode oracle bytes (Huffman value in RFC 9204 sec 4.5.4 field) → verify all 4 headers.
     """
     var wire = hex_to_bytes("0000d1c1d7508cf1e3c2e5f23a6ba0ab90f4ff")
     var dec = QpackDecoder()
     var headers = dec.decode(wire)
-    assert_equal_int(len(headers), 4, "decoded header count")
+    assert_equal(len(headers), 4, "decoded header count")
     assert_true(headers[0].name == ":method", "h0.name")
     assert_true(headers[0].value == "GET", "h0.value")
     assert_true(headers[1].name == ":path", "h1.name")

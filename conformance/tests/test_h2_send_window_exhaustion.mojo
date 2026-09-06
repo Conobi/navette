@@ -5,12 +5,12 @@
 # exceeds the remaining connection (or stream) window. Post-fix: the codec
 # emits as much as fits, queues the remainder, and drains it on WINDOW_UPDATE.
 
-from std.memory import Span
+from std.collections import Span
 
-from lib.http2.connection import (
+from oracle.http2.connection import (
     H2Connection,
 )
-from lib.http1.types import Header
+from oracle.http1.types import Header
 from navette.http.headers import Headers
 from navette.http.request import Request
 from navette.http.method import Method

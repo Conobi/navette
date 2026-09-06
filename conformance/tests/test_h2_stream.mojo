@@ -1,8 +1,8 @@
 # conformance/tests/test_h2_stream.mojo
 #
 # HC-4b: HTTP/2 stream data path tests.
-from lib.test_util import assert_true, assert_equal, hex_decode, hex_encode
-from lib.http2.connection import (
+from oracle.test_util import assert_true, assert_equal, hex_decode, hex_encode
+from oracle.http2.connection import (
     H2Config,
     H2Settings,
     H2Event,
@@ -27,7 +27,7 @@ from lib.http2.connection import (
     _append_setting,
     SETTINGS_INITIAL_WINDOW_SIZE,
 )
-from lib.http2.frame import (
+from oracle.http2.frame import (
     Frame,
     encode_frame,
     decode_frame,
@@ -47,8 +47,8 @@ from lib.http2.frame import (
     FLAG_ACK,
     FLAG_END_HEADERS,
 )
-from lib.http2.hpack import HpackEncoder, HpackDecoder, HpackConfig
-from lib.http1.types import Header
+from oracle.http2.hpack import HpackEncoder, HpackDecoder, HpackConfig
+from oracle.http1.types import Header
 
 
 def test_stream_state_new_fields() raises:
@@ -57,11 +57,11 @@ def test_stream_state_new_fields() raises:
     assert_true(not s.headers_end_stream, "default headers_end_stream")
     assert_true(not s.data_received, "default data_received")
     # Copy preserves new fields
-    var s2 = StreamState(other=s)
+    var s2 = StreamState(copy=s)
     assert_true(not s2.headers_end_stream, "copy headers_end_stream")
     assert_true(not s2.data_received, "copy data_received")
     # Move preserves new fields
-    var s3 = StreamState(take=s2^)
+    var s3 = StreamState(move=s2^)
     assert_true(not s3.headers_end_stream, "move headers_end_stream")
     assert_true(not s3.data_received, "move data_received")
 
@@ -749,7 +749,7 @@ def test_settings_max_frame_size_invalid() raises:
 
 def test_oracle_roundtrip_smoke() raises:
     """H2_roundtrip oracle returns valid result dict."""
-    from lib.http2.oracles import h2_roundtrip
+    from oracle.http2.oracles import h2_roundtrip
     var result = h2_roundtrip()
     var error = String(result["error"])
     assert_true(error == "None", "no oracle error")

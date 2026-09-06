@@ -3,7 +3,7 @@
 # HC-3b Task 1: HPACK variable-length prefix integer codec tests.
 # Loads vectors from rfc7541/c1_integer.json and validates
 # encode, decode, roundtrip, overflow, and anti-cheat randomised checks.
-from lib.test_util import (
+from oracle.test_util import (
     load_vectors,
     hex_decode,
     hex_encode,
@@ -11,7 +11,7 @@ from lib.test_util import (
     assert_equal,
     assert_bytes_equal,
 )
-from lib.http2.hpack_integer import encode_integer, decode_integer
+from oracle.http2.hpack_integer import encode_integer, decode_integer
 from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
@@ -35,7 +35,7 @@ def main() raises:
     assert_true(sentinel_ok, "assertions are not firing")
 
     # ---- Load test vectors ----
-    var vectors = load_vectors("vectors/rfc7541/c1_integer.json")
+    var vectors = load_vectors("conformance/vectors/rfc7541/c1_integer.json")
     var builtins = Python.import_module("builtins")
     var vec_count = Int(py=builtins.len(vectors))
 
@@ -59,7 +59,7 @@ def main() raises:
             var result = decode_integer(wire, 0, prefix_bits)
             var err = result[2]
             assert_true(
-                len(err) > 0,
+                Bool(err),
                 vid + ": expected decode error but got none",
             )
             # Check the error message contains "overflow"
@@ -95,7 +95,7 @@ def main() raises:
             var dec_consumed = result[1]
             var dec_err = result[2]
             assert_true(
-                len(dec_err) == 0,
+                not dec_err,
                 vid + " decode: unexpected error: " + dec_err,
             )
             assert_equal(dec_value, expected_value, vid + " decode value")
@@ -112,7 +112,7 @@ def main() raises:
             var rt_consumed = rt_result[1]
             var rt_err = rt_result[2]
             assert_true(
-                len(rt_err) == 0,
+                not rt_err,
                 vid + " roundtrip: unexpected error: " + rt_err,
             )
             assert_equal(rt_value, value, vid + " roundtrip value")
@@ -139,7 +139,7 @@ def main() raises:
     # Empty wire
     var empty_result = decode_integer(List[UInt8](), 0, 5)
     assert_true(
-        len(empty_result[2]) > 0,
+        Bool(empty_result[2]),
         "expected error for empty wire",
     )
 
@@ -148,7 +148,7 @@ def main() raises:
     trunc_wire.append(UInt8(0x1F))  # max_prefix for 5-bit
     var trunc_result = decode_integer(trunc_wire, 0, 5)
     assert_true(
-        len(trunc_result[2]) > 0,
+        Bool(trunc_result[2]),
         "expected error for truncated continuation",
     )
 
@@ -158,7 +158,7 @@ def main() raises:
     trunc_wire2.append(UInt8(0x80))  # continuation bit set, no next byte
     var trunc_result2 = decode_integer(trunc_wire2, 0, 5)
     assert_true(
-        len(trunc_result2[2]) > 0,
+        Bool(trunc_result2[2]),
         "expected error for truncated continuation (2 bytes)",
     )
     print("  [PASS] truncation edge cases")
@@ -189,7 +189,7 @@ def main() raises:
             var dec_err = dec[2]
 
             assert_true(
-                len(dec_err) == 0,
+                not dec_err,
                 "random roundtrip error: value="
                 + String(rand_value)
                 + " prefix="

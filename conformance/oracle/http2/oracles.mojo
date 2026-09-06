@@ -1,4 +1,4 @@
-# conformance/lib/http2/oracles.mojo
+# conformance/oracle/http2/oracles.mojo
 #
 # As of §3.3 of the dependency-enhancement plan, the bulk of the live h2 /
 # hpack / hyperframe oracle wrappers have been pruned. Their callers
@@ -17,9 +17,29 @@ from std.python import Python, PythonObject
 
 
 def _get_helpers() raises -> PythonObject:
-    """Import oracle_helpers module."""
+    """Import the `oracle_helpers` Python module from `conformance/scripts`.
+
+    The directory is located relative to the process working directory, which
+    is the project root under `mojox test` but `conformance/` under
+    `conformance/scripts/run_tests.sh`. Both spellings are probed and the
+    first one that exists is prepended to `sys.path` as an absolute path, so
+    the import no longer depends on where the target was launched from.
+
+    Raises:
+        If neither candidate directory exists, or `oracle_helpers` (or one of
+        its third-party imports) cannot be imported.
+    """
     var sys = Python.import_module("sys")
-    sys.path.insert(0, "scripts")
+    var os = Python.import_module("os")
+    var scripts_dir = String("conformance/scripts")
+    if not os.path.isdir(scripts_dir):
+        scripts_dir = String("scripts")
+    if not os.path.isdir(scripts_dir):
+        raise (
+            "oracle_helpers: cannot locate conformance/scripts from CWD "
+            + String(os.getcwd())
+        )
+    sys.path.insert(0, os.path.abspath(scripts_dir))
     return Python.import_module("oracle_helpers")
 
 

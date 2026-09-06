@@ -1,4 +1,4 @@
-from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, assert_true, assert_equal
+from oracle.test_util import hex_decode, hex_encode, assert_bytes_equal, assert_true, assert_equal
 
 
 def main() raises:

@@ -1,9 +1,9 @@
 # conformance/tests/test_h1_response.mojo
 #
 # HC-2a: RFC 9112 response compliance tests.
-from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
-from lib.http1.types import ParseConfig, ParserStrictness, Header, ParsedResponse
-from lib.http1.response import parse_response
+from oracle.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
+from oracle.http1.types import ParseConfig, ParserStrictness, Header, ParsedResponse
+from oracle.http1.response import parse_response
 from std.python import Python, PythonObject
 
 
@@ -249,7 +249,7 @@ def check_reject_response(
     # use a different but equally valid error message)
     if _has_key(expected, "reason"):
         var reason = String(expected["reason"])
-        if len(reason) > 0:
+        if reason:
             if not _str_contains(result_ref.error, reason):
                 print(
                     "    WARNING: " + vec_id + ": error '" + result_ref.error
@@ -377,12 +377,12 @@ def main() raises:
     var total = 0
 
     var files = List[String]()
-    files.append("vectors/rfc9112/response_status.json")
-    files.append("vectors/rfc9112/response_body.json")
-    files.append("vectors/rfc9112/response_head.json")
-    files.append("vectors/rfc9112/response_informational.json")
-    files.append("vectors/rfc9112/response_no_body.json")
-    files.append("vectors/rfc9112/response_framing.json")
+    files.append("conformance/vectors/rfc9112/response_status.json")
+    files.append("conformance/vectors/rfc9112/response_body.json")
+    files.append("conformance/vectors/rfc9112/response_head.json")
+    files.append("conformance/vectors/rfc9112/response_informational.json")
+    files.append("conformance/vectors/rfc9112/response_no_body.json")
+    files.append("conformance/vectors/rfc9112/response_framing.json")
 
     for fi in range(len(files)):
         var path = files[fi]
@@ -427,7 +427,7 @@ def main() raises:
         tv = tv // 26 + ri + 1
 
     var rand_body = "rand" + rand_val
-    var rand_cl = String(len(rand_body))
+    var rand_cl = String(rand_body.byte_length())
 
     # Build wire: HTTP/1.1 200 OK\r\nContent-Length: <cl>\r\nX-Rand: <rand_val>\r\n\r\n<body>
     var rt_str = "HTTP/1.1 200 OK\r\nContent-Length: " + rand_cl + "\r\nX-Rand: " + rand_val + "\r\n\r\n" + rand_body

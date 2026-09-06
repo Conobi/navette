@@ -1,6 +1,6 @@
 # conformance/tests/test_packet_number.mojo
-from lib.test_util import load_vectors, assert_true, assert_equal
-from lib.packet import decode_packet_number, encode_packet_number_length
+from oracle.test_util import load_vectors, assert_true, assert_equal
+from oracle.packet import decode_packet_number, encode_packet_number_length
 from std.python import Python, PythonObject
 
 
@@ -13,7 +13,7 @@ def main() raises:
         _sentinel_ok = True
     assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
 
-    var vectors = load_vectors("vectors/rfc9000/packet_number.json")
+    var vectors = load_vectors("conformance/vectors/rfc9000/packet_number.json")
     assert_true(len(vectors) >= 30, "expected at least 30 packet_number vectors, got " + String(Int(py=len(vectors))))
     var count = 0
 

@@ -1,4 +1,4 @@
-# conformance/lib/http2/frame.mojo — re-exports from navette.h2.frame
+# conformance/oracle/http2/frame.mojo — re-exports from navette.h2.frame
 from navette.h2.frame import (
     H2_NO_ERROR,
     H2_PROTOCOL_ERROR,

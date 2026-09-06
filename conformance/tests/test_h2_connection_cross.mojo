@@ -7,8 +7,8 @@
 # bytes, expected event sequence) are pre-materialized into
 # conformance/vectors/rfc9113/h2_states.json by
 # conformance/scripts/oracle_h1_h2_states.py.
-from lib.test_util import assert_true, assert_equal, hex_encode
-from lib.http2.connection import (
+from oracle.test_util import assert_true, assert_equal, hex_encode
+from oracle.http2.connection import (
     H2Connection,
     H2Config,
     H2Event,
@@ -20,7 +20,7 @@ from lib.http2.connection import (
     H2_EVT_CONNECTION_TERMINATED,
     H2_EVT_WINDOW_UPDATED,
 )
-from lib.http2.frame import (
+from oracle.http2.frame import (
     Frame,
     encode_frame,
     FRAME_SETTINGS,
@@ -28,7 +28,7 @@ from lib.http2.frame import (
     FRAME_GOAWAY,
     FLAG_ACK,
 )
-from lib.stateful_vectors import load_states, py_field_str, py_has_key
+from oracle.stateful_vectors import load_states, py_field_str, py_has_key
 from std.python import Python, PythonObject
 
 
@@ -47,7 +47,7 @@ def _hex_to_bytes(hex_str: String) -> List[UInt8]:
     var result = List[UInt8]()
     var b = hex_str.as_bytes()
     var i = 0
-    while i < len(hex_str):
+    while i < hex_str.byte_length():
         var hi = _hex_val(b[i])
         var lo = _hex_val(b[i + 1])
         result.append(UInt8(hi * 16 + lo))
@@ -67,7 +67,7 @@ def test_cross_client_preface_accepted(states: PythonObject) raises:
     """
     var oracle = states["h2_server_receive_client_preface"]
     var err_field = py_field_str(oracle, "error")
-    assert_true(len(err_field) == 0, "oracle has no error: " + err_field)
+    assert_true(not err_field, "oracle has no error: " + err_field)
 
     var builtins = Python.import_module("builtins")
     var events = oracle["events"]
@@ -91,7 +91,7 @@ def test_cross_client_preface_accepted(states: PythonObject) raises:
 def test_cross_server_preface_accepted(states: PythonObject) raises:
     """Our client accepts Python h2's server preface (pre-materialized)."""
     var preface_hex = py_field_str(states, "server_preface_after_empty_recv_hex")
-    assert_true(len(preface_hex) > 0, "server preface present in oracle JSON")
+    assert_true(Bool(preface_hex), "server preface present in oracle JSON")
     var h2_preface = _hex_to_bytes(preface_hex)
 
     var client = H2Connection(client_side=True)
@@ -138,7 +138,7 @@ def test_cross_ping(states: PythonObject) raises:
 
     var oracle = states["ping_oracle"]
     var err_field = py_field_str(oracle, "error")
-    assert_true(len(err_field) == 0, "oracle ping has no error: " + err_field)
+    assert_true(not err_field, "oracle ping has no error: " + err_field)
 
     assert_true(len(our_events) >= 1, "our server got event")
     assert_equal(our_events[0].kind, H2_EVT_PING_RECEIVED, "our PingReceived")
@@ -160,7 +160,7 @@ def test_cross_ping(states: PythonObject) raises:
 
 
 def main() raises:
-    var states = load_states("vectors/rfc9113/h2_states.json")
+    var states = load_states("conformance/vectors/rfc9113/h2_states.json")
     test_cross_client_preface_accepted(states)
     test_cross_server_preface_accepted(states)
     test_cross_ping(states)

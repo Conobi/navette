@@ -1,4 +1,4 @@
-# conformance/lib/http1/oracles.mojo
+# conformance/oracle/http1/oracles.mojo
 #
 # As of §3.3 of the dependency-enhancement plan, all live h11 / httptools
 # oracle wrappers have been pruned. Their callers (test_h1_cross_parser,
@@ -7,6 +7,6 @@
 # (see conformance/scripts/oracle_h1_h2_states.py).
 #
 # This module is intentionally left empty (apart from this note) to keep
-# the `from lib.http1.oracles import …` import sites in any future test
+# the `from oracle.http1.oracles import …` import sites in any future test
 # easy to revive — but no new live oracle calls should be added here.
 from std.python import Python, PythonObject  # noqa: F401  (kept for potential reuse)

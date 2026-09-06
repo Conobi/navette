@@ -1,9 +1,9 @@
 # conformance/tests/test_h1_chunked.mojo
 #
 # Unit tests for the chunked transfer encoding codec.
-from lib.test_util import assert_true, assert_equal, assert_bytes_equal, hex_decode
-from lib.http1.types import ParseConfig, ChunkedResult, ParserStrictness
-from lib.http1.chunked import decode_chunked, encode_chunked
+from oracle.test_util import assert_true, assert_equal, assert_bytes_equal, hex_decode
+from oracle.http1.types import ParseConfig, ChunkedResult, ParserStrictness
+from oracle.http1.chunked import decode_chunked, encode_chunked
 
 
 def test_single_chunk() raises:

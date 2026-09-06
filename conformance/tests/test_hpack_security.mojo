@@ -5,9 +5,9 @@
 # (bombs, integer overflow, invalid Huffman, invalid index, oversized
 # table updates, truncated wire) and accepts clean edge cases.
 
-from lib.test_util import load_vectors, hex_decode, assert_true
-from lib.http1.types import Header
-from lib.http2.hpack import HpackDecoder, HpackConfig
+from oracle.test_util import load_vectors, hex_decode, assert_true
+from oracle.http1.types import Header
+from oracle.http2.hpack import HpackDecoder, HpackConfig
 from std.python import Python, PythonObject
 
 
@@ -30,7 +30,7 @@ def main() raises:
     assert_true(_sentinel_ok, "assertions are not firing")
 
     var vectors = load_vectors(
-        "vectors/security/hpack_security.json"
+        "conformance/vectors/security/hpack_security.json"
     )
     var builtins = Python.import_module("builtins")
     var count = Int(py=builtins.len(vectors))
@@ -57,7 +57,7 @@ def main() raises:
             if severity == "severe":
                 severe_count += 1
                 assert_true(
-                    len(err) > 0,
+                    Bool(err),
                     "SECURITY FAILURE: severe vector '"
                     + vid
                     + "' was ACCEPTED — must be rejected",
@@ -65,7 +65,7 @@ def main() raises:
                 severe_passed += 1
             else:
                 assert_true(
-                    len(err) > 0,
+                    Bool(err),
                     vid + ": expected reject but decoder accepted",
                 )
             print("  [PASS] " + vid + " (rejected: " + err + ")")
@@ -75,7 +75,7 @@ def main() raises:
             if severity == "severe":
                 severe_count += 1
                 assert_true(
-                    len(err) == 0,
+                    not err,
                     "SECURITY FAILURE: severe vector '"
                     + vid
                     + "' was REJECTED ("
@@ -85,7 +85,7 @@ def main() raises:
                 severe_passed += 1
             else:
                 assert_true(
-                    len(err) == 0,
+                    not err,
                     vid
                     + ": expected accept but decoder rejected — "
                     + err,

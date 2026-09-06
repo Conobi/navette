@@ -1,4 +1,4 @@
-# conformance/lib/packet.mojo
+# conformance/oracle/packet.mojo
 
 
 def decode_packet_number(largest_pn: Int, truncated_pn: Int, pn_nbits: Int) -> Int:

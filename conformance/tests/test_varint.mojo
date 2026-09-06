@@ -1,7 +1,7 @@
 # conformance/tests/test_varint.mojo
-from lib.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors, assert_true, assert_equal
-from lib.cursor import ByteWriter, ByteReader
-from lib.varint import varint_encode, varint_decode
+from oracle.test_util import hex_decode, hex_encode, assert_bytes_equal, load_vectors, assert_true, assert_equal
+from oracle.cursor import ByteWriter, ByteReader
+from oracle.varint import varint_encode, varint_decode
 from std.python import Python, PythonObject
 
 
@@ -14,7 +14,7 @@ def main() raises:
         _sentinel_ok = True
     assert_true(_sentinel_ok, "assertions are not firing — test infrastructure is broken")
 
-    var vectors = load_vectors("vectors/rfc9000/varint.json")
+    var vectors = load_vectors("conformance/vectors/rfc9000/varint.json")
     assert_true(len(vectors) >= 100, "expected at least 100 varint vectors, got " + String(Int(py=len(vectors))))
     var count = 0
 

@@ -1,4 +1,4 @@
-# conformance/lib/stateful_vectors.mojo
+# conformance/oracle/stateful_vectors.mojo
 #
 # Pre-materialized oracle vector loaders for the stateful cross-validation
 # tests. These replace the live Python.import_module("h11"/"httptools"/"h2"/

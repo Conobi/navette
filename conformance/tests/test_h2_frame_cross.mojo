@@ -15,8 +15,8 @@
 # Phase 2 (random fuzz against live hyperframe) has been deprecated.
 # The roundtrip-only vectors plus type-specific accept vectors provide
 # the same encode/decode coverage without a live oracle.
-from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal
-from lib.http2.frame import (
+from oracle.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal
+from oracle.http2.frame import (
     Frame,
     H2FrameConfig,
     decode_frame,
@@ -157,18 +157,18 @@ def main() raises:
     print("=== Vector-based cross-validation (hyperframe oracle pre-materialized) ===")
 
     var files = List[String]()
-    files.append("vectors/rfc9113/frame_data.json")
-    files.append("vectors/rfc9113/frame_headers.json")
-    files.append("vectors/rfc9113/frame_settings.json")
-    files.append("vectors/rfc9113/frame_goaway.json")
-    files.append("vectors/rfc9113/frame_window_update.json")
-    files.append("vectors/rfc9113/frame_rst_stream.json")
-    files.append("vectors/rfc9113/frame_priority.json")
-    files.append("vectors/rfc9113/frame_push_promise.json")
-    files.append("vectors/rfc9113/frame_ping.json")
-    files.append("vectors/rfc9113/frame_continuation.json")
-    files.append("vectors/rfc9113/frame_error.json")
-    files.append("vectors/security/h2_frame_abuse.json")
+    files.append("conformance/vectors/rfc9113/frame_data.json")
+    files.append("conformance/vectors/rfc9113/frame_headers.json")
+    files.append("conformance/vectors/rfc9113/frame_settings.json")
+    files.append("conformance/vectors/rfc9113/frame_goaway.json")
+    files.append("conformance/vectors/rfc9113/frame_window_update.json")
+    files.append("conformance/vectors/rfc9113/frame_rst_stream.json")
+    files.append("conformance/vectors/rfc9113/frame_priority.json")
+    files.append("conformance/vectors/rfc9113/frame_push_promise.json")
+    files.append("conformance/vectors/rfc9113/frame_ping.json")
+    files.append("conformance/vectors/rfc9113/frame_continuation.json")
+    files.append("conformance/vectors/rfc9113/frame_error.json")
+    files.append("conformance/vectors/security/h2_frame_abuse.json")
 
     var total_cross = 0
     var accept_agree = 0

@@ -1,4 +1,4 @@
-from lib.http2.payloads import (
+from oracle.http2.payloads import (
     DataPayload,
     decode_data_payload,
     HeadersPayload,
@@ -21,8 +21,8 @@ from lib.http2.payloads import (
     ContinuationPayload,
     decode_continuation_payload,
 )
-from lib.http2.frame import Frame, decode_frame
-from lib.test_util import hex_decode
+from oracle.http2.frame import Frame, decode_frame
+from oracle.test_util import hex_decode
 from std.testing import assert_true, assert_equal
 
 

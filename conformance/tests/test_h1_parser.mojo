@@ -1,9 +1,9 @@
 # conformance/tests/test_h1_parser.mojo
 #
 # RFC 9112 compliance tests — loads vectors, feeds to parser, checks results.
-from lib.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
-from lib.http1.types import ParseConfig, Header, ParsedRequest, ParserStrictness
-from lib.http1.parser import parse_request
+from oracle.test_util import load_vectors, hex_decode, hex_encode, assert_true, assert_equal, assert_bytes_equal
+from oracle.http1.types import ParseConfig, Header, ParsedRequest, ParserStrictness
+from oracle.http1.parser import parse_request
 from std.python import Python, PythonObject
 
 
@@ -326,11 +326,11 @@ def main() raises:
     var total = 0
 
     var files = List[String]()
-    files.append("vectors/rfc9112/request_line.json")
-    files.append("vectors/rfc9112/headers.json")
-    files.append("vectors/rfc9112/content_length.json")
-    files.append("vectors/rfc9112/chunked.json")
-    files.append("vectors/rfc9112/host.json")
+    files.append("conformance/vectors/rfc9112/request_line.json")
+    files.append("conformance/vectors/rfc9112/headers.json")
+    files.append("conformance/vectors/rfc9112/content_length.json")
+    files.append("conformance/vectors/rfc9112/chunked.json")
+    files.append("conformance/vectors/rfc9112/host.json")
 
     # Per-file minimum vector counts
     var min_counts = List[Int]()

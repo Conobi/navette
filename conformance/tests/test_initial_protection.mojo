@@ -17,28 +17,28 @@
 # answers). The actual cross-validation against rustls' AEAD/HKDF/HP
 # implementations lives in test_rustls_initial.mojo and
 # test_cross_initial_crypto.mojo.
-from lib.test_util import load_vectors, assert_true
+from oracle.test_util import load_vectors, assert_true
 from std.python import Python, PythonObject
 
 
 def _expect_string_field(v: PythonObject, key: String) raises -> String:
     """Read v[key] as a Mojo String, raising if missing or empty."""
     var got = String(v[key])
-    if len(got) == 0:
+    if not got:
         raise "vector field '" + key + "' is empty"
     return got^
 
 
 def _vector_field(v: PythonObject, group: String, key: String) raises -> String:
     var raw = String(v[group][key])
-    if len(raw) == 0:
+    if not raw:
         raise "vector field '" + group + "." + key + "' is empty"
     return raw^
 
 
 def test_hkdf_vectors() raises -> None:
     """Validate the HKDF-Expand-Label vector file structure."""
-    var vectors = load_vectors("vectors/rfc9001/hkdf.json")
+    var vectors = load_vectors("conformance/vectors/rfc9001/hkdf.json")
     var n = Int(py=len(vectors))
     assert_true(n >= 8, "expected at least 8 hkdf vectors, got " + String(n))
 
@@ -61,7 +61,7 @@ def test_hkdf_vectors() raises -> None:
 
 def test_aead_vectors() raises -> None:
     """Validate the AEAD-AES-128-GCM vector file structure."""
-    var vectors = load_vectors("vectors/rfc9001/aead.json")
+    var vectors = load_vectors("conformance/vectors/rfc9001/aead.json")
     var n = Int(py=len(vectors))
     assert_true(n >= 4, "expected at least 4 aead vectors, got " + String(n))
 
@@ -97,7 +97,7 @@ def test_aead_vectors() raises -> None:
 
 def test_hp_vectors() raises -> None:
     """Validate the AES-128-ECB header-protection vector file structure."""
-    var vectors = load_vectors("vectors/rfc9001/header_protection.json")
+    var vectors = load_vectors("conformance/vectors/rfc9001/header_protection.json")
     var n = Int(py=len(vectors))
     assert_true(n >= 2, "expected at least 2 hp vectors, got " + String(n))
 
@@ -109,9 +109,9 @@ def test_hp_vectors() raises -> None:
         var sample = _expect_string_field(v, "sample")
         var mask = _expect_string_field(v, "mask")
         # The HP mask is the first 5 bytes of AES-ECB(hp_key, sample).
-        assert_true(len(hp_key) == 32, "hp_key must be 16 bytes (32 hex chars)")
-        assert_true(len(sample) == 32, "sample must be 16 bytes (32 hex chars)")
-        assert_true(len(mask) == 10,   "mask must be 5 bytes (10 hex chars)")
+        assert_true(hp_key.byte_length() == 32, "hp_key must be 16 bytes (32 hex chars)")
+        assert_true(sample.byte_length() == 32, "sample must be 16 bytes (32 hex chars)")
+        assert_true(mask.byte_length() == 10,   "mask must be 5 bytes (10 hex chars)")
         if name == "client_initial_v1_header_protection":
             # Cross-check against RFC 9001 A.2 canonical value.
             assert_true(mask == "437b9aec36", "A.2 client mask drift")
@@ -121,7 +121,7 @@ def test_hp_vectors() raises -> None:
 
 def test_initial_keys_vectors() raises -> None:
     """Validate the QUIC v1 Initial-keys derivation vector file structure."""
-    var vectors = load_vectors("vectors/rfc9001/initial_keys.json")
+    var vectors = load_vectors("conformance/vectors/rfc9001/initial_keys.json")
     var n = Int(py=len(vectors))
     assert_true(n >= 2, "expected client+server initial-keys vectors, got " + String(n))
 
@@ -133,9 +133,9 @@ def test_initial_keys_vectors() raises -> None:
         var key = _expect_string_field(v, "key")
         var iv = _expect_string_field(v, "iv")
         var hp = _expect_string_field(v, "hp")
-        assert_true(len(key) == 32, "key must be 16 bytes (32 hex chars)")
-        assert_true(len(iv) == 24,  "iv must be 12 bytes (24 hex chars)")
-        assert_true(len(hp) == 32,  "hp must be 16 bytes (32 hex chars)")
+        assert_true(key.byte_length() == 32, "key must be 16 bytes (32 hex chars)")
+        assert_true(iv.byte_length() == 24,  "iv must be 12 bytes (24 hex chars)")
+        assert_true(hp.byte_length() == 32,  "hp must be 16 bytes (32 hex chars)")
         if role == "client":
             # RFC 9001 A.1 canonical values.
             assert_true(key == "1f369613dd76d5467730efcbe3b1a22d", "client_key drift")

@@ -3,9 +3,9 @@
 # HC-3b Task 5: HPACK encoder + roundtrip tests.
 # Layer 3: self-roundtrip testing using raw-data stories and random headers.
 
-from lib.test_util import assert_true, assert_equal
-from lib.http1.types import Header
-from lib.http2.hpack import HpackEncoder, HpackDecoder, HpackConfig
+from oracle.test_util import assert_true, assert_equal
+from oracle.http1.types import Header
+from oracle.http2.hpack import HpackEncoder, HpackDecoder, HpackConfig
 from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
@@ -46,7 +46,7 @@ def run_roundtrip_story(
         # Decode
         var result = decoder.decode(wire)
         assert_true(
-            len(result[1]) == 0,
+            not result[1],
             story_name
             + " case "
             + String(i)
@@ -100,7 +100,7 @@ def run_raw_data_stories() raises -> Int:
     var builtins = Python.import_module("builtins")
     var os_mod = Python.import_module("os")
 
-    var raw_dir = "vectors/hpack-stories/raw-data"
+    var raw_dir = "conformance/vectors/hpack-stories/raw-data"
 
     if not Bool(os_mod.path.isdir(raw_dir)):
         print(
@@ -174,7 +174,7 @@ def run_no_huffman_roundtrip() raises:
     var wire = encoder.encode(headers)
     var result = decoder.decode(wire)
     assert_true(
-        len(result[1]) == 0,
+        not result[1],
         "no-huffman roundtrip decode error: " + result[1],
     )
     assert_equal(
@@ -226,7 +226,7 @@ def run_table_size_update_roundtrip() raises:
     var wire1 = encoder.encode(headers1)
     var result1 = decoder.decode(wire1)
     assert_true(
-        len(result1[1]) == 0,
+        not result1[1],
         "table-size-update block 1 decode error: " + result1[1],
     )
     assert_equal(
@@ -245,7 +245,7 @@ def run_table_size_update_roundtrip() raises:
     var wire2 = encoder.encode(headers2)
     var result2 = decoder.decode(wire2)
     assert_true(
-        len(result2[1]) == 0,
+        not result2[1],
         "table-size-update block 2 decode error: " + result2[1],
     )
     assert_equal(
@@ -291,7 +291,7 @@ def run_dynamic_table_reuse_roundtrip() raises:
     var wire1 = encoder.encode(headers1)
     var result1 = decoder.decode(wire1)
     assert_true(
-        len(result1[1]) == 0,
+        not result1[1],
         "dt-reuse block 1 decode: " + result1[1],
     )
     assert_equal(len(result1[0]), 3, "dt-reuse block 1 count")
@@ -309,7 +309,7 @@ def run_dynamic_table_reuse_roundtrip() raises:
     var wire2 = encoder.encode(headers2)
     var result2 = decoder.decode(wire2)
     assert_true(
-        len(result2[1]) == 0,
+        not result2[1],
         "dt-reuse block 2 decode: " + result2[1],
     )
     assert_equal(len(result2[0]), 3, "dt-reuse block 2 count")
@@ -435,7 +435,7 @@ def run_random_roundtrips() raises:
             # Decode
             var result = decoder.decode(wire)
             assert_true(
-                len(result[1]) == 0,
+                not result[1],
                 "random story "
                 + String(story)
                 + " block "
