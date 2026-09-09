@@ -231,10 +231,23 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self._drain_responses(now)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
+        """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`."""
         return self._h3.drain_datagrams(now)
 
     def should_close(self) -> Bool:
         return self._h3.is_closed()
+
+    def is_closing_or_draining(self) -> Bool:
+        """True once CLOSING, DRAINING or CLOSED (peer address is frozen)."""
+        return self._h3.is_closing_or_draining()
+
+    def timeout(self, now: UInt64) -> Optional[UInt64]:
+        """Earliest absolute deadline (µs) this connection needs servicing at."""
+        return self._h3.timeout(now)
+
+    def has_pending_egress(self) -> Bool:
+        """True when the last drain hit the cap and datagrams are still owed."""
+        return self._h3.has_pending_egress()
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
         """Send GOAWAY via the underlying H3Connection."""

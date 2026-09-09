@@ -52,6 +52,11 @@ from navette.h3.guard_predicates import (
 
 
 # HTTP/3 CANCEL_PUSH frame type (RFC 9114 §7.2.3 — type 0x03).
+# Upper bound on datagrams collected by one `drain_datagrams` call. Bounds
+# egress work per connection per flush (fairness across connections) and
+# guarantees termination independently of the frame builder.
+comptime MAX_DATAGRAMS_PER_DRAIN: Int = 64
+
 comptime H3_FRAME_CANCEL_PUSH: UInt64 = 0x03
 
 
@@ -177,12 +182,21 @@ struct H3Connection(Movable):
     var _local_h3_datagram_enabled:  Bool
     var _peer_h3_datagram_enabled:   Bool
     var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
+    # Read cursor into `_h3_events`; entries below it are consumed. Reset
+    # to 0 (with the list cleared) once every event has been popped.
+    var _h3_events_head:             Int
+    # True when the last `drain_datagrams` stopped at MAX_DATAGRAMS_PER_DRAIN
+    # rather than because `send()` ran dry; the server treats such a
+    # connection as due for another drain right now.
+    var egress_capped:               Bool
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
         self._is_server = is_server
         self._stream_bufs = Dict[Int, _H3StreamBuf]()
         self._h3_events = List[H3Event]()
+        self._h3_events_head = 0
+        self.egress_capped = False
         self._local_ctrl_sid = Optional[UInt64]()
         self._local_qenc_sid = Optional[UInt64]()
         self._local_qdec_sid = Optional[UInt64]()
@@ -223,6 +237,8 @@ struct H3Connection(Movable):
         self._local_h3_datagram_enabled = move._local_h3_datagram_enabled
         self._peer_h3_datagram_enabled = move._peer_h3_datagram_enabled
         self.profile_ptr = move.profile_ptr
+        self._h3_events_head = move._h3_events_head
+        self.egress_capped = move.egress_capped
 
     @staticmethod
     def server(var quic: QuicConnection) raises -> H3Connection:
@@ -260,6 +276,27 @@ struct H3Connection(Movable):
 
     def is_closed(self) -> Bool:
         return self._quic.is_closed()
+
+    def is_closing_or_draining(self) -> Bool:
+        """True once the connection is CLOSING, DRAINING or CLOSED.
+
+        Servers freeze the peer address in these states so a reflected
+        CONNECTION_CLOSE can only go to the address the peer was using
+        before the close began.
+        """
+        return (
+            self._quic.is_closing()
+            or self._quic.is_draining()
+            or self._quic.is_closed()
+        )
+
+    def timeout(self, now: UInt64) -> Optional[UInt64]:
+        """Earliest absolute deadline (µs) the QUIC layer needs servicing at."""
+        return self._quic.timeout(now)
+
+    def has_pending_egress(self) -> Bool:
+        """True when the last drain hit the cap and datagrams are still owed."""
+        return self.egress_capped
 
     def peer_max_bidi_streams_raw(self) -> UInt64:
         """Return the peer's QUIC MAX_STREAMS (bidirectional) limit.
@@ -320,14 +357,20 @@ struct H3Connection(Movable):
         return (stream_id & UInt64(0x02)) == 0
 
     def poll_event(mut self) -> Optional[H3Event]:
-        """Return the next pending H3Event, or None if the queue is empty."""
-        if len(self._h3_events) == 0:
+        """Return the next pending H3Event, or None if the queue is empty.
+
+        O(1): advances a head cursor instead of rebuilding the list; the
+        list is cleared once the cursor reaches its end.
+        """
+        if self._h3_events_head >= len(self._h3_events):
+            self._h3_events.clear()
+            self._h3_events_head = 0
             return Optional[H3Event]()
-        var ev = H3Event(copy=self._h3_events[0])
-        var rest = List[H3Event]()
-        for i in range(1, len(self._h3_events)):
-            rest.append(H3Event(copy=self._h3_events[i]))
-        self._h3_events = rest^
+        var ev = H3Event(copy=self._h3_events[self._h3_events_head])
+        self._h3_events_head += 1
+        if self._h3_events_head >= len(self._h3_events):
+            self._h3_events.clear()
+            self._h3_events_head = 0
         return Optional[H3Event](ev^)
 
     # --- Transport API -------------------------------------------------------
@@ -401,8 +444,33 @@ struct H3Connection(Movable):
                 self._dispatch_quic_datagram(ev.datagram_payload)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Drain outbound QUIC datagrams. Returns list of UDP payloads."""
-        return self._quic.send(now)
+        """Collect UDP payloads until `send()` runs dry or the drain cap hits.
+
+        `QuicConnection.send` emits at most one datagram per call; this
+        loop keeps calling it, so a whole response leaves in one drain
+        instead of one datagram per received packet. Stopping at
+        `MAX_DATAGRAMS_PER_DRAIN` sets `egress_capped`, which the server
+        reads through `has_pending_egress()` to schedule the remainder.
+        A closing connection yields its CLOSE and nothing more.
+
+        If `send()` raises mid-loop the datagrams already collected are
+        dropped: their packets are recorded in the PN spaces and loss
+        detection retransmits them, exactly as a single dropped datagram.
+        """
+        var out = List[List[UInt8]]()
+        while len(out) < MAX_DATAGRAMS_PER_DRAIN:
+            var batch = self._quic.send(now)
+            if len(batch) == 0:
+                self.egress_capped = False
+                return out^
+            while len(batch) > 0:
+                out.append(batch.pop(0))
+            if self._quic.is_closing():
+                # One CLOSE per trigger; nothing else may follow it.
+                self.egress_capped = False
+                return out^
+        self.egress_capped = True
+        return out^
 
     # --- Send API ------------------------------------------------------------
 

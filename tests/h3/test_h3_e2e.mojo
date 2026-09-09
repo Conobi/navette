@@ -11,8 +11,9 @@ from std.collections import Span
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
+from navette.quic.cc.cc_trait import AckedPacket
 from navette.quic.trans_param import TransportParams, default_transport_params
-from navette.h3.connection import H3Connection, H3Event
+from navette.h3.connection import H3Connection, H3Event, MAX_DATAGRAMS_PER_DRAIN
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.h3_session import H3Session
 from navette.h3.qpack import QpackHeaderField, QpackEncoder
@@ -395,6 +396,182 @@ def test_h3_goaway() raises:
     print("  test_h3_goaway: PASS")
 
 
+# ── Send loop: drain-terminates / drain-cap-is-observable ────────────────
+
+
+struct _BigResponseHandler(StreamHandler):
+    """Handler that answers every request with `size` bytes of 'x'."""
+    var _size: Int
+
+    def __init__(out self, size: Int):
+        self._size = size
+
+    def __init__(out self, *, deinit move: Self):
+        self._size = move._size
+
+    def on_request(
+        mut self, var req: Request, mut body: RecvBody, mut resp: ResponseWriter, caps: Capabilities
+    ) raises:
+        resp.send_status(StatusCode.ok(), Headers())
+        var body_bytes = List[UInt8](capacity=self._size)
+        for _ in range(self._size):
+            body_bytes.append(UInt8(120))
+        _ = resp.try_send_body(BodyFrame.data(body_bytes^))
+        resp.end()
+
+    def on_body_available(mut self, mut body: RecvBody, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_request_end(mut self, mut body: RecvBody, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_send_drained(mut self, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_reset(mut self, error: StreamError):
+        pass
+
+
+def _send_get(mut client: H3Connection) raises -> UInt64:
+    """Open a bidi stream and send `GET /` with FIN; returns the stream id."""
+    var stream_id = client.open_bidi_stream()
+    var req_fields = List[QpackHeaderField]()
+    req_fields.append(QpackHeaderField(":method", "GET"))
+    req_fields.append(QpackHeaderField(":path", "/"))
+    req_fields.append(QpackHeaderField(":scheme", "https"))
+    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    client.send_headers(stream_id, req_fields, True)
+    return stream_id
+
+
+def _open_server_cwnd[H: StreamHandler](
+    mut server: H3HandlerServer[H], bytes: Int
+) raises:
+    """Grow the server's cwnd by `bytes` through synthetic ACKs; unpace it."""
+    var acked = 0
+    var i = 0
+    while acked < bytes:
+        var pkt = AckedPacket(
+            pkt_num=UInt64(100_000 + i),
+            size=UInt64(1200),
+            time_sent=UInt64(i * 1000),
+            time_acked=UInt64(i * 1000 + 500),
+            rtt_sample=UInt64(500),
+        )
+        server._h3._quic.recovery.cc.on_packet_acked(
+            pkt, UInt64(500), UInt64(i * 1000 + 500)
+        )
+        acked += 1200
+        i += 1
+    server._h3._quic.recovery.pacer.enabled = False
+
+
+def test_h3_drain_terminates() raises:
+    """drain-terminates: idle → second drain empty; local close → one CLOSE then empty."""
+    var tc = _TestConfigs()
+    var params = _h3_default_params()
+    var now = UInt64(1_000_000)
+
+    var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3HandlerServer[_FixedResponseHandler](
+        quic=server_quic^, handler=_FixedResponseHandler("hello")
+    )
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_server_client(server, client, now, 50)
+    _ = _send_get(client)
+    now = _pump_server_client(server, client, now, 20)
+
+    # Idle exchange: the drain runs dry within the cap, and a second call
+    # at the same clock returns nothing.
+    now += UInt64(10_000)
+    var first = server.drain_datagrams(now)
+    assert_true(
+        len(first) < MAX_DATAGRAMS_PER_DRAIN,
+        "idle drain must terminate below the cap",
+    )
+    assert_true(not server.has_pending_egress(), "idle drain must not report pending egress")
+    var second = server.drain_datagrams(now)
+    assert_equal_int(len(second), 0, "second idle drain must be empty")
+
+    # Local close: exactly one CLOSE datagram, then empty.
+    server._h3._quic.close_app(UInt64(0x100), String("bye"), now)
+    var close_dgs = server.drain_datagrams(now)
+    assert_equal_int(len(close_dgs), 1, "close drain must yield exactly one datagram")
+    assert_true(not server.has_pending_egress(), "close drain must not report pending egress")
+    var after_close = server.drain_datagrams(now)
+    assert_equal_int(len(after_close), 0, "drain after the CLOSE must be empty")
+    print("  test_h3_drain_terminates: PASS")
+
+
+def test_h3_drain_cap_is_observable() raises:
+    """drain-cap-is-observable: a 200 kB response yields exactly 64 datagrams
+    from one drain (egress_capped set) and the remainder from the next."""
+    var tc = _TestConfigs()
+    var params = _h3_default_params()
+    # Lift the per-stream windows so 200 kB fits without a MAX_STREAM_DATA
+    # round-trip; connection-level data is already 1 MiB.
+    params.initial_max_stream_data_bidi_local = UInt64(1_048_576)
+    params.initial_max_stream_data_bidi_remote = UInt64(1_048_576)
+    var now = UInt64(1_000_000)
+    var body_size = 200_000
+
+    var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
+    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var server_quic = QuicConnection.server(
+        tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
+    )
+    var server = H3HandlerServer[_BigResponseHandler](
+        quic=server_quic^, handler=_BigResponseHandler(body_size)
+    )
+    var client = H3Connection.client(client_quic^)
+
+    now = _pump_server_client(server, client, now, 50)
+    assert_true(server._h3.is_established(), "handshake did not complete")
+
+    # A cwnd well above the whole response so the congestion gate never
+    # closes the loop before the cap does.
+    _open_server_cwnd[_BigResponseHandler](server, 2 * body_size)
+
+    _ = _send_get(client)
+    now += UInt64(10_000)
+    var c_dgs = client.drain_datagrams(now)
+    for i in range(len(c_dgs)):
+        server.feed_datagram(Span(c_dgs[i]), now)
+
+    now += UInt64(10_000)
+    var first = server.drain_datagrams(now)
+    assert_equal_int(
+        len(first), MAX_DATAGRAMS_PER_DRAIN,
+        "first drain must stop exactly at the cap",
+    )
+    assert_true(server.has_pending_egress(), "capped drain must report pending egress")
+
+    var second = server.drain_datagrams(now)
+    assert_true(len(second) > 0, "second drain must carry the remainder")
+
+    # Keep draining without feeding the client: the total must cover the
+    # body and the loop must eventually run dry (egress_capped cleared).
+    var total = len(first) + len(second)
+    var calls = 2
+    while server.has_pending_egress() and calls < 32:
+        var more = server.drain_datagrams(now)
+        total += len(more)
+        calls += 1
+    assert_true(not server.has_pending_egress(), "drain must run dry once the response is out")
+    assert_true(
+        total * 1200 >= body_size,
+        "drained datagrams cannot carry the whole body: " + String(total),
+    )
+    print("  test_h3_drain_cap_is_observable: PASS")
+
+
 def main() raises:
     print("=== test_h3_e2e ===")
     test_h3_simple_get()
@@ -402,4 +579,6 @@ def main() raises:
     test_h3_session_get()
     test_h3_multi_request()
     test_h3_goaway()
+    test_h3_drain_cap_is_observable()
+    test_h3_drain_terminates()
     print("All H3 E2E tests passed.")

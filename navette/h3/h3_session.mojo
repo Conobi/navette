@@ -115,7 +115,7 @@ struct H3Session(Session):
         self._dispatch_events()
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Drain outbound QUIC datagrams."""
+        """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`."""
         return self._h3.drain_datagrams(now)
 
     # --- Session trait API --------------------------------------------------
