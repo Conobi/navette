@@ -312,6 +312,17 @@ struct CidManager(Movable):
         """True if a new local CID should be issued (count below peer_active_limit)."""
         return UInt64(self.active_local_count()) < self.peer_active_limit
 
+    def has_unadvertised(self) -> Bool:
+        """Non-allocating: an Active local CID still owes a NEW_CONNECTION_ID."""
+        for i in range(len(self.local_cids)):
+            if self.local_cids[i].state == CID_ACTIVE and not self.local_cids[i].advertised:
+                return True
+        return False
+
+    def has_pending_retire(self) -> Bool:
+        """Non-allocating: a RETIRE_CONNECTION_ID is queued."""
+        return len(self.retire_queue) > 0
+
     def pending_new_cid_entries(self) -> List[CidEntry]:
         """Return Active local CIDs that have not yet been advertised.
 

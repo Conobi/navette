@@ -146,8 +146,73 @@ def test_drain_clears_buffer() raises:
     print("  test_drain_clears_buffer: PASS")
 
 
+def test_next_crypto_frame_cursor() raises:
+    """`crypto-split-across-packets`: 3000 queued bytes come out as contiguous
+    frames sized to each budget; the buffer is not rebuilt per frame (its
+    capacity is stable until the cursor reaches the end) and has_unsent()
+    tracks the cursor."""
+    var cs = CryptoStream()
+    var data = List[UInt8](capacity=3000)
+    for i in range(3000):
+        data.append(UInt8((i * 7) % 256))
+    cs.requeue(UInt64(100), Span(data))
+    assert_true(cs.has_unsent(), "queued data is unsent")
+    var cap_before = cs.send_buf.capacity()
+    var expected_offset = UInt64(100)
+    var out = List[UInt8]()
+    var budgets = List[Int]()
+    budgets.append(1100)
+    budgets.append(900)
+    budgets.append(5000)
+    for bi in range(len(budgets)):
+        var maybe = cs.next_crypto_frame(budgets[bi])
+        assert_true(Bool(maybe), "frame " + String(bi) + " present")
+        var f = maybe.value().copy()
+        assert_true(f.offset == expected_offset, "frame " + String(bi) + " offset contiguous")
+        assert_true(len(f.data) <= budgets[bi], "frame " + String(bi) + " within budget")
+        expected_offset += UInt64(len(f.data))
+        for j in range(len(f.data)):
+            out.append(f.data[j])
+        if bi < 2:
+            assert_true(cs.send_buf.capacity() == cap_before, "no reallocation mid-flight")
+            assert_true(cs.has_unsent(), "remainder still unsent")
+    assert_true(not cs.has_unsent(), "flight fully emitted")
+    assert_true(not Bool(cs.next_crypto_frame(10)), "nothing left")
+    assert_equal_int(len(out), 3000, "all bytes emitted once")
+    for i in range(3000):
+        assert_true(out[i] == data[i], "byte " + String(i) + " preserved")
+    assert_true(cs.send_offset == UInt64(3100), "send_offset advanced past the flight")
+    assert_true(not Bool(cs.next_crypto_frame(0)), "zero budget yields nothing")
+    print("  test_next_crypto_frame_cursor: PASS")
+
+
+def test_requeue_compacts_sent_prefix() raises:
+    """A requeue after a partial emission drops the emitted prefix and keeps
+    the unsent remainder addressable at the right offset."""
+    var cs = CryptoStream()
+    var data = _str_bytes("abcdefghij")
+    cs.write(Span(data))
+    var first = cs.next_crypto_frame(4).value().copy()
+    assert_true(first.offset == UInt64(0), "first at 0")
+    assert_equal_int(len(first.data), 4, "first is 4 bytes")
+    # Retransmit the lost first frame: it starts before the unsent tail.
+    cs.requeue(UInt64(0), Span(first.data))
+    assert_true(cs.send_offset == UInt64(0), "replaced from offset 0")
+    var again = cs.next_crypto_frame(100).value().copy()
+    assert_equal_int(len(again.data), 4, "only the requeued range is staged")
+    # A contiguous requeue after the emitted prefix extends the tail.
+    var tail = _str_bytes("efghij")
+    cs.requeue(UInt64(4), Span(tail))
+    var f = cs.next_crypto_frame(100).value().copy()
+    assert_true(f.offset == UInt64(4), "tail offset")
+    assert_equal_int(len(f.data), 6, "tail length")
+    print("  test_requeue_compacts_sent_prefix: PASS")
+
+
 def main() raises:
     print("test_quic_crypto_stream:")
+    test_next_crypto_frame_cursor()
+    test_requeue_compacts_sent_prefix()
     test_in_order_receive()
     test_out_of_order_receive()
     test_overlap_receive()
