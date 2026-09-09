@@ -197,9 +197,12 @@ struct H1Conn(Movable):
         """
         if self._closing:
             return
-        _ = external_call["shutdown", Int32](
-            self.socket.raw(), Int32(2)
-        )
+        try:
+            _ = external_call["shutdown", Int32](
+                self.socket.raw(), Int32(2)
+            )
+        except:
+            pass
         self._closing = True
         self._recv_future = Optional[RecvFuture]()
         self._send_future = Optional[SendFuture]()
