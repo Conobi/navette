@@ -115,6 +115,10 @@ comptime _RECV_NAME_CAPACITY: Int = 28
 # or IPV6_TCLASS (4 B) ECN cmsg record (both 24 after CMSG_ALIGN).
 comptime _SEND_CONTROL_CAPACITY: Int = 24
 
+# Control capacity for GSO-batched egress Messages. 48 bytes holds one
+# ECN cmsg (24 B) plus one SOL_UDP/UDP_SEGMENT record (24 B).
+comptime _SEND_CONTROL_CAPACITY_GSO: Int = 48
+
 
 def _sockaddr_to_path_key(
     buf_ptr: Pointer[mut=True, T=UInt8, origin=_],
@@ -225,6 +229,16 @@ def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
             s0, s1, s2, s3, s4, s5, s6, s7,
             port=port, scope_id=scope_id,
         ))
+
+
+def _egress_addrs_eq(a: List[UInt8], b: List[UInt8]) -> Bool:
+    """Byte-compare two raw sockaddr blobs for GSO grouping."""
+    if len(a) != len(b):
+        return False
+    for i in range(len(a)):
+        if a[i] != b[i]:
+            return False
+    return True
 
 
 # ── Pending datagram (ingress queue) ──────────────────────────────────────────
@@ -474,6 +488,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # Cross-transport injection staging (from inject_response).
     var _inject_egress: List[EgressPacket]
 
+    # Maximum datagrams that may be packed into one GSO super-buffer.
+    # Starts at 1 (no GSO); wired from UdpSocketState in start().
+    # Permanently downgraded to 1 on the first GSO send failure.
+    var _gso_max_segments: Int
+
     # WatchLoop recv infrastructure. _recv_pool is the BufferPool
     # backing the multishot recvmsg. _recv_stream is the DatagramStream
     # handle. Both created in start(). The stream is declared AFTER the
@@ -533,6 +552,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._egress_backlog = List[EgressPacket]()
         self._inject_egress = List[EgressPacket]()
 
+        self._gso_max_segments = 1
+
         # Recv pool + stream — created in start() via WatchLoop.
         self._recv_pool = Optional[BufferPool](None)
         self._recv_stream = Optional[DatagramStream](None)
@@ -557,6 +578,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._dgram_refcounts = move._dgram_refcounts^
         self._egress_backlog = move._egress_backlog^
         self._inject_egress = move._inject_egress^
+        self._gso_max_segments = move._gso_max_segments
         self._recv_pool = move._recv_pool^
         self._recv_stream = move._recv_stream^
         self._timer = move._timer^
@@ -706,45 +728,127 @@ struct H3UdpServer[H: StreamHandler](Movable):
     def _submit_egress(mut self) raises:
         """Submit queued egress packets via WatchLoop.send_msg.
 
-        Drains _egress_backlog FIFO. Each packet is wrapped in a
-        `Message` with the ECN codepoint written as a cmsg. The
-        resulting `SendMsgFuture` is dropped (fire-and-forget);
-        WatchLoop reclaims the internal slot on completion.
+        When GSO is available (`_gso_max_segments > 1`), consecutive
+        packets sharing the same peer address and payload size are
+        packed into a single super-buffer with a SOL_UDP/UDP_SEGMENT
+        cmsg. The kernel splits the buffer back into individual
+        datagrams at the segment boundary, cutting syscall overhead.
+
+        If a GSO sendmsg fails, segmentation offload is permanently
+        downgraded to one datagram per syscall and the unsent packets
+        are re-queued for the next flush cycle.
 
         When the loop's send slab is full, remaining packets stay in
         the backlog for the next flush cycle.
         """
-        var remaining = List[EgressPacket]()
-        while len(self._egress_backlog) > 0:
-            var pkt = self._egress_backlog.pop()
+        var n = len(self._egress_backlog)
+        if n == 0:
+            return
 
-            # Build Message with a copy of the payload so the packet
-            # can be re-queued on submission failure.
+        var unsent = List[EgressPacket]()
+        var i = 0
+
+        while i < n:
+            # ── GSO grouping ─────────────────────────────────
+            if self._gso_max_segments > 1:
+                var seg_size = len(self._egress_backlog[i].data)
+                var run_end = i + 1
+                while (
+                    run_end < n
+                    and run_end - i < self._gso_max_segments
+                    and len(self._egress_backlog[run_end].data) == seg_size
+                    and _egress_addrs_eq(
+                        self._egress_backlog[run_end].addr,
+                        self._egress_backlog[i].addr,
+                    )
+                ):
+                    run_end += 1
+
+                var run_len = run_end - i
+                if run_len > 1:
+                    # Pack payloads contiguously into one super-buffer.
+                    var combined = List[UInt8](
+                        capacity=seg_size * run_len,
+                    )
+                    for j in range(i, run_end):
+                        for k in range(
+                            len(self._egress_backlog[j].data)
+                        ):
+                            combined.append(
+                                self._egress_backlog[j].data[k]
+                            )
+
+                    var msg = Message(
+                        combined^,
+                        control_capacity=_SEND_CONTROL_CAPACITY_GSO,
+                    )
+                    _set_msg_peer_raw(
+                        msg, self._egress_backlog[i].addr
+                    )
+                    try:
+                        msg.set_ecn(
+                            self._egress_backlog[i].ecn_mark
+                        )
+                    except:
+                        pass
+                    try:
+                        msg.set_gso_segment_size(UInt16(seg_size))
+                    except:
+                        pass
+
+                    try:
+                        _ = self._loop_ptr[].send_msg(
+                            self.udp_socket, msg^
+                        )
+                        i = run_end
+                        continue
+                    except:
+                        # GSO send failed — permanently downgrade.
+                        self._gso_max_segments = 1
+                        # Re-queue everything from i onward.
+                        for j in range(i, n):
+                            unsent.append(EgressPacket(
+                                List[UInt8](
+                                    copy=self._egress_backlog[j].data
+                                ),
+                                List[UInt8](
+                                    copy=self._egress_backlog[j].addr
+                                ),
+                                self._egress_backlog[j].conn_idx,
+                                self._egress_backlog[j].ecn_mark,
+                            ))
+                        break
+
+            # ── Single-packet path (no GSO cmsg) ────────────
             var msg = Message(
-                List[UInt8](copy=pkt.data),
+                List[UInt8](copy=self._egress_backlog[i].data),
                 control_capacity=_SEND_CONTROL_CAPACITY,
             )
-
-            # Set destination address from the raw sockaddr blob.
-            _set_msg_peer_raw(msg, pkt.addr)
-
-            # Write ECN mark as a per-datagram cmsg.
+            _set_msg_peer_raw(msg, self._egress_backlog[i].addr)
             try:
-                msg.set_ecn(pkt.ecn_mark)
+                msg.set_ecn(self._egress_backlog[i].ecn_mark)
             except:
-                pass  # Proceed without ECN if control area exhausted.
+                pass
 
-            # Submit async sendmsg. The future is dropped immediately;
-            # WatchLoop reclaims the internal slot on completion.
             try:
                 _ = self._loop_ptr[].send_msg(self.udp_socket, msg^)
             except:
-                # WatchLoop slab full or fd invalid — re-queue and stop.
-                remaining.append(pkt^)
+                # Slab full — re-queue this and everything after.
+                for j in range(i, n):
+                    unsent.append(EgressPacket(
+                        List[UInt8](
+                            copy=self._egress_backlog[j].data
+                        ),
+                        List[UInt8](
+                            copy=self._egress_backlog[j].addr
+                        ),
+                        self._egress_backlog[j].conn_idx,
+                        self._egress_backlog[j].ecn_mark,
+                    ))
                 break
-        # Put unsubmitted packets back (preserve FIFO order).
-        while len(remaining) > 0:
-            self._egress_backlog.append(remaining.pop())
+            i += 1
+
+        self._egress_backlog = unsent^
 
     # ── Ingress (DatagramStream drain) ─────────────────────────────
 
