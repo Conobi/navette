@@ -202,9 +202,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         buf: Pointer[UInt8, MutUntrackedOrigin],
         buf_len: Int,
         now: UInt64,
+        ecn_mark: UInt8 = UInt8(0),
     ) raises:
         """Feed one inbound QUIC datagram from a mutable buffer (zero-copy)."""
-        self._h3.feed_datagram_from_buffer(buf, buf_len, now)
+        self._h3.feed_datagram_from_buffer(buf, buf_len, now, ecn_mark)
 
         # Bracket _dispatch_h3_events
         comptime if PROFILE_ACCEPT:

@@ -342,10 +342,11 @@ struct H3Connection(Movable):
         buf: Pointer[UInt8, MutUntrackedOrigin],
         buf_len: Int,
         now: UInt64,
+        ecn_mark: UInt8 = UInt8(0),
     ) raises:
         """Feed one inbound QUIC datagram from a mutable buffer pointer.
         Zero-copy variant — buffer is modified in-place."""
-        self._quic.recv_from_buffer(buf, buf_len, now)
+        self._quic.recv_from_buffer(buf, buf_len, now, ecn_mark)
 
         # Bracket the post-recv tail (timeout + poll-loop including _drain_stream).
         # record_pkt at connection.mojo:890 fires INSIDE recv_from_buffer's
