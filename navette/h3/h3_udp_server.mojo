@@ -1298,7 +1298,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # no pending challenge (validated path → returns True). The
             # validator's `can_send_bytes` includes the QUIC header +
             # AEAD ciphertext (i.e. the full UDP payload), matching RFC
-            # 9000 §8.1's measurement convention.
+            # 9000 section 8.1's measurement convention.
             if not self.conn_slots[conn_idx].h3[].can_send_to(
                 target_key, len(pkt)
             ):

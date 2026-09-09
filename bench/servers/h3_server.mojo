@@ -535,13 +535,13 @@ struct H3UdpHandler(Movable):
                 # Bad packet — skip.
                 continue
 
-            # Q4: count datagrams per recvmsg CQE. With multishot recvmsg,
+            # Count datagrams per recvmsg CQE. With multishot recvmsg,
             # each delivery carries exactly 1 datagram.
             var stamp_us: UInt64 = UInt64(0)
             comptime if PROFILE_ACCEPT:
                 stamp_us = profile_monotonic_us()
                 self.profile.record_recv_batch(1)
-                # Q7 H_C: 8-bucket recvmsg batch histogram.
+                # 8-bucket recvmsg batch histogram.
                 self.profile.record_recvmsg_batch_size(1)
 
             var dgram_idx = len(self._live_datagrams)
@@ -818,12 +818,12 @@ struct H3UdpHandler(Movable):
         comptime if PROFILE_ACCEPT:
             if _profile_dump_pending():
                 # Timeout sweep: count surviving non-established conns
-                # (B9 already counted evicted ones).
+                # (evicted ones already counted above).
                 for i in range(len(self.conn_h3s)):
                     if not self.conn_h3s[i][]._h3.is_established():
                         self.profile.record_handshake_timeout(UInt64(1))
                 # Write text report to stderr-equivalent (stdout is fine
-                # for the bench; B11 will add structured JSON sidecar).
+                # for the bench; structured JSON sidecar is a future addition).
                 print(self.profile.report_text(), end="")
                 # Plan C diagnostic: surface kernel-level recvmsg drops + multishot terminations + silent error swallows.
                 print("=== Plan C diagnostic counters ===")
@@ -850,7 +850,7 @@ struct H3UdpHandler(Movable):
             if len(pkt) == 0:
                 continue
 
-            # Q7 H_C: 8-bucket sendmsg batch histogram.
+            # 8-bucket sendmsg batch histogram.
             comptime if PROFILE_ACCEPT:
                 self.profile.record_sendmsg_batch_size(1)
 
@@ -1080,7 +1080,7 @@ def main() raises:
 
     # Event loop.
     while True:
-        # Q7 H_F: bracket the canonical io_uring park site (step calls
+        # Bracket the canonical io_uring park site (step calls
         # submit_and_wait internally).
         var t_park_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
@@ -1101,7 +1101,7 @@ def main() raises:
             t_dsubmit_start = profile_monotonic_us()
             srv_ptr[].profile.record_drain_submits_us(profile_monotonic_us() - t_dsubmit_start)
 
-        # Q7 H_A: 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
+        # 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
         comptime if PROFILE_ACCEPT:
             srv_ptr[].profile.tick_profile_gauges(profile_monotonic_us())
         _ = loop_ptr
