@@ -80,7 +80,7 @@ def _pump_sync_client(
     """Exchange QUIC datagrams between H3CoroServer (sync) and client H3Connection."""
     for _ in range(rounds):
         now += UInt64(10_000)
-        var s_dgs = server.drain()
+        var s_dgs = server.drain(now)
         for i in range(len(s_dgs)):
             try:
                 client.feed_datagram(Span(s_dgs[i]), now)

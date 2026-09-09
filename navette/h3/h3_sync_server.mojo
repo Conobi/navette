@@ -307,8 +307,18 @@ struct H3CoroServer(Movable):
             self._drain_responses(now)
         self._flush_outbound(now)
 
-    def drain(mut self) -> List[List[UInt8]]:
-        """Drain queued outbound QUIC datagrams for the transport to write."""
+    def drain(mut self, now: UInt64 = 0) -> List[List[UInt8]]:
+        """Drain queued outbound QUIC datagrams for the transport to write.
+
+        Also pulls whatever the connection can send right now, so egress
+        queued outside the ingress path (GOAWAY, timer-driven frames)
+        leaves without waiting for the peer's next datagram. Pass the
+        caller's clock; the default 0 cannot fire any armed timer.
+        """
+        try:
+            self._flush_outbound(now)
+        except:
+            pass
         var out = self._outbuf^
         self._outbuf = List[List[UInt8]]()
         return out^
