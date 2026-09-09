@@ -40,7 +40,7 @@ from std.io.file import open as open_file
 from std.os.env import getenv
 from std.sys import stderr
 
-from navette.h3.h3_udp_server import H3UdpServer
+from navette.h3.h3_udp_server import H3UdpServer, TIMER_CEILING_MS
 from navette.http.handler import (
     StreamHandler,
     Request,
@@ -172,6 +172,8 @@ def main() raises:
     print("hello_h3_server: listening (fd=" + String(Int(sock.raw())) + ")")
 
     var tp = default_transport_params()
+    # Idle timeout on: an abandoned handshake must not hold a slot forever.
+    tp.max_idle_timeout = UInt64(30_000)
     var server = H3UdpServer[HelloHandler](
         sock^, TlsBackend(copy=tls), config^, tp^, make_hello_handler,
     )
@@ -185,5 +187,7 @@ def main() raises:
     loop_ptr.unsafe_write(WatchLoop(capacity=256))
     srv_ptr[].start(loop_ptr[])
     while True:
-        _ = loop_ptr[].step()
+        # Bounded by the timer ceiling: if arming the timer ever fails,
+        # only ingress would otherwise wake the loop.
+        _ = loop_ptr[].step(Int(TIMER_CEILING_MS))
         srv_ptr[].flush()

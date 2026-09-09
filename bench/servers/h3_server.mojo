@@ -4,10 +4,11 @@
 #
 # Uses boucle's WatchLoop with multishot recvmsg via DatagramStream
 # backed by a BufferPool, fire-and-forget sendmsg via WatchLoop.send_msg,
-# and periodic timeout via TimerFuture. The event loop is:
-#   step() -> flush() -> repeat
+# and one TimerFuture armed to the earliest connection deadline (1 ms
+# floor, 1000 ms ceiling). The event loop is:
+#   step(TIMER_CEILING_MS) -> flush() -> repeat
 # where flush() drains the DatagramStream, routes packets through QUIC/H3,
-# submits egress, and polls the timer.
+# services expired deadlines, re-arms the timer and submits egress.
 #
 # This is the benchmark-instrumented variant of the library's
 # H3UdpServer[BenchHandler], carrying AcceptProfile counters, Plan C
@@ -65,6 +66,46 @@ comptime _RECV_NAME_CAPACITY: Int = 28
 
 # Control capacity — zero for bench (no ECN/GRO needed).
 comptime _RECV_CONTROL_CAPACITY: Int = 0
+
+# Loop-timer bounds (ms) and the idle timeout substituted when the
+# transport params carry 0. Mirrors the library server.
+comptime TIMER_FLOOR_MS: UInt64 = 1
+comptime TIMER_CEILING_MS: UInt64 = 1000
+comptime SERVER_DEFAULT_IDLE_TIMEOUT_MS: UInt64 = 30_000
+
+
+def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
+    """Milliseconds to arm the loop timer for a deadline at absolute µs.
+
+    `ceil((deadline - now) / 1000)` clamped to `[TIMER_FLOOR_MS,
+    TIMER_CEILING_MS]`; the ceiling when there is no deadline, the floor
+    when it has already passed.
+    """
+    if deadline is None:
+        return TIMER_CEILING_MS
+    var d = deadline.value()
+    if d <= now:
+        return TIMER_FLOOR_MS
+    var ms = (d - now + UInt64(999)) // UInt64(1000)
+    if ms < TIMER_FLOOR_MS:
+        return TIMER_FLOOR_MS
+    if ms > TIMER_CEILING_MS:
+        return TIMER_CEILING_MS
+    return ms
+
+
+def _sockaddr_matches(
+    addr: List[UInt8],
+    name_ptr: Pointer[UInt8, MutUntrackedOrigin],
+    name_len: Int,
+) -> Bool:
+    """Length-and-bytes comparison of a stored sockaddr blob with a delivery's."""
+    if len(addr) != name_len:
+        return False
+    for j in range(name_len):
+        if addr[j] != name_ptr[unsafe_offset=j]:
+            return False
+    return True
 
 
 # ── Plan B SIGINT plumbing ────────────────────────────────────────────
@@ -319,8 +360,9 @@ struct H3UdpHandler(Movable):
 
     Ingress is via a DatagramStream (multishot recvmsg backed by a
     BufferPool); egress is via WatchLoop.send_msg (fire-and-forget,
-    loop owns the message slab). A TimerFuture drives the 50ms periodic
-    timeout for connection sweeps and retransmits.
+    loop owns the message slab). One TimerFuture, armed to the earliest
+    connection deadline, wakes the loop for retransmits and expiry; the
+    decision to service deadlines is made against the clock in flush().
 
     Must be heap-allocated before use: profiling pointers and the
     loop reference store this struct's address, so it may not move
@@ -332,7 +374,7 @@ struct H3UdpHandler(Movable):
     var conn_h3s: List[Pointer[H3HandlerServer[BenchHandler], MutUntrackedOrigin]]
     var conn_addrs: List[List[UInt8]]
     # Per-conn list of DCID-u64 keys we inserted into conn_dcid_map.
-    # Used by _handle_timeout to remove ALL of a conn's entries on swap-and-pop
+    # Used by _free_conn to remove ALL of a conn's entries on swap-and-pop
     # (B-permissive dual-DCID strategy: each conn has 2 entries — initial_dcid
     # AND local_cid).
     var conn_dcids: List[List[UInt64]]
@@ -357,6 +399,14 @@ struct H3UdpHandler(Movable):
     # WatchLoop-based timer for QUIC loss detection / idle close.
     var _timer: Optional[TimerFuture]
     var _loop_ptr: Pointer[WatchLoop, MutUntrackedOrigin]
+    # Absolute µs deadline the live kernel timer targets (None = no
+    # live timer), plus test-readable arm bookkeeping.
+    var _armed_deadline_us: Optional[UInt64]
+    var _last_armed_ms: UInt64
+    var _reset_count: Int
+    var _timeout_count: Int
+    # Test-only clock override consulted by `_now()`; None in production.
+    var _clock_override_us: Optional[UInt64]
 
     # Plan B profile (always present; dead in off-build).
     var profile: AcceptProfile
@@ -402,6 +452,11 @@ struct H3UdpHandler(Movable):
         self._egress_backlog = List[EgressPacket]()
         self._timer = Optional[TimerFuture](None)
         self._loop_ptr = null_ptr[WatchLoop, MutUntrackedOrigin]()
+        self._armed_deadline_us = Optional[UInt64](None)
+        self._last_armed_ms = UInt64(0)
+        self._reset_count = 0
+        self._timeout_count = 0
+        self._clock_override_us = Optional[UInt64](None)
 
         self.profile = AcceptProfile()
         self.last_flush_end_us = UInt64(0)
@@ -429,6 +484,11 @@ struct H3UdpHandler(Movable):
         self._egress_backlog = move._egress_backlog^
         self._timer = move._timer^
         self._loop_ptr = move._loop_ptr
+        self._armed_deadline_us = move._armed_deadline_us^
+        self._last_armed_ms = move._last_armed_ms
+        self._reset_count = move._reset_count
+        self._timeout_count = move._timeout_count
+        self._clock_override_us = move._clock_override_us^
         self.profile = move.profile^
         self.last_flush_end_us = move.last_flush_end_us
         self.enobufs_count = move.enobufs_count
@@ -483,8 +543,20 @@ struct H3UdpHandler(Movable):
             )
         )
 
-        # Arm the initial periodic timeout (50ms).
-        self._timer = Optional(loop.timeout(UInt64(50)))
+        # Arm the timer to the (empty) minimum deadline: the ceiling.
+        self._rearm_timer()
+
+    # --- clock ---
+
+    def _now(self) -> UInt64:
+        """Protocol time in µs: the test override when set, else monotonic."""
+        if self._clock_override_us is not None:
+            return self._clock_override_us.value()
+        return monotonic_us()
+
+    def _set_clock_for_tests(mut self, now_us: UInt64):
+        """Pin `_now()` so tests can cross deadlines without sleeping."""
+        self._clock_override_us = Optional[UInt64](now_us)
 
     def _profile_ptr(mut self) -> Pointer[AcceptProfile, MutUntrackedOrigin]:
         """Return an untracked pointer to the embedded AcceptProfile."""
@@ -565,15 +637,18 @@ struct H3UdpHandler(Movable):
     # --- flush: step-driven batch processing ---
 
     def flush(mut self):
-        """Drain the recv stream, process ingress, submit egress, poll timer.
+        """Drain the recv stream, process ingress, service deadlines, submit egress.
 
-        Called by the external run loop after each step(). Runs the full
-        ingress-to-egress pipeline in one call.
+        Called by the external run loop after each step(). The timer pass
+        runs before egress submission so timer-owed datagrams leave in
+        this flush, and the timer is re-armed before `_submit_egress` so
+        its SQE is reserved before egress can exhaust the queue.
         """
         # 1. Drain datagrams from the DatagramStream into pending_rx.
         self._drain_recv_stream()
 
-        # 2. Process buffered ingress (DCID routing, QUIC feed, egress drain).
+        # 2. Process buffered ingress (DCID routing, QUIC feed, egress
+        #    drain, reap of connections closed by ingress).
         # Q-IO-1: bracket _flush_impl to histogram per-wake wall-clock duration.
         var t_flush_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
@@ -585,20 +660,32 @@ struct H3UdpHandler(Movable):
         comptime if PROFILE_ACCEPT:
             self.profile.record_flush_impl_us(profile_monotonic_us() - t_flush_start)
 
-        # 3. Submit egress from backlog via WatchLoop.send_msg.
+        # 3. Timer pass — by clock: when no timer is live or the earliest
+        #    deadline has passed. Drains only expired slots, then reaps.
+        var now = self._now()
+        if self._timer_pass_due(now):
+            try:
+                self._timer_pass(now)
+            except:
+                pass
+
+        # 4. Re-arm the timer to the new minimum deadline.
+        self._rearm_timer()
+
+        # 5. Submit egress from backlog via WatchLoop.send_msg.
         try:
             self._submit_egress()
         except:
             pass
 
-        # 4. Release buffer leases whose refcount reached 0.
+        # 6. Release buffer leases whose refcount reached 0.
         for i in range(len(self._live_datagrams)):
             if self._dgram_refcounts[i] == UInt16(0):
                 self._live_datagrams[i] = Optional[Datagram](None)
         self._live_datagrams.clear()
         self._dgram_refcounts.clear()
 
-        # 5. Rearm the stream if it disarmed (typically ENOBUFS).
+        # 7. Rearm the stream if it disarmed (typically ENOBUFS).
         if self._recv_stream is not None:
             if not self._recv_stream.value().armed():
                 self.multishot_term_count += UInt64(1)
@@ -607,20 +694,87 @@ struct H3UdpHandler(Movable):
                 except:
                     pass  # Will retry next flush.
 
-        # 6. Poll timer — process timeout and re-arm via WatchLoop.
-        if self._timer is not None and self._timer.value().done():
+    # --- timer ---
+
+    def _next_deadline_us(self, now: UInt64) -> Optional[UInt64]:
+        """Earliest deadline over all conns; `now` for one with capped egress."""
+        var earliest = Optional[UInt64](None)
+        for i in range(len(self.conn_h3s)):
+            var candidate: Optional[UInt64]
+            if self.conn_h3s[i][].has_pending_egress():
+                candidate = Optional[UInt64](now)
+            else:
+                candidate = self.conn_h3s[i][].timeout(now)
+            if candidate is None:
+                continue
+            if earliest is None or candidate.value() < earliest.value():
+                earliest = candidate
+        return earliest
+
+    def _timer_live(self) -> Bool:
+        """True while a kernel timer whose completion has not arrived exists."""
+        return self._timer is not None and not self._timer.value().done()
+
+    def _timer_pass_due(self, now: UInt64) -> Bool:
+        """Pass gate: no live timer, or the minimum deadline has passed."""
+        if not self._timer_live():
+            return True
+        var d = self._next_deadline_us(now)
+        return d is not None and d.value() <= now
+
+    def _rearm_timer(mut self):
+        """Keep exactly one live kernel timer aimed at the minimum deadline.
+
+        Absent/done future: always a fresh `timeout()`. Live future:
+        `reset` only when the target moved earlier by more than 1 ms; a
+        refused reset means the loop is gone, so the deadline is
+        forgotten and the loop is not touched. A raise from `timeout()`
+        leaves no timer; the next flush retries through the pass gate.
+        """
+        if Int(self._loop_ptr) == 0:
+            return
+        var now = self._now()
+        var ms = _timer_arm_ms(self._next_deadline_us(now), now)
+        var want = now + ms * UInt64(1000)
+
+        if self._timer_live():
+            var earlier = True
+            if self._armed_deadline_us is not None:
+                earlier = want + UInt64(1000) < self._armed_deadline_us.value()
+            if not earlier:
+                return
+            if self._timer.value().reset(ms):
+                self._reset_count += 1
+                self._armed_deadline_us = Optional[UInt64](want)
+                self._last_armed_ms = ms
+            else:
+                self._armed_deadline_us = Optional[UInt64](None)
+            return
+
+        try:
+            var fresh = self._loop_ptr[].timeout(ms)
+            self._timer = Optional[TimerFuture](fresh^)
+            self._armed_deadline_us = Optional[UInt64](want)
+            self._last_armed_ms = ms
+            self._timeout_count += 1
+        except:
+            self._timer = Optional[TimerFuture](None)
+            self._armed_deadline_us = Optional[UInt64](None)
+
+    def _timer_pass(mut self, now: UInt64) raises:
+        """Drain only conns whose deadline passed or whose egress was capped, then reap."""
+        for i in range(len(self.conn_h3s)):
+            var due = self.conn_h3s[i][].has_pending_egress()
+            if not due:
+                var t = self.conn_h3s[i][].timeout(now)
+                due = t is not None and t.value() <= now
+            if not due:
+                continue
             try:
-                self._handle_timeout(0)
+                self._drain_and_send(i, now)
             except:
                 pass
-            # Drop the expired timer and arm a fresh one.
-            self._timer = Optional[TimerFuture](None)
-            try:
-                self._timer = Optional(
-                    self._loop_ptr[].timeout(UInt64(50))
-                )
-            except:
-                pass  # Will retry next flush.
+        self._reap_closed()
 
     def _flush_impl(mut self) raises:
         """Route every buffered datagram to its connection and drain egress."""
@@ -632,7 +786,12 @@ struct H3UdpHandler(Movable):
                 self.profile.record_idle(t_busy_start - self.last_flush_end_us)
             n_pkts_at_start = len(self.pending_rx)
 
-        var now = monotonic_us()
+        var now = self._now()
+        # Instrumentation clock for the arrival-latency delta: must be the
+        # same source as `arrival_us`, never the test clock.
+        var t_flush_now: UInt64 = 0
+        comptime if PROFILE_ACCEPT:
+            t_flush_now = profile_monotonic_us()
 
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
@@ -641,10 +800,10 @@ struct H3UdpHandler(Movable):
                 t_pop_dispatch_start = profile_monotonic_us()
                 self.profile.record_loop_iter()
             comptime if PROFILE_ACCEPT:
-                # Queueing wait: now (flush start) - arrival_us (recvmsg ingress).
+                # Queueing wait: flush start - arrival_us (recvmsg ingress).
                 # delta is the wall-clock time the packet sat in pending_rx.
-                if pd.arrival_us > UInt64(0) and now >= pd.arrival_us:
-                    self.profile.record_arrival_lat(now - pd.arrival_us)
+                if pd.arrival_us > UInt64(0) and t_flush_now >= pd.arrival_us:
+                    self.profile.record_arrival_lat(t_flush_now - pd.arrival_us)
                 else:
                     self.profile.record_arrival_lat(UInt64(0))
             # DCID-keyed lookup. pd.dcid was extracted at _drain_recv_stream
@@ -675,8 +834,12 @@ struct H3UdpHandler(Movable):
 
             if conn_idx < 0:
                 # Create new QUIC connection. DCID was already extracted in
-                # _drain_recv_stream and travels in PendingDatagram.
+                # _drain_recv_stream and travels in PendingDatagram. Idle
+                # disabled would leak abandoned handshakes; substitute the
+                # server default.
                 var tp = default_transport_params()
+                if tp.max_idle_timeout == UInt64(0):
+                    tp.max_idle_timeout = SERVER_DEFAULT_IDLE_TIMEOUT_MS
                 var dcid_copy = List[UInt8](copy=pd.dcid)
                 var quic: QuicConnection
                 try:
@@ -780,11 +943,18 @@ struct H3UdpHandler(Movable):
             var t_post_pkt_start: UInt64 = 0
             comptime if PROFILE_ACCEPT:
                 t_post_pkt_start = profile_monotonic_us()
-            # Update peer address from the delivery header name region.
-            var addr_update = List[UInt8](capacity=pd.name_len)
-            for j in range(pd.name_len):
-                addr_update.append(pd.name_ptr[unsafe_offset=j])
-            self.conn_addrs[conn_idx] = addr_update^
+            # Update peer address from the delivery header name region —
+            # only when it changed, and never once the connection is
+            # closing (checked after the feed so the datagram that
+            # triggers the close cannot redirect the reflected CLOSE).
+            if not self.conn_h3s[conn_idx][].is_closing_or_draining():
+                if not _sockaddr_matches(
+                    self.conn_addrs[conn_idx], pd.name_ptr, pd.name_len
+                ):
+                    var addr_update = List[UInt8](capacity=pd.name_len)
+                    for j in range(pd.name_len):
+                        addr_update.append(pd.name_ptr[unsafe_offset=j])
+                    self.conn_addrs[conn_idx] = addr_update^
 
             comptime if PROFILE_ACCEPT:
                 self.profile.record_loop_post_pkt(profile_monotonic_us() - t_post_pkt_start)
@@ -809,6 +979,10 @@ struct H3UdpHandler(Movable):
         self.pending_rx.clear()
         comptime if PROFILE_ACCEPT:
             self.profile.record_loop_teardown(profile_monotonic_us() - t_teardown_start)
+
+        # Reap connections the ingress drove to CLOSED, now that no
+        # pending_rx entry can resolve to a moved index.
+        self._reap_closed()
 
         comptime if PROFILE_ACCEPT:
             var t_busy_end = profile_monotonic_us()
@@ -846,7 +1020,10 @@ struct H3UdpHandler(Movable):
         """
         var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
         for i in range(len(datagrams)):
-            var pkt = List[UInt8](copy=datagrams[i])
+            # Move the payload out of the drained list (swap with an
+            # empty husk) rather than copying 1200 bytes per datagram.
+            var pkt = List[UInt8]()
+            swap(pkt, datagrams[i])
             if len(pkt) == 0:
                 continue
 
@@ -862,15 +1039,16 @@ struct H3UdpHandler(Movable):
 
         Fire-and-forget: the future is dropped immediately. WatchLoop
         owns the slab internally; QUIC handles retransmission on loss.
+        Payloads move into their `Message` (no per-datagram copy).
         """
         var n = len(self._egress_backlog)
         if n == 0:
             return
 
         for i in range(n):
-            var msg = Message(
-                List[UInt8](copy=self._egress_backlog[i].data),
-            )
+            var data = List[UInt8]()
+            swap(data, self._egress_backlog[i].data)
+            var msg = Message(data^)
             _set_msg_peer_raw(msg, self._egress_backlog[i].addr)
             try:
                 _ = self._loop_ptr[].send_msg(self.udp_socket, msg^)
@@ -879,59 +1057,51 @@ struct H3UdpHandler(Movable):
 
         self._egress_backlog.clear()
 
-    # --- timeout path ---
+    # --- reap path ---
 
-    def _handle_timeout(mut self, result: Int) raises:
-        """Sweep every connection for retransmits and expiry.
+    def _reap_closed(mut self) raises:
+        """Free every conn reporting `should_close()`, walking downward.
 
-        Timer re-arm is handled by flush() — this method only
-        processes connections and queues egress.
+        Swap-and-pop moves the last conn into the freed index; walking
+        from the end guarantees the survivor was already examined.
         """
-        var now = monotonic_us()
-
-        # Drain all connections — they may have pending retransmissions.
-        var i = 0
-        while i < len(self.conn_h3s):
-            # Drain datagrams for this connection.
-            try:
-                self._drain_and_send(i, now)
-            except:
-                pass
-
-            # Close dead connections (swap-and-pop).
+        var i = len(self.conn_h3s) - 1
+        while i >= 0:
             if self.conn_h3s[i][].should_close():
-                comptime if PROFILE_ACCEPT:
-                    if not self.conn_h3s[i][]._h3.is_established():
-                        self.profile.record_handshake_timeout(UInt64(1))
-                var ptr = self.conn_h3s[i]
-                ptr.unsafe_deinit_pointee()
-                ptr.unsafe_free()
+                self._free_conn(i)
+            i -= 1
 
-                # B-permissive teardown: pop ALL of dying conn's DCID entries
-                # (typically 2: initial_dcid + local_cid).
-                for dcid_u64 in self.conn_dcids[i]:
-                    _ = self.conn_dcid_map.pop(dcid_u64)
+    def _free_conn(mut self, i: Int) raises:
+        """Destroy conn `i`, drop its DCIDs and swap-and-pop the parallel lists."""
+        comptime if PROFILE_ACCEPT:
+            if not self.conn_h3s[i][]._h3.is_established():
+                self.profile.record_handshake_timeout(UInt64(1))
+        var ptr = self.conn_h3s[i]
+        ptr.unsafe_deinit_pointee()
+        ptr.unsafe_free()
 
-                var last = len(self.conn_h3s) - 1
-                if i != last:
-                    # Swap the last element into position i in all parallel
-                    # lists (conn_h3s, conn_addrs, conn_dcids).
-                    self.conn_h3s[i] = self.conn_h3s[last]
-                    self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
-                    self.conn_dcids[i] = List[UInt64](copy=self.conn_dcids[last])
+        # B-permissive teardown: pop ALL of dying conn's DCID entries
+        # (typically 2: initial_dcid + local_cid).
+        for dcid_u64 in self.conn_dcids[i]:
+            _ = self.conn_dcid_map.pop(dcid_u64)
 
-                    # Remap ALL of the swapped-in conn's DCID entries from
-                    # `last` to `i`. CRITICAL: do NOT break after first match
-                    # (the survivor has 2 entries; both must be remapped).
-                    for dcid_u64 in self.conn_dcids[i]:
-                        self.conn_dcid_map[dcid_u64] = i
+        var last = len(self.conn_h3s) - 1
+        if i != last:
+            # Swap the last element into position i in all parallel
+            # lists (conn_h3s, conn_addrs, conn_dcids).
+            self.conn_h3s[i] = self.conn_h3s[last]
+            self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
+            self.conn_dcids[i] = List[UInt64](copy=self.conn_dcids[last])
 
-                _ = self.conn_h3s.pop()
-                _ = self.conn_addrs.pop()
-                _ = self.conn_dcids.pop()
-                # Don't increment i — the swapped-in element needs checking.
-                continue
-            i += 1
+            # Remap ALL of the swapped-in conn's DCID entries from
+            # `last` to `i`. CRITICAL: do NOT break after first match
+            # (the survivor has 2 entries; both must be remapped).
+            for dcid_u64 in self.conn_dcids[i]:
+                self.conn_dcid_map[dcid_u64] = i
+
+        _ = self.conn_h3s.pop()
+        _ = self.conn_addrs.pop()
+        _ = self.conn_dcids.pop()
 
     def _write_profile_json_sidecar(self) raises:
         """Write profile JSON sidecar to bench/quic_perf/results/profile/."""
@@ -1085,7 +1255,9 @@ def main() raises:
         var t_park_start: UInt64 = 0
         comptime if PROFILE_ACCEPT:
             t_park_start = profile_monotonic_us()
-        var completions = loop_ptr[].step()
+        # Bounded by the timer ceiling: if arming the timer ever fails,
+        # only ingress would otherwise wake the loop.
+        var completions = loop_ptr[].step(Int(TIMER_CEILING_MS))
         comptime if PROFILE_ACCEPT:
             srv_ptr[].profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
             srv_ptr[].profile.record_cqes_per_wake(UInt64(completions))
