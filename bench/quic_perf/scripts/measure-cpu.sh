@@ -20,7 +20,7 @@ fi
 CONTAINER="$1"
 DUR="$2"
 
-if ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true; then
+if [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" != "true" ]]; then
     echo "[measure-cpu] container $CONTAINER is not running" >&2
     echo '{"container": "'"$CONTAINER"'", "samples": [], "mean_pct": null, "max_pct": null}' > /tmp/cpu.json
     exit 0
