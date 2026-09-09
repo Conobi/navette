@@ -31,8 +31,8 @@ TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 OUTDIR="$SCRIPT_DIR/results/$TIMESTAMP-h3"
 mkdir -p "$OUTDIR"
 
-OLD_TAG="navette-bench:old"
-NEW_TAG="navette-bench:new"
+OLD_TAG="${OLD_TAG:-navette-bench:old}"
+NEW_TAG="${NEW_TAG:-navette-bench:new}"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
