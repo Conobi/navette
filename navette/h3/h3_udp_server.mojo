@@ -15,14 +15,16 @@ per-operation Completions with batch-then-flush dispatch.
     │  ├─ buffers packet into pending_rx
     │  SendSlab._on_sendmsg_complete ──────┘
     │  ├─ releases slab slot
-    │  _on_timeout (Completion callback) ──┘
-    │  ├─ sets housekeeping flag
+    │
+    │  WatchLoop (owns TimerFuture for periodic timeout)
+    │  ├─ polled in flush(); fires _handle_timeout_impl
     │
     │  flush(driver) ──── (after each run_once/tick)
     │  └─ _flush_ingress: demux pending_rx by DCID, route to
     │                     H3HandlerServer[H] per conn, drain egress
     │  └─ _submit_egress: submit sendmsg SQEs via slab pool
-    │  └─ recycle BufRing buffers, re-arm multishot/timeout
+    │  └─ recycle BufRing buffers, re-arm multishot
+    │  └─ poll timer, process timeout, re-arm via WatchLoop
     │
     └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + dcids + generation)
          └─ owns a QuicConnection + an H instance
@@ -50,8 +52,10 @@ after all connections.
 After construction, the caller must:
   1. Heap-allocate the server (pointer stability).
   2. Call `wire_context()` to set Completion context pointers.
-  3. Call `start(driver)` to register BufRing and submit initial ops.
-  4. In the run loop: `driver.tick(wait=True)` then `server.flush(driver)`.
+  3. Call `start(driver, loop)` to register BufRing, submit initial ops,
+     and arm the periodic timer on the WatchLoop.
+  4. In the run loop: `driver.tick()`, `loop.step()`, then
+     `server.flush(driver)`.
 """
 
 from std.collections import Optional
@@ -59,6 +63,7 @@ from std.collections.dict import Dict
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
+from boucle import WatchLoop, TimerFuture
 from boucle.handle import RawHandle, OwnedHandle
 from boucle.proactor.completion import Completion
 from boucle.drivers.bufring import BufRing
@@ -94,7 +99,6 @@ from navette.util.null_ptr import null_ptr
 comptime _MSGHDR_SIZE: Int = 56
 comptime _IOVEC_SIZE: Int = 16
 comptime _ADDR_SIZE: Int = 28        # sockaddr_in6
-comptime _TIMESPEC_SIZE: Int = 16    # __kernel_timespec
 comptime _RECVMSG_OUT_HDR_SIZE: Int = 16
 
 # Provided-buffer ring sizing for multishot recvmsg.
@@ -413,9 +417,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _msghdr_template: Pointer[UInt8, MutUntrackedOrigin]
     var _multishot_active: Bool
 
-    # Owned Completions for recvmsg and timeout.
+    # Owned Completion for recvmsg.
     var _recvmsg_cmp: Completion
-    var _timeout_cmp: Completion
 
     # Sendmsg slab pool (owns per-slot Completions).
     var _send_pool: SendSlabPool
@@ -433,8 +436,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # Multishot re-arm flag (set by recvmsg callback when F_MORE clears).
     var _needs_multishot_rearm: Bool
 
-    # Periodic timeout for QUIC loss detection / idle close.
-    var _timeout_ts: Pointer[UInt8, MutUntrackedOrigin]
+    # WatchLoop-based timer for QUIC loss detection / idle close.
+    # _timer holds the in-flight TimerFuture; _loop_ptr points at the
+    # caller's WatchLoop so flush() can re-arm after each expiry.
+    var _timer: Optional[TimerFuture]
+    var _loop_ptr: Pointer[WatchLoop, MutUntrackedOrigin]
 
     # PROFILE_ACCEPT counters (always present; dead-stripped when
     # PROFILE_ACCEPT=False at compile time).
@@ -495,13 +501,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._msghdr_template[unsafe_offset=8] = 28
         self._multishot_active = False
 
-        # Completions — context set by wire_context() after heap allocation.
+        # Completion — context set by wire_context() after heap allocation.
         self._recvmsg_cmp = Completion(
             invoke=_on_recvmsg[Self.H],
-            context=null_ptr[NoneType, MutUntrackedOrigin](),
-        )
-        self._timeout_cmp = Completion(
-            invoke=_on_timeout[Self.H],
             context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
 
@@ -515,14 +517,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._inject_egress = List[EgressPacket]()
         self._needs_multishot_rearm = False
 
-        # 50ms periodic timeout — tv_sec=0, tv_nsec=50_000_000 LE.
-        self._timeout_ts = _heap_alloc[UInt8](_TIMESPEC_SIZE)
-        for i in range(_TIMESPEC_SIZE):
-            self._timeout_ts[unsafe_offset=i] = 0
-        self._timeout_ts[unsafe_offset=8] = 0x80
-        self._timeout_ts[unsafe_offset=9] = 0xF0
-        self._timeout_ts[unsafe_offset=10] = 0xFA
-        self._timeout_ts[unsafe_offset=11] = 0x02
+        # Timer — armed in start() via WatchLoop.timeout().
+        self._timer = Optional[TimerFuture](None)
+        self._loop_ptr = null_ptr[WatchLoop, MutUntrackedOrigin]()
 
         self.profile = AcceptProfile()
 
@@ -543,13 +540,13 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._msghdr_template = move._msghdr_template
         self._multishot_active = move._multishot_active
         self._recvmsg_cmp = move._recvmsg_cmp^
-        self._timeout_cmp = move._timeout_cmp^
         self._send_pool = move._send_pool^
         self._bufring = move._bufring^
         self._egress_backlog = move._egress_backlog^
         self._inject_egress = move._inject_egress^
         self._needs_multishot_rearm = move._needs_multishot_rearm
-        self._timeout_ts = move._timeout_ts
+        self._timer = move._timer^
+        self._loop_ptr = move._loop_ptr
         self.profile = move.profile^
 
     def __deinit__(deinit self):
@@ -557,10 +554,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         Walks any live `conn_slots`, destroying their pointees before
         freeing the per-slot heap blocks. Tears down the send slab pool.
-        `_pbuf_pool`, `_msghdr_template`, and `_timeout_ts` are raw byte
-        buffers — no pointee destructor. The BufRing is cleaned up by
-        its own destructor. On clean teardown conn_slots is typically
-        empty; the walk defends against drop-mid-flight.
+        `_pbuf_pool` and `_msghdr_template` are raw byte buffers — no
+        pointee destructor. The BufRing is cleaned up by its own
+        destructor. The `_timer` (Optional[TimerFuture]) is dropped
+        normally. On clean teardown conn_slots is typically empty; the
+        walk defends against drop-mid-flight.
         """
         for i in range(len(self.conn_slots)):
             var ptr = self.conn_slots[i].h3
@@ -569,7 +567,6 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._send_pool.teardown()
         self._pbuf_pool.unsafe_free()
         self._msghdr_template.unsafe_free()
-        self._timeout_ts.unsafe_free()
 
     # ── Connection lookup ────────────────────────────────────────
 
@@ -627,19 +624,29 @@ struct H3UdpServer[H: StreamHandler](Movable):
             unsafe_from_address=Int(Pointer(to=self))
         )
         self._recvmsg_cmp.context = self_ctx
-        self._timeout_cmp.context = self_ctx
         self._send_pool.wire_completions()
 
-    def start(mut self, mut driver: IoUringDriver) raises:
-        """Submit initial operations onto the driver.
+    def start(
+        mut self, mut driver: IoUringDriver, mut loop: WatchLoop
+    ) raises:
+        """Submit initial operations onto the driver and arm the timer.
 
         Must be called after wire_context() and before the first tick.
-        Registers the BufRing, submits multishot recvmsg, and submits
-        the initial periodic timeout.
+        Registers the BufRing, submits multishot recvmsg on the
+        IoUringDriver, and arms the periodic timeout via WatchLoop.
+
+        The WatchLoop must outlive this server; `_loop_ptr` is stored
+        for re-arming the timer in `flush()`.
 
         Args:
-            driver: The IoUringDriver to submit operations on.
+            driver: The IoUringDriver for recvmsg / sendmsg operations.
+            loop: The WatchLoop that owns the periodic timer.
         """
+        # Store loop pointer for re-arming in flush().
+        self._loop_ptr = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=loop))
+        )
+
         # Register BufRing.
         self._bufring = driver.register_buf_ring(
             self._pbuf_pool, UInt32(PBUF_SIZE), PBUF_COUNT, PBUF_GROUP_ID
@@ -657,14 +664,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
         )
         self._multishot_active = True
 
-        # Submit initial timeout.
-        var timeout_cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
-        )
-        var ts_ptr = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(self._timeout_ts)
-        )
-        driver.timeout(ts_ptr, timeout_cmp_ptr)
+        # Arm the initial periodic timeout via WatchLoop.
+        self._timer = Optional(loop.timeout(UInt64(50)))
 
     def flush(mut self, mut driver: IoUringDriver) raises:
         """Process buffered ingress, submit egress, recycle buffers.
@@ -717,17 +718,20 @@ struct H3UdpServer[H: StreamHandler](Movable):
             self._multishot_active = True
             self._needs_multishot_rearm = False
 
-        # 6. Re-arm timeout.
-        var ts_ptr = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(self._timeout_ts)
-        )
-        var timeout_cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._timeout_cmp))
-        )
-        try:
-            driver.timeout(ts_ptr, timeout_cmp_ptr)
-        except:
-            pass  # SQ full — will retry next tick.
+        # 6. Poll timer — process timeout and re-arm via WatchLoop.
+        if self._timer is not None and self._timer.value().done():
+            try:
+                self._handle_timeout_impl(0)
+            except:
+                pass
+            # Drop the expired timer and arm a fresh one.
+            self._timer = Optional[TimerFuture](None)
+            try:
+                self._timer = Optional(
+                    self._loop_ptr[].timeout(UInt64(50))
+                )
+            except:
+                pass  # Will retry next flush.
 
     def _submit_egress(
         mut self, mut driver: IoUringDriver
@@ -1344,25 +1348,3 @@ def _on_recvmsg[H: StreamHandler](
         print("H3UdpServer: _on_recvmsg error:", e)
 
 
-def _on_timeout[H: StreamHandler](
-    ctx: Pointer[NoneType, MutUntrackedOrigin],
-    result: Int,
-    flags: UInt32,
-):
-    """Periodic timeout CQE callback. Walks connections, drains egress,
-    reaps closed connections.
-
-    Defined at module level for parameterised-struct compatibility.
-
-    Args:
-        ctx: Type-erased pointer to the owning H3UdpServer instance.
-        result: io_uring CQE result (negative errno on error).
-        flags: io_uring CQE flags (unused for timeout).
-    """
-    var self_ptr = Pointer[H3UdpServer[H], MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    try:
-        self_ptr[]._handle_timeout_impl(result)
-    except e:
-        print("H3UdpServer: _on_timeout error:", e)
