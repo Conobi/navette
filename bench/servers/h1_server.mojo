@@ -7,18 +7,15 @@
 #   BENCH_H1_ROLE      — log prefix tag (default "h1", set to "h1tls" by
 #                        the launcher for the TLS sidecar worker)
 #
-# Uses boucle's IoUringDriver with per-operation `Completion` callbacks plus
-# H1HandlerServer[BenchHandler]. Each connection owns its recv and send
-# Completions; the kernel hands the Completion pointer back as the CQE
-# user_data, so the callback recovers the connection directly instead of
-# decoding a token. Submission is inline from the callbacks — SQEs land in
-# the unsynced submission queue and are flushed by the next `tick()`, so the
-# io_uring_enter cadence is one per loop iteration, as before.
+# Uses boucle's WatchLoop with per-connection RecvFuture/SendFuture handles
+# plus H1HandlerServer[BenchHandler]. Each connection owns Optional recv and
+# send futures; after each loop.step() the server polls every connection's
+# futures for completed results.
 #
-# When TLS is enabled, lifts the rustls glue from h2_server.mojo:
+# When TLS is enabled, lifts the rustls glue from the H2 path:
 # TlsConnection wraps every accepted socket, ALPN advertises "http/1.1"
 # only, and recv/send go through tls.receive_data / tls.drain_plaintext /
-# tls.send_data / tls.drain_ciphertext just like the H2 path.
+# tls.send_data / tls.drain_ciphertext.
 
 from std.collections.optional import Optional
 from std.ffi import external_call
@@ -39,11 +36,7 @@ from bench.lib.handler import (
 )
 from interop.file_io import getenv_opt, read_file
 
-from boucle.proactor.completion import Completion
-from boucle.drivers.io_uring import IoUringDriver
-from boucle.socle.linux.raw import IORING_CQE_F_MORE
-from boucle.handle import OwnedHandle
-from boucle.net.socket import Socket
+from boucle import WatchLoop, RecvFuture, SendFuture, AcceptFuture, Socket
 from boucle.net.addr import SocketAddrV4
 from boucle.net.options import Backlog
 
@@ -57,7 +50,6 @@ comptime _DEFAULT_PLAINTEXT_PORT: UInt16 = 8080
 comptime _DEFAULT_TLS_PORT: UInt16 = 8081
 comptime SO_REUSEPORT: Int32 = 15
 
-# TLS connection phases — only meaningful when tls_enabled.
 comptime _PHASE_TLS_HANDSHAKE: UInt8 = 0
 comptime _PHASE_READY: UInt8 = 1
 
@@ -68,162 +60,308 @@ comptime _PHASE_READY: UInt8 = 1
 
 
 struct H1Conn(Movable):
-    """One accepted TCP connection plus its two owned Completion tokens.
+    """One accepted TCP connection with WatchLoop recv/send futures.
 
-    `_recv_cmp` and `_send_cmp` are submitted as the io_uring user_data for
-    this connection's recv and send operations, so a completion routes back
-    here by pointer rather than by decoding a token. `_owner` points at the
-    `H1BenchServer` that allocated this connection; the module-level
-    callbacks follow it to reach the server-side handling code.
-
-    Both Completion contexts and `_owner` are null until `wire_context()`
-    runs, which must happen once the struct is at its final heap address.
+    Manages recv and send via Optional futures stored on the connection.
+    The close state machine uses _closing: once set, no further I/O
+    submissions are made. The connection is drained (safe to free) when
+    _closing is True and both futures are absent.
     """
 
-    var fd: OwnedHandle
+    var socket: Socket
     var http: H1HandlerServer[BenchHandler]
     var tls: Optional[TlsConnection]
     var phase: UInt8
     var recv_buf: List[UInt8]
     var send_buf: List[UInt8]
     var send_pending: List[UInt8]
-    var send_in_flight: Bool
-    var recv_in_flight: Bool
-    var closed: Bool
-    var _recv_cmp: Completion
-    var _send_cmp: Completion
-    var _owner: Pointer[NoneType, MutUntrackedOrigin]
+    var _closing: Bool
+    var _recv_future: Optional[RecvFuture]
+    var _send_future: Optional[SendFuture]
+    var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
 
     def __init__(
         out self,
-        var fd: OwnedHandle,
+        var socket: Socket,
         var http: H1HandlerServer[BenchHandler],
         var tls: Optional[TlsConnection],
+        loop_ptr: Pointer[NoneType, MutUntrackedOrigin],
     ):
-        """Build a connection with unwired Completions.
+        """Build a connection with WatchLoop futures.
 
         Args:
-            fd: Owned accepted socket handle.
+            socket: Owned accepted TCP socket.
             http: H1 codec plus benchmark handler for this connection.
             tls: A rustls connection when TLS is enabled, empty otherwise.
+            loop_ptr: Type-erased pointer to the WatchLoop.
         """
-        self.fd = fd^
+        self.socket = socket^
         self.http = http^
         self.tls = tls^
         self.phase = _PHASE_TLS_HANDSHAKE if Bool(self.tls) else _PHASE_READY
         self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=UInt8(0))
         self.send_buf = List[UInt8]()
         self.send_pending = List[UInt8]()
-        self.send_in_flight = False
-        self.recv_in_flight = False
-        self.closed = False
-        self._recv_cmp = Completion(
-            invoke=_on_recv, context=null_ptr[NoneType, MutUntrackedOrigin]()
-        )
-        self._send_cmp = Completion(
-            invoke=_on_send, context=null_ptr[NoneType, MutUntrackedOrigin]()
-        )
-        self._owner = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._closing = False
+        self._recv_future = Optional[RecvFuture]()
+        self._send_future = Optional[SendFuture]()
+        self._loop_ptr = loop_ptr
 
     def __init__(out self, *, deinit move: Self):
-        """Move constructor."""
-        self.fd = move.fd^
+        self.socket = move.socket^
         self.http = move.http^
         self.tls = move.tls^
         self.phase = move.phase
         self.recv_buf = move.recv_buf^
         self.send_buf = move.send_buf^
         self.send_pending = move.send_pending^
-        self.send_in_flight = move.send_in_flight
-        self.recv_in_flight = move.recv_in_flight
-        self.closed = move.closed
-        self._recv_cmp = move._recv_cmp^
-        self._send_cmp = move._send_cmp^
-        self._owner = move._owner
+        self._closing = move._closing
+        self._recv_future = move._recv_future^
+        self._send_future = move._send_future^
+        self._loop_ptr = move._loop_ptr
 
-    def wire_context(mut self, owner: Pointer[NoneType, MutUntrackedOrigin]):
-        """Point both Completions at this connection's final heap address.
+    def is_drained(self) -> Bool:
+        """Check if the connection is closed and has no I/O in flight."""
+        return (
+            self._closing
+            and not Bool(self._recv_future)
+            and not Bool(self._send_future)
+        )
 
-        Must run after the connection reaches its permanent address and
-        before any SQE referencing it is queued.
+    # --- I/O submission ---
+
+    def _submit_recv(mut self) raises:
+        """Submit a recv via WatchLoop, storing the returned future.
+
+        Moves recv_buf into the future; reclaimed on result.
+        """
+        if Bool(self._recv_future) or self._closing:
+            return
+        var loop = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._loop_ptr)
+        )
+        var buf = self.recv_buf^
+        self.recv_buf = List[UInt8]()
+        try:
+            self._recv_future = loop[].recv(self.socket, buf^)
+        except e:
+            var opt_buf = e^.take_buffer()
+            if Bool(opt_buf):
+                self.recv_buf = opt_buf.unsafe_take()
+            else:
+                self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
+            raise Error("recv submit failed")
+
+    def _submit_send(mut self) raises:
+        """Submit a send via WatchLoop, storing the returned future.
+
+        Moves send_buf into the future; reclaimed on result.
+        """
+        if Bool(self._send_future) or self._closing:
+            return
+        if len(self.send_buf) == 0:
+            return
+        var loop = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._loop_ptr)
+        )
+        var buf = self.send_buf^
+        self.send_buf = List[UInt8]()
+        try:
+            self._send_future = loop[].send(self.socket, buf^)
+        except e:
+            var opt_buf = e^.take_buffer()
+            if Bool(opt_buf):
+                self.send_buf = opt_buf.unsafe_take()
+            else:
+                self.send_buf = List[UInt8]()
+            raise Error("send submit failed")
+
+    def _stage_send(mut self, var data: List[UInt8]) raises:
+        """Send `data` now, or append it to the pending tail if busy.
 
         Args:
-            owner: Type-erased pointer to the owning H1BenchServer.
+            data: Outbound bytes, moved in.
         """
-        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self))
+        if len(data) == 0:
+            return
+        if Bool(self._send_future):
+            self.send_pending.extend(Span(data))
+            return
+        self.send_buf = data^
+        self._submit_send()
+
+    def _begin_close(mut self):
+        """Mark the connection for shutdown and drop in-flight futures.
+
+        Idempotent -- no-op if already closing.
+        """
+        if self._closing:
+            return
+        _ = external_call["shutdown", Int32](
+            self.socket.raw(), Int32(2)
         )
-        self._recv_cmp.context = self_ctx
-        self._send_cmp.context = self_ctx
-        self._owner = owner
+        self._closing = True
+        self._recv_future = Optional[RecvFuture]()
+        self._send_future = Optional[SendFuture]()
 
+    # --- Future polling ---
 
-# ---------------------------------------------------------------------------
-# Module-level completion callbacks
-# ---------------------------------------------------------------------------
+    def poll_io(mut self):
+        """Poll recv and send futures, processing any completed results."""
+        self._poll_recv()
+        self._poll_send()
 
+    def _poll_recv(mut self):
+        """Check the recv future; if done, process the result."""
+        if not Bool(self._recv_future):
+            return
+        if not self._recv_future.value().done():
+            return
 
-def _on_accept(
-    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
-):
-    """Multishot-accept completion: context is the H1BenchServer.
+        var opt = self._recv_future^
+        self._recv_future = Optional[RecvFuture]()
+        var future = opt.unsafe_take()
 
-    Args:
-        ctx: Type-erased pointer to the owning H1BenchServer.
-        result: Accepted file descriptor, or a negative errno.
-        flags: CQE flags; IORING_CQE_F_MORE means the multishot lives on.
-    """
-    var srv = Pointer[H1BenchServer, MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    try:
-        srv[]._handle_accept(result, flags)
-    except e:
-        print("h1-bench: accept completion error:", e)
+        var count = 0
+        var chunk = List[UInt8]()
+        try:
+            var result = future^.result()
+            count = result.count
+            var span = result.transferred()
+            chunk = List[UInt8](capacity=count)
+            for i in range(count):
+                chunk.append(span[i])
+        except:
+            self._begin_close()
+            return
 
+        try:
+            self._handle_recv_result(count, chunk)
+        except:
+            self._begin_close()
 
-def _on_recv(
-    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
-):
-    """Recv completion: context is the H1Conn that owns the operation.
+    def _poll_send(mut self):
+        """Check the send future; if done, process the result."""
+        if not Bool(self._send_future):
+            return
+        if not self._send_future.value().done():
+            return
 
-    Args:
-        ctx: Type-erased pointer to the owning H1Conn.
-        result: Bytes received, or a negative errno.
-        flags: CQE flags (unused for single-shot recv).
-    """
-    var conn = Pointer[H1Conn, MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    var srv = Pointer[H1BenchServer, MutUntrackedOrigin](
-        unsafe_from_address=Int(conn[]._owner)
-    )
-    try:
-        srv[]._handle_recv(conn, result)
-    except e:
-        print("h1-bench: recv completion error:", e)
+        var opt = self._send_future^
+        self._send_future = Optional[SendFuture]()
+        var future = opt.unsafe_take()
 
+        var count = 0
+        try:
+            var result = future^.result()
+            count = result.count
+            self.send_buf = result^.take_buffer()
+        except:
+            self._begin_close()
+            return
 
-def _on_send(
-    ctx: Pointer[NoneType, MutUntrackedOrigin], result: Int, flags: UInt32
-):
-    """Send completion: context is the H1Conn that owns the operation.
+        try:
+            self._handle_send_result(count)
+        except:
+            self._begin_close()
 
-    Args:
-        ctx: Type-erased pointer to the owning H1Conn.
-        result: Bytes sent, or a negative errno.
-        flags: CQE flags (unused for single-shot send).
-    """
-    var conn = Pointer[H1Conn, MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    var srv = Pointer[H1BenchServer, MutUntrackedOrigin](
-        unsafe_from_address=Int(conn[]._owner)
-    )
-    try:
-        srv[]._handle_send(conn, result)
-    except e:
-        print("h1-bench: send completion error:", e)
+    # --- Recv handling ---
+
+    def _handle_recv_result(mut self, count: Int, chunk: List[UInt8]) raises:
+        """Process received bytes through plaintext or TLS+H1 pipeline.
+
+        Args:
+            count: Bytes received.
+            chunk: The received bytes (copied from the buffer).
+        """
+        if self._closing:
+            return
+
+        if count <= 0:
+            self._begin_close()
+            return
+
+        if Bool(self.tls):
+            self._handle_recv_tls(Span(chunk))
+        else:
+            self.http.feed(Span(chunk))
+            var response_bytes = self.http.drain()
+            if len(response_bytes) > 0:
+                self._stage_send(response_bytes^)
+            if not Bool(self._send_future):
+                if not self.http.should_close():
+                    self._submit_recv()
+
+    def _handle_recv_tls(mut self, chunk: Span[UInt8, _]) raises:
+        """Drive the rustls handshake, then the H1 codec, over one chunk.
+
+        Args:
+            chunk: Ciphertext bytes just received from the socket.
+        """
+        self.tls.value().receive_data(chunk)
+
+        if self.tls.value().wants_write():
+            var ct = self.tls.value().drain_ciphertext()
+            self._stage_send(ct^)
+
+        if self.tls.value().is_handshaking():
+            self._submit_recv()
+            return
+
+        if self.phase == _PHASE_TLS_HANDSHAKE:
+            self.phase = _PHASE_READY
+
+        var plaintext = self.tls.value().drain_plaintext()
+        if len(plaintext) > 0:
+            self.http.feed(Span(plaintext))
+            var response_bytes = self.http.drain()
+            if len(response_bytes) > 0:
+                self.tls.value().send_data(Span(response_bytes))
+                var ct2 = self.tls.value().drain_ciphertext()
+                self._stage_send(ct2^)
+
+        if not Bool(self._send_future):
+            if not self.http.should_close():
+                self._submit_recv()
+
+    # --- Send handling ---
+
+    def _handle_send_result(mut self, count: Int) raises:
+        """Retire a send, re-queueing the tail or the pending buffer.
+
+        Args:
+            count: Bytes successfully sent.
+        """
+        if self._closing:
+            return
+
+        if count < 0:
+            self._begin_close()
+            return
+
+        var buf_len = len(self.send_buf)
+        if count < buf_len:
+            var remaining = List[UInt8](capacity=buf_len - count)
+            remaining.extend(Span(self.send_buf)[count:buf_len])
+            self.send_buf = remaining^
+            self._submit_send()
+            return
+
+        self.send_buf = List[UInt8]()
+
+        if len(self.send_pending) > 0:
+            var pending_view = Span(self.send_pending)
+            var pending = List[UInt8](capacity=len(pending_view))
+            pending.extend(pending_view)
+            self.send_pending = List[UInt8]()
+            self.send_buf = pending^
+            self._submit_send()
+            return
+
+        if self.http.should_close():
+            self._begin_close()
+        else:
+            self._submit_recv()
 
 
 # ---------------------------------------------------------------------------
@@ -232,57 +370,57 @@ def _on_send(
 
 
 struct H1BenchServer(Movable):
-    """Owns the listener, the connection table and the accept Completion.
+    """Owns the listener, the connection table and the accept future.
 
-    Must be heap-allocated before use: the accept Completion and every
-    connection's `_owner` store its address, so it may not move afterwards.
+    Must be heap-allocated before use so that the loop pointer stays
+    stable across the server's lifetime.
     """
 
-    var listener_fd: Int32
+    var listener: Socket
     var connections: List[Pointer[H1Conn, MutUntrackedOrigin]]
     var state_ptr: Pointer[BenchState, MutUntrackedOrigin]
     var tls_enabled: Bool
     var tls_lib: Optional[SharedLibrary]
     var server_tls_config: Optional[TlsServerConfig]
-    var _accept_cmp: Completion
-    var _driver: Pointer[NoneType, MutUntrackedOrigin]
+    var _accept_future: Optional[AcceptFuture]
+    var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
+    var _needs_accept_rearm: Bool
 
     def __init__(
         out self,
-        listener_fd: Int32,
+        var listener: Socket,
         state_ptr: Pointer[BenchState, MutUntrackedOrigin],
         var tls_lib: Optional[SharedLibrary],
         var server_tls_config: Optional[TlsServerConfig],
     ):
-        """Build the server with an unwired accept Completion.
+        """Build the server.
 
         Args:
-            listener_fd: Bound and listening TCP socket.
+            listener: Bound and listening TCP socket (moved in).
             state_ptr: Shared benchmark state (static cache + dataset).
             tls_lib: The rustls shared library when TLS is enabled.
             server_tls_config: The rustls server config when TLS is enabled.
         """
-        self.listener_fd = listener_fd
+        self.listener = listener^
         self.connections = List[Pointer[H1Conn, MutUntrackedOrigin]]()
         self.state_ptr = state_ptr
         self.tls_enabled = Bool(tls_lib) and Bool(server_tls_config)
         self.tls_lib = tls_lib^
         self.server_tls_config = server_tls_config^
-        self._accept_cmp = Completion(
-            invoke=_on_accept, context=null_ptr[NoneType, MutUntrackedOrigin]()
-        )
-        self._driver = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._accept_future = Optional[AcceptFuture]()
+        self._loop_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._needs_accept_rearm = False
 
     def __init__(out self, *, deinit move: Self):
-        """Move constructor."""
-        self.listener_fd = move.listener_fd
+        self.listener = move.listener^
         self.connections = move.connections^
         self.state_ptr = move.state_ptr
         self.tls_enabled = move.tls_enabled
         self.tls_lib = move.tls_lib^
         self.server_tls_config = move.server_tls_config^
-        self._accept_cmp = move._accept_cmp^
-        self._driver = move._driver
+        self._accept_future = move._accept_future^
+        self._loop_ptr = move._loop_ptr
+        self._needs_accept_rearm = move._needs_accept_rearm
 
     def __deinit__(deinit self):
         """Release every connection still in the table."""
@@ -293,143 +431,50 @@ struct H1BenchServer(Movable):
 
     # --- Lifecycle ---
 
-    def wire_context(mut self):
-        """Point the accept Completion at this server's final heap address."""
-        self._accept_cmp.context = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self))
-        )
-
-    def start(mut self, mut driver: IoUringDriver) raises:
-        """Record the driver and arm the multishot accept.
+    def start(mut self, mut loop: WatchLoop) raises:
+        """Store the loop pointer and arm the initial accept.
 
         Args:
-            driver: The io_uring driver every operation is queued on.
+            loop: The WatchLoop for all I/O operations.
         """
-        self._driver = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=driver))
+        self._loop_ptr = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=loop))
         )
-        self._arm_accept()
-
-    def _driver_ptr(self) -> Pointer[IoUringDriver, MutUntrackedOrigin]:
-        """Recover the typed driver pointer stored by `start()`."""
-        return Pointer[IoUringDriver, MutUntrackedOrigin](
-            unsafe_from_address=Int(self._driver)
-        )
-
-    # --- Conn lookup ---
-
-    def _find_index(self, conn: Pointer[H1Conn, MutUntrackedOrigin]) -> Int:
-        """Locate a connection in the table by address.
-
-        Only used on the close path, so the linear scan stays off the
-        per-request hot path.
-
-        Args:
-            conn: Address of the connection to find.
-
-        Returns:
-            Its index, or -1 when the connection is no longer registered.
-        """
-        for i in range(len(self.connections)):
-            if Int(self.connections[i]) == Int(conn):
-                return i
-        return -1
-
-    # --- Operation arming ---
-
-    def _arm_accept(mut self) raises:
-        """Queue the multishot accept on the listener."""
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._accept_cmp))
-        )
-        self._driver_ptr()[].accept_multishot(self.listener_fd, cmp_ptr)
-
-    def _arm_recv(mut self, conn: Pointer[H1Conn, MutUntrackedOrigin]) raises:
-        """Queue a recv into this connection's receive buffer.
-
-        No-op when a recv is already outstanding. The in-flight flag is
-        only set once the SQE is queued, so a full submission queue leaves
-        the connection re-armable rather than permanently stuck.
-
-        Args:
-            conn: The connection to receive on.
-        """
-        if conn[].recv_in_flight:
-            return
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=conn[]._recv_cmp))
-        )
-        var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
-            unsafe_from_address=Int(conn[].recv_buf.unsafe_ptr())
-        )
-        self._driver_ptr()[].recv(
-            conn[].fd.raw(), buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
-        )
-        conn[].recv_in_flight = True
-
-    def _arm_send(mut self, conn: Pointer[H1Conn, MutUntrackedOrigin]) raises:
-        """Queue a send of this connection's staged output buffer.
-
-        No-op when a send is already outstanding or the buffer is empty.
-
-        Args:
-            conn: The connection to send on.
-        """
-        if conn[].send_in_flight:
-            return
-        var n = len(conn[].send_buf)
-        if n == 0:
-            return
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=conn[]._send_cmp))
-        )
-        var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
-            unsafe_from_address=Int(conn[].send_buf.unsafe_ptr())
-        )
-        self._driver_ptr()[].send(conn[].fd.raw(), buf_ptr, UInt32(n), cmp_ptr)
-        conn[].send_in_flight = True
-
-    # --- Staging helper ---
-
-    def _stage_send(
-        mut self,
-        conn: Pointer[H1Conn, MutUntrackedOrigin],
-        var data: List[UInt8],
-    ) raises:
-        """Send `data` now, or append it to the pending tail if busy.
-
-        Args:
-            conn: The connection the bytes belong to.
-            data: Outbound bytes, moved in.
-        """
-        if len(data) == 0:
-            return
-        if conn[].send_in_flight:
-            conn[].send_pending.extend(Span(data))
-            return
-        conn[].send_buf = data^
-        self._arm_send(conn)
+        self._submit_accept()
 
     # --- Accept ---
 
-    def _handle_accept(mut self, result: Int, flags: UInt32) raises:
+    def _submit_accept(mut self) raises:
+        """Submit an accept operation on the listening socket via WatchLoop."""
+        var loop = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._loop_ptr)
+        )
+        self._accept_future = Optional(loop[].accept(self.listener))
+
+    def poll_accept(mut self):
+        """Poll the accept future and process any accepted connection."""
+        if not Bool(self._accept_future):
+            return
+        if not self._accept_future.value().done():
+            return
+
+        var opt = self._accept_future^
+        self._accept_future = Optional[AcceptFuture]()
+        var future = opt.unsafe_take()
+
+        try:
+            var socket = future.result()
+            self._handle_accept_impl(socket^)
+        except e:
+            print("h1-bench: accept error:", e)
+            self._needs_accept_rearm = True
+
+    def _handle_accept_impl(mut self, var socket: Socket) raises:
         """Register an accepted socket and start reading from it.
 
         Args:
-            result: Accepted file descriptor, or a negative errno.
-            flags: CQE flags; without IORING_CQE_F_MORE the multishot has
-                   ended and must be re-armed.
+            socket: The accepted TCP socket (moved in).
         """
-        var more = (flags & UInt32(IORING_CQE_F_MORE)) != 0
-
-        if result < 0:
-            print("h1-bench: accept failed:", result)
-            if not more:
-                self._arm_accept()
-            return
-
-        var client_fd = Int32(result)
-        var handle = OwnedHandle(raw=client_fd)
         var handler = BenchHandler(self.state_ptr)
         var http = H1HandlerServer[BenchHandler](handler=handler^)
 
@@ -443,190 +488,59 @@ struct H1BenchServer(Movable):
         else:
             tls_opt = Optional[TlsConnection]()
 
-        var conn = H1Conn(fd=handle^, http=http^, tls=tls_opt^)
+        var conn = H1Conn(
+            socket=socket^,
+            http=http^,
+            tls=tls_opt^,
+            loop_ptr=self._loop_ptr,
+        )
 
         var conn_ptr = _heap_alloc[H1Conn](1)
         conn_ptr.unsafe_write(conn^)
-        conn_ptr[].wire_context(
-            Pointer[NoneType, MutUntrackedOrigin](
-                unsafe_from_address=Int(Pointer(to=self))
-            )
-        )
         self.connections.append(conn_ptr)
 
-        # Re-arm accept before the initial recv: queueing used to be
-        # infallible, so a full submission queue must not be able to take
-        # the listener down with it. A connection that cannot be armed is
-        # closed so it drains and is reaped.
-        if not more:
-            self._arm_accept()
         try:
-            self._arm_recv(conn_ptr)
+            self._submit_accept()
         except:
-            self._close_connection(conn_ptr)
+            self._needs_accept_rearm = True
 
-    # --- Recv ---
+        try:
+            conn_ptr[]._submit_recv()
+        except:
+            conn_ptr[]._begin_close()
 
-    def _handle_recv(
-        mut self, conn: Pointer[H1Conn, MutUntrackedOrigin], result: Int
-    ) raises:
-        """Feed received bytes through the H1 codec and stage the reply.
+    # --- Polling ---
 
-        Args:
-            conn: The connection the completion belongs to.
-            result: Bytes received, or a negative errno.
+    def poll_connections(mut self):
+        """Poll all connections' recv/send futures for completed results."""
+        for i in range(len(self.connections)):
+            self.connections[i][].poll_io()
+
+    def reap_closed(mut self):
+        """Sweep the connection list and free any fully-drained connections.
+
+        Uses swap-and-pop for O(1) removal. Also retries any deferred
+        accept rearm.
         """
-        conn[].recv_in_flight = False
+        var i = 0
+        while i < len(self.connections):
+            if self.connections[i][].is_drained():
+                var ptr = self.connections[i]
+                var last = len(self.connections) - 1
+                if i != last:
+                    self.connections[i] = self.connections[last]
+                _ = self.connections.pop()
+                ptr.unsafe_deinit_pointee()
+                ptr.unsafe_free()
+            else:
+                i += 1
 
-        if conn[].closed:
-            if not conn[].send_in_flight:
-                self._free_connection(conn)
-            return
-
-        if result <= 0:
-            self._close_connection(conn)
-            return
-
-        var n = Int(result)
-        # Slice the recv buffer to just the bytes the kernel produced — no copy.
-        var recv_span = Span(conn[].recv_buf)[0:n]
-
-        if self.tls_enabled:
-            self._handle_recv_tls(conn, recv_span)
-        else:
-            conn[].http.feed(recv_span)
-            var response_bytes = conn[].http.drain()
-            if len(response_bytes) > 0:
-                self._stage_send(conn, response_bytes^)
-
-            if not conn[].send_in_flight:
-                if not conn[].http.should_close():
-                    self._arm_recv(conn)
-
-    def _handle_recv_tls(
-        mut self,
-        conn: Pointer[H1Conn, MutUntrackedOrigin],
-        chunk: Span[UInt8, _],
-    ) raises:
-        """Drive the rustls handshake, then the H1 codec, over one chunk.
-
-        Args:
-            conn: The connection the ciphertext belongs to.
-            chunk: Ciphertext bytes just received from the socket.
-        """
-        # Feed ciphertext into rustls.
-        conn[].tls.value().receive_data(chunk)
-
-        # Flush any handshake-reply ciphertext immediately.
-        if conn[].tls.value().wants_write():
-            var ct = conn[].tls.value().drain_ciphertext()
-            self._stage_send(conn, ct^)
-
-        # Still handshaking — keep reading more ciphertext.
-        if conn[].tls.value().is_handshaking():
-            self._arm_recv(conn)
-            return
-
-        # Handshake done — switch phase and drain plaintext into H1 codec.
-        if conn[].phase == _PHASE_TLS_HANDSHAKE:
-            conn[].phase = _PHASE_READY
-
-        var plaintext = conn[].tls.value().drain_plaintext()
-        if len(plaintext) > 0:
-            conn[].http.feed(Span(plaintext))
-            var response_bytes = conn[].http.drain()
-            if len(response_bytes) > 0:
-                conn[].tls.value().send_data(Span(response_bytes))
-                var ct2 = conn[].tls.value().drain_ciphertext()
-                self._stage_send(conn, ct2^)
-
-        if not conn[].send_in_flight:
-            if not conn[].http.should_close():
-                self._arm_recv(conn)
-
-    # --- Send ---
-
-    def _handle_send(
-        mut self, conn: Pointer[H1Conn, MutUntrackedOrigin], result: Int
-    ) raises:
-        """Retire a send, re-queueing the tail or the pending buffer.
-
-        Args:
-            conn: The connection the completion belongs to.
-            result: Bytes sent, or a negative errno.
-        """
-        conn[].send_in_flight = False
-
-        if conn[].closed:
-            if not conn[].recv_in_flight:
-                self._free_connection(conn)
-            return
-
-        if result < 0:
-            self._close_connection(conn)
-            return
-
-        # Handle partial sends.
-        var sent = Int(result)
-        var buf_len = len(conn[].send_buf)
-        if sent < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - sent)
-            remaining.extend(Span(conn[].send_buf)[sent:buf_len])
-            conn[].send_buf = remaining^
-            self._arm_send(conn)
-            return
-
-        conn[].send_buf = List[UInt8]()
-
-        # Promote any pending data — single memcpy via extend, not byte-by-byte.
-        if len(conn[].send_pending) > 0:
-            var pending_view = Span(conn[].send_pending)
-            var pending = List[UInt8](capacity=len(pending_view))
-            pending.extend(pending_view)
-            conn[].send_pending = List[UInt8]()
-            conn[].send_buf = pending^
-            self._arm_send(conn)
-            return
-
-        if conn[].http.should_close():
-            self._close_connection(conn)
-        else:
-            # Ready for next request.
-            self._arm_recv(conn)
-
-    # --- Close ---
-
-    def _close_connection(mut self, conn: Pointer[H1Conn, MutUntrackedOrigin]):
-        """Mark a connection dead, freeing it once the kernel is done with it.
-
-        While an operation is still in flight the kernel may write to this
-        connection's buffers, so the memory is only released when the last
-        outstanding completion has been retired.
-
-        Args:
-            conn: The connection to close.
-        """
-        if conn[].closed:
-            return
-        conn[].closed = True
-        if not conn[].recv_in_flight and not conn[].send_in_flight:
-            self._free_connection(conn)
-
-    def _free_connection(mut self, conn: Pointer[H1Conn, MutUntrackedOrigin]):
-        """Unregister and deallocate a connection with no operations pending.
-
-        Args:
-            conn: The connection to free. Dangling on return.
-        """
-        var idx = self._find_index(conn)
-        if idx < 0:
-            return
-        var last = len(self.connections) - 1
-        if idx != last:
-            self.connections[idx] = self.connections[last]
-        _ = self.connections.pop()
-        conn.unsafe_deinit_pointee()
-        conn.unsafe_free()
+        if self._needs_accept_rearm:
+            try:
+                self._submit_accept()
+                self._needs_accept_rearm = False
+            except:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +637,6 @@ def main() raises:
     var bind_addr = SocketAddrV4(0, 0, 0, 0, port=port)
     listener.bind(bind_addr)
     listener.listen(Backlog.DEFAULT)
-    var listener_fd = listener.raw()
 
     var worker_id_opt = getenv_opt("BENCH_WORKER_ID")
     var prefix: String
@@ -735,22 +648,22 @@ def main() raises:
     print(prefix + "h1-bench: listening on " + scheme + "://0.0.0.0:" + String(port)
           + (" (TLS, ALPN=http/1.1)" if tls_enabled else ""))
 
-    # Build the io_uring driver and the heap-stable server.
-    var driver = IoUringDriver(capacity=_SQ_ENTRIES)
-
+    # Build the WatchLoop and the heap-stable server.
     var server = H1BenchServer(
-        listener_fd=listener_fd,
+        listener=listener^,
         state_ptr=state_ptr,
         tls_lib=tls_lib_opt^,
         server_tls_config=server_tls_config_opt^,
     )
     var server_ptr = _heap_alloc[H1BenchServer](1)
     server_ptr.unsafe_write(server^)
-    server_ptr[].wire_context()
-    server_ptr[].start(driver)
 
-    # Event loop: one submit_and_wait per iteration, completions dispatched
-    # inline by their Completion callbacks.
+    var loop = WatchLoop(capacity=_SQ_ENTRIES)
+    server_ptr[].start(loop)
+
+    # Event loop: step dispatches completions, then we poll futures.
     while True:
-        _ = driver.tick(wait=True)
-        _ = listener
+        _ = loop.step(timeout_ms=-1)
+        server_ptr[].poll_accept()
+        server_ptr[].poll_connections()
+        server_ptr[].reap_closed()
