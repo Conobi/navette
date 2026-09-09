@@ -26,6 +26,7 @@ Expected: `HTTP/2 200` with `Hello, H2!\\n` body.
 
 from navette.h2.h2_tcp_server import H2TcpServer
 from boucle.drivers.io_uring import IoUringDriver
+from boucle.watch import WatchLoop
 from navette.http.handler import (
     StreamHandler,
     Request,
@@ -199,9 +200,12 @@ def main() raises:
     srv_ptr[].wire_context()
 
     var driver = IoUringDriver(capacity=4096)
-    srv_ptr[].start(driver)
+    var loop = WatchLoop(capacity=4096)
+    srv_ptr[].start(driver, loop)
 
     print("hello_h2_server: serving")
     while True:
-        _ = driver.tick(wait=True)
+        _ = driver.tick(wait=False)
+        _ = loop.step(timeout_ms=100)
+        srv_ptr[].poll_connections()
         srv_ptr[].reap_closed()

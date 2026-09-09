@@ -19,6 +19,7 @@ from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle.drivers.io_uring import IoUringDriver
+from boucle.watch import WatchLoop
 
 from navette.h2.h2_tcp_server import H2TcpServer
 from navette.http.handler import (
@@ -108,14 +109,17 @@ def test_h2_tcp_server_init_and_tick() raises:
     # -- 5. Wire Completion context pointers --
     srv_ptr[].wire_context()
 
-    # -- 6. IoUringDriver + start (initial accept submission) --
+    # -- 6. IoUringDriver + WatchLoop + start --
     var driver = IoUringDriver(capacity=64)
-    srv_ptr[].start(driver)
+    var loop = WatchLoop(capacity=64)
+    srv_ptr[].start(driver, loop)
 
     # -- 7. One non-blocking tick — no client, accept stays pending --
     driver.tick(wait=False)
+    _ = loop.step(timeout_ms=0)
 
-    # -- 8. Reap closed — no-op on empty connection list --
+    # -- 8. Poll connections + reap closed — no-op on empty connection list --
+    srv_ptr[].poll_connections()
     srv_ptr[].reap_closed()
 
     # -- 9. Teardown --

@@ -1,7 +1,8 @@
-"""H2TcpServer — generic HTTP/2 server over TLS-on-TCP + io_uring (proactor model).
+"""H2TcpServer — generic HTTP/2 server over TLS-on-TCP (WatchLoop futures + proactor accept).
 
-Drives multiple HTTP/2 connections off a single TCP listener using
-per-connection Completions with inline submission.
+Drives multiple HTTP/2 connections off a single TCP listener. Per-connection
+recv and send use WatchLoop futures; the accept path still uses IoUringDriver
+Completions (ported in a later task).
 
 # Architecture
 
@@ -9,22 +10,21 @@ per-connection Completions with inline submission.
   Mojo land                                Kernel
   ─────────                                ──────
 
-  H2TcpServer[H: StreamHandler]            io_uring + IoUringDriver
+  H2TcpServer[H: StreamHandler]            io_uring via WatchLoop + IoUringDriver
     │                                        │
-    │  _on_accept (Completion callback) ───┘   (CQE)
-    │  ├─ alloc H2TcpConn[H], TlsConnection.new_server, submit recv
+    │  _on_accept (Completion callback) ───┘   (CQE, via IoUringDriver)
+    │  ├─ alloc H2TcpConn[H], TlsConnection.new_server, submit recv future
     │
     │  H2TcpConn[H]                       (per-connection)
-    │  ├─ _on_recv  → tls.receive_data → tls.drain_plaintext → h2.feed
-    │  │              → h2.drain → tls.send_data → tls.drain_ciphertext
-    │  │              → _stage_send → inline send
-    │  └─ _on_send  → handle partial, drain pending, inline recv
+    │  ├─ _poll_recv → future.done() → result() → TLS+H2 pipeline
+    │  └─ _poll_send → future.done() → result() → partial/pending
     │
-    │  All submissions inline via stored IoUringDriver pointer
+    │  Recv/send via WatchLoop futures (stored loop pointer)
+    │  Accept still via IoUringDriver Completion
     │
-    └─ connections: List[UnsafePointer[H2TcpConn[H]]]
-         └─ per conn: fd OwnedHandle, TlsConnection, H2HandlerServer[H],
-                     phase, buffers, flags, owned recv/send Completions
+    └─ connections: List[Pointer[H2TcpConn[H]]]
+         └─ per conn: Socket, TlsConnection, H2HandlerServer[H],
+                     phase, buffers, flags, Optional recv/send futures
 ```
 
 # Why TLS-only
@@ -46,8 +46,9 @@ the factory once per accepted TCP connection.
 After construction, the caller must:
   1. Heap-allocate the server (pointer stability).
   2. Call `wire_context()` to set the accept Completion context pointer.
-  3. Call `start(driver)` to submit the initial accept.
-  4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
+  3. Call `start(driver, loop)` to submit the initial accept.
+  4. In the run loop: `driver.tick()` and `loop.step()`,
+     then `server.poll_connections()` then `server.reap_closed()`.
 """
 
 from std.memory import Pointer
@@ -57,6 +58,8 @@ from std.ffi import external_call
 from boucle.handle import RawHandle, OwnedHandle
 from boucle.proactor.completion import Completion
 from boucle.drivers.io_uring import IoUringDriver
+from boucle.net.socket import Socket
+from boucle.watch import WatchLoop, RecvFuture, SendFuture
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer
@@ -165,152 +168,123 @@ comptime _PHASE_H2_READY: UInt8 = 1
 
 
 struct H2TcpConn[H: StreamHandler](Movable):
-    """One TCP+TLS connection with owned recv/send Completions.
+    """One TCP+TLS connection with WatchLoop recv/send futures.
 
-    Manages a single HTTP/2-over-TLS connection using inline I/O
-    submission via a stored IoUringDriver pointer. The recv and send
-    Completions are owned by this struct; their context pointers are
-    set via wire_context() after heap allocation.
+    Manages a single HTTP/2-over-TLS connection using WatchLoop futures
+    for async I/O. The recv and send futures are stored as Optionals;
+    a present future means an operation is in flight.
 
     The close state machine uses the _closing flag: once set, no
     further I/O submissions are made. The connection is considered
     drained (ready for deallocation) when _closing is True and both
-    recv_in_flight and send_in_flight are False.
+    recv and send futures are absent (no I/O in flight).
     """
 
-    var fd: OwnedHandle
+    var socket: Socket
     var tls: TlsConnection
     var http: H2HandlerServer[Self.H]
     var phase: UInt8
     var recv_buf: List[UInt8]
     var send_buf: List[UInt8]
     var send_pending: List[UInt8]
-    var send_in_flight: Bool
-    var recv_in_flight: Bool
     var _closing: Bool
-    var _recv_cmp: Completion
-    var _send_cmp: Completion
-    var _driver_ptr: Pointer[NoneType, MutUntrackedOrigin]
+    var _recv_future: Optional[RecvFuture]
+    var _send_future: Optional[SendFuture]
+    var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
 
     def __init__(
         out self,
-        var fd: OwnedHandle,
+        var socket: Socket,
         var tls: TlsConnection,
         var http: H2HandlerServer[Self.H],
-        driver_ptr: Pointer[NoneType, MutUntrackedOrigin],
+        loop_ptr: Pointer[NoneType, MutUntrackedOrigin],
     ):
         """Construct a new H2TcpConn.
 
-        The recv and send Completions are initialized with the callback
-        functions but null context pointers -- call wire_context() after
-        heap allocation to set them.
-
         Args:
-            fd: Owned TCP socket handle.
+            socket: Owned TCP socket.
             tls: TLS connection state machine.
             http: H2 handler server adapter.
-            driver_ptr: Type-erased pointer to the IoUringDriver.
+            loop_ptr: Type-erased pointer to the WatchLoop.
         """
-        self.fd = fd^
+        self.socket = socket^
         self.tls = tls^
         self.http = http^
         self.phase = _PHASE_TLS_HANDSHAKE
-        self.recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
-        for _ in range(_RECV_BUF_SIZE):
-            self.recv_buf.append(0)
+        self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
         self.send_buf = List[UInt8]()
         self.send_pending = List[UInt8]()
-        self.send_in_flight = False
-        self.recv_in_flight = False
         self._closing = False
-        self._recv_cmp = Completion(
-            invoke=_on_recv[Self.H],
-            context=null_ptr[NoneType, MutUntrackedOrigin](),
-        )
-        self._send_cmp = Completion(
-            invoke=_on_send[Self.H],
-            context=null_ptr[NoneType, MutUntrackedOrigin](),
-        )
-        self._driver_ptr = driver_ptr
+        self._recv_future = Optional[RecvFuture]()
+        self._send_future = Optional[SendFuture]()
+        self._loop_ptr = loop_ptr
 
     def is_drained(self) -> Bool:
         """Check if the connection is closed and has no I/O in flight.
 
         A drained connection is safe to deallocate -- both the recv and
-        send operations have completed and _closing has been set.
-
-        Returns:
-            True if _closing and both recv/send not in flight.
+        send futures are absent and _closing has been set.
         """
-        return self._closing and not self.recv_in_flight and not self.send_in_flight
-
-    def wire_context(mut self):
-        """Set Completion context pointers to this connection's heap address.
-
-        Must be called after the H2TcpConn is at its final heap address
-        (pointer stability guaranteed) and before any SQE submission.
-        """
-        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self))
+        return (
+            self._closing
+            and not Bool(self._recv_future)
+            and not Bool(self._send_future)
         )
-        self._recv_cmp.context = self_ctx
-        self._send_cmp.context = self_ctx
 
     def _submit_recv(mut self) raises:
-        """Submit a recv operation on this connection's fd.
+        """Submit a recv via WatchLoop, storing the returned future.
 
-        Guards on _recv_in_flight and _closing -- no-op if either is true.
-        Submits directly to the stored IoUringDriver via inline submission.
+        Guards on existing recv future and _closing -- no-op if either
+        is true. Moves recv_buf into the future; reclaimed on result.
         """
-        if self.recv_in_flight or self._closing:
+        if Bool(self._recv_future) or self._closing:
             return
-        var driver = Pointer[IoUringDriver, MutUntrackedOrigin](
-            unsafe_from_address=Int(self._driver_ptr)
+        var loop = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._loop_ptr)
         )
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._recv_cmp))
-        )
-        var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
-            unsafe_from_address=Int(self.recv_buf.unsafe_ptr())
-        )
-        driver[].recv(
-            self.fd.raw(), buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
-        )
-        # Set after successful submit — if submit raises (SQ full), the
-        # flag stays False so the connection isn't permanently stuck.
-        self.recv_in_flight = True
+        var buf = self.recv_buf^
+        self.recv_buf = List[UInt8]()
+        try:
+            self._recv_future = loop[].recv(self.socket, buf^)
+        except e:
+            # Recover buffer from TransferFailed.
+            var opt_buf = e^.take_buffer()
+            if Bool(opt_buf):
+                self.recv_buf = opt_buf.unsafe_take()
+            else:
+                self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
+            raise Error("recv submit failed")
 
     def _submit_send(mut self) raises:
-        """Submit a send operation on this connection's fd.
+        """Submit a send via WatchLoop, storing the returned future.
 
-        Guards on _send_in_flight, _closing, and empty send_buf --
-        no-op if any guard triggers. Submits directly to the stored
-        IoUringDriver via inline submission.
+        Guards on existing send future, _closing, and empty send_buf --
+        no-op if any guard triggers. Moves send_buf into the future;
+        reclaimed on result.
         """
-        if self.send_in_flight or self._closing:
+        if Bool(self._send_future) or self._closing:
             return
         if len(self.send_buf) == 0:
             return
-        var driver = Pointer[IoUringDriver, MutUntrackedOrigin](
-            unsafe_from_address=Int(self._driver_ptr)
+        var loop = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._loop_ptr)
         )
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._send_cmp))
-        )
-        var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
-            unsafe_from_address=Int(self.send_buf.unsafe_ptr())
-        )
-        driver[].send(
-            self.fd.raw(), buf_ptr, UInt32(len(self.send_buf)), cmp_ptr
-        )
-        # Set after successful submit — if submit raises (SQ full), the
-        # flag stays False so the connection isn't permanently stuck.
-        self.send_in_flight = True
+        var buf = self.send_buf^
+        self.send_buf = List[UInt8]()
+        try:
+            self._send_future = loop[].send(self.socket, buf^)
+        except e:
+            var opt_buf = e^.take_buffer()
+            if Bool(opt_buf):
+                self.send_buf = opt_buf.unsafe_take()
+            else:
+                self.send_buf = List[UInt8]()
+            raise Error("send submit failed")
 
     def _stage_send(mut self, var data: List[UInt8]) raises:
         """Stage data for sending -- submit directly or queue as pending.
 
-        If no send is currently in flight, moves the data into send_buf
+        If no send future is in flight, moves the data into send_buf
         and submits immediately. If a send is in flight, appends the
         data to send_pending for later promotion.
 
@@ -319,14 +293,14 @@ struct H2TcpConn[H: StreamHandler](Movable):
         """
         if len(data) == 0:
             return
-        if self.send_in_flight:
+        if Bool(self._send_future):
             for i in range(len(data)):
                 self.send_pending.append(data[i])
             return
         self.send_buf = data^
         self._submit_send()
 
-    def _begin_close(mut self) raises:
+    def _begin_close(mut self):
         """Initiate connection shutdown via shutdown(SHUT_RDWR).
 
         Calls shutdown(2) with SHUT_RDWR to send FIN, then sets
@@ -335,16 +309,21 @@ struct H2TcpConn[H: StreamHandler](Movable):
         """
         if self._closing:
             return
-        var fd = self.fd.raw()
-        _ = external_call["shutdown", Int32](fd, Int32(2))
+        _ = external_call["shutdown", Int32](
+            self.socket._handle._raw, Int32(2)
+        )
         self._closing = True
 
     # ── Recv (ciphertext → TLS → plaintext → H2) ────────────────
 
     def _handle_recv_impl(mut self, result: Int) raises:
-        """Process a recv CQE -- feed ciphertext through TLS+H2, emit responses.
+        """Process a completed recv -- feed ciphertext through TLS+H2, emit responses.
 
-        Preserves the exact TLS+H2 processing pipeline:
+        Called after the recv future completes and the buffer is back in
+        recv_buf. The result is the byte count (always >= 0; negative
+        results are handled by _poll_recv).
+
+        Pipeline:
           1. Feed ciphertext into TLS state machine.
           2. Flush handshake-reply ciphertext immediately.
           3. If still handshaking, re-queue recv (unless send in flight).
@@ -353,11 +332,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
           6. Re-queue recv if connection still alive.
 
         Args:
-            result: CQE result -- bytes received (>0) or negative errno.
+            result: Byte count from the completed recv (>= 0).
         """
-        debug_assert(self.recv_in_flight, "recv CQE fired without in-flight recv")
-        self.recv_in_flight = False
-
         if self._closing:
             return
 
@@ -380,7 +356,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
         # 3. Still handshaking — keep reading more ciphertext.
         if self.tls.is_handshaking():
-            if not self.send_in_flight:
+            if not Bool(self._send_future):
                 self._submit_recv()
             return
 
@@ -419,25 +395,26 @@ struct H2TcpConn[H: StreamHandler](Movable):
                 off = end
 
         # 6. Re-queue recv if conn is still alive.
-        if not self.send_in_flight:
+        if not Bool(self._send_future):
             if not self.http.should_close():
                 self._submit_recv()
 
     # ── Send ─────────────────────────────────────────────────────
 
     def _handle_send_impl(mut self, result: Int) raises:
-        """Process a send CQE -- handle partial sends, promote pending data.
+        """Process a completed send -- handle partial sends, promote pending data.
+
+        Called after the send future completes and the buffer is back in
+        send_buf. The result is the byte count (always >= 0; negative
+        results are handled by _poll_send).
 
         On successful full send, promotes any pending data and re-submits.
         If should_close is true after all data is flushed, begins closing.
         Otherwise re-queues recv for the next request.
 
         Args:
-            result: CQE result -- bytes sent (>=0) or negative errno.
+            result: Byte count from the completed send (>= 0).
         """
-        debug_assert(self.send_in_flight, "send CQE fired without in-flight send")
-        self.send_in_flight = False
-
         if self._closing:
             return
 
@@ -477,6 +454,70 @@ struct H2TcpConn[H: StreamHandler](Movable):
         else:
             self._submit_recv()
 
+    # ── Future polling ──────────────────────────────────────────────
+
+    def _poll_recv(mut self):
+        """Check recv future, process completed result. No-op if not done.
+
+        Takes the future out of the Optional, extracts the byte count and
+        buffer, stores the buffer back in recv_buf, and delegates to
+        _handle_recv_impl. On IO failure, closes the connection.
+        """
+        if not Bool(self._recv_future):
+            return
+        if not self._recv_future.value().done():
+            return
+
+        var opt = self._recv_future^
+        self._recv_future = Optional[RecvFuture]()
+        var future = opt.unsafe_take()
+
+        var count = 0
+        try:
+            var result = future^.result()
+            count = result.count
+            self.recv_buf = result^.take_buffer()
+        except e:
+            print("H2TcpServer: recv IO error:", e)
+            self._begin_close()
+            return
+
+        try:
+            self._handle_recv_impl(count)
+        except e:
+            print("H2TcpServer: recv processing error:", e)
+
+    def _poll_send(mut self):
+        """Check send future, process completed result. No-op if not done.
+
+        Takes the future out of the Optional, extracts the byte count and
+        buffer, stores the buffer back in send_buf, and delegates to
+        _handle_send_impl. On IO failure, closes the connection.
+        """
+        if not Bool(self._send_future):
+            return
+        if not self._send_future.value().done():
+            return
+
+        var opt = self._send_future^
+        self._send_future = Optional[SendFuture]()
+        var future = opt.unsafe_take()
+
+        var count = 0
+        try:
+            var result = future^.result()
+            count = result.count
+            self.send_buf = result^.take_buffer()
+        except e:
+            print("H2TcpServer: send IO error:", e)
+            self._begin_close()
+            return
+
+        try:
+            self._handle_send_impl(count)
+        except e:
+            print("H2TcpServer: send processing error:", e)
+
 
 # ── Module-level completion callbacks ──────────────────────────────────────
 
@@ -507,64 +548,14 @@ def _on_accept[H: StreamHandler](
         print("H2TcpServer: _on_accept error:", e)
 
 
-def _on_recv[H: StreamHandler](
-    ctx: Pointer[NoneType, MutUntrackedOrigin],
-    result: Int,
-    flags: UInt32,
-):
-    """Recv CQE callback. Casts context to H2TcpConn and delegates
-    to _handle_recv_impl.
-
-    Defined at module level for parameterised-struct compatibility.
-
-    Args:
-        ctx: Type-erased pointer to the owning H2TcpConn instance.
-        result: io_uring CQE result (bytes received or negative errno).
-        flags: io_uring CQE flags (unused for TCP recv).
-    """
-    var self_ptr = Pointer[H2TcpConn[H], MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    try:
-        self_ptr[]._handle_recv_impl(result)
-    except e:
-        print("H2TcpServer: _on_recv error:", e)
-
-
-def _on_send[H: StreamHandler](
-    ctx: Pointer[NoneType, MutUntrackedOrigin],
-    result: Int,
-    flags: UInt32,
-):
-    """Send CQE callback. Casts context to H2TcpConn and delegates
-    to _handle_send_impl.
-
-    Defined at module level for parameterised-struct compatibility.
-
-    Args:
-        ctx: Type-erased pointer to the owning H2TcpConn instance.
-        result: io_uring CQE result (bytes sent or negative errno).
-        flags: io_uring CQE flags (unused for TCP send).
-    """
-    var self_ptr = Pointer[H2TcpConn[H], MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    try:
-        self_ptr[]._handle_send_impl(result)
-    except e:
-        print("H2TcpServer: _on_send error:", e)
-
-
 # ── H2TcpServer ──────────────────────────────────────────────────────────────
 
 
 struct H2TcpServer[H: StreamHandler](Movable):
-    """Generic HTTP/2 server over TLS+TCP+io_uring (proactor model).
+    """Generic HTTP/2 server over TLS+TCP (WatchLoop futures + proactor accept).
 
-    Uses per-connection Completions with inline submission. Each
-    accepted TCP connection allocates a heap-owned H2TcpConn[H]
-    that owns recv/send Completions and submits I/O inline via the
-    stored driver pointer.
+    Per-connection recv/send use WatchLoop futures. The accept path
+    still uses IoUringDriver Completions (ported separately).
 
     Owns: the listening fd, the rustls library handle, the server-side
     TlsServerConfig (with ALPN=h2 set by the caller), and the
@@ -573,8 +564,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
     After construction, the caller must:
       1. Heap-allocate the server (pointer stability).
       2. Call `wire_context()` to set the accept Completion context pointer.
-      3. Call `start(driver)` to submit the initial accept.
-      4. In the run loop: `driver.tick(wait=True)` then `server.reap_closed()`.
+      3. Call `start(driver, loop)` to submit the initial accept.
+      4. In the run loop: `driver.tick()` and `loop.step()`,
+         then `server.poll_connections()` then `server.reap_closed()`.
     """
 
     var listen_handle: OwnedHandle
@@ -584,6 +576,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     var server_tls_config: TlsServerConfig
     var _accept_cmp: Completion
     var _driver_ptr: Pointer[NoneType, MutUntrackedOrigin]
+    var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
     var _needs_accept_rearm: Bool
 
     def __init__(
@@ -596,7 +589,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         """Construct an H2TcpServer.
 
         After construction, heap-allocate the server for pointer
-        stability, then call wire_context() and start(driver).
+        stability, then call wire_context() and start(driver, loop).
 
         Args:
             listen_handle: Owned listening TCP socket (moved in).
@@ -614,6 +607,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             context=null_ptr[NoneType, MutUntrackedOrigin](),
         )
         self._driver_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._loop_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
 
     def __init__(out self, *, deinit move: Self):
@@ -625,6 +619,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         self.server_tls_config = move.server_tls_config^
         self._accept_cmp = move._accept_cmp^
         self._driver_ptr = move._driver_ptr
+        self._loop_ptr = move._loop_ptr
         self._needs_accept_rearm = move._needs_accept_rearm
 
     def __deinit__(deinit self):
@@ -647,28 +642,47 @@ struct H2TcpServer[H: StreamHandler](Movable):
         )
         self._accept_cmp.context = self_ctx
 
-    def start(mut self, mut driver: IoUringDriver) raises:
+    def start(
+        mut self, mut driver: IoUringDriver, mut loop: WatchLoop
+    ) raises:
         """Submit the initial accept on the listener fd.
 
         Must be called after wire_context() and before the first tick.
-        Stores the driver pointer for inline submission by connections.
+        Stores both the driver pointer (for accept) and the loop pointer
+        (for per-connection recv/send futures).
 
         Args:
-            driver: The IoUringDriver to submit operations on.
+            driver: The IoUringDriver for accept submissions.
+            loop: The WatchLoop for per-connection recv/send futures.
         """
         self._driver_ptr = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=driver))
+        )
+        self._loop_ptr = Pointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(Pointer(to=loop))
         )
         var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
         driver.accept(self.listen_handle.raw(), cmp_ptr)
 
+    def poll_connections(mut self):
+        """Poll all connection recv/send futures and process completed ones.
+
+        Must be called after loop.step() (which dispatches CQEs and marks
+        futures done) and before reap_closed() (which frees drained
+        connections). Each connection's _poll_recv and _poll_send handle
+        errors internally and set _closing on failure.
+        """
+        for i in range(len(self.connections)):
+            self.connections[i][]._poll_recv()
+            self.connections[i][]._poll_send()
+
     def reap_closed(mut self):
         """Sweep the connection list and free any fully-drained connections.
 
         A connection is drained when _closing is True and both recv and
-        send are no longer in flight. Called after each driver tick.
+        send futures are absent. Called after poll_connections().
         Uses swap-and-pop for O(1) removal.
 
         Also retries any deferred accept rearm (set by transient errors
@@ -715,9 +729,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
     def _handle_accept_impl(mut self, result: Int) raises:
         """Handle an accepted TCP connection.
 
-        Creates a new H2TcpConn with owned Completions, wires its
-        context pointers, submits the initial recv, and re-submits
-        accept for the next connection.
+        Creates a new H2TcpConn with a WatchLoop pointer, submits the
+        initial recv future, and re-submits accept for the next
+        connection.
 
         Transient resource errors (EMFILE, ENFILE, ENOMEM) defer the
         accept rearm to the next reap_closed() tick to avoid a
@@ -744,22 +758,21 @@ struct H2TcpServer[H: StreamHandler](Movable):
         var client_fd = Int32(result)
         var peer_addr = _peer_addr_from_fd(client_fd)
 
-        var handle = OwnedHandle(raw=client_fd)
+        var socket = Socket(OwnedHandle(raw=client_fd))
         var tls = TlsConnection.new_server(self._tls.shared(), self.server_tls_config)
 
         var handler = self.make_handler()
         var http = H2HandlerServer[Self.H](handler=handler^, peer_addr=peer_addr^)
 
         var conn = H2TcpConn[Self.H](
-            fd=handle^,
+            socket=socket^,
             tls=tls^,
             http=http^,
-            driver_ptr=self._driver_ptr,
+            loop_ptr=self._loop_ptr,
         )
 
         var conn_ptr = _heap_alloc[H2TcpConn[Self.H]](1)
         conn_ptr.unsafe_write(conn^)
-        conn_ptr[].wire_context()
         self.connections.append(conn_ptr)
 
         # Re-submit accept BEFORE initial recv — if _submit_recv raises
