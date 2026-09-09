@@ -6,7 +6,7 @@ through wire_context() + start() + one WatchLoop step (consuming the
 
   * H3UdpServer construction (field init order, Socket wrapping)
   * wire_context() lifecycle call (no-op after send path ported to WatchLoop)
-  * start() (BufferPool + DatagramStream via WatchLoop, timer arm)
+  * start() (UdpSocketState probe, BufferPool + DatagramStream, timer arm)
   * WatchLoop timer submission and expiry
   * flush() (drains recv stream, polls timer, processes timeout)
 
@@ -19,7 +19,6 @@ from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle import WatchLoop
-from boucle.drivers.io_uring import IoUringDriver
 
 from navette.h3.h3_udp_server import H3UdpServer
 from navette.http.handler import (
@@ -80,8 +79,8 @@ def make_stub_handler() raises -> StubHandler:
 def test_h3_udp_server_init_and_tick() raises:
     """Spin the server through the full proactor lifecycle.
 
-    Exercises wire_context + start (BufferPool + DatagramStream via
-    WatchLoop, timer arm), one WatchLoop step (timer fires after
+    Exercises wire_context + start (UdpSocketState probe, BufferPool +
+    DatagramStream, timer arm), one WatchLoop step (timer fires after
     50ms), and flush (drains recv stream, polls timer, processes
     timeout, re-arms) without requiring a real H3 client.
     """
@@ -112,11 +111,10 @@ def test_h3_udp_server_init_and_tick() raises:
     # -- 5. Lifecycle call (no-op after send path moved to WatchLoop) --
     srv_ptr[].wire_context()
 
-    # -- 6. IoUringDriver + WatchLoop + start --
-    var driver = IoUringDriver(capacity=64)
+    # -- 6. WatchLoop + start --
     var loop_ptr = _heap_alloc[WatchLoop](1)
     loop_ptr.unsafe_write(WatchLoop(capacity=64))
-    srv_ptr[].start(driver, loop_ptr[])
+    srv_ptr[].start(loop_ptr[])
 
     # -- 7. One WatchLoop step — timer fires after 50ms --
     _ = loop_ptr[].step()

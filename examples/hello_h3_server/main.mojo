@@ -185,7 +185,7 @@ def main() raises:
     var driver = IoUringDriver(capacity=256)
     var loop_ptr = _heap_alloc[WatchLoop](1)
     loop_ptr.unsafe_write(WatchLoop(capacity=256))
-    srv_ptr[].start(driver, loop_ptr[])
+    srv_ptr[].start(loop_ptr[])
     while True:
         _ = driver.tick(wait=True)
         _ = loop_ptr[].step()

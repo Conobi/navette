@@ -54,10 +54,9 @@ after all connections.
 After construction, the caller must:
   1. Heap-allocate the server (pointer stability).
   2. Call `wire_context()` (no-op kept for lifecycle compatibility).
-  3. Call `start(driver, loop)` to create the BufferPool and
-     DatagramStream, and arm the periodic timer on the WatchLoop.
-  4. In the run loop: `driver.tick()`, `loop.step()`, then
-     `server.flush()`.
+  3. Call `start(loop)` to probe transport capabilities, create
+     the BufferPool and DatagramStream, and arm the periodic timer.
+  4. In the run loop: `loop.step()`, then `server.flush()`.
 """
 
 from std.collections import Optional
@@ -78,8 +77,8 @@ from boucle import (
     SocketAddrV6,
 )
 from boucle.handle import OwnedHandle
-from boucle.drivers.io_uring import IoUringDriver
 
+from navette.runtime.udp_socket_state import UdpSocketState
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
 from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFilter
@@ -493,6 +492,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # Permanently downgraded to 1 on the first GSO send failure.
     var _gso_max_segments: Int
 
+    # Transport capability snapshot probed in start(). Holds GRO/GSO
+    # probe results and receives downgrade notifications on GSO failure.
+    var _socket_state: Optional[UdpSocketState]
+
     # WatchLoop recv infrastructure. _recv_pool is the BufferPool
     # backing the multishot recvmsg. _recv_stream is the DatagramStream
     # handle. Both created in start(). The stream is declared AFTER the
@@ -525,7 +528,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         After construction, the caller must heap-allocate the server
         (for pointer stability), then call `wire_context()` followed by
-        `start(driver, loop)` before any tick.
+        `start(loop)` before any tick.
 
         Args:
             udp_handle: Owned UDP socket handle (moved in, wrapped in Socket).
@@ -553,6 +556,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._inject_egress = List[EgressPacket]()
 
         self._gso_max_segments = 1
+        self._socket_state = Optional[UdpSocketState](None)
 
         # Recv pool + stream — created in start() via WatchLoop.
         self._recv_pool = Optional[BufferPool](None)
@@ -579,6 +583,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._egress_backlog = move._egress_backlog^
         self._inject_egress = move._inject_egress^
         self._gso_max_segments = move._gso_max_segments
+        self._socket_state = move._socket_state^
         self._recv_pool = move._recv_pool^
         self._recv_stream = move._recv_stream^
         self._timer = move._timer^
@@ -628,21 +633,19 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """
         pass
 
-    def start(
-        mut self, mut driver: IoUringDriver, mut loop: WatchLoop
-    ) raises:
-        """Create the recv infrastructure on the WatchLoop and arm the timer.
+    def start(mut self, mut loop: WatchLoop) raises:
+        """Probe transport capabilities and create recv/send infrastructure.
 
         Must be called after wire_context() and before the first tick.
-        Enables ECN via `set_recv_tos`, creates a `BufferPool` and arms
-        a multishot recvmsg `DatagramStream` through the WatchLoop, and
-        arms the periodic timeout.
+        Probes the socket for GRO/GSO support via `UdpSocketState`,
+        sizes the `BufferPool` accordingly, arms a multishot recvmsg
+        `DatagramStream` through the WatchLoop, and arms the periodic
+        timeout.
 
         The WatchLoop must outlive this server; `_loop_ptr` is stored
         for re-arming the timer in `flush()`.
 
         Args:
-            driver: Kept for lifecycle compatibility (unused).
             loop: The WatchLoop that owns recv, send, and timers.
         """
         # Store loop pointer for re-arming in flush().
@@ -650,13 +653,25 @@ struct H3UdpServer[H: StreamHandler](Movable):
             unsafe_from_address=Int(Pointer(to=loop))
         )
 
-        # Enable ECN (IP_RECVTOS / IPV6_RECVTCLASS) so the kernel
-        # writes TOS cmsgs into the control area of each datagram.
-        self.udp_socket.set_recv_tos(True)
+        # Probe transport capabilities (ECN, GRO, GSO) on the socket.
+        # UdpSocketState enables ECN internally, so no separate
+        # set_recv_tos call is needed.
+        var state = UdpSocketState(self.udp_socket)
+        self._gso_max_segments = state.max_send_segments()
+
+        # Size the buffer pool based on GRO support: fewer, larger
+        # buffers when the kernel coalesces datagrams; many small
+        # buffers otherwise.
+        var buf_count = PBUF_COUNT
+        var buf_size = state.recv_buffer_size()
+        if state.supports_coalesced_recv():
+            buf_count = 128
+
+        self._socket_state = Optional(state^)
 
         # Create the buffer pool and arm multishot recvmsg.
         self._recv_pool = Optional(
-            loop.buffer_pool(PBUF_COUNT, PBUF_SIZE)
+            loop.buffer_pool(buf_count, buf_size)
         )
         self._recv_stream = Optional(
             loop.recv_msg_multishot(
@@ -672,9 +687,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
     def flush(mut self) raises:
         """Drain the recv stream, process ingress, submit egress.
 
-        Called by the external run loop after each tick. MUST NOT call
-        driver.tick() or loop.step() (no-callback-during-flush
-        invariant).
+        Called by the external run loop after each step. MUST NOT call
+        loop.step() during flush (no-callback-during-flush invariant).
         """
         # 1. Drain datagrams from the DatagramStream into pending_rx.
         self._drain_recv_stream()
@@ -805,6 +819,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     except:
                         # GSO send failed — permanently downgrade.
                         self._gso_max_segments = 1
+                        if self._socket_state is not None:
+                            self._socket_state.value().downgrade_send_segments()
                         # Re-queue everything from i onward.
                         for j in range(i, n):
                             unsent.append(EgressPacket(

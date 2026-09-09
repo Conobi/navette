@@ -897,7 +897,7 @@ struct ProxyHandler(Movable):
             unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
         driver.accept(self.listener_fd, cmp_ptr)
-        self._h3.start(driver, loop)
+        self._h3.start(loop)
 
     def flush_h3(mut self, mut driver: IoUringDriver) raises:
         """Run the embedded H3 server's per-tick batch flush.
