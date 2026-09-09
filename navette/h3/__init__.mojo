@@ -60,4 +60,3 @@ from navette.h3.h3_udp_server import (
     PBUF_COUNT,
     PBUF_SIZE,
 )
-from navette.h3.send_slab import SendSlab, SendSlabPool
