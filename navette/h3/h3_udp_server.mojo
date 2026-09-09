@@ -231,11 +231,13 @@ def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
 
 
 struct PendingDatagram(Copyable, Movable):
-    """A single inbound UDP datagram parked between stream drain and flush.
+    """A single inbound UDP segment parked between stream drain and flush.
 
     `payload_ptr` and `name_ptr` are raw pointers into the
     `DatagramStream`'s leased buffer. The lease stays alive in
-    `_live_datagrams` until `_flush_ingress` completes.
+    `_live_datagrams` until `_flush_ingress` completes. `dgram_idx`
+    indexes into `_live_datagrams` / `_dgram_refcounts` so the
+    refcount can be decremented when this segment is consumed.
     """
     var payload_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var payload_len: Int
@@ -243,6 +245,7 @@ struct PendingDatagram(Copyable, Movable):
     var name_len: Int
     var dcid: List[UInt8]
     var ecn_mark: UInt8
+    var dgram_idx: Int
 
     def __init__(
         out self,
@@ -252,6 +255,7 @@ struct PendingDatagram(Copyable, Movable):
         name_len: Int,
         var dcid: List[UInt8],
         ecn_mark: UInt8,
+        dgram_idx: Int,
     ):
         self.payload_ptr = payload_ptr
         self.payload_len = payload_len
@@ -259,6 +263,7 @@ struct PendingDatagram(Copyable, Movable):
         self.name_len = name_len
         self.dcid = dcid^
         self.ecn_mark = ecn_mark
+        self.dgram_idx = dgram_idx
 
     def __init__(out self, *, copy: Self):
         self.payload_ptr = copy.payload_ptr
@@ -267,6 +272,7 @@ struct PendingDatagram(Copyable, Movable):
         self.name_len = copy.name_len
         self.dcid = List[UInt8](copy=copy.dcid)
         self.ecn_mark = copy.ecn_mark
+        self.dgram_idx = copy.dgram_idx
 
     def __init__(out self, *, deinit move: Self):
         self.payload_ptr = move.payload_ptr
@@ -275,6 +281,7 @@ struct PendingDatagram(Copyable, Movable):
         self.name_len = move.name_len
         self.dcid = move.dcid^
         self.ecn_mark = move.ecn_mark
+        self.dgram_idx = move.dgram_idx
 
 
 # ── Egress packet (queued for flush submission) ─────────────────────────────
@@ -451,8 +458,15 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # Live datagrams from the DatagramStream. Each Datagram holds a
     # LeasedBuffer whose raw pointers are stored in pending_rx. The
     # list keeps the leases alive until _flush_ingress completes; then
-    # it is cleared to return buffers to the pool.
+    # entries whose refcount reached 0 are released.
     var _live_datagrams: List[Optional[Datagram]]
+
+    # Per-datagram refcount, parallel to _live_datagrams. A GRO-
+    # coalesced datagram produces N PendingDatagram entries sharing one
+    # buffer lease; the refcount starts at N and decrements as each
+    # segment is consumed in _flush_ingress. Non-GRO datagrams use
+    # refcount 1 (unified path).
+    var _dgram_refcounts: List[UInt16]
 
     # Egress backlog — packets queued for the next _submit_egress.
     var _egress_backlog: List[EgressPacket]
@@ -514,6 +528,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self.pending_rx = List[PendingDatagram]()
         self._live_datagrams = List[Optional[Datagram]]()
+        self._dgram_refcounts = List[UInt16]()
 
         self._egress_backlog = List[EgressPacket]()
         self._inject_egress = List[EgressPacket]()
@@ -539,6 +554,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self.server_config = move.server_config^
         self.pending_rx = move.pending_rx^
         self._live_datagrams = move._live_datagrams^
+        self._dgram_refcounts = move._dgram_refcounts^
         self._egress_backlog = move._egress_backlog^
         self._inject_egress = move._inject_egress^
         self._recv_pool = move._recv_pool^
@@ -651,10 +667,17 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # 4. Submit egress from backlog via WatchLoop.send_msg.
         self._submit_egress()
 
-        # 5. Release buffer leases so the DatagramStream can reuse them.
-        # WatchLoop manages its own send slab internally, so no
-        # slab-based backpressure check is needed.
+        # 5. Release buffer leases whose refcount reached 0.
+        # GRO-coalesced datagrams share one lease across N segments;
+        # the refcount for each entry was decremented in _flush_ingress
+        # as each segment was consumed. Non-GRO entries have refcount 1.
+        # Setting the Optional to None drops the Datagram (and its
+        # LeasedBuffer), returning the buffer to the pool.
+        for _ri in range(len(self._live_datagrams)):
+            if self._dgram_refcounts[_ri] == UInt16(0):
+                self._live_datagrams[_ri] = Optional[Datagram](None)
         self._live_datagrams.clear()
+        self._dgram_refcounts.clear()
         # Rearm the stream if it disarmed (typically ENOBUFS when
         # all buffers were leased). Now that leases are returned,
         # the pool has capacity again.
@@ -734,6 +757,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
         remain valid until `_flush_ingress` completes. Truncated and
         empty datagrams are dropped (their leases are returned
         immediately).
+
+        When the kernel has GRO enabled, one Datagram may contain N
+        coalesced UDP segments at a fixed stride. The SOL_UDP/UDP_GRO
+        cmsg carries the stride; each segment gets its own DCID
+        extraction and PendingDatagram entry, all sharing one buffer
+        lease via a refcount in `_dgram_refcounts`.
         """
         if self._recv_stream is None:
             return
@@ -757,35 +786,88 @@ struct H3UdpServer[H: StreamHandler](Movable):
             if len(payload) == 0:
                 continue
 
-            # Extract DCID from the QUIC packet header.
-            var dcid: List[UInt8]
-            try:
-                dcid = extract_dcid(payload)
-            except:
-                continue
-
-            # Extract ECN codepoint from the control messages.
+            # Extract ECN codepoint from the control messages (shared
+            # across all GRO segments — they come from the same source
+            # tuple).
             var ecn_mark = UInt8(0)
             var ecn_opt = hdr.control().ecn()
             if ecn_opt is not None:
                 ecn_mark = ecn_opt.value()
 
-            # Get peer address region.
+            # Get peer address region (shared across segments).
             var name = hdr.name()
 
-            self.pending_rx.append(
-                PendingDatagram(
-                    payload_ptr=payload.unsafe_ptr(),
-                    payload_len=len(payload),
-                    name_ptr=name.unsafe_ptr(),
-                    name_len=len(name),
-                    dcid=dcid^,
-                    ecn_mark=ecn_mark,
-                )
-            )
+            # Check for GRO coalescing: when the kernel coalesced
+            # multiple datagrams, a SOL_UDP/UDP_GRO cmsg carries the
+            # per-segment stride. Without it, the buffer holds one
+            # datagram.
+            var gro_opt = hdr.control().gro_segment_size()
+            var dgram_idx = len(self._live_datagrams)
 
-            # Keep the lease alive until _flush_ingress completes.
-            self._live_datagrams.append(dgram_opt^)
+            if gro_opt is not None and gro_opt.value() > 0:
+                # GRO active — split into N segments at fixed stride.
+                var seg_size = gro_opt.value()
+                var total_len = len(payload)
+                var n_segments = (total_len + seg_size - 1) // seg_size
+
+                self._dgram_refcounts.append(UInt16(n_segments))
+                self._live_datagrams.append(dgram_opt^)
+
+                for seg_i in range(n_segments):
+                    var offset = seg_i * seg_size
+                    var seg_len = min(seg_size, total_len - offset)
+                    var seg_ptr = payload.unsafe_ptr().unsafe_offset(offset)
+
+                    # Each GRO segment needs its own DCID extraction
+                    # (different connections may be coalesced, though
+                    # GRO groups by source tuple so this is unlikely).
+                    var seg_span = Span[UInt8, MutUntrackedOrigin](
+                        unsafe_ptr=seg_ptr, length=seg_len,
+                    )
+                    var dcid: List[UInt8]
+                    try:
+                        dcid = extract_dcid(seg_span)
+                    except:
+                        # Undecodable segment — release its share of
+                        # the refcount so the buffer can still be freed.
+                        self._dgram_refcounts[dgram_idx] -= UInt16(1)
+                        continue
+
+                    self.pending_rx.append(
+                        PendingDatagram(
+                            payload_ptr=seg_ptr,
+                            payload_len=seg_len,
+                            name_ptr=name.unsafe_ptr(),
+                            name_len=len(name),
+                            dcid=dcid^,
+                            ecn_mark=ecn_mark,
+                            dgram_idx=dgram_idx,
+                        )
+                    )
+            else:
+                # Non-GRO: single datagram, refcount 1.
+                var dcid: List[UInt8]
+                try:
+                    dcid = extract_dcid(payload)
+                except:
+                    continue
+
+                self._dgram_refcounts.append(UInt16(1))
+
+                self.pending_rx.append(
+                    PendingDatagram(
+                        payload_ptr=payload.unsafe_ptr(),
+                        payload_len=len(payload),
+                        name_ptr=name.unsafe_ptr(),
+                        name_len=len(name),
+                        dcid=dcid^,
+                        ecn_mark=ecn_mark,
+                        dgram_idx=dgram_idx,
+                    )
+                )
+
+                # Keep the lease alive until _flush_ingress completes.
+                self._live_datagrams.append(dgram_opt^)
 
     # ── Per-connection construction ──────────────────────────────
 
@@ -925,6 +1007,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 var first_byte_span = Span[UInt8, MutUntrackedOrigin](
                     unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
+                    self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
                     continue
 
             if conn_idx < 0:
@@ -936,6 +1019,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     h3_ptr = self._construct_conn_handler(Span(pd.dcid), now)
                 except e:
                     print("H3UdpServer: conn construction error:", e)
+                    self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
                     continue
 
                 # B-permissive dual-DCID: both the client's Initial DCID
@@ -1043,6 +1127,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 self._drain_and_send(conn_idx, now)
             except e:
                 print("H3UdpServer: drain_and_send error:", e)
+
+            # Release this segment's share of the buffer refcount.
+            self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
 
         self.pending_rx.clear()
 
