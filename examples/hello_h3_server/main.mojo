@@ -56,6 +56,7 @@ from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls import EarlyDataPolicy, TlsBackend
 from navette.tls.config import QuicServerConfig
+from boucle import WatchLoop
 from boucle.drivers.io_uring import IoUringDriver
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
@@ -182,7 +183,10 @@ def main() raises:
     srv_ptr[].wire_context()
 
     var driver = IoUringDriver(capacity=256)
-    srv_ptr[].start(driver)
+    var loop_ptr = _heap_alloc[WatchLoop](1)
+    loop_ptr.unsafe_write(WatchLoop(capacity=256))
+    srv_ptr[].start(driver, loop_ptr[])
     while True:
         _ = driver.tick(wait=True)
-        srv_ptr[].flush(driver)
+        _ = loop_ptr[].step()
+        srv_ptr[].flush()

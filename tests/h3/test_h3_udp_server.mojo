@@ -5,7 +5,7 @@ through wire_context() + start() + one WatchLoop step (consuming the
 50ms timer) + flush(), and exits. Catches regressions in:
 
   * H3UdpServer construction (field init order, Socket wrapping)
-  * SendSlabPool wiring (wire_context sets slab context pointers)
+  * wire_context() lifecycle call (no-op after send path ported to WatchLoop)
   * start() (BufferPool + DatagramStream via WatchLoop, timer arm)
   * WatchLoop timer submission and expiry
   * flush() (drains recv stream, polls timer, processes timeout)
@@ -81,9 +81,9 @@ def test_h3_udp_server_init_and_tick() raises:
     """Spin the server through the full proactor lifecycle.
 
     Exercises wire_context + start (BufferPool + DatagramStream via
-    WatchLoop, timer arm), one WatchLoop step (timer fires after 50ms),
-    and flush (drains recv stream, polls timer, processes timeout,
-    re-arms) -- without requiring a real H3 client.
+    WatchLoop, timer arm), one WatchLoop step (timer fires after
+    50ms), and flush (drains recv stream, polls timer, processes
+    timeout, re-arms) without requiring a real H3 client.
     """
     # -- 1. TLS setup --
     var cert = read_file(String("certs/server.crt"))
@@ -109,7 +109,7 @@ def test_h3_udp_server_init_and_tick() raises:
     var srv_ptr = _heap_alloc[H3UdpServer[StubHandler]](1)
     srv_ptr.unsafe_write(server^)
 
-    # -- 5. Wire Completion context pointers --
+    # -- 5. Lifecycle call (no-op after send path moved to WatchLoop) --
     srv_ptr[].wire_context()
 
     # -- 6. IoUringDriver + WatchLoop + start --
@@ -122,7 +122,7 @@ def test_h3_udp_server_init_and_tick() raises:
     _ = loop_ptr[].step()
 
     # -- 8. Flush — polls timer, processes timeout, re-arms, recycles buffers --
-    srv_ptr[].flush(driver)
+    srv_ptr[].flush()
 
     # -- 9. Teardown --
     _ = srv_ptr.unsafe_take_pointee()

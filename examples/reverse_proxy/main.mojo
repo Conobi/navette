@@ -67,6 +67,7 @@ from navette.tls import (
 )
 from navette.tls.config import QuicServerConfig
 
+from boucle import WatchLoop
 from boucle.drivers.io_uring import IoUringDriver
 from boucle.proactor.completion import Completion
 from boucle.handle import OwnedHandle
@@ -881,33 +882,36 @@ struct ProxyHandler(Movable):
         )
         self._h3.wire_context()
 
-    def start(mut self, mut driver: IoUringDriver) raises:
+    def start(
+        mut self, mut driver: IoUringDriver, mut loop: WatchLoop
+    ) raises:
         """Submit the proxy's initial operations: the first TCP accept and
         the embedded H3 server's bootstrap (buf-ring registration, multishot
         recvmsg, periodic timeout).
 
         Args:
             driver: The io_uring driver every operation is submitted on.
+            loop: The WatchLoop for recv/send/timer operations.
         """
         var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
         driver.accept(self.listener_fd, cmp_ptr)
-        self._h3.start(driver)
+        self._h3.start(driver, loop)
 
     def flush_h3(mut self, mut driver: IoUringDriver) raises:
         """Run the embedded H3 server's per-tick batch flush.
 
-        `H3UdpServer.flush` subsumes what the token-era driver did by hand:
-        it demuxes the datagrams buffered by the recvmsg callback, runs the
-        `ForwardingHandler` callbacks, submits egress sendmsg SQEs from its
-        own slab pool, recycles buf-ring buffers, and re-arms both the
-        multishot recvmsg and the periodic timeout.
+        `H3UdpServer.flush` demuxes the datagrams buffered by the
+        recvmsg callback, runs the `ForwardingHandler` callbacks,
+        submits egress via WatchLoop.send_msg, recycles buf-ring
+        buffers, and re-arms both the multishot recvmsg and the
+        periodic timeout.
 
         Args:
-            driver: The io_uring driver every operation is submitted on.
+            driver: The io_uring driver (kept for lifecycle compat).
         """
-        self._h3.flush(driver)
+        self._h3.flush()
 
     # --- H3 backend config publication ----------------------------------
 
@@ -1784,20 +1788,20 @@ struct ProxyHandler(Movable):
 def _run_tick(
     handler: Pointer[ProxyHandler, MutUntrackedOrigin],
     mut driver: IoUringDriver,
+    loop: Pointer[WatchLoop, MutUntrackedOrigin],
 ) raises:
-    """One event-loop iteration: tick the ring, then run the embedded H3
-    server's batch flush, then drain both the TCP proxy paths and the H3
-    backend follow-ups, then reap whatever the ring has finished with.
+    """One event-loop iteration: tick the ring, step the WatchLoop, then
+    run the embedded H3 server's batch flush, then drain both the TCP
+    proxy paths and the H3 backend follow-ups, then reap whatever the
+    ring has finished with.
 
-    The ordering is the token era's, minus the steps `H3UdpServer.flush`
-    now performs itself (buffer re-provisioning, multishot re-arm, and the
-    H3 sendmsg/timeout submissions that used to be a hand-drained pending
-    queue). `tick(wait=True)` is the old `poll(wait_nr=1)`: one
-    io_uring_enter that submits everything queued and blocks for at least
-    one completion, then fires each CQE's Completion. Handlers still cannot
-    submit from inside a callback — they queue into `pending_submits` and
-    the drains below issue the SQEs — so `reap()` is safe here: every
-    submission for this tick has already happened.
+    `tick(wait=True)` submits everything queued and blocks for at least
+    one completion, then fires each CQE's Completion. `loop.step()`
+    drains WatchLoop completions (recv/send/timer). Handlers still
+    cannot submit from inside a callback — they queue into
+    `pending_submits` and the drains below issue the SQEs — so
+    `reap()` is safe here: every submission for this tick has already
+    happened.
 
     Extracted from `main`'s `while True` so the loop body lowers as its own
     small codegen unit rather than inflating `main`.
@@ -1805,8 +1809,10 @@ def _run_tick(
     Args:
         handler: The heap-stable proxy state.
         driver: The io_uring driver every operation is submitted on.
+        loop: The WatchLoop for recv/send/timer completions.
     """
     _ = driver.tick(wait=True)
+    _ = loop[].step()
     handler[].flush_h3(driver)
     handler[].collect_h3_forwards(driver)
     handler[].drain_submits(driver)
@@ -2102,6 +2108,8 @@ def main() raises:
     # on top of the TCP accept/recv/send/connect ops; 256 would overflow
     # under load.
     var driver = IoUringDriver(capacity=4096)
+    var loop_ptr = _heap_alloc[WatchLoop](1)
+    loop_ptr.unsafe_write(WatchLoop(capacity=4096))
 
     # The handler must not move again: every Completion the ring holds
     # points either at it or at a record that stores its address. Heap it,
@@ -2117,7 +2125,7 @@ def main() raises:
 
     # Submit the initial accept plus the embedded H3 server's bootstrap
     # (buf-ring registration + multishot recvmsg + periodic timeout).
-    handler_ptr[].start(driver)
+    handler_ptr[].start(driver, loop_ptr[])
 
     # Event loop. Drain queued submissions from the handler after every
     # tick — handlers still cannot submit from inside a completion callback,
@@ -2126,5 +2134,5 @@ def main() raises:
     # monolithic `main` bodies that mix the driver with many free-function
     # calls stress the lowering pass).
     while True:
-        _run_tick(handler_ptr, driver)
+        _run_tick(handler_ptr, driver, loop_ptr)
         _ = listener  # anchor: keep listener fd alive for io_uring

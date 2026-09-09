@@ -1,8 +1,8 @@
 """H3UdpServer — generic UDP + QUIC + H3 server (proactor model).
 
 Drives multiple H3 connections off a single UDP socket using
-WatchLoop for ingress (multishot recvmsg via DatagramStream) and
-IoUringDriver for egress (sendmsg via SendSlabPool).
+WatchLoop for both ingress (multishot recvmsg via DatagramStream)
+and egress (send_msg with ECN cmsgs).
 
 # Architecture
 
@@ -14,18 +14,18 @@ IoUringDriver for egress (sendmsg via SendSlabPool).
     │                                        │
     │  DatagramStream (multishot recvmsg) ──┘  (BufferPool leases)
     │  ├─ drained in flush() into pending_rx
-    │  SendSlab._on_sendmsg_complete ──────┘   (IoUringDriver CQE)
-    │  ├─ releases slab slot
+    │  WatchLoop.send_msg ─────────────────┘   (per-datagram sendmsg)
+    │  ├─ fire-and-forget; WatchLoop owns slab
     │
     │  WatchLoop (owns TimerFuture for periodic timeout)
     │  ├─ polled in flush(); fires _handle_timeout_impl
     │
-    │  flush(driver) ──── (after each run_once/tick)
+    │  flush() ──── (after each run_once/tick)
     │  └─ _drain_recv_stream: take datagrams from DatagramStream
     │  └─ _flush_ingress: demux pending_rx by DCID, route to
     │                     H3HandlerServer[H] per conn, drain egress
     │  └─ release buffer leases (_live_datagrams.clear)
-    │  └─ _submit_egress: submit sendmsg SQEs via slab pool
+    │  └─ _submit_egress: build Message + ECN cmsg, send_msg
     │  └─ poll timer, process timeout, re-arm via WatchLoop
     │
     └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + dcids + generation)
@@ -53,11 +53,11 @@ after all connections.
 
 After construction, the caller must:
   1. Heap-allocate the server (pointer stability).
-  2. Call `wire_context()` to set SendSlabPool context pointers.
+  2. Call `wire_context()` (no-op kept for lifecycle compatibility).
   3. Call `start(driver, loop)` to create the BufferPool and
      DatagramStream, and arm the periodic timer on the WatchLoop.
   4. In the run loop: `driver.tick()`, `loop.step()`, then
-     `server.flush(driver)`.
+     `server.flush()`.
 """
 
 from std.collections import Optional
@@ -72,7 +72,10 @@ from boucle import (
     DatagramStream,
     Datagram,
     DeliveryHeader,
+    Message,
     Socket,
+    SocketAddrV4,
+    SocketAddrV6,
 )
 from boucle.handle import OwnedHandle
 from boucle.drivers.io_uring import IoUringDriver
@@ -90,7 +93,6 @@ from navette.quic.packet import is_long_header_initial, extract_dcid
 from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
-from navette.h3.send_slab import SendSlab, SendSlabPool
 from navette.util.null_ptr import null_ptr
 
 
@@ -109,9 +111,9 @@ comptime _RECV_CONTROL_CAPACITY: Int = 48
 # match boucle's _NAME_CAPACITY (sizeof(sockaddr_in6) = 28 on x86_64).
 comptime _RECV_NAME_CAPACITY: Int = 28
 
-# Egress backpressure: when backlog exceeds capacity * multiplier,
-# buffer lease returns are delayed to throttle ingress at the kernel level.
-comptime _BACKLOG_CAP_MULTIPLIER: Int = 2
+# Control capacity for egress Messages. 24 bytes holds one IP_TOS (1 B)
+# or IPV6_TCLASS (4 B) ECN cmsg record (both 24 after CMSG_ALIGN).
+comptime _SEND_CONTROL_CAPACITY: Int = 24
 
 
 def _sockaddr_to_path_key(
@@ -177,6 +179,54 @@ def _sockaddr_to_path_key(
         return PathKey.zero()
 
 
+def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
+    """Set a Message's peer from raw sockaddr bytes (Linux layout).
+
+    Parses sa_family (LE on x86_64) to choose between AF_INET and
+    AF_INET6, builds the typed address, and calls `msg.set_peer`.
+    Does nothing when the addr is too short or has an unknown family.
+    """
+    if len(addr) < 4:
+        return
+
+    # sa_family is little-endian on Linux x86_64.
+    var family = Int(addr[0]) | (Int(addr[1]) << 8)
+    # Port is network-order (big-endian).
+    var port = (UInt16(addr[2]) << 8) | UInt16(addr[3])
+
+    if family == 2:  # AF_INET
+        if len(addr) < 8:
+            return
+        msg.set_peer(SocketAddrV4(
+            addr[4], addr[5], addr[6], addr[7], port=port,
+        ))
+    elif family == 10:  # AF_INET6
+        if len(addr) < 24:
+            return
+        # 8 segments of 2 bytes each, big-endian, at offset [8..24).
+        # SocketAddrV6 expects host-order segments.
+        var s0 = (UInt16(addr[8]) << 8) | UInt16(addr[9])
+        var s1 = (UInt16(addr[10]) << 8) | UInt16(addr[11])
+        var s2 = (UInt16(addr[12]) << 8) | UInt16(addr[13])
+        var s3 = (UInt16(addr[14]) << 8) | UInt16(addr[15])
+        var s4 = (UInt16(addr[16]) << 8) | UInt16(addr[17])
+        var s5 = (UInt16(addr[18]) << 8) | UInt16(addr[19])
+        var s6 = (UInt16(addr[20]) << 8) | UInt16(addr[21])
+        var s7 = (UInt16(addr[22]) << 8) | UInt16(addr[23])
+        var scope_id = UInt32(0)
+        if len(addr) >= 28:
+            scope_id = (
+                UInt32(addr[24])
+                | (UInt32(addr[25]) << 8)
+                | (UInt32(addr[26]) << 16)
+                | (UInt32(addr[27]) << 24)
+            )
+        msg.set_peer(SocketAddrV6(
+            s0, s1, s2, s3, s4, s5, s6, s7,
+            port=port, scope_id=scope_id,
+        ))
+
+
 # ── Pending datagram (ingress queue) ──────────────────────────────────────────
 
 
@@ -231,40 +281,43 @@ struct PendingDatagram(Copyable, Movable):
 
 
 struct EgressPacket(Movable):
-    """A queued egress datagram — payload + destination address.
+    """A queued egress datagram — payload + destination address + ECN mark.
 
     Buffered during CQE callbacks (timeout drains) and injected
-    cross-transport responses. Submitted via SendSlabPool in
+    cross-transport responses. Submitted via WatchLoop.send_msg in
     flush()'s _submit_egress phase.
     """
 
     var data: List[UInt8]
     var addr: List[UInt8]
     var conn_idx: Int
+    var ecn_mark: UInt8
 
     def __init__(
         out self,
         var data: List[UInt8],
         var addr: List[UInt8],
         conn_idx: Int,
+        ecn_mark: UInt8,
     ):
-        """Construct an egress packet with payload, peer address, and
-        originating connection index.
+        """Construct an egress packet.
 
         Args:
             data: Packet payload bytes (moved in).
             addr: Peer sockaddr bytes for sendmsg routing (moved in).
             conn_idx: Index into conn_slots for bookkeeping.
+            ecn_mark: ECN codepoint from the QUIC connection's ecn_mark().
         """
         self.data = data^
         self.addr = addr^
         self.conn_idx = conn_idx
+        self.ecn_mark = ecn_mark
 
     def __init__(out self, *, deinit move: Self):
-        """Move constructor."""
         self.data = move.data^
         self.addr = move.addr^
         self.conn_idx = move.conn_idx
+        self.ecn_mark = move.ecn_mark
 
 
 # ── Connection slot + DCID demux entry ──────────────────────────────────────
@@ -347,11 +400,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
     allocates a heap-owned `H3HandlerServer[H]` which owns its own
     `H` instance plus the underlying `QuicConnection` + `H3Connection`.
 
-    Ingress uses a WatchLoop `DatagramStream` (multishot recvmsg backed
-    by a `BufferPool`). Egress uses a `SendSlabPool` submitted through
-    the IoUringDriver. An explicit `flush(driver)` method drains the
-    stream, processes buffered packets through QUIC, submits egress
-    sendmsg SQEs, and releases buffer leases.
+    Both ingress and egress use WatchLoop: ingress via a
+    `DatagramStream` (multishot recvmsg backed by a `BufferPool`),
+    egress via `WatchLoop.send_msg` with ECN marks written as cmsgs.
+    An explicit `flush()` method drains the stream, processes buffered
+    packets through QUIC, submits egress via send_msg, and releases
+    buffer leases.
 
     `make_handler` is a user-provided factory function called once per
     new QUIC connection. The factory owns construction policy — share
@@ -363,7 +417,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # Listening UDP socket. Wraps the OwnedHandle in a Socket so
     # WatchLoop.recv_msg_multishot can reference it and set_recv_tos
     # can enable ECN cmsgs. RAII keeps the fd alive for the entire
-    # loop's lifetime. Use `self.udp_socket.raw()` for sendmsg.
+    # loop's lifetime.
     var udp_socket: Socket
 
     # Transport params reused for every new QuicConnection.server() call.
@@ -400,11 +454,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # it is cleared to return buffers to the pool.
     var _live_datagrams: List[Optional[Datagram]]
 
-    # Sendmsg slab pool (owns per-slot Completions).
-    var _send_pool: SendSlabPool
-
-    # Egress backpressure — packets that couldn't be submitted
-    # (slab exhausted or SQ full).
+    # Egress backlog — packets queued for the next _submit_egress.
     var _egress_backlog: List[EgressPacket]
 
     # Cross-transport injection staging (from inject_response).
@@ -465,9 +515,6 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self.pending_rx = List[PendingDatagram]()
         self._live_datagrams = List[Optional[Datagram]]()
 
-        # Slab pool — 256 slots, PBUF_SIZE bytes max per packet.
-        self._send_pool = SendSlabPool(capacity=256, buf_size=PBUF_SIZE)
-
         self._egress_backlog = List[EgressPacket]()
         self._inject_egress = List[EgressPacket]()
 
@@ -492,7 +539,6 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self.server_config = move.server_config^
         self.pending_rx = move.pending_rx^
         self._live_datagrams = move._live_datagrams^
-        self._send_pool = move._send_pool^
         self._egress_backlog = move._egress_backlog^
         self._inject_egress = move._inject_egress^
         self._recv_pool = move._recv_pool^
@@ -505,17 +551,15 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """Free heap allocations owned by the server.
 
         Walks any live `conn_slots`, destroying their pointees before
-        freeing the per-slot heap blocks. Tears down the send slab pool.
-        The recv stream, buffer pool, live datagrams, and timer are
-        cleaned up by their respective field destructors.
-        On clean teardown conn_slots is typically empty; the walk
-        defends against drop-mid-flight.
+        freeing the per-slot heap blocks. The recv stream, buffer pool,
+        live datagrams, and timer are cleaned up by their respective
+        field destructors. On clean teardown conn_slots is typically
+        empty; the walk defends against drop-mid-flight.
         """
         for i in range(len(self.conn_slots)):
             var ptr = self.conn_slots[i].h3
             ptr.unsafe_deinit_pointee()
             ptr.unsafe_free()
-        self._send_pool.teardown()
 
     # ── Connection lookup ────────────────────────────────────────
 
@@ -537,12 +581,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # ── Lifecycle — wire_context / start / flush ────────────────
 
     def wire_context(mut self):
-        """Set SendSlabPool context pointers to this server's heap address.
+        """No-op kept for lifecycle compatibility.
 
-        Must be called after the H3UdpServer is at its final heap address
-        (pointer stability guaranteed) and before any SQE submission.
+        Previously wired SendSlabPool context pointers; egress now uses
+        WatchLoop.send_msg which manages its own slab internally. Callers
+        may still call this between heap-allocation and start() — it
+        does nothing.
         """
-        self._send_pool.wire_completions()
+        pass
 
     def start(
         mut self, mut driver: IoUringDriver, mut loop: WatchLoop
@@ -558,8 +604,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
         for re-arming the timer in `flush()`.
 
         Args:
-            driver: The IoUringDriver for sendmsg operations.
-            loop: The WatchLoop that owns recv and timers.
+            driver: Kept for lifecycle compatibility (unused).
+            loop: The WatchLoop that owns recv, send, and timers.
         """
         # Store loop pointer for re-arming in flush().
         self._loop_ptr = Pointer[WatchLoop, MutUntrackedOrigin](
@@ -585,15 +631,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # Arm the initial periodic timeout via WatchLoop.
         self._timer = Optional(loop.timeout(UInt64(50)))
 
-    def flush(mut self, mut driver: IoUringDriver) raises:
+    def flush(mut self) raises:
         """Drain the recv stream, process ingress, submit egress.
 
         Called by the external run loop after each tick. MUST NOT call
         driver.tick() or loop.step() (no-callback-during-flush
         invariant).
-
-        Args:
-            driver: The IoUringDriver for submitting new SQEs.
         """
         # 1. Drain datagrams from the DatagramStream into pending_rx.
         self._drain_recv_stream()
@@ -605,27 +648,22 @@ struct H3UdpServer[H: StreamHandler](Movable):
         while len(self._inject_egress) > 0:
             self._egress_backlog.append(self._inject_egress.pop())
 
-        # 4. Submit egress from backlog via slab pool.
-        self._submit_egress(driver)
+        # 4. Submit egress from backlog via WatchLoop.send_msg.
+        self._submit_egress()
 
-        # 5. Egress backpressure: if backlog exceeds 2x slab capacity,
-        # delay returning buffer leases to throttle ingress. Without
-        # available buffers the DatagramStream disarms with ENOBUFS.
-        var backlog_over_cap = len(self._egress_backlog) > (
-            self._send_pool.capacity * _BACKLOG_CAP_MULTIPLIER
-        )
-        if not backlog_over_cap:
-            self._live_datagrams.clear()
-            # Rearm the stream if it disarmed (typically ENOBUFS when
-            # all buffers were leased). Now that leases are returned,
-            # the pool has capacity again.
-            if self._recv_stream is not None:
-                if not self._recv_stream.value().armed():
-                    try:
-                        self._recv_stream.value().rearm()
-                    except:
-                        pass  # Will retry next flush.
-        # else: delay lease return — pool runs out, stream pauses
+        # 5. Release buffer leases so the DatagramStream can reuse them.
+        # WatchLoop manages its own send slab internally, so no
+        # slab-based backpressure check is needed.
+        self._live_datagrams.clear()
+        # Rearm the stream if it disarmed (typically ENOBUFS when
+        # all buffers were leased). Now that leases are returned,
+        # the pool has capacity again.
+        if self._recv_stream is not None:
+            if not self._recv_stream.value().armed():
+                try:
+                    self._recv_stream.value().rearm()
+                except:
+                    pass  # Will retry next flush.
 
         # 6. Poll timer — process timeout and re-arm via WatchLoop.
         if self._timer is not None and self._timer.value().done():
@@ -642,41 +680,43 @@ struct H3UdpServer[H: StreamHandler](Movable):
             except:
                 pass  # Will retry next flush.
 
-    def _submit_egress(
-        mut self, mut driver: IoUringDriver
-    ) raises:
-        """Submit queued egress packets via the slab pool.
+    def _submit_egress(mut self) raises:
+        """Submit queued egress packets via WatchLoop.send_msg.
 
-        Drains _egress_backlog FIFO. When the slab is exhausted or the
-        SQ is full, remaining packets stay in the backlog for the next
-        flush cycle.
+        Drains _egress_backlog FIFO. Each packet is wrapped in a
+        `Message` with the ECN codepoint written as a cmsg. The
+        resulting `SendMsgFuture` is dropped (fire-and-forget);
+        WatchLoop reclaims the internal slot on completion.
 
-        Args:
-            driver: The IoUringDriver for submitting sendmsg SQEs.
+        When the loop's send slab is full, remaining packets stay in
+        the backlog for the next flush cycle.
         """
-        # Resolve the raw fd once (Socket.raw raises IOError; keep it
-        # outside the per-packet try so the error types don't clash).
-        var fd = self.udp_socket.raw()
-
         var remaining = List[EgressPacket]()
         while len(self._egress_backlog) > 0:
             var pkt = self._egress_backlog.pop()
-            var slot_idx = self._send_pool.acquire()
-            if slot_idx < 0:
-                # Slab exhausted — put back and stop.
-                remaining.append(pkt^)
-                break
-            var slab = self._send_pool.slot_ptr(slot_idx)
-            slab[].fill(pkt.data, pkt.addr)
-            var msg_ptr = Pointer[NoneType, MutUntrackedOrigin](
-                unsafe_from_address=Int(slab[].msghdr_ptr())
+
+            # Build Message with a copy of the payload so the packet
+            # can be re-queued on submission failure.
+            var msg = Message(
+                List[UInt8](copy=pkt.data),
+                control_capacity=_SEND_CONTROL_CAPACITY,
             )
-            var cmp_ptr = self._send_pool.completion_ptr(slot_idx)
+
+            # Set destination address from the raw sockaddr blob.
+            _set_msg_peer_raw(msg, pkt.addr)
+
+            # Write ECN mark as a per-datagram cmsg.
             try:
-                driver.sendmsg(fd, msg_ptr, cmp_ptr)
+                msg.set_ecn(pkt.ecn_mark)
             except:
-                # SQ full — release slot and re-queue.
-                self._send_pool.release(slot_idx)
+                pass  # Proceed without ECN if control area exhausted.
+
+            # Submit async sendmsg. The future is dropped immediately;
+            # WatchLoop reclaims the internal slot on completion.
+            try:
+                _ = self._loop_ptr[].send_msg(self.udp_socket, msg^)
+            except:
+                # WatchLoop slab full or fd invalid — re-queue and stop.
                 remaining.append(pkt^)
                 break
         # Put unsubmitted packets back (preserve FIFO order).
@@ -916,7 +956,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
                 # Build peer address from the delivery header name region
                 # for sendmsg routing. Stored as a raw sockaddr blob (16 or
-                # 28 bytes) — SendSlab.fill() consumes the same layout.
+                # 28 bytes) — _set_msg_peer_raw() parses this layout.
                 var addr = List[UInt8](capacity=pd.name_len)
                 for j in range(pd.name_len):
                     addr.append(pd.name_ptr[unsafe_offset=j])
@@ -1039,6 +1079,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
             len(self.conn_slots[conn_idx].addr),
         )
 
+        # ECN mark from the connection's probing/capability state.
+        var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
+
         for i in range(len(datagrams)):
             var pkt = List[UInt8](copy=datagrams[i])
             if len(pkt) == 0:
@@ -1062,7 +1105,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
 
             self._egress_backlog.append(
-                EgressPacket(pkt^, addr_copy^, conn_idx)
+                EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
             )
 
             # Credit per-path bytes_sent. No-op on validated paths.
@@ -1196,12 +1239,13 @@ struct H3UdpServer[H: StreamHandler](Movable):
         var now = monotonic_us()
         var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
         var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
+        var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
         for i in range(len(datagrams)):
             var pkt = List[UInt8](copy=datagrams[i])
             if len(pkt) == 0:
                 continue
             self._inject_egress.append(
-                EgressPacket(pkt^, List[UInt8](copy=addr_copy), conn_idx)
+                EgressPacket(pkt^, List[UInt8](copy=addr_copy), conn_idx, ecn)
             )
 
 
