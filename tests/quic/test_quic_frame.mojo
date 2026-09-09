@@ -1151,11 +1151,114 @@ def test_is_ack_eliciting() raises:
     print("  is_ack_eliciting: PASS")
 
 
+# ── wire_len property ───────────────────────────────────────────────────
+
+
+def _check_wire_len(frame: Frame, label: String) raises:
+    var w = ByteWriter()
+    serialize_frame(frame, w)
+    var buf = w.finish()
+    _assert_eq_int(frame.wire_len(), len(buf), "wire_len mismatch for " + label)
+
+
+def _fill(n: Int, seed: UInt64) -> List[UInt8]:
+    var out = List[UInt8](capacity=n)
+    for i in range(n):
+        out.append(UInt8((seed + UInt64(i) * UInt64(31)) & UInt64(0xFF)))
+    return out^
+
+
+def test_wire_len_exact() raises:
+    """`wire-len-exact`: Frame.wire_len() == len(serialize(frame)) for every
+    kind, across varint magnitudes (1/2/4/8-byte) and payload sizes."""
+    # Values chosen to hit each varint encoding width.
+    var magnitudes = List[UInt64]()
+    magnitudes.append(UInt64(0))
+    magnitudes.append(UInt64(63))
+    magnitudes.append(UInt64(64))
+    magnitudes.append(UInt64(16383))
+    magnitudes.append(UInt64(16384))
+    magnitudes.append(UInt64(1073741823))
+    magnitudes.append(UInt64(1073741824))
+    magnitudes.append(UInt64(4611686018427387903) - UInt64(64))
+    var sizes = List[Int]()
+    sizes.append(0)
+    sizes.append(1)
+    sizes.append(63)
+    sizes.append(64)
+    sizes.append(1200)
+    sizes.append(16384)
+
+    _check_wire_len(Frame.padding(), "PADDING")
+    _check_wire_len(Frame.ping(), "PING")
+    _check_wire_len(Frame.handshake_done(), "HANDSHAKE_DONE")
+
+    var checked = 0
+    for mi in range(len(magnitudes)):
+        var m = magnitudes[mi]
+        # ACK with 0..3 ranges, with and without ECN.
+        for nr in range(4):
+            for ecn in range(2):
+                var ack = AckFrame()
+                ack.largest_ack = m + UInt64(nr * 4) + UInt64(8)
+                ack.ack_delay = m
+                ack.first_ack_range = UInt64(1)
+                for r in range(nr):
+                    ack.ranges.append(AckRange(UInt64(r), UInt64(1)))
+                if ecn == 1:
+                    ack.has_ecn = True
+                    ack.ecn_ect0 = m
+                    ack.ecn_ect1 = UInt64(1)
+                    ack.ecn_ce = m
+                _check_wire_len(Frame.ack(ack), "ACK")
+                checked += 1
+        _check_wire_len(Frame.reset_stream(ResetStreamFrame(m, UInt64(7), m)), "RESET_STREAM")
+        _check_wire_len(Frame.stop_sending(StopSendingFrame(m, m)), "STOP_SENDING")
+        _check_wire_len(Frame.max_data(m), "MAX_DATA")
+        _check_wire_len(Frame.data_blocked(m), "DATA_BLOCKED")
+        _check_wire_len(Frame.max_stream_data(MaxStreamDataFrame(UInt64(4), m)), "MAX_STREAM_DATA")
+        _check_wire_len(Frame.stream_data_blocked(StreamDataBlockedFrame(m, UInt64(9))), "STREAM_DATA_BLOCKED")
+        _check_wire_len(Frame.max_streams(MaxStreamsFrame(m, True)), "MAX_STREAMS_BIDI")
+        _check_wire_len(Frame.max_streams(MaxStreamsFrame(m, False)), "MAX_STREAMS_UNI")
+        _check_wire_len(Frame.streams_blocked(StreamsBlockedFrame(m, True)), "STREAMS_BLOCKED_BIDI")
+        _check_wire_len(Frame.streams_blocked(StreamsBlockedFrame(m, False)), "STREAMS_BLOCKED_UNI")
+        _check_wire_len(Frame.retire_connection_id(m), "RETIRE_CONNECTION_ID")
+        var ncid = NewConnectionIdFrame()
+        ncid.sequence = m
+        ncid.retire_prior_to = UInt64(0)
+        ncid.cid = _fill(8, m)
+        ncid.stateless_reset_token = _fill(16, m)
+        _check_wire_len(Frame.new_connection_id(ncid), "NEW_CONNECTION_ID")
+        for si in range(len(sizes)):
+            var n = sizes[si]
+            _check_wire_len(Frame.crypto(CryptoFrame(m, _fill(n, m))), "CRYPTO")
+            _check_wire_len(Frame.stream(StreamFrame(UInt64(4), m, _fill(n, m), False)), "STREAM")
+            _check_wire_len(Frame.stream(StreamFrame(m, UInt64(0), _fill(n, m), True)), "STREAM fin off0")
+            _check_wire_len(Frame.new_token(_fill(n, m)), "NEW_TOKEN")
+            _check_wire_len(Frame.datagram(_fill(n, m)), "DATAGRAM")
+            _check_wire_len(Frame.datagram_with_len(_fill(n, m)), "DATAGRAM_LEN")
+            var cc = ConnectionCloseFrame()
+            cc.is_transport = (si % 2) == 0
+            cc.error_code = m
+            cc.frame_type = m
+            cc.reason = _fill(n, m)
+            _check_wire_len(Frame.connection_close(cc), "CONNECTION_CLOSE")
+            checked += 7
+    _check_wire_len(Frame.path_challenge(_fill(8, UInt64(1))), "PATH_CHALLENGE")
+    _check_wire_len(Frame.path_response(_fill(8, UInt64(2))), "PATH_RESPONSE")
+    _assert_true(checked > 300, "property must cover many cases")
+    print("  wire_len_exact: PASS")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
 def main() raises:
     print("test_quic_frame:")
+
+    # 0. wire_len property
+    print("  -- wire_len --")
+    test_wire_len_exact()
 
     # 1. Round-trip tests
     print("  -- Round-trip tests --")

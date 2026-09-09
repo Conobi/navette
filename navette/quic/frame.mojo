@@ -725,6 +725,103 @@ struct Frame(Copyable, Movable):
             return False
         return True
 
+    def wire_len(self) -> Int:
+        """Exact serialized length; must match `serialize_frame` byte for byte.
+
+        Lets the packet builder admit frames against a byte budget without
+        serializing them. STREAM frames always carry the LEN bit and omit the
+        offset field when it is 0, mirroring the serializer. Unknown frame
+        types (which the serializer rejects) report 0.
+        """
+        var tid = self.type_id
+        if tid == FRAME_PADDING or tid == FRAME_PING or tid == FRAME_HANDSHAKE_DONE:
+            return 1
+        if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
+            if not self._ack:
+                return 0
+            ref ack = self._ack.value()
+            var n = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
+            n += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
+            for i in range(len(ack.ranges)):
+                n += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
+            if ack.has_ecn:
+                n += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
+            return n
+        if tid == FRAME_RESET_STREAM:
+            if not self._reset_stream:
+                return 0
+            ref rs = self._reset_stream.value()
+            return 1 + varint_len(rs.stream_id) + varint_len(rs.error_code) + varint_len(rs.final_size)
+        if tid == FRAME_STOP_SENDING:
+            if not self._stop_sending:
+                return 0
+            ref ss = self._stop_sending.value()
+            return 1 + varint_len(ss.stream_id) + varint_len(ss.error_code)
+        if tid == FRAME_CRYPTO:
+            if not self._crypto:
+                return 0
+            ref cf = self._crypto.value()
+            return 1 + varint_len(cf.offset) + varint_len(UInt64(len(cf.data))) + len(cf.data)
+        if tid == FRAME_NEW_TOKEN:
+            if not self._new_token:
+                return 0
+            var tl = len(self._new_token.value())
+            return 1 + varint_len(UInt64(tl)) + tl
+        if (tid & UInt64(0xF8)) == FRAME_STREAM_BASE:
+            if not self._stream:
+                return 0
+            ref sf = self._stream.value()
+            var n = 1 + varint_len(sf.stream_id)
+            if sf.offset != UInt64(0):
+                n += varint_len(sf.offset)
+            return n + varint_len(UInt64(len(sf.data))) + len(sf.data)
+        if tid == FRAME_MAX_DATA or tid == FRAME_DATA_BLOCKED:
+            if not self._max_data:
+                return 0
+            return 1 + varint_len(self._max_data.value())
+        if tid == FRAME_MAX_STREAM_DATA or tid == FRAME_STREAM_DATA_BLOCKED:
+            if not self._max_stream_data:
+                return 0
+            ref msd = self._max_stream_data.value()
+            return 1 + varint_len(msd.stream_id) + varint_len(msd.maximum)
+        if (tid == FRAME_MAX_STREAMS_BIDI or tid == FRAME_MAX_STREAMS_UNI
+                or tid == FRAME_STREAMS_BLOCKED_BIDI or tid == FRAME_STREAMS_BLOCKED_UNI):
+            if not self._max_streams:
+                return 0
+            return 1 + varint_len(self._max_streams.value().maximum)
+        if tid == FRAME_NEW_CONNECTION_ID:
+            if not self._new_cid:
+                return 0
+            ref ncid = self._new_cid.value()
+            return (1 + varint_len(ncid.sequence) + varint_len(ncid.retire_prior_to)
+                    + 1 + len(ncid.cid) + len(ncid.stateless_reset_token))
+        if tid == FRAME_RETIRE_CONNECTION_ID:
+            if not self._retire_cid:
+                return 0
+            return 1 + varint_len(self._retire_cid.value())
+        if tid == FRAME_PATH_CHALLENGE or tid == FRAME_PATH_RESPONSE:
+            if not self._path_data:
+                return 0
+            return 1 + len(self._path_data.value())
+        if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
+            if not self._conn_close:
+                return 0
+            ref cc = self._conn_close.value()
+            var n = 1 + varint_len(cc.error_code)
+            if cc.is_transport:
+                n += varint_len(cc.frame_type)
+            return n + varint_len(UInt64(len(cc.reason))) + len(cc.reason)
+        if tid == FRAME_DATAGRAM:
+            if not self._datagram:
+                return 0
+            return 1 + len(self._datagram.value())
+        if tid == FRAME_DATAGRAM_LEN:
+            if not self._datagram:
+                return 0
+            var dl = len(self._datagram.value())
+            return 1 + varint_len(UInt64(dl)) + dl
+        return 0
+
     def is_ack_eliciting(self) -> Bool:
         # ACK-eliciting: everything EXCEPT PADDING, ACK/ACK_ECN, CONNECTION_CLOSE
         if self.type_id == FRAME_PADDING:
