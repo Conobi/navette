@@ -59,6 +59,5 @@ from navette.h3.h3_udp_server import (
     EgressPacket,
     PBUF_COUNT,
     PBUF_SIZE,
-    PBUF_GROUP_ID,
 )
 from navette.h3.send_slab import SendSlab, SendSlabPool
