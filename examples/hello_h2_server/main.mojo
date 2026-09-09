@@ -6,8 +6,8 @@ Demonstrates:
   * `tcp_listener(port)`         — owns the listening TCP socket
   * `TlsBackend`                  — loads librustls_mojo.so
   * `TlsServerConfig`             — PEM cert+key + ALPN=h2
-  * `H2TcpServer[HelloHandler]`   — proactor-model h2 server
-  * Proactor lifecycle: heap-alloc → wire_context → start → tick loop
+  * `H2TcpServer[HelloHandler]`   — WatchLoop-model h2 server
+  * WatchLoop lifecycle: heap-alloc → start → step/poll loop
 
 # Build + run
 
@@ -25,7 +25,6 @@ Expected: `HTTP/2 200` with `Hello, H2!\\n` body.
 """
 
 from navette.h2.h2_tcp_server import H2TcpServer
-from boucle.drivers.io_uring import IoUringDriver
 from boucle.watch import WatchLoop
 from navette.http.handler import (
     StreamHandler,
@@ -197,15 +196,13 @@ def main() raises:
 
     var srv_ptr = _heap_alloc[H2TcpServer[HelloHandler]](1)
     srv_ptr.unsafe_write(server^)
-    srv_ptr[].wire_context()
 
-    var driver = IoUringDriver(capacity=4096)
     var loop = WatchLoop(capacity=4096)
-    srv_ptr[].start(driver, loop)
+    srv_ptr[].start(loop)
 
     print("hello_h2_server: serving")
     while True:
-        _ = driver.tick(wait=False)
-        _ = loop.step(timeout_ms=100)
+        _ = loop.step(timeout_ms=-1)
+        srv_ptr[].poll_accept()
         srv_ptr[].poll_connections()
         srv_ptr[].reap_closed()

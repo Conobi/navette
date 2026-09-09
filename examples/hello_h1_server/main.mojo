@@ -5,7 +5,7 @@ Plaintext HTTP/1.1 on `[::]:8080` by default (override via
 
   * `tcp_listener(port)`         — owns the listening TCP socket
   * `H1TcpServer[HelloHandler]`  — generic plaintext H1 server
-  * Proactor lifecycle: heap-alloc → wire_context → start → tick/step loop
+  * WatchLoop lifecycle: heap-alloc → start → step/poll loop
 
 # Build + run
 
@@ -28,7 +28,6 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.h1.config import ParseConfig
 from navette.h1.h1_tcp_server import H1TcpServer
 from boucle import WatchLoop
-from boucle.drivers.io_uring import IoUringDriver
 from navette.http.handler import (
     StreamHandler,
     Request,
@@ -129,15 +128,13 @@ def main() raises:
 
     var srv_ptr = _heap_alloc[H1TcpServer[HelloHandler]](1)
     srv_ptr.unsafe_write(server^)
-    srv_ptr[].wire_context()
 
-    var driver = IoUringDriver(capacity=4096)
     var loop = WatchLoop(capacity=4096)
-    srv_ptr[].start(driver, loop)
+    srv_ptr[].start(loop)
 
     print("hello_h1_server: serving")
     while True:
-        _ = driver.tick(wait=True)
-        _ = loop.step(timeout_ms=0)
+        _ = loop.step(timeout_ms=-1)
+        srv_ptr[].poll_accept()
         srv_ptr[].poll_connections()
         srv_ptr[].reap_closed()

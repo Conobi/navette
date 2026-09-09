@@ -1,8 +1,7 @@
-"""H2TcpServer — generic HTTP/2 server over TLS-on-TCP (WatchLoop futures + proactor accept).
+"""H2TcpServer — generic HTTP/2 server over TLS-on-TCP + WatchLoop.
 
-Drives multiple HTTP/2 connections off a single TCP listener. Per-connection
-recv and send use WatchLoop futures; the accept path still uses IoUringDriver
-Completions (ported in a later task).
+Drives multiple HTTP/2 connections off a single TCP listener using
+WatchLoop futures for accept, recv, and send.
 
 # Architecture
 
@@ -10,17 +9,16 @@ Completions (ported in a later task).
   Mojo land                                Kernel
   ─────────                                ──────
 
-  H2TcpServer[H: StreamHandler]            io_uring via WatchLoop + IoUringDriver
+  H2TcpServer[H: StreamHandler]            WatchLoop (io_uring internally)
     │                                        │
-    │  _on_accept (Completion callback) ───┘   (CQE, via IoUringDriver)
+    │  AcceptFuture (polled in poll_accept) ─┘
     │  ├─ alloc H2TcpConn[H], TlsConnection.new_server, submit recv future
     │
     │  H2TcpConn[H]                       (per-connection)
     │  ├─ _poll_recv → future.done() → result() → TLS+H2 pipeline
     │  └─ _poll_send → future.done() → result() → partial/pending
     │
-    │  Recv/send via WatchLoop futures (stored loop pointer)
-    │  Accept still via IoUringDriver Completion
+    │  All I/O (accept, recv, send) via WatchLoop futures
     │
     └─ connections: List[Pointer[H2TcpConn[H]]]
          └─ per conn: Socket, TlsConnection, H2HandlerServer[H],
@@ -45,21 +43,18 @@ the factory once per accepted TCP connection.
 
 After construction, the caller must:
   1. Heap-allocate the server (pointer stability).
-  2. Call `wire_context()` to set the accept Completion context pointer.
-  3. Call `start(driver, loop)` to submit the initial accept.
-  4. In the run loop: `driver.tick()` and `loop.step()`,
-     then `server.poll_connections()` then `server.reap_closed()`.
+  2. Call `start(loop)` to submit the initial accept.
+  3. In the run loop: `loop.step()`, then `server.poll_accept()`,
+     `server.poll_connections()`, then `server.reap_closed()`.
 """
 
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.ffi import external_call
 
-from boucle.handle import RawHandle, OwnedHandle
-from boucle.proactor.completion import Completion
-from boucle.drivers.io_uring import IoUringDriver
+from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
-from boucle.watch import WatchLoop, RecvFuture, SendFuture
+from boucle.watch import WatchLoop, RecvFuture, SendFuture, AcceptFuture
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer
@@ -519,63 +514,33 @@ struct H2TcpConn[H: StreamHandler](Movable):
             print("H2TcpServer: send processing error:", e)
 
 
-# ── Module-level completion callbacks ──────────────────────────────────────
-
-
-def _on_accept[H: StreamHandler](
-    ctx: Pointer[NoneType, MutUntrackedOrigin],
-    result: Int,
-    flags: UInt32,
-):
-    """Accept CQE callback. Casts context to H2TcpServer and delegates
-    to _handle_accept_impl.
-
-    Defined at module level (rather than as a static method on the
-    parameterised struct) to avoid Mojo limitations with static
-    methods on generic structs.
-
-    Args:
-        ctx: Type-erased pointer to the owning H2TcpServer instance.
-        result: io_uring CQE result (accepted fd or negative errno).
-        flags: io_uring CQE flags (unused for single-shot accept).
-    """
-    var self_ptr = Pointer[H2TcpServer[H], MutUntrackedOrigin](
-        unsafe_from_address=Int(ctx)
-    )
-    try:
-        self_ptr[]._handle_accept_impl(result)
-    except e:
-        print("H2TcpServer: _on_accept error:", e)
-
-
 # ── H2TcpServer ──────────────────────────────────────────────────────────────
 
 
 struct H2TcpServer[H: StreamHandler](Movable):
-    """Generic HTTP/2 server over TLS+TCP (WatchLoop futures + proactor accept).
+    """Generic HTTP/2 server over TLS+TCP + WatchLoop.
 
-    Per-connection recv/send use WatchLoop futures. The accept path
-    still uses IoUringDriver Completions (ported separately).
+    Uses WatchLoop futures for accept, recv, and send. Each accepted
+    TCP connection allocates a heap-owned H2TcpConn[H] that owns
+    RecvFuture/SendFuture handles.
 
-    Owns: the listening fd, the rustls library handle, the server-side
-    TlsServerConfig (with ALPN=h2 set by the caller), and the
-    per-conn connection table.
+    Owns: the listening socket, the rustls library handle, the
+    server-side TlsServerConfig (with ALPN=h2 set by the caller),
+    and the per-conn connection table.
 
     After construction, the caller must:
       1. Heap-allocate the server (pointer stability).
-      2. Call `wire_context()` to set the accept Completion context pointer.
-      3. Call `start(driver, loop)` to submit the initial accept.
-      4. In the run loop: `driver.tick()` and `loop.step()`,
-         then `server.poll_connections()` then `server.reap_closed()`.
+      2. Call `start(loop)` to submit the initial accept.
+      3. In the run loop: `loop.step()`, then `server.poll_accept()`,
+         `server.poll_connections()`, then `server.reap_closed()`.
     """
 
-    var listen_handle: OwnedHandle
+    var listen_socket: Socket
     var connections: List[Pointer[H2TcpConn[Self.H], MutUntrackedOrigin]]
     var make_handler: def () thin raises -> Self.H
     var _tls: TlsBackend
     var server_tls_config: TlsServerConfig
-    var _accept_cmp: Completion
-    var _driver_ptr: Pointer[NoneType, MutUntrackedOrigin]
+    var _accept_future: Optional[AcceptFuture]
     var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
     var _needs_accept_rearm: Bool
 
@@ -589,7 +554,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         """Construct an H2TcpServer.
 
         After construction, heap-allocate the server for pointer
-        stability, then call wire_context() and start(driver, loop).
+        stability, then call start(loop).
 
         Args:
             listen_handle: Owned listening TCP socket (moved in).
@@ -597,28 +562,22 @@ struct H2TcpServer[H: StreamHandler](Movable):
             tls: TLS backend instance (moved in).
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
         """
-        self.listen_handle = listen_handle^
+        self.listen_socket = Socket(listen_handle^)
         self.connections = List[Pointer[H2TcpConn[Self.H], MutUntrackedOrigin]]()
         self.make_handler = make_handler
         self._tls = tls^
         self.server_tls_config = server_tls_config^
-        self._accept_cmp = Completion(
-            invoke=_on_accept[Self.H],
-            context=null_ptr[NoneType, MutUntrackedOrigin](),
-        )
-        self._driver_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._accept_future = Optional[AcceptFuture]()
         self._loop_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
 
     def __init__(out self, *, deinit move: Self):
-        """Move constructor."""
-        self.listen_handle = move.listen_handle^
+        self.listen_socket = move.listen_socket^
         self.connections = move.connections^
         self.make_handler = move.make_handler
         self._tls = move._tls^
         self.server_tls_config = move.server_tls_config^
-        self._accept_cmp = move._accept_cmp^
-        self._driver_ptr = move._driver_ptr
+        self._accept_future = move._accept_future^
         self._loop_ptr = move._loop_ptr
         self._needs_accept_rearm = move._needs_accept_rearm
 
@@ -629,42 +588,21 @@ struct H2TcpServer[H: StreamHandler](Movable):
             ptr.unsafe_deinit_pointee()
             ptr.unsafe_free()
 
-    # ── Lifecycle — wire_context / start ────────────────────────
+    # ── Lifecycle — start ────────────────────────────────────────
 
-    def wire_context(mut self):
-        """Set accept Completion context pointer to this server's heap address.
+    def start(mut self, mut loop: WatchLoop) raises:
+        """Submit the initial accept on the listener socket.
 
-        Must be called after the H2TcpServer is at its final heap address
-        (pointer stability guaranteed) and before any SQE submission.
-        """
-        var self_ctx = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self))
-        )
-        self._accept_cmp.context = self_ctx
-
-    def start(
-        mut self, mut driver: IoUringDriver, mut loop: WatchLoop
-    ) raises:
-        """Submit the initial accept on the listener fd.
-
-        Must be called after wire_context() and before the first tick.
-        Stores both the driver pointer (for accept) and the loop pointer
-        (for per-connection recv/send futures).
+        Must be called after heap-allocation and before the first step.
+        Stores the loop pointer for all I/O (accept, recv, send).
 
         Args:
-            driver: The IoUringDriver for accept submissions.
-            loop: The WatchLoop for per-connection recv/send futures.
+            loop: The WatchLoop for all I/O operations.
         """
-        self._driver_ptr = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=driver))
-        )
         self._loop_ptr = Pointer[NoneType, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=loop))
         )
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._accept_cmp))
-        )
-        driver.accept(self.listen_handle.raw(), cmp_ptr)
+        self._submit_accept()
 
     def poll_connections(mut self):
         """Poll all connection recv/send futures and process completed ones.
@@ -705,60 +643,61 @@ struct H2TcpServer[H: StreamHandler](Movable):
         # Retry deferred accept rearm (transient error or SQ-full).
         if self._needs_accept_rearm:
             try:
-                self._resubmit_accept()
+                self._submit_accept()
                 self._needs_accept_rearm = False
             except:
                 pass  # SQ still full — retry on next tick.
 
-    def _resubmit_accept(mut self) raises:
-        """Re-submit the accept operation on the listener fd.
-
-        Called after each accept CQE (success or failure) to keep
-        the server listening for new connections (single-shot model).
-        """
-        var driver = Pointer[IoUringDriver, MutUntrackedOrigin](
-            unsafe_from_address=Int(self._driver_ptr)
-        )
-        var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self._accept_cmp))
-        )
-        driver[].accept(self.listen_handle.raw(), cmp_ptr)
-
     # ── Accept ───────────────────────────────────────────────────
 
-    def _handle_accept_impl(mut self, result: Int) raises:
-        """Handle an accepted TCP connection.
+    def _submit_accept(mut self) raises:
+        """Submit an accept operation on the listening socket via WatchLoop.
 
-        Creates a new H2TcpConn with a WatchLoop pointer, submits the
-        initial recv future, and re-submits accept for the next
-        connection.
-
-        Transient resource errors (EMFILE, ENFILE, ENOMEM) defer the
-        accept rearm to the next reap_closed() tick to avoid a
-        CPU-burning hot loop. If the final _resubmit_accept raises
-        (SQ full), the rearm is likewise deferred.
-
-        Args:
-            result: CQE result -- accepted fd (>=0) or negative errno.
+        Stores the returned AcceptFuture. Called from start() for the
+        initial accept and from _handle_accept_impl for re-arming.
         """
-        if result < 0:
-            # Transient resource errors — defer rearm to next reap_closed()
-            # tick to avoid a CPU-burning hot loop.
-            if result == -24 or result == -23 or result == -12:  # EMFILE / ENFILE / ENOMEM
-                print("H2TcpServer: accept backoff (errno", result, ")")
-                self._needs_accept_rearm = True
-                return
-            print("H2TcpServer: accept failed:", result)
-            try:
-                self._resubmit_accept()
-            except:
-                self._needs_accept_rearm = True
+        var loop = Pointer[WatchLoop, MutUntrackedOrigin](
+            unsafe_from_address=Int(self._loop_ptr)
+        )
+        self._accept_future = Optional(loop[].accept(self.listen_socket))
+
+    def poll_accept(mut self):
+        """Poll the accept future and process any accepted connection.
+
+        Called after loop.step(). If the accept future is done, extracts
+        the accepted socket and delegates to _handle_accept_impl. On
+        accept failure, defers rearm to the next reap_closed() tick.
+        """
+        if not Bool(self._accept_future):
+            return
+        if not self._accept_future.value().done():
             return
 
-        var client_fd = Int32(result)
-        var peer_addr = _peer_addr_from_fd(client_fd)
+        var opt = self._accept_future^
+        self._accept_future = Optional[AcceptFuture]()
+        var future = opt.unsafe_take()
 
-        var socket = Socket(OwnedHandle(raw=client_fd))
+        # Split: result() raises on accept syscall failure;
+        # _handle_accept_impl raises on processing errors.
+        # Both are caught here — accept errors defer rearm.
+        try:
+            var socket = future^.result()
+            self._handle_accept_impl(socket^)
+        except e:
+            print("H2TcpServer: accept error:", e)
+            self._needs_accept_rearm = True
+
+    def _handle_accept_impl(mut self, var socket: Socket) raises:
+        """Handle an accepted TCP connection.
+
+        Creates a new H2TcpConn, submits initial recv, and rearms
+        accept for the next connection.
+
+        Args:
+            socket: The accepted TCP socket (moved in).
+        """
+        var peer_addr = _peer_addr_from_fd(socket.raw())
+
         var tls = TlsConnection.new_server(self._tls.shared(), self.server_tls_config)
 
         var handler = self.make_handler()
@@ -778,7 +717,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         # Re-submit accept BEFORE initial recv — if _submit_recv raises
         # (SQ full), the accept rearm is already queued.
         try:
-            self._resubmit_accept()
+            self._submit_accept()
         except:
             self._needs_accept_rearm = True
 

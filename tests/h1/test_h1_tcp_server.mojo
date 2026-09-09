@@ -1,13 +1,12 @@
-"""Smoke test for H1TcpServer bootstrap (WatchLoop + IoUringDriver model).
+"""Smoke test for H1TcpServer bootstrap (WatchLoop model).
 
 Doesn't require an external HTTP/1.1 client: spins the proactor lifecycle
-through wire_context() + start() + one non-blocking tick + reap_closed(),
-and exits. Catches regressions in:
+through start() + one non-blocking step + reap_closed(), and exits. Catches
+regressions in:
 
-  * H1TcpServer construction (field init order, accept Completion wiring)
-  * Completion wiring (wire_context sets accept callback context pointer)
+  * H1TcpServer construction (field init order)
   * start() SQE sequence (initial accept submission on listener fd)
-  * one tick cycle (non-blocking — no client connects, accept stays pending)
+  * one step cycle (non-blocking — no client connects, accept stays pending)
   * reap_closed() (no-op on empty connection list, verifies no crash)
 
 No TLS setup needed — H1TcpServer is plaintext-only.
@@ -17,7 +16,6 @@ from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from boucle import WatchLoop
-from boucle.drivers.io_uring import IoUringDriver
 
 from navette.h1.h1_tcp_server import H1TcpServer
 from navette.h1.config import ParseConfig
@@ -74,11 +72,12 @@ def make_stub_handler() raises -> StubHandler:
 def test_h1_tcp_server_init_and_tick() raises:
     """Spin the server through the full proactor lifecycle.
 
-    Exercises wire_context + start (initial accept submission on the
-    listener fd), one non-blocking tick (no client connects, so the
-    accept stays pending and tick returns immediately), poll_connections
-    (no-op since no connections exist), and reap_closed (no-op on
-    empty connection list) — without requiring a real HTTP/1.1 client.
+    Exercises start (initial accept submission on the listener fd),
+    one non-blocking step (no client connects, so the accept stays
+    pending and step returns immediately), poll_accept (no-op since
+    accept is not done), poll_connections (no-op since no connections
+    exist), and reap_closed (no-op on empty connection list) — without
+    requiring a real HTTP/1.1 client.
     """
     # -- 1. TCP listener on ephemeral port --
     var sock = tcp_listener(0)  # kernel picks a free port
@@ -95,23 +94,19 @@ def test_h1_tcp_server_init_and_tick() raises:
     var srv_ptr = _heap_alloc[H1TcpServer[StubHandler]](1)
     srv_ptr.init_pointee_move(server^)
 
-    # -- 4. Wire Completion context pointers --
-    srv_ptr[].wire_context()
-
-    # -- 5. IoUringDriver + WatchLoop + start --
-    var driver = IoUringDriver(capacity=64)
+    # -- 4. WatchLoop + start --
     var loop = WatchLoop(capacity=64)
-    srv_ptr[].start(driver, loop)
+    srv_ptr[].start(loop)
 
-    # -- 6. One non-blocking tick — no client, accept stays pending --
-    driver.tick(wait=False)
+    # -- 5. One non-blocking step — no client, accept stays pending --
     _ = loop.step(timeout_ms=0)
 
-    # -- 7. Poll connections + reap closed — no-op on empty list --
+    # -- 6. Poll accept + connections + reap closed — no-op on empty list --
+    srv_ptr[].poll_accept()
     srv_ptr[].poll_connections()
     srv_ptr[].reap_closed()
 
-    # -- 8. Teardown --
+    # -- 7. Teardown --
     srv_ptr.destroy_pointee()
     srv_ptr.free()
 
