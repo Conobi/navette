@@ -7,7 +7,7 @@ Demonstrates the full navette library surface:
   * `quic_server_config_new`  — builds a rustls server config from PEM
   * `default_transport_params` — sane QUIC transport params for v1
   * `H3UdpServer[HelloHandler]` — the generic server
-  * the tick/flush loop        — drives io_uring directly
+  * the step/flush loop        — drives the WatchLoop event loop
 
 # Build + run
 
@@ -57,7 +57,6 @@ from navette.quic.trans_param import default_transport_params
 from navette.tls import EarlyDataPolicy, TlsBackend
 from navette.tls.config import QuicServerConfig
 from boucle import WatchLoop
-from boucle.drivers.io_uring import IoUringDriver
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 
@@ -182,11 +181,9 @@ def main() raises:
     srv_ptr.unsafe_write(server^)
     srv_ptr[].wire_context()
 
-    var driver = IoUringDriver(capacity=256)
     var loop_ptr = _heap_alloc[WatchLoop](1)
     loop_ptr.unsafe_write(WatchLoop(capacity=256))
     srv_ptr[].start(loop_ptr[])
     while True:
-        _ = driver.tick(wait=True)
         _ = loop_ptr[].step()
         srv_ptr[].flush()

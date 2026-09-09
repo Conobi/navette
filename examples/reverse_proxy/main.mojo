@@ -10,16 +10,18 @@
 #
 # Event model
 #
-#   One `IoUringDriver` drives everything. Every operation carries its own
-#   `Completion`, whose pointer the kernel hands back as the SQE user_data,
-#   so the driver routes each CQE directly to the code that submitted it —
-#   there is no token, no central dispatch switch, and no retry queue for
-#   operations the submission queue could not take (the driver flushes and
-#   retries, raising only if the queue is still full).
+#   One `WatchLoop` drives everything. The H3/QUIC frontend uses the
+#   WatchLoop's Future API; the H1/H2 TCP proxy paths submit through the
+#   loop's internal driver using raw Completions whose pointer the kernel
+#   hands back as the SQE user_data, so the driver routes each CQE directly
+#   to the code that submitted it — there is no token, no central dispatch
+#   switch, and no retry queue for operations the submission queue could
+#   not take (the driver flushes and retries, raising only if the queue is
+#   still full).
 #
-#   A completion callback still cannot submit: it has no driver reference.
+#   A completion callback still cannot submit: it has no loop reference.
 #   It queues a `PendingSubmit` and `_run_tick` issues the SQEs after the
-#   tick, which is also what keeps the per-tick ordering stable.
+#   step, which is also what keeps the per-tick ordering stable.
 #
 #   Because a `Completion` pointer lives in the ring until its CQE arrives,
 #   nothing that owns one is freed the moment it is closed. Connections and
@@ -68,7 +70,6 @@ from navette.tls import (
 from navette.tls.config import QuicServerConfig
 
 from boucle import WatchLoop
-from boucle.drivers.io_uring import IoUringDriver
 from boucle.proactor.completion import Completion
 from boucle.handle import OwnedHandle
 from boucle.net.socket import Socket
@@ -757,7 +758,7 @@ struct ProxyHandler(Movable):
 
     Owns the listener fd, rustls lib + three configs (one server with
     dual-ALPN, two clients each pinned to one ALPN), the list of in-flight
-    connections, and the queue of I/O ops to submit after each driver tick.
+    connections, and the queue of I/O ops to submit after each loop step.
 
     The actual per-variant work lives in `proxy_h1` / `proxy_h2`
     free functions; this struct is just the dispatch + TLS-handshake
@@ -803,7 +804,7 @@ struct ProxyHandler(Movable):
     # The listener's own Completion. Exactly one accept is in flight at a
     # time (each accept CQE re-arms the next), so one Completion suffices.
     var _accept_cmp: Completion
-    # Embedded H3/QUIC frontend, driven off the same IoUringDriver through
+    # Embedded H3/QUIC frontend, driven off the same WatchLoop through
     # its own Completions. Declared LAST and heap-allocated together with
     # this struct before any QUIC connection exists, so the pointer the H3
     # server's per-conn handlers take to `self.profile` stays stable.
@@ -882,24 +883,21 @@ struct ProxyHandler(Movable):
         )
         self._h3.wire_context()
 
-    def start(
-        mut self, mut driver: IoUringDriver, mut loop: WatchLoop
-    ) raises:
+    def start(mut self, mut loop: WatchLoop) raises:
         """Submit the proxy's initial operations: the first TCP accept and
         the embedded H3 server's bootstrap (buf-ring registration, multishot
         recvmsg, periodic timeout).
 
         Args:
-            driver: The io_uring driver every operation is submitted on.
-            loop: The WatchLoop for recv/send/timer operations.
+            loop: The WatchLoop for all I/O operations.
         """
         var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
             unsafe_from_address=Int(Pointer(to=self._accept_cmp))
         )
-        driver.accept(self.listener_fd, cmp_ptr)
+        loop._driver.accept(self.listener_fd, cmp_ptr)
         self._h3.start(loop)
 
-    def flush_h3(mut self, mut driver: IoUringDriver) raises:
+    def flush_h3(mut self) raises:
         """Run the embedded H3 server's per-tick batch flush.
 
         `H3UdpServer.flush` demuxes the datagrams buffered by the
@@ -907,9 +905,6 @@ struct ProxyHandler(Movable):
         submits egress via WatchLoop.send_msg, recycles buf-ring
         buffers, and re-arms both the multishot recvmsg and the
         periodic timeout.
-
-        Args:
-            driver: The io_uring driver (kept for lifecycle compat).
         """
         self._h3.flush()
 
@@ -1544,7 +1539,9 @@ struct ProxyHandler(Movable):
 
     # --- Post-tick submission drains ------------------------------------
 
-    def drain_submits(mut self, mut driver: IoUringDriver) raises:
+    def drain_submits(
+        mut self, loop: Pointer[WatchLoop, MutUntrackedOrigin]
+    ) raises:
         """Submit every op queued by this tick's completions, then clear the
         queue.
 
@@ -1555,7 +1552,7 @@ struct ProxyHandler(Movable):
         the connection from `connections` immediately.
 
         Args:
-            driver: The io_uring driver every operation is submitted on.
+            loop: Pointer to the WatchLoop whose driver submits operations.
         """
         var submits = self.pending_submits^
         self.pending_submits = List[PendingSubmit]()
@@ -1567,7 +1564,7 @@ struct ProxyHandler(Movable):
                 var cmp_ptr = Pointer[Completion, MutUntrackedOrigin](
                     unsafe_from_address=Int(Pointer(to=self._accept_cmp))
                 )
-                driver.accept(s.fd, cmp_ptr)
+                loop[]._driver.accept(s.fd, cmp_ptr)
                 continue
 
             var idx = self._find_index(s.conn_id)
@@ -1591,7 +1588,7 @@ struct ProxyHandler(Movable):
                 var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
                     unsafe_from_address=raw_addr
                 )
-                driver.recv(
+                loop[]._driver.recv(
                     s.fd, buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
                 )
             elif s.kind == SUBMIT_SEND:
@@ -1614,11 +1611,11 @@ struct ProxyHandler(Movable):
                 var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
                     unsafe_from_address=raw_addr
                 )
-                driver.send(s.fd, buf_ptr, UInt32(n), cmp_ptr)
+                loop[]._driver.send(s.fd, buf_ptr, UInt32(n), cmp_ptr)
             elif s.kind == SUBMIT_CONNECT:
                 var addr_ptr = conn[].backend_addr_stor.addr_unsafe_ptr()
                 var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
-                driver.connect(s.fd, addr_ptr, addr_len, cmp_ptr)
+                loop[]._driver.connect(s.fd, addr_ptr, addr_len, cmp_ptr)
                 conn[].connect_in_flight = True
 
     def _find_h3_ops(self, backend_conn_id: UInt64) -> Int:
@@ -1629,7 +1626,9 @@ struct ProxyHandler(Movable):
                 return i
         return -1
 
-    def collect_h3_forwards(mut self, mut driver: IoUringDriver) raises:
+    def collect_h3_forwards(
+        mut self, loop: Pointer[WatchLoop, MutUntrackedOrigin]
+    ) raises:
         """Walk every live H3 connection's `ForwardingHandler`, drain its
         captured requests, open a backend TCP+TLS+`H1Session` for each, and
         submit the backend connect.
@@ -1641,7 +1640,7 @@ struct ProxyHandler(Movable):
         forbids globals).
 
         Args:
-            driver: The io_uring driver every operation is submitted on.
+            loop: Pointer to the WatchLoop whose driver submits operations.
         """
         var n_conns = len(self._h3.conn_slots)
         for ci in range(n_conns):
@@ -1674,7 +1673,7 @@ struct ProxyHandler(Movable):
                 )
                 self.h3_backend_ops.append(ops_ptr)
                 var addr_len = UInt64(SocketAddrStorV4.ADDR_LEN)
-                driver.connect(
+                loop[]._driver.connect(
                     fd,
                     addr_ptr,
                     addr_len,
@@ -1683,7 +1682,7 @@ struct ProxyHandler(Movable):
                 ops_ptr[].set_in_flight(OP_BACKEND_CONNECT, True)
 
     def drain_h3_backend_submits(
-        mut self, mut driver: IoUringDriver
+        mut self, loop: Pointer[WatchLoop, MutUntrackedOrigin]
     ) raises:
         """Issue the H3-backend recv/send SQEs queued by the backend
         handlers. Buffer pointers come from the backend-conn registry (these
@@ -1691,7 +1690,7 @@ struct ProxyHandler(Movable):
         Completions from the matching `H3BackendOps` block.
 
         Args:
-            driver: The io_uring driver every operation is submitted on.
+            loop: Pointer to the WatchLoop whose driver submits operations.
         """
         var submits = self.h3_backend_submits^
         self.h3_backend_submits = List[PendingSubmit]()
@@ -1713,7 +1712,7 @@ struct ProxyHandler(Movable):
                 var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
                     unsafe_from_address=raw_addr
                 )
-                driver.recv(
+                loop[]._driver.recv(
                     s.fd, buf_ptr, UInt32(_RECV_BUF_SIZE), cmp_ptr
                 )
                 ops[].set_in_flight(s.op_kind, True)
@@ -1731,7 +1730,7 @@ struct ProxyHandler(Movable):
                 var buf_ptr = Pointer[UInt8, MutUntrackedOrigin](
                     unsafe_from_address=raw_addr
                 )
-                driver.send(s.fd, buf_ptr, UInt32(n), cmp_ptr)
+                loop[]._driver.send(s.fd, buf_ptr, UInt32(n), cmp_ptr)
                 ops[].set_in_flight(s.op_kind, True)
 
     # --- Reaping --------------------------------------------------------
@@ -1787,36 +1786,31 @@ struct ProxyHandler(Movable):
 
 def _run_tick(
     handler: Pointer[ProxyHandler, MutUntrackedOrigin],
-    mut driver: IoUringDriver,
     loop: Pointer[WatchLoop, MutUntrackedOrigin],
 ) raises:
-    """One event-loop iteration: tick the ring, step the WatchLoop, then
-    run the embedded H3 server's batch flush, then drain both the TCP
-    proxy paths and the H3 backend follow-ups, then reap whatever the
-    ring has finished with.
+    """One event-loop iteration: step the WatchLoop (which ticks the
+    underlying driver), then run the embedded H3 server's batch flush,
+    then drain both the TCP proxy paths and the H3 backend follow-ups,
+    then reap whatever the ring has finished with.
 
-    `tick(wait=True)` submits everything queued and blocks for at least
-    one completion, then fires each CQE's Completion. `loop.step()`
-    drains WatchLoop completions (recv/send/timer). Handlers still
-    cannot submit from inside a callback — they queue into
-    `pending_submits` and the drains below issue the SQEs — so
-    `reap()` is safe here: every submission for this tick has already
-    happened.
+    `step()` submits everything queued and blocks for at least one
+    completion, then fires each CQE's Completion. Handlers still cannot
+    submit from inside a callback — they queue into `pending_submits`
+    and the drains below issue the SQEs — so `reap()` is safe here:
+    every submission for this tick has already happened.
 
     Extracted from `main`'s `while True` so the loop body lowers as its own
     small codegen unit rather than inflating `main`.
 
     Args:
         handler: The heap-stable proxy state.
-        driver: The io_uring driver every operation is submitted on.
-        loop: The WatchLoop for recv/send/timer completions.
+        loop: The WatchLoop for all I/O operations.
     """
-    _ = driver.tick(wait=True)
     _ = loop[].step()
-    handler[].flush_h3(driver)
-    handler[].collect_h3_forwards(driver)
-    handler[].drain_submits(driver)
-    handler[].drain_h3_backend_submits(driver)
+    handler[].flush_h3()
+    handler[].collect_h3_forwards(loop)
+    handler[].drain_submits(loop)
+    handler[].drain_h3_backend_submits(loop)
     handler[].reap()
 
 
@@ -2107,7 +2101,6 @@ def main() raises:
     # provided-buffer ring + multishot recvmsg + timeout + per-stream sendmsg
     # on top of the TCP accept/recv/send/connect ops; 256 would overflow
     # under load.
-    var driver = IoUringDriver(capacity=4096)
     var loop_ptr = _heap_alloc[WatchLoop](1)
     loop_ptr.unsafe_write(WatchLoop(capacity=4096))
 
@@ -2125,14 +2118,14 @@ def main() raises:
 
     # Submit the initial accept plus the embedded H3 server's bootstrap
     # (buf-ring registration + multishot recvmsg + periodic timeout).
-    handler_ptr[].start(driver, loop_ptr[])
+    handler_ptr[].start(loop_ptr[])
 
     # Event loop. Drain queued submissions from the handler after every
-    # tick — handlers still cannot submit from inside a completion callback,
-    # because a callback has no driver reference. The per-tick body is
+    # step — handlers still cannot submit from inside a completion callback,
+    # because a callback has no loop reference. The per-tick body is
     # extracted into `_run_tick` to keep `main`'s codegen unit small (large
-    # monolithic `main` bodies that mix the driver with many free-function
+    # monolithic `main` bodies that mix the loop with many free-function
     # calls stress the lowering pass).
     while True:
-        _run_tick(handler_ptr, driver, loop_ptr)
+        _run_tick(handler_ptr, loop_ptr)
         _ = listener  # anchor: keep listener fd alive for io_uring

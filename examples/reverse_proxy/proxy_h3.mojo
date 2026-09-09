@@ -5,7 +5,7 @@
 # Design philosophy (mirrors proxy_h2.mojo's reuse-first approach):
 #   We do NOT reimplement QUIC / H3 / QPACK. We EMBED navette's
 #   `H3UdpServer[ForwardingHandler]` inside the proxy and drive it from the
-#   proxy's existing `IoUringDriver`, sharing one ring with the TCP paths.
+#   proxy's existing `WatchLoop`, sharing one ring with the TCP paths.
 #   The embedded server owns the Completions for its own UDP operations, so
 #   its completions never reach the proxy's dispatch at all; the proxy only
 #   ticks the driver and calls `H3UdpServer.flush` each round.
@@ -41,7 +41,7 @@
 #   This file holds the driver-agnostic building blocks. The driver-typed
 #   glue (bootstrap, per-tick drain, SQE submission, and the `Completion`
 #   blocks each backend round-trip is routed by) lives in main.mojo, where
-#   `ProxyHandler` and the `IoUringDriver` are in scope — exactly as
+#   `ProxyHandler` and the `WatchLoop` are in scope — exactly as
 #   `ProxyHandler.drain_submits` already does for the TCP paths. This keeps
 #   proxy_h3 free of a circular import on main.mojo.
 
