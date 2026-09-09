@@ -882,6 +882,181 @@ def test_stream_data_transfer() raises:
     print("  test_stream_data_transfer: PASS")
 
 
+def _pattern_bytes(n: Int, seed: Int) -> List[UInt8]:
+    """Deterministic non-repeating-per-chunk body: byte i = (i + seed) % 251."""
+    var out = List[UInt8](capacity=n)
+    for i in range(n):
+        out.append(UInt8((i + seed) % 251))
+    return out^
+
+
+def _drive_response(
+    mut client: QuicConnection,
+    mut server: QuicConnection,
+    sid: UInt64,
+    mut now: UInt64,
+    max_rounds: Int,
+) raises -> Tuple[List[UInt8], Int]:
+    """Pump server -> client until the client reads FIN on `sid`.
+
+    Returns the reassembled response bytes and the number of datagrams the
+    server emitted while delivering it (ACK-only ones included).
+    """
+    var body = List[UInt8]()
+    var server_dgs = 0
+    var fin_seen = False
+    for _ in range(max_rounds):
+        now += UInt64(10_000)
+        var s_dg = server.send(now)
+        server_dgs += len(s_dg)
+        for i in range(len(s_dg)):
+            client.recv(Span(s_dg[i]), now)
+        var got = client.recv_stream_data(sid)
+        for i in range(len(got[0])):
+            body.append(got[0][i])
+        if got[1]:
+            fin_seen = True
+            break
+        var c_dg = client.send(now)
+        for i in range(len(c_dg)):
+            server.recv(Span(c_dg[i]), now)
+    assert_true(fin_seen, "client never saw FIN on the response stream")
+    return Tuple[List[UInt8], Int](body^, server_dgs)
+
+
+# Server datagrams emitted for the scripted 5 kB exchange below, measured
+# before the frame builder stopped copying streams per packet. The in-place
+# rewrite must not change what goes on the wire.
+comptime RESPONSE_5KB_SERVER_DATAGRAMS: Int = 5
+
+
+def test_response_5kb_wire_unchanged() raises:
+    """A scripted 5 kB response arrives intact in the recorded datagram count."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var sid = client.open_stream(True)
+    var req = _to_bytes("GET")
+    client.send_stream_data(sid, Span(req), True)
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+    var srv_read = server.recv_stream_data(sid)
+    assert_true(_bytes_equal(srv_read[0], "GET"), "server did not read request")
+
+    var expected = _pattern_bytes(5000, 7)
+    server.send_stream_data(sid, Span(expected), True)
+    var res = _drive_response(client, server, sid, now, 40)
+    var body = res[0].copy()
+    assert_equal_int(len(body), 5000, "5 kB response length")
+    for i in range(len(expected)):
+        if body[i] != expected[i]:
+            raise "5 kB response byte mismatch at " + String(i)
+    print("    server datagrams for 5 kB response: " + String(res[1]))
+    assert_equal_int(
+        res[1], RESPONSE_5KB_SERVER_DATAGRAMS,
+        "server datagram count for 5 kB response changed",
+    )
+    _ = tls^
+    print("  test_response_5kb_wire_unchanged: PASS")
+
+
+def test_64kb_body_across_sends_intact() raises:
+    """64 kB written in four `send_stream_data` calls interleaved with packets
+    arrives byte-exact (the send buffer is mutated in place across packets)."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    var sid = client.open_stream(True)
+    var req = _to_bytes("GET")
+    client.send_stream_data(sid, Span(req), True)
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+    _ = server.recv_stream_data(sid)
+
+    comptime CHUNK: Int = 16 * 1024
+    var expected = _pattern_bytes(4 * CHUNK, 3)
+    var body = List[UInt8]()
+    var fin_seen = False
+    for c in range(4):
+        var chunk = List[UInt8](capacity=CHUNK)
+        for i in range(CHUNK):
+            chunk.append(expected[c * CHUNK + i])
+        server.send_stream_data(sid, Span(chunk), c == 3)
+        # Let a few packets fly between writes so later writes append to a
+        # partially-drained send buffer.
+        for _ in range(3):
+            now += UInt64(10_000)
+            var s_dg = server.send(now)
+            for i in range(len(s_dg)):
+                client.recv(Span(s_dg[i]), now)
+            var got = client.recv_stream_data(sid)
+            for i in range(len(got[0])):
+                body.append(got[0][i])
+            var c_dg = client.send(now)
+            for i in range(len(c_dg)):
+                server.recv(Span(c_dg[i]), now)
+    for _ in range(400):
+        if fin_seen:
+            break
+        now += UInt64(10_000)
+        var s_dg = server.send(now)
+        for i in range(len(s_dg)):
+            client.recv(Span(s_dg[i]), now)
+        var got = client.recv_stream_data(sid)
+        for i in range(len(got[0])):
+            body.append(got[0][i])
+        if got[1]:
+            fin_seen = True
+        var c_dg = client.send(now)
+        for i in range(len(c_dg)):
+            server.recv(Span(c_dg[i]), now)
+    assert_true(fin_seen, "client never saw FIN on the 64 kB response")
+    assert_equal_int(len(body), 4 * CHUNK, "64 kB response length")
+    for i in range(len(expected)):
+        if body[i] != expected[i]:
+            raise "64 kB response byte mismatch at " + String(i)
+    _ = tls^
+    print("  test_64kb_body_across_sends_intact: PASS")
+
+
 def test_multi_stream() raises:
     """Three concurrent bidi streams retain independent data."""
     var tls = TlsBackend("lib/librustls_mojo.so")
@@ -4448,6 +4623,8 @@ def main() raises:
     test_coalesced_packets()
     test_anti_amplification()
     test_stream_data_transfer()
+    test_response_5kb_wire_unchanged()
+    test_64kb_body_across_sends_intact()
     test_multi_stream()
     test_unidirectional_stream()
     test_reset_stream()

@@ -423,6 +423,60 @@ def test_sendable_remove() raises:
     print("  test_sendable_remove: PASS")
 
 
+def test_stream_ref_mutation_visible() raises:
+    """Mutations through `stream_ref` land in the map (no hidden copy)."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+    var sid = Int(sm.open_stream(bidi=True))
+    assert_true(sm.has_stream(sid), "has_stream: opened stream present")
+    assert_false(sm.has_stream(sid + 4), "has_stream: unopened id absent")
+
+    var payload = List[UInt8]()
+    for i in range(300):
+        payload.append(UInt8(i % 256))
+    ref s = sm.stream_ref(sid)
+    s.send_buf.value().write(Span(payload), True)
+    s.needs_max_stream_data = True
+    _ = s.send_buf.value().make_frame(UInt64(sid), 100)
+
+    var seen = sm.get_stream(sid)
+    assert_true(seen.needs_max_stream_data, "stream_ref: flag write visible")
+    assert_equal_int(len(seen.send_buf.value().data), 300, "stream_ref: buffered bytes visible")
+    assert_equal_int(Int(seen.send_buf.value().unsent_offset), 100, "stream_ref: framing progress visible")
+    assert_true(seen.send_buf.value().fin, "stream_ref: FIN visible")
+
+    # A second borrow sees the first borrow's mutation.
+    ref again = sm.stream_ref(sid)
+    _ = again.send_buf.value().make_frame(UInt64(sid), 100)
+    assert_equal_int(
+        Int(sm.get_stream(sid).send_buf.value().unsent_offset), 200,
+        "stream_ref: repeated in-place framing accumulates",
+    )
+    print("  test_stream_ref_mutation_visible: PASS")
+
+
+def test_stream_ref_missing_raises() raises:
+    """`stream_ref` on an unknown id raises the same error as `get_stream`."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+    var raised = False
+    var msg = String("")
+    try:
+        ref s = sm.stream_ref(12)
+        _ = s.id
+    except e:
+        raised = True
+        msg = String(e)
+    assert_true(raised, "stream_ref: missing id raises")
+    var get_msg = String("")
+    try:
+        _ = sm.get_stream(12)
+    except e:
+        get_msg = String(e)
+    assert_true(msg == get_msg, "stream_ref: same error text as get_stream")
+    print("  test_stream_ref_missing_raises: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -445,5 +499,7 @@ def main() raises:
     test_max_streams_update_threshold()
     test_sendable_list_round_robin()
     test_sendable_remove()
+    test_stream_ref_mutation_visible()
+    test_stream_ref_missing_raises()
 
     print("All test_quic_stream_map tests passed.")

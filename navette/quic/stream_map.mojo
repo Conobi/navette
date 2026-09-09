@@ -370,6 +370,22 @@ struct StreamMap(Movable):
         """Update (replace) a stream in the Dict."""
         self.streams[stream_id] = stream^
 
+    def has_stream(self, stream_id: Int) -> Bool:
+        """Cheaper `stream_id in self.streams` for callers about to take a ref."""
+        return stream_id in self.streams
+
+    def stream_ref(ref self, stream_id: Int) raises -> ref [self.streams[stream_id]] Stream:
+        """Borrow the stream in place; raises like `get_stream` when absent.
+
+        While the returned ref is live the caller must not insert into or
+        remove from `streams` (`add_stream`, `maybe_cleanup`) nor call any
+        `mut self` method of this map: the Dict may rehash and the ref would
+        dangle. Read-only access to sibling fields is fine.
+        """
+        if stream_id not in self.streams:
+            raise "stream not found: id=" + String(stream_id)
+        return self.streams[stream_id]
+
     # ── Stream cleanup (§4.3) ────────────────────────────────────────────────
 
     def maybe_cleanup(mut self, stream_id: Int) raises -> Bool:

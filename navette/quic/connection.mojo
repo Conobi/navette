@@ -3872,25 +3872,24 @@ struct QuicConnection(Movable):
                 sent_records.append(rec^)
 
         # 5. Per-stream control frames (MAX_STREAM_DATA, RESET_STREAM, STOP_SENDING).
-        # Snapshot stream IDs so we can safely mutate the Dict while iterating.
+        # Streams are mutated in place through `stream_ref`; the ID snapshot
+        # keeps iteration independent of the Dict, and nothing below inserts
+        # or removes streams while a ref is live.
         var all_ids = List[Int]()
         for key in self.stream_map.streams.keys():
             all_ids.append(key)
         for i in range(len(all_ids)):
             var sid = all_ids[i]
-            if sid not in self.stream_map.streams:
+            if not self.stream_map.has_stream(sid):
                 continue
-            var stream = self.stream_map.get_stream(sid)
-            var changed = False
+            ref stream = self.stream_map.stream_ref(sid)
 
             # MAX_STREAM_DATA
             if stream.needs_max_stream_data and stream.fc_recv:
                 var next_limit = stream.fc_recv.value().next_limit()
                 var wl = 1 + varint_len(stream.id) + varint_len(next_limit)
                 if used + wl <= budget:
-                    var fc = stream.fc_recv.value().copy()
-                    var new_limit = fc.update_limit()
-                    stream.fc_recv = fc^
+                    var new_limit = stream.fc_recv.value().update_limit()
                     stream.needs_max_stream_data = False
                     var f = Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit))
                     used += f.wire_len()
@@ -3899,7 +3898,6 @@ struct QuicConnection(Movable):
                     rec.kind = SSF_MAX_STREAM_DATA
                     rec.stream_id = stream.id
                     sent_records.append(rec^)
-                    changed = True
 
             # RESET_STREAM
             if stream.needs_reset_stream:
@@ -3918,7 +3916,6 @@ struct QuicConnection(Movable):
                     rec.kind = SSF_RESET_STREAM
                     rec.stream_id = stream.id
                     sent_records.append(rec^)
-                    changed = True
 
             # STOP_SENDING
             if stream.needs_stop_sending:
@@ -3933,10 +3930,6 @@ struct QuicConnection(Movable):
                     rec.kind = SSF_STOP_SENDING
                     rec.stream_id = stream.id
                     sent_records.append(rec^)
-                    changed = True
-
-            if changed:
-                self.stream_map.set_stream(sid, stream^)
 
         # 6. STREAM frames from sendable streams (round-robin snapshot).
         # Snapshot sendable IDs to avoid mutation-during-iteration.
@@ -3951,32 +3944,43 @@ struct QuicConnection(Movable):
         if n > 0:
             start = self.stream_map.send_index % n
             self.stream_map.send_index = (self.stream_map.send_index + 1) % n
+        # Each stream is mutated in place through a `ref`. Decisions that
+        # need `mut self.stream_map` (conn-level FC credit, dropping the
+        # stream from `sendable_ids`, resuming here next packet) are
+        # collected while the ref is live and applied after its last use.
+        var resume_idx = -1
         for i in range(n):
             var conn_avail = self.stream_map.conn_fc_send.available()
             if conn_avail == 0:
                 break
             var idx = (start + i) % n
             var sid = sendable[idx]
-            if sid not in self.stream_map.streams:
+            if not self.stream_map.has_stream(sid):
                 continue
-            var stream = self.stream_map.get_stream(sid)
+            var conn_delta = UInt64(0)
+            var drop_sendable = False
+            ref stream = self.stream_map.stream_ref(sid)
             if not stream.send_state or not stream.send_buf or not stream.fc_send:
                 continue
             var ss = stream.send_state.value()
             if ss != SEND_READY and ss != SEND_SEND:
                 continue
-            var sb = stream.send_buf.value().copy()
-            var fc = stream.fc_send.value().copy()
-            var stream_avail = fc.available()
-            if stream_avail == 0 and not (sb.fin and not sb.fin_offset):
+            var stream_avail = stream.fc_send.value().available()
+            var fin_pending = (
+                stream.send_buf.value().fin and not stream.send_buf.value().fin_offset
+            )
+            if stream_avail == 0 and not fin_pending:
                 continue
             # Worst-case STREAM header for this frame: type + stream id +
             # offset + a 2-byte length varint (any chunk < 16384). Budget
             # exhausted: stop here and resume at this stream next packet.
-            var hdr_charge = 1 + varint_len(stream.id) + varint_len(sb.unsent_offset) + 2
+            var hdr_charge = (
+                1 + varint_len(stream.id)
+                + varint_len(stream.send_buf.value().unsent_offset) + 2
+            )
             var room = budget - used - hdr_charge
             if room < 0:
-                self.stream_map.send_index = idx
+                resume_idx = idx
                 break
             var limit = Int(conn_avail)
             if Int(stream_avail) < limit:
@@ -3987,12 +3991,10 @@ struct QuicConnection(Movable):
                 limit = room
             # If the only work is a standalone FIN, limit can be 0: make_frame
             # handles this via fin-only emission.
-            var maybe_frame = sb.make_frame(stream.id, limit)
+            var maybe_frame = stream.send_buf.value().make_frame(stream.id, limit)
             if not maybe_frame:
-                # Nothing to send from this stream; drop from sendable list.
-                stream.send_buf = sb^
-                stream.fc_send = fc^
-                self.stream_map.set_stream(sid, stream^)
+                # Nothing to send from this stream; drop from sendable list
+                # (the ref's last use is above, so the map may be mutated).
                 self.stream_map.remove_sendable(sid)
                 continue
             var sf = maybe_frame.value().copy()
@@ -4001,26 +4003,22 @@ struct QuicConnection(Movable):
             var frame_fin = sf.fin
             var f = Frame._stream_move(sf)
             var wl = f.wire_len()
-            if used + wl > budget:
-                # Cannot happen given the charge above; `sb` is a copy, so
-                # nothing was consumed. Resume at this stream next packet.
-                self.stream_map.send_index = idx
-                break
+            # `limit <= room` and `hdr_charge` bounds the real header, so the
+            # frame always fits; the bytes are already consumed from the send
+            # buffer, which is why this must hold rather than be retried.
+            debug_assert(used + wl <= budget, "STREAM frame exceeds its charge")
             frames.append(f^)
             used += wl
             # Flow-control accounting (only "new" bytes past received mark).
             var prev_end = frame_offset + frame_len
-            if prev_end > fc.received:
-                var delta = prev_end - fc.received
-                fc.add_received(delta)
-                self.stream_map.conn_fc_send.add_received(delta)
+            if prev_end > stream.fc_send.value().received:
+                conn_delta = prev_end - stream.fc_send.value().received
+                stream.fc_send.value().add_received(conn_delta)
             # Send-state transitions.
             if ss == SEND_READY:
                 stream.send_state = Optional[UInt8](SEND_SEND)
-            if frame_fin and sb.fin_offset:
+            if frame_fin and stream.send_buf.value().fin_offset:
                 stream.send_state = Optional[UInt8](SEND_DATA_SENT)
-            stream.send_buf = sb^
-            stream.fc_send = fc^
             var rec = SentStreamFrame()
             rec.kind = SSF_STREAM
             rec.stream_id = stream.id
@@ -4028,10 +4026,14 @@ struct QuicConnection(Movable):
             rec.length = frame_len
             rec.fin = frame_fin
             sent_records.append(rec^)
-            var still_pending = stream.send_buf.value().has_pending()
-            self.stream_map.set_stream(sid, stream^)
-            if not still_pending:
+            drop_sendable = not stream.send_buf.value().has_pending()
+            # Last use of `stream` above; apply the collected map mutations.
+            if conn_delta > 0:
+                self.stream_map.conn_fc_send.add_received(conn_delta)
+            if drop_sendable:
                 self.stream_map.remove_sendable(sid)
+        if resume_idx >= 0:
+            self.stream_map.send_index = resume_idx
 
         # 7. DATA_BLOCKED (RFC 9000 §4.1) — connection-level FC exhausted.
         var conn_limit = self.stream_map.conn_fc_send.limit
@@ -4049,22 +4051,21 @@ struct QuicConnection(Movable):
             blocked_ids.append(key)
         for i in range(len(blocked_ids)):
             var sid = blocked_ids[i]
-            if sid not in self.stream_map.streams:
+            if not self.stream_map.has_stream(sid):
                 continue
-            var stream = self.stream_map.get_stream(sid)
+            ref stream = self.stream_map.stream_ref(sid)
             if not stream.fc_send:
                 continue
-            var fc = stream.fc_send.value().copy()
-            var stream_limit = fc.limit
-            if fc.available() == UInt64(0) and fc.blocked_at != stream_limit and stream_limit > UInt64(0):
+            var stream_limit = stream.fc_send.value().limit
+            if (stream.fc_send.value().available() == UInt64(0)
+                    and stream.fc_send.value().blocked_at != stream_limit
+                    and stream_limit > UInt64(0)):
                 var wl = 1 + varint_len(stream.id) + varint_len(stream_limit)
                 if used + wl > budget:
                     continue
                 frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(stream.id, stream_limit)))
                 used += wl
-                fc.blocked_at = stream_limit
-                stream.fc_send = fc^
-                self.stream_map.set_stream(sid, stream^)
+                stream.fc_send.value().blocked_at = stream_limit
 
         # 9. STREAMS_BLOCKED (RFC 9000 §4.6) — local stream count at peer concurrency limit.
         if self.stream_map.needs_streams_blocked_bidi:
