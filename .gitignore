@@ -42,6 +42,7 @@ certs/
 
 # Worktree-local symlink to repo-root HttpArena fixtures
 bench/.httparena
+bench/ab/results/
 
 # Git worktrees
 .worktrees/

@@ -91,13 +91,14 @@ RUN cargo build --release --features skip-locks --manifest-path crates/librustls
 # Copy the .so into the conventional lib/ directory
 RUN mkdir -p lib && cp crates/librustls-mojo/target/release/liblibrustls_mojo.so lib/librustls_mojo.so
 
-# Build the three benchmark server binaries directly via the venv mojox
-# (bypassing `uv run` so uv doesn't try to re-resolve the (now-stubbed)
-# project).
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h1_server.mojo -o /bench-h1
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h2_server.mojo -o /bench-h2
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h3_server.mojo -o /bench-h3
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojox build --march=x86-64-v3+pclmul+aes -I . -I /boucle bench/launcher.mojo -o /bench-launcher
+# Build the three benchmark server binaries via `mojo build` directly.
+# mojox 0.5+ is config-driven (no positional-file CLI), so we call the
+# compiler through the venv's `mojo` binary and bypass `uv run` so uv
+# doesn't try to re-resolve the (now-stubbed) project.
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h1_server.mojo -o /bench-h1
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h2_server.mojo -o /bench-h2
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h3_server.mojo -o /bench-h3
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
