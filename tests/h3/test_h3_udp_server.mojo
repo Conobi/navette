@@ -161,6 +161,30 @@ def _send_partial_request(mut client: HarnessClient) raises -> UInt64:
     return sid
 
 
+def _warm_ack_eliciting[H: StreamHandler](
+    mut harness: UdpServerHarness[H], mut client: HarnessClient, slot: Int,
+) raises:
+    """One ack-eliciting 1-RTT packet, acknowledged before returning.
+
+    RFC 9000 section 13.2.1 acknowledges an out-of-order packet at once, and the
+    first ack-eliciting one after the handshake counts as such (nothing
+    precedes it). After this, the client's next packet is contiguous with
+    the last acknowledged one, so only the delayed-ACK timer applies.
+    """
+    _ = _send_partial_request(client)
+    _ = harness.client_send(client)
+    _ = harness.step(20)
+    harness.flush()
+    harness.advance(harness.srv[].transport_params.max_ack_delay * UInt64(1_000) + UInt64(1_000))
+    harness.flush()
+    _ = harness.step(20)
+    assert_true(harness.client_recv(client, 50) >= 1, "warm-up ACK delivered")
+    assert_true(
+        not harness.server_conn(slot)[]._h3._quic.spaces[2].has_unacked_ack_eliciting(),
+        "warm-up acknowledged",
+    )
+
+
 def _send_get(mut client: HarnessClient) raises -> UInt64:
     """Queue `GET /` with FIN on a fresh bidi stream."""
     var sid = client.h3.open_bidi_stream()
@@ -435,9 +459,11 @@ def test_timer_reserved_before_egress() raises:
 def test_flush_order_timer_before_egress() raises:
     """flush-order-timer-before-egress: a timer-owed ACK leaves in the same flush.
 
-    The client sends one ack-eliciting 1-RTT packet that draws no
-    response; with the clock advanced past the server's delayed-ACK
-    deadline and no ingress, one flush() + one step() delivers the ACK.
+    After a warm-up packet (so the one under test is in-order and only
+    the delayed-ACK timer applies), the client sends one ack-eliciting
+    1-RTT packet that draws no response; with the clock advanced past
+    the server's delayed-ACK deadline and no ingress, one flush() + one
+    step() delivers the ACK.
     """
     var sp = _params()
     sp.max_ack_delay = UInt64(5)
@@ -448,6 +474,7 @@ def test_flush_order_timer_before_egress() raises:
     for _ in range(3):
         _ = h.pump(c)
     assert_equal_int(h.slot_count(), 1, "one slot")
+    _warm_ack_eliciting(h, c, 0)
 
     _ = _send_partial_request(c)
     _ = h.client_send(c)
@@ -469,10 +496,11 @@ def test_flush_order_timer_before_egress() raises:
 def test_timer_pass_runs_when_deadline_passed() raises:
     """timer-pass-runs-when-deadline-passed: an ACK deadline is honoured under load.
 
-    Slot A holds a 5 ms ACK deadline; slot B receives a datagram every
-    100 µs of test-clock time for 20 ms. The ACK to A must leave within
-    1 ms of its deadline even though the kernel timer never gets a
-    chance to fire between wakes.
+    Slot A (warmed up so its packet is in-order and timer-owed, not
+    ACKed at once) holds a 5 ms ACK deadline; slot B receives a datagram
+    every 100 µs of test-clock time for 20 ms. The ACK to A must leave
+    within 1 ms of its deadline even though the kernel timer never gets
+    a chance to fire between wakes.
     """
     var sp = _params()
     sp.max_ack_delay = UInt64(5)
@@ -485,6 +513,7 @@ def test_timer_pass_runs_when_deadline_passed() raises:
         _ = h.pump(a)
         _ = h.pump(b)
     assert_equal_int(h.slot_count(), 2, "two slots")
+    _warm_ack_eliciting(h, a, 0)
 
     # B streams one byte at a time on a uni stream of a reserved type
     # (0x21): the server ignores it, so every datagram is ack-eliciting
