@@ -33,6 +33,8 @@ from boucle.net.socket import Socket
 from boucle.net.addr import SocketAddrV4
 from boucle.net.options import Backlog
 
+from navette.util.null_ptr import null_ptr
+
 from interop.file_io import read_file, getenv_opt
 
 
@@ -402,9 +404,7 @@ struct H2StreamingBenchServer(Movable):
         self.tls_lib = tls_lib^
         self.server_tls_config = server_tls_config^
         self._accept_future = Optional[AcceptFuture]()
-        self._loop_ptr = Pointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=0
-        )
+        self._loop_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
 
     def __init__(out self, *, deinit move: Self):
