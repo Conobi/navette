@@ -1,4 +1,4 @@
-"""Smoke test for H1TcpServer bootstrap (proactor model).
+"""Smoke test for H1TcpServer bootstrap (WatchLoop + IoUringDriver model).
 
 Doesn't require an external HTTP/1.1 client: spins the proactor lifecycle
 through wire_context() + start() + one non-blocking tick + reap_closed(),
@@ -16,6 +16,7 @@ No TLS setup needed — H1TcpServer is plaintext-only.
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
+from boucle import WatchLoop
 from boucle.drivers.io_uring import IoUringDriver
 
 from navette.h1.h1_tcp_server import H1TcpServer
@@ -75,9 +76,9 @@ def test_h1_tcp_server_init_and_tick() raises:
 
     Exercises wire_context + start (initial accept submission on the
     listener fd), one non-blocking tick (no client connects, so the
-    accept stays pending and tick returns immediately), and reap_closed
-    (no-op on empty connection list) — without requiring a real HTTP/1.1
-    client.
+    accept stays pending and tick returns immediately), poll_connections
+    (no-op since no connections exist), and reap_closed (no-op on
+    empty connection list) — without requiring a real HTTP/1.1 client.
     """
     # -- 1. TCP listener on ephemeral port --
     var sock = tcp_listener(0)  # kernel picks a free port
@@ -97,14 +98,17 @@ def test_h1_tcp_server_init_and_tick() raises:
     # -- 4. Wire Completion context pointers --
     srv_ptr[].wire_context()
 
-    # -- 5. IoUringDriver + start (initial accept submission) --
+    # -- 5. IoUringDriver + WatchLoop + start --
     var driver = IoUringDriver(capacity=64)
-    srv_ptr[].start(driver)
+    var loop = WatchLoop(capacity=64)
+    srv_ptr[].start(driver, loop)
 
     # -- 6. One non-blocking tick — no client, accept stays pending --
     driver.tick(wait=False)
+    _ = loop.step(timeout_ms=0)
 
-    # -- 7. Reap closed — no-op on empty connection list --
+    # -- 7. Poll connections + reap closed — no-op on empty list --
+    srv_ptr[].poll_connections()
     srv_ptr[].reap_closed()
 
     # -- 8. Teardown --
