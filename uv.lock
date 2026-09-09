@@ -43,7 +43,7 @@ wheels = [
 [[package]]
 name = "boucle"
 version = "0.1.0"
-source = { git = "https://github.com/Conobi/boucle#4195dc7a640608551803d5bb423b248a7963d73d" }
+source = { git = "https://github.com/Conobi/boucle#9e3de8a627abcc7bcc2a9ccafc874df3c753c1b3" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojo-compiler-mojo-libs" },
