@@ -157,6 +157,21 @@ struct PacketNumberSpace(Copyable, Movable):
     var ect0_in_flight: UInt64    # O(1) count of in-flight ECT(0)-marked packets
     var pn_skip_rng: UInt64    # Xorshift64 state; 0 = disabled (Initial + Handshake)
     var pn_skip_next: UInt64   # PN at which the next gap is inserted
+    # ACK scheduling (RFC 9000 §13.2). `Optional` sentinels rather than 0 so a
+    # clock starting at 0 and max_ack_delay == 0 cannot collide with "unarmed".
+    var largest_rx_pkt_time: Optional[UInt64]   # arrival time of largest_recv_pn
+    var ack_deadline: Optional[UInt64]          # absolute µs by which an ACK MUST go out
+    var largest_rx_ack_eliciting_pn: Int        # -1 = none
+    # PTO state (RFC 9002 §6.2). `time_of_last_ae_sent` has commit-time
+    # semantics: set when an ack-eliciting packet is committed here, never
+    # rolled back to an older packet's time, None once no ack-eliciting
+    # packet remains in sent_packets. `probe_pending` means the PTO fired and
+    # the next packet in this space bypasses the congestion gate.
+    var probe_pending: Bool
+    var time_of_last_ae_sent: Optional[UInt64]
+    # Count of ack-eliciting entries in sent_packets; every removal path
+    # (`on_ack_received`, `forget_sent`, `discard`) keeps it in step.
+    var ae_in_flight: Int
 
     def __init__(out self, level: EncryptionLevel):
         self.level = level
@@ -174,6 +189,12 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = UInt64(0)
         self.pn_skip_rng  = UInt64(0)
         self.pn_skip_next = UInt64(0xFFFFFFFFFFFFFFFF)
+        self.largest_rx_pkt_time = None
+        self.ack_deadline = None
+        self.largest_rx_ack_eliciting_pn = -1
+        self.probe_pending = False
+        self.time_of_last_ae_sent = None
+        self.ae_in_flight = 0
 
     def __init__(out self, *, copy: Self):
         self.level = EncryptionLevel(copy=copy.level)
@@ -191,6 +212,12 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = copy.ect0_in_flight
         self.pn_skip_rng  = copy.pn_skip_rng
         self.pn_skip_next = copy.pn_skip_next
+        self.largest_rx_pkt_time = copy.largest_rx_pkt_time.copy()
+        self.ack_deadline = copy.ack_deadline.copy()
+        self.largest_rx_ack_eliciting_pn = copy.largest_rx_ack_eliciting_pn
+        self.probe_pending = copy.probe_pending
+        self.time_of_last_ae_sent = copy.time_of_last_ae_sent.copy()
+        self.ae_in_flight = copy.ae_in_flight
 
     def __init__(out self, *, deinit move: Self):
         self.level = move.level
@@ -208,6 +235,12 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = move.ect0_in_flight
         self.pn_skip_rng  = move.pn_skip_rng
         self.pn_skip_next = move.pn_skip_next
+        self.largest_rx_pkt_time = move.largest_rx_pkt_time^
+        self.ack_deadline = move.ack_deadline^
+        self.largest_rx_ack_eliciting_pn = move.largest_rx_ack_eliciting_pn
+        self.probe_pending = move.probe_pending
+        self.time_of_last_ae_sent = move.time_of_last_ae_sent^
+        self.ae_in_flight = move.ae_in_flight
 
     # ── PN allocation ────────────────────────────────────────────────
 
@@ -234,27 +267,60 @@ struct PacketNumberSpace(Copyable, Movable):
 
     # ── Receive tracking ─────────────────────────────────────────────
 
-    def on_packet_received(mut self, pn: UInt64, ack_eliciting: Bool):
-        """Record receipt of a packet. Updates largest_recv_pn, inserts PN into
-        ack_ranges, and determines whether an ACK is needed."""
-        # Update largest received.
+    def on_packet_received(
+        mut self,
+        pn: UInt64,
+        ack_eliciting: Bool,
+        now: UInt64 = UInt64(0),
+        max_ack_delay_us: UInt64 = UInt64(25_000),
+    ):
+        """Record receipt and decide when the ACK is owed (RFC 9000 §13.2.1).
+
+        Initial/Handshake acknowledge every ack-eliciting packet at once. The
+        Application space acknowledges immediately on the second ack-eliciting
+        packet since the last ACK, or on an out-of-order one (PN below the
+        largest ack-eliciting PN seen, or more than one above it); otherwise
+        the first such packet arms `ack_deadline = now + max_ack_delay_us`,
+        which later packets never move.
+        """
         var pn_int = Int(pn)
         if pn_int > self.largest_recv_pn:
             self.largest_recv_pn = pn_int
+            self.largest_rx_pkt_time = Optional[UInt64](now)
 
-        # Insert PN into ack_ranges.
         self._insert_ack_range(pn)
 
-        # ACK generation policy.
-        if ack_eliciting:
-            self.ack_eliciting_since_last_ack += 1
-            if self.level == EncryptionLevel.initial() or self.level == EncryptionLevel.handshake():
-                # Initial/Handshake: ACK immediately for every ack-eliciting packet.
-                self.ack_needed = True
-            else:
-                # Application: ACK after 2 ack-eliciting packets.
-                if self.ack_eliciting_since_last_ack >= 2:
-                    self.ack_needed = True
+        if not ack_eliciting:
+            return
+        self.ack_eliciting_since_last_ack += 1
+        if self.level == EncryptionLevel.initial() or self.level == EncryptionLevel.handshake():
+            self.ack_needed = True
+            return
+
+        var immediate = self.ack_eliciting_since_last_ack >= 2
+        if pn_int < self.largest_rx_ack_eliciting_pn or pn_int > self.largest_rx_ack_eliciting_pn + 1:
+            immediate = True
+        if pn_int > self.largest_rx_ack_eliciting_pn:
+            self.largest_rx_ack_eliciting_pn = pn_int
+        if immediate:
+            self.ack_needed = True
+            self.ack_deadline = None
+        elif not self.ack_deadline:
+            self.ack_deadline = Optional[UInt64](now + max_ack_delay_us)
+
+    def has_unacked_ack_eliciting(self) -> Bool:
+        """True while an ack-eliciting packet received here awaits an ACK."""
+        return self.ack_eliciting_since_last_ack > 0
+
+    def ack_delay_field(self, now: UInt64, ack_delay_exponent: UInt64) -> UInt64:
+        """ACK Delay field value: time since the largest PN arrived, scaled by
+        the local exponent; 0 before any packet or if the clock went backwards."""
+        if not self.largest_rx_pkt_time:
+            return UInt64(0)
+        var t = self.largest_rx_pkt_time.value()
+        if now < t:
+            return UInt64(0)
+        return (now - t) >> ack_delay_exponent
 
     def _insert_ack_range(mut self, pn: UInt64):
         """Insert a PN into ack_ranges, maintaining sorted-descending order by .end.
@@ -337,15 +403,24 @@ struct PacketNumberSpace(Copyable, Movable):
 
     # ── ACK frame building ───────────────────────────────────────────
 
-    def build_ack_frame(mut self, ack_delay: UInt64) -> Optional[AckFrame]:
-        """Build an AckFrame from current ack_ranges if an ACK is needed.
-        Resets ack_needed and ack_eliciting_since_last_ack on success."""
-        if not self.ack_needed or len(self.ack_ranges) == 0:
+    def peek_ack_frame(
+        self, now: UInt64, ack_delay_exponent: UInt64, *, bundle: Bool = False
+    ) -> Optional[AckFrame]:
+        """Non-mutating ACK candidate.
+
+        Returns a frame when ranges exist and either an ACK is owed
+        (`ack_needed`) or `bundle` is set and an ack-eliciting packet is
+        unacknowledged (piggyback on a packet that goes out anyway). The
+        caller commits with `mark_ack_sent()` once the frame is in the packet.
+        """
+        if len(self.ack_ranges) == 0:
+            return None
+        if not self.ack_needed and not (bundle and self.has_unacked_ack_eliciting()):
             return None
 
         var ack = AckFrame()
         ack.largest_ack = self.ack_ranges[0].end
-        ack.ack_delay = ack_delay
+        ack.ack_delay = self.ack_delay_field(now, ack_delay_exponent)
         ack.first_ack_range = self.ack_ranges[0].end - self.ack_ranges[0].start
 
         var ranges = List[AckRange]()
@@ -365,17 +440,51 @@ struct PacketNumberSpace(Copyable, Movable):
             ack.ecn_ect1 = self.recv_ecn.ect1
             ack.ecn_ce = self.recv_ecn.ce
 
-        # Reset ACK state.
+        return ack^
+
+    def mark_ack_sent(mut self):
+        """Commit the peeked ACK: nothing is owed until the next packet."""
         self.ack_needed = False
         self.ack_eliciting_since_last_ack = 0
-
-        return ack^
+        self.ack_deadline = None
 
     # ── Send tracking ────────────────────────────────────────────────
 
-    def on_packet_sent(mut self, pkt: SentPacket):
-        """Record a sent packet for ACK/loss tracking."""
-        self.sent_packets[Int(pkt.pn)] = SentPacket(copy=pkt)
+    def on_packet_sent(mut self, pkt: SentPacket) raises:
+        """Record a sent packet; an ack-eliciting one re-arms the PTO base."""
+        var key = Int(pkt.pn)
+        if key in self.sent_packets:
+            if self.sent_packets[key].ack_eliciting:
+                self.ae_in_flight -= 1
+        self.sent_packets[key] = SentPacket(copy=pkt)
+        if pkt.ack_eliciting:
+            self.ae_in_flight += 1
+            self.time_of_last_ae_sent = Optional[UInt64](pkt.time_sent)
+            self.probe_pending = False
+
+    def forget_sent(mut self, pn: Int) raises -> Optional[SentPacket]:
+        """Remove and return a sent record (loss or discard path), keeping the
+        ack-eliciting count and the PTO base in step."""
+        if pn not in self.sent_packets:
+            return None
+        var pkt = SentPacket(copy=self.sent_packets[pn])
+        _ = self.sent_packets.pop(pn)
+        if pkt.ack_eliciting:
+            self.ae_in_flight -= 1
+        self.sync_ae_tracking()
+        return pkt^
+
+    def has_ack_eliciting_in_flight(self) -> Bool:
+        """True while any ack-eliciting packet remains unacknowledged."""
+        return self.ae_in_flight > 0
+
+    def sync_ae_tracking(mut self):
+        """Disarm the PTO base and any pending probe once no ack-eliciting
+        packet remains in `sent_packets` (after ACK or loss removal)."""
+        if self.ae_in_flight <= 0:
+            self.ae_in_flight = 0
+            self.time_of_last_ae_sent = None
+            self.probe_pending = False
 
     # ── ACK processing ───────────────────────────────────────────────
 
@@ -428,16 +537,24 @@ struct PacketNumberSpace(Copyable, Movable):
         for i in range(len(acked_pns)):
             var key = acked_pns[i]
             if key in self.sent_packets:
+                if self.sent_packets[key].ack_eliciting:
+                    self.ae_in_flight -= 1
                 acked.append(SentPacket(copy=self.sent_packets[key]))
                 _ = self.sent_packets.pop(key)
 
+        if len(acked) > 0:
+            self.sync_ae_tracking()
         return acked^
 
     # ── Space discard ────────────────────────────────────────────────
 
     def discard(mut self) raises -> List[SentPacket]:
         """Remove all sent_packets and return them for bytes_in_flight accounting.
-        Sets keys_handle = -1."""
+
+        Sets keys_handle = -1 and resets every ACK/PTO scheduling field so a
+        discarded space can neither report a deadline nor be considered
+        sendable.
+        """
         var result = List[SentPacket]()
         var keys = List[Int]()
         for key in self.sent_packets.keys():
@@ -446,6 +563,12 @@ struct PacketNumberSpace(Copyable, Movable):
             result.append(SentPacket(copy=self.sent_packets[keys[i]]))
             _ = self.sent_packets.pop(keys[i])
         self.keys_handle = Int32(-1)
+        self.ack_needed = False
+        self.ack_deadline = None
+        self.ack_eliciting_since_last_ack = 0
+        self.probe_pending = False
+        self.time_of_last_ae_sent = None
+        self.ae_in_flight = 0
         return result^
 
     # ── Persistent-congestion helper ─────────────────────────────────

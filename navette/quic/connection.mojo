@@ -165,7 +165,15 @@ comptime _HP_SAMPLE_LEN: Int = 16  # header-protection sample length
 comptime ANTI_AMP_HEADER_FUDGE: UInt64 = 100
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
-comptime _MAX_CRYPTO_FRAME_SIZE: Int = 1200
+# Every datagram `send()` returns fits this many bytes; PMTUD is not
+# implemented, so the peer's max_udp_payload_size is only asserted >= this.
+comptime MAX_DATAGRAM_SIZE: Int = 1200
+# CONNECTION_CLOSE reason phrases are truncated here so three coalesced
+# CLOSE packets (one per keyed space) always fit one datagram.
+comptime MAX_CLOSE_REASON_BYTES: Int = 256
+# Smallest possible packet: header + 4-byte PN budget + 4-byte plaintext
+# minimum (header-protection sample) + AEAD tag; see `_min_packet_cost`.
+comptime _MIN_PLAINTEXT_LEN: Int = 4
 
 # RFC 9001 §5.7 buffer caps. Per-connection. If a 0-RTT packet would
 # exceed either cap, the packet is dropped (§5.7 allows the server
@@ -285,6 +293,52 @@ struct SentStreamFrame(Copyable, Movable):
         self.length = move.length
         self.fin = move.fin
         self.cid_seq = move.cid_seq
+
+
+# ── _PacketPlan ──────────────────────────────────────────────────────
+
+
+struct _PacketPlan(Copyable, Movable):
+    """One packet of a datagram between frame assembly and encryption.
+
+    `send()` plans every keyed space first so that datagram-level padding can
+    land in the last packet; only then are packet numbers allocated and the
+    packets protected and recorded.
+    """
+
+    var space_idx: Int
+    var frames: List[Frame]
+    var sent_records: List[SentStreamFrame]
+    var payload: List[UInt8]
+    var ack_committed: Bool
+
+    def __init__(
+        out self,
+        space_idx: Int,
+        var frames: List[Frame],
+        var sent_records: List[SentStreamFrame],
+        var payload: List[UInt8],
+        ack_committed: Bool,
+    ):
+        self.space_idx = space_idx
+        self.frames = frames^
+        self.sent_records = sent_records^
+        self.payload = payload^
+        self.ack_committed = ack_committed
+
+    def __init__(out self, *, copy: Self):
+        self.space_idx = copy.space_idx
+        self.frames = List[Frame](copy=copy.frames)
+        self.sent_records = List[SentStreamFrame](copy=copy.sent_records)
+        self.payload = List[UInt8](copy=copy.payload)
+        self.ack_committed = copy.ack_committed
+
+    def __init__(out self, *, deinit move: Self):
+        self.space_idx = move.space_idx
+        self.frames = move.frames^
+        self.sent_records = move.sent_records^
+        self.payload = move.payload^
+        self.ack_committed = move.ack_committed
 
 
 # ── QuicEvent ────────────────────────────────────────────────────────
@@ -436,14 +490,20 @@ struct QuicConnection(Movable):
     var bytes_received: UInt64
     var bytes_sent: UInt64
     var events: List[QuicEvent]
+    # `poll()` pops from `events[_events_head]`; both reset once drained.
+    var _events_head: Int
     var pending_close: Optional[ConnectionCloseFrame]
+    # A CONNECTION_CLOSE datagram is owed once per trigger (the transition
+    # into CLOSING, or a peer datagram at most once per PTO while CLOSING);
+    # `close_last_sent` stamps the last emission for that rate limit.
+    var close_owed: Bool
+    var close_last_sent: UInt64
     var close_timer: UInt64
     var drain_timer: UInt64
     var idle_timer: UInt64
     var handshake_confirmed: Bool
     var current_level: Int
     var send_handshake_done: Bool
-    var last_ack_eliciting_send_time: UInt64
     var stream_map: StreamMap
     var cid_mgr: CidManager
     # RFC 9000 §8/§9 path validation state. Holds in-flight PATH_CHALLENGE
@@ -460,8 +520,10 @@ struct QuicConnection(Movable):
     # entry composes cleanly with ACK/STREAM/etc. Per RFC §5.4 entries are
     # NOT retransmitted on loss — once a packet carrying a DATAGRAM is
     # declared lost, the payload is gone (callers MUST handle reliability
-    # themselves if they need it).
+    # themselves if they need it). Drained from `_outbound_dg_head`; the
+    # list is reset once every entry has been emitted.
     var pending_outbound_datagrams: List[List[UInt8]]
+    var _outbound_dg_head: Int
     # Current validated peer 4-tuple (RFC 9000 §9). Updated ONLY inside
     # `on_path_response_received` after a verified PATH_RESPONSE token+addr
     # match. The bench-server receive site MUST NOT mutate it
@@ -609,19 +671,22 @@ struct QuicConnection(Movable):
         self.bytes_received = move.bytes_received
         self.bytes_sent = move.bytes_sent
         self.events = move.events^
+        self._events_head = move._events_head
         self.pending_close = move.pending_close^
+        self.close_owed = move.close_owed
+        self.close_last_sent = move.close_last_sent
         self.close_timer = move.close_timer
         self.drain_timer = move.drain_timer
         self.idle_timer = move.idle_timer
         self.handshake_confirmed = move.handshake_confirmed
         self.current_level = move.current_level
         self.send_handshake_done = move.send_handshake_done
-        self.last_ack_eliciting_send_time = move.last_ack_eliciting_send_time
         self.stream_map = move.stream_map^
         self.cid_mgr = move.cid_mgr^
         self.path_validator = move.path_validator^
         self.pending_path_responses = move.pending_path_responses^
         self.pending_outbound_datagrams = move.pending_outbound_datagrams^
+        self._outbound_dg_head = move._outbound_dg_head
         self.peer_addr = move.peer_addr^
         self._current_recv_addr = move._current_recv_addr^
         self.initial_cids_emitted = move.initial_cids_emitted
@@ -687,14 +752,16 @@ struct QuicConnection(Movable):
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
         self.events = List[QuicEvent]()
+        self._events_head = 0
         self.pending_close = None
+        self.close_owed = False
+        self.close_last_sent = UInt64(0)
         self.close_timer = UInt64(0)
         self.drain_timer = UInt64(0)
         self.idle_timer = now
         self.handshake_confirmed = False
         self.current_level = 0
         self.send_handshake_done = False
-        self.last_ack_eliciting_send_time = UInt64(0)
         self.ecn_state = ECN_STATE_PROBING
         self.ecn_probe_pkts_needed = 10
         self.ecn_probe_pkts_sent = 0
@@ -751,6 +818,7 @@ struct QuicConnection(Movable):
         self.path_validator = PathValidator()
         self.pending_path_responses = List[List[UInt8]]()
         self.pending_outbound_datagrams = List[List[UInt8]]()
+        self._outbound_dg_head = 0
         # Sentinel zero PathKey — overwritten by the bench server on the
         # first ingress datagram (and on every PATH_RESPONSE-validated
         # migration). family=0 never matches AF_INET (2) or AF_INET6 (10),
@@ -1059,7 +1127,19 @@ struct QuicConnection(Movable):
         var ph_sm_us = UInt64(0)
 
         self.bytes_received += UInt64(buf_len)
-        self.idle_timer = now
+
+        # RFC 9000 §10.2: a draining or closed endpoint drops everything
+        # before decrypt. A closing endpoint owes at most one CLOSE per PTO
+        # in response to peer datagrams (§10.2.1), does not refresh its idle
+        # timer, and acts on nothing but a CONNECTION_CLOSE frame below.
+        if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
+            return
+        var closing = (self.state & CONN_CLOSING) != 0
+        if closing:
+            if now >= self.close_last_sent + self._pto_interval():
+                self.close_owed = True
+        else:
+            self.idle_timer = now
 
         # Track the lowest encryption level at which we process a packet
         # in this datagram, used for implicit CRYPTO retransmission below.
@@ -1067,6 +1147,8 @@ struct QuicConnection(Movable):
 
         var offset = 0
         while offset < buf_len:
+            if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
+                break
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     t_iter_start = monotonic_us()
@@ -1406,6 +1488,8 @@ struct QuicConnection(Movable):
                 # next packet's dispatch.
                 self._current_space_idx = space_idx
                 for i in range(len(frames)):
+                    if closing and not frames[i].is_connection_close():
+                        continue
                     if frames[i].is_ack_eliciting():
                         ack_eliciting = True
                     self._dispatch_frame(frames[i], space_idx, now)
@@ -1414,25 +1498,29 @@ struct QuicConnection(Movable):
                     if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
 
-                # 11. Update PN space — `pn_space_idx` collapses the 0-RTT
-                # dispatch sentinel (3) onto the Application PN space (2)
-                # per RFC 9000 §12.3.
-                self.spaces[pn_space_idx].on_packet_received(full_pn, ack_eliciting)
+                if not closing:
+                    # 11. Update PN space — `pn_space_idx` collapses the 0-RTT
+                    # dispatch sentinel (3) onto the Application PN space (2)
+                    # per RFC 9000 §12.3.
+                    self.spaces[pn_space_idx].on_packet_received(
+                        full_pn, ack_eliciting, now,
+                        self.local_params.max_ack_delay * 1000,
+                    )
 
-                # ECN accounting: count marks seen on received packets.
-                if self.ecn_state != ECN_STATE_DISABLED:
-                    if ecn_mark == ECN_CE:
-                        self.spaces[pn_space_idx].recv_ecn.ce += UInt64(1)
-                    elif ecn_mark == ECN_ECT0:
-                        self.spaces[pn_space_idx].recv_ecn.ect0 += UInt64(1)
-                    elif ecn_mark == ECN_ECT1:
-                        self.spaces[pn_space_idx].recv_ecn.ect1 += UInt64(1)
+                    # ECN accounting: count marks seen on received packets.
+                    if self.ecn_state != ECN_STATE_DISABLED:
+                        if ecn_mark == ECN_CE:
+                            self.spaces[pn_space_idx].recv_ecn.ce += UInt64(1)
+                        elif ecn_mark == ECN_ECT0:
+                            self.spaces[pn_space_idx].recv_ecn.ect0 += UInt64(1)
+                        elif ecn_mark == ECN_ECT1:
+                            self.spaces[pn_space_idx].recv_ecn.ect1 += UInt64(1)
 
-                # Track lowest processed space for retransmission logic.
-                # Use `pn_space_idx` so 0-RTT (sentinel 3) doesn't widen
-                # the tracker beyond the valid Application PN space.
-                if pn_space_idx < lowest_recv_space:
-                    lowest_recv_space = pn_space_idx
+                    # Track lowest processed space for retransmission logic.
+                    # Use `pn_space_idx` so 0-RTT (sentinel 3) doesn't widen
+                    # the tracker beyond the valid Application PN space.
+                    if pn_space_idx < lowest_recv_space:
+                        lowest_recv_space = pn_space_idx
             except e:
                 # Decryption or frame processing failed for this packet.
                 # Per RFC 9000 §12.2, stop processing remaining coalesced
@@ -1442,7 +1530,7 @@ struct QuicConnection(Movable):
 
             # 12. Drive handshake OUTSIDE try/except so TLS errors
             # propagate to the caller (they are fatal, not recoverable).
-            if decrypt_ok:
+            if decrypt_ok and not closing:
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
                         ph_sm_us = monotonic_us()
@@ -1485,11 +1573,11 @@ struct QuicConnection(Movable):
         # higher-level response.  Re-queue unacked CRYPTO data so the
         # next send() retransmits it.  This is critical for the server
         # which cannot PTO while amplification-limited.
-        if lowest_recv_space < 3:
+        if lowest_recv_space < 3 and not closing:
             for s in range(lowest_recv_space + 1, 3):
                 if not self.protect.has_keys(s):
                     continue
-                if len(self.crypto_streams[s].send_buf) > 0:
+                if self.crypto_streams[s].has_unsent():
                     continue
                 if len(self.spaces[s].sent_packets) == 0:
                     continue
@@ -2070,11 +2158,8 @@ struct QuicConnection(Movable):
             if frame._conn_close:
                 var cc = frame._conn_close.value().copy()
                 self.state = self.state | CONN_DRAINING
-                # Start drain timer: 3 * PTO.
-                var pto = self.recovery.pto_timeout(
-                    self.local_params.max_ack_delay * 1000
-                )
-                self.drain_timer = now + 3 * pto
+                # Start drain timer: 3 * PTO (RFC 9000 §10.2).
+                self.drain_timer = now + 3 * self._pto_interval()
                 # Build reason string from bytes.
                 var reason = String("")
                 for i in range(len(cc.reason)):
@@ -2465,10 +2550,9 @@ struct QuicConnection(Movable):
         # Process lost packets (teardown + retransmission hooks).
         for i in range(len(lost_pns)):
             var pn_key = lost_pns[i]
-            if pn_key in self.spaces[space_idx].sent_packets:
-                var lost_pkt = SentPacket(
-                    copy=self.spaces[space_idx].sent_packets[pn_key]
-                )
+            var maybe_lost = self.spaces[space_idx].forget_sent(pn_key)
+            if maybe_lost:
+                var lost_pkt = maybe_lost.value().copy()
                 # Decrement ECT(0) in-flight on loss.
                 if lost_pkt.ecn_mark == ECN_ECT0:
                     if self.spaces[space_idx].ect0_in_flight > UInt64(0):
@@ -2488,8 +2572,6 @@ struct QuicConnection(Movable):
                 # Re-apply stream-layer loss handling for Application space.
                 if space_idx == 2:
                     self._on_app_pkt_lost(pn_key)
-
-                _ = self.spaces[space_idx].sent_packets.pop(pn_key)
 
         # Fan out to CC. `persistent=True` triggers cwnd reset to min_cwnd.
         self.recovery.cc.on_packets_lost(
@@ -3299,94 +3381,180 @@ struct QuicConnection(Movable):
     # ── Send path ────────────────────────────────────────────────────
 
     def send(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Build and return datagrams to send.
+        """Build at most one datagram; empty when nothing is owed.
 
-        Coalesces packets from multiple encryption levels into a single
-        datagram when possible. Pads Initial datagrams to 1200 bytes.
+        Runs expired timers first, then plans one packet per keyed space in
+        Initial → Handshake → Application order against a MAX_DATAGRAM_SIZE
+        budget (clamped to the amplification allowance on an unvalidated
+        server). Per space: a CLOSING connection emits only its CLOSE; else
+        the ACK candidate is sized and reserved, the congestion gate is
+        evaluated (bypassed by a pending PTO probe), and only then do the
+        state-consuming builders run. ACK-only and CLOSE-only packets bypass
+        congestion control but never the amplification limit. Padding to
+        1200 bytes (client handshake datagrams, server ack-eliciting Initial)
+        is appended to the last packet at serialization time.
+
+        Empty return is the drain loop's termination condition: a CLOSING
+        connection returns its CLOSE datagram once per trigger, then empty.
+        A raise mid-way drops the datagram; packets already committed stay
+        recorded for loss recovery, the in-progress builder state is lost.
         """
         var datagrams = List[List[UInt8]]()
 
-        # Check timers first — drain/close timers must fire even when
-        # the connection is draining (otherwise we never reach CLOSED).
+        # Timers first — drain/close timers must fire even when the
+        # connection is draining (otherwise we never reach CLOSED).
         self._check_timers(now)
 
-        if (self.state & CONN_DRAINING) != 0 or (self.state & CONN_CLOSED) != 0:
+        if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
+            return datagrams^
+        var closing = (self.state & CONN_CLOSING) != 0
+        if closing and not self.close_owed:
             return datagrams^
 
-        # CC window + pacer gate: if we can't even fit one minimum-size packet, skip.
-        # Anti-amplification is also re-checked per-space below.
-        if not self._can_send(UInt64(1200), now):
-            return datagrams^
+        # Step 0: datagram budget with the per-datagram amplification clamp.
+        var budget = self._datagram_budget()
+        if self.is_server and not self._addr_validated():
+            var allowance = self._amp_allowance()
+            if allowance < budget:
+                budget = allowance
+        # Step 1b: an ack-eliciting server Initial must be padded to 1200, so
+        # it is deferred until the allowance covers a full datagram.
+        var server_initial_deferred = self.is_server and budget < MAX_DATAGRAM_SIZE
+        var ade = self.local_params.ack_delay_exponent
 
-        # Build one datagram with coalesced packets.
-        var datagram = List[UInt8]()
-
+        # Phase 1: plan packets (frames + serialized plaintext) per space.
+        var plans = List[_PacketPlan]()
+        var used = 0
+        var all_close_committed = True
+        var end_assembly = False
         for space_idx in range(3):
+            if end_assembly:
+                break
             if not self.protect.has_keys(space_idx):
                 continue
-
-            # Anti-amplification check (server only, before address validated).
-            if not self._anti_amp_ok(UInt64(len(datagram))):
-                break
-
-            var sent_records = List[SentStreamFrame]()
-            var frames = self._build_frames_for_space(space_idx, now, sent_records)
-            if len(frames) == 0:
+            var overhead = self._header_len(space_idx) + _MAX_PN_LEN + _AEAD_TAG_LEN
+            var remaining = budget - used
+            if remaining < overhead + _MIN_PLAINTEXT_LEN:
+                if closing:
+                    all_close_committed = False
                 continue
+            var payload_budget = remaining - overhead
 
-            # Pad client long-header datagrams to 1200 bytes during handshake.
-            # Initial: required by RFC 9000 §14.1.
-            # Handshake: not strictly required, but necessary in practice —
-            # some server stacks (Cloudflare/quiche) drop undersized client
-            # datagrams during handshake due to anti-amplification accounting.
-            if (space_idx == 0 or space_idx == 1) and not self.is_server:
-                if (self.state & CONN_ESTABLISHED) == 0:
-                    var hdr_overhead = 7 + len(self.peer_cid) + len(self.local_cid) + 2
-                    var pn_est = 4  # max PN length
-                    var tag_len = _AEAD_TAG_LEN
+            var frames = List[Frame]()
+            var sent_records = List[SentStreamFrame]()
+            var ack_committed = False
+            if closing:
+                # Step 1: CLOSE-only packet in every keyed space.
+                var cf = self._close_frame_for_space(space_idx)
+                if cf.wire_len() > payload_budget:
+                    all_close_committed = False
+                    continue
+                frames.append(cf^)
+            else:
+                var deferred = server_initial_deferred and space_idx == 0
+                # Step 2: ACK candidate, reserved before the gate.
+                var may_bundle = (not deferred) and self._space_has_other_sendable(space_idx)
+                var maybe_ack = self.spaces[space_idx].peek_ack_frame(
+                    now, ade, bundle=may_bundle
+                )
+                var reserve = 0
+                var has_ack = False
+                if maybe_ack:
+                    frames.append(Frame.ack(maybe_ack.value()))
+                    reserve = frames[0].wire_len()
+                    has_ack = True
+                    if reserve > payload_budget:
+                        # Only the tail of a datagram is this small; the ACK
+                        # (and this space) waits for the next datagram so it
+                        # is never the first frame that does not fit.
+                        continue
+                var base = len(frames)
+                # Step 3: congestion gate (cwnd + pacer), bypassed on PTO.
+                var gate_open = self.spaces[space_idx].probe_pending or self._cc_open(
+                    now, space_idx, overhead + _MIN_PLAINTEXT_LEN
+                )
+                # Step 4: the state-consuming builders.
+                if gate_open and not deferred:
+                    self._build_frames_for_space(
+                        space_idx, now, frames, sent_records, payload_budget - reserve
+                    )
+                    if (self.spaces[space_idx].probe_pending
+                            and not _has_ack_eliciting(frames)
+                            and reserve + 1 <= payload_budget):
+                        frames.append(Frame.ping())
+                # Step 5: decide the packet.
+                if len(frames) == base:
+                    if has_ack and self.spaces[space_idx].ack_needed:
+                        ack_committed = True
+                    else:
+                        if deferred and self.crypto_streams[0].has_unsent():
+                            end_assembly = True
+                        continue
+                else:
+                    ack_committed = has_ack
+                if deferred and self.crypto_streams[0].has_unsent():
+                    end_assembly = True
 
-                    var est_writer = ByteWriter()
-                    serialize_frames(frames, est_writer)
-                    var est_payload = est_writer.finish()
-                    var current_total = hdr_overhead + pn_est + len(est_payload) + tag_len + len(datagram)
-
-                    if current_total < 1200:
-                        var pad_needed = 1200 - current_total
-                        for _ in range(pad_needed):
-                            frames.append(Frame.padding())
-
-            # Serialize frames.
             var writer = ByteWriter()
             serialize_frames(frames, writer)
             var payload = writer.finish()
+            var plaintext = len(payload)
+            if plaintext < _MIN_PLAINTEXT_LEN:
+                plaintext = _MIN_PLAINTEXT_LEN
+            used += overhead + plaintext
+            plans.append(_PacketPlan(space_idx, frames^, sent_records^, payload^, ack_committed))
 
-            # Encode PN.
+        if len(plans) == 0:
+            return datagrams^
+
+        # Datagram-level padding target (RFC 9000 §14.1), applied to the last
+        # packet: client handshake datagrams (Initial or Handshake present,
+        # not yet established); server datagrams with an ack-eliciting Initial.
+        var pad_to = 0
+        for i in range(len(plans)):
+            var s = plans[i].space_idx
+            if self.is_server:
+                if s == 0 and _has_ack_eliciting(plans[i].frames):
+                    pad_to = MAX_DATAGRAM_SIZE
+            elif (s == 0 or s == 1) and (self.state & CONN_ESTABLISHED) == 0:
+                pad_to = MAX_DATAGRAM_SIZE
+        debug_assert(pad_to <= budget, "padding target exceeds the datagram budget")
+
+        # Phase 2: allocate PNs, pad, protect, record.
+        var datagram = List[UInt8]()
+        for i in range(len(plans)):
+            var space_idx = plans[i].space_idx
             var pn = self.spaces[space_idx].alloc_pn()
             var largest_acked = UInt64(0)
             if self.spaces[space_idx].largest_acked_pn >= 0:
                 largest_acked = UInt64(self.spaces[space_idx].largest_acked_pn)
             var pn_len = pn_encode_length(pn, largest_acked)
 
-            # Build header + encrypt + protect.
-            var pkt = self._build_packet(space_idx, pn, pn_len, payload)
+            var padding = 0
+            if i == len(plans) - 1 and pad_to > 0:
+                # Padding is added on top of the raw payload; `_build_packet`
+                # only applies its 4-byte minimum when the sum is shorter.
+                var hdr = self._header_len(space_idx) - _MAX_PN_LEN + pn_len
+                var unpadded = len(datagram) + hdr + len(plans[i].payload) + _AEAD_TAG_LEN
+                if unpadded < pad_to:
+                    padding = pad_to - unpadded
+            var pkt = self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
             var pkt_size = len(pkt)
-
             datagram.extend(pkt^)
 
-            # NOTE: Initial discard deferred to _on_handshake_complete so the
-            # client can coalesce Initial ACK + Handshake in the same datagram
-            # (required by some server stacks for proper routing).
-
-            # Record sent packet with ECN mark.
-            var is_ack_eliciting = _has_ack_eliciting(frames)
+            # Step 6: commit.
+            if plans[i].ack_committed:
+                self.spaces[space_idx].mark_ack_sent()
+            var is_ack_eliciting = _has_ack_eliciting(plans[i].frames)
+            var in_flight = is_ack_eliciting or padding > 0
             var ect = self.ecn_mark()
             var sent = SentPacket(
                 pn=pn,
                 time_sent=now,
                 ack_eliciting=is_ack_eliciting,
-                in_flight=True,
+                in_flight=in_flight,
                 size=pkt_size,
-                frames=frames,
+                frames=plans[i].frames,
                 ecn_mark=ect,
             )
             self.spaces[space_idx].on_packet_sent(sent)
@@ -3396,87 +3564,155 @@ struct QuicConnection(Movable):
                 if self.ecn_probe_pkts_sent == 0:
                     self.ecn_probe_first_pn = pn
                 self.ecn_probe_pkts_sent += 1
-            self.recovery.on_packet_sent(pkt_size, True, pn, now)
-            # Commit pacer token for this packet — App-space only; matches
-            # the gate bypass in _can_send and the deadline bypass in _next_timeout.
-            if space_idx == 2:
+            self.recovery.on_packet_sent(pkt_size, in_flight, pn, now)
+            # Pacer token: Application space, ack-eliciting packets only.
+            if space_idx == 2 and is_ack_eliciting:
                 var _pace_rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
                 _ = self.recovery.pacer.refill_and_check(_pace_rate, now)
                 self.recovery.pacer.on_sent(UInt64(pkt_size))
+            # Stream-layer frame records for ACK / loss processing.
+            if space_idx == 2 and len(plans[i].sent_records) > 0:
+                self.app_frames_sent[Int(pn)] = List[SentStreamFrame](copy=plans[i].sent_records)
 
-            # Register stream-layer frame records for this Application-space packet
-            # so ACK / loss handlers can re-apply state.
-            if space_idx == 2 and len(sent_records) > 0:
-                self.app_frames_sent[Int(pn)] = sent_records^
+        if closing and all_close_committed:
+            self.close_owed = False
+            self.close_last_sent = now
 
-            # Track last ack-eliciting send time for PTO.
-            if is_ack_eliciting:
-                self.last_ack_eliciting_send_time = now
-
-        if len(datagram) > 0:
-            self.bytes_sent += UInt64(len(datagram))
-            datagrams.append(datagram^)
-
+        debug_assert(len(datagram) <= budget, "datagram exceeds its budget")
+        self.bytes_sent += UInt64(len(datagram))
+        datagrams.append(datagram^)
         return datagrams^
+
+    def _datagram_budget(self) -> Int:
+        """MAX_DATAGRAM_SIZE; the peer's max_udp_payload_size is only asserted."""
+        if self.peer_params:
+            debug_assert(
+                self.peer_params.value().max_udp_payload_size >= UInt64(MAX_DATAGRAM_SIZE),
+                "peer max_udp_payload_size below 1200",
+            )
+        return MAX_DATAGRAM_SIZE
+
+    def _amp_allowance(self) -> Int:
+        """Bytes an unvalidated server may still send (RFC 9000 §8.1), saturating at 0."""
+        var cap = 3 * self.bytes_received
+        var spent = self.bytes_sent + ANTI_AMP_HEADER_FUDGE
+        if spent >= cap:
+            return 0
+        return Int(cap - spent)
+
+    def _header_len(self, space_idx: Int) -> Int:
+        """Budgeted header bytes including a 4-byte PN and a 2-byte Length
+        varint for long headers; the encoder may use fewer (accepted slack)."""
+        if space_idx == 0:
+            # Token is always empty on this path (varint_len(0) == 1).
+            return 7 + len(self.peer_cid) + len(self.local_cid) + 1 + 2 + _MAX_PN_LEN
+        if space_idx == 1:
+            return 7 + len(self.peer_cid) + len(self.local_cid) + 2 + _MAX_PN_LEN
+        return 1 + len(self.peer_cid) + _MAX_PN_LEN
+
+    def _cc_open(self, now: UInt64, space_idx: Int, min_cost: Int) -> Bool:
+        """Congestion gate: cwnd has room for a minimum packet and, in the
+        Application space once established, the pacer has a token."""
+        if self.recovery.bytes_in_flight + UInt64(min_cost) > self.recovery.cc.cwnd():
+            return False
+        if space_idx == 2 and self.is_established():
+            var rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
+            if self.recovery.pacer.next_send_time(rate, now):
+                return False
+        return True
+
+    def _close_frame_for_space(self, space_idx: Int) -> Frame:
+        """The pending CLOSE as emitted in `space_idx`: RFC 9000 §10.2.3
+        re-packs an application close (0x1d) as a transport close (0x1c,
+        APPLICATION_ERROR) in Initial and Handshake packets."""
+        if not self.pending_close.value().is_transport and space_idx != 2:
+            var cc = ConnectionCloseFrame()
+            cc.is_transport = True
+            cc.error_code = APPLICATION_ERROR
+            cc.frame_type = UInt64(0)
+            cc.reason = List[UInt8](copy=self.pending_close.value().reason)
+            return Frame.connection_close(cc)
+        return Frame.connection_close(self.pending_close.value())
+
+    def _space_has_other_sendable(self, space_idx: Int) -> Bool:
+        """Non-mutating bundle predicate: one clause per builder that could
+        emit a non-ACK frame in this space. May be conservatively true, never
+        false when a builder would produce a frame."""
+        if self.crypto_streams[space_idx].has_unsent():
+            return True
+        if self.spaces[space_idx].probe_pending:
+            return True
+        if space_idx != 2:
+            return False
+        if self.send_handshake_done and self.is_server:
+            return True
+        if self.is_server and not self.initial_cids_emitted and (self.state & CONN_ESTABLISHED) != 0:
+            return True
+        if self.cid_mgr.has_unadvertised() or self.cid_mgr.has_pending_retire():
+            return True
+        if len(self.stream_map.sendable_ids) > 0:
+            return True
+        if (self.stream_map.conn_fc_recv.should_update() or self.stream_map.needs_max_data
+                or self.stream_map.needs_max_streams_bidi or self.stream_map.needs_max_streams_uni
+                or self.stream_map.needs_streams_blocked_bidi or self.stream_map.needs_streams_blocked_uni):
+            return True
+        var conn_limit = self.stream_map.conn_fc_send.limit
+        if (self.stream_map.conn_fc_send.received >= conn_limit
+                and self.stream_map.conn_fc_send.blocked_at != conn_limit):
+            return True
+        for entry in self.stream_map.streams.items():
+            if entry.value.needs_max_stream_data or entry.value.needs_reset_stream or entry.value.needs_stop_sending:
+                return True
+            if entry.value.fc_recv:
+                if entry.value.fc_recv.value().should_update():
+                    return True
+            if entry.value.fc_send:
+                ref fc = entry.value.fc_send.value()
+                if fc.available() == UInt64(0) and fc.limit > UInt64(0) and fc.blocked_at != fc.limit:
+                    return True
+        if len(self.pending_path_responses) > 0 or len(self.path_validator.pending) > 0:
+            return True
+        if self._outbound_dg_head < len(self.pending_outbound_datagrams):
+            return True
+        return False
 
     # ── Frame building ───────────────────────────────────────────────
 
     def _build_frames_for_space(
         mut self, space_idx: Int, now: UInt64,
+        mut frames: List[Frame],
         mut sent_records: List[SentStreamFrame],
-    ) raises -> List[Frame]:
-        """Collect frames to send for a given PN space.
+        budget: Int,
+    ) raises:
+        """Append the non-ACK frames for one PN space within `budget` bytes.
 
-        `sent_records` is populated for Application-space stream-layer frames
-        (STREAM/RESET/STOP/MAX_*/NEW_CID/RETIRE_CID) so the caller can track
-        them by packet number for ACK/loss processing.
+        Runs only when the packet will be emitted: every builder here mutates
+        state (crypto cursor, `needs_*` flags, `mark_advertised`, FC windows).
+        `sent_records` receives the Application-space stream-layer frames so
+        ACK/loss handlers can re-apply state by packet number.
         """
-        var frames = List[Frame]()
+        var used = 0
 
-        # When CLOSING, only send CONNECTION_CLOSE (RFC 9000 §10.2.1).
-        if (self.state & CONN_CLOSING) != 0 and self.pending_close:
-            # RFC 9000 §10.2.3: a CONNECTION_CLOSE of type 0x1d
-            # (application namespace) MUST be replaced with a 0x1c
-            # CONNECTION_CLOSE when emitted in Initial or Handshake
-            # packets — application error codes have no meaning in those
-            # spaces, so we re-pack as a transport-close carrying
-            # APPLICATION_ERROR (0x0c) and drop the original code.
-            if not self.pending_close.value().is_transport and space_idx != 2:
-                var cc_to_emit = ConnectionCloseFrame()
-                cc_to_emit.is_transport = True
-                cc_to_emit.error_code = APPLICATION_ERROR
-                cc_to_emit.frame_type = UInt64(0)
-                cc_to_emit.reason = List[UInt8](copy=self.pending_close.value().reason)
-                frames.append(Frame.connection_close(cc_to_emit))
-            else:
-                frames.append(
-                    Frame.connection_close(self.pending_close.value())
-                )
-            return frames^
-
-        # ACK frame (if needed).
-        var maybe_ack = self.spaces[space_idx].build_ack_frame(UInt64(0))
-        if maybe_ack:
-            frames.append(Frame.ack(maybe_ack.value()))
-
-        # CRYPTO frames from the crypto stream's send_buf.
-        var crypto_frames = self.crypto_streams[space_idx].pending_crypto_frames(
-            _MAX_CRYPTO_FRAME_SIZE
-        )
-        for i in range(len(crypto_frames)):
-            frames.append(Frame.crypto(crypto_frames[i]))
-
-        # Advance send offset for queued crypto data.
-        if len(crypto_frames) > 0:
-            var total_crypto = UInt64(0)
-            for i in range(len(crypto_frames)):
-                total_crypto += UInt64(len(crypto_frames[i].data))
-            self.crypto_streams[space_idx].advance_send(total_crypto)
+        # CRYPTO: one frame per packet, sized to what is left. The length
+        # varint is charged at 2 bytes (valid for any chunk < 16384).
+        if self.crypto_streams[space_idx].has_unsent():
+            var off = self.crypto_streams[space_idx].send_offset + UInt64(
+                self.crypto_streams[space_idx].sent_cursor
+            )
+            var charge = 1 + varint_len(off) + 2
+            var max_data = budget - used - charge
+            if max_data > 0:
+                var maybe = self.crypto_streams[space_idx].next_crypto_frame(max_data)
+                if maybe:
+                    var cf = maybe.value().copy()
+                    frames.append(Frame._crypto_move(cf))
+                    used += frames[len(frames) - 1].wire_len()
 
         # HANDSHAKE_DONE (server, Application space, once).
-        if self.send_handshake_done and space_idx == 2 and self.is_server:
+        if self.send_handshake_done and space_idx == 2 and self.is_server and used + 1 <= budget:
             frames.append(Frame.handshake_done())
             self.send_handshake_done = False
+            used += 1
 
         # Application-space stream-layer frames.
         if space_idx == 2:
@@ -3499,45 +3735,67 @@ struct QuicConnection(Movable):
                         break
                 self.initial_cids_emitted = True
 
-            self._build_app_frames(frames, sent_records)
+            self._build_app_frames(frames, sent_records, budget, used)
 
             # RFC 9000 §8.2 / §17.2.4: PATH_RESPONSE and PATH_CHALLENGE are
-            # 1-RTT-only (F13 already closes Initial/Handshake at RX). Drain
-            # any pending echoes first, then any freshly-queued challenges.
-            var path_responses = self.emit_path_response_frames()
-            for i in range(len(path_responses)):
-                ref pr = path_responses[i]
-                frames.append(pr.copy())
-            var path_challenges = self.emit_path_challenge_frames(now)
-            for i in range(len(path_challenges)):
-                ref pc = path_challenges[i]
-                frames.append(pc.copy())
+            # 1-RTT-only (F13 already closes Initial/Handshake at RX). Each
+            # frame is 9 bytes; the emitters drain their queues wholesale, so
+            # a batch is taken only when the whole batch fits.
+            var n_resp = len(self.pending_path_responses)
+            if n_resp > 0 and used + 9 * n_resp <= budget:
+                var path_responses = self.emit_path_response_frames()
+                for i in range(len(path_responses)):
+                    ref pr = path_responses[i]
+                    frames.append(pr.copy())
+                used += 9 * n_resp
+            var n_chal = len(self.path_validator.pending)
+            if n_chal > 0 and used + 9 * n_chal <= budget:
+                var path_challenges = self.emit_path_challenge_frames(now)
+                for i in range(len(path_challenges)):
+                    ref pc = path_challenges[i]
+                    frames.append(pc.copy())
+                used += 9 * n_chal
 
             # RFC 9221 §5: drain outbound DATAGRAM payloads into 1-RTT
             # DATAGRAM_LEN (0x31) frames so they compose with stream/ACK
-            # frames in the same packet. The Mojo `List` has no pop_front,
-            # so we rebuild the queue from index 1 — acceptable because
-            # the queue is short-lived (drained every flush) and each
-            # element is itself a small List[UInt8]. Crucially, we do NOT
-            # append entries to `sent_records`: DATAGRAMs are not retransmitted
-            # on loss (RFC 9221 §5.4), so loss-recovery must treat the
-            # carrying packet's DATAGRAMs as discarded rather than queued.
-            while len(self.pending_outbound_datagrams) > 0:
-                var head = List[UInt8](copy=self.pending_outbound_datagrams[0])
-                var rest = List[List[UInt8]]()
-                for i in range(1, len(self.pending_outbound_datagrams)):
-                    rest.append(List[UInt8](copy=self.pending_outbound_datagrams[i]))
-                self.pending_outbound_datagrams = rest^
+            # frames in the same packet. Entries are consumed from a head
+            # index (no per-pop rebuild); the list is reset once empty. We do
+            # NOT append entries to `sent_records`: DATAGRAMs are not
+            # retransmitted on loss (RFC 9221 §5.4), so loss-recovery must
+            # treat the carrying packet's DATAGRAMs as discarded.
+            while self._outbound_dg_head < len(self.pending_outbound_datagrams):
+                var dl = len(self.pending_outbound_datagrams[self._outbound_dg_head])
+                var wl = 1 + varint_len(UInt64(dl)) + dl
+                if used + wl > budget:
+                    if wl > self._max_app_payload():
+                        raise "DATAGRAM frame of " + String(wl) + " bytes can never fit a packet"
+                    break
+                var head = List[UInt8](copy=self.pending_outbound_datagrams[self._outbound_dg_head])
+                self._outbound_dg_head += 1
                 frames.append(Frame.datagram_with_len(head^))
+                used += wl
+            if self._outbound_dg_head >= len(self.pending_outbound_datagrams):
+                self.pending_outbound_datagrams = List[List[UInt8]]()
+                self._outbound_dg_head = 0
 
-        return frames^
+    def _max_app_payload(self) -> Int:
+        """Largest plaintext a 1-RTT packet can carry in an empty datagram."""
+        return MAX_DATAGRAM_SIZE - self._header_len(2) - _AEAD_TAG_LEN
 
     def _build_app_frames(
         mut self,
         mut frames: List[Frame],
         mut sent_records: List[SentStreamFrame],
+        budget: Int,
+        mut used: Int,
     ) raises:
-        """Append Application-space stream / FC / CID frames and record them."""
+        """Append Application-space stream / FC / CID frames within `budget`.
+
+        Every frame is admitted only if it fits, and the state it consumes
+        (`advertised`, retire queue, `needs_*` flags, FC windows, send buffer)
+        is mutated only for admitted frames. `used` is advanced by the wire
+        length of each admitted frame.
+        """
 
         # 1. NEW_CONNECTION_ID frames for unadvertised local CIDs.
         var pending_new = self.cid_mgr.pending_new_cid_entries()
@@ -3548,7 +3806,12 @@ struct QuicConnection(Movable):
             ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
             ncid.cid = List[UInt8](copy=entry.cid)
             ncid.stateless_reset_token = List[UInt8](copy=entry.reset_token)
-            frames.append(Frame.new_connection_id(ncid))
+            var f = Frame.new_connection_id(ncid)
+            var wl = f.wire_len()
+            if used + wl > budget:
+                break
+            frames.append(f^)
+            used += wl
             var rec = SentStreamFrame()
             rec.kind = SSF_NEW_CID
             rec.cid_seq = entry.sequence
@@ -3556,15 +3819,18 @@ struct QuicConnection(Movable):
             self.cid_mgr.mark_advertised(entry.sequence)
 
         # 2. RETIRE_CONNECTION_ID frames drain cid_mgr's retirement queue.
-        # Safety invariant: pending_retire_frames() drains the queue here, before
-        # the packet is committed.  This is safe because no code path between this
-        # call and on_packet_sent can raise — so the drain is always paired with a
-        # committed packet.  If a lost packet is detected later, _on_app_pkt_lost
-        # re-appends the seq numbers to retire_queue so they are retransmitted.
+        # Entries that do not fit are put back (the cap cannot be exceeded
+        # since they were just taken from the same queue); a lost packet
+        # re-queues its entries via _on_app_pkt_lost.
         var pending_retire = self.cid_mgr.pending_retire_frames()
         for i in range(len(pending_retire)):
             var seq = pending_retire[i]
+            var wl = 1 + varint_len(seq)
+            if used + wl > budget:
+                self.cid_mgr.requeue_retire(seq)
+                continue
             frames.append(Frame.retire_connection_id(seq))
+            used += wl
             var rec = SentStreamFrame()
             rec.kind = SSF_RETIRE_CID
             rec.cid_seq = seq
@@ -3572,28 +3838,38 @@ struct QuicConnection(Movable):
 
         # 3. Connection-level MAX_DATA.
         if self.stream_map.conn_fc_recv.should_update() or self.stream_map.needs_max_data:
-            var new_limit = self.stream_map.conn_fc_recv.update_limit()
-            frames.append(Frame.max_data(new_limit))
-            self.stream_map.needs_max_data = False
-            var rec = SentStreamFrame()
-            rec.kind = SSF_MAX_DATA
-            sent_records.append(rec^)
+            var wl = 1 + varint_len(self.stream_map.conn_fc_recv.next_limit())
+            if used + wl <= budget:
+                var new_limit = self.stream_map.conn_fc_recv.update_limit()
+                var f = Frame.max_data(new_limit)
+                used += f.wire_len()
+                frames.append(f^)
+                self.stream_map.needs_max_data = False
+                var rec = SentStreamFrame()
+                rec.kind = SSF_MAX_DATA
+                sent_records.append(rec^)
 
         # 4. MAX_STREAMS (bidi / uni).
         if self.stream_map.needs_max_streams_bidi:
-            var ms = MaxStreamsFrame(self.stream_map.local_max_streams_bidi, True)
-            frames.append(Frame.max_streams(ms))
-            self.stream_map.needs_max_streams_bidi = False
-            var rec = SentStreamFrame()
-            rec.kind = SSF_MAX_STREAMS_BIDI
-            sent_records.append(rec^)
+            var f = Frame.max_streams(MaxStreamsFrame(self.stream_map.local_max_streams_bidi, True))
+            var wl = f.wire_len()
+            if used + wl <= budget:
+                frames.append(f^)
+                used += wl
+                self.stream_map.needs_max_streams_bidi = False
+                var rec = SentStreamFrame()
+                rec.kind = SSF_MAX_STREAMS_BIDI
+                sent_records.append(rec^)
         if self.stream_map.needs_max_streams_uni:
-            var ms = MaxStreamsFrame(self.stream_map.local_max_streams_uni, False)
-            frames.append(Frame.max_streams(ms))
-            self.stream_map.needs_max_streams_uni = False
-            var rec = SentStreamFrame()
-            rec.kind = SSF_MAX_STREAMS_UNI
-            sent_records.append(rec^)
+            var f = Frame.max_streams(MaxStreamsFrame(self.stream_map.local_max_streams_uni, False))
+            var wl = f.wire_len()
+            if used + wl <= budget:
+                frames.append(f^)
+                used += wl
+                self.stream_map.needs_max_streams_uni = False
+                var rec = SentStreamFrame()
+                rec.kind = SSF_MAX_STREAMS_UNI
+                sent_records.append(rec^)
 
         # 5. Per-stream control frames (MAX_STREAM_DATA, RESET_STREAM, STOP_SENDING).
         # Snapshot stream IDs so we can safely mutate the Dict while iterating.
@@ -3609,16 +3885,21 @@ struct QuicConnection(Movable):
 
             # MAX_STREAM_DATA
             if stream.needs_max_stream_data and stream.fc_recv:
-                var fc = stream.fc_recv.value().copy()
-                var new_limit = fc.update_limit()
-                stream.fc_recv = fc^
-                stream.needs_max_stream_data = False
-                frames.append(Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit)))
-                var rec = SentStreamFrame()
-                rec.kind = SSF_MAX_STREAM_DATA
-                rec.stream_id = stream.id
-                sent_records.append(rec^)
-                changed = True
+                var next_limit = stream.fc_recv.value().next_limit()
+                var wl = 1 + varint_len(stream.id) + varint_len(next_limit)
+                if used + wl <= budget:
+                    var fc = stream.fc_recv.value().copy()
+                    var new_limit = fc.update_limit()
+                    stream.fc_recv = fc^
+                    stream.needs_max_stream_data = False
+                    var f = Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit))
+                    used += f.wire_len()
+                    frames.append(f^)
+                    var rec = SentStreamFrame()
+                    rec.kind = SSF_MAX_STREAM_DATA
+                    rec.stream_id = stream.id
+                    sent_records.append(rec^)
+                    changed = True
 
             # RESET_STREAM
             if stream.needs_reset_stream:
@@ -3627,24 +3908,32 @@ struct QuicConnection(Movable):
                     stream.reset_stream_error,
                     stream.reset_stream_final_size,
                 )
-                frames.append(Frame.reset_stream(rs_f))
-                stream.needs_reset_stream = False
-                var rec = SentStreamFrame()
-                rec.kind = SSF_RESET_STREAM
-                rec.stream_id = stream.id
-                sent_records.append(rec^)
-                changed = True
+                var f = Frame.reset_stream(rs_f)
+                var wl = f.wire_len()
+                if used + wl <= budget:
+                    frames.append(f^)
+                    used += wl
+                    stream.needs_reset_stream = False
+                    var rec = SentStreamFrame()
+                    rec.kind = SSF_RESET_STREAM
+                    rec.stream_id = stream.id
+                    sent_records.append(rec^)
+                    changed = True
 
             # STOP_SENDING
             if stream.needs_stop_sending:
                 var ss_f = StopSendingFrame(stream.id, stream.stop_sending_error)
-                frames.append(Frame.stop_sending(ss_f))
-                stream.needs_stop_sending = False
-                var rec = SentStreamFrame()
-                rec.kind = SSF_STOP_SENDING
-                rec.stream_id = stream.id
-                sent_records.append(rec^)
-                changed = True
+                var f = Frame.stop_sending(ss_f)
+                var wl = f.wire_len()
+                if used + wl <= budget:
+                    frames.append(f^)
+                    used += wl
+                    stream.needs_stop_sending = False
+                    var rec = SentStreamFrame()
+                    rec.kind = SSF_STOP_SENDING
+                    rec.stream_id = stream.id
+                    sent_records.append(rec^)
+                    changed = True
 
             if changed:
                 self.stream_map.set_stream(sid, stream^)
@@ -3655,7 +3944,7 @@ struct QuicConnection(Movable):
         for i in range(len(self.stream_map.sendable_ids)):
             sendable.append(self.stream_map.sendable_ids[i])
 
-        var max_bytes_per_frame = 1200
+        var max_bytes_per_frame = MAX_DATAGRAM_SIZE
         var n = len(sendable)
         # Rotate starting point for fairness: low-ID streams don't always win.
         var start = 0
@@ -3681,11 +3970,21 @@ struct QuicConnection(Movable):
             var stream_avail = fc.available()
             if stream_avail == 0 and not (sb.fin and not sb.fin_offset):
                 continue
+            # Worst-case STREAM header for this frame: type + stream id +
+            # offset + a 2-byte length varint (any chunk < 16384). Budget
+            # exhausted: stop here and resume at this stream next packet.
+            var hdr_charge = 1 + varint_len(stream.id) + varint_len(sb.unsent_offset) + 2
+            var room = budget - used - hdr_charge
+            if room < 0:
+                self.stream_map.send_index = idx
+                break
             var limit = Int(conn_avail)
             if Int(stream_avail) < limit:
                 limit = Int(stream_avail)
             if max_bytes_per_frame < limit:
                 limit = max_bytes_per_frame
+            if room < limit:
+                limit = room
             # If the only work is a standalone FIN, limit can be 0: make_frame
             # handles this via fin-only emission.
             var maybe_frame = sb.make_frame(stream.id, limit)
@@ -3700,7 +3999,15 @@ struct QuicConnection(Movable):
             var frame_len = UInt64(len(sf.data))
             var frame_offset = sf.offset
             var frame_fin = sf.fin
-            frames.append(Frame._stream_move(sf))
+            var f = Frame._stream_move(sf)
+            var wl = f.wire_len()
+            if used + wl > budget:
+                # Cannot happen given the charge above; `sb` is a copy, so
+                # nothing was consumed. Resume at this stream next packet.
+                self.stream_map.send_index = idx
+                break
+            frames.append(f^)
+            used += wl
             # Flow-control accounting (only "new" bytes past received mark).
             var prev_end = frame_offset + frame_len
             if prev_end > fc.received:
@@ -3730,8 +4037,11 @@ struct QuicConnection(Movable):
         var conn_limit = self.stream_map.conn_fc_send.limit
         if (self.stream_map.conn_fc_send.received >= conn_limit
                 and self.stream_map.conn_fc_send.blocked_at != conn_limit):
-            frames.append(Frame.data_blocked(conn_limit))
-            self.stream_map.conn_fc_send.blocked_at = conn_limit
+            var wl = 1 + varint_len(conn_limit)
+            if used + wl <= budget:
+                frames.append(Frame.data_blocked(conn_limit))
+                used += wl
+                self.stream_map.conn_fc_send.blocked_at = conn_limit
 
         # 8. STREAM_DATA_BLOCKED (RFC 9000 §4.1) — per-stream FC exhausted.
         var blocked_ids = List[Int]()
@@ -3747,7 +4057,11 @@ struct QuicConnection(Movable):
             var fc = stream.fc_send.value().copy()
             var stream_limit = fc.limit
             if fc.available() == UInt64(0) and fc.blocked_at != stream_limit and stream_limit > UInt64(0):
+                var wl = 1 + varint_len(stream.id) + varint_len(stream_limit)
+                if used + wl > budget:
+                    continue
                 frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(stream.id, stream_limit)))
+                used += wl
                 fc.blocked_at = stream_limit
                 stream.fc_send = fc^
                 self.stream_map.set_stream(sid, stream^)
@@ -3755,17 +4069,21 @@ struct QuicConnection(Movable):
         # 9. STREAMS_BLOCKED (RFC 9000 §4.6) — local stream count at peer concurrency limit.
         if self.stream_map.needs_streams_blocked_bidi:
             var bidi_limit = self.stream_map.peer_max_streams_bidi
-            if self.stream_map.streams_blocked_at_bidi != bidi_limit:
+            var wl = 1 + varint_len(bidi_limit)
+            if self.stream_map.streams_blocked_at_bidi != bidi_limit and used + wl <= budget:
                 frames.append(
                     Frame.streams_blocked(StreamsBlockedFrame(bidi_limit, True))
                 )
+                used += wl
                 self.stream_map.streams_blocked_at_bidi = bidi_limit
         if self.stream_map.needs_streams_blocked_uni:
             var uni_limit = self.stream_map.peer_max_streams_uni
-            if self.stream_map.streams_blocked_at_uni != uni_limit:
+            var wl = 1 + varint_len(uni_limit)
+            if self.stream_map.streams_blocked_at_uni != uni_limit and used + wl <= budget:
                 frames.append(
                     Frame.streams_blocked(StreamsBlockedFrame(uni_limit, False))
                 )
+                used += wl
                 self.stream_map.streams_blocked_at_uni = uni_limit
 
     # ── Packet building ──────────────────────────────────────────────
@@ -3776,15 +4094,21 @@ struct QuicConnection(Movable):
         pn: UInt64,
         pn_len: Int,
         payload: List[UInt8],
+        padding: Int = 0,
     ) raises -> List[UInt8]:
         """Build a complete encrypted QUIC packet.
 
-        1. Serialize header.
-        2. Write PN bytes.
-        3. AEAD encrypt the frame payload.
-        4. Apply header protection.
+        `padding` zero bytes (PADDING frames) are appended to the plaintext,
+        which is in any case extended to at least 4 bytes so the
+        header-protection sample fits (RFC 9001 §5.4.2) — a 1-byte PING
+        probe would otherwise leave a 17-byte ciphertext, short of the 20
+        the sample offset needs. Under ASSERT=all the actual header plus PN
+        must not exceed the budgeted `_header_len`.
         """
-        var payload_ciphertext_len = len(payload) + _AEAD_TAG_LEN
+        var plaintext_len = len(payload) + padding
+        if plaintext_len < _MIN_PLAINTEXT_LEN:
+            plaintext_len = _MIN_PLAINTEXT_LEN
+        var payload_ciphertext_len = plaintext_len + _AEAD_TAG_LEN
 
         if space_idx == 0 or space_idx == 1:
             # Long header (Initial or Handshake).
@@ -3814,6 +4138,10 @@ struct QuicConnection(Movable):
 
             # Record pn_offset (where PN bytes start).
             var pn_offset = len(header_bytes)
+            debug_assert(
+                pn_offset + pn_len <= self._header_len(space_idx),
+                "long header exceeds its budgeted length",
+            )
 
             # Append PN bytes.
             var truncated = pn_truncate(pn, pn_len)
@@ -3822,9 +4150,11 @@ struct QuicConnection(Movable):
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
             # Encrypt + protect in a single buffer (zero-copy).
-            # Append payload to header_bytes.
+            # Append payload, then padding up to plaintext_len.
             for i in range(len(payload)):
                 header_bytes.append(payload[i])
+            for _ in range(plaintext_len - len(payload)):
+                header_bytes.append(UInt8(0))
             # Append zero space for AEAD tag.
             for _ in range(_AEAD_TAG_LEN):
                 header_bytes.append(UInt8(0))
@@ -3837,7 +4167,7 @@ struct QuicConnection(Movable):
             var header_len = pn_offset + pn_len
             _ = self.protect.encrypt_payload_in_place(
                 space_idx, pn, pkt_ptr, header_len,
-                len(payload), total_len,
+                plaintext_len, total_len,
             )
 
             # Protect header in-place.
@@ -3858,6 +4188,10 @@ struct QuicConnection(Movable):
 
             # Record pn_offset.
             var pn_offset = len(header_bytes)
+            debug_assert(
+                pn_offset + pn_len <= self._header_len(space_idx),
+                "short header exceeds its budgeted length",
+            )
 
             # Append PN bytes.
             var truncated = pn_truncate(pn, pn_len)
@@ -3865,18 +4199,12 @@ struct QuicConnection(Movable):
                 var shift = UInt64((pn_len - 1 - i) * 8)
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
-            # Header-protection requires the ciphertext to be at least
-            # _MAX_PN_LEN + _HP_SAMPLE_LEN = 20 bytes after pn_offset.
-            # ciphertext = payload + AEAD_TAG(16), so payload must be >= 4
-            # for a 1-byte PN.  Pad with QUIC PADDING (0x00) if needed.
-            # Pad payload to minimum size for HP sample.
-            var min_payload_len = _MAX_PN_LEN
+            # Payload, then padding up to plaintext_len (>= 4 so the
+            # header-protection sample at pn_offset + 4 fits).
             for i in range(len(payload)):
                 header_bytes.append(payload[i])
-            var current_payload_len = len(payload)
-            while current_payload_len < min_payload_len:
+            for _ in range(plaintext_len - len(payload)):
                 header_bytes.append(UInt8(0))
-                current_payload_len += 1
 
             # Append zero space for AEAD tag.
             for _ in range(_AEAD_TAG_LEN):
@@ -3889,7 +4217,7 @@ struct QuicConnection(Movable):
             var header_len = pn_offset + pn_len
             _ = self.protect.encrypt_payload_in_place(
                 space_idx, pn, pkt_ptr, header_len,
-                current_payload_len, total_len,
+                plaintext_len, total_len,
             )
 
             # Protect header in-place.
@@ -4012,65 +4340,85 @@ struct QuicConnection(Movable):
 
     # ── Timers ───────────────────────────────────────────────────────
 
-    def timeout(self, now: UInt64) -> Optional[UInt64]:
-        """Return the earliest deadline among PTO, idle, close/drain, and pacer timers.
+    def _pto_interval(self, space_idx: Int = 2) -> UInt64:
+        """Current PTO period (RFC 9002 §6.2.1): srtt + max(4·rttvar, 1 ms)
+        + the PEER's max_ack_delay, the latter only for the Application space
+        once the handshake is confirmed; backed off by `pto_count`."""
+        var mad = UInt64(0)
+        if space_idx == 2 and self.handshake_confirmed and self.peer_params:
+            mad = self.peer_params.value().max_ack_delay * 1000
+        return self.recovery.pto_timeout(mad)
 
-        Returns None if no timer is active.
+    def _highest_keyed_space(self) -> Int:
+        """Index of the highest space with keys, -1 if none."""
+        for s in range(2, -1, -1):
+            if self.protect.has_keys(s):
+                return s
+        return -1
+
+    def _pto_deadline(self, space_idx: Int) -> Optional[UInt64]:
+        """Single source of truth for one space's PTO deadline.
+
+        None while closing/draining/closed, on an amplification-limited
+        server (RFC 9002 §6.2.2.1), for a keyless space, or while this space's
+        probe is already pending (delivered by the next `send()`). Otherwise
+        `time_of_last_ae_sent + PTO`. A handshaking client with nothing
+        ack-eliciting in flight anywhere arms `idle_timer + PTO` on its
+        highest keyed space so it cannot deadlock (RFC 9002 §6.2.2.1).
+        """
+        if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return None
+        if self.is_server and not self._addr_validated():
+            return None
+        if not self.protect.has_keys(space_idx):
+            return None
+        if self.spaces[space_idx].probe_pending:
+            return None
+        if self.spaces[space_idx].time_of_last_ae_sent:
+            return Optional[UInt64](
+                self.spaces[space_idx].time_of_last_ae_sent.value() + self._pto_interval(space_idx)
+            )
+        if not self.is_server and (self.state & CONN_HANDSHAKING) != 0:
+            if space_idx == self._highest_keyed_space():
+                var any_ae = False
+                for s in range(3):
+                    if self.spaces[s].time_of_last_ae_sent:
+                        any_ae = True
+                if not any_ae:
+                    return Optional[UInt64](self.idle_timer + self._pto_interval(space_idx))
+        return None
+
+    def timeout(self, now: UInt64) -> Optional[UInt64]:
+        """Earliest deadline the caller must wake `send()` for, or None.
+
+        Sources: per-space PTO and ACK deadlines (omitted while
+        closing/draining/closed), idle, close and drain timers, and the pacer
+        (only when Application-space data is actually waiting). After
+        `send(now)` this is None or strictly greater than `now`, except for an
+        idle deadline that expired in that call.
         """
         var earliest = Optional[UInt64](None)
+        var terminal = (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0
 
-        # PTO timer — skip when server is amplification-limited (M7).
-        if not (self.is_server and (self.state & CONN_ADDR_VALIDATED) == 0):
-            # Only arm PTO if we have sent ack-eliciting packets.
-            if self.last_ack_eliciting_send_time > 0:
-                var max_ack_delay_us = self.local_params.max_ack_delay * 1000
-                var pto = self.recovery.pto_timeout(max_ack_delay_us)
-                var pto_deadline = self.last_ack_eliciting_send_time + pto
-                earliest = pto_deadline
-            elif not self.is_server:
-                # Client anti-deadlock: arm PTO from idle_timer even without sends.
-                var max_ack_delay_us = self.local_params.max_ack_delay * 1000
-                var pto = self.recovery.pto_timeout(max_ack_delay_us)
-                var pto_deadline = self.idle_timer + pto
-                earliest = pto_deadline
+        if not terminal:
+            for s in range(3):
+                _min_deadline(earliest, self._pto_deadline(s))
+                _min_deadline(earliest, self.spaces[s].ack_deadline)
 
-        # Idle timer — use effective min(local, peer) (M8).
+        # Idle timer — use effective min(local, peer).
         var idle_effective = self._effective_idle_timeout()
         if idle_effective > 0:
-            var idle_deadline = self.idle_timer + idle_effective * 1000
-            if earliest:
-                if idle_deadline < earliest.value():
-                    earliest = idle_deadline
-            else:
-                earliest = idle_deadline
+            _min_deadline(earliest, Optional[UInt64](self.idle_timer + idle_effective * 1000))
 
-        # Close timer.
         if self.close_timer > 0:
-            if earliest:
-                if self.close_timer < earliest.value():
-                    earliest = self.close_timer
-            else:
-                earliest = self.close_timer
-
-        # Drain timer.
+            _min_deadline(earliest, Optional[UInt64](self.close_timer))
         if self.drain_timer > 0:
-            if earliest:
-                if self.drain_timer < earliest.value():
-                    earliest = self.drain_timer
-            else:
-                earliest = self.drain_timer
+            _min_deadline(earliest, Optional[UInt64](self.drain_timer))
 
-        # --- Pacer branch ---
-        # Pacer deadlines do not gate handshake-space sends (see _can_send).
-        if self.is_established():
+        # Pacer: only a wake-up source when something is waiting on a token.
+        if not terminal and self.is_established() and self._space_has_other_sendable(2):
             var rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
-            var pacer_deadline = self.recovery.pacer.next_send_time(rate, now)
-            if pacer_deadline:
-                if earliest:
-                    if pacer_deadline.value() < earliest.value():
-                        earliest = pacer_deadline
-                else:
-                    earliest = pacer_deadline
+            _min_deadline(earliest, self.recovery.pacer.next_send_time(rate, now))
 
         return earliest^
 
@@ -4115,72 +4463,67 @@ struct QuicConnection(Movable):
                 )
                 return
 
-        # PTO fire: resend CRYPTO or send PING.
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
-        # Skip PTO when server is amplification-limited.
-        if self.is_server and (self.state & CONN_ADDR_VALIDATED) == 0:
+
+        # Delayed-ACK deadlines: the ACK goes out in this same send() since
+        # ACK-only packets bypass the congestion gate.
+        for s in range(3):
+            if self.spaces[s].ack_deadline:
+                if self.spaces[s].ack_deadline.value() <= now:
+                    self.spaces[s].ack_needed = True
+                    self.spaces[s].ack_deadline = None
+
+        # PTO (RFC 9002 §6.2.4). Deadlines are snapshotted for all spaces
+        # before anything mutates, then every expired space fires and
+        # pto_count is incremented exactly once — the backoff must not hide a
+        # second expired space behind the first one's doubled interval.
+        var fire = List[Bool](capacity=3)
+        var any_fire = False
+        for s in range(3):
+            var d = self._pto_deadline(s)
+            var expired = False
+            if d:
+                expired = d.value() <= now
+            fire.append(expired)
+            if expired:
+                any_fire = True
+        if not any_fire:
             return
-        var max_ack_delay_us = UInt64(0)
-        if self.handshake_confirmed:
-            max_ack_delay_us = self.local_params.max_ack_delay * 1000
-        var pto = self.recovery.pto_timeout(max_ack_delay_us)
-        var pto_deadline = self.last_ack_eliciting_send_time + pto
-        # Client anti-deadlock: arm PTO even with no in-flight packets.
-        if not self.is_server and self.recovery.bytes_in_flight == 0 and (self.state & CONN_HANDSHAKING) != 0:
-            pto_deadline = self.idle_timer + pto
-        if self.last_ack_eliciting_send_time > 0 or (not self.is_server and (self.state & CONN_HANDSHAKING) != 0):
-            if now >= pto_deadline:
-                self.recovery.pto_count += 1
-                # Re-queue CRYPTO frames from unacked sent_packets for
-                # retransmission.  advance_send() already consumed the
-                # original send_buf bytes after the first send(), so we
-                # must copy CRYPTO data back from the SentPacket records.
-                var pto_space = -1
-                for s in range(3):
-                    if not self.protect.has_keys(s):
-                        continue
-                    # First check if send_buf already has data.
-                    if len(self.crypto_streams[s].send_buf) > 0:
-                        pto_space = s
-                        continue
-                    # Otherwise recover CRYPTO from unacked packets.
-                    var requeued = False
-                    for entry in self.spaces[s].sent_packets.items():
-                        for fi in range(len(entry.value.frames)):
-                            if entry.value.frames[fi].is_crypto():
-                                if entry.value.frames[fi]._crypto:
-                                    var cf = entry.value.frames[fi]._crypto.value().copy()
-                                    self.crypto_streams[s].requeue(
-                                        cf.offset, Span(cf.data)
-                                    )
-                                    requeued = True
-                    if requeued:
-                        pto_space = s
-                if pto_space >= 0:
-                    # CRYPTO data is now in send_buf; next
-                    # _build_frames_for_space will pick it up.
-                    pass
-                else:
-                    # Send PING in highest available space.
-                    for s in range(2, -1, -1):
-                        if self.protect.has_keys(s):
-                            self.spaces[s].ack_needed = True  # Force a packet
-                            break
+        for s in range(3):
+            if not fire[s]:
+                continue
+            # Re-queue this space's unacknowledged CRYPTO data (the cursor
+            # already consumed the original bytes) unless some is still
+            # staged; the probe is then that retransmission, else a PING.
+            if not self.crypto_streams[s].has_unsent():
+                for entry in self.spaces[s].sent_packets.items():
+                    for fi in range(len(entry.value.frames)):
+                        if entry.value.frames[fi].is_crypto():
+                            if entry.value.frames[fi]._crypto:
+                                var cf = entry.value.frames[fi]._crypto.value().copy()
+                                self.crypto_streams[s].requeue(
+                                    cf.offset, Span(cf.data)
+                                )
+            self.spaces[s].probe_pending = True
+        self.recovery.pto_count += 1
 
     # ── Public API ───────────────────────────────────────────────────
 
     def poll(mut self) -> Optional[QuicEvent]:
-        """Return the next pending event, or None."""
-        if len(self.events) > 0:
-            # Pop the first event.
-            var ev = self.events[0].copy()
-            var new_events = List[QuicEvent]()
-            for i in range(1, len(self.events)):
-                new_events.append(self.events[i].copy())
-            self.events = new_events^
-            return ev^
-        return None
+        """Next pending event in append order; O(1) via a head index, the
+        list is reset (not rebuilt) once drained."""
+        if self._events_head >= len(self.events):
+            if len(self.events) > 0:
+                self.events = List[QuicEvent]()
+            self._events_head = 0
+            return None
+        var ev = self.events[self._events_head].copy()
+        self._events_head += 1
+        if self._events_head >= len(self.events):
+            self.events = List[QuicEvent]()
+            self._events_head = 0
+        return ev^
 
     def close_transport(mut self, error_code: UInt64, reason: String, now: UInt64):
         """Initiate a graceful CONNECTION_CLOSE (RFC 9000 §19.19 frame type 0x1c).
@@ -4205,20 +4548,24 @@ struct QuicConnection(Movable):
         """Shared implementation for `close_transport` and `close_app`.
 
         Idempotent: subsequent calls after CLOSING/DRAINING/CLOSED is set
-        are no-ops. Builds the appropriate `ConnectionCloseFrame` (transport
-        or application) and queues it as `pending_close`; arms the 3*PTO
-        close timer so the loss recovery layer can finalize teardown.
+        are no-ops. Queues the `ConnectionCloseFrame` as `pending_close` with
+        the reason truncated to MAX_CLOSE_REASON_BYTES, owes one CLOSE
+        datagram, drops any pending delayed ACK, and arms the 3*PTO close
+        timer (RFC 9000 §10.2).
         """
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         self.state = self.state | CONN_CLOSING
-        # Set close timer: 3 * PTO.
-        var max_ack_delay_us = self.local_params.max_ack_delay * 1000
-        var pto = self.recovery.pto_timeout(max_ack_delay_us)
-        self.close_timer = now + 3 * pto
+        self.close_timer = now + 3 * self._pto_interval()
+        self.close_owed = True
+        for s in range(3):
+            self.spaces[s].ack_deadline = None
         var reason_bytes = List[UInt8]()
         var reason_str_bytes = reason.as_bytes()
-        for i in range(len(reason_str_bytes)):
+        var n = len(reason_str_bytes)
+        if n > MAX_CLOSE_REASON_BYTES:
+            n = MAX_CLOSE_REASON_BYTES
+        for i in range(n):
             reason_bytes.append(reason_str_bytes[i])
         var cc = ConnectionCloseFrame()
         cc.is_transport = not is_app
@@ -4516,6 +4863,14 @@ def _has_ack_eliciting(frames: List[Frame]) -> Bool:
         if frames[i].is_ack_eliciting():
             return True
     return False
+
+
+def _min_deadline(mut earliest: Optional[UInt64], candidate: Optional[UInt64]):
+    """Fold `candidate` into `earliest` (None never wins)."""
+    if not candidate:
+        return
+    if not earliest or candidate.value() < earliest.value():
+        earliest = Optional[UInt64](candidate.value())
 
 
 def _apply_m3c_defaults(mut params: TransportParams):

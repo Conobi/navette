@@ -656,12 +656,17 @@ def test_coalesced_packets() raises:
         Span(orig_dcid), Span(client_dcid), now,
     )
 
-    # Client sends Initial.
+    # Client sends its Initial flight (the ClientHello spans two 1200-byte
+    # datagrams; each send() returns at most one).
     now += UInt64(10_000)
     var client_dgrams = client.send(now)
     assert_true(len(client_dgrams) > 0, "client should send Initial")
-    for i in range(len(client_dgrams)):
-        server.recv(Span(client_dgrams[i]), now)
+    for _ in range(8):
+        for i in range(len(client_dgrams)):
+            server.recv(Span(client_dgrams[i]), now)
+        client_dgrams = client.send(now)
+        if len(client_dgrams) == 0:
+            break
 
     # Server sends response -- should contain coalesced data.
     now += UInt64(10_000)
@@ -3726,7 +3731,8 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
     server.state = server.state | CONN_ESTABLISHED
 
     var sent_records = List[SentStreamFrame]()
-    var frames = server._build_frames_for_space(2, UInt64(1_000_000), sent_records)
+    var frames = List[Frame]()
+    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, 1100)
 
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -3748,7 +3754,8 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
     # A second 1-RTT flush MUST NOT re-issue: pending_new_cid_entries is
     # drained (everything marked advertised) and the guard stays set.
     var sent_records2 = List[SentStreamFrame]()
-    var frames2 = server._build_frames_for_space(2, UInt64(1_000_001), sent_records2)
+    var frames2 = List[Frame]()
+    server._build_frames_for_space(2, UInt64(1_000_001), frames2, sent_records2, 1100)
     var n_new_cid2 = 0
     for i in range(len(frames2)):
         if frames2[i].is_new_connection_id():
@@ -3775,7 +3782,8 @@ def test_initial_new_cid_burst_default_limit() raises:
 
     server.state = server.state | CONN_ESTABLISHED
     var sent_records = List[SentStreamFrame]()
-    var frames = server._build_frames_for_space(2, UInt64(1_000_000), sent_records)
+    var frames = List[Frame]()
+    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, 1100)
 
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -3805,7 +3813,8 @@ def test_initial_burst_skipped_before_handshake_complete() raises:
     )
 
     var sent_records = List[SentStreamFrame]()
-    var frames = server._build_frames_for_space(2, UInt64(1_000_000), sent_records)
+    var frames = List[Frame]()
+    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, 1100)
 
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -3840,7 +3849,8 @@ def test_initial_burst_server_only() raises:
     var initial_count = len(client.cid_mgr.local_cids)
 
     var sent_records = List[SentStreamFrame]()
-    var frames = client._build_frames_for_space(2, now, sent_records)
+    var frames = List[Frame]()
+    client._build_frames_for_space(2, now, frames, sent_records, 1100)
     var n_new_cid = 0
     for i in range(len(frames)):
         if frames[i].is_new_connection_id():

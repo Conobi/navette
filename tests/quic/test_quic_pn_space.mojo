@@ -114,21 +114,22 @@ def test_ack_delayed_application() raises:
 
 
 def test_build_ack_frame() raises:
-    """Receive PNs 0,1,3,5,6; build ACK; verify largest=6, first_range=1,
-    ranges has gap=1/ack=0 then gap=1/ack=1."""
+    """Receive PNs 0,1,3,5,6 (last at t=1000); peek at t=1800 with exponent 3
+    yields largest=6, delay=100, first_range=1, ranges gap=1/ack=0 then
+    gap=1/ack=1. Peeking is non-mutating; mark_ack_sent resets the state."""
     var space = PacketNumberSpace(EncryptionLevel.initial())
-    space.on_packet_received(UInt64(0), True)
-    space.on_packet_received(UInt64(1), True)
-    space.on_packet_received(UInt64(3), True)
-    space.on_packet_received(UInt64(5), True)
-    space.on_packet_received(UInt64(6), True)
+    space.on_packet_received(UInt64(0), True, UInt64(100))
+    space.on_packet_received(UInt64(1), True, UInt64(200))
+    space.on_packet_received(UInt64(3), True, UInt64(300))
+    space.on_packet_received(UInt64(5), True, UInt64(400))
+    space.on_packet_received(UInt64(6), True, UInt64(1000))
 
-    var maybe_ack = space.build_ack_frame(UInt64(100))
+    var maybe_ack = space.peek_ack_frame(UInt64(1800), UInt64(3))
     _assert_true(maybe_ack.__bool__(), "ACK frame should be present")
     var ack = maybe_ack.value().copy()
 
     _assert_eq_u64(ack.largest_ack, UInt64(6), "largest_ack")
-    _assert_eq_u64(ack.ack_delay, UInt64(100), "ack_delay")
+    _assert_eq_u64(ack.ack_delay, UInt64(100), "ack_delay = (1800-1000) >> 3")
     _assert_eq_u64(ack.first_ack_range, UInt64(1), "first_ack_range")  # [5,6] -> 6-5=1
 
     _assert_eq(len(ack.ranges), 2, "additional ranges count")
@@ -139,10 +140,142 @@ def test_build_ack_frame() raises:
     _assert_eq_u64(ack.ranges[1].gap, UInt64(1), "range[1].gap")
     _assert_eq_u64(ack.ranges[1].ack_range, UInt64(1), "range[1].ack_range")
 
-    # State should be reset.
+    # Peeking must not touch scheduling state.
+    _assert_true(space.ack_needed, "ack_needed intact after peek")
+    _assert_eq(space.ack_eliciting_since_last_ack, 5, "count intact after peek")
+
+    space.mark_ack_sent()
     _assert_false(space.ack_needed, "ack_needed reset")
     _assert_eq(space.ack_eliciting_since_last_ack, 0, "ack_eliciting_since_last_ack reset")
+    _assert_false(Bool(space.ack_deadline), "ack_deadline cleared")
+    _assert_false(Bool(space.peek_ack_frame(UInt64(1800), UInt64(3))), "nothing to peek after commit")
     print("    PASS test_build_ack_frame")
+
+
+def test_ack_deadline_armed_once() raises:
+    """First non-immediate application packet arms now + max_ack_delay; later
+    packets do not move it; the threshold clears it."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    space.on_packet_received(UInt64(0), True, UInt64(5_000), UInt64(25_000))
+    _assert_false(space.ack_needed, "one packet does not need an ACK yet")
+    _assert_true(Bool(space.ack_deadline), "deadline armed by first packet")
+    _assert_eq_u64(space.ack_deadline.value(), UInt64(30_000), "deadline = now + max_ack_delay")
+    # A non-ack-eliciting packet neither arms nor moves the deadline.
+    space.on_packet_received(UInt64(1), False, UInt64(9_000), UInt64(25_000))
+    _assert_eq_u64(space.ack_deadline.value(), UInt64(30_000), "deadline unchanged")
+    # Second ack-eliciting packet: threshold reached, deadline cleared.
+    space.on_packet_received(UInt64(2), True, UInt64(9_500), UInt64(25_000))
+    _assert_true(space.ack_needed, "threshold sets ack_needed")
+    _assert_false(Bool(space.ack_deadline), "threshold clears the deadline")
+
+    # max_ack_delay_us == 0 arms Some(now).
+    var zero = PacketNumberSpace(EncryptionLevel.application())
+    zero.on_packet_received(UInt64(0), True, UInt64(77), UInt64(0))
+    _assert_eq_u64(zero.ack_deadline.value(), UInt64(77), "zero delay arms now")
+    print("    PASS test_ack_deadline_armed_once")
+
+
+def test_ack_out_of_order_immediate() raises:
+    """A PN below the largest ack-eliciting one, or more than one above it,
+    sets ack_needed at once; the -1 sentinel makes PN >= 1 immediate."""
+    var gap = PacketNumberSpace(EncryptionLevel.application())
+    gap.on_packet_received(UInt64(0), True, UInt64(0))
+    _assert_false(gap.ack_needed, "PN 0 first: not immediate")
+    gap.on_packet_received(UInt64(1), False, UInt64(0))
+    gap.mark_ack_sent()
+    gap.on_packet_received(UInt64(3), True, UInt64(0))
+    _assert_true(gap.ack_needed, "PN 3 after largest AE 0: gap -> immediate")
+    _assert_eq(gap.largest_rx_ack_eliciting_pn, 3, "largest AE tracked")
+
+    var reorder = PacketNumberSpace(EncryptionLevel.application())
+    reorder.on_packet_received(UInt64(5), True, UInt64(0))
+    _assert_true(reorder.ack_needed, "first AE with PN >= 1 is immediate")
+    reorder.mark_ack_sent()
+    reorder.on_packet_received(UInt64(4), True, UInt64(0))
+    _assert_true(reorder.ack_needed, "PN below largest AE: immediate")
+    _assert_eq(reorder.largest_rx_ack_eliciting_pn, 5, "largest AE never lowered")
+
+    var contiguous = PacketNumberSpace(EncryptionLevel.application())
+    contiguous.on_packet_received(UInt64(0), True, UInt64(0))
+    contiguous.mark_ack_sent()
+    contiguous.on_packet_received(UInt64(1), True, UInt64(0))
+    _assert_false(contiguous.ack_needed, "next PN in order: delayed")
+    print("    PASS test_ack_out_of_order_immediate")
+
+
+def test_peek_ack_bundle() raises:
+    """`bundle=True` yields a frame while an ack-eliciting packet is unacked even
+    though ack_needed is false; nothing when nothing is owed."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    _assert_false(Bool(space.peek_ack_frame(UInt64(0), UInt64(3), bundle=True)), "empty space: no frame")
+    space.on_packet_received(UInt64(0), True, UInt64(0))
+    _assert_true(space.has_unacked_ack_eliciting(), "one AE unacked")
+    _assert_false(Bool(space.peek_ack_frame(UInt64(0), UInt64(3))), "not needed without bundle")
+    _assert_true(Bool(space.peek_ack_frame(UInt64(0), UInt64(3), bundle=True)), "bundled")
+    space.mark_ack_sent()
+    _assert_false(space.has_unacked_ack_eliciting(), "count reset")
+    space.on_packet_received(UInt64(1), False, UInt64(0))
+    _assert_false(Bool(space.peek_ack_frame(UInt64(0), UInt64(3), bundle=True)), "non-AE only: no bundle")
+    print("    PASS test_peek_ack_bundle")
+
+
+def test_ack_delay_field() raises:
+    """`ack_delay` is (now - largest_rx_pkt_time) >> exponent, 0 when unknown or
+    when the clock went backwards; largest_rx_pkt_time follows largest_recv_pn."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    _assert_eq_u64(space.ack_delay_field(UInt64(500), UInt64(3)), UInt64(0), "no packet yet")
+    space.on_packet_received(UInt64(2), False, UInt64(1_000))
+    _assert_eq_u64(space.largest_rx_pkt_time.value(), UInt64(1_000), "time of largest")
+    space.on_packet_received(UInt64(1), False, UInt64(2_000))
+    _assert_eq_u64(space.largest_rx_pkt_time.value(), UInt64(1_000), "older PN does not move it")
+    _assert_eq_u64(space.ack_delay_field(UInt64(1_800), UInt64(3)), UInt64(100), "(1800-1000)>>3")
+    _assert_eq_u64(space.ack_delay_field(UInt64(900), UInt64(3)), UInt64(0), "clock backwards -> 0")
+    print("    PASS test_ack_delay_field")
+
+
+def test_pn_space_discard_resets_scheduling() raises:
+    """`discard()` clears ack_needed, ack_deadline, probe_pending,
+    time_of_last_ae_sent and the ack-eliciting count."""
+    var space = PacketNumberSpace(EncryptionLevel.handshake())
+    space.on_packet_received(UInt64(0), True, UInt64(10))
+    space.ack_deadline = Optional[UInt64](UInt64(99))
+    space.probe_pending = True
+    space.on_packet_sent(_make_sent_packet(space.alloc_pn(), True))
+    _assert_true(Bool(space.time_of_last_ae_sent), "AE send time set on commit")
+    _ = space.discard()
+    _assert_false(space.ack_needed, "ack_needed reset")
+    _assert_false(Bool(space.ack_deadline), "ack_deadline reset")
+    _assert_false(space.probe_pending, "probe_pending reset")
+    _assert_false(Bool(space.time_of_last_ae_sent), "time_of_last_ae_sent reset")
+    _assert_eq(space.ack_eliciting_since_last_ack, 0, "count reset")
+    print("    PASS test_pn_space_discard_resets_scheduling")
+
+
+def test_time_of_last_ae_sent_tracking() raises:
+    """Commit-time semantics: set by an ack-eliciting send, untouched by an
+    ACK-only send, cleared (with probe_pending) once no AE packet remains."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    space.on_packet_sent(_make_sent_packet(space.alloc_pn(), False))
+    _assert_false(Bool(space.time_of_last_ae_sent), "ACK-only send does not arm")
+    space.on_packet_sent(_make_sent_packet(space.alloc_pn(), True))   # pn 1, t=1100
+    space.on_packet_sent(_make_sent_packet(space.alloc_pn(), True))   # pn 2, t=1200
+    _assert_eq_u64(space.time_of_last_ae_sent.value(), UInt64(1200), "latest commit time")
+    space.probe_pending = True
+    # ACK pn 2 only: pn 1 still in flight, no rollback to its send time.
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(2)
+    ack.first_ack_range = UInt64(0)
+    _ = space.on_ack_received(ack)
+    _assert_eq_u64(space.time_of_last_ae_sent.value(), UInt64(1200), "no rollback")
+    _assert_true(space.probe_pending, "probe still pending with AE in flight")
+    # ACK pn 1: nothing ack-eliciting remains (pn 0 is ACK-only).
+    var ack2 = AckFrame()
+    ack2.largest_ack = UInt64(1)
+    ack2.first_ack_range = UInt64(0)
+    _ = space.on_ack_received(ack2)
+    _assert_false(Bool(space.time_of_last_ae_sent), "cleared once nothing AE in flight")
+    _assert_false(space.probe_pending, "probe cleared with it")
+    print("    PASS test_time_of_last_ae_sent_tracking")
 
 
 def test_ack_validation_reject_future() raises:
@@ -335,6 +468,12 @@ def main() raises:
     test_ack_immediate_handshake()
     test_ack_delayed_application()
     test_build_ack_frame()
+    test_ack_deadline_armed_once()
+    test_ack_out_of_order_immediate()
+    test_peek_ack_bundle()
+    test_ack_delay_field()
+    test_pn_space_discard_resets_scheduling()
+    test_time_of_last_ae_sent_tracking()
     test_ack_validation_reject_future()
     test_space_discard()
     test_on_ack_received()
