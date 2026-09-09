@@ -577,7 +577,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
         # _handle_accept_impl raises on processing errors.
         # Both are caught here — accept errors defer rearm.
         try:
-            var socket = future^.result()
+            var socket = future.result()
             self._handle_accept_impl(socket^)
         except e:
             print("H1TcpServer: accept error:", e)
