@@ -4613,6 +4613,130 @@ def test_datagram_round_trip_client_to_server() raises:
     print("  test_datagram_round_trip_client_to_server: PASS")
 
 
+def test_timeout_pacer_clause_order() raises:
+    """timeout() equals the hand-derived min in every (pacer wait, sendable, state) cell."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    _drain_events(client)
+    _drain_events(server)
+
+    # Quiesce: nothing left to send on the client after the handshake.
+    for _ in range(5):
+        if not client._space_has_other_sendable(2):
+            break
+        now = _pump(client, server, now, 1)
+    assert_true(not client._space_has_other_sendable(2), "precondition: nothing sendable after quiescing")
+    now += UInt64(10_000)
+
+    # Non-pacer reference: the same call with the pacer disabled. srtt is
+    # fixed first because the PTO term depends on it as well.
+    client.recovery.smoothed_rtt = UInt64(1)
+    client.recovery.pacer.enabled = False
+    var base = client.timeout(now)
+    assert_true(base is not None, "the 30 s idle term keeps the min Some")
+    client.recovery.pacer.enabled = True
+
+    # A fast pacer wait: tokens 0, refill 0, rate = 2*cwnd*1e6/1 -> +1 us.
+    client.recovery.pacer.tokens = UInt64(0)
+    client.recovery.pacer.last_sched_time = now
+    var fast_rate = client.recovery.cc.pacing_rate(client.recovery.smoothed_rtt)
+    var fast_wait = client.recovery.pacer.next_send_time(fast_rate, now)
+    assert_true(
+        fast_wait is not None and fast_wait.value() < base.value(),
+        "fast pacer wait precedes every non-pacer term",
+    )
+
+    # Row 4: wait Some and earlier, nothing sendable, established -> min(non-pacer).
+    assert_true(client.timeout(now).value() == base.value(), "row 4: nothing sendable -> min(non-pacer)")
+
+    # Make the walk answer True: queued stream data (sendable_ids non-empty).
+    var sid = client.open_stream(True)
+    var payload = List[UInt8]()
+    payload.append(UInt8(0x41))
+    client.send_stream_data(sid, Span(payload), False)
+    assert_true(client._space_has_other_sendable(2), "precondition: stream data waiting")
+
+    # Row 1a: pacer disabled -> None wait.
+    client.recovery.pacer.enabled = False
+    assert_true(client.timeout(now).value() == base.value(), "row 1a: disabled pacer -> min(non-pacer)")
+    client.recovery.pacer.enabled = True
+    # Row 1b: tokens cover one MDS -> None wait.
+    client.recovery.pacer.tokens = client.recovery.pacer.max_datagram_size
+    assert_true(client.recovery.pacer.next_send_time(fast_rate, now) is None, "tokens >= MDS -> no wait")
+    assert_true(client.timeout(now).value() == base.value(), "row 1b: tokens >= MDS -> min(non-pacer)")
+
+    # Row 2: wait Some and earlier than every other term, sendable -> the wait.
+    client.recovery.pacer.tokens = UInt64(0)
+    assert_true(client.timeout(now).value() == fast_wait.value(), "row 2: pacer wait wins")
+
+    # Row 3: ACK at +1 ms, slow pacer (1 s srtt) -> the ACK deadline.
+    client.spaces[2].ack_deadline = Optional[UInt64](now + UInt64(1_000))
+    client.recovery.smoothed_rtt = UInt64(1_000_000)
+    var slow_rate = client.recovery.cc.pacing_rate(client.recovery.smoothed_rtt)
+    var slow_wait = client.recovery.pacer.next_send_time(slow_rate, now)
+    assert_true(
+        slow_wait is not None and slow_wait.value() > now + UInt64(1_000),
+        "slow pacer wait is later than the ACK",
+    )
+    assert_true(base.value() > now + UInt64(1_000), "the ACK is earlier than every other term")
+    assert_true(client.timeout(now).value() == now + UInt64(1_000), "row 3: ACK deadline wins over the pacer")
+    client.spaces[2].ack_deadline = None
+    client.recovery.smoothed_rtt = UInt64(1)
+
+    # Row 5: CLOSING -> close/idle min; no PTO, ACK or pacer term.
+    client.close_transport(UInt64(0x0A), String("row 5"), now)
+    var expect5 = client.close_timer
+    var idle5 = client.idle_timer + UInt64(30_000) * UInt64(1_000)
+    if idle5 < expect5:
+        expect5 = idle5
+    var t5 = client.timeout(now)
+    assert_true(t5 is not None and t5.value() == expect5, "row 5: closing -> close/idle min")
+    assert_true(fast_wait.value() < expect5, "row 5 is non-vacuous: the pacer wait would have been earlier")
+
+    # Row 6: not established -> no pacer term.
+    var fresh = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    assert_true(not fresh.is_established(), "precondition: handshaking")
+    # srtt feeds the PTO term too (idle_timer + PTO before anything is sent),
+    # so it must be fixed before the non-pacer reference is captured.
+    fresh.recovery.smoothed_rtt = UInt64(1)
+    fresh.recovery.pacer.enabled = False
+    var base6 = fresh.timeout(now)
+    fresh.recovery.pacer.enabled = True
+    fresh.recovery.pacer.tokens = UInt64(0)
+    fresh.recovery.pacer.last_sched_time = now
+    var wait6 = fresh.recovery.pacer.next_send_time(
+        fresh.recovery.cc.pacing_rate(fresh.recovery.smoothed_rtt), now,
+    )
+    assert_true(
+        base6 is not None and wait6 is not None and wait6.value() < base6.value(),
+        "row 6 is non-vacuous: the pacer wait would have been earlier",
+    )
+    assert_true(fresh.timeout(now).value() == base6.value(), "row 6: handshaking -> no pacer term")
+
+    _ = tls^
+    print("  test_timeout_pacer_clause_order: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -4712,4 +4836,5 @@ def main() raises:
     test_send_datagram_refused_when_peer_disabled()
     test_send_datagram_refused_when_oversize()
     test_datagram_round_trip_client_to_server()
+    test_timeout_pacer_clause_order()
     print("All test_quic_connection tests passed.")

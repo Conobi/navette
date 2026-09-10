@@ -4416,10 +4416,15 @@ struct QuicConnection(Movable):
         if self.drain_timer > 0:
             _min_deadline(earliest, Optional[UInt64](self.drain_timer))
 
-        # Pacer: only a wake-up source when something is waiting on a token.
-        if not terminal and self.is_established() and self._space_has_other_sendable(2):
+        # Pacer: a wake-up source only when Application data is waiting on
+        # a token. The wait is computed first (pure, O(1)) and the stream
+        # walk is the last operand, so an unpaced or already-later wait
+        # never pays for `_space_has_other_sendable`.
+        if not terminal and self.is_established():
             var rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
-            _min_deadline(earliest, self.recovery.pacer.next_send_time(rate, now))
+            var wait = self.recovery.pacer.next_send_time(rate, now)
+            if wait and (earliest is None or wait.value() < earliest.value()) and self._space_has_other_sendable(2):
+                earliest = wait
 
         return earliest^
 
