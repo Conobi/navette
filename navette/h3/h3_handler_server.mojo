@@ -238,7 +238,15 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self._drain_responses(now)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`."""
+        """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`.
+
+        Test-only: with `_raise_on_next_drain` set, clears it and raises
+        before the connection is touched, so no datagram is produced and no
+        state moves.
+        """
+        if self._raise_on_next_drain:
+            self._raise_on_next_drain = False
+            raise "H3HandlerServer: forced drain failure (test-only)"
         return self._h3.drain_datagrams(now)
 
     def should_close(self) -> Bool:

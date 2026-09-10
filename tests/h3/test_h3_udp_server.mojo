@@ -945,7 +945,7 @@ def test_forward_clock_jump() raises:
         h.flush()
     for i in range(3):
         assert_true(
-            h.server_conn(i)[]._h3._quic.spaces[2].ae_in_flight > 0,
+            h.server_conn(i)[]._h3._quic.spaces[2].has_ack_eliciting_in_flight(),
             "slot " + String(i) + " holds an unacked response",
         )
         assert_equal_int(h.server_conn(i)[]._h3._quic.recovery.pto_count, 0, "no PTO fired yet")
@@ -953,8 +953,13 @@ def test_forward_clock_jump() raises:
     h.advance(UInt64(10_000_000))
     h.srv[]._timer = Optional[TimerFuture](None)
     var timeouts = h.srv[]._timeout_count
+    var refreshes = h.srv[]._deadline_refresh_count
     h.flush()
     assert_equal_int(h.slot_count(), 3, "no slot closed by a 10 s jump under a 30 s idle")
+    assert_equal_int(
+        h.srv[]._deadline_refresh_count - refreshes, 3,
+        "one refresh per drained slot, none twice",
+    )
     for i in range(3):
         assert_equal_int(
             h.server_conn(i)[]._h3._quic.recovery.pto_count, 1,
@@ -1108,7 +1113,7 @@ def test_deadline_moves_later_no_reset() raises:
     _ = h.client_send(a)
     _ = h.step(20)
     h.flush()
-    assert_true(conn[]._h3._quic.spaces[2].ae_in_flight > 0, "the response arms a PTO")
+    assert_true(conn[]._h3._quic.spaces[2].has_ack_eliciting_in_flight(), "the response arms a PTO")
     var resp_pn = Int(conn[]._h3._quic.spaces[2].next_pn) - 1
     _ = h.step(20)
     assert_true(h.client_recv(a, 50) >= 1, "client fed the response")
@@ -1121,8 +1126,8 @@ def test_deadline_moves_later_no_reset() raises:
     var resets = h.srv[]._reset_count
     var timeouts = h.srv[]._timeout_count
     var refreshes = h.srv[]._deadline_refresh_count
-    # A bounded step can return on a stale timer CQE before the recv CQE;
-    # keep stepping until the ACK has been fed.
+    # A bounded step can return with zero completions before the recv CQE
+    # lands; keep stepping until the ACK has been fed.
     # The ACK confirming the server's FIN also closes the stream, and the
     # stream credit that follows is a fresh ack-eliciting packet, so the
     # landing is judged on the response's own packet number.
@@ -1261,6 +1266,32 @@ def test_missed_refresh_is_detected() raises:
     print("PASS: test_missed_refresh_is_detected")
 
 
+def test_drain_raises_still_refreshes() raises:
+    """drain-raises-still-refreshes: a raise inside the drain still rewrites the cache at the flush's `now`."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    for _ in range(3):
+        _ = h.pump(c)
+    _settle(h)
+
+    h.server_conn(0)[]._raise_on_next_drain = True
+    _ = _send_partial_request(c)
+    _ = h.client_send(c)
+    _ = h.step(20)
+    var refreshes = h.srv[]._deadline_refresh_count
+    h.flush()  # prints "H3UdpServer: drain_and_send error: ..." — expected
+    assert_true(not h.server_conn(0)[]._raise_on_next_drain, "flag cleared by the drain")
+    assert_true(h.srv[]._deadline_refresh_count - refreshes >= 1, "the finally refreshed the slot")
+    assert_true(
+        h.srv[].conn_slots[0].deadline_refreshed_at_us == h.now(),
+        "refreshed at the flush's now",
+    )
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after a raising drain")
+    _ = h.slot_count()  # keep the harness alive past the last slot dereference
+    print("PASS: test_drain_raises_still_refreshes")
+
+
 def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
     """A `ConnSlot` around a null `h3` pointer carrying one cached deadline."""
     var s = ConnSlot[StubHandler](
@@ -1382,6 +1413,10 @@ def main() raises:
         test_missed_refresh_is_detected()
     except e:
         failed.append(String("test_missed_refresh_is_detected: ") + String(e))
+    try:
+        test_drain_raises_still_refreshes()
+    except e:
+        failed.append(String("test_drain_raises_still_refreshes: ") + String(e))
     if len(failed) > 0:
         for i in range(len(failed)):
             print("FAILED " + failed[i])
