@@ -137,6 +137,48 @@ def make_big_handler() raises -> BigHandler:
     return BigHandler()
 
 
+struct OkHandler(StreamHandler):
+    """Answers every request at once with a two-byte 200 body."""
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, deinit move: Self):
+        pass
+
+    def on_request(
+        mut self, var req: Request, mut body: RecvBody,
+        mut resp: ResponseWriter, caps: Capabilities,
+    ) raises:
+        resp.send_status(StatusCode.ok(), Headers())
+        var body_bytes = List[UInt8]()
+        body_bytes.append(UInt8(111))
+        body_bytes.append(UInt8(107))
+        _ = resp.try_send_body(BodyFrame.data(body_bytes^))
+        resp.end()
+
+    def on_body_available(
+        mut self, mut body: RecvBody, mut resp: ResponseWriter,
+    ) raises:
+        pass
+
+    def on_request_end(
+        mut self, mut body: RecvBody, mut resp: ResponseWriter,
+    ) raises:
+        pass
+
+    def on_send_drained(mut self, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_reset(mut self, error: StreamError):
+        pass
+
+
+def make_ok_handler() raises -> OkHandler:
+    """Per-conn factory for the small-response tests."""
+    return OkHandler()
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -239,6 +281,58 @@ def _addrs_eq(a: List[UInt8], b: List[UInt8]) -> Bool:
         if a[i] != b[i]:
             return False
     return True
+
+
+def _alloc_clients[H: StreamHandler](
+    mut harness: UdpServerHarness[H], n: Int,
+) raises -> List[Pointer[HarnessClient, MutUntrackedOrigin]]:
+    """`n` handshaken, settled clients on the heap (`HarnessClient` is not Copyable)."""
+    var out = List[Pointer[HarnessClient, MutUntrackedOrigin]]()
+    for i in range(n):
+        var p = _heap_alloc[HarnessClient](1)
+        p.unsafe_write(harness.new_client())
+        assert_true(harness.handshake(p[]), "handshake client " + String(i))
+        for _ in range(3):
+            _ = harness.pump(p[])
+        out.append(p)
+    assert_equal_int(harness.slot_count(), n, "one slot per client")
+    return out^
+
+
+def _free_clients(mut clients: List[Pointer[HarnessClient, MutUntrackedOrigin]]):
+    """Destroy and free every client allocated by `_alloc_clients`."""
+    for i in range(len(clients)):
+        _ = clients[i].unsafe_take_pointee()
+        clients[i].unsafe_free()
+    clients.clear()
+
+
+def _settle[H: StreamHandler](mut harness: UdpServerHarness[H], max_flushes: Int = 16) raises:
+    """Flush with a frozen clock until one flush issues no deadline refresh."""
+    for _ in range(max_flushes):
+        var before = harness.srv[]._deadline_refresh_count
+        harness.flush()
+        if harness.srv[]._deadline_refresh_count == before:
+            return
+    raise "settle: refresh count still moving after " + String(max_flushes) + " flushes"
+
+
+def _expected_arm_ms[H: StreamHandler](harness: UdpServerHarness[H]) -> UInt64:
+    """Timer target recomputed from every live connection, independent of any cache."""
+    var now = harness.now()
+    var earliest = Optional[UInt64](None)
+    for i in range(harness.slot_count()):
+        var conn = harness.server_conn(i)
+        var d: Optional[UInt64]
+        if conn[].has_pending_egress():
+            d = Optional[UInt64](now)
+        else:
+            d = conn[].timeout(now)
+        if d is None:
+            continue
+        if earliest is None or d.value() < earliest.value():
+            earliest = d
+    return _timer_arm_ms(earliest, now)
 
 
 # ── Tests ────────────────────────────────────────────────────────────────
@@ -696,6 +790,187 @@ def test_closing_conn_addr_frozen() raises:
     print("PASS: test_closing_conn_addr_frozen")
 
 
+def test_freed_minimum_slot_rearms_to_next() raises:
+    """freed-minimum-slot-rearms-to-next: reaping the earliest slot re-aims at the survivors' min."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var clients = _alloc_clients(h, 3)
+    _settle(h)
+
+    var pto = _server_pto_us(h, 0)
+    clients[0][].h3._quic.close_app(UInt64(0x100), String("done"), h.now())
+    _ = h.pump(clients[0][])
+    assert_true(h.server_conn(0)[].is_closing_or_draining(), "slot 0 drains on the peer CLOSE")
+    assert_equal_int(h.slot_count(), 3, "draining slot still present")
+
+    h.advance(UInt64(3) * pto + UInt64(2_000))
+    h.flush()
+    assert_equal_int(h.slot_count(), 2, "the minimum's slot was reaped")
+
+    # A fresh arm makes the new target observable (a live timer whose
+    # target already passed is left alone by policy).
+    h.srv[]._timer = Optional[TimerFuture](None)
+    var timeouts = h.srv[]._timeout_count
+    h.flush()
+    assert_equal_int(h.srv[]._timeout_count, timeouts + 1, "re-arm issued a fresh timeout()")
+    assert_true(
+        h.srv[]._last_armed_ms == _expected_arm_ms(h),
+        "timer targets the surviving minimum: armed " + String(h.srv[]._last_armed_ms)
+        + " expected " + String(_expected_arm_ms(h)),
+    )
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    _free_clients(clients)
+    print("PASS: test_freed_minimum_slot_rearms_to_next")
+
+
+def test_capped_egress_slot_not_starved() raises:
+    """capped-egress-slot-not-starved: a capped slot arms the floor next to a 30 s slot and completes."""
+    var h = UdpServerHarness[BigHandler](make_big_handler, _params(), _params())
+    var a = h.new_client()
+    var b = h.new_client()
+    assert_true(h.handshake(a), "handshake A")
+    assert_true(h.handshake(b), "handshake B")
+    for _ in range(3):
+        _ = h.pump(a)
+        _ = h.pump(b)
+    assert_equal_int(h.slot_count(), 2, "two slots")
+    var b_addr = h.server_addr(1)
+    _open_cwnd(h, 0, 2 * BIG_BODY_BYTES)
+
+    _ = _send_get(a)
+    _ = h.client_send(a)
+    _ = h.step(20)
+    h.flush()
+    var conn = h.server_conn(0)
+    var capped_flushes = 0
+    if conn[].has_pending_egress():
+        capped_flushes += 1
+        assert_true(h.srv[]._last_armed_ms == TIMER_FLOOR_MS, "capped slot arms the floor despite B's 30 s deadline")
+    _ = h.step(10)
+    var received = h.client_recv(a, 20, feed=False)
+
+    var flushes = 0
+    while conn[].has_pending_egress() and flushes < 64:
+        capped_flushes += 1
+        h.flush()
+        # The flush that drains the last datagram may re-arm past the
+        # floor; only a still-capped slot must keep the floor.
+        if conn[].has_pending_egress():
+            assert_true(h.srv[]._last_armed_ms == TIMER_FLOOR_MS, "still capped: floor")
+        flushes += 1
+        _ = h.step(10)
+        received += h.client_recv(a, 20, feed=False)
+    assert_true(not conn[].has_pending_egress(), "response fully emitted by flush-only progress")
+    assert_true(capped_flushes >= 1, "the 200 kB response must hit the cap at least once")
+    assert_true(received >= MAX_DATAGRAMS_PER_DRAIN, "client received only " + String(received))
+    assert_equal_int(h.slot_count(), 2, "B untouched")
+    assert_true(_addrs_eq(h.server_addr(1), b_addr), "slot 1 is still B")
+    var b_conn = h.server_conn(1)
+    var b_closing = b_conn[].is_closing_or_draining()
+    assert_true(
+        not b_closing,
+        "B still open: state=" + String(b_conn[]._h3._quic.state)
+        + " h3=" + String(b_conn[]._h3.is_closing_or_draining())
+        + " closing=" + String(b_conn[]._h3._quic.is_closing())
+        + " draining=" + String(b_conn[]._h3._quic.is_draining())
+        + " closed=" + String(b_conn[]._h3._quic.is_closed()),
+    )
+    # Keep the harness alive past the slot derefs above (ASAP destruction
+    # would otherwise free the server between `server_conn()` and `[]`).
+    _ = h.slot_count()
+    print("PASS: test_capped_egress_slot_not_starved")
+
+
+def test_closed_in_feed_reaped_before_rearm() raises:
+    """closed-in-feed-reaped-before-rearm: a datagram whose drain expires the drain timer frees the slot in that flush."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var a = h.new_client()
+    var b = h.new_client()
+    assert_true(h.handshake(a), "handshake A")
+    assert_true(h.handshake(b), "handshake B")
+    for _ in range(3):
+        _ = h.pump(a)
+        _ = h.pump(b)
+    assert_equal_int(h.slot_count(), 2, "two slots")
+    var b_addr = h.server_addr(1)
+
+    # A valid datagram from A, held back for replay after A is draining.
+    _ = _send_partial_request(a)
+    var held = a.h3.drain_datagrams(h.now())
+    assert_true(len(held) >= 1, "client A produced a datagram to replay")
+
+    var pto = _server_pto_us(h, 0)
+    a.h3._quic.close_app(UInt64(0x100), String("done"), h.now())
+    _ = h.pump(a)
+    assert_true(h.server_conn(0)[].is_closing_or_draining(), "A drains on the peer CLOSE")
+
+    # Past the drain timer without a flush, then the replay: the drain
+    # inside the feed path observes the expiry and the slot is reaped
+    # before the timer is re-armed.
+    h.advance(UInt64(3) * pto + UInt64(2_000))
+    h.send_raw(a.sock, held[0])
+    _ = h.step(20)
+    h.flush()
+    assert_equal_int(h.slot_count(), 1, "A reaped in the flush that fed the datagram")
+    assert_true(_addrs_eq(h.server_addr(0), b_addr), "B moved into slot 0")
+
+    h.srv[]._timer = Optional[TimerFuture](None)
+    var timeouts = h.srv[]._timeout_count
+    h.flush()
+    assert_equal_int(h.srv[]._timeout_count, timeouts + 1, "fresh arm")
+    assert_true(
+        h.srv[]._last_armed_ms == _expected_arm_ms(h),
+        "timer targets the remaining slot: armed " + String(h.srv[]._last_armed_ms)
+        + " expected " + String(_expected_arm_ms(h)),
+    )
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    print("PASS: test_closed_in_feed_reaped_before_rearm")
+
+
+def test_forward_clock_jump() raises:
+    """forward-clock-jump: +10 s drains every armed slot once, none twice, and re-arms to the new min."""
+    var h = UdpServerHarness[OkHandler](make_ok_handler, _params(), _params())
+    var clients = _alloc_clients(h, 3)
+    _settle(h)
+
+    # One unacknowledged response per slot: every slot holds a PTO.
+    # One request per client, delivered one at a time so a bounded step
+    # cannot leave a GET behind in the socket.
+    for i in range(3):
+        _ = _send_get(clients[i][])
+        _ = h.client_send(clients[i][])
+        _ = h.step(20)
+        h.flush()
+    for i in range(3):
+        assert_true(
+            h.server_conn(i)[]._h3._quic.spaces[2].ae_in_flight > 0,
+            "slot " + String(i) + " holds an unacked response",
+        )
+        assert_equal_int(h.server_conn(i)[]._h3._quic.recovery.pto_count, 0, "no PTO fired yet")
+
+    h.advance(UInt64(10_000_000))
+    h.srv[]._timer = Optional[TimerFuture](None)
+    var timeouts = h.srv[]._timeout_count
+    h.flush()
+    assert_equal_int(h.slot_count(), 3, "no slot closed by a 10 s jump under a 30 s idle")
+    for i in range(3):
+        assert_equal_int(
+            h.server_conn(i)[]._h3._quic.recovery.pto_count, 1,
+            "slot " + String(i) + " fired its PTO exactly once in the pass",
+        )
+    assert_equal_int(h.srv[]._timeout_count, timeouts + 1, "fresh arm after the pass")
+    assert_true(
+        h.srv[]._last_armed_ms == _expected_arm_ms(h),
+        "re-armed to the new min: armed " + String(h.srv[]._last_armed_ms)
+        + " expected " + String(_expected_arm_ms(h)),
+    )
+    # Let the probes leave the socket before teardown.
+    _ = h.step(20)
+    _free_clients(clients)
+    print("PASS: test_forward_clock_jump")
+
+
 def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
     """A `ConnSlot` around a null `h3` pointer carrying one cached deadline."""
     var s = ConnSlot[StubHandler](
@@ -769,6 +1044,22 @@ def main() raises:
         test_earliest_cached_deadline_pure()
     except e:
         failed.append(String("test_earliest_cached_deadline_pure: ") + String(e))
+    try:
+        test_freed_minimum_slot_rearms_to_next()
+    except e:
+        failed.append(String("test_freed_minimum_slot_rearms_to_next: ") + String(e))
+    try:
+        test_capped_egress_slot_not_starved()
+    except e:
+        failed.append(String("test_capped_egress_slot_not_starved: ") + String(e))
+    try:
+        test_closed_in_feed_reaped_before_rearm()
+    except e:
+        failed.append(String("test_closed_in_feed_reaped_before_rearm: ") + String(e))
+    try:
+        test_forward_clock_jump()
+    except e:
+        failed.append(String("test_forward_clock_jump: ") + String(e))
     if len(failed) > 0:
         for i in range(len(failed)):
             print("FAILED " + failed[i])
