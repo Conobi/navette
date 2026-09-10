@@ -42,6 +42,7 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.http.body import BodyFrame
 from navette.quic.cc.cc_trait import AckedPacket
+from navette.quic.cid import dcid_to_u64
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.tls.lib import TlsBackend
@@ -671,8 +672,8 @@ def test_drain_cap_schedules_continuation() raises:
     if conn[].has_pending_egress():
         capped_flushes += 1
         assert_true(
-            h.srv[]._next_deadline_us(h.now()) is not None
-            and h.srv[]._next_deadline_us(h.now()).value() == h.now(),
+            h.srv[]._next_deadline_us() is not None
+            and h.srv[]._next_deadline_us().value() == h.now(),
             "capped slot reports deadline == now",
         )
         assert_true(h.srv[]._last_armed_ms == TIMER_FLOOR_MS, "capped slot arms the floor")
@@ -971,6 +972,295 @@ def test_forward_clock_jump() raises:
     print("PASS: test_forward_clock_jump")
 
 
+def test_refresh_matches_oracle() raises:
+    """refresh-matches-oracle: five lifecycle checkpoints, each with cache == oracle."""
+    var h = UdpServerHarness[OkHandler](make_ok_handler, _params(), _params())
+    var t0 = h.now()
+
+    # 1. Initial fed (B, abandoned afterwards).
+    var b = h.new_client()
+    _ = h.client_send(b)
+    _ = h.step(20)
+    h.flush()
+    assert_equal_int(h.slot_count(), 1, "Initial created B's slot")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after Initial fed")
+
+    # B's idle clock started at t0; everything else starts >= 1 s later.
+    h.advance(UInt64(1_000_000))
+
+    # 2. Handshake complete (A).
+    var a = h.new_client()
+    assert_true(h.handshake(a), "handshake A")
+    for _ in range(3):
+        _ = h.pump(a)
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after handshake")
+
+    # 3. Request served (A).
+    _ = _send_get(a)
+    # The response staged by this flush leaves the socket on the next step.
+    _ = h.pump(a)
+    assert_true(h.pump(a) >= 1, "response delivered")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after request served")
+
+    # 4. Peer CLOSE fed (D).
+    var d = h.new_client()
+    assert_true(h.handshake(d), "handshake D")
+    d.h3._quic.close_app(UInt64(0x100), String("bye"), h.now())
+    _ = h.pump(d)
+    assert_equal_int(h.slot_count(), 3, "B, A, D")
+    assert_true(h.server_conn(2)[].is_closing_or_draining(), "D drains")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after peer CLOSE fed")
+
+    # 5. The pass that expires B's idle (and D's drain); A survives.
+    h.advance(t0 + UInt64(30_005_000) - h.now())
+    h.flush()
+    assert_equal_int(h.slot_count(), 1, "B idle-expired and D drain-expired; A remains")
+    assert_true(h.server_conn(0)[]._h3._quic.is_established(), "the survivor is A")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after the expiring pass")
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    print("PASS: test_refresh_matches_oracle")
+
+
+def test_only_touched_slots_recomputed() raises:
+    """only-touched-slots-recomputed: one datagram for one of eight slots -> exactly one refresh."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var clients = _alloc_clients(h, 8)
+    h.advance(h.srv[].transport_params.max_ack_delay * UInt64(1_000) + UInt64(1_000))
+    _settle(h)
+
+    _ = _send_partial_request(clients[0][])
+    var dgs = clients[0][].h3.drain_datagrams(h.now())
+    assert_true(len(dgs) >= 1, "client 0 produced a datagram")
+    h.send_raw(clients[0][].sock, dgs[0])
+    _ = h.step(20)
+    var before = h.srv[]._deadline_refresh_count
+    h.flush()
+    assert_equal_int(
+        h.srv[]._deadline_refresh_count - before, 1,
+        "one datagram for one slot -> exactly one refresh",
+    )
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    _free_clients(clients)
+    print("PASS: test_only_touched_slots_recomputed")
+
+
+def test_deadline_moves_earlier_resets_live_timer() raises:
+    """deadline-moves-earlier: B's 5 ms ACK resets the live timer once; the +5 ms pass refreshes B only."""
+    var sp = _params()
+    sp.max_ack_delay = UInt64(5)
+    var h = UdpServerHarness[StubHandler](make_stub_handler, sp^, _params())
+    var a = h.new_client()
+    var b = h.new_client()
+    assert_true(h.handshake(a), "handshake A")
+    assert_true(h.handshake(b), "handshake B")
+    for _ in range(3):
+        _ = h.pump(a)
+        _ = h.pump(b)
+    assert_equal_int(h.slot_count(), 2, "two slots")
+    _warm_ack_eliciting(h, b, 1)
+    _settle(h)
+    # A fresh arm: `_last_armed_ms` would otherwise still show the warm-up's
+    # 5 ms target (a live timer whose target passed is left alone).
+    h.srv[]._timer = Optional[TimerFuture](None)
+    h.flush()
+    assert_true(h.srv[]._timer_live(), "precondition: a live timer")
+    assert_true(h.srv[]._last_armed_ms > UInt64(6), "precondition: armed far beyond 5 ms")
+
+    _ = _send_partial_request(b)
+    _ = h.client_send(b)
+    _ = h.step(20)
+    var resets = h.srv[]._reset_count
+    var timeouts = h.srv[]._timeout_count
+    var refreshes = h.srv[]._deadline_refresh_count
+    h.flush()
+    assert_equal_int(h.srv[]._reset_count, resets + 1, "earlier deadline -> exactly one reset")
+    assert_equal_int(h.srv[]._timeout_count, timeouts, "earlier deadline -> no timeout()")
+    assert_true(h.srv[]._last_armed_ms <= UInt64(5), "armed to the 5 ms ACK")
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 1, "B's ingress -> one refresh")
+
+    h.advance(UInt64(5_000) + UInt64(1_000))
+    refreshes = h.srv[]._deadline_refresh_count
+    h.flush()
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 1, "the +5 ms pass refreshes B only")
+    _ = h.step(20)
+    assert_true(h.client_recv(b, 50, feed=False) >= 1, "B's ACK left")
+    print("PASS: test_deadline_moves_earlier_resets_live_timer")
+
+
+def test_deadline_moves_later_no_reset() raises:
+    """deadline-moves-later: an ACK clearing A's PTO leaves the timer alone; its early fire refreshes nothing."""
+    var h = UdpServerHarness[OkHandler](make_ok_handler, _params(), _params())
+    var a = h.new_client()
+    assert_true(h.handshake(a), "handshake")
+    for _ in range(3):
+        _ = h.pump(a)
+    _settle(h)
+    # The handshake left srtt near 1 ms, which puts the server PTO
+    # (srtt + max(4 rttvar, 1 ms) + the client's 25 ms ack delay) within
+    # a millisecond of the client's delayed ACK. Pin srtt far out so the
+    # ACK is unambiguously the first thing that happens.
+    var conn = h.server_conn(0)
+    conn[]._h3._quic.recovery.smoothed_rtt = UInt64(200_000)
+
+    _ = _send_get(a)
+    _ = h.client_send(a)
+    _ = h.step(20)
+    h.flush()
+    assert_true(conn[]._h3._quic.spaces[2].ae_in_flight > 0, "the response arms a PTO")
+    var resp_pn = Int(conn[]._h3._quic.spaces[2].next_pn) - 1
+    _ = h.step(20)
+    assert_true(h.client_recv(a, 50) >= 1, "client fed the response")
+    h.flush()
+    assert_true(h.srv[]._timer_live(), "precondition: live timer aimed at the PTO")
+
+    # The client's delayed ACK (25 ms) leaves long before the server PTO.
+    h.advance(UInt64(26_000))
+    assert_true(h.client_send(a) >= 1, "client emits its ACK")
+    var resets = h.srv[]._reset_count
+    var timeouts = h.srv[]._timeout_count
+    var refreshes = h.srv[]._deadline_refresh_count
+    # A bounded step can return on a stale timer CQE before the recv CQE;
+    # keep stepping until the ACK has been fed.
+    # The ACK confirming the server's FIN also closes the stream, and the
+    # stream credit that follows is a fresh ack-eliciting packet, so the
+    # landing is judged on the response's own packet number.
+    var fed = 0
+    while fed < 3 and conn[]._h3._quic.spaces[2].largest_acked_pn < resp_pn:
+        _ = h.step(20)
+        h.flush()
+        fed += 1
+    assert_true(
+        conn[]._h3._quic.spaces[2].largest_acked_pn >= resp_pn,
+        "the ACK landed: largest_acked=" + String(conn[]._h3._quic.spaces[2].largest_acked_pn)
+        + " response_pn=" + String(resp_pn)
+        + " pto_count=" + String(conn[]._h3._quic.recovery.pto_count),
+    )
+    assert_equal_int(h.srv[]._reset_count, resets, "later deadline -> no reset")
+    assert_equal_int(h.srv[]._timeout_count, timeouts, "later deadline -> no timeout()")
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 1, "the ACK's ingress -> one refresh")
+
+    # The early fire at the old PTO target is a no-op pass.
+    var waited = 0
+    while waited < 3000 and not h.srv[]._timer.value().done():
+        _ = h.step(50)
+        waited += 50
+    assert_true(h.srv[]._timer.value().done(), "the old PTO timer fired")
+    refreshes = h.srv[]._deadline_refresh_count
+    h.flush()
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 0, "early fire refreshes nothing")
+    assert_equal_int(h.slot_count(), 1, "nothing expired")
+    print("PASS: test_deadline_moves_later_no_reset")
+
+
+def test_swap_and_pop_preserves_survivor_deadline() raises:
+    """swap-and-pop-preserves-survivor-deadline: the moved slot's two cached fields are bit-identical."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var clients = _alloc_clients(h, 3)
+    _settle(h)
+
+    var pre_deadline = h.srv[].conn_slots[2].next_deadline_us
+    var pre_refreshed = h.srv[].conn_slots[2].deadline_refreshed_at_us
+    var refreshes = h.srv[]._deadline_refresh_count
+    h.srv[]._free_slot(0)
+    assert_equal_int(h.slot_count(), 2, "slot 0 freed, index 2 moved to 0")
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 0, "a move needs no refresh")
+    assert_true(h.srv[].conn_slots[0].next_deadline_us == pre_deadline, "survivor's deadline moved intact")
+    assert_true(h.srv[].conn_slots[0].deadline_refreshed_at_us == pre_refreshed, "survivor's refresh time moved intact")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after swap-and-pop")
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    _free_clients(clients)
+    print("PASS: test_swap_and_pop_preserves_survivor_deadline")
+
+
+def test_many_draining_slots_single_pass() raises:
+    """many-draining-slots-single-pass: 64 CLOSEs, then a quiet flush issues 0 refreshes, and one jump reaps all."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var clients = _alloc_clients(h, 64)
+    _settle(h)
+    var pto_max = UInt64(0)
+    for i in range(64):
+        var p = _server_pto_us(h, i)
+        if p > pto_max:
+            pto_max = p
+
+    for i in range(64):
+        clients[i][].h3._quic.close_app(UInt64(0x100), String("bye"), h.now())
+        _ = h.client_send(clients[i][])
+    var refreshes = h.srv[]._deadline_refresh_count
+    var draining = 0
+    for _ in range(8):
+        _ = h.step(20)
+        h.flush()
+        draining = 0
+        for i in range(h.slot_count()):
+            if h.server_conn(i)[].is_closing_or_draining():
+                draining += 1
+        if draining == 64:
+            break
+    assert_equal_int(draining, 64, "every slot is draining")
+    assert_true(h.srv[]._deadline_refresh_count - refreshes >= 64, "each fed CLOSE refreshed its slot")
+
+    refreshes = h.srv[]._deadline_refresh_count
+    h.flush()
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 0, "nothing new -> 0 refreshes")
+
+    h.advance(UInt64(3) * pto_max + UInt64(2_000))
+    refreshes = h.srv[]._deadline_refresh_count
+    h.flush()
+    assert_equal_int(h.slot_count(), 0, "one pass reaped all 64")
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 64, "one drain per draining slot")
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    _free_clients(clients)
+    print("PASS: test_many_draining_slots_single_pass")
+
+
+def test_inject_response_refreshes_deadline() raises:
+    """inject-response-refreshes-deadline: the out-of-band path refreshes its slot before the next flush."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    for _ in range(3):
+        _ = h.pump(c)
+    var sid = _send_get(c)
+    _ = h.pump(c)
+    var conn_id = dcid_to_u64(Span(h.server_conn(0)[]._h3._quic.local_cid))
+    assert_true(h.srv[].has_stream(conn_id, Int(sid)), "the unanswered request stream is open")
+    _settle(h)
+
+    var refreshes = h.srv[]._deadline_refresh_count
+    var body = List[UInt8]()
+    body.append(UInt8(111))
+    body.append(UInt8(107))
+    h.srv[].inject_response(conn_id, Int(sid), StatusCode.ok(), Headers(), body^, True)
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 1, "inject_response refreshed its slot")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle before the next flush")
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    print("PASS: test_inject_response_refreshes_deadline")
+
+
+def test_missed_refresh_is_detected() raises:
+    """missed-refresh-is-detected: a mutation that skips the writer makes the oracle report False."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    for _ in range(3):
+        _ = h.pump(c)
+    h.flush()
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle True after the flush")
+    assert_true(not h.server_conn(0)[].has_pending_egress(), "not capped: the oracle compares timeout()")
+
+    h.server_conn(0)[]._h3._quic.close_transport(UInt64(0x0A), String("skip-writer"), h.now())
+    assert_true(not h.srv[]._deadline_cache_matches_oracle(), "a write that bypasses the writer is detected")
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    print("PASS: test_missed_refresh_is_detected")
+
+
 def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
     """A `ConnSlot` around a null `h3` pointer carrying one cached deadline."""
     var s = ConnSlot[StubHandler](
@@ -1060,6 +1350,38 @@ def main() raises:
         test_forward_clock_jump()
     except e:
         failed.append(String("test_forward_clock_jump: ") + String(e))
+    try:
+        test_refresh_matches_oracle()
+    except e:
+        failed.append(String("test_refresh_matches_oracle: ") + String(e))
+    try:
+        test_only_touched_slots_recomputed()
+    except e:
+        failed.append(String("test_only_touched_slots_recomputed: ") + String(e))
+    try:
+        test_deadline_moves_earlier_resets_live_timer()
+    except e:
+        failed.append(String("test_deadline_moves_earlier_resets_live_timer: ") + String(e))
+    try:
+        test_deadline_moves_later_no_reset()
+    except e:
+        failed.append(String("test_deadline_moves_later_no_reset: ") + String(e))
+    try:
+        test_swap_and_pop_preserves_survivor_deadline()
+    except e:
+        failed.append(String("test_swap_and_pop_preserves_survivor_deadline: ") + String(e))
+    try:
+        test_many_draining_slots_single_pass()
+    except e:
+        failed.append(String("test_many_draining_slots_single_pass: ") + String(e))
+    try:
+        test_inject_response_refreshes_deadline()
+    except e:
+        failed.append(String("test_inject_response_refreshes_deadline: ") + String(e))
+    try:
+        test_missed_refresh_is_detected()
+    except e:
+        failed.append(String("test_missed_refresh_is_detected: ") + String(e))
     if len(failed) > 0:
         for i in range(len(failed)):
             print("FAILED " + failed[i])

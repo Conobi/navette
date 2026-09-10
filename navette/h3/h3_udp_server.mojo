@@ -898,20 +898,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     # ── Timer ────────────────────────────────────────────────────
 
-    def _next_deadline_us(self, now: UInt64) -> Optional[UInt64]:
-        """Earliest deadline over all slots; `now` for a slot with capped egress."""
-        var earliest = Optional[UInt64](None)
-        for i in range(len(self.conn_slots)):
-            var candidate: Optional[UInt64]
-            if self.conn_slots[i].h3[].has_pending_egress():
-                candidate = Optional[UInt64](now)
-            else:
-                candidate = self.conn_slots[i].h3[].timeout(now)
-            if candidate is None:
-                continue
-            if earliest is None or candidate.value() < earliest.value():
-                earliest = candidate
-        return earliest
+    def _next_deadline_us(self) -> Optional[UInt64]:
+        """Earliest cached deadline over all slots (a capped slot caches its refresh `now`)."""
+        return _earliest_cached_deadline(self.conn_slots)
 
     def _timer_live(self) -> Bool:
         """True while a kernel timer whose completion has not arrived exists."""
@@ -935,11 +924,25 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 return False
         return True
 
+    def _refresh_deadline(mut self, idx: Int, now: UInt64):
+        """Recompute slot `idx`'s cached deadline: `now` while egress is capped, else `timeout(now)`.
+
+        The only production writer of the cache; every server path that
+        mutates a connection reaches it before the next reader runs.
+        """
+        self._deadline_refresh_count += 1
+        self.conn_slots[idx].deadline_refreshed_at_us = now
+        if self.conn_slots[idx].h3[].has_pending_egress():
+            self.conn_slots[idx].next_deadline_us = now
+            return
+        var t = self.conn_slots[idx].h3[].timeout(now)
+        self.conn_slots[idx].next_deadline_us = t.value() if t else NO_DEADLINE_US
+
     def _timer_pass_due(self, now: UInt64) -> Bool:
         """Pass gate: no live timer, or the minimum deadline has passed."""
         if not self._timer_live():
             return True
-        var d = self._next_deadline_us(now)
+        var d = self._next_deadline_us()
         return d is not None and d.value() <= now
 
     def _rearm_timer(mut self):
@@ -957,7 +960,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         if Int(self._loop_ptr) == 0:
             return
         var now = self._now()
-        var ms = _timer_arm_ms(self._next_deadline_us(now), now)
+        var ms = _timer_arm_ms(self._next_deadline_us(), now)
         var want = now + ms * UInt64(1000)
 
         if self._timer_live():
@@ -985,18 +988,16 @@ struct H3UdpServer[H: StreamHandler](Movable):
             self._armed_deadline_us = Optional[UInt64](None)
 
     def _timer_pass(mut self, now: UInt64) raises:
-        """Drain only the slots whose deadline passed or whose egress was capped, then reap.
+        """Drain only the slots whose cached deadline passed, then reap.
 
-        Each drained slot either advances its deadline, becomes CLOSED, or
-        still has capped egress (progress by construction), so no slot is
-        drained on consecutive passes without progress.
+        A capped slot caches `now` at its refresh, so it is due on the next
+        pass. Each drained slot either advances its deadline, becomes CLOSED,
+        or is still capped (progress by construction), so no slot is drained
+        on consecutive passes without progress. Only the drained slots are
+        recomputed; the loop itself is an O(N) integer compare.
         """
         for i in range(len(self.conn_slots)):
-            var due = self.conn_slots[i].h3[].has_pending_egress()
-            if not due:
-                var t = self.conn_slots[i].h3[].timeout(now)
-                due = t is not None and t.value() <= now
-            if not due:
+            if self.conn_slots[i].next_deadline_us > now:
                 continue
             try:
                 self._drain_and_send(i, now)
@@ -1515,6 +1516,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 self.conn_slots.append(
                     ConnSlot[Self.H](h3_ptr, addr^, dcids^, gen)
                 )
+                # Provisional cache so no live slot ever holds the sentinel;
+                # this iteration's `_drain_and_send` replaces it.
+                self.conn_slots[conn_idx].next_deadline_us = now
+                self.conn_slots[conn_idx].deadline_refreshed_at_us = now
 
                 # Seed `peer_addr` exactly once at conn creation so
                 # the sentinel zero PathKey is replaced. From this point
@@ -1606,8 +1611,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # ── Egress ───────────────────────────────────────────────────
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
-        """Drain outgoing datagrams from a connection and queue them
-        as EgressPacket entries for flush()'s _submit_egress phase.
+        """Drain a connection's datagrams into the egress backlog, then refresh its cached deadline.
 
         RFC 9000 §8.1 anti-amplification: for each datagram the server
         intends to send to the current peer addr, gate via
@@ -1623,55 +1627,65 @@ struct H3UdpServer[H: StreamHandler](Movable):
             conn_idx: Index into conn_slots for the connection to drain.
             now: Current monotonic time in microseconds.
         """
-        var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
-
-        # Resolve the structured peer key once per flush. The server
-        # tracks the latest sockaddr blob in `conn_slots[i].addr`, which
-        # was just refreshed in `_flush_ingress` to match the source addr
-        # of the datagram that triggered this flush — i.e. the same
-        # address sendmsg will route to.
-        var target_key = _sockaddr_to_path_key(
-            self.conn_slots[conn_idx].addr.unsafe_ptr(),
-            0,
-            len(self.conn_slots[conn_idx].addr),
-        )
-
-        # ECN mark from the connection's probing/capability state.
-        var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
-
-        for i in range(len(datagrams)):
-            # Move the payload out of the drained list (swap with an
-            # empty husk) rather than copying 1200 bytes per datagram.
-            var pkt = List[UInt8]()
-            swap(pkt, datagrams[i])
-            if len(pkt) == 0:
-                continue
-
-            # Per-path anti-amp gate. No-op when `target_key` has
-            # no pending challenge (validated path → returns True). The
-            # validator's `can_send_bytes` includes the QUIC header +
-            # AEAD ciphertext (i.e. the full UDP payload), matching RFC
-            # 9000 section 8.1's measurement convention.
-            if not self.conn_slots[conn_idx].h3[].can_send_to(
-                target_key, len(pkt)
-            ):
-                # Budget exhausted on the unvalidated path. Drop the
-                # datagram; loss recovery will regenerate the contents
-                # once the peer credits more bytes or validation lifts
-                # the gate. NOT a fatal error.
-                continue
-
-            var pkt_len = len(pkt)
-            var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
-
-            self._egress_backlog.append(
-                EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
+        try:
+            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(
+                now
             )
 
-            # Credit per-path bytes_sent. No-op on validated paths.
-            self.conn_slots[conn_idx].h3[].record_send_to(
-                target_key, pkt_len
+            # Resolve the structured peer key once per flush. The server
+            # tracks the latest sockaddr blob in `conn_slots[i].addr`, which
+            # was just refreshed in `_flush_ingress` to match the source addr
+            # of the datagram that triggered this flush — i.e. the same
+            # address sendmsg will route to.
+            var target_key = _sockaddr_to_path_key(
+                self.conn_slots[conn_idx].addr.unsafe_ptr(),
+                0,
+                len(self.conn_slots[conn_idx].addr),
             )
+
+            # ECN mark from the connection's probing/capability state.
+            var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
+
+            for i in range(len(datagrams)):
+                # Move the payload out of the drained list (swap with an
+                # empty husk) rather than copying 1200 bytes per datagram.
+                var pkt = List[UInt8]()
+                swap(pkt, datagrams[i])
+                if len(pkt) == 0:
+                    continue
+
+                # Per-path anti-amp gate. No-op when `target_key` has
+                # no pending challenge (validated path → returns True). The
+                # validator's `can_send_bytes` includes the QUIC header +
+                # AEAD ciphertext (i.e. the full UDP payload), matching RFC
+                # 9000 section 8.1's measurement convention.
+                if not self.conn_slots[conn_idx].h3[].can_send_to(
+                    target_key, len(pkt)
+                ):
+                    # Budget exhausted on the unvalidated path. Drop the
+                    # datagram; loss recovery will regenerate the contents
+                    # once the peer credits more bytes or validation lifts
+                    # the gate. NOT a fatal error.
+                    continue
+
+                var pkt_len = len(pkt)
+                var addr_copy = List[UInt8](
+                    copy=self.conn_slots[conn_idx].addr
+                )
+
+                self._egress_backlog.append(
+                    EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
+                )
+
+                # Credit per-path bytes_sent. No-op on validated paths.
+                self.conn_slots[conn_idx].h3[].record_send_to(
+                    target_key, pkt_len
+                )
+        finally:
+            # A raise above (drain, anti-amp accounting) still leaves a
+            # fresh cache: the PTO armed by the dropped datagrams must be
+            # visible to the timer before the caller's `except` runs.
+            self._refresh_deadline(conn_idx, now)
 
     # ── Out-of-band response injection (cross-transport wake) ─────
 
@@ -1730,20 +1744,29 @@ struct H3UdpServer[H: StreamHandler](Movable):
         var conn_idx = self._find_conn_by_dcid(conn_id)
         if conn_idx < 0:
             return
-        self.conn_slots[conn_idx].h3[].inject_response(
-            sid, status^, headers^, body^, end
-        )
         var now = self._now()
-        var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
-        var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
-        for i in range(len(datagrams)):
-            var pkt = List[UInt8]()
-            swap(pkt, datagrams[i])
-            if len(pkt) == 0:
-                continue
-            var addr_copy = List[UInt8](copy=self.conn_slots[conn_idx].addr)
-            self._inject_egress.append(
-                EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
+        try:
+            self.conn_slots[conn_idx].h3[].inject_response(
+                sid, status^, headers^, body^, end
             )
+            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(
+                now
+            )
+            var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
+            for i in range(len(datagrams)):
+                var pkt = List[UInt8]()
+                swap(pkt, datagrams[i])
+                if len(pkt) == 0:
+                    continue
+                var addr_copy = List[UInt8](
+                    copy=self.conn_slots[conn_idx].addr
+                )
+                self._inject_egress.append(
+                    EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
+                )
+        finally:
+            # New sendable data or a PTO armed by the drain must reach the
+            # timer even if staging or draining raised midway.
+            self._refresh_deadline(conn_idx, now)
 
 

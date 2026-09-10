@@ -32,7 +32,7 @@ from navette.runtime.socket_helpers import udp_listener
 from navette.tls.config import QuicClientConfig, QuicServerConfig
 from navette.tls.lib import TlsBackend
 
-from tests._test_util import load_test_ca, load_test_cert
+from tests._test_util import assert_true, load_test_ca, load_test_cert
 
 
 comptime _POLLIN: Int16 = 1
@@ -177,7 +177,12 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         return self.loop[].step(ms)
 
     def flush(mut self) raises:
+        """`srv.flush()` followed by the cache-vs-oracle check every test inherits."""
         self.srv[].flush()
+        assert_true(
+            self.srv[]._deadline_cache_matches_oracle(),
+            "deadline cache matches oracle after flush",
+        )
 
     def slot_count(self) -> Int:
         return len(self.srv[].conn_slots)
