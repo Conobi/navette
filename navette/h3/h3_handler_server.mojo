@@ -147,6 +147,11 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     to `_early_data_filter_ptr` per the truth-table for the predicate
     variant of the 0-RTT policy."""
 
+    # Test-only: when True the next `drain_datagrams` clears it and raises
+    # before touching the connection, so the server's refresh-on-raise
+    # path can be exercised. Never set by production code.
+    var _raise_on_next_drain: Bool
+
     def __init__(
         out self,
         *,
@@ -168,6 +173,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._h3.profile_ptr = profile_ptr
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
+        self._raise_on_next_drain = False
 
     def __init__(out self, *, deinit move: Self):
         self._h3 = move._h3^
@@ -176,6 +182,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self.profile_ptr = move.profile_ptr
         self._early_data_filter_ptr = move._early_data_filter_ptr
         self._early_data_predicate_fn = move._early_data_predicate_fn
+        self._raise_on_next_drain = move._raise_on_next_drain
 
     def __deinit__(deinit self):
         var keys = List[Int]()

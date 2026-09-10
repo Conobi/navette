@@ -17,12 +17,17 @@ from boucle import WatchLoop, TimerFuture
 
 from navette.h3.h3_udp_server import (
     H3UdpServer,
+    ConnSlot,
     EgressPacket,
+    NO_DEADLINE_US,
     TIMER_FLOOR_MS,
     TIMER_CEILING_MS,
     SERVER_DEFAULT_IDLE_TIMEOUT_MS,
+    _earliest_cached_deadline,
     _timer_arm_ms,
 )
+from navette.h3.h3_handler_server import H3HandlerServer
+from navette.util.null_ptr import null_ptr
 from navette.h3.connection import MAX_DATAGRAMS_PER_DRAIN
 from navette.h3.qpack import QpackHeaderField
 from navette.http.handler import (
@@ -691,6 +696,60 @@ def test_closing_conn_addr_frozen() raises:
     print("PASS: test_closing_conn_addr_frozen")
 
 
+def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
+    """A `ConnSlot` around a null `h3` pointer carrying one cached deadline."""
+    var s = ConnSlot[StubHandler](
+        null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
+        List[UInt8](),
+        List[UInt64](),
+        UInt64(0),
+    )
+    s.next_deadline_us = deadline
+    return s^
+
+
+def test_earliest_cached_deadline_pure() raises:
+    """Scan == min over the multiset with the sentinel filtered; empty / all-sentinel -> None."""
+    var slots = List[ConnSlot[StubHandler]]()
+    assert_true(_earliest_cached_deadline(slots) is None, "empty -> None")
+    slots.append(_slot_with(NO_DEADLINE_US))
+    slots.append(_slot_with(NO_DEADLINE_US))
+    assert_true(_earliest_cached_deadline(slots) is None, "all sentinel -> None")
+    slots.append(_slot_with(UInt64(7_000)))
+    slots.append(_slot_with(UInt64(5_000)))
+    slots.append(_slot_with(UInt64(9_000)))
+    var d = _earliest_cached_deadline(slots)
+    assert_true(d is not None and d.value() == UInt64(5_000), "mixed -> min 5000")
+    slots.append(_slot_with(UInt64(5_000)))
+    d = _earliest_cached_deadline(slots)
+    assert_true(d is not None and d.value() == UInt64(5_000), "duplicate minimum -> 5000")
+
+    # Property: random multisets with sentinels against the reference min.
+    var seed = UInt64(0x9E3779B97F4A7C15)
+    for _ in range(500):
+        var rnd = List[ConnSlot[StubHandler]]()
+        var ref_min = NO_DEADLINE_US
+        seed = seed * UInt64(6364136223846793005) + UInt64(1442695040888963407)
+        var n = Int((seed >> 40) % UInt64(8))
+        for _ in range(n):
+            seed = seed * UInt64(6364136223846793005) + UInt64(1442695040888963407)
+            var v = (seed >> 24) % UInt64(1_000_000)
+            if (seed >> 16) % UInt64(4) == UInt64(0):
+                v = NO_DEADLINE_US
+            rnd.append(_slot_with(v))
+            if v < ref_min:
+                ref_min = v
+        var got = _earliest_cached_deadline(rnd)
+        if ref_min == NO_DEADLINE_US:
+            assert_true(got is None, "random: no real deadline -> None")
+        else:
+            assert_true(
+                got is not None and got.value() == ref_min,
+                "random: expected " + String(ref_min),
+            )
+    print("PASS: test_earliest_cached_deadline_pure")
+
+
 def main() raises:
     test_h3_udp_server_init_and_tick()
     test_timer_arm_is_min()
@@ -703,3 +762,14 @@ def main() raises:
     test_closing_conn_addr_frozen()
     test_flush_order_timer_before_egress()
     test_timer_pass_runs_when_deadline_passed()
+
+    # Cached-deadline tests: run every one, report every failure, then raise.
+    var failed = List[String]()
+    try:
+        test_earliest_cached_deadline_pure()
+    except e:
+        failed.append(String("test_earliest_cached_deadline_pure: ") + String(e))
+    if len(failed) > 0:
+        for i in range(len(failed)):
+            print("FAILED " + failed[i])
+        raise "test_h3_udp_server: " + String(len(failed)) + " failure(s)"

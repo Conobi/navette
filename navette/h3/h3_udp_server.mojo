@@ -148,6 +148,25 @@ comptime TIMER_CEILING_MS: UInt64 = 1000
 # client and test defaults are unchanged.
 comptime SERVER_DEFAULT_IDLE_TIMEOUT_MS: UInt64 = 30_000
 
+# "No deadline" sentinel for `ConnSlot.next_deadline_us`. `UInt64.MAX` so the
+# scan is a plain min over integers; produced only by the `ConnSlot`
+# constructor and by `_refresh_deadline` when `timeout()` returns None.
+comptime NO_DEADLINE_US: UInt64 = UInt64.MAX
+
+
+def _earliest_cached_deadline[H: StreamHandler](
+    slots: List[ConnSlot[H]],
+) -> Optional[UInt64]:
+    """Min of every slot's cached deadline; None when no slot has one. Never dereferences `h3`."""
+    var best = NO_DEADLINE_US
+    for i in range(len(slots)):
+        var d = slots[i].next_deadline_us
+        if d < best:
+            best = d
+    if best == NO_DEADLINE_US:
+        return Optional[UInt64](None)
+    return Optional[UInt64](best)
+
 
 def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
     """Milliseconds to arm the loop timer for a deadline at absolute µs.
@@ -439,6 +458,12 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     is overwritten by a swap-and-pop survivor, so stale demux entries
     can be detected at lookup time.
 
+    `next_deadline_us` caches the connection's earliest deadline as of
+    `deadline_refreshed_at_us` (`now` while egress is capped, `timeout()`
+    otherwise, `NO_DEADLINE_US` for none); after construction only the
+    creation-time write and `_refresh_deadline` may change it, and the
+    timer scan reads it without touching `h3`.
+
     `Copyable` is required by `List[ConnSlot[H]]` storage; aliasing
     `h3` across copies matches the prior `List[UnsafePointer[...]]`
     semantics (the underlying pointer was already trivially copied
@@ -448,6 +473,8 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     var addr: List[UInt8]
     var dcids: List[UInt64]
     var generation: UInt64
+    var next_deadline_us: UInt64
+    var deadline_refreshed_at_us: UInt64
 
     def __init__(
         out self,
@@ -460,18 +487,24 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.addr = addr^
         self.dcids = dcids^
         self.generation = generation
+        self.next_deadline_us = NO_DEADLINE_US
+        self.deadline_refreshed_at_us = UInt64(0)
 
     def __init__(out self, *, copy: Self):
         self.h3 = copy.h3
         self.addr = List[UInt8](copy=copy.addr)
         self.dcids = List[UInt64](copy=copy.dcids)
         self.generation = copy.generation
+        self.next_deadline_us = copy.next_deadline_us
+        self.deadline_refreshed_at_us = copy.deadline_refreshed_at_us
 
     def __init__(out self, *, deinit move: Self):
         self.h3 = move.h3
         self.addr = move.addr^
         self.dcids = move.dcids^
         self.generation = move.generation
+        self.next_deadline_us = move.next_deadline_us
+        self.deadline_refreshed_at_us = move.deadline_refreshed_at_us
 
 
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
@@ -584,6 +617,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _reset_count: Int
     var _timeout_count: Int
 
+    # Test-only: how many times `_refresh_deadline` ran. On production
+    # paths this is >= the number of `QuicConnection.timeout()` calls
+    # (equal when no slot is capped).
+    var _deadline_refresh_count: Int
+
     # Test-only clock override consulted by `_now()`; None in production.
     var _clock_override_us: Optional[UInt64]
 
@@ -648,6 +686,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._last_armed_ms = UInt64(0)
         self._reset_count = 0
         self._timeout_count = 0
+        self._deadline_refresh_count = 0
         self._clock_override_us = Optional[UInt64](None)
 
         self.profile = AcceptProfile()
@@ -676,6 +715,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._last_armed_ms = move._last_armed_ms
         self._reset_count = move._reset_count
         self._timeout_count = move._timeout_count
+        self._deadline_refresh_count = move._deadline_refresh_count
         self._clock_override_us = move._clock_override_us^
         self.profile = move.profile^
 
@@ -876,6 +916,24 @@ struct H3UdpServer[H: StreamHandler](Movable):
     def _timer_live(self) -> Bool:
         """True while a kernel timer whose completion has not arrived exists."""
         return self._timer is not None and not self._timer.value().done()
+
+    def _deadline_cache_matches_oracle(self) -> Bool:
+        """Test-only: every slot's cache equals `now`/`timeout()` recomputed at its own refresh instant.
+
+        Costs the N recomputes the cache removes, so it is never wired under
+        `ASSERT=all`; the test harness calls it after each `flush()`.
+        """
+        for i in range(len(self.conn_slots)):
+            var t = self.conn_slots[i].deadline_refreshed_at_us
+            var expect: UInt64
+            if self.conn_slots[i].h3[].has_pending_egress():
+                expect = t
+            else:
+                var d = self.conn_slots[i].h3[].timeout(t)
+                expect = d.value() if d else NO_DEADLINE_US
+            if self.conn_slots[i].next_deadline_us != expect:
+                return False
+        return True
 
     def _timer_pass_due(self, now: UInt64) -> Bool:
         """Pass gate: no live timer, or the minimum deadline has passed."""
