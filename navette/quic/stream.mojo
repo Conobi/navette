@@ -513,7 +513,9 @@ struct SendBuf(Copyable, Movable):
     def on_ack(mut self, ack_off: UInt64, ack_len: UInt64):
         """Handle acknowledgment of [ack_off, ack_off+ack_len) bytes.
 
-        If the ack range extends the contiguous acked_offset, trims buffer front.
+        If the ack range extends the contiguous acked_offset, trims buffer front
+        and floors unsent_offset at acked_offset so acked bytes are never
+        retransmitted (guards the on_loss-then-late-ACK spurious-loss race).
         Bare-FIN ACKs (ack_len == 0) are handled by checking if all data was
         already acked (acked_offset >= fin_offset).
         """
@@ -529,6 +531,15 @@ struct SendBuf(Copyable, Movable):
         # Only process if this extends the contiguous acked region
         if ack_off <= self.acked_offset and ack_end > self.acked_offset:
             self.acked_offset = ack_end
+
+            # A prior on_loss may have rewound unsent_offset below bytes this
+            # ACK now covers (spurious loss / reordered ACK). Acked bytes must
+            # never be retransmitted, so keep the send cursor at or above
+            # acked_offset — the mirror of the floor in on_loss. Without this,
+            # the trim below advances self.offset past unsent_offset and the
+            # next make_frame indexes before data[0].
+            if self.unsent_offset < self.acked_offset:
+                self.unsent_offset = self.acked_offset
 
             # Trim buffer front: remove bytes [offset, acked_offset)
             var trim = Int(self.acked_offset - self.offset)

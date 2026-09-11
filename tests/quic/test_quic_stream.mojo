@@ -397,6 +397,62 @@ def test_send_buf_on_loss() raises:
     print("  test_send_buf_on_loss: PASS")
 
 
+def test_send_buf_ack_after_loss_rewind() raises:
+    """Regression: a reordered/late ACK covering bytes that on_loss rewound the
+    send cursor below must not leave unsent_offset beneath the trimmed buffer.
+
+    Spurious loss: on_loss rewinds unsent_offset to retransmit a range; before
+    the retransmit flies, an ACK acknowledges that same range. on_ack advances
+    acked_offset and trims the buffer front (offset), but historically left
+    unsent_offset behind. The next make_frame then computes
+    buf_start = frame_start - offset < 0 and aborts with an out-of-bounds index
+    (stream.mojo make_frame). Acked bytes must never be re-sent, so the send
+    cursor must stay at or above the trimmed front.
+    """
+    var buf = SendBuf()
+    var data = List[UInt8](capacity=5000)
+    for i in range(5000):
+        data.append(UInt8(i % 251))
+    buf.write(Span(data), True)
+
+    # Frame three 1200-byte chunks; unsent_offset advances to 3600.
+    _ = buf.make_frame(UInt64(4), 1200)   # [0,1200)
+    _ = buf.make_frame(UInt64(4), 1200)   # [1200,2400)
+    _ = buf.make_frame(UInt64(4), 1200)   # [2400,3600)
+    assert_equal_int(Int(buf.unsent_offset), 3600, "ack-after-loss: framed three chunks")
+
+    # The first chunk's packet is declared lost — rewind the send cursor to 0.
+    buf.on_loss(UInt64(0), UInt64(1200))
+    assert_equal_int(Int(buf.unsent_offset), 0, "ack-after-loss: on_loss rewound unsent to 0")
+
+    # Before retransmitting, a reordered ACK acknowledges [0,2400): the very
+    # bytes the cursor was rewound below. acked_offset/offset jump to 2400.
+    buf.on_ack(UInt64(0), UInt64(2400))
+    assert_equal_int(Int(buf.acked_offset), 2400, "ack-after-loss: acked_offset advanced")
+    assert_equal_int(Int(buf.offset), 2400, "ack-after-loss: buffer front trimmed to 2400")
+
+    # The invariant make_frame relies on. Pre-fix unsent_offset is still 0.
+    assert_true(
+        buf.unsent_offset >= buf.offset,
+        "ack-after-loss: send cursor must not sit below the trimmed buffer front",
+    )
+
+    # make_frame must resume at the un-acked tail (offset 2400), never index
+    # before data[0], and return the original stream bytes.
+    var f_opt = buf.make_frame(UInt64(4), 1200)
+    assert_true(f_opt.__bool__(), "ack-after-loss: make_frame returns the un-acked tail")
+    var f = f_opt.value().copy()
+    assert_true(
+        Int(f.offset) >= Int(buf.offset),
+        "ack-after-loss: retransmit frame offset must be >= trimmed front",
+    )
+    for i in range(len(f.data)):
+        var abs_off = Int(f.offset) + i
+        assert_equal_int(Int(f.data[i]), abs_off % 251, "ack-after-loss: resumed byte matches source")
+
+    print("  test_send_buf_ack_after_loss_rewind: PASS")
+
+
 def test_send_buf_fin() raises:
     var buf = SendBuf()
 
@@ -762,6 +818,7 @@ def main() raises:
     test_send_buf_write_and_frame()
     test_send_buf_on_ack_trims()
     test_send_buf_on_loss()
+    test_send_buf_ack_after_loss_rewind()
     test_send_buf_fin()
     test_send_buf_is_fully_acked()
 
