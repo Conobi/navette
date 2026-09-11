@@ -41,9 +41,11 @@ and egress (send_msg with ECN cmsgs).
 The server keeps exactly one live kernel timer, armed to the minimum of
 every slot's cached deadline (clamped to `[TIMER_FLOOR_MS,
 TIMER_CEILING_MS]`). Each `ConnSlot` caches `timeout(now)` — or `now`
-while its egress is capped — and only `_refresh_deadline`, run at the end
-of every `_drain_and_send` and `inject_response`, rewrites it; the timer
-pass and re-arm scan the cached integers without touching a connection.
+while its egress is capped — seeded at creation and, after that, rewritten
+only by `_refresh_deadline` at the end of every `_drain_and_send` and
+`inject_response`; the pass gate and the re-arm scan the cached integers
+without touching a connection, and the pass drains only the slots whose
+cached deadline has passed.
 If arming raises (loop gone, submission queue exhausted) no timer is live
 until the next `flush()` retries; only ingress wakes the loop in that
 state, so run loops must call `loop.step(TIMER_CEILING_MS)` rather than

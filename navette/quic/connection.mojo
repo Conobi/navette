@@ -4393,9 +4393,10 @@ struct QuicConnection(Movable):
         """Earliest deadline the caller must wake `send()` for, or None.
 
         Sources: per-space PTO and ACK deadlines (omitted while
-        closing/draining/closed), idle, close and drain timers, and the pacer
-        wait — folded only when it is earlier than the rest and Application
-        data is actually waiting, so the stream walk is skipped otherwise.
+        closing/draining/closed), idle, close and drain timers, and, on an
+        established non-terminal connection, the pacer wait — folded only
+        when it is earlier than the rest and Application data is actually
+        waiting, so the stream walk is skipped otherwise.
         Pure in connection state and `now`. After `send(now)` this is None or
         strictly greater than `now`, except for an idle deadline that expired
         in that call.
