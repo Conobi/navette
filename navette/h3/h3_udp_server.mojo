@@ -1008,8 +1008,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 continue
             try:
                 self._drain_and_send(i, now)
-            except:
-                pass
+            except e:
+                print("H3UdpServer: timer drain error:", e)
         self._reap_closed()
 
     def _reap_closed(mut self) raises:
