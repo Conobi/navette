@@ -1298,10 +1298,11 @@ def test_timer_pass_reads_the_cache() raises:
     var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
     var clients = _alloc_clients(h, 2)
     _settle(h)
-    # Nothing is due: a recomputing pass would drain nothing.
+    # Control: gate open (no live timer), cache intact -> the pass refreshes nothing.
     var refreshes = h.srv[]._deadline_refresh_count
+    h.srv[]._timer = Optional[TimerFuture](None)
     h.srv[].flush()
-    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 0, "precondition: quiet flush drains nothing")
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 0, "control: open gate, intact cache drains nothing")
 
     # Poison slot 1's cache to "due now" without touching the connection.
     h.srv[].conn_slots[1].next_deadline_us = h.now()

@@ -1008,8 +1008,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 continue
             try:
                 self._drain_and_send(i, now)
-            except e:
-                print("H3UdpServer: timer drain error:", e)
+            # Silent on purpose: a slot whose send() raises persistently stays due on
+            # every pass (>= 1000 lines/s with no peer input); ingress already reports it.
+            except:
+                pass
         self._reap_closed()
 
     def _reap_closed(mut self) raises:
