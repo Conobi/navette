@@ -4673,6 +4673,11 @@ def test_timeout_pacer_clause_order() raises:
     payload.append(UInt8(0x41))
     client.send_stream_data(sid, Span(payload), False)
     assert_true(client._space_has_other_sendable(2), "precondition: stream data waiting")
+    # Queueing moved the connection's own terms; rows 1a-3 compare against a
+    # non-pacer reference taken after it, not the pre-queue one.
+    client.recovery.pacer.enabled = False
+    base = client.timeout(now)
+    client.recovery.pacer.enabled = True
 
     # Row 1a: pacer disabled -> None wait.
     client.recovery.pacer.enabled = False

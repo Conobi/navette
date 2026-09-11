@@ -1274,6 +1274,7 @@ def test_drain_raises_still_refreshes() raises:
     for _ in range(3):
         _ = h.pump(c)
     _settle(h)
+    h.advance(UInt64(1_000))  # the flush's `now` must differ from the settled value
 
     h.server_conn(0)[]._raise_on_next_drain = True
     _ = _send_partial_request(c)
@@ -1282,7 +1283,7 @@ def test_drain_raises_still_refreshes() raises:
     var refreshes = h.srv[]._deadline_refresh_count
     h.flush()  # prints "H3UdpServer: drain_and_send error: ..." — expected
     assert_true(not h.server_conn(0)[]._raise_on_next_drain, "flag cleared by the drain")
-    assert_true(h.srv[]._deadline_refresh_count - refreshes >= 1, "the finally refreshed the slot")
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 1, "the finally refreshed the slot")
     assert_true(
         h.srv[].conn_slots[0].deadline_refreshed_at_us == h.now(),
         "refreshed at the flush's now",
@@ -1290,6 +1291,30 @@ def test_drain_raises_still_refreshes() raises:
     assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after a raising drain")
     _ = h.slot_count()  # keep the harness alive past the last slot dereference
     print("PASS: test_drain_raises_still_refreshes")
+
+
+def test_timer_pass_reads_the_cache() raises:
+    """timer-pass-reads-the-cache: a poisoned cache alone makes the pass drain that slot."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var clients = _alloc_clients(h, 2)
+    _settle(h)
+    # Nothing is due: a recomputing pass would drain nothing.
+    var refreshes = h.srv[]._deadline_refresh_count
+    h.srv[].flush()
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 0, "precondition: quiet flush drains nothing")
+
+    # Poison slot 1's cache to "due now" without touching the connection.
+    h.srv[].conn_slots[1].next_deadline_us = h.now()
+    refreshes = h.srv[]._deadline_refresh_count
+    h.srv[]._timer = Optional[TimerFuture](None)  # no live timer: the pass gate is open
+    h.srv[].flush()  # raw flush: the harness hook would trip on the poison first
+    assert_equal_int(h.srv[]._deadline_refresh_count - refreshes, 1, "the pass drained exactly the poisoned slot")
+    assert_true(h.srv[].conn_slots[1].deadline_refreshed_at_us == h.now(), "slot 1 was the one refreshed")
+    assert_true(h.srv[]._deadline_cache_matches_oracle(), "the drain restored the cache")
+    # Keep the harness alive past the server derefs above (ASAP destruction).
+    _ = h.slot_count()
+    _free_clients(clients)
+    print("PASS: test_timer_pass_reads_the_cache")
 
 
 def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
@@ -1417,6 +1442,10 @@ def main() raises:
         test_drain_raises_still_refreshes()
     except e:
         failed.append(String("test_drain_raises_still_refreshes: ") + String(e))
+    try:
+        test_timer_pass_reads_the_cache()
+    except e:
+        failed.append(String("test_timer_pass_reads_the_cache: ") + String(e))
     if len(failed) > 0:
         for i in range(len(failed)):
             print("FAILED " + failed[i])
