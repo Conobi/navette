@@ -39,11 +39,15 @@ and egress (send_msg with ECN cmsgs).
 # Timer contract
 
 The server keeps exactly one live kernel timer, armed to the minimum of
-every connection's `timeout(now)` (clamped to `[TIMER_FLOOR_MS,
-TIMER_CEILING_MS]`). If arming raises (loop gone, submission queue
-exhausted) no timer is live until the next `flush()` retries; only
-ingress wakes the loop in that state, so run loops must call
-`loop.step(TIMER_CEILING_MS)` rather than an unbounded `step()`.
+every slot's cached deadline (clamped to `[TIMER_FLOOR_MS,
+TIMER_CEILING_MS]`). Each `ConnSlot` caches `timeout(now)` — or `now`
+while its egress is capped — and only `_refresh_deadline`, run at the end
+of every `_drain_and_send` and `inject_response`, rewrites it; the timer
+pass and re-arm scan the cached integers without touching a connection.
+If arming raises (loop gone, submission queue exhausted) no timer is live
+until the next `flush()` retries; only ingress wakes the loop in that
+state, so run loops must call `loop.step(TIMER_CEILING_MS)` rather than
+an unbounded `step()`.
 
 # Per-conn handler factory
 
@@ -450,12 +454,11 @@ struct _DcidEntry(Copyable, Movable):
 
 
 struct ConnSlot[H: StreamHandler](Copyable, Movable):
-    """One QUIC/H3 connection's parallel-list-collapsing record.
+    """One QUIC/H3 connection's per-slot record, indexed by `conn_slots` position.
 
-    Holds the `H3HandlerServer[H]` pointer, peer sockaddr bytes, every
-    DCID this connection responds to (typically `[initial_dcid, local_cid]`),
-    and a generation counter. Generation increments every time the slot
-    is overwritten by a swap-and-pop survivor, so stale demux entries
+    `dcids` holds every DCID the connection responds to (typically
+    `[initial_dcid, local_cid]`). `generation` increments every time the
+    slot is overwritten by a swap-and-pop survivor, so stale demux entries
     can be detected at lookup time.
 
     `next_deadline_us` caches the connection's earliest deadline as of
@@ -847,7 +850,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
         timer is re-armed before `_submit_egress` so its SQE is reserved
         before egress can exhaust the submission queue. Lease release
         stays last because a GRO segment consumed by ingress only frees
-        its buffer once every sibling segment is done.
+        its buffer once every sibling segment is done. Only the slots this
+        flush fed or drained are recomputed; the pass gate and the re-arm
+        read the per-slot cache.
         """
         # 1. Drain datagrams from the DatagramStream into pending_rx.
         self._drain_recv_stream()
@@ -939,14 +944,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self.conn_slots[idx].next_deadline_us = t.value() if t else NO_DEADLINE_US
 
     def _timer_pass_due(self, now: UInt64) -> Bool:
-        """Pass gate: no live timer, or the minimum deadline has passed."""
+        """Pass gate: no live timer, or the minimum cached deadline has passed."""
         if not self._timer_live():
             return True
         var d = self._next_deadline_us()
         return d is not None and d.value() <= now
 
     def _rearm_timer(mut self):
-        """Keep exactly one live kernel timer aimed at the minimum deadline.
+        """Keep exactly one live kernel timer aimed at the minimum cached deadline.
 
         Takes a fresh `_now()` so the flush duration does not skew the
         target. A done or absent future is always replaced by a new
@@ -1622,10 +1627,6 @@ struct H3UdpServer[H: StreamHandler](Movable):
         more bytes arrive from the peer (or after validation lifts the
         gate entirely). On a successful queue we credit the per-path
         bytes_sent so subsequent emissions stay within budget.
-
-        Args:
-            conn_idx: Index into conn_slots for the connection to drain.
-            now: Current monotonic time in microseconds.
         """
         try:
             var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(
@@ -1766,7 +1767,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 )
         finally:
             # New sendable data or a PTO armed by the drain must reach the
-            # timer even if staging or draining raised midway.
+            # timer even if staging or draining raised midway. This also
+            # runs when `h3[].inject_response` raised before mutating
+            # anything: one spurious refresh, accepted over a second
+            # try/except just to skip it.
             self._refresh_deadline(conn_idx, now)
 
 

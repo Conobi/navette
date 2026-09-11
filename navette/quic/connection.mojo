@@ -4394,9 +4394,11 @@ struct QuicConnection(Movable):
 
         Sources: per-space PTO and ACK deadlines (omitted while
         closing/draining/closed), idle, close and drain timers, and the pacer
-        (only when Application-space data is actually waiting). After
-        `send(now)` this is None or strictly greater than `now`, except for an
-        idle deadline that expired in that call.
+        wait — folded only when it is earlier than the rest and Application
+        data is actually waiting, so the stream walk is skipped otherwise.
+        Pure in connection state and `now`. After `send(now)` this is None or
+        strictly greater than `now`, except for an idle deadline that expired
+        in that call.
         """
         var earliest = Optional[UInt64](None)
         var terminal = (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0
