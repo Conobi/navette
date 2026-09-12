@@ -416,6 +416,7 @@ struct SendBuf(Copyable, Movable):
     var fin: Bool
     var fin_offset: Optional[UInt64]    # set when FIN first framed
     var fin_acked: Bool
+    var read_cursor: Int
 
     def __init__(out self):
         self.data = List[UInt8]()
@@ -425,6 +426,7 @@ struct SendBuf(Copyable, Movable):
         self.fin = False
         self.fin_offset = None
         self.fin_acked = False
+        self.read_cursor = 0
 
     def __init__(out self, *, copy: Self):
         self.data = List[UInt8](copy=copy.data)
@@ -434,6 +436,7 @@ struct SendBuf(Copyable, Movable):
         self.fin = copy.fin
         self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
         self.fin_acked = copy.fin_acked
+        self.read_cursor = copy.read_cursor
 
     def __init__(out self, *, deinit move: Self):
         self.data = move.data^
@@ -443,19 +446,19 @@ struct SendBuf(Copyable, Movable):
         self.fin = move.fin
         self.fin_offset = move.fin_offset^
         self.fin_acked = move.fin_acked
+        self.read_cursor = move.read_cursor
 
     def write(mut self, new_data: Span[UInt8, _], set_fin: Bool) raises:
         """Append data to the outgoing buffer and optionally set the FIN flag."""
         if self.fin and len(new_data) > 0:
             raise "STREAM_STATE_ERROR: write after FIN queued"
-        for i in range(len(new_data)):
-            self.data.append(new_data[i])
+        self.data.extend(new_data)
         if set_fin:
             self.fin = True
 
     def has_pending(self) -> Bool:
         """True if there is unsent data or an unsent FIN."""
-        var total_data_end = self.offset + UInt64(len(self.data))
+        var total_data_end = self.offset + UInt64(len(self.data) - self.read_cursor)
         if self.unsent_offset < total_data_end:
             return True
         # FIN pending: fin is set but not yet framed (fin_offset not set)
@@ -465,7 +468,7 @@ struct SendBuf(Copyable, Movable):
 
     def pending_len(self) -> UInt64:
         """Number of bytes not yet framed."""
-        var total_data_end = self.offset + UInt64(len(self.data))
+        var total_data_end = self.offset + UInt64(len(self.data) - self.read_cursor)
         if self.unsent_offset >= total_data_end:
             return UInt64(0)
         return total_data_end - self.unsent_offset
@@ -474,10 +477,32 @@ struct SendBuf(Copyable, Movable):
         """Create a STREAM frame from unsent data up to max_bytes.
 
         Returns None if no data or FIN to send.
+        Prefer prepare_frame + data_span for the hot send path to avoid
+        the intermediate List allocation.
         """
-        var total_data_end = self.offset + UInt64(len(self.data))
+        var meta = self.prepare_frame(max_bytes)
+        if not meta:
+            return None
+        var t = meta.value()
+        var frame_start = t[0]
+        var chunk_size = t[1]
+        var include_fin = t[2]
 
-        # Calculate how many bytes to include
+        var buf_start = self.read_cursor + Int(frame_start - self.offset)
+        var frame_data = List[UInt8](capacity=chunk_size)
+        frame_data.extend(Span(self.data)[buf_start : buf_start + chunk_size])
+
+        var frame = StreamFrame(stream_id, frame_start, frame_data^, include_fin)
+        return frame^
+
+    def prepare_frame(mut self, max_bytes: Int) -> Optional[Tuple[UInt64, Int, Bool]]:
+        """Advance the send cursor and return (offset, chunk_size, fin).
+
+        Unlike make_frame, does NOT copy data — the caller reads the
+        chunk via data_span() after this returns.
+        """
+        var total_data_end = self.offset + UInt64(len(self.data) - self.read_cursor)
+
         var frame_start = self.unsent_offset
         var available = Int(0)
         if total_data_end > frame_start:
@@ -488,33 +513,33 @@ struct SendBuf(Copyable, Movable):
 
         var include_fin = False
         if self.fin and not self.fin_offset:
-            # Include FIN only if we've reached the end of the data
             if frame_start + UInt64(chunk_size) >= total_data_end:
                 include_fin = True
 
         if chunk_size == 0 and not include_fin:
             return None
 
-        # Build frame data
-        var frame_data = List[UInt8](capacity=chunk_size)
-        var buf_start = Int(frame_start - self.offset)
-        for i in range(chunk_size):
-            frame_data.append(self.data[buf_start + i])
-
-        # Record fin_offset when FIN is first included
         if include_fin and not self.fin_offset:
             self.fin_offset = frame_start + UInt64(chunk_size)
 
         self.unsent_offset = frame_start + UInt64(chunk_size)
 
-        var frame = StreamFrame(stream_id, frame_start, frame_data^, include_fin)
-        return frame^
+        return Tuple(frame_start, chunk_size, include_fin)
+
+    def data_span(self, frame_offset: UInt64, chunk_size: Int) -> Span[UInt8, origin_of(self.data)]:
+        """Return a view of the send buffer for the given frame region.
+
+        Call after prepare_frame to read data without copying.
+        """
+        var buf_start = self.read_cursor + Int(frame_offset - self.offset)
+        return Span(self.data)[buf_start : buf_start + chunk_size]
 
     def on_ack(mut self, ack_off: UInt64, ack_len: UInt64):
         """Handle acknowledgment of [ack_off, ack_off+ack_len) bytes.
 
-        If the ack range extends the contiguous acked_offset, trims buffer front
-        and floors unsent_offset at acked_offset so acked bytes are never
+        If the ack range extends the contiguous acked_offset, advances the
+        read cursor past consumed bytes (O(1) instead of reallocating) and
+        floors unsent_offset at acked_offset so acked bytes are never
         retransmitted (guards the on_loss-then-late-ACK spurious-loss race).
         Bare-FIN ACKs (ack_len == 0) are handled by checking if all data was
         already acked (acked_offset >= fin_offset).
@@ -541,15 +566,13 @@ struct SendBuf(Copyable, Movable):
             if self.unsent_offset < self.acked_offset:
                 self.unsent_offset = self.acked_offset
 
-            # Trim buffer front: remove bytes [offset, acked_offset)
+            # Advance read cursor instead of physically trimming.
             var trim = Int(self.acked_offset - self.offset)
-            if trim > len(self.data):
-                trim = len(self.data)
+            var live = len(self.data) - self.read_cursor
+            if trim > live:
+                trim = live
             if trim > 0:
-                var new_data = List[UInt8](capacity=len(self.data) - trim)
-                for i in range(trim, len(self.data)):
-                    new_data.append(self.data[i])
-                self.data = new_data^
+                self.read_cursor += trim
                 self.offset = self.offset + UInt64(trim)
 
         # Check fin_acked

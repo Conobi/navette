@@ -361,8 +361,8 @@ def test_max_streams_update_threshold() raises:
     print("  test_max_streams_update_threshold: PASS")
 
 
-def test_sendable_list_round_robin() raises:
-    """Add 3 stream IDs, get_next_sendable returns them in rotation."""
+def test_sendable_deque_round_robin() raises:
+    """Add 3 stream IDs, Deque popleft returns them in FIFO order."""
     var sm = make_stream_map(False)
     setup_peer_limits(sm)
 
@@ -370,56 +370,42 @@ def test_sendable_list_round_robin() raises:
     sm.add_sendable(20)
     sm.add_sendable(30)
 
-    # First rotation
-    var id0 = sm.get_next_sendable()
-    assert_true(id0.__bool__(), "round robin: first call returns Some")
-    var id1 = sm.get_next_sendable()
-    assert_true(id1.__bool__(), "round robin: second call returns Some")
-    var id2 = sm.get_next_sendable()
-    assert_true(id2.__bool__(), "round robin: third call returns Some")
+    assert_equal_int(len(sm.sendable_queue), 3, "deque round robin: 3 entries")
+    assert_equal_int(len(sm.sendable_set), 3, "deque round robin: set has 3")
 
-    # All 3 unique values returned
-    var v0 = id0.value()
-    var v1 = id1.value()
-    var v2 = id2.value()
-    assert_true(v0 != v1 or v1 != v2 or v0 != v2, "round robin: not all same")
+    var id0 = sm.sendable_queue.popleft()
+    var id1 = sm.sendable_queue.popleft()
+    var id2 = sm.sendable_queue.popleft()
 
-    # After a full rotation, wraps back
-    var id3 = sm.get_next_sendable()
-    assert_true(id3.__bool__(), "round robin: wraps around")
-    print("  test_sendable_list_round_robin: PASS")
+    assert_equal_int(id0, 10, "deque round robin: first=10")
+    assert_equal_int(id1, 20, "deque round robin: second=20")
+    assert_equal_int(id2, 30, "deque round robin: third=30")
+    assert_equal_int(len(sm.sendable_queue), 0, "deque round robin: queue empty")
+    print("  test_sendable_deque_round_robin: PASS")
 
 
 def test_sendable_remove() raises:
-    """Remove middle element from sendable list — list shrinks correctly."""
+    """Remove middle element — set shrinks, Deque retains the stale entry."""
     var sm = make_stream_map(False)
     setup_peer_limits(sm)
 
     sm.add_sendable(10)
     sm.add_sendable(20)
     sm.add_sendable(30)
-    assert_equal_int(len(sm.sendable_ids), 3, "sendable remove: 3 before remove")
+    assert_equal_int(len(sm.sendable_set), 3, "sendable remove: set=3 before remove")
 
     sm.remove_sendable(20)
-    assert_equal_int(len(sm.sendable_ids), 2, "sendable remove: 2 after remove")
+    assert_equal_int(len(sm.sendable_set), 2, "sendable remove: set=2 after remove")
 
-    # 20 should not be in the list anymore
-    var found = False
-    for i in range(len(sm.sendable_ids)):
-        if sm.sendable_ids[i] == 20:
-            found = True
-    assert_false(found, "sendable remove: 20 not in list")
+    # 20 should not be in the set anymore
+    assert_false(20 in sm.sendable_set, "sendable remove: 20 not in set")
 
     # 10 and 30 should still be there
-    var has10 = False
-    var has30 = False
-    for i in range(len(sm.sendable_ids)):
-        if sm.sendable_ids[i] == 10:
-            has10 = True
-        if sm.sendable_ids[i] == 30:
-            has30 = True
-    assert_true(has10, "sendable remove: 10 still in list")
-    assert_true(has30, "sendable remove: 30 still in list")
+    assert_true(10 in sm.sendable_set, "sendable remove: 10 still in set")
+    assert_true(30 in sm.sendable_set, "sendable remove: 30 still in set")
+
+    # Deque still has the stale entry (lazy eviction)
+    assert_equal_int(len(sm.sendable_queue), 3, "sendable remove: queue=3 (lazy)")
     print("  test_sendable_remove: PASS")
 
 
@@ -497,9 +483,58 @@ def main() raises:
     test_maybe_cleanup_bidi_one_terminal()
     test_maybe_cleanup_peer_bidi_increments_completed()
     test_max_streams_update_threshold()
-    test_sendable_list_round_robin()
+    test_sendable_deque_round_robin()
     test_sendable_remove()
     test_stream_ref_mutation_visible()
     test_stream_ref_missing_raises()
+    test_sendable_deque_add_dedup()
+    test_sendable_deque_remove_lazy()
+    test_mark_control_lists()
 
     print("All test_quic_stream_map tests passed.")
+
+
+def test_sendable_deque_add_dedup() raises:
+    """Adding the same stream ID twice produces one entry in the set and Deque."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+
+    sm.add_sendable(42)
+    sm.add_sendable(42)
+
+    assert_equal_int(len(sm.sendable_set), 1, "deque add dedup: set has 1 entry")
+    assert_equal_int(len(sm.sendable_queue), 1, "deque add dedup: queue has 1 entry")
+    print("  test_sendable_deque_add_dedup: PASS")
+
+
+def test_sendable_deque_remove_lazy() raises:
+    """After removal the set is empty but the Deque retains the stale entry."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+
+    sm.add_sendable(7)
+    assert_equal_int(len(sm.sendable_set), 1, "deque remove lazy: set=1 before remove")
+    assert_equal_int(len(sm.sendable_queue), 1, "deque remove lazy: queue=1 before remove")
+
+    sm.remove_sendable(7)
+    assert_equal_int(len(sm.sendable_set), 0, "deque remove lazy: set empty after remove")
+    assert_equal_int(len(sm.sendable_queue), 1, "deque remove lazy: queue still has stale entry")
+    print("  test_sendable_deque_remove_lazy: PASS")
+
+
+def test_mark_control_lists() raises:
+    """Each mark_* method appends to the corresponding control list."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+
+    sm.mark_max_stream_data(4)
+    sm.mark_reset(8)
+    sm.mark_stop_sending(12)
+
+    assert_equal_int(len(sm.control_max_stream_data), 1, "mark control: max_stream_data len=1")
+    assert_equal_int(sm.control_max_stream_data[0], 4, "mark control: max_stream_data[0]=4")
+    assert_equal_int(len(sm.control_reset), 1, "mark control: reset len=1")
+    assert_equal_int(sm.control_reset[0], 8, "mark control: reset[0]=8")
+    assert_equal_int(len(sm.control_stop_sending), 1, "mark control: stop_sending len=1")
+    assert_equal_int(sm.control_stop_sending[0], 12, "mark control: stop_sending[0]=12")
+    print("  test_mark_control_lists: PASS")

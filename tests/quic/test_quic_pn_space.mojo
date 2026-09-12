@@ -115,8 +115,8 @@ def test_ack_delayed_application() raises:
 
 def test_build_ack_frame() raises:
     """Receive PNs 0,1,3,5,6 (last at t=1000); peek at t=1800 with exponent 3
-    yields largest=6, delay=100, first_range=1, ranges gap=1/ack=0 then
-    gap=1/ack=1. Peeking is non-mutating; mark_ack_sent resets the state."""
+    yields largest=6, delay=100, first_range=1, ranges gap=0/ack=0 then
+    gap=0/ack=1. Peeking is non-mutating; mark_ack_sent resets the state."""
     var space = PacketNumberSpace(EncryptionLevel.initial())
     space.on_packet_received(UInt64(0), True, UInt64(100))
     space.on_packet_received(UInt64(1), True, UInt64(200))
@@ -133,11 +133,11 @@ def test_build_ack_frame() raises:
     _assert_eq_u64(ack.first_ack_range, UInt64(1), "first_ack_range")  # [5,6] -> 6-5=1
 
     _assert_eq(len(ack.ranges), 2, "additional ranges count")
-    # Range 1: gap between [5,6] and [3,3] -> gap = (5-1)-3 = 1, ack_range = 3-3 = 0
-    _assert_eq_u64(ack.ranges[0].gap, UInt64(1), "range[0].gap")
+    # Range 1: gap between [5,6] and [3,3] → unacked={4}, gap=0, ack_range=0
+    _assert_eq_u64(ack.ranges[0].gap, UInt64(0), "range[0].gap")
     _assert_eq_u64(ack.ranges[0].ack_range, UInt64(0), "range[0].ack_range")
-    # Range 2: gap between [3,3] and [0,1] -> gap = (3-1)-1 = 1, ack_range = 1-0 = 1
-    _assert_eq_u64(ack.ranges[1].gap, UInt64(1), "range[1].gap")
+    # Range 2: gap between [3,3] and [0,1] → unacked={2}, gap=0, ack_range=1
+    _assert_eq_u64(ack.ranges[1].gap, UInt64(0), "range[1].gap")
     _assert_eq_u64(ack.ranges[1].ack_range, UInt64(1), "range[1].ack_range")
 
     # Peeking must not touch scheduling state.
@@ -456,6 +456,130 @@ def test_pn_skip_initial_handshake_spaces_unaffected() raises:
     print("    PASS test_pn_skip_initial_handshake_spaces_unaffected")
 
 
+def _decode_ack_to_pns(ack: AckFrame) raises -> List[Int]:
+    """Decode an AckFrame into a sorted list of acked PNs using the
+    RFC 9000 ACK frame decode algorithm. Raises on underflow."""
+    var pns = List[Int]()
+    var largest = ack.largest_ack
+    if largest < ack.first_ack_range:
+        raise "first_ack_range exceeds largest_ack"
+    var smallest = largest - ack.first_ack_range
+    var pn = smallest
+    while pn <= largest:
+        pns.append(Int(pn))
+        pn += 1
+
+    for i in range(len(ack.ranges)):
+        var gap = ack.ranges[i].gap
+        var ack_range = ack.ranges[i].ack_range
+        if smallest < gap + 2:
+            raise "ACK gap underflow: smallest=" + String(
+                Int(smallest)
+            ) + " gap=" + String(Int(gap))
+        largest = smallest - gap - 2
+        if largest < ack_range:
+            raise "ACK range underflow: largest=" + String(
+                Int(largest)
+            ) + " ack_range=" + String(Int(ack_range))
+        smallest = largest - ack_range
+        pn = smallest
+        while pn <= largest:
+            pns.append(Int(pn))
+            pn += 1
+
+    # Sort ascending for comparison.
+    for i in range(len(pns)):
+        for j in range(i + 1, len(pns)):
+            if pns[j] < pns[i]:
+                var tmp = pns[i]
+                pns[i] = pns[j]
+                pns[j] = tmp
+    return pns^
+
+
+def _assert_ack_roundtrip(
+    label: String, received_pns: List[Int]
+) raises:
+    """Feed PNs into a PN space, peek an ACK frame, decode it via the
+    RFC algorithm, and verify the decoded set matches the input."""
+    var space = PacketNumberSpace(EncryptionLevel.initial())
+    for i in range(len(received_pns)):
+        space.on_packet_received(UInt64(received_pns[i]), True, UInt64(i * 100))
+    var maybe_ack = space.peek_ack_frame(
+        UInt64(len(received_pns) * 100 + 800), UInt64(3)
+    )
+    if not maybe_ack:
+        raise label + ": peek_ack_frame returned None"
+    var ack = maybe_ack.value().copy()
+    var decoded = _decode_ack_to_pns(ack)
+
+    var expected = List[Int]()
+    for i in range(len(received_pns)):
+        expected.append(received_pns[i])
+    for i in range(len(expected)):
+        for j in range(i + 1, len(expected)):
+            if expected[j] < expected[i]:
+                var tmp = expected[i]
+                expected[i] = expected[j]
+                expected[j] = tmp
+
+    if len(decoded) != len(expected):
+        raise label + ": PN count mismatch: decoded=" + String(
+            len(decoded)
+        ) + " expected=" + String(len(expected))
+    for i in range(len(decoded)):
+        if decoded[i] != expected[i]:
+            raise label + ": PN mismatch at [" + String(
+                i
+            ) + "]: decoded=" + String(decoded[i]) + " expected=" + String(
+                expected[i]
+            )
+
+
+def _pns(*values: Int) -> List[Int]:
+    """Build a PN list from variadic args."""
+    var result = List[Int]()
+    for i in range(len(values)):
+        result.append(values[i])
+    return result^
+
+
+def test_ack_gap_rfc_decode_roundtrip() raises:
+    """Verify that peek_ack_frame produces ACK frames that the RFC 9000
+    decode algorithm can parse without underflow, and that the decoded
+    PNs match the received PNs exactly.
+
+    This is the oracle test for the gap formula: a gap off-by-one would
+    either trigger an underflow raise or produce wrong decoded PNs.
+    """
+    # Case 1: ranges touching PN 0 with single-PN gaps (the exact
+    # pattern that triggered the original off-by-one bug).
+    _assert_ack_roundtrip("pns-0-1-3-5-6", _pns(0, 1, 3, 5, 6))
+
+    # Case 2: contiguous (no additional ranges).
+    _assert_ack_roundtrip("contiguous-0-4", _pns(0, 1, 2, 3, 4))
+
+    # Case 3: single PN.
+    _assert_ack_roundtrip("single-pn-0", _pns(0))
+
+    # Case 4: two ranges, lowest at PN 0.
+    _assert_ack_roundtrip("gap-at-1", _pns(0, 2, 3))
+
+    # Case 5: wide gap.
+    _assert_ack_roundtrip("wide-gap", _pns(0, 1, 50, 51, 52))
+
+    # Case 6: many single-PN ranges near zero.
+    _assert_ack_roundtrip("alternating", _pns(0, 2, 4, 6, 8, 10))
+
+    # Case 7: three ranges with the lowest starting at PN 0.
+    _assert_ack_roundtrip("three-ranges-at-zero", _pns(0, 1, 5, 6, 10, 11))
+
+    # Case 8: large PNs with small gaps.
+    _assert_ack_roundtrip("high-pns", _pns(100, 101, 103, 105, 106))
+
+    print("    PASS test_ack_gap_rfc_decode_roundtrip")
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -485,5 +609,6 @@ def main() raises:
     test_pn_skip_gap_inserted()
     test_pn_skip_disabled_when_rng_zero()
     test_pn_skip_initial_handshake_spaces_unaffected()
+    test_ack_gap_rfc_decode_roundtrip()
 
     print("All test_quic_pn_space tests passed.")

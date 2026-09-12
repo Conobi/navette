@@ -11,7 +11,7 @@ from std.collections import Span
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import (
-    QuicConnection, QuicEvent, SentStreamFrame,
+    QuicConnection, QuicEvent, SentStreamFrame, SSF_STREAM,
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING, CONN_HANDSHAKING,
     MAX_DATAGRAM_SIZE, MAX_CLOSE_REASON_BYTES,
 )
@@ -177,6 +177,20 @@ def _has_kind(frames: List[Frame], kind: String) -> Bool:
     return False
 
 
+def _pn_has_stream_data(conn: QuicConnection, pn: Int) raises -> Bool:
+    """Check app_frames_sent for STREAM records at a given PN.
+
+    Since the direct-write optimization, STREAM frames bypass the Frame
+    struct and are tracked in app_frames_sent, not SentPacket.frames.
+    """
+    if pn not in conn.app_frames_sent:
+        return False
+    for i in range(len(conn.app_frames_sent[pn])):
+        if conn.app_frames_sent[pn][i].kind == SSF_STREAM:
+            return True
+    return False
+
+
 def _bytes(n: Int, seed: UInt8 = UInt8(0x41)) -> List[UInt8]:
     var out = List[UInt8](capacity=n)
     for i in range(n):
@@ -255,7 +269,7 @@ def test_ack_bundled_on_send() raises:
     var resp_pn = _last_sent_pn(p.server, 2)
     var frames = _frames_of(p.server, 2, resp_pn)
     assert_true(frames[0].is_ack(), "ACK is the first frame of the response packet")
-    assert_true(_has_kind(frames, "stream"), "response packet carries STREAM")
+    assert_true(_pn_has_stream_data(p.server, resp_pn), "response packet carries STREAM")
     assert_false(p.server.spaces[2].has_unacked_ack_eliciting(), "bundled ACK cleared the count")
     assert_false(Bool(p.server.spaces[2].ack_deadline), "bundled ACK cleared the deadline")
     p.client.recv(Span(dgs[0]), now)
@@ -362,7 +376,7 @@ def test_ack_only_bypasses_cc() raises:
     assert_true(p.server.recovery.bytes_in_flight == bif_before, "bytes_in_flight untouched")
     assert_false(Bool(p.server.spaces[2].time_of_last_ae_sent) and p.server.spaces[2].time_of_last_ae_sent.value() == now,
                  "ACK-only send does not re-arm the PTO base")
-    assert_true(len(p.server.stream_map.sendable_ids) == 1, "stream data still queued (builders did not run)")
+    assert_true(len(p.server.stream_map.sendable_set) == 1, "stream data still queued (builders did not run)")
     assert_equal_int(len(p.server.send(now)), 0, "gate closed: nothing more to send")
 
     p.server.recovery.bytes_in_flight = UInt64(0)
@@ -370,7 +384,7 @@ def test_ack_only_bypasses_cc() raises:
     dgs = p.server.send(now)
     assert_equal_int(len(dgs), 1, "data leaves once the gate opens")
     frames = _frames_of(p.server, 2, _last_sent_pn(p.server, 2))
-    assert_true(_has_kind(frames, "stream"), "STREAM emitted after the gate opened")
+    assert_true(_pn_has_stream_data(p.server, _last_sent_pn(p.server, 2)), "STREAM emitted after the gate opened")
     print("  test_ack_only_bypasses_cc: PASS")
 
 
@@ -710,7 +724,8 @@ def test_bundle_predicate_sound() raises:
         var may = p.server._space_has_other_sendable(2)
         var frames = List[Frame]()
         var records = List[SentStreamFrame]()
-        p.server._build_frames_for_space(2, now, frames, records, 1100)
+        var stream_payload = List[UInt8]()
+        p.server._build_frames_for_space(2, now, frames, records, stream_payload, 1100)
         if p.server.spaces[2].probe_pending and len(frames) == 0:
             frames.append(Frame.ping())
         if not may:

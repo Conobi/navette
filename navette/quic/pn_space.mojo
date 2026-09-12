@@ -427,8 +427,11 @@ struct PacketNumberSpace(Copyable, Movable):
         for i in range(1, len(self.ack_ranges)):
             var prev_start = self.ack_ranges[i - 1].start
             var curr_end = self.ack_ranges[i].end
-            # gap = (prev_range.start - 1) - curr_range.end
-            var gap = (prev_start - 1) - curr_end
+            # Gap encodes (unacked_count - 1); the decoder subtracts
+            # gap+2 from smallest_ack. With inclusive ranges,
+            # unacked_count = prev_start - curr_end - 1, so
+            # gap = prev_start - curr_end - 2.
+            var gap = prev_start - curr_end - 2
             var ack_range = self.ack_ranges[i].end - self.ack_ranges[i].start
             ranges.append(AckRange(gap, ack_range))
         ack.ranges = ranges^
@@ -465,14 +468,14 @@ struct PacketNumberSpace(Copyable, Movable):
     def forget_sent(mut self, pn: Int) raises -> Optional[SentPacket]:
         """Remove and return a sent record (loss or discard path), keeping the
         ack-eliciting count and the PTO base in step."""
-        if pn not in self.sent_packets:
+        try:
+            var pkt = self.sent_packets.pop(pn)
+            if pkt.ack_eliciting:
+                self.ae_in_flight -= 1
+            self.sync_ae_tracking()
+            return pkt^
+        except:
             return None
-        var pkt = SentPacket(copy=self.sent_packets[pn])
-        _ = self.sent_packets.pop(pn)
-        if pkt.ack_eliciting:
-            self.ae_in_flight -= 1
-        self.sync_ae_tracking()
-        return pkt^
 
     def has_ack_eliciting_in_flight(self) -> Bool:
         """True while any ack-eliciting packet remains unacknowledged."""
@@ -534,13 +537,16 @@ struct PacketNumberSpace(Copyable, Movable):
             self.largest_acked_pn = ack_largest_int
 
         # Remove acked packets from sent_packets and collect them.
+        # Single pop per PN: avoids the old in + [] + copy + pop (4 lookups).
         for i in range(len(acked_pns)):
             var key = acked_pns[i]
-            if key in self.sent_packets:
-                if self.sent_packets[key].ack_eliciting:
+            try:
+                var pkt = self.sent_packets.pop(key)
+                if pkt.ack_eliciting:
                     self.ae_in_flight -= 1
-                acked.append(SentPacket(copy=self.sent_packets[key]))
-                _ = self.sent_packets.pop(key)
+                acked.append(pkt^)
+            except:
+                pass  # PN not in sent_packets — already removed or never tracked
 
         if len(acked) > 0:
             self.sync_ae_tracking()
@@ -560,8 +566,7 @@ struct PacketNumberSpace(Copyable, Movable):
         for key in self.sent_packets.keys():
             keys.append(key)
         for i in range(len(keys)):
-            result.append(SentPacket(copy=self.sent_packets[keys[i]]))
-            _ = self.sent_packets.pop(keys[i])
+            result.append(self.sent_packets.pop(keys[i]))
         self.keys_handle = Int32(-1)
         self.ack_needed = False
         self.ack_deadline = None

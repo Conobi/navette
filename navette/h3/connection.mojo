@@ -486,16 +486,14 @@ struct H3Connection(Movable):
     def send_data(
         mut self, stream_id: UInt64, data: List[UInt8], fin: Bool
     ) raises:
-        """Encode as DataFrame → send_stream_data. Empty data + fin=True sends FIN only."""
+        """Fuse H3 DATA header with payload in a single QUIC stream write. Empty data + fin=True sends FIN only."""
         if len(data) == 0 and fin:
             var empty = List[UInt8]()
             self._quic.send_stream_data(stream_id, Span(empty), True)
             return
         if len(data) == 0:
             return
-        var df = DataFrame(data)
-        var wire = df.encode()
-        self._quic.send_stream_data(stream_id, Span(wire), fin)
+        self._quic.send_h3_data(stream_id, data, fin)
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
         """Write GOAWAY frame to local control stream."""

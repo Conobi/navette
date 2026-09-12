@@ -3907,7 +3907,8 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
 
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, 1100)
+    var stream_payload = List[UInt8]()
+    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, stream_payload, 1100)
 
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -3930,7 +3931,8 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
     # drained (everything marked advertised) and the guard stays set.
     var sent_records2 = List[SentStreamFrame]()
     var frames2 = List[Frame]()
-    server._build_frames_for_space(2, UInt64(1_000_001), frames2, sent_records2, 1100)
+    var stream_payload2 = List[UInt8]()
+    server._build_frames_for_space(2, UInt64(1_000_001), frames2, sent_records2, stream_payload2, 1100)
     var n_new_cid2 = 0
     for i in range(len(frames2)):
         if frames2[i].is_new_connection_id():
@@ -3958,7 +3960,8 @@ def test_initial_new_cid_burst_default_limit() raises:
     server.state = server.state | CONN_ESTABLISHED
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, 1100)
+    var stream_payload = List[UInt8]()
+    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, stream_payload, 1100)
 
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -3989,7 +3992,8 @@ def test_initial_burst_skipped_before_handshake_complete() raises:
 
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, 1100)
+    var stream_payload = List[UInt8]()
+    server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, stream_payload, 1100)
 
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -4025,7 +4029,8 @@ def test_initial_burst_server_only() raises:
 
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    client._build_frames_for_space(2, now, frames, sent_records, 1100)
+    var stream_payload = List[UInt8]()
+    client._build_frames_for_space(2, now, frames, sent_records, stream_payload, 1100)
     var n_new_cid = 0
     for i in range(len(frames)):
         if frames[i].is_new_connection_id():
@@ -4667,7 +4672,7 @@ def test_timeout_pacer_clause_order() raises:
     # Row 4: wait Some and earlier, nothing sendable, established -> min(non-pacer).
     assert_true(client.timeout(now).value() == base.value(), "row 4: nothing sendable -> min(non-pacer)")
 
-    # Make the walk answer True: queued stream data (sendable_ids non-empty).
+    # Make the walk answer True: queued stream data (sendable_set non-empty).
     var sid = client.open_stream(True)
     var payload = List[UInt8]()
     payload.append(UInt8(0x41))

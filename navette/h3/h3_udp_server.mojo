@@ -1113,12 +1113,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
                         capacity=seg_size * run_len,
                     )
                     for j in range(i, run_end):
-                        for k in range(
-                            len(self._egress_backlog[j].data)
-                        ):
-                            combined.append(
-                                self._egress_backlog[j].data[k]
-                            )
+                        combined.extend(
+                            Span(self._egress_backlog[j].data)
+                        )
 
                     var msg = Message(
                         combined^,

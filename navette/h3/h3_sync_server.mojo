@@ -233,6 +233,10 @@ struct H3CoroServer(Movable):
     Predicate. The dispatch helper consults this field in preference
     to `_early_data_filter_ptr` per the truth-table for the predicate
     variant of the 0-RTT policy."""
+    var _pending_response_streams: List[Int]
+    """Stream IDs whose handler has returned with pending response data
+    awaiting drain. Replaces the O(all-streams) key scan in
+    `_drain_responses` with an O(pending-only) iteration."""
 
     # --- Constructors -------------------------------------------------------
 
@@ -259,6 +263,7 @@ struct H3CoroServer(Movable):
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
+        self._pending_response_streams = List[Int]()
 
     def __init__(out self, *, deinit move: Self):
         self._h3 = move._h3^
@@ -269,6 +274,7 @@ struct H3CoroServer(Movable):
         self._ctx_pool = move._ctx_pool^
         self._early_data_filter_ptr = move._early_data_filter_ptr
         self._early_data_predicate_fn = move._early_data_predicate_fn
+        self._pending_response_streams = move._pending_response_streams^
 
     def __deinit__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
@@ -506,6 +512,9 @@ struct H3CoroServer(Movable):
 
         # Run handler synchronously — Path A simplification.
         self._run_handler(stream_id)
+        # Mark this stream for draining (handler may have queued response data).
+        if self._has_stream(stream_id):
+            self._pending_response_streams.append(stream_id)
 
     def _on_trailers(mut self, ev: H3Event) raises:
         """Second HEADERS_RECEIVED on an open stream = trailers.
@@ -581,17 +590,14 @@ struct H3CoroServer(Movable):
 
     def _drain_responses(mut self, now: UInt64) raises:
         """Drain pending response data from stream contexts into the H3Connection.
-        Uses take_pointee/init_pointee_move to safely interleave ctx access
-        with self._h3 mutations.
-
-        R-2A-3: H3HandlerServer._drain_responses has identical logic but operates
-        on _H3StreamCtx (not CoroStreamCtx) so it cannot be called directly here.
-        Ported verbatim from h3_coro_server.mojo; flagged for a future dedup pass."""
-        var stream_ids = List[Int]()
-        for key in self._streams.keys():
-            stream_ids.append(key)
-        for i in range(len(stream_ids)):
-            var sid = stream_ids[i]
+        Iterates only streams with pending responses (populated after
+        _run_handler), not the full _streams dict. Uses
+        take_pointee/init_pointee_move to safely interleave ctx access
+        with self._h3 mutations."""
+        var pending = self._pending_response_streams^
+        self._pending_response_streams = List[Int]()
+        for i in range(len(pending)):
+            var sid = pending[i]
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()

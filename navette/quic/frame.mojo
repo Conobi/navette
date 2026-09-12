@@ -2,7 +2,7 @@
 # QUIC frame codec — RFC 9000 Section 19.
 # Parse/serialize for all 20 QUIC frame types.
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
 
 # ── Frame type constants (RFC 9000 §19) ──────────────────────────────
 
@@ -1325,6 +1325,102 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
 def serialize_frames(frames: List[Frame], mut writer: ByteWriter) raises:
     for i in range(len(frames)):
         serialize_frame(frames[i], writer)
+
+
+# ── Direct STREAM frame writer ──────────────────────────────────────
+
+
+def write_stream_frame_direct(
+    mut pkt_buf: List[UInt8],
+    budget: Int,
+    stream_id: UInt64,
+    offset: UInt64,
+    data: Span[UInt8, _],
+    fin: Bool,
+) -> Int:
+    """Write a STREAM frame directly into pkt_buf, bypassing Frame allocation.
+
+    Appends the encoded STREAM frame (header + payload) to `pkt_buf` using
+    the reserve-copy-encode pattern: the type byte, varint fields, and data
+    bytes are written in one pass with no intermediate Frame or StreamFrame
+    struct.  Always sets the LEN bit; sets the OFF bit only when offset > 0.
+
+    Returns the total bytes written (header + data), or 0 if the budget
+    cannot hold even a minimal frame (header + 1 data byte, or a FIN-only
+    header).
+    """
+    var has_off = offset > UInt64(0)
+
+    # Fixed header: type byte + stream_id varint + optional offset varint.
+    var fixed_hdr = 1 + varint_len(stream_id)
+    if has_off:
+        fixed_hdr += varint_len(offset)
+
+    # Nothing to emit when there is no data and no FIN.
+    if len(data) == 0 and not fin:
+        return 0
+
+    # FIN-only: header + 1-byte length varint (encoding 0).
+    if len(data) == 0 and fin:
+        var total = fixed_hdr + 1  # varint_len(0) == 1
+        if total > budget:
+            return 0
+        var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02) | UInt64(0x01))
+        if has_off:
+            stype = stype | UInt8(0x04)
+        pkt_buf.append(stype)
+        varint_encode_raw(pkt_buf, stream_id)
+        if has_off:
+            varint_encode_raw(pkt_buf, offset)
+        varint_encode_raw(pkt_buf, UInt64(0))
+        return total
+
+    # Compute how much data fits.  Start by assuming a 2-byte length varint
+    # (covers payloads up to 16383); if the result turns out < 64 bytes the
+    # actual varint is 1 byte and we get one extra byte of room.
+    var max_data = budget - fixed_hdr - 2
+    if max_data <= 0:
+        # Try with 1-byte length varint.
+        max_data = budget - fixed_hdr - 1
+        if max_data <= 0:
+            return 0
+
+    var data_len = len(data)
+    if data_len > max_data:
+        data_len = max_data
+
+    # Recompute with the actual length-varint size.
+    var len_vl = varint_len(UInt64(data_len))
+    var room = budget - fixed_hdr - len_vl
+    if room <= 0:
+        return 0
+    if data_len > room:
+        data_len = room
+        # Shrinking might reduce the varint size; recompute once more.
+        len_vl = varint_len(UInt64(data_len))
+        room = budget - fixed_hdr - len_vl
+        if room <= 0:
+            return 0
+        if data_len > room:
+            data_len = room
+
+    # Type byte: LEN always set; OFF if offset > 0; FIN if fin AND we are
+    # writing all the remaining data (or the caller already sliced to the
+    # final chunk, so `fin` is authoritative).
+    var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02))
+    if has_off:
+        stype = stype | UInt8(0x04)
+    if fin:
+        stype = stype | UInt8(0x01)
+
+    pkt_buf.append(stype)
+    varint_encode_raw(pkt_buf, stream_id)
+    if has_off:
+        varint_encode_raw(pkt_buf, offset)
+    varint_encode_raw(pkt_buf, UInt64(data_len))
+    pkt_buf.extend(data[:data_len])
+
+    return fixed_hdr + len_vl + data_len
 
 
 # ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────

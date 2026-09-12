@@ -131,6 +131,31 @@ def varint_encode(mut writer: ByteWriter, value: UInt64) raises:
         writer.write_u64_be(value | UInt64(0xC000000000000000))
 
 
+def varint_encode_raw(mut buf: List[UInt8], value: UInt64):
+    """Encode a QUIC varint and append it directly to a byte list.
+
+    Bypasses ByteWriter to avoid intermediate allocation when writing
+    frames directly into a pre-existing packet buffer.
+    """
+    var size = varint_len(value)
+    if size == 1:
+        buf.append(UInt8(value))
+    elif size == 2:
+        var v = UInt16(value) | UInt16(0x4000)
+        buf.append(UInt8((v >> 8) & 0xFF))
+        buf.append(UInt8(v & 0xFF))
+    elif size == 4:
+        var v = UInt32(value) | UInt32(0x80000000)
+        buf.append(UInt8((v >> 24) & 0xFF))
+        buf.append(UInt8((v >> 16) & 0xFF))
+        buf.append(UInt8((v >> 8) & 0xFF))
+        buf.append(UInt8(v & 0xFF))
+    else:
+        var v = value | UInt64(0xC000000000000000)
+        for i in range(8):
+            buf.append(UInt8((v >> UInt64((7 - i) * 8)) & 0xFF))
+
+
 def varint_decode[origin: Origin](mut reader: ByteReader[origin]) raises -> UInt64:
     var first = reader.read_u8()
     var prefix = Int(first >> 6)

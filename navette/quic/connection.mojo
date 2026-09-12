@@ -13,7 +13,7 @@
 
 from std.collections import Dict, Optional
 from std.ffi import external_call
-from std.memory import Pointer
+from std.memory import Pointer, UnsafePointer
 from std.collections import Span
 from navette.util.owned_alloc import Owned
 
@@ -22,7 +22,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.early_data_store import (
     InMemoryEarlyDataStore, ReplayDecision,
 )
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.frame import (
@@ -40,6 +40,7 @@ from navette.quic.frame import (
     StreamsBlockedFrame,
     parse_frames,
     serialize_frames,
+    write_stream_frame_direct,
     FRAME_PADDING,
     FRAME_PING,
     FRAME_ACK,
@@ -137,7 +138,7 @@ from navette.quic.pn_space import (
     PacketNumberSpace,
     SentPacket,
 )
-from navette.quic.recovery import Recovery, K_GRANULARITY
+from navette.quic.recovery import Recovery, K_GRANULARITY, K_PACKET_THRESHOLD
 from navette.quic.crypto_stream import CryptoStream
 from navette.quic.packet_protect import PacketProtect, ZERO_RTT_KEY_SLOT_IDX
 from navette.quic.cc.cc_trait import AckedPacket, LostPacket, PERSISTENT_CONG_THRESHOLD
@@ -311,6 +312,7 @@ struct _PacketPlan(Copyable, Movable):
     var sent_records: List[SentStreamFrame]
     var payload: List[UInt8]
     var ack_committed: Bool
+    var has_stream_data: Bool
 
     def __init__(
         out self,
@@ -319,12 +321,14 @@ struct _PacketPlan(Copyable, Movable):
         var sent_records: List[SentStreamFrame],
         var payload: List[UInt8],
         ack_committed: Bool,
+        has_stream_data: Bool = False,
     ):
         self.space_idx = space_idx
         self.frames = frames^
         self.sent_records = sent_records^
         self.payload = payload^
         self.ack_committed = ack_committed
+        self.has_stream_data = has_stream_data
 
     def __init__(out self, *, copy: Self):
         self.space_idx = copy.space_idx
@@ -332,6 +336,7 @@ struct _PacketPlan(Copyable, Movable):
         self.sent_records = List[SentStreamFrame](copy=copy.sent_records)
         self.payload = List[UInt8](copy=copy.payload)
         self.ack_committed = copy.ack_committed
+        self.has_stream_data = copy.has_stream_data
 
     def __init__(out self, *, deinit move: Self):
         self.space_idx = move.space_idx
@@ -339,6 +344,7 @@ struct _PacketPlan(Copyable, Movable):
         self.sent_records = move.sent_records^
         self.payload = move.payload^
         self.ack_committed = move.ack_committed
+        self.has_stream_data = move.has_stream_data
 
 
 # ── QuicEvent ────────────────────────────────────────────────────────
@@ -1819,6 +1825,7 @@ struct QuicConnection(Movable):
 
         self.events.append(QuicEvent.stream_stopped(stream_id, error_code))
         self.stream_map.set_stream(key, stream^)
+        self.stream_map.mark_reset(key)
         _ = self.stream_map.maybe_cleanup(key)
 
     # ── Path validation RX handlers ──────────────────────────────────
@@ -2296,9 +2303,14 @@ struct QuicConnection(Movable):
                     if grew:
                         fc.blocked_at = UInt64(0)   # allow re-emission at new limit
                     stream.fc_send = fc^
+                    var _has_pending = False
+                    if stream.send_buf:
+                        _has_pending = stream.send_buf.value().has_pending()
                     self.stream_map.set_stream(key, stream^)
                     if grew:
                         self.events.append(QuicEvent.stream_writable(msd.stream_id))
+                        if _has_pending:
+                            self.stream_map.add_sendable(key)
             return
 
         if tid == FRAME_MAX_STREAMS_BIDI:
@@ -2501,23 +2513,20 @@ struct QuicConnection(Movable):
         if self.spaces[space_idx].largest_acked_pn < 0:
             return
 
-        # Collect sent packet info for loss detection.
-        var sent_pns = List[Int]()
-        var sent_times = List[UInt64]()
-        var sent_in_flight = List[Bool]()
-
+        # Detect lost packets by iterating sent_packets in-place, avoiding
+        # materialization of 3 parallel lists.
+        var largest_acked = self.spaces[space_idx].largest_acked_pn
+        var ld = self.recovery.loss_delay()
+        var lost_pns = List[Int]()
         for entry in self.spaces[space_idx].sent_packets.items():
-            sent_pns.append(entry.key)
-            sent_times.append(entry.value.time_sent)
-            sent_in_flight.append(entry.value.in_flight)
-
-        var lost_pns = self.recovery.detect_lost_packets(
-            sent_pns,
-            sent_times,
-            sent_in_flight,
-            self.spaces[space_idx].largest_acked_pn,
-            now,
-        )
+            var pn = entry.key
+            if pn > largest_acked:
+                continue
+            if largest_acked - pn >= K_PACKET_THRESHOLD:
+                lost_pns.append(pn)
+                continue
+            if now >= entry.value.time_sent + ld:
+                lost_pns.append(pn)
 
         if len(lost_pns) == 0:
             return
@@ -2531,19 +2540,17 @@ struct QuicConnection(Movable):
             space_idx, lost_pns, peer_mad_us, now
         )
 
-        # Build the LostPacket list for CC before teardown.
+        # Build the LostPacket list for CC — single Dict access per PN.
         var lost_records = List[LostPacket]()
         for i in range(len(lost_pns)):
             var pn_key = lost_pns[i]
             if pn_key in self.spaces[space_idx].sent_packets:
-                var sp_pn = self.spaces[space_idx].sent_packets[pn_key].pn
-                var sp_size = self.spaces[space_idx].sent_packets[pn_key].size
-                var sp_ts = self.spaces[space_idx].sent_packets[pn_key].time_sent
+                ref sp = self.spaces[space_idx].sent_packets[pn_key]
                 lost_records.append(
                     LostPacket(
-                        pkt_num=sp_pn,
-                        size=UInt64(sp_size),
-                        time_sent=sp_ts,
+                        pkt_num=sp.pn,
+                        size=UInt64(sp.size),
+                        time_sent=sp.time_sent,
                     )
                 )
 
@@ -3442,6 +3449,8 @@ struct QuicConnection(Movable):
 
             var frames = List[Frame]()
             var sent_records = List[SentStreamFrame]()
+            var stream_payload = List[UInt8]()
+            var has_stream_data = False
             var ack_committed = False
             if closing:
                 # Step 1: CLOSE-only packet in every keyed space.
@@ -3476,14 +3485,17 @@ struct QuicConnection(Movable):
                 # Step 4: the state-consuming builders.
                 if gate_open and not deferred:
                     self._build_frames_for_space(
-                        space_idx, now, frames, sent_records, payload_budget - reserve
+                        space_idx, now, frames, sent_records, stream_payload,
+                        payload_budget - reserve,
                     )
                     if (self.spaces[space_idx].probe_pending
                             and not _has_ack_eliciting(frames)
+                            and len(stream_payload) == 0
                             and reserve + 1 <= payload_budget):
                         frames.append(Frame.ping())
                 # Step 5: decide the packet.
-                if len(frames) == base:
+                has_stream_data = len(stream_payload) > 0
+                if len(frames) == base and not has_stream_data:
                     if has_ack and self.spaces[space_idx].ack_needed:
                         ack_committed = True
                     else:
@@ -3498,11 +3510,18 @@ struct QuicConnection(Movable):
             var writer = ByteWriter()
             serialize_frames(frames, writer)
             var payload = writer.finish()
+            # Append directly-written STREAM bytes after the serialized
+            # non-STREAM frames.  This avoids the Frame struct allocation
+            # and serialize_frame dispatch for every STREAM frame.
+            if len(stream_payload) > 0:
+                payload.extend(stream_payload^)
             var plaintext = len(payload)
             if plaintext < _MIN_PLAINTEXT_LEN:
                 plaintext = _MIN_PLAINTEXT_LEN
             used += overhead + plaintext
-            plans.append(_PacketPlan(space_idx, frames^, sent_records^, payload^, ack_committed))
+            plans.append(_PacketPlan(
+                space_idx, frames^, sent_records^, payload^, ack_committed, has_stream_data,
+            ))
 
         if len(plans) == 0:
             return datagrams^
@@ -3545,7 +3564,7 @@ struct QuicConnection(Movable):
             # Step 6: commit.
             if plans[i].ack_committed:
                 self.spaces[space_idx].mark_ack_sent()
-            var is_ack_eliciting = _has_ack_eliciting(plans[i].frames)
+            var is_ack_eliciting = _has_ack_eliciting(plans[i].frames) or plans[i].has_stream_data
             var in_flight = is_ack_eliciting or padding > 0
             var ect = self.ecn_mark()
             var sent = SentPacket(
@@ -3571,8 +3590,11 @@ struct QuicConnection(Movable):
                 _ = self.recovery.pacer.refill_and_check(_pace_rate, now)
                 self.recovery.pacer.on_sent(UInt64(pkt_size))
             # Stream-layer frame records for ACK / loss processing.
+            # Move instead of copy — plans[i] is not accessed after this.
             if space_idx == 2 and len(plans[i].sent_records) > 0:
-                self.app_frames_sent[Int(pn)] = List[SentStreamFrame](copy=plans[i].sent_records)
+                var ptr = UnsafePointer(to=plans[i].sent_records)
+                self.app_frames_sent[Int(pn)] = ptr.unsafe_take_pointee()
+                ptr.init_pointee_move(List[SentStreamFrame]())
 
         if closing and all_close_committed:
             self.close_owed = False
@@ -3650,7 +3672,7 @@ struct QuicConnection(Movable):
             return True
         if self.cid_mgr.has_unadvertised() or self.cid_mgr.has_pending_retire():
             return True
-        if len(self.stream_map.sendable_ids) > 0:
+        if len(self.stream_map.sendable_set) > 0:
             return True
         if (self.stream_map.conn_fc_recv.should_update() or self.stream_map.needs_max_data
                 or self.stream_map.needs_max_streams_bidi or self.stream_map.needs_max_streams_uni
@@ -3660,16 +3682,10 @@ struct QuicConnection(Movable):
         if (self.stream_map.conn_fc_send.received >= conn_limit
                 and self.stream_map.conn_fc_send.blocked_at != conn_limit):
             return True
-        for entry in self.stream_map.streams.items():
-            if entry.value.needs_max_stream_data or entry.value.needs_reset_stream or entry.value.needs_stop_sending:
-                return True
-            if entry.value.fc_recv:
-                if entry.value.fc_recv.value().should_update():
-                    return True
-            if entry.value.fc_send:
-                ref fc = entry.value.fc_send.value()
-                if fc.available() == UInt64(0) and fc.limit > UInt64(0) and fc.blocked_at != fc.limit:
-                    return True
+        if (len(self.stream_map.control_max_stream_data) > 0
+                or len(self.stream_map.control_reset) > 0
+                or len(self.stream_map.control_stop_sending) > 0):
+            return True
         if len(self.pending_path_responses) > 0 or len(self.path_validator.pending) > 0:
             return True
         if self._outbound_dg_head < len(self.pending_outbound_datagrams):
@@ -3682,6 +3698,7 @@ struct QuicConnection(Movable):
         mut self, space_idx: Int, now: UInt64,
         mut frames: List[Frame],
         mut sent_records: List[SentStreamFrame],
+        mut stream_payload: List[UInt8],
         budget: Int,
     ) raises:
         """Append the non-ACK frames for one PN space within `budget` bytes.
@@ -3689,7 +3706,9 @@ struct QuicConnection(Movable):
         Runs only when the packet will be emitted: every builder here mutates
         state (crypto cursor, `needs_*` flags, `mark_advertised`, FC windows).
         `sent_records` receives the Application-space stream-layer frames so
-        ACK/loss handlers can re-apply state by packet number.
+        ACK/loss handlers can re-apply state by packet number. STREAM frame
+        bytes are written directly into `stream_payload`, bypassing Frame
+        allocation; all other frames go into `frames` for serialize_frames.
         """
         var used = 0
 
@@ -3735,7 +3754,7 @@ struct QuicConnection(Movable):
                         break
                 self.initial_cids_emitted = True
 
-            self._build_app_frames(frames, sent_records, budget, used)
+            self._build_app_frames(frames, sent_records, stream_payload, budget, used)
 
             # RFC 9000 §8.2 / §17.2.4: PATH_RESPONSE and PATH_CHALLENGE are
             # 1-RTT-only (F13 already closes Initial/Handshake at RX). Each
@@ -3786,6 +3805,7 @@ struct QuicConnection(Movable):
         mut self,
         mut frames: List[Frame],
         mut sent_records: List[SentStreamFrame],
+        mut stream_payload: List[UInt8],
         budget: Int,
         mut used: Int,
     ) raises:
@@ -3794,7 +3814,9 @@ struct QuicConnection(Movable):
         Every frame is admitted only if it fits, and the state it consumes
         (`advertised`, retire queue, `needs_*` flags, FC windows, send buffer)
         is mutated only for admitted frames. `used` is advanced by the wire
-        length of each admitted frame.
+        length of each admitted frame.  STREAM frame bytes are written
+        directly into `stream_payload` via write_stream_frame_direct,
+        bypassing Frame struct allocation and the serialize_frame dispatch.
         """
 
         # 1. NEW_CONNECTION_ID frames for unadvertised local CIDs.
@@ -3872,115 +3894,157 @@ struct QuicConnection(Movable):
                 sent_records.append(rec^)
 
         # 5. Per-stream control frames (MAX_STREAM_DATA, RESET_STREAM, STOP_SENDING).
-        # Streams are mutated in place through `stream_ref`; the ID snapshot
-        # keeps iteration independent of the Dict, and nothing below inserts
-        # or removes streams while a ref is live.
-        var all_ids = List[Int]()
-        for key in self.stream_map.streams.keys():
-            all_ids.append(key)
-        for i in range(len(all_ids)):
-            var sid = all_ids[i]
+        # Drain the control event lists populated by mark_* calls instead of
+        # scanning every stream.  Each drain pops consumed/stale entries and
+        # leaves un-emitted entries (budget exhaustion) for the next packet.
+
+        # 5a. MAX_STREAM_DATA — drain control_max_stream_data.
+        var msd_remaining = List[Int]()
+        var msd_full = False
+        for i in range(len(self.stream_map.control_max_stream_data)):
+            var sid = self.stream_map.control_max_stream_data[i]
+            if msd_full:
+                msd_remaining.append(sid)
+                continue
             if not self.stream_map.has_stream(sid):
                 continue
             ref stream = self.stream_map.stream_ref(sid)
+            if not stream.needs_max_stream_data or not stream.fc_recv:
+                continue
+            var next_limit = stream.fc_recv.value().next_limit()
+            var wl = 1 + varint_len(stream.id) + varint_len(next_limit)
+            if used + wl > budget:
+                msd_remaining.append(sid)
+                msd_full = True
+                continue
+            var new_limit = stream.fc_recv.value().update_limit()
+            stream.needs_max_stream_data = False
+            var f = Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit))
+            used += f.wire_len()
+            frames.append(f^)
+            var rec = SentStreamFrame()
+            rec.kind = SSF_MAX_STREAM_DATA
+            rec.stream_id = stream.id
+            sent_records.append(rec^)
+        self.stream_map.control_max_stream_data = msd_remaining^
 
-            # MAX_STREAM_DATA
-            if stream.needs_max_stream_data and stream.fc_recv:
-                var next_limit = stream.fc_recv.value().next_limit()
-                var wl = 1 + varint_len(stream.id) + varint_len(next_limit)
-                if used + wl <= budget:
-                    var new_limit = stream.fc_recv.value().update_limit()
-                    stream.needs_max_stream_data = False
-                    var f = Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit))
-                    used += f.wire_len()
-                    frames.append(f^)
-                    var rec = SentStreamFrame()
-                    rec.kind = SSF_MAX_STREAM_DATA
-                    rec.stream_id = stream.id
-                    sent_records.append(rec^)
+        # 5b. RESET_STREAM — drain control_reset.
+        var rst_remaining = List[Int]()
+        var rst_full = False
+        for i in range(len(self.stream_map.control_reset)):
+            var sid = self.stream_map.control_reset[i]
+            if rst_full:
+                rst_remaining.append(sid)
+                continue
+            if not self.stream_map.has_stream(sid):
+                continue
+            ref stream = self.stream_map.stream_ref(sid)
+            if not stream.needs_reset_stream:
+                continue
+            var rs_f = ResetStreamFrame(
+                stream.id,
+                stream.reset_stream_error,
+                stream.reset_stream_final_size,
+            )
+            var f = Frame.reset_stream(rs_f)
+            var wl = f.wire_len()
+            if used + wl > budget:
+                rst_remaining.append(sid)
+                rst_full = True
+                continue
+            frames.append(f^)
+            used += wl
+            stream.needs_reset_stream = False
+            var rec = SentStreamFrame()
+            rec.kind = SSF_RESET_STREAM
+            rec.stream_id = stream.id
+            sent_records.append(rec^)
+        self.stream_map.control_reset = rst_remaining^
 
-            # RESET_STREAM
-            if stream.needs_reset_stream:
-                var rs_f = ResetStreamFrame(
-                    stream.id,
-                    stream.reset_stream_error,
-                    stream.reset_stream_final_size,
-                )
-                var f = Frame.reset_stream(rs_f)
-                var wl = f.wire_len()
-                if used + wl <= budget:
-                    frames.append(f^)
-                    used += wl
-                    stream.needs_reset_stream = False
-                    var rec = SentStreamFrame()
-                    rec.kind = SSF_RESET_STREAM
-                    rec.stream_id = stream.id
-                    sent_records.append(rec^)
+        # 5c. STOP_SENDING — drain control_stop_sending.
+        var ss_remaining = List[Int]()
+        var ss_full = False
+        for i in range(len(self.stream_map.control_stop_sending)):
+            var sid = self.stream_map.control_stop_sending[i]
+            if ss_full:
+                ss_remaining.append(sid)
+                continue
+            if not self.stream_map.has_stream(sid):
+                continue
+            ref stream = self.stream_map.stream_ref(sid)
+            if not stream.needs_stop_sending:
+                continue
+            var ss_f = StopSendingFrame(stream.id, stream.stop_sending_error)
+            var f = Frame.stop_sending(ss_f)
+            var wl = f.wire_len()
+            if used + wl > budget:
+                ss_remaining.append(sid)
+                ss_full = True
+                continue
+            frames.append(f^)
+            used += wl
+            stream.needs_stop_sending = False
+            var rec = SentStreamFrame()
+            rec.kind = SSF_STOP_SENDING
+            rec.stream_id = stream.id
+            sent_records.append(rec^)
+        self.stream_map.control_stop_sending = ss_remaining^
 
-            # STOP_SENDING
-            if stream.needs_stop_sending:
-                var ss_f = StopSendingFrame(stream.id, stream.stop_sending_error)
-                var f = Frame.stop_sending(ss_f)
-                var wl = f.wire_len()
-                if used + wl <= budget:
-                    frames.append(f^)
-                    used += wl
-                    stream.needs_stop_sending = False
-                    var rec = SentStreamFrame()
-                    rec.kind = SSF_STOP_SENDING
-                    rec.stream_id = stream.id
-                    sent_records.append(rec^)
-
-        # 6. STREAM frames from sendable streams (round-robin snapshot).
-        # Snapshot sendable IDs to avoid mutation-during-iteration.
-        var sendable = List[Int]()
-        for i in range(len(self.stream_map.sendable_ids)):
-            sendable.append(self.stream_map.sendable_ids[i])
-
+        # 6. STREAM frames from sendable streams (Deque pop loop).
+        # Pop at most `initial_len` entries for round-robin fairness; streams
+        # with remaining data are re-appended to the back, budget-blocked
+        # streams go back to the front, and stale/orphan entries are dropped.
         var max_bytes_per_frame = MAX_DATAGRAM_SIZE
-        var n = len(sendable)
-        # Rotate starting point for fairness: low-ID streams don't always win.
-        var start = 0
-        if n > 0:
-            start = self.stream_map.send_index % n
-            self.stream_map.send_index = (self.stream_map.send_index + 1) % n
-        # Each stream is mutated in place through a `ref`. Decisions that
-        # need `mut self.stream_map` (conn-level FC credit, dropping the
-        # stream from `sendable_ids`, resuming here next packet) are
-        # collected while the ref is live and applied after its last use.
-        var resume_idx = -1
-        for i in range(n):
+        var initial_len = len(self.stream_map.sendable_queue)
+        var popped = 0
+        while popped < initial_len:
+            var sid = self.stream_map.sendable_queue.popleft()
+            popped += 1
+            # Stale entry — lazily removed from sendable_set.
+            if sid not in self.stream_map.sendable_set:
+                continue
+            # Stream gone — clean up sendable_set (single Dict check
+            # replaces has_stream + redundant sendable_set re-check).
+            if sid not in self.stream_map.streams:
+                self.stream_map.remove_sendable(sid)
+                continue
             var conn_avail = self.stream_map.conn_fc_send.available()
             if conn_avail == 0:
+                # Conn FC exhausted — put back at front and stop.
+                self.stream_map.sendable_queue.appendleft(sid)
                 break
-            var idx = (start + i) % n
-            var sid = sendable[idx]
-            if not self.stream_map.has_stream(sid):
-                continue
             var conn_delta = UInt64(0)
             var drop_sendable = False
-            ref stream = self.stream_map.stream_ref(sid)
+            ref stream = self.stream_map.streams[sid]
             if not stream.send_state or not stream.send_buf or not stream.fc_send:
+                # Orphan — remove from sendable (ref's last use is above).
+                self.stream_map.remove_sendable(sid)
                 continue
             var ss = stream.send_state.value()
             if ss != SEND_READY and ss != SEND_SEND:
+                # Invalid state — clean up (ref's last use is above).
+                self.stream_map.remove_sendable(sid)
                 continue
             var stream_avail = stream.fc_send.value().available()
             var fin_pending = (
                 stream.send_buf.value().fin and not stream.send_buf.value().fin_offset
             )
             if stream_avail == 0 and not fin_pending:
+                # FC-blocked — re-enqueue to back for next round.
+                # (ref's last use is above; locals are value copies.)
+                self.stream_map.sendable_queue.append(sid)
                 continue
             # Worst-case STREAM header for this frame: type + stream id +
             # offset + a 2-byte length varint (any chunk < 16384). Budget
-            # exhausted: stop here and resume at this stream next packet.
+            # exhausted: put back at front and stop.
             var hdr_charge = (
                 1 + varint_len(stream.id)
                 + varint_len(stream.send_buf.value().unsent_offset) + 2
             )
             var room = budget - used - hdr_charge
             if room < 0:
-                resume_idx = idx
+                # Ref's last use is above — appendleft is safe.
+                self.stream_map.sendable_queue.appendleft(sid)
                 break
             var limit = Int(conn_avail)
             if Int(stream_avail) < limit:
@@ -3989,25 +4053,35 @@ struct QuicConnection(Movable):
                 limit = max_bytes_per_frame
             if room < limit:
                 limit = room
-            # If the only work is a standalone FIN, limit can be 0: make_frame
+            # If the only work is a standalone FIN, limit can be 0: prepare_frame
             # handles this via fin-only emission.
-            var maybe_frame = stream.send_buf.value().make_frame(stream.id, limit)
-            if not maybe_frame:
-                # Nothing to send from this stream; drop from sendable list
-                # (the ref's last use is above, so the map may be mutated).
+            var meta = stream.send_buf.value().prepare_frame(limit)
+            if not meta:
+                # Nothing to send — remove from sendable.
+                # (ref's last use is above.)
                 self.stream_map.remove_sendable(sid)
                 continue
-            var sf = maybe_frame.value().copy()
-            var frame_len = UInt64(len(sf.data))
-            var frame_offset = sf.offset
-            var frame_fin = sf.fin
-            var f = Frame._stream_move(sf)
-            var wl = f.wire_len()
+            var frame_meta = meta.value()
+            var frame_offset = frame_meta[0]
+            var chunk_size = frame_meta[1]
+            var frame_fin = frame_meta[2]
+            var frame_len = UInt64(chunk_size)
+            # Read data directly from the send buffer — no intermediate copy.
+            var data_view = stream.send_buf.value().data_span(frame_offset, chunk_size)
+            # Write the STREAM frame directly into stream_payload, bypassing
+            # Frame struct allocation and the serialize_frame dispatch.
+            var wl = write_stream_frame_direct(
+                stream_payload,
+                budget=budget - used,
+                stream_id=stream.id,
+                offset=frame_offset,
+                data=data_view,
+                fin=frame_fin,
+            )
             # `limit <= room` and `hdr_charge` bounds the real header, so the
             # frame always fits; the bytes are already consumed from the send
             # buffer, which is why this must hold rather than be retried.
-            debug_assert(used + wl <= budget, "STREAM frame exceeds its charge")
-            frames.append(f^)
+            debug_assert(wl > 0 and used + wl <= budget, "STREAM frame exceeds its charge")
             used += wl
             # Flow-control accounting (only "new" bytes past received mark).
             var prev_end = frame_offset + frame_len
@@ -4032,8 +4106,9 @@ struct QuicConnection(Movable):
                 self.stream_map.conn_fc_send.add_received(conn_delta)
             if drop_sendable:
                 self.stream_map.remove_sendable(sid)
-        if resume_idx >= 0:
-            self.stream_map.send_index = resume_idx
+            else:
+                # Still has data — re-enqueue to back for round-robin.
+                self.stream_map.sendable_queue.append(sid)
 
         # 7. DATA_BLOCKED (RFC 9000 §4.1) — connection-level FC exhausted.
         var conn_limit = self.stream_map.conn_fc_send.limit
@@ -4046,8 +4121,10 @@ struct QuicConnection(Movable):
                 self.stream_map.conn_fc_send.blocked_at = conn_limit
 
         # 8. STREAM_DATA_BLOCKED (RFC 9000 §4.1) — per-stream FC exhausted.
+        # Only sendable streams can be FC-blocked; iterate the set, not
+        # the full streams Dict.
         var blocked_ids = List[Int]()
-        for key in self.stream_map.streams.keys():
+        for key in self.stream_map.sendable_set.keys():
             blocked_ids.append(key)
         for i in range(len(blocked_ids)):
             var sid = blocked_ids[i]
@@ -4133,6 +4210,7 @@ struct QuicConnection(Movable):
             var hw = ByteWriter()
             serialize_long_header(header, hw)
             var header_bytes = hw.finish()
+            header_bytes.reserve(len(header_bytes) + pn_len + plaintext_len + _AEAD_TAG_LEN)
 
             # Set PN length in the first byte (lower 2 bits = pn_len - 1).
             header_bytes[0] = (header_bytes[0] & 0xFC) | UInt8(pn_len - 1)
@@ -4151,13 +4229,9 @@ struct QuicConnection(Movable):
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
             # Encrypt + protect in a single buffer (zero-copy).
-            # Append payload, then padding up to plaintext_len.
-            for i in range(len(payload)):
-                header_bytes.append(payload[i])
-            for _ in range(plaintext_len - len(payload)):
-                header_bytes.append(UInt8(0))
-            # Append zero space for AEAD tag.
-            for _ in range(_AEAD_TAG_LEN):
+            # Append payload, then padding + AEAD tag space.
+            header_bytes.extend(Span(payload))
+            for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
                 header_bytes.append(UInt8(0))
 
             # header_bytes is now: [header | PN | payload | tag_space]
@@ -4183,6 +4257,7 @@ struct QuicConnection(Movable):
             var hw = ByteWriter()
             serialize_short_header(Span(self.peer_cid), hw)
             var header_bytes = hw.finish()
+            header_bytes.reserve(len(header_bytes) + pn_len + plaintext_len + _AEAD_TAG_LEN)
 
             # Set PN length in the first byte (lower 2 bits = pn_len - 1).
             header_bytes[0] = (header_bytes[0] & 0xFC) | UInt8(pn_len - 1)
@@ -4200,15 +4275,10 @@ struct QuicConnection(Movable):
                 var shift = UInt64((pn_len - 1 - i) * 8)
                 header_bytes.append(UInt8((truncated >> shift) & 0xFF))
 
-            # Payload, then padding up to plaintext_len (>= 4 so the
-            # header-protection sample at pn_offset + 4 fits).
-            for i in range(len(payload)):
-                header_bytes.append(payload[i])
-            for _ in range(plaintext_len - len(payload)):
-                header_bytes.append(UInt8(0))
-
-            # Append zero space for AEAD tag.
-            for _ in range(_AEAD_TAG_LEN):
+            # Payload, then padding + AEAD tag space (plaintext_len >= 4
+            # so the header-protection sample at pn_offset + 4 fits).
+            header_bytes.extend(Span(payload))
+            for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
                 header_bytes.append(UInt8(0))
 
             var total_len = len(header_bytes)
@@ -4313,12 +4383,14 @@ struct QuicConnection(Movable):
                     var stream = self.stream_map.get_stream(key)
                     stream.needs_reset_stream = True
                     self.stream_map.set_stream(key, stream^)
+                    self.stream_map.mark_reset(key)
             elif rec.kind == SSF_STOP_SENDING:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
                     var stream = self.stream_map.get_stream(key)
                     stream.needs_stop_sending = True
                     self.stream_map.set_stream(key, stream^)
+                    self.stream_map.mark_stop_sending(key)
             elif rec.kind == SSF_MAX_DATA:
                 self.stream_map.needs_max_data = True
             elif rec.kind == SSF_MAX_STREAM_DATA:
@@ -4327,6 +4399,7 @@ struct QuicConnection(Movable):
                     var stream = self.stream_map.get_stream(key)
                     stream.needs_max_stream_data = True
                     self.stream_map.set_stream(key, stream^)
+                    self.stream_map.mark_max_stream_data(key)
             elif rec.kind == SSF_MAX_STREAMS_BIDI:
                 self.stream_map.needs_max_streams_bidi = True
             elif rec.kind == SSF_MAX_STREAMS_UNI:
@@ -4673,6 +4746,30 @@ struct QuicConnection(Movable):
         if has_pending:
             self.stream_map.add_sendable(key)
 
+    def send_h3_data(
+        mut self,
+        stream_id: UInt64,
+        app_payload: List[UInt8],
+        fin: Bool,
+    ) raises:
+        """Write H3 DATA header + application payload as a single stream write.
+
+        Fuses the H3 DATA frame header (type 0x00 + varint length) with the
+        application payload into one buffer, avoiding the intermediate
+        H3RawFrame.encode allocation that the H3 layer would otherwise
+        perform.
+        """
+        var payload_len = len(app_payload)
+        var hdr_len = 1 + varint_len(UInt64(payload_len))
+        var combined = List[UInt8](capacity=hdr_len + payload_len)
+        # H3 DATA frame type = 0x00.
+        combined.append(0x00)
+        # Varint-encode the payload length directly into the buffer.
+        varint_encode_raw(combined, UInt64(payload_len))
+        # Bulk-copy the application payload.
+        combined.extend(Span(app_payload))
+        self.send_stream_data(stream_id, Span(combined), fin)
+
     def recv_stream_data(
         mut self, stream_id: UInt64
     ) raises -> Tuple[List[UInt8], Bool]:
@@ -4696,7 +4793,8 @@ struct QuicConnection(Movable):
         if drained > 0:
             fc.add_consumed(drained)
             self.stream_map.conn_fc_recv.add_consumed(drained)
-        if fc.should_update():
+        var _needs_msd = fc.should_update()
+        if _needs_msd:
             stream.needs_max_stream_data = True
         if self.stream_map.conn_fc_recv.should_update():
             self.stream_map.needs_max_data = True
@@ -4707,6 +4805,8 @@ struct QuicConnection(Movable):
             if rs == RECV_DATA_RECVD and fin_reached:
                 stream.recv_state = Optional[UInt8](RECV_DATA_READ)
         self.stream_map.set_stream(key, stream^)
+        if _needs_msd:
+            self.stream_map.mark_max_stream_data(key)
         _ = self.stream_map.maybe_cleanup(key)
         return (data^, fin_reached)
 
@@ -4736,6 +4836,7 @@ struct QuicConnection(Movable):
         stream.reset_stream_final_size = final_size
         self.stream_map.remove_sendable(key)
         self.stream_map.set_stream(key, stream^)
+        self.stream_map.mark_reset(key)
 
     def send_datagram(mut self, payload: Span[UInt8, _]) raises -> Bool:
         """RFC 9221 §5 — enqueue a QUIC DATAGRAM frame for the next 1-RTT flush.
@@ -4797,6 +4898,7 @@ struct QuicConnection(Movable):
         stream.needs_stop_sending = True
         stream.stop_sending_error = error_code
         self.stream_map.set_stream(key, stream^)
+        self.stream_map.mark_stop_sending(key)
 
     # ── Internal helpers ─────────────────────────────────────────────
 

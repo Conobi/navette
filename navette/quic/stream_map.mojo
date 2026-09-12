@@ -6,6 +6,7 @@
 # drives implicit stream creation, and manages the round-robin send schedule.
 
 from std.collections import Dict, Optional
+from std.collections.deque import Deque
 from navette.quic.flow_control import FlowControl, CONN_FC_MAX_WINDOW
 from navette.quic.stream import (
     Stream,
@@ -59,8 +60,13 @@ struct StreamMap(Movable):
     var peer_stream_fc_limit_uni: UInt64
 
     # ── Scheduling ────────────────────────────────────────────────────────────
-    var sendable_ids: List[Int]
-    var send_index: Int
+    var sendable_queue: Deque[Int]
+    var sendable_set: Dict[Int, Bool]
+
+    # ── Per-stream control frame queues ──────────────────────────────────────
+    var control_max_stream_data: List[Int]
+    var control_reset: List[Int]
+    var control_stop_sending: List[Int]
 
     # ── Pending flags ─────────────────────────────────────────────────────────
     var needs_max_data: Bool
@@ -115,8 +121,11 @@ struct StreamMap(Movable):
         self.peer_stream_fc_limit_bidi_remote = UInt64(0)
         self.peer_stream_fc_limit_uni = UInt64(0)
 
-        self.sendable_ids = List[Int]()
-        self.send_index = 0
+        self.sendable_queue = Deque[Int]()
+        self.sendable_set = Dict[Int, Bool]()
+        self.control_max_stream_data = List[Int]()
+        self.control_reset = List[Int]()
+        self.control_stop_sending = List[Int]()
 
         self.needs_max_data = False
         self.needs_max_streams_bidi = False
@@ -149,8 +158,11 @@ struct StreamMap(Movable):
         self.peer_stream_fc_limit_bidi_local = move.peer_stream_fc_limit_bidi_local
         self.peer_stream_fc_limit_bidi_remote = move.peer_stream_fc_limit_bidi_remote
         self.peer_stream_fc_limit_uni = move.peer_stream_fc_limit_uni
-        self.sendable_ids = move.sendable_ids^
-        self.send_index = move.send_index
+        self.sendable_queue = move.sendable_queue^
+        self.sendable_set = move.sendable_set^
+        self.control_max_stream_data = move.control_max_stream_data^
+        self.control_reset = move.control_reset^
+        self.control_stop_sending = move.control_stop_sending^
         self.needs_max_data = move.needs_max_data
         self.needs_max_streams_bidi = move.needs_max_streams_bidi
         self.needs_max_streams_uni = move.needs_max_streams_uni
@@ -427,32 +439,29 @@ struct StreamMap(Movable):
     # ── Send scheduling ──────────────────────────────────────────────────────
 
     def add_sendable(mut self, stream_id: Int):
-        """Add stream_id to the sendable list if not already present."""
-        for i in range(len(self.sendable_ids)):
-            if self.sendable_ids[i] == stream_id:
-                return
-        self.sendable_ids.append(stream_id)
+        """Enqueue a stream for STREAM frame emission if not already present."""
+        if stream_id not in self.sendable_set:
+            self.sendable_set[stream_id] = True
+            self.sendable_queue.append(stream_id)
 
     def remove_sendable(mut self, stream_id: Int):
-        """Remove stream_id from the sendable list."""
-        var new_list = List[Int]()
-        for i in range(len(self.sendable_ids)):
-            if self.sendable_ids[i] != stream_id:
-                new_list.append(self.sendable_ids[i])
-        self.sendable_ids = new_list^
-        # Clamp send_index to valid range
-        if len(self.sendable_ids) == 0:
-            self.send_index = 0
-        elif self.send_index >= len(self.sendable_ids):
-            self.send_index = 0
+        """Mark a stream as no longer sendable (lazy Deque eviction)."""
+        if stream_id in self.sendable_set:
+            try:
+                _ = self.sendable_set.pop(stream_id)
+            except:
+                pass
 
-    def get_next_sendable(mut self) -> Optional[Int]:
-        """Round-robin: return next stream ID with pending send data."""
-        var n = len(self.sendable_ids)
-        if n == 0:
-            return None
-        if self.send_index >= n:
-            self.send_index = 0
-        var id = self.sendable_ids[self.send_index]
-        self.send_index = (self.send_index + 1) % n
-        return id
+    # ── Control frame queuing ────────────────────────────────────────────────
+
+    def mark_max_stream_data(mut self, stream_id: Int):
+        """Queue a MAX_STREAM_DATA frame for the next send pass."""
+        self.control_max_stream_data.append(stream_id)
+
+    def mark_reset(mut self, stream_id: Int):
+        """Queue a RESET_STREAM frame for the next send pass."""
+        self.control_reset.append(stream_id)
+
+    def mark_stop_sending(mut self, stream_id: Int):
+        """Queue a STOP_SENDING frame for the next send pass."""
+        self.control_stop_sending.append(stream_id)
