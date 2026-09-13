@@ -552,6 +552,7 @@ struct QuicConnection(Movable):
     # Maps Application-space packet number -> list of stream-layer frames
     # sent in that packet, for ACK/loss processing.
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
+    var pkt_buf: List[UInt8]
     # ECN path validation state (RFC 9000 §13.4.2, RFC 9002 §7.9).
     var ecn_state: UInt8           # ECN_STATE_PROBING / ECN_STATE_CAPABLE / ECN_STATE_DISABLED
     var ecn_probe_pkts_needed: Int # probe this many ECT(0) packets before validation check
@@ -697,6 +698,7 @@ struct QuicConnection(Movable):
         self._current_recv_addr = move._current_recv_addr^
         self.initial_cids_emitted = move.initial_cids_emitted
         self.app_frames_sent = move.app_frames_sent^
+        self.pkt_buf = move.pkt_buf^
         self.ecn_state = move.ecn_state
         self.ecn_probe_pkts_needed = move.ecn_probe_pkts_needed
         self.ecn_probe_pkts_sent = move.ecn_probe_pkts_sent
@@ -835,6 +837,7 @@ struct QuicConnection(Movable):
         self._current_recv_addr = PathKey.zero()
         self.initial_cids_emitted = False
         self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
+        self.pkt_buf = List[UInt8](capacity=1350)
 
     # ── Destructor ───────────────────────────────────────────────────
 
