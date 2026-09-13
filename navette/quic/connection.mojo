@@ -114,7 +114,9 @@ from navette.quic.packet import (
     PacketHeader,
     parse_packet_header,
     serialize_long_header,
+    serialize_long_header_into,
     serialize_short_header,
+    serialize_short_header_into,
     pn_decode,
     pn_truncate,
     pn_encode_length,
@@ -3560,9 +3562,9 @@ struct QuicConnection(Movable):
                 var unpadded = len(datagram) + hdr + len(plans[i].payload) + _AEAD_TAG_LEN
                 if unpadded < pad_to:
                     padding = pad_to - unpadded
-            var pkt = self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
-            var pkt_size = len(pkt)
-            datagram.extend(pkt^)
+            self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
+            var pkt_size = len(self.pkt_buf)
+            datagram.extend(Span(self.pkt_buf))
 
             # Step 6: commit.
             if plans[i].ack_committed:
@@ -4176,16 +4178,14 @@ struct QuicConnection(Movable):
         pn_len: Int,
         payload: List[UInt8],
         padding: Int = 0,
-    ) raises -> List[UInt8]:
-        """Build a complete encrypted QUIC packet.
+    ) raises:
+        """Build a complete encrypted QUIC packet into self.pkt_buf.
 
-        `padding` zero bytes (PADDING frames) are appended to the plaintext,
-        which is in any case extended to at least 4 bytes so the
-        header-protection sample fits (RFC 9001 §5.4.2) — a 1-byte PING
-        probe would otherwise leave a 17-byte ciphertext, short of the 20
-        the sample offset needs. Under ASSERT=all the actual header plus PN
-        must not exceed the budgeted `_header_len`.
+        Reuses the per-connection buffer to avoid per-packet allocation.
+        The caller reads from self.pkt_buf after this returns.
         """
+        self.pkt_buf.clear()
+
         var plaintext_len = len(payload) + padding
         if plaintext_len < _MIN_PLAINTEXT_LEN:
             plaintext_len = _MIN_PLAINTEXT_LEN
@@ -4209,17 +4209,14 @@ struct QuicConnection(Movable):
             # payload_length = pn_len + ciphertext + tag.
             header.payload_length = UInt64(pn_len + payload_ciphertext_len)
 
-            # Serialize header.
-            var hw = ByteWriter()
-            serialize_long_header(header, hw)
-            var header_bytes = hw.finish()
-            header_bytes.reserve(len(header_bytes) + pn_len + plaintext_len + _AEAD_TAG_LEN)
+            # Serialize header directly into pkt_buf.
+            serialize_long_header_into(header, self.pkt_buf)
 
             # Set PN length in the first byte (lower 2 bits = pn_len - 1).
-            header_bytes[0] = (header_bytes[0] & 0xFC) | UInt8(pn_len - 1)
+            self.pkt_buf[0] = (self.pkt_buf[0] & 0xFC) | UInt8(pn_len - 1)
 
             # Record pn_offset (where PN bytes start).
-            var pn_offset = len(header_bytes)
+            var pn_offset = len(self.pkt_buf)
             debug_assert(
                 pn_offset + pn_len <= self._header_len(space_idx),
                 "long header exceeds its budgeted length",
@@ -4229,17 +4226,16 @@ struct QuicConnection(Movable):
             var truncated = pn_truncate(pn, pn_len)
             for i in range(pn_len):
                 var shift = UInt64((pn_len - 1 - i) * 8)
-                header_bytes.append(UInt8((truncated >> shift) & 0xFF))
+                self.pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
 
-            # Encrypt + protect in a single buffer (zero-copy).
             # Append payload, then padding + AEAD tag space.
-            header_bytes.extend(Span(payload))
+            self.pkt_buf.extend(Span(payload))
             for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
-                header_bytes.append(UInt8(0))
+                self.pkt_buf.append(UInt8(0))
 
-            # header_bytes is now: [header | PN | payload | tag_space]
-            var total_len = len(header_bytes)
-            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
+            # pkt_buf is now: [header | PN | payload | tag_space]
+            var total_len = len(self.pkt_buf)
+            var pkt_ptr = self.pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
 
             # Encrypt payload region in-place.
             var header_len = pn_offset + pn_len
@@ -4253,20 +4249,15 @@ struct QuicConnection(Movable):
                 space_idx, pkt_ptr, total_len, pn_offset, pn_len,
             )
 
-            return header_bytes^
-
         else:
             # Short header (1-RTT / Application).
-            var hw = ByteWriter()
-            serialize_short_header(Span(self.peer_cid), hw)
-            var header_bytes = hw.finish()
-            header_bytes.reserve(len(header_bytes) + pn_len + plaintext_len + _AEAD_TAG_LEN)
+            serialize_short_header_into(Span(self.peer_cid), self.pkt_buf)
 
             # Set PN length in the first byte (lower 2 bits = pn_len - 1).
-            header_bytes[0] = (header_bytes[0] & 0xFC) | UInt8(pn_len - 1)
+            self.pkt_buf[0] = (self.pkt_buf[0] & 0xFC) | UInt8(pn_len - 1)
 
             # Record pn_offset.
-            var pn_offset = len(header_bytes)
+            var pn_offset = len(self.pkt_buf)
             debug_assert(
                 pn_offset + pn_len <= self._header_len(space_idx),
                 "short header exceeds its budgeted length",
@@ -4276,16 +4267,16 @@ struct QuicConnection(Movable):
             var truncated = pn_truncate(pn, pn_len)
             for i in range(pn_len):
                 var shift = UInt64((pn_len - 1 - i) * 8)
-                header_bytes.append(UInt8((truncated >> shift) & 0xFF))
+                self.pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
 
             # Payload, then padding + AEAD tag space (plaintext_len >= 4
             # so the header-protection sample at pn_offset + 4 fits).
-            header_bytes.extend(Span(payload))
+            self.pkt_buf.extend(Span(payload))
             for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
-                header_bytes.append(UInt8(0))
+                self.pkt_buf.append(UInt8(0))
 
-            var total_len = len(header_bytes)
-            var pkt_ptr = header_bytes.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
+            var total_len = len(self.pkt_buf)
+            var pkt_ptr = self.pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
 
             # Encrypt payload region in-place.
             var header_len = pn_offset + pn_len
@@ -4298,8 +4289,6 @@ struct QuicConnection(Movable):
             self.protect.protect_header_ptr(
                 space_idx, pkt_ptr, total_len, pn_offset, pn_len,
             )
-
-            return header_bytes^
 
     # ── Application-space frame ACK/loss handling ─────────────
 
