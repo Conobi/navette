@@ -40,7 +40,9 @@ from navette.quic.frame import (
     StreamDataBlockedFrame,
     StreamsBlockedFrame,
     parse_frames,
-    serialize_frames,
+    serialize_frame,
+    write_ack_frame_direct,
+    write_crypto_frame_direct,
     write_stream_frame_direct,
     FRAME_PADDING,
     FRAME_PING,
@@ -3458,6 +3460,7 @@ struct QuicConnection(Movable):
             var frames = List[Frame]()
             var sent_records = List[SentStreamFrame]()
             var stream_payload = List[UInt8]()
+            var ack_payload = List[UInt8]()
             var has_stream_data = False
             var ack_committed = False
             if closing:
@@ -3477,10 +3480,11 @@ struct QuicConnection(Movable):
                 var reserve = 0
                 var has_ack = False
                 if maybe_ack:
-                    frames.append(Frame.ack(maybe_ack.value()))
-                    reserve = frames[0].wire_len()
-                    has_ack = True
-                    if reserve > payload_budget:
+                    var ack_val = maybe_ack.value().copy()
+                    reserve = write_ack_frame_direct(ack_payload, payload_budget, ack_val)
+                    if reserve > 0:
+                        has_ack = True
+                    else:
                         # Only the tail of a datagram is this small; the ACK
                         # (and this space) waits for the next datagram so it
                         # is never the first frame that does not fit.
@@ -3516,11 +3520,18 @@ struct QuicConnection(Movable):
                     end_assembly = True
 
             var writer = ByteWriter()
-            serialize_frames(frames, writer)
+            # CRYPTO frames are serialized directly into stream_payload;
+            # skip them here to avoid duplicate bytes.
+            for fi in range(len(frames)):
+                if not frames[fi].is_crypto():
+                    serialize_frame(frames[fi], writer)
             var payload = writer.finish()
-            # Append directly-written STREAM bytes after the serialized
-            # non-STREAM frames.  This avoids the Frame struct allocation
-            # and serialize_frame dispatch for every STREAM frame.
+            # Prepend direct-written ACK bytes (frame order is
+            # insignificant in QUIC, but ACK-first matches convention).
+            if len(ack_payload) > 0:
+                ack_payload.extend(payload^)
+                payload = ack_payload^
+            # Append directly-written CRYPTO + STREAM bytes.
             if len(stream_payload) > 0:
                 payload.extend(stream_payload^)
             var plaintext = len(payload)
@@ -3714,9 +3725,11 @@ struct QuicConnection(Movable):
         Runs only when the packet will be emitted: every builder here mutates
         state (crypto cursor, `needs_*` flags, `mark_advertised`, FC windows).
         `sent_records` receives the Application-space stream-layer frames so
-        ACK/loss handlers can re-apply state by packet number. STREAM frame
-        bytes are written directly into `stream_payload`, bypassing Frame
-        allocation; all other frames go into `frames` for serialize_frames.
+        ACK/loss handlers can re-apply state by packet number.  CRYPTO and
+        STREAM frame bytes are written directly into `stream_payload`,
+        bypassing Frame allocation and serialize_frame dispatch; CRYPTO
+        Frames are still appended to `frames` for loss-recovery requeue.
+        All other frames go into `frames` for serialize_frames.
         """
         var used = 0
 
@@ -3732,8 +3745,14 @@ struct QuicConnection(Movable):
                 var maybe = self.crypto_streams[space_idx].next_crypto_frame(max_data)
                 if maybe:
                     var cf = maybe.value().copy()
+                    var written = write_crypto_frame_direct(
+                        stream_payload, budget - used, cf.offset, Span(cf.data)
+                    )
+                    # Frame kept in `frames` for CRYPTO loss tracking;
+                    # wire bytes already in stream_payload — serialize
+                    # skips CRYPTO frames to avoid duplication.
                     frames.append(Frame._crypto_move(cf))
-                    used += frames[len(frames) - 1].wire_len()
+                    used += written
 
         # HANDSHAKE_DONE (server, Application space, once).
         if self.send_handshake_done and space_idx == 2 and self.is_server and used + 1 <= budget:
