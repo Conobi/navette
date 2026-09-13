@@ -19,6 +19,7 @@ from navette.quic.frame import (
     serialize_frame,
     write_stream_frame_direct,
     write_ack_frame_direct,
+    write_crypto_frame_direct,
     frame_allowed_in_packet_type,
     FRAME_PADDING,
     FRAME_PING,
@@ -1546,7 +1547,84 @@ def test_write_ack_frame_direct_no_ranges() raises:
     print("  write_ack_frame_direct_no_ranges: PASS")
 
 
-# ── 8. FrameCursor tests ──────────────────────────────────────────────────
+# ── 8. write_crypto_frame_direct tests ───────────────────────────────────
+
+
+def test_write_crypto_frame_direct_matches_serialize() raises:
+    """Direct-write CRYPTO produces byte-identical output to serialize_frame."""
+    var data = List[UInt8]()
+    for i in range(20):
+        data.append(UInt8(i))
+
+    # Via serialize_frame.
+    var w = ByteWriter()
+    serialize_frame(Frame.crypto(CryptoFrame(UInt64(100), data)), w)
+    var expected = w.finish()
+
+    # Via direct writer.
+    var direct = List[UInt8]()
+    var written = write_crypto_frame_direct(direct, 1000, UInt64(100), Span(data))
+    _assert_eq_int(written, len(expected), "written length should match")
+    _assert_bytes_eq(direct, expected, "direct vs serialize_frame bytes")
+    print("  write_crypto_frame_direct_matches_serialize: PASS")
+
+
+def test_write_crypto_frame_direct_zero_offset() raises:
+    """Direct-write CRYPTO with zero offset matches serialize_frame."""
+    var data = List[UInt8]()
+    for i in range(10):
+        data.append(UInt8(i + 0x40))
+
+    # Via serialize_frame.
+    var w = ByteWriter()
+    serialize_frame(Frame.crypto(CryptoFrame(UInt64(0), data)), w)
+    var expected = w.finish()
+
+    # Via direct writer.
+    var direct = List[UInt8]()
+    var written = write_crypto_frame_direct(direct, 1000, UInt64(0), Span(data))
+    _assert_eq_int(written, len(expected), "zero-offset written length should match")
+    _assert_bytes_eq(direct, expected, "zero-offset direct vs serialize_frame bytes")
+    print("  write_crypto_frame_direct_zero_offset: PASS")
+
+
+def test_write_crypto_frame_direct_budget_exceeded() raises:
+    """Returns 0 when budget is too small for even header + 1 byte."""
+    var data = List[UInt8]()
+    for i in range(10):
+        data.append(UInt8(i))
+
+    var direct = List[UInt8]()
+    var written = write_crypto_frame_direct(direct, 2, UInt64(100), Span(data))
+    _assert_eq_int(written, 0, "should return 0 when budget too small")
+    _assert_eq_int(len(direct), 0, "should not write anything when budget exceeded")
+    print("  write_crypto_frame_direct_budget_exceeded: PASS")
+
+
+def test_write_crypto_frame_direct_budget_truncation() raises:
+    """Truncates data to fit the budget, producing valid wire bytes."""
+    var data = List[UInt8]()
+    for i in range(100):
+        data.append(UInt8(i))
+
+    # Budget allows header + only 10 data bytes.
+    # Header for offset=0: type(1) + offset(1) + length_varint(1) = 3 bytes.
+    var budget = 13
+    var direct = List[UInt8]()
+    var written = write_crypto_frame_direct(direct, budget, UInt64(0), Span(data))
+
+    _assert_true(written > 0, "should write truncated frame")
+    _assert_true(written <= budget, "should not exceed budget")
+    _assert_eq_int(len(direct), written, "buffer length should match returned count")
+
+    # Parse the result and verify it round-trips.
+    var reader = ByteReader(direct)
+    var parsed = parse_frame(reader)
+    _assert_true(parsed.is_crypto(), "parsed frame should be CRYPTO")
+    print("  write_crypto_frame_direct_budget_truncation: PASS")
+
+
+# ── 9. FrameCursor tests ──────────────────────────────────────────────────
 
 
 def test_frame_cursor_yields_all_frames() raises:
@@ -1708,7 +1786,14 @@ def main() raises:
     test_write_ack_frame_direct_budget_exceeded()
     test_write_ack_frame_direct_no_ranges()
 
-    # 8. FrameCursor tests
+    # 8. write_crypto_frame_direct tests
+    print("  -- Direct CRYPTO frame tests --")
+    test_write_crypto_frame_direct_matches_serialize()
+    test_write_crypto_frame_direct_zero_offset()
+    test_write_crypto_frame_direct_budget_exceeded()
+    test_write_crypto_frame_direct_budget_truncation()
+
+    # 9. FrameCursor tests
     print("  -- FrameCursor tests --")
     test_frame_cursor_yields_all_frames()
     test_frame_cursor_empty_payload()

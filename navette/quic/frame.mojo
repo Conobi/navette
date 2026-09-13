@@ -1500,6 +1500,59 @@ def write_ack_frame_direct(
     return size
 
 
+# ── Direct CRYPTO frame writer ───────────────────────────────────────
+
+
+def write_crypto_frame_direct(
+    mut payload: List[UInt8],
+    budget: Int,
+    offset: UInt64,
+    data: Span[UInt8, _],
+) -> Int:
+    """Write a CRYPTO frame directly into a payload buffer.
+
+    Truncates data to fit budget if necessary. Returns total bytes
+    written (header + data), or 0 if even the header + 1 byte exceeds
+    the budget.
+    """
+    # Fixed header: type varint (1 byte for 0x06) + offset varint.
+    var fixed_hdr = 1 + varint_len(offset)
+
+    # Start by assuming a 2-byte length varint (covers up to 16383);
+    # if the result turns out < 64 bytes the actual varint is 1 byte.
+    var max_data = budget - fixed_hdr - 2
+    if max_data <= 0:
+        max_data = budget - fixed_hdr - 1
+        if max_data <= 0:
+            return 0
+
+    var data_len = len(data)
+    if data_len > max_data:
+        data_len = max_data
+
+    # Recompute with the actual length-varint size.
+    var len_vl = varint_len(UInt64(data_len))
+    var room = budget - fixed_hdr - len_vl
+    if room <= 0:
+        return 0
+    if data_len > room:
+        data_len = room
+        # Shrinking might reduce the varint size; recompute once more.
+        len_vl = varint_len(UInt64(data_len))
+        room = budget - fixed_hdr - len_vl
+        if room <= 0:
+            return 0
+        if data_len > room:
+            data_len = room
+
+    varint_encode_raw(payload, FRAME_CRYPTO)
+    varint_encode_raw(payload, offset)
+    varint_encode_raw(payload, UInt64(data_len))
+    payload.extend(data[:data_len])
+
+    return fixed_hdr + len_vl + data_len
+
+
 # ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────
 
 
