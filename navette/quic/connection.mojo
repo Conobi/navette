@@ -27,6 +27,7 @@ from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION,
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.frame import (
     Frame,
+    FrameCursor,
     AckFrame,
     CryptoFrame,
     ConnectionCloseFrame,
@@ -1452,29 +1453,46 @@ struct QuicConnection(Movable):
                 if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
                     self.state = self.state | CONN_ADDR_VALIDATED
 
-                # 10. Parse and dispatch frames from a Span backed by the
-                # caller's buffer directly. The prior implementation copied
-                # `pkt_ptr[header_len .. header_len+plaintext_len]` into a
-                # `List[UInt8]` — once per coalesced QUIC packet. Eliminated
-                # via `Span(unsafe_ptr=pkt_ptr+header_len, length=plaintext_len)`
-                # since ByteReader / parse_frames are generic over origin.
+                # 10. Parse and dispatch frames via zero-alloc FrameCursor.
+                # FrameCursor iterates over the payload Span in-place,
+                # constructing one Frame at a time without a List[Frame]
+                # allocation.  The Span is backed by the caller's buffer
+                # directly (no copy).
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us()
-                var reader = ByteReader(
+                var cursor = FrameCursor(
                     Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
                 )
                 # F10 — RFC 9000 §12.4: any parse failure inside a packet
                 # already authenticated by AEAD is FRAME_ENCODING_ERROR.
-                # Without this inner try/except, the outer catch swallows
-                # the raise and the server silently drops the packet; the
-                # peer keeps the connection alive expecting a CC.
-                var frames = List[Frame]()
+                # The try/except is per-frame so _dispatch_frame raises
+                # propagate to the outer handler, not here.
                 var _f10_parse_failed = False
-                try:
-                    frames = parse_frames(reader)
-                except:
-                    _f10_parse_failed = True
+                var ack_eliciting = False
+                # Bookend the per-packet space_idx around the per-frame
+                # loop. `_handle_stream_frame` (invoked deep inside
+                # `_dispatch_frame`) consumes this to tag newly-created
+                # peer-initiated streams at insertion-time. Resetting AFTER
+                # the loop guarantees no per-packet state leaks into the
+                # next packet's dispatch.
+                self._current_space_idx = space_idx
+                while True:
+                    var maybe_frame = Optional[Frame]()
+                    try:
+                        maybe_frame = cursor.next()
+                    except:
+                        _f10_parse_failed = True
+                        break
+                    if not maybe_frame:
+                        break
+                    var frame = maybe_frame.value().copy()
+                    if closing and not frame.is_connection_close():
+                        continue
+                    if frame.is_ack_eliciting():
+                        ack_eliciting = True
+                    self._dispatch_frame(frame, space_idx, now)
+                self._current_space_idx = -1
                 if _f10_parse_failed:
                     self.close_transport(
                         UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
@@ -1484,27 +1502,12 @@ struct QuicConnection(Movable):
                 # PROTOCOL_VIOLATION. Use close_transport instead of raising
                 # so the connection-level CONNECTION_CLOSE is queued; the
                 # outer for-loop over coalesced packets is aborted via the
-                # existing `decrypt_ok = False` short-circuit at line ~1005.
-                var _f11_verdict = predicate_f11_no_frames(len(frames))
+                # existing `decrypt_ok = False` short-circuit.
+                var _f11_verdict = predicate_f11_no_frames(cursor.count())
                 if _f11_verdict:
                     var _v11 = _f11_verdict.value().copy()
                     self.close_transport(_v11.error_code, _v11.tag, now)
                     return
-                var ack_eliciting = False
-                # Bookend the per-packet space_idx around the per-frame
-                # loop. `_handle_stream_frame` (invoked deep inside
-                # `_dispatch_frame`) consumes this to tag newly-created
-                # peer-initiated streams at insertion-time. Resetting AFTER
-                # the loop guarantees no per-packet state leaks into the
-                # next packet's dispatch.
-                self._current_space_idx = space_idx
-                for i in range(len(frames)):
-                    if closing and not frames[i].is_connection_close():
-                        continue
-                    if frames[i].is_ack_eliciting():
-                        ack_eliciting = True
-                    self._dispatch_frame(frames[i], space_idx, now)
-                self._current_space_idx = -1
                 comptime if PROFILE_ACCEPT:
                     if self.profile_ptr is not None:
                         ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
