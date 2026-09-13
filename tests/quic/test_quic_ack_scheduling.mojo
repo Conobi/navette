@@ -267,8 +267,8 @@ def test_ack_bundled_on_send() raises:
     var dgs = p.server.send(now)
     assert_equal_int(len(dgs), 1, "one response datagram")
     var resp_pn = _last_sent_pn(p.server, 2)
-    var frames = _frames_of(p.server, 2, resp_pn)
-    assert_true(frames[0].is_ack(), "ACK is the first frame of the response packet")
+    # ACK is direct-written into the payload, not stored in frames.
+    # Verify ACK was committed via side-effect checks below.
     assert_true(_pn_has_stream_data(p.server, resp_pn), "response packet carries STREAM")
     assert_false(p.server.spaces[2].has_unacked_ack_eliciting(), "bundled ACK cleared the count")
     assert_false(Bool(p.server.spaces[2].ack_deadline), "bundled ACK cleared the deadline")
@@ -334,7 +334,9 @@ def test_ack_within_max_ack_delay() raises:
     var dgs = p.server.send(now)
     assert_equal_int(len(dgs), 1, "ACK leaves at the deadline")
     var frames = _frames_of(p.server, 2, _last_sent_pn(p.server, 2))
-    assert_true(frames[0].is_ack() and len(frames) == 1, "ACK-only packet")
+    # ACK is direct-written into the payload; frames list is empty for
+    # an ACK-only packet.
+    assert_equal_int(len(frames), 0, "ACK-only packet has no tracked frames")
     p.client.recv(Span(dgs[0]), now)
     assert_true(pn not in p.client.spaces[2].sent_packets, "packet acknowledged")
     print("  test_ack_within_max_ack_delay: PASS")
@@ -370,7 +372,8 @@ def test_ack_only_bypasses_cc() raises:
     assert_equal_int(len(dgs), 1, "ACK-only datagram despite closed gate")
     var pn = _last_sent_pn(p.server, 2)
     var frames = _frames_of(p.server, 2, pn)
-    assert_true(len(frames) == 1 and frames[0].is_ack(), "packet is [ack]")
+    # ACK is direct-written into the payload, not in frames.
+    assert_equal_int(len(frames), 0, "ACK-only packet has no tracked frames")
     assert_false(p.server.spaces[2].sent_packets[pn].in_flight, "ACK-only packet not in flight")
     assert_false(p.server.spaces[2].sent_packets[pn].ack_eliciting, "ACK-only packet not ack-eliciting")
     assert_true(p.server.recovery.bytes_in_flight == bif_before, "bytes_in_flight untouched")
