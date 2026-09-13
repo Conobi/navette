@@ -2,7 +2,7 @@
 # QUIC packet header codec and packet number encode/decode.
 # RFC 9000 Section 17 (headers), Appendix A (PN decode).
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_into, varint_decode, varint_len
 
 # --- Constants ---
 
@@ -345,6 +345,64 @@ def serialize_short_header(dcid: Span[UInt8, _], mut writer: ByteWriter):
     # First byte: form=0, fixed bit=1 -> 0x40. Spin, reserved, key phase, PN len TBD by caller.
     writer.write_u8(UInt8(0x40))
     writer.write_bytes(dcid)
+
+
+def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raises:
+    """Write a long header directly into a pre-allocated buffer.
+
+    Same layout as serialize_long_header but bypasses ByteWriter indirection.
+    """
+    # Build first byte: form bit (0x80) | fixed bit (0x40) | type bits.
+    var first_byte = UInt8(0xC0)  # long header + fixed bit
+
+    if header.packet_type == PacketType.initial():
+        first_byte = first_byte | UInt8(0x00)
+    elif header.packet_type == PacketType.zero_rtt():
+        first_byte = first_byte | UInt8(0x10)
+    elif header.packet_type == PacketType.handshake():
+        first_byte = first_byte | UInt8(0x20)
+    elif header.packet_type == PacketType.retry():
+        first_byte = first_byte | UInt8(0x30)
+
+    buf.append(first_byte)
+
+    # Version (4 bytes BE).
+    buf.append(UInt8((header.version >> 24) & 0xFF))
+    buf.append(UInt8((header.version >> 16) & 0xFF))
+    buf.append(UInt8((header.version >> 8) & 0xFF))
+    buf.append(UInt8(header.version & 0xFF))
+
+    # DCID.
+    if len(header.dcid) > 20:
+        raise "DCID length exceeds 20"
+    buf.append(UInt8(len(header.dcid)))
+    buf.extend(Span[UInt8, origin_of(header.dcid)](header.dcid))
+
+    # SCID.
+    if len(header.scid) > 20:
+        raise "SCID length exceeds 20"
+    buf.append(UInt8(len(header.scid)))
+    buf.extend(Span[UInt8, origin_of(header.scid)](header.scid))
+
+    if header.packet_type == PacketType.initial():
+        # Token length + token.
+        varint_encode_into(buf, UInt64(len(header.token)))
+        if len(header.token) > 0:
+            buf.extend(Span[UInt8, origin_of(header.token)](header.token))
+
+    if header.packet_type != PacketType.retry():
+        # Payload length.
+        varint_encode_into(buf, header.payload_length)
+
+
+def serialize_short_header_into(dcid: Span[UInt8, _], mut buf: List[UInt8]):
+    """Write a 1-RTT short header directly into a pre-allocated buffer.
+
+    Writes the fixed-bit flag byte (0x40) followed by the DCID.
+    The caller sets PN-length bits and appends PN bytes afterward.
+    """
+    buf.append(UInt8(0x40))
+    buf.extend(dcid)
 
 
 def serialize_retry_packet(

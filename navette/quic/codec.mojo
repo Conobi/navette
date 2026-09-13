@@ -131,6 +131,16 @@ def varint_encode(mut writer: ByteWriter, value: UInt64) raises:
         writer.write_u64_be(value | UInt64(0xC000000000000000))
 
 
+def varint_encode_into(mut buf: List[UInt8], value: UInt64) raises:
+    """Encode a QUIC varint directly into a byte list with overflow check.
+
+    Same encoding as varint_encode but bypasses ByteWriter indirection.
+    """
+    if value > UInt64(4611686018427387903):
+        raise "varint value exceeds max (2^62 - 1)"
+    varint_encode_raw(buf, value)
+
+
 def varint_encode_raw(mut buf: List[UInt8], value: UInt64):
     """Encode a QUIC varint and append it directly to a byte list.
 
