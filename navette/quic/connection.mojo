@@ -1486,7 +1486,7 @@ struct QuicConnection(Movable):
                         break
                     if not maybe_frame:
                         break
-                    var frame = maybe_frame.value().copy()
+                    ref frame = maybe_frame.value()
                     if closing and not frame.is_connection_close():
                         continue
                     if frame.is_ack_eliciting():
