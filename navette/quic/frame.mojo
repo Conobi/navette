@@ -1131,6 +1131,44 @@ def parse_frames[origin: Origin](mut reader: ByteReader[origin]) raises -> List[
     return frames^
 
 
+# ── Zero-alloc frame cursor ─────────────────────────────────────────────
+
+
+struct FrameCursor[origin: Origin]:
+    """Zero-alloc frame iterator over a packet's payload bytes.
+
+    Stores a Span and a position cursor, constructing a lightweight
+    ByteReader on each next() call.  No List[Frame] is ever allocated.
+    The origin parameter ties the cursor's lifetime to the input buffer
+    so the borrow checker guarantees the buffer outlives the cursor.
+    """
+
+    var _buf: Span[UInt8, Self.origin]
+    var _pos: Int
+    var _count: Int
+
+    def __init__(out self, buf: Span[UInt8, Self.origin]):
+        """Create a cursor over the given payload bytes."""
+        self._buf = buf
+        self._pos = 0
+        self._count = 0
+
+    def next(mut self) raises -> Optional[Frame]:
+        """Return the next frame, or None when the payload is exhausted."""
+        if self._pos >= len(self._buf):
+            return None
+        var reader = ByteReader(self._buf)
+        reader.pos = self._pos
+        var frame = parse_frame(reader)
+        self._pos = reader.pos
+        self._count += 1
+        return Optional[Frame](frame^)
+
+    def count(self) -> Int:
+        """Number of frames yielded so far."""
+        return self._count
+
+
 # ── Serialize functions ───────────────────────────────────────────────
 
 

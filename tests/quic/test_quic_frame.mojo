@@ -13,7 +13,9 @@ from navette.quic.frame import (
     StreamsBlockedFrame,
     NewConnectionIdFrame,
     ConnectionCloseFrame,
+    FrameCursor,
     parse_frame,
+    parse_frames,
     serialize_frame,
     write_stream_frame_direct,
     frame_allowed_in_packet_type,
@@ -1455,6 +1457,88 @@ def test_direct_stream_no_data_no_fin() raises:
     print("  direct_stream_no_data_no_fin: PASS")
 
 
+# ── 7. FrameCursor tests ──────────────────────────────────────────────────
+
+
+def test_frame_cursor_yields_all_frames() raises:
+    """Serialize PING + ACK, iterate via FrameCursor, verify order and count."""
+    var w = ByteWriter()
+    serialize_frame(Frame.ping(), w)
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(10)
+    ack.ack_delay = UInt64(5)
+    ack.first_ack_range = UInt64(2)
+    serialize_frame(Frame.ack(ack), w)
+    var buf = w.finish()
+
+    var cursor = FrameCursor(Span(buf))
+
+    # First frame: PING
+    var f1 = cursor.next()
+    _assert_true(Bool(f1), "first next() should yield a frame")
+    _assert_true(f1.value().is_ping(), "first frame should be PING")
+
+    # Second frame: ACK
+    var f2 = cursor.next()
+    _assert_true(Bool(f2), "second next() should yield a frame")
+    _assert_true(f2.value().is_ack(), "second frame should be ACK")
+    _assert_eq(f2.value().as_ack().largest_ack, UInt64(10), "ACK largest_ack")
+
+    # Exhausted
+    var f3 = cursor.next()
+    _assert_false(Bool(f3), "third next() should return None")
+
+    _assert_eq_int(cursor.count(), 2, "count should be 2")
+    print("  frame_cursor_yields_all_frames: PASS")
+
+
+def test_frame_cursor_empty_payload() raises:
+    """FrameCursor on an empty buffer yields None immediately."""
+    var buf = List[UInt8]()
+    var cursor = FrameCursor(Span(buf))
+
+    var f1 = cursor.next()
+    _assert_false(Bool(f1), "next() on empty should return None")
+    _assert_eq_int(cursor.count(), 0, "count should be 0")
+    print("  frame_cursor_empty_payload: PASS")
+
+
+def test_frame_cursor_matches_parse_frames() raises:
+    """FrameCursor yields identical frames to parse_frames."""
+    var w = ByteWriter()
+    serialize_frame(Frame.ping(), w)
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(50)
+    ack.ack_delay = UInt64(10)
+    ack.first_ack_range = UInt64(5)
+    serialize_frame(Frame.ack(ack), w)
+    serialize_frame(Frame.max_data(UInt64(1048576)), w)
+    var buf = w.finish()
+
+    # parse_frames path
+    var r1 = ByteReader(Span(buf))
+    var list_frames = parse_frames(r1)
+
+    # FrameCursor path
+    var cursor = FrameCursor(Span(buf))
+    var cursor_types = List[UInt64]()
+    while True:
+        var maybe = cursor.next()
+        if not maybe:
+            break
+        cursor_types.append(maybe.value().type_id)
+
+    _assert_eq_int(len(cursor_types), len(list_frames), "frame count must match")
+    for i in range(len(list_frames)):
+        _assert_eq(
+            cursor_types[i],
+            list_frames[i].type_id,
+            "type_id mismatch at index " + String(i),
+        )
+    _assert_eq_int(cursor.count(), len(list_frames), "cursor count matches list length")
+    print("  frame_cursor_matches_parse_frames: PASS")
+
+
 def main() raises:
     print("test_quic_frame:")
 
@@ -1527,5 +1611,11 @@ def main() raises:
     test_direct_stream_budget_too_small()
     test_direct_stream_matches_serialize()
     test_direct_stream_no_data_no_fin()
+
+    # 7. FrameCursor tests
+    print("  -- FrameCursor tests --")
+    test_frame_cursor_yields_all_frames()
+    test_frame_cursor_empty_payload()
+    test_frame_cursor_matches_parse_frames()
 
     print("All test_quic_frame tests passed.")
