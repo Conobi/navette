@@ -4304,8 +4304,7 @@ struct QuicConnection(Movable):
         """Apply ACK side-effects for stream-layer frames in the acked packet."""
         if pn not in self.app_frames_sent:
             return
-        var records = self.app_frames_sent[pn].copy()
-        _ = self.app_frames_sent.pop(pn)
+        var records = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
             var rec = SentStreamFrame(copy=records[i])
             if rec.kind == SSF_STREAM:
@@ -4358,8 +4357,7 @@ struct QuicConnection(Movable):
         """Re-queue stream-layer frames for retransmission on packet loss."""
         if pn not in self.app_frames_sent:
             return
-        var records = self.app_frames_sent[pn].copy()
-        _ = self.app_frames_sent.pop(pn)
+        var records = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
             var rec = SentStreamFrame(copy=records[i])
             if rec.kind == SSF_STREAM:
