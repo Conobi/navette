@@ -18,6 +18,7 @@ from navette.quic.frame import (
     parse_frames,
     serialize_frame,
     write_stream_frame_direct,
+    write_ack_frame_direct,
     frame_allowed_in_packet_type,
     FRAME_PADDING,
     FRAME_PING,
@@ -1457,7 +1458,95 @@ def test_direct_stream_no_data_no_fin() raises:
     print("  direct_stream_no_data_no_fin: PASS")
 
 
-# ── 7. FrameCursor tests ──────────────────────────────────────────────────
+# ── 7. write_ack_frame_direct tests ──────────────────────────────────────
+
+
+def test_write_ack_frame_direct_matches_serialize() raises:
+    """Direct-write ACK produces byte-identical output to serialize_frame."""
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(42)
+    ack.ack_delay = UInt64(10)
+    ack.first_ack_range = UInt64(5)
+    ack.ranges = List[AckRange]()
+    ack.ranges.append(AckRange(UInt64(2), UInt64(3)))
+
+    # Via serialize_frame.
+    var w = ByteWriter()
+    serialize_frame(Frame.ack(AckFrame(copy=ack)), w)
+    var expected = w.finish()
+
+    # Via direct writer.
+    var direct = List[UInt8]()
+    var written = write_ack_frame_direct(direct, 1000, ack)
+    _assert_eq_int(written, len(expected), "written length should match")
+    _assert_bytes_eq(direct, expected, "direct vs serialize_frame bytes")
+    print("  write_ack_frame_direct_matches_serialize: PASS")
+
+
+def test_write_ack_frame_direct_ecn_matches_serialize() raises:
+    """Direct-write ACK with ECN produces byte-identical output."""
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(100)
+    ack.ack_delay = UInt64(25)
+    ack.first_ack_range = UInt64(10)
+    ack.ranges = List[AckRange]()
+    ack.ranges.append(AckRange(UInt64(1), UInt64(4)))
+    ack.ranges.append(AckRange(UInt64(3), UInt64(7)))
+    ack.has_ecn = True
+    ack.ecn_ect0 = UInt64(5)
+    ack.ecn_ect1 = UInt64(2)
+    ack.ecn_ce = UInt64(1)
+
+    # Via serialize_frame.
+    var w = ByteWriter()
+    serialize_frame(Frame.ack(AckFrame(copy=ack)), w)
+    var expected = w.finish()
+
+    # Via direct writer.
+    var direct = List[UInt8]()
+    var written = write_ack_frame_direct(direct, 1000, ack)
+    _assert_eq_int(written, len(expected), "ECN written length should match")
+    _assert_bytes_eq(direct, expected, "ECN direct vs serialize_frame bytes")
+    print("  write_ack_frame_direct_ecn_matches_serialize: PASS")
+
+
+def test_write_ack_frame_direct_budget_exceeded() raises:
+    """Returns 0 when budget is too small for the ACK frame."""
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(42)
+    ack.ack_delay = UInt64(10)
+    ack.first_ack_range = UInt64(5)
+    ack.ranges = List[AckRange]()
+
+    var direct = List[UInt8]()
+    var written = write_ack_frame_direct(direct, 1, ack)
+    _assert_eq_int(written, 0, "should return 0 when budget is too small")
+    _assert_eq_int(len(direct), 0, "should not write anything when budget exceeded")
+    print("  write_ack_frame_direct_budget_exceeded: PASS")
+
+
+def test_write_ack_frame_direct_no_ranges() raises:
+    """Direct-write ACK with no additional ranges matches serialize_frame."""
+    var ack = AckFrame()
+    ack.largest_ack = UInt64(200)
+    ack.ack_delay = UInt64(50)
+    ack.first_ack_range = UInt64(200)
+    ack.ranges = List[AckRange]()
+
+    # Via serialize_frame.
+    var w = ByteWriter()
+    serialize_frame(Frame.ack(AckFrame(copy=ack)), w)
+    var expected = w.finish()
+
+    # Via direct writer.
+    var direct = List[UInt8]()
+    var written = write_ack_frame_direct(direct, 1000, ack)
+    _assert_eq_int(written, len(expected), "no-ranges written length should match")
+    _assert_bytes_eq(direct, expected, "no-ranges direct vs serialize_frame bytes")
+    print("  write_ack_frame_direct_no_ranges: PASS")
+
+
+# ── 8. FrameCursor tests ──────────────────────────────────────────────────
 
 
 def test_frame_cursor_yields_all_frames() raises:
@@ -1612,7 +1701,14 @@ def main() raises:
     test_direct_stream_matches_serialize()
     test_direct_stream_no_data_no_fin()
 
-    # 7. FrameCursor tests
+    # 7. write_ack_frame_direct tests
+    print("  -- Direct ACK frame tests --")
+    test_write_ack_frame_direct_matches_serialize()
+    test_write_ack_frame_direct_ecn_matches_serialize()
+    test_write_ack_frame_direct_budget_exceeded()
+    test_write_ack_frame_direct_no_ranges()
+
+    # 8. FrameCursor tests
     print("  -- FrameCursor tests --")
     test_frame_cursor_yields_all_frames()
     test_frame_cursor_empty_payload()

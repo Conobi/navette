@@ -1461,6 +1461,45 @@ def write_stream_frame_direct(
     return fixed_hdr + len_vl + data_len
 
 
+# ── Direct ACK frame writer ───────────────────────────────────────────
+
+
+def write_ack_frame_direct(
+    mut payload: List[UInt8],
+    budget: Int,
+    ack: AckFrame,
+) -> Int:
+    """Write an ACK frame directly into a payload buffer, bypassing Frame allocation.
+
+    Returns bytes written, or 0 if the frame exceeds the budget.
+    """
+    var tid = FRAME_ACK_ECN if ack.has_ecn else FRAME_ACK
+    var size = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
+    size += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
+    for i in range(len(ack.ranges)):
+        size += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
+    if ack.has_ecn:
+        size += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
+
+    if size > budget:
+        return 0
+
+    varint_encode_raw(payload, tid)
+    varint_encode_raw(payload, ack.largest_ack)
+    varint_encode_raw(payload, ack.ack_delay)
+    varint_encode_raw(payload, UInt64(len(ack.ranges)))
+    varint_encode_raw(payload, ack.first_ack_range)
+    for i in range(len(ack.ranges)):
+        varint_encode_raw(payload, ack.ranges[i].gap)
+        varint_encode_raw(payload, ack.ranges[i].ack_range)
+    if ack.has_ecn:
+        varint_encode_raw(payload, ack.ecn_ect0)
+        varint_encode_raw(payload, ack.ecn_ect1)
+        varint_encode_raw(payload, ack.ecn_ce)
+
+    return size
+
+
 # ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────
 
 
