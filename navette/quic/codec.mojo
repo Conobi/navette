@@ -95,8 +95,8 @@ struct ByteWriter:
             self.buf.append(UInt8((value >> UInt64((7 - i) * 8)) & 0xFF))
 
     def write_bytes(mut self, data: Span[UInt8, _]):
-        for i in range(len(data)):
-            self.buf.append(data[i])
+        """Append a byte span to the write buffer."""
+        self.buf.extend(data)
 
     def len(self) -> Int:
         return len(self.buf)
