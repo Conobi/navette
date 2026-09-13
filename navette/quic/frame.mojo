@@ -1467,7 +1467,7 @@ def write_stream_frame_direct(
 def write_ack_frame_direct(
     mut payload: List[UInt8],
     budget: Int,
-    ack: AckFrame,
+    ref ack: AckFrame,
 ) -> Int:
     """Write an ACK frame directly into a payload buffer, bypassing Frame allocation.
 

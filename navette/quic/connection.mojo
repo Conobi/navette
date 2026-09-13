@@ -3460,7 +3460,7 @@ struct QuicConnection(Movable):
             var frames = List[Frame]()
             var sent_records = List[SentStreamFrame]()
             var stream_payload = List[UInt8]()
-            var ack_payload = List[UInt8]()
+            var ack_reserve = 0
             var has_stream_data = False
             var ack_committed = False
             if closing:
@@ -3480,8 +3480,9 @@ struct QuicConnection(Movable):
                 var reserve = 0
                 var has_ack = False
                 if maybe_ack:
-                    var ack_val = maybe_ack.value().copy()
-                    reserve = write_ack_frame_direct(ack_payload, payload_budget, ack_val)
+                    ref ack_ref = maybe_ack.value()
+                    ack_reserve = write_ack_frame_direct(stream_payload, payload_budget, ack_ref)
+                    reserve = ack_reserve
                     if reserve > 0:
                         has_ack = True
                     else:
@@ -3502,11 +3503,11 @@ struct QuicConnection(Movable):
                     )
                     if (self.spaces[space_idx].probe_pending
                             and not _has_ack_eliciting(frames)
-                            and len(stream_payload) == 0
+                            and len(stream_payload) == ack_reserve
                             and reserve + 1 <= payload_budget):
                         frames.append(Frame.ping())
                 # Step 5: decide the packet.
-                has_stream_data = len(stream_payload) > 0
+                has_stream_data = len(stream_payload) > ack_reserve
                 if len(frames) == base and not has_stream_data:
                     if has_ack and self.spaces[space_idx].ack_needed:
                         ack_committed = True
@@ -3519,21 +3520,18 @@ struct QuicConnection(Movable):
                 if deferred and self.crypto_streams[0].has_unsent():
                     end_assembly = True
 
+            # stream_payload already contains ACK (direct-written first)
+            # + CRYPTO (direct-written by _build_frames_for_space).
+            # Serialize remaining control frames (non-CRYPTO) via ByteWriter.
             var writer = ByteWriter()
-            # CRYPTO frames are serialized directly into stream_payload;
-            # skip them here to avoid duplicate bytes.
             for fi in range(len(frames)):
                 if not frames[fi].is_crypto():
                     serialize_frame(frames[fi], writer)
-            var payload = writer.finish()
-            # Prepend direct-written ACK bytes (frame order is
-            # insignificant in QUIC, but ACK-first matches convention).
-            if len(ack_payload) > 0:
-                ack_payload.extend(payload^)
-                payload = ack_payload^
-            # Append directly-written CRYPTO + STREAM bytes.
-            if len(stream_payload) > 0:
-                payload.extend(stream_payload^)
+            var control_bytes = writer.finish()
+            # Assemble payload: stream_payload (ACK + CRYPTO + STREAM) + control frames.
+            if len(control_bytes) > 0:
+                stream_payload.extend(Span(control_bytes))
+            var payload = stream_payload^
             var plaintext = len(payload)
             if plaintext < _MIN_PLAINTEXT_LEN:
                 plaintext = _MIN_PLAINTEXT_LEN
