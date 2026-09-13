@@ -263,10 +263,10 @@ def _sockaddr_to_path_key(
         # AF_INET6 — 16-octet address at offset+8.
         if addr_len < 24:
             return PathKey.zero()
-        var bytes = List[UInt8](capacity=16)
+        var addr = InlineArray[UInt8, 16](fill=UInt8(0))
         for i in range(16):
-            bytes.append(buf_ptr[unsafe_offset=addr_offset + 8 + i])
-        return PathKey(Int32(10), bytes^, port)
+            addr[i] = buf_ptr[unsafe_offset=addr_offset + 8 + i]
+        return PathKey(Int32(10), addr^, port)
     else:
         return PathKey.zero()
 

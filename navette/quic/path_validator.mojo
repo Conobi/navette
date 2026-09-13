@@ -40,23 +40,22 @@ struct PathKey(Copyable, Movable):
     """
 
     var family: Int32
-    var addr: List[UInt8]   # always 16 bytes; IPv4 zero-padded in the high 12
+    var addr: InlineArray[UInt8, 16]
     var port: UInt16
 
-    def __init__(out self, family: Int32, var addr: List[UInt8], port: UInt16):
+    def __init__(out self, family: Int32, var addr: InlineArray[UInt8, 16], port: UInt16):
         """Construct from explicit family + 16-byte addr + port."""
         self.family = family
         self.addr = addr^
         self.port = port
 
     def __init__(out self, *, copy: Self):
-        """Copy constructor — deep-copies the address buffer."""
+        """Copy constructor."""
         self.family = copy.family
-        self.addr = List[UInt8](copy=copy.addr)
+        self.addr = InlineArray[UInt8, 16](copy=copy.addr)
         self.port = copy.port
 
     def __init__(out self, *, deinit move: Self):
-        """Move constructor — transfers ownership of the address buffer."""
         self.family = move.family
         self.addr = move.addr^
         self.port = move.port
@@ -65,9 +64,7 @@ struct PathKey(Copyable, Movable):
         """Byte-exact equality across family, addr, port."""
         if self.family != other.family or self.port != other.port:
             return False
-        if len(self.addr) != len(other.addr):
-            return False
-        for i in range(len(self.addr)):
+        for i in range(16):
             if self.addr[i] != other.addr[i]:
                 return False
         return True
@@ -83,10 +80,7 @@ struct PathKey(Copyable, Movable):
         seen always triggers the address-change branch unless the caller
         has already promoted the validated path.
         """
-        var bytes = List[UInt8](capacity=16)
-        for _ in range(16):
-            bytes.append(UInt8(0))
-        return Self(Int32(0), bytes^, UInt16(0))
+        return Self(Int32(0), InlineArray[UInt8, 16](fill=UInt8(0)), UInt16(0))
 
     @staticmethod
     def from_v4(a: UInt8, b: UInt8, c: UInt8, d: UInt8, port: UInt16) -> Self:
@@ -95,14 +89,12 @@ struct PathKey(Copyable, Movable):
         The 4 octets occupy the last four bytes of the 16-byte buffer; the
         high 12 bytes are zero. Family is AF_INET (2).
         """
-        var bytes = List[UInt8](capacity=16)
-        for _ in range(12):
-            bytes.append(UInt8(0))
-        bytes.append(a)
-        bytes.append(b)
-        bytes.append(c)
-        bytes.append(d)
-        return Self(Int32(2), bytes^, port)
+        var buf = InlineArray[UInt8, 16](fill=UInt8(0))
+        buf[12] = a
+        buf[13] = b
+        buf[14] = c
+        buf[15] = d
+        return Self(Int32(2), buf^, port)
 
 
 # ── PathChallenge — a PATH_CHALLENGE in flight ────────────────────────────────
