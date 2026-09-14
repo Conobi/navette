@@ -1636,31 +1636,30 @@ struct QuicConnection(Movable):
                 if nkey in self.stream_map.streams:
                     self.stream_map.streams[nkey][].is_zero_rtt = is_zr
 
-        # 2. Get stream (returns a copy).
-        var stream = self.stream_map.get_stream(key)
+        # 2. Get stream pointer for direct in-place mutation.
+        var p = self.stream_map.stream_ptr(key)
 
         # 3. Validate direction: no incoming STREAM on a local uni stream.
-        if not stream.is_bidi and stream.is_local:
+        if not p[].is_bidi and p[].is_local:
             raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
 
         # 4. Validate recv state: must be in RECV or SIZE_KNOWN.
-        if not stream.recv_state:
+        if not p[].recv_state:
             raise "STREAM_STATE_ERROR: no recv state"
-        var rs = stream.recv_state.value()
+        var rs = p[].recv_state.value()
         if rs != RECV_RECV and rs != RECV_SIZE_KNOWN:
             # Terminal or post-reset — silently drop.
             return
 
         # 5. Per-stream flow-control enforcement.
-        if not stream.fc_recv:
+        if not p[].fc_recv:
             raise "internal: missing fc_recv"
-        var fc_r = stream.fc_recv.value().copy()
         # F01 — RFC 9000 §4.1: a STREAM frame whose offset+data_len
         # exceeds the per-stream flow-control window MUST close the
         # connection with FLOW_CONTROL_ERROR. Saturating-overflow inputs
         # (`offset + data_len < offset`) are also covered by the
         # predicate.
-        if stream_offset_exceeds_fc(offset, data_len, fc_r.limit):
+        if stream_offset_exceeds_fc(offset, data_len, p[].fc_recv.value().limit):
             self.close_transport(
                 UInt64(0x03),  # FLOW_CONTROL_ERROR
                 String(GUARD_TAG_STREAM_LARGE_OFFSET),
@@ -1669,30 +1668,27 @@ struct QuicConnection(Movable):
             return
 
         # 6. Write to the receive buffer (may update stream.fin_offset).
-        if not stream.recv_buf:
+        if not p[].recv_buf:
             raise "internal: missing recv_buf"
-        var rb = stream.recv_buf.value().copy()
-        var new_bytes = rb.write(
-            offset, Span(stream_frame.data), fin, stream.fin_offset
+        var new_bytes = p[].recv_buf.value().write(
+            offset, Span(stream_frame.data), fin, p[].fin_offset
         )
 
         # 7. Track highest offset observed on this stream.
-        var prev_highest = stream.recv_highest_offset
+        var prev_highest = p[].recv_highest_offset
         if offset + data_len > prev_highest:
-            stream.recv_highest_offset = offset + data_len
+            p[].recv_highest_offset = offset + data_len
 
         # 8. Connection-level flow-control check.
         if not self.stream_map.conn_fc_recv.check_limit(new_bytes):
             raise "FLOW_CONTROL_ERROR: connection FC exceeded"
 
         # 9. Bump FC counters.
-        fc_r.add_received(new_bytes)
+        p[].fc_recv.value().add_received(new_bytes)
         self.stream_map.conn_fc_recv.add_received(new_bytes)
 
         # 10. Emit readable event if data is now deliverable.
-        var had_readable = rb.has_readable()
-        stream.recv_buf = rb^
-        stream.fc_recv = fc_r^
+        var had_readable = p[].recv_buf.value().has_readable()
 
         if had_readable:
             self.events.append(QuicEvent.stream_readable(stream_id))
@@ -1700,15 +1696,11 @@ struct QuicConnection(Movable):
         # 11. Recv-state transitions on FIN.
         if fin:
             if rs == RECV_RECV:
-                stream.recv_state = Optional[UInt8](RECV_SIZE_KNOWN)
+                p[].recv_state = Optional[UInt8](RECV_SIZE_KNOWN)
                 rs = RECV_SIZE_KNOWN
             if rs == RECV_SIZE_KNOWN:
-                # rb is already the pre-write reference reassigned above;
-                # use stream.recv_buf to check completeness.
-                if stream.recv_buf.value().is_complete(stream.fin_offset):
-                    stream.recv_state = Optional[UInt8](RECV_DATA_RECVD)
-
-        self.stream_map.set_stream(key, stream^)
+                if p[].recv_buf.value().is_complete(p[].fin_offset):
+                    p[].recv_state = Optional[UInt8](RECV_DATA_RECVD)
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
         """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
@@ -1737,46 +1729,45 @@ struct QuicConnection(Movable):
             for i in range(len(new_ids)):
                 self.events.append(QuicEvent.stream_opened(new_ids[i]))
 
-        var stream = self.stream_map.get_stream(key)
-        if not stream.recv_state:
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].recv_state:
             raise "STREAM_STATE_ERROR: RESET on non-recv stream"
 
         # Validate final_size invariants.
-        if final_size < stream.recv_highest_offset:
+        if final_size < p[].recv_highest_offset:
             raise "FINAL_SIZE_ERROR: final_size < received"
-        if stream.fin_offset:
-            if final_size != stream.fin_offset.value():
+        if p[].fin_offset:
+            if final_size != p[].fin_offset.value():
                 raise "FINAL_SIZE_ERROR: final_size differs from FIN"
 
-        if stream.fc_recv:
-            if final_size > stream.fc_recv.value().limit:
+        if p[].fc_recv:
+            if final_size > p[].fc_recv.value().limit:
                 raise "FLOW_CONTROL_ERROR: RESET final_size exceeds stream limit"
 
-        var rs = stream.recv_state.value()
+        var rs = p[].recv_state.value()
         var was_complete = (rs == RECV_DATA_RECVD or rs == RECV_DATA_READ)
 
         # Account phantom bytes at connection level (bytes the peer implicitly
         # "sent" by claiming final_size without delivering them).
-        var phantom = final_size - stream.recv_highest_offset
+        var phantom = final_size - p[].recv_highest_offset
         if phantom > 0:
             if not self.stream_map.conn_fc_recv.check_limit(phantom):
                 raise "FLOW_CONTROL_ERROR: conn FC exceeded on phantom bytes"
             self.stream_map.conn_fc_recv.add_received(phantom)
             self.stream_map.conn_fc_recv.add_consumed(phantom)
 
-        if not stream.fin_offset:
-            stream.fin_offset = Optional[UInt64](final_size)
+        if not p[].fin_offset:
+            p[].fin_offset = Optional[UInt64](final_size)
 
         # Suppress RESET state transition when DATA_RECVD: RFC 9000 §3.2 lets
         # us keep delivering the fully-received stream to the application.
         if not was_complete:
-            stream.recv_state = Optional[UInt8](RECV_RESET_RECVD)
-            stream.reset_error = Optional[UInt64](error_code)
+            p[].recv_state = Optional[UInt8](RECV_RESET_RECVD)
+            p[].reset_error = Optional[UInt64](error_code)
 
         self.events.append(
             QuicEvent.stream_reset(stream_id, error_code, final_size)
         )
-        self.stream_map.set_stream(key, stream^)
         _ = self.stream_map.maybe_cleanup(key)
 
     def _handle_stop_sending(mut self, stop_frame: StopSendingFrame) raises:
@@ -1806,33 +1797,31 @@ struct QuicConnection(Movable):
             for i in range(len(new_ids)):
                 self.events.append(QuicEvent.stream_opened(new_ids[i]))
 
-        var stream = self.stream_map.get_stream(key)
-        if not stream.send_state:
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].send_state:
             raise "STREAM_STATE_ERROR: STOP_SENDING targets non-send side"
 
-        var ss = stream.send_state.value()
+        var ss = p[].send_state.value()
         if ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD or ss == SEND_DATA_RECVD:
-            self.stream_map.set_stream(key, stream^)
             return
 
         # Transition to RESET_SENT and queue a RESET_STREAM for the send path.
-        stream.send_state = Optional[UInt8](SEND_RESET_SENT)
-        stream.stop_error = Optional[UInt64](error_code)
-        stream.needs_reset_stream = True
-        stream.reset_stream_error = error_code
+        p[].send_state = Optional[UInt8](SEND_RESET_SENT)
+        p[].stop_error = Optional[UInt64](error_code)
+        p[].needs_reset_stream = True
+        p[].reset_stream_error = error_code
         var final_size: UInt64 = 0
-        if stream.send_buf:
-            var sb = stream.send_buf.value().copy()
+        if p[].send_buf:
+            ref sb = p[].send_buf.value()
             if sb.fin_offset:
                 final_size = sb.fin_offset.value()
             else:
                 final_size = sb.unsent_offset
-        stream.reset_stream_final_size = final_size
+        p[].reset_stream_final_size = final_size
 
         self.stream_map.remove_sendable(key)
 
         self.events.append(QuicEvent.stream_stopped(stream_id, error_code))
-        self.stream_map.set_stream(key, stream^)
         self.stream_map.mark_reset(key)
         _ = self.stream_map.maybe_cleanup(key)
 
@@ -2302,19 +2291,16 @@ struct QuicConnection(Movable):
                     var _v_msd = _verdict_msd.take()
                     self.close_transport(_v_msd.error_code, _v_msd.tag, now)
                     return
-                var stream = self.stream_map.get_stream(key)
-                if stream.fc_send:
-                    var fc = stream.fc_send.value().copy()
-                    var old_limit = fc.limit
-                    fc.ensure_limit(msd.maximum)
-                    var grew = fc.limit > old_limit
+                var p = self.stream_map.stream_ptr(key)
+                if p[].fc_send:
+                    var old_limit = p[].fc_send.value().limit
+                    p[].fc_send.value().ensure_limit(msd.maximum)
+                    var grew = p[].fc_send.value().limit > old_limit
                     if grew:
-                        fc.blocked_at = UInt64(0)   # allow re-emission at new limit
-                    stream.fc_send = fc^
+                        p[].fc_send.value().blocked_at = UInt64(0)   # allow re-emission at new limit
                     var _has_pending = False
-                    if stream.send_buf:
-                        _has_pending = stream.send_buf.value().has_pending()
-                    self.stream_map.set_stream(key, stream^)
+                    if p[].send_buf:
+                        _has_pending = p[].send_buf.value().has_pending()
                     if grew:
                         self.events.append(QuicEvent.stream_writable(msd.stream_id))
                         if _has_pending:
@@ -3935,23 +3921,23 @@ struct QuicConnection(Movable):
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
-            ref stream = self.stream_map.stream_ref(sid)
-            if not stream.needs_max_stream_data or not stream.fc_recv:
+            var p = self.stream_map.stream_ptr(sid)
+            if not p[].needs_max_stream_data or not p[].fc_recv:
                 continue
-            var next_limit = stream.fc_recv.value().next_limit()
-            var wl = 1 + varint_len(stream.id) + varint_len(next_limit)
+            var next_limit = p[].fc_recv.value().next_limit()
+            var wl = 1 + varint_len(p[].id) + varint_len(next_limit)
             if used + wl > budget:
                 msd_remaining.append(sid)
                 msd_full = True
                 continue
-            var new_limit = stream.fc_recv.value().update_limit()
-            stream.needs_max_stream_data = False
-            var f = Frame.max_stream_data(MaxStreamDataFrame(stream.id, new_limit))
+            var new_limit = p[].fc_recv.value().update_limit()
+            p[].needs_max_stream_data = False
+            var f = Frame.max_stream_data(MaxStreamDataFrame(p[].id, new_limit))
             used += f.wire_len()
             frames.append(f^)
             var rec = SentStreamFrame()
             rec.kind = SSF_MAX_STREAM_DATA
-            rec.stream_id = stream.id
+            rec.stream_id = p[].id
             sent_records.append(rec^)
         self.stream_map.control_max_stream_data = msd_remaining^
 
@@ -3965,13 +3951,13 @@ struct QuicConnection(Movable):
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
-            ref stream = self.stream_map.stream_ref(sid)
-            if not stream.needs_reset_stream:
+            var p = self.stream_map.stream_ptr(sid)
+            if not p[].needs_reset_stream:
                 continue
             var rs_f = ResetStreamFrame(
-                stream.id,
-                stream.reset_stream_error,
-                stream.reset_stream_final_size,
+                p[].id,
+                p[].reset_stream_error,
+                p[].reset_stream_final_size,
             )
             var f = Frame.reset_stream(rs_f)
             var wl = f.wire_len()
@@ -3981,10 +3967,10 @@ struct QuicConnection(Movable):
                 continue
             frames.append(f^)
             used += wl
-            stream.needs_reset_stream = False
+            p[].needs_reset_stream = False
             var rec = SentStreamFrame()
             rec.kind = SSF_RESET_STREAM
-            rec.stream_id = stream.id
+            rec.stream_id = p[].id
             sent_records.append(rec^)
         self.stream_map.control_reset = rst_remaining^
 
@@ -3998,10 +3984,10 @@ struct QuicConnection(Movable):
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
-            ref stream = self.stream_map.stream_ref(sid)
-            if not stream.needs_stop_sending:
+            var p = self.stream_map.stream_ptr(sid)
+            if not p[].needs_stop_sending:
                 continue
-            var ss_f = StopSendingFrame(stream.id, stream.stop_sending_error)
+            var ss_f = StopSendingFrame(p[].id, p[].stop_sending_error)
             var f = Frame.stop_sending(ss_f)
             var wl = f.wire_len()
             if used + wl > budget:
@@ -4010,10 +3996,10 @@ struct QuicConnection(Movable):
                 continue
             frames.append(f^)
             used += wl
-            stream.needs_stop_sending = False
+            p[].needs_stop_sending = False
             var rec = SentStreamFrame()
             rec.kind = SSF_STOP_SENDING
-            rec.stream_id = stream.id
+            rec.stream_id = p[].id
             sent_records.append(rec^)
         self.stream_map.control_stop_sending = ss_remaining^
 
@@ -4042,35 +4028,33 @@ struct QuicConnection(Movable):
                 break
             var conn_delta = UInt64(0)
             var drop_sendable = False
-            ref stream = self.stream_map.stream_ref(sid)
-            if not stream.send_state or not stream.send_buf or not stream.fc_send:
-                # Orphan — remove from sendable (ref's last use is above).
+            var p = self.stream_map.stream_ptr(sid)
+            if not p[].send_state or not p[].send_buf or not p[].fc_send:
+                # Orphan — remove from sendable.
                 self.stream_map.remove_sendable(sid)
                 continue
-            var ss = stream.send_state.value()
+            var ss = p[].send_state.value()
             if ss != SEND_READY and ss != SEND_SEND:
-                # Invalid state — clean up (ref's last use is above).
+                # Invalid state — clean up.
                 self.stream_map.remove_sendable(sid)
                 continue
-            var stream_avail = stream.fc_send.value().available()
+            var stream_avail = p[].fc_send.value().available()
             var fin_pending = (
-                stream.send_buf.value().fin and not stream.send_buf.value().fin_offset
+                p[].send_buf.value().fin and not p[].send_buf.value().fin_offset
             )
             if stream_avail == 0 and not fin_pending:
                 # FC-blocked — re-enqueue to back for next round.
-                # (ref's last use is above; locals are value copies.)
                 self.stream_map.sendable_queue.append(sid)
                 continue
             # Worst-case STREAM header for this frame: type + stream id +
             # offset + a 2-byte length varint (any chunk < 16384). Budget
             # exhausted: put back at front and stop.
             var hdr_charge = (
-                1 + varint_len(stream.id)
-                + varint_len(stream.send_buf.value().unsent_offset) + 2
+                1 + varint_len(p[].id)
+                + varint_len(p[].send_buf.value().unsent_offset) + 2
             )
             var room = budget - used - hdr_charge
             if room < 0:
-                # Ref's last use is above — appendleft is safe.
                 self.stream_map.sendable_queue.appendleft(sid)
                 break
             var limit = Int(conn_avail)
@@ -4082,10 +4066,9 @@ struct QuicConnection(Movable):
                 limit = room
             # If the only work is a standalone FIN, limit can be 0: prepare_frame
             # handles this via fin-only emission.
-            var meta = stream.send_buf.value().prepare_frame(limit)
+            var meta = p[].send_buf.value().prepare_frame(limit)
             if not meta:
                 # Nothing to send — remove from sendable.
-                # (ref's last use is above.)
                 self.stream_map.remove_sendable(sid)
                 continue
             var frame_meta = meta.value()
@@ -4094,13 +4077,13 @@ struct QuicConnection(Movable):
             var frame_fin = frame_meta[2]
             var frame_len = UInt64(chunk_size)
             # Read data directly from the send buffer — no intermediate copy.
-            var data_view = stream.send_buf.value().data_span(frame_offset, chunk_size)
+            var data_view = p[].send_buf.value().data_span(frame_offset, chunk_size)
             # Write the STREAM frame directly into stream_payload, bypassing
             # Frame struct allocation and the serialize_frame dispatch.
             var wl = write_stream_frame_direct(
                 stream_payload,
                 budget=budget - used,
-                stream_id=stream.id,
+                stream_id=p[].id,
                 offset=frame_offset,
                 data=data_view,
                 fin=frame_fin,
@@ -4112,23 +4095,22 @@ struct QuicConnection(Movable):
             used += wl
             # Flow-control accounting (only "new" bytes past received mark).
             var prev_end = frame_offset + frame_len
-            if prev_end > stream.fc_send.value().received:
-                conn_delta = prev_end - stream.fc_send.value().received
-                stream.fc_send.value().add_received(conn_delta)
+            if prev_end > p[].fc_send.value().received:
+                conn_delta = prev_end - p[].fc_send.value().received
+                p[].fc_send.value().add_received(conn_delta)
             # Send-state transitions.
             if ss == SEND_READY:
-                stream.send_state = Optional[UInt8](SEND_SEND)
-            if frame_fin and stream.send_buf.value().fin_offset:
-                stream.send_state = Optional[UInt8](SEND_DATA_SENT)
+                p[].send_state = Optional[UInt8](SEND_SEND)
+            if frame_fin and p[].send_buf.value().fin_offset:
+                p[].send_state = Optional[UInt8](SEND_DATA_SENT)
             var rec = SentStreamFrame()
             rec.kind = SSF_STREAM
-            rec.stream_id = stream.id
+            rec.stream_id = p[].id
             rec.offset = frame_offset
             rec.length = frame_len
             rec.fin = frame_fin
             sent_records.append(rec^)
-            drop_sendable = not stream.send_buf.value().has_pending()
-            # Last use of `stream` above; apply the collected map mutations.
+            drop_sendable = not p[].send_buf.value().has_pending()
             if conn_delta > 0:
                 self.stream_map.conn_fc_send.add_received(conn_delta)
             if drop_sendable:
@@ -4157,19 +4139,19 @@ struct QuicConnection(Movable):
             var sid = blocked_ids[i]
             if not self.stream_map.has_stream(sid):
                 continue
-            ref stream = self.stream_map.stream_ref(sid)
-            if not stream.fc_send:
+            var p = self.stream_map.stream_ptr(sid)
+            if not p[].fc_send:
                 continue
-            var stream_limit = stream.fc_send.value().limit
-            if (stream.fc_send.value().available() == UInt64(0)
-                    and stream.fc_send.value().blocked_at != stream_limit
+            var stream_limit = p[].fc_send.value().limit
+            if (p[].fc_send.value().available() == UInt64(0)
+                    and p[].fc_send.value().blocked_at != stream_limit
                     and stream_limit > UInt64(0)):
-                var wl = 1 + varint_len(stream.id) + varint_len(stream_limit)
+                var wl = 1 + varint_len(p[].id) + varint_len(stream_limit)
                 if used + wl > budget:
                     continue
-                frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(stream.id, stream_limit)))
+                frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(p[].id, stream_limit)))
                 used += wl
-                stream.fc_send.value().blocked_at = stream_limit
+                p[].fc_send.value().blocked_at = stream_limit
 
         # 9. STREAMS_BLOCKED (RFC 9000 §4.6) — local stream count at peer concurrency limit.
         if self.stream_map.needs_streams_blocked_bidi:
@@ -4325,30 +4307,24 @@ struct QuicConnection(Movable):
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
                     continue
-                var stream = self.stream_map.get_stream(key)
-                if stream.send_buf:
-                    var sb = stream.send_buf.value().copy()
-                    sb.on_ack(rec.offset, rec.length)
-                    var fully = sb.is_fully_acked()
-                    stream.send_buf = sb^
-                    if fully and stream.send_state:
-                        var ss = stream.send_state.value()
+                var p = self.stream_map.stream_ptr(key)
+                if p[].send_buf:
+                    p[].send_buf.value().on_ack(rec.offset, rec.length)
+                    var fully = p[].send_buf.value().is_fully_acked()
+                    if fully and p[].send_state:
+                        var ss = p[].send_state.value()
                         if ss == SEND_DATA_SENT:
-                            stream.send_state = Optional[UInt8](SEND_DATA_RECVD)
-                    self.stream_map.set_stream(key, stream^)
+                            p[].send_state = Optional[UInt8](SEND_DATA_RECVD)
                     _ = self.stream_map.maybe_cleanup(key)
-                else:
-                    self.stream_map.set_stream(key, stream^)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
                     continue
-                var stream = self.stream_map.get_stream(key)
-                if stream.send_state:
-                    var ss = stream.send_state.value()
+                var p = self.stream_map.stream_ptr(key)
+                if p[].send_state:
+                    var ss = p[].send_state.value()
                     if ss == SEND_RESET_SENT:
-                        stream.send_state = Optional[UInt8](SEND_RESET_RECVD)
-                self.stream_map.set_stream(key, stream^)
+                        p[].send_state = Optional[UInt8](SEND_RESET_RECVD)
                 _ = self.stream_map.maybe_cleanup(key)
             elif rec.kind == SSF_STOP_SENDING:
                 # STOP_SENDING ACK does not change recv state; peer must send
@@ -4378,39 +4354,31 @@ struct QuicConnection(Movable):
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
                     continue
-                var stream = self.stream_map.get_stream(key)
-                if stream.send_buf:
-                    var sb = stream.send_buf.value().copy()
-                    sb.on_loss(rec.offset, rec.length)
-                    var has_pending = sb.has_pending()
-                    stream.send_buf = sb^
-                    self.stream_map.set_stream(key, stream^)
+                var p = self.stream_map.stream_ptr(key)
+                if p[].send_buf:
+                    p[].send_buf.value().on_loss(rec.offset, rec.length)
+                    var has_pending = p[].send_buf.value().has_pending()
                     if has_pending:
                         self.stream_map.add_sendable(key)
-                else:
-                    self.stream_map.set_stream(key, stream^)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
-                    stream.needs_reset_stream = True
-                    self.stream_map.set_stream(key, stream^)
+                    var p = self.stream_map.stream_ptr(key)
+                    p[].needs_reset_stream = True
                     self.stream_map.mark_reset(key)
             elif rec.kind == SSF_STOP_SENDING:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
-                    stream.needs_stop_sending = True
-                    self.stream_map.set_stream(key, stream^)
+                    var p = self.stream_map.stream_ptr(key)
+                    p[].needs_stop_sending = True
                     self.stream_map.mark_stop_sending(key)
             elif rec.kind == SSF_MAX_DATA:
                 self.stream_map.needs_max_data = True
             elif rec.kind == SSF_MAX_STREAM_DATA:
                 var key = Int(rec.stream_id)
                 if key in self.stream_map.streams:
-                    var stream = self.stream_map.get_stream(key)
-                    stream.needs_max_stream_data = True
-                    self.stream_map.set_stream(key, stream^)
+                    var p = self.stream_map.stream_ptr(key)
+                    p[].needs_max_stream_data = True
                     self.stream_map.mark_max_stream_data(key)
             elif rec.kind == SSF_MAX_STREAMS_BIDI:
                 self.stream_map.needs_max_streams_bidi = True
@@ -4740,18 +4708,15 @@ struct QuicConnection(Movable):
         var key = Int(stream_id)
         if key not in self.stream_map.streams:
             raise "unknown stream"
-        var stream = self.stream_map.get_stream(key)
-        if not stream.send_state or not stream.send_buf:
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].send_state or not p[].send_buf:
             raise "STREAM_STATE_ERROR: no send side"
-        var ss = stream.send_state.value()
+        var ss = p[].send_state.value()
         if (ss == SEND_DATA_SENT or ss == SEND_DATA_RECVD
                 or ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD):
             raise "STREAM_STATE_ERROR: send side terminal or FIN already queued"
-        var sb = stream.send_buf.value().copy()
-        sb.write(data, fin)
-        var has_pending = sb.has_pending()
-        stream.send_buf = sb^
-        self.stream_map.set_stream(key, stream^)
+        p[].send_buf.value().write(data, fin)
+        var has_pending = p[].send_buf.value().has_pending()
         if has_pending:
             self.stream_map.add_sendable(key)
 
@@ -4790,30 +4755,25 @@ struct QuicConnection(Movable):
         var key = Int(stream_id)
         if key not in self.stream_map.streams:
             raise "unknown stream"
-        var stream = self.stream_map.get_stream(key)
-        if not stream.recv_buf or not stream.fc_recv:
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].recv_buf or not p[].fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
-        var rb = stream.recv_buf.value().copy()
-        var result = rb.read(stream.fin_offset)
+        var result = p[].recv_buf.value().read(p[].fin_offset)
         var data = result[0].copy()
         var fin_reached = result[1]
         var drained = UInt64(len(data))
-        var fc = stream.fc_recv.value().copy()
         if drained > 0:
-            fc.add_consumed(drained)
+            p[].fc_recv.value().add_consumed(drained)
             self.stream_map.conn_fc_recv.add_consumed(drained)
-        var _needs_msd = fc.should_update()
+        var _needs_msd = p[].fc_recv.value().should_update()
         if _needs_msd:
-            stream.needs_max_stream_data = True
+            p[].needs_max_stream_data = True
         if self.stream_map.conn_fc_recv.should_update():
             self.stream_map.needs_max_data = True
-        stream.recv_buf = rb^
-        stream.fc_recv = fc^
-        if stream.recv_state:
-            var rs = stream.recv_state.value()
+        if p[].recv_state:
+            var rs = p[].recv_state.value()
             if rs == RECV_DATA_RECVD and fin_reached:
-                stream.recv_state = Optional[UInt8](RECV_DATA_READ)
-        self.stream_map.set_stream(key, stream^)
+                p[].recv_state = Optional[UInt8](RECV_DATA_READ)
         if _needs_msd:
             self.stream_map.mark_max_stream_data(key)
         _ = self.stream_map.maybe_cleanup(key)
@@ -4824,27 +4784,25 @@ struct QuicConnection(Movable):
         var key = Int(stream_id)
         if key not in self.stream_map.streams:
             raise "unknown stream"
-        var stream = self.stream_map.get_stream(key)
-        if not stream.send_state:
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].send_state:
             raise "STREAM_STATE_ERROR: no send side"
-        var ss = stream.send_state.value()
+        var ss = p[].send_state.value()
         if (ss == SEND_DATA_RECVD or ss == SEND_RESET_SENT
                 or ss == SEND_RESET_RECVD):
-            self.stream_map.set_stream(key, stream^)
             return
         var final_size: UInt64 = 0
-        if stream.send_buf:
-            var sb = stream.send_buf.value().copy()
+        if p[].send_buf:
+            ref sb = p[].send_buf.value()
             if sb.fin_offset:
                 final_size = sb.fin_offset.value()
             else:
                 final_size = sb.unsent_offset
-        stream.send_state = Optional[UInt8](SEND_RESET_SENT)
-        stream.needs_reset_stream = True
-        stream.reset_stream_error = error_code
-        stream.reset_stream_final_size = final_size
+        p[].send_state = Optional[UInt8](SEND_RESET_SENT)
+        p[].needs_reset_stream = True
+        p[].reset_stream_error = error_code
+        p[].reset_stream_final_size = final_size
         self.stream_map.remove_sendable(key)
-        self.stream_map.set_stream(key, stream^)
         self.stream_map.mark_reset(key)
 
     def send_datagram(mut self, payload: Span[UInt8, _]) raises -> Bool:
@@ -4895,18 +4853,16 @@ struct QuicConnection(Movable):
         var key = Int(stream_id)
         if key not in self.stream_map.streams:
             raise "unknown stream"
-        var stream = self.stream_map.get_stream(key)
-        if not stream.recv_state:
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].recv_state:
             raise "STREAM_STATE_ERROR: no recv side"
-        var rs = stream.recv_state.value()
+        var rs = p[].recv_state.value()
         if (rs == RECV_DATA_READ or rs == RECV_RESET_READ
                 or rs == RECV_RESET_RECVD):
-            self.stream_map.set_stream(key, stream^)
             return
-        stream.recv_state = Optional[UInt8](RECV_STOP_SENDING_SENT)
-        stream.needs_stop_sending = True
-        stream.stop_sending_error = error_code
-        self.stream_map.set_stream(key, stream^)
+        p[].recv_state = Optional[UInt8](RECV_STOP_SENDING_SENT)
+        p[].needs_stop_sending = True
+        p[].stop_sending_error = error_code
         self.stream_map.mark_stop_sending(key)
 
     # ── Internal helpers ─────────────────────────────────────────────
