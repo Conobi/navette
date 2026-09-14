@@ -33,7 +33,7 @@ from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.profile import AcceptProfile
 from navette.quic.stream import Stream
 from navette.quic.trans_param import default_transport_params
-from navette.tls.config import QuicServerConfig
+from navette.tls.config import QuicServerConfig, FilterStrategy
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
@@ -232,7 +232,7 @@ def test_filter_field_populated_when_zero_rtt_enabled() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     assert_true(
-        cfg._early_data_filter is not None,
+        cfg._early_data.isa[FilterStrategy](),
         String("0-RTT enabled must populate _early_data_filter"),
     )
     _ = cfg._handle
@@ -253,7 +253,7 @@ def test_no_filter_field_when_zero_rtt_disabled() raises:
         max_early_data=UInt32(0),
     )
     assert_true(
-        cfg._early_data_filter is None,
+        not cfg._early_data.isa[FilterStrategy](),
         String("0-RTT disabled must leave _early_data_filter None"),
     )
     _ = cfg._handle
@@ -273,11 +273,11 @@ def test_store_and_filter_synchronized_when_enabled() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     assert_true(
-        cfg._early_data_store is not None,
+        not cfg._early_data.isa[NoneType](),
         String("store must be Some when enabled"),
     )
     assert_true(
-        cfg._early_data_filter is not None,
+        cfg._early_data.isa[FilterStrategy](),
         String("filter must be Some when enabled"),
     )
     _ = cfg._handle
@@ -297,11 +297,11 @@ def test_store_and_filter_synchronized_when_disabled() raises:
         max_early_data=UInt32(0),
     )
     assert_true(
-        cfg._early_data_store is None,
+        cfg._early_data.isa[NoneType](),
         String("store must be None when disabled"),
     )
     assert_true(
-        cfg._early_data_filter is None,
+        not cfg._early_data.isa[FilterStrategy](),
         String("filter must be None when disabled"),
     )
     _ = cfg._handle

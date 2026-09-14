@@ -8,7 +8,9 @@ from navette.quic.recovery import (
     INITIAL_RTTVAR,
 )
 from navette.quic.cc.controller import CcController
-from navette.quic.cc.cc_trait import CC_KIND_CUBIC, CC_KIND_DUMMY, AckedPacket, LostPacket
+from navette.quic.cc.cc_trait import AckedPacket, LostPacket
+from navette.quic.cc.cubic import Cubic
+from navette.quic.cc.dummy import DummyCc
 from std.testing import assert_true
 
 
@@ -220,13 +222,13 @@ def test_bytes_in_flight() raises:
 
 def test_recovery_cc_cubic_by_default() raises:
     var rec = Recovery(max_datagram_size=UInt64(1200))
-    assert_true(rec.cc.kind == CC_KIND_CUBIC, "CUBIC by default")
+    assert_true(rec.cc.cc.isa[Cubic](), "CUBIC by default")
     print("PASS: test_recovery_cc_cubic_by_default")
 
 
 def test_recovery_cc_dummy_optin() raises:
     var rec = Recovery(max_datagram_size=UInt64(1200), use_cubic=False)
-    assert_true(rec.cc.kind == CC_KIND_DUMMY, "dummy when opted in")
+    assert_true(rec.cc.cc.isa[DummyCc](), "dummy when opted in")
     print("PASS: test_recovery_cc_dummy_optin")
 
 

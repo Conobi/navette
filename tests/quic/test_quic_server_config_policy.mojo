@@ -28,7 +28,7 @@ from std.collections import Span
 
 from navette.http.headers import Headers
 from navette.tls.lib import TlsBackend
-from navette.tls.config import QuicServerConfig
+from navette.tls.config import QuicServerConfig, FilterStrategy, PredicateStrategy
 from navette.tls.early_data_filter import FilterDecision
 from navette.tls.early_data_policy import EarlyDataPolicy
 from navette.tls.early_data_store import EarlyDataStoreConfig
@@ -60,12 +60,12 @@ def test_ctor_with_policy_off() raises:
         String("policy=off must produce max_early_data=0"),
     )
     assert_true(
-        cfg._early_data_store is None,
-        String("policy=off store must be None"),
+        cfg._early_data.isa[NoneType](),
+        String("policy=off must be NoneType variant"),
     )
     assert_true(
-        cfg._early_data_filter is None,
-        String("policy=off filter must be None"),
+        not cfg._early_data.isa[FilterStrategy](),
+        String("policy=off filter must not be present"),
     )
     _ = cfg._handle
     print("  test_ctor_with_policy_off: PASS")
@@ -89,12 +89,12 @@ def test_ctor_with_policy_idempotent_only() raises:
         String("policy=idempotent_only must produce max_early_data=u32::MAX"),
     )
     assert_true(
-        cfg._early_data_store is not None,
-        String("policy=idempotent_only store must be Some"),
+        not cfg._early_data.isa[NoneType](),
+        String("policy=idempotent_only store must be present"),
     )
     assert_true(
-        cfg._early_data_filter is not None,
-        String("policy=idempotent_only filter must be Some"),
+        cfg._early_data.isa[FilterStrategy](),
+        String("policy=idempotent_only must be FilterStrategy"),
     )
     _ = cfg._handle
     print("  test_ctor_with_policy_idempotent_only: PASS")
@@ -125,14 +125,14 @@ def test_ctor_with_policy_tuned() raises:
         String("policy=tuned must produce max_early_data=u32::MAX"),
     )
     assert_true(
-        cfg._early_data_store is not None,
-        String("policy=tuned store must be Some"),
+        not cfg._early_data.isa[NoneType](),
+        String("policy=tuned store must be present"),
     )
     assert_true(
-        cfg._early_data_filter is not None,
-        String("policy=tuned filter must be Some"),
+        cfg._early_data.isa[FilterStrategy](),
+        String("policy=tuned must be FilterStrategy"),
     )
-    var store_cfg = cfg._early_data_store.value()._config.copy()
+    var store_cfg = cfg._early_data.unsafe_get[FilterStrategy]().store._config.copy()
     assert_true(
         store_cfg.max_entries == UInt32(99)
         and store_cfg.entry_ttl_ms == UInt64(7_777)
@@ -288,13 +288,13 @@ def test_ctor_legacy_max_early_data_still_works() raises:
         String("legacy max_early_data=u32::MAX must match policy enabled"),
     )
     assert_true(
-        (legacy._early_data_store is not None)
-        and (policied._early_data_store is not None),
+        (not legacy._early_data.isa[NoneType]())
+        and (not policied._early_data.isa[NoneType]()),
         String("both ctors must populate the store"),
     )
     assert_true(
-        (legacy._early_data_filter is not None)
-        and (policied._early_data_filter is not None),
+        legacy._early_data.isa[FilterStrategy]()
+        and policied._early_data.isa[FilterStrategy](),
         String("both ctors must populate the filter"),
     )
     _ = legacy._handle
@@ -315,11 +315,11 @@ def test_ctor_both_kwargs_omitted_is_off() raises:
         cfg.max_early_data() == UInt32(0),
         String("both kwargs omitted must produce max_early_data=0"),
     )
-    assert_true(cfg._early_data_store is None, String("default store must be None"))
-    assert_true(cfg._early_data_filter is None, String("default filter must be None"))
+    assert_true(cfg._early_data.isa[NoneType](), String("default must be NoneType variant"))
+    assert_true(not cfg._early_data.isa[FilterStrategy](), String("default filter must not be present"))
     assert_true(
-        cfg._early_data_predicate_fn is None,
-        String("default predicate-fn must be None"),
+        not cfg._early_data.isa[PredicateStrategy](),
+        String("default predicate must not be present"),
     )
     _ = cfg._handle
     print("  test_ctor_both_kwargs_omitted_is_off: PASS")
@@ -343,8 +343,8 @@ def test_ctor_legacy_explicit_zero_without_policy_is_off() raises:
         String("explicit zero without policy must stay off"),
     )
     assert_true(
-        cfg._early_data_store is None,
-        String("explicit zero without policy: store must be None"),
+        cfg._early_data.isa[NoneType](),
+        String("explicit zero without policy: must be NoneType variant"),
     )
     _ = cfg._handle
     print("  test_ctor_legacy_explicit_zero_without_policy_is_off: PASS")
@@ -367,8 +367,8 @@ def test_ctor_explicit_zero_with_policy_off_agrees() raises:
         String("explicit zero + off must stay off (kwargs agree)"),
     )
     assert_true(
-        cfg._early_data_filter is None,
-        String("explicit zero + off: filter must be None"),
+        not cfg._early_data.isa[FilterStrategy](),
+        String("explicit zero + off: filter must not be present"),
     )
     _ = cfg._handle
     print("  test_ctor_explicit_zero_with_policy_off_agrees: PASS")
@@ -394,15 +394,42 @@ def test_ctor_legacy_nonzero_with_enabling_policy_policy_wins() raises:
         String("legacy non-zero + enabling policy must yield u32::MAX"),
     )
     assert_true(
-        cfg._early_data_store is not None,
+        not cfg._early_data.isa[NoneType](),
         String("policy-wins cell must populate the store"),
     )
     assert_true(
-        cfg._early_data_filter is not None,
-        String("policy-wins cell must populate the filter"),
+        cfg._early_data.isa[FilterStrategy](),
+        String("policy-wins cell must be FilterStrategy"),
     )
     _ = cfg._handle
     print("  test_ctor_legacy_nonzero_with_enabling_policy_policy_wins: PASS")
+
+
+def test_early_data_variant_off() raises:
+    """Off policy produces NoneType variant."""
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var tls = TlsBackend()
+    var cfg = QuicServerConfig(tls.shared(), Span(cert_pem), Span(key_pem))
+    assert_true(cfg._early_data.isa[NoneType](), String("Off -> NoneType"))
+    _ = cfg._handle
+    print("  test_early_data_variant_off: PASS")
+
+
+def test_early_data_variant_idempotent() raises:
+    """IdempotentOnly produces FilterStrategy variant."""
+    var ck = load_test_cert()
+    var cert_pem = ck[0].copy()
+    var key_pem = ck[1].copy()
+    var tls = TlsBackend()
+    var cfg = QuicServerConfig(
+        tls.shared(), Span(cert_pem), Span(key_pem),
+        policy=EarlyDataPolicy.idempotent_only(),
+    )
+    assert_true(cfg._early_data.isa[FilterStrategy](), String("IdempotentOnly -> FilterStrategy"))
+    _ = cfg._handle
+    print("  test_early_data_variant_idempotent: PASS")
 
 
 def main() raises:
@@ -417,4 +444,6 @@ def main() raises:
     test_ctor_legacy_explicit_zero_without_policy_is_off()
     test_ctor_explicit_zero_with_policy_off_agrees()
     test_ctor_legacy_nonzero_with_enabling_policy_policy_wins()
+    test_early_data_variant_off()
+    test_early_data_variant_idempotent()
     print("test_quic_server_config_policy: PASS")

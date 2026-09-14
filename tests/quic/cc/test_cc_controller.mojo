@@ -6,7 +6,7 @@ from navette.quic.cc.cubic import Cubic
 from navette.quic.cc.dummy import DummyCc
 from navette.quic.cc.cc_trait import (
     AckedPacket, LostPacket,
-    CC_KIND_DUMMY, CC_KIND_CUBIC, UINT64_UNLIMITED,
+    UINT64_UNLIMITED,
 )
 from std.testing import assert_true
 
@@ -23,7 +23,7 @@ def test_dummy_cc_basic() raises:
 
 def test_controller_cubic_dispatch() raises:
     var ctrl = CcController.new_cubic(max_datagram_size=MDS)
-    assert_true(ctrl.kind == CC_KIND_CUBIC, "kind is CUBIC")
+    assert_true(ctrl.cc.isa[Cubic](), "kind is CUBIC")
     assert_true(ctrl.name() == String("cubic"), "name dispatch")
     var start = ctrl.cwnd()
     ctrl.on_packet_sent(size=MDS, pn=UInt64(1), now=UInt64(1000))
@@ -33,7 +33,7 @@ def test_controller_cubic_dispatch() raises:
 
 def test_controller_dummy_unlimited_cwnd() raises:
     var ctrl = CcController.new_dummy(max_datagram_size=MDS)
-    assert_true(ctrl.kind == CC_KIND_DUMMY, "kind is DUMMY")
+    assert_true(ctrl.cc.isa[DummyCc](), "kind is DUMMY")
     assert_true(ctrl.cwnd() == UINT64_UNLIMITED, "dummy cwnd unlimited")
     print("PASS: test_controller_dummy_unlimited_cwnd")
 
@@ -56,7 +56,7 @@ def test_controller_copy_preserves_variant() raises:
     ctrl.on_packets_lost(lost, smoothed_rtt_us=UInt64(50_000), now=UInt64(100_000), persistent=False)
     var reduced = ctrl.cwnd()
     var ctrl2 = ctrl
-    assert_true(ctrl2.kind == CC_KIND_CUBIC, "copy kind preserved")
+    assert_true(ctrl2.cc.isa[Cubic](), "copy kind preserved")
     assert_true(ctrl2.cwnd() == reduced, "copy cwnd preserved")
     print("PASS: test_controller_copy_preserves_variant")
 
@@ -77,6 +77,14 @@ def test_controller_persistent_loss_resets_cubic() raises:
     print("PASS: test_controller_persistent_loss_resets_cubic")
 
 
+def test_controller_variant_no_phantom() raises:
+    """Verify new_cubic only creates Cubic -- no phantom DummyCc."""
+    var ctrl = CcController.new_cubic(UInt64(1200))
+    assert_true(ctrl.cc.isa[Cubic](), "Cubic active")
+    assert_true(not ctrl.cc.isa[DummyCc](), "no phantom DummyCc")
+    print("PASS: test_controller_variant_no_phantom")
+
+
 def main() raises:
     test_dummy_cc_basic()
     test_controller_cubic_dispatch()
@@ -84,4 +92,5 @@ def main() raises:
     test_controller_dummy_no_op_acked()
     test_controller_copy_preserves_variant()
     test_controller_persistent_loss_resets_cubic()
+    test_controller_variant_no_phantom()
     print("All controller tests passed.")

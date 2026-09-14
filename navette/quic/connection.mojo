@@ -1006,21 +1006,13 @@ struct QuicConnection(Movable):
         # {0, 0xFFFFFFFF}; any non-zero value means "0-RTT opt-in".
         conn.zero_rtt_enabled = (config.max_early_data() != UInt32(0))
 
-        # Promote the QuicServerConfig._early_data_store handle into a raw
-        # pointer the decrypt path can call into without crossing the FFI.
-        # The pointer is valid for the connection's lifetime because
-        # QuicConnection.server(...) takes `ref config` and the public
-        # surface keeps the config alive across all connections that
-        # reference it. `rebind` lifts the inferred config-bound origin to
-        # `MutAnyOrigin` so the pointer can be stored in the connection's
-        # erased field (matches the existing `profile_ptr` shape).
-        if config._early_data_store is not None:
-            var store_ptr = rebind[
-                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
-            ](UnsafePointer(to=config._early_data_store.value()))
-            conn._early_data_store_ptr = Optional[
-                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
-            ](store_ptr)
+        # Promote the config's early-data store into a raw pointer the
+        # decrypt path can call into without crossing the FFI. The pointer
+        # is valid for the connection's lifetime because the public surface
+        # keeps the config alive across all connections that reference it.
+        var store_ptr_opt = config.early_data_store()
+        if store_ptr_opt is not None:
+            conn._early_data_store_ptr = store_ptr_opt
 
         comptime if PROFILE_ACCEPT:
             if profile_ptr is not None:
