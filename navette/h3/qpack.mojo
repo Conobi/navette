@@ -880,12 +880,15 @@ def _qpack_decode_string_with_tables(
 
 struct QpackEncoder(Copyable, Movable):
     var use_huffman: Bool
+    var _static_table: List[QpackStaticEntry]
 
     def __init__(out self, use_huffman: Bool = True):
         self.use_huffman = use_huffman
+        self._static_table = _qpack_static_table()
 
     def __init__(out self, *, copy_from: Self):
         self.use_huffman = copy_from.use_huffman
+        self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
         """Encode a header list as a QPACK field section block.
@@ -909,7 +912,11 @@ struct QpackEncoder(Copyable, Movable):
 
     def _encode_field(self, name: String, value: String) raises -> List[UInt8]:
         # 1. Try exact static match → Indexed Static Field Line (§4.5.2)
-        var exact = qpack_static_find(name, value)
+        var exact = Optional[Int](None)
+        for i in range(len(self._static_table)):
+            if self._static_table[i].name == name and self._static_table[i].value == value:
+                exact = i
+                break
         if exact.__bool__():
             var idx = exact.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 6)
@@ -919,7 +926,11 @@ struct QpackEncoder(Copyable, Movable):
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
         # Format: 0 1 N T xxxx where N=0 (may-index), T=1 (static)
         # = 0101 xxxx = 0x50 with 4-bit index prefix
-        var name_match = qpack_static_find_name(name)
+        var name_match = Optional[Int](None)
+        for i in range(len(self._static_table)):
+            if self._static_table[i].name == name:
+                name_match = i
+                break
         if name_match.__bool__():
             var idx = name_match.value()
             var idx_bytes = qpack_encode_int(UInt64(idx), 4)
@@ -972,6 +983,7 @@ struct QpackDecoder(Copyable, Movable):
 
     var _huff_trie: List[_HuffTrieNode]
     var _huff_fast: List[_HuffFast]
+    var _static_table: List[QpackStaticEntry]
 
     def __init__(out self):
         # The trie/fast-table builders only raise on a malformed encode table,
@@ -987,10 +999,12 @@ struct QpackDecoder(Copyable, Movable):
             # decode will raise via the normal error path.
             self._huff_trie = List[_HuffTrieNode]()
             self._huff_fast = List[_HuffFast]()
+        self._static_table = _qpack_static_table()
 
     def __init__(out self, *, copy_from: Self):
         self._huff_trie = copy_from._huff_trie.copy()
         self._huff_fast = copy_from._huff_fast.copy()
+        self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
 
     def decode(self, data: List[UInt8]) raises -> List[QpackHeaderField]:
         """Decode a QPACK field section block.
@@ -1034,7 +1048,9 @@ struct QpackDecoder(Copyable, Movable):
                 pos = ir.new_offset
                 if t_bit:
                     # Static table reference
-                    var entry = qpack_static_get(idx)
+                    if idx < 0 or idx >= len(self._static_table):
+                        raise "QPACK: invalid static table index"
+                    var entry = self._static_table[idx].copy()
                     result.append(QpackHeaderField(entry.name, entry.value))
                 else:
                     raise "QPACK: dynamic table not supported (indexed)"
@@ -1050,7 +1066,9 @@ struct QpackDecoder(Copyable, Movable):
                 var value = sr.value
                 pos = sr.new_offset
                 if t_bit:
-                    var entry = qpack_static_get(idx)
+                    if idx < 0 or idx >= len(self._static_table):
+                        raise "QPACK: invalid static table index"
+                    var entry = self._static_table[idx].copy()
                     result.append(QpackHeaderField(entry.name, value))
                 else:
                     raise "QPACK: dynamic table not supported (literal name ref)"
