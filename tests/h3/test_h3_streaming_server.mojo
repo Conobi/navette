@@ -560,7 +560,7 @@ def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
         pass
     server._h3._quic._current_space_idx = -1
     assert_true(
-        server._h3._quic.stream_map.streams[0].is_zero_rtt,
+        server._h3._quic.stream_map.streams[0][].is_zero_rtt,
         "white-box setup: stream must carry the artificial 0-RTT tag",
     )
 

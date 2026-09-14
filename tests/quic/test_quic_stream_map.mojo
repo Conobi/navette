@@ -203,7 +203,7 @@ def test_set_peer_limits_retro_bumps_zero_rtt_streams() raises:
 
     # The pre-handshake fc_send limit is 0 (peer_stream_fc_limit_bidi_local
     # defaults to 0 until set_peer_limits is called).
-    var stream_pre = sm.streams[0].copy()
+    var stream_pre = sm.streams[0][].copy()
     assert_true(Bool(stream_pre.fc_send), "stream 0 has fc_send")
     var fc_pre = stream_pre.fc_send.value().copy()
     assert_equal_int(Int(fc_pre.limit), 0, "fc_send.limit=0 before set_peer_limits")
@@ -213,7 +213,7 @@ def test_set_peer_limits_retro_bumps_zero_rtt_streams() raises:
 
     # Stream 0's fc_send should now be bumped to 1048576 (the bidi_local
     # limit from setup_peer_limits).
-    var stream_post = sm.streams[0].copy()
+    var stream_post = sm.streams[0][].copy()
     assert_true(Bool(stream_post.fc_send), "stream 0 retains fc_send")
     var fc_post = stream_post.fc_send.value().copy()
     assert_equal_int(
@@ -245,7 +245,7 @@ def test_set_peer_limits_does_not_lower_existing_fc_send() raises:
 
     # Manually elevate fc_send.limit to 2 MiB — HIGHER than the 1 MiB
     # `setup_peer_limits` will advertise as stream_fc_bidi_local.
-    var stream_boost = Stream(copy=sm.streams[0])
+    var stream_boost = Stream(copy=sm.streams[0][])
     assert_true(Bool(stream_boost.fc_send), "stream 0 has fc_send")
     var fc_boost = stream_boost.fc_send.value().copy()
     var ELEVATED: UInt64 = UInt64(2097152)  # 2 MiB
@@ -255,14 +255,14 @@ def test_set_peer_limits_does_not_lower_existing_fc_send() raises:
         "pre-handshake fc_send.limit elevated to 2 MiB",
     )
     stream_boost.fc_send = fc_boost^
-    sm.streams[0] = stream_boost^
+    sm.set_stream(0, stream_boost^)
 
     # Apply peer limits (advertises 1 MiB stream_fc_bidi_local).
     setup_peer_limits(sm)
 
     # The 2 MiB elevated limit must survive — set_peer_limits MUST NOT
     # lower it to the peer's 1 MiB advertisement.
-    var stream_post = sm.streams[0].copy()
+    var stream_post = sm.streams[0][].copy()
     assert_true(Bool(stream_post.fc_send), "stream 0 retains fc_send")
     var fc_post = stream_post.fc_send.value().copy()
     assert_equal_int(

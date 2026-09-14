@@ -259,7 +259,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
         key in server._h3._quic.stream_map.streams,
         String("response stream must still exist after 425"),
     )
-    var send_buf_opt = server._h3._quic.stream_map.streams[key].send_buf.copy()
+    var send_buf_opt = server._h3._quic.stream_map.streams[key][].send_buf.copy()
     assert_true(
         Bool(send_buf_opt),
         String("stream must have a send buffer for the 425 response"),
@@ -327,7 +327,7 @@ def test_h3_handler_server_filter_reject_emits_stop_sending() raises:
         key in server._h3._quic.stream_map.streams,
         String("request stream must exist after 425 reject"),
     )
-    var stream = server._h3._quic.stream_map.streams[key].copy()
+    var stream = server._h3._quic.stream_map.streams[key][].copy()
     assert_true(
         stream.needs_stop_sending,
         String("STOP_SENDING must be queued on the rejected stream"),

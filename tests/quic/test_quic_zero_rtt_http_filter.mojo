@@ -369,7 +369,7 @@ def test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet() raises:
 
     var key = Int(0)
     assert_true(key in conn.stream_map.streams, String("stream must be created"))
-    var s = Stream(copy=conn.stream_map.streams[key])
+    var s = Stream(copy=conn.stream_map.streams[key][])
     assert_true(
         s.is_zero_rtt,
         String("new stream from 0-RTT packet must be tagged"),
@@ -402,7 +402,7 @@ def test_stream_is_zero_rtt_false_from_1rtt_packet() raises:
 
     var key = Int(4)
     assert_true(key in conn.stream_map.streams, String("stream must be created"))
-    var s = Stream(copy=conn.stream_map.streams[key])
+    var s = Stream(copy=conn.stream_map.streams[key][])
     assert_false(
         s.is_zero_rtt,
         String("new stream from 1-RTT packet must not be tagged"),
@@ -435,7 +435,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     var sf1 = StreamFrame(UInt64(8), UInt64(0), p1, False)
     conn._handle_stream_frame(sf1)
     var key = Int(8)
-    var s1 = Stream(copy=conn.stream_map.streams[key])
+    var s1 = Stream(copy=conn.stream_map.streams[key][])
     assert_true(s1.is_zero_rtt, String("creation-time tag True"))
 
     # Subsequent frame on the SAME stream in 1-RTT — must NOT clear.
@@ -444,7 +444,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     p2.append(UInt8(0x42))
     var sf2 = StreamFrame(UInt64(8), UInt64(1), p2, False)
     conn._handle_stream_frame(sf2)
-    var s2 = Stream(copy=conn.stream_map.streams[key])
+    var s2 = Stream(copy=conn.stream_map.streams[key][])
     assert_true(
         s2.is_zero_rtt,
         String("subsequent 1-RTT frame must not clear the tag"),
@@ -711,7 +711,7 @@ def test_send_425_emits_status_only_fin() raises:
     # `fin_offset` (frame-emission timestamp) is set only once
     # `make_frame` actually slices the FIN onto the wire, which
     # requires a flush pass that this test deliberately skips.
-    var s = Stream(copy=h3._quic.stream_map.streams[Int(0)])
+    var s = Stream(copy=h3._quic.stream_map.streams[Int(0)][])
     assert_true(
         s.send_buf is not None,
         String("send-side buffer must exist on the request stream"),
