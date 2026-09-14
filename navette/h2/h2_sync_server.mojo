@@ -13,9 +13,8 @@
 # can rename to H2StreamServer / H2StreamCtx if needed.
 
 from std.collections import Dict
-from std.memory import Pointer
-from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
+from std.memory import Span, UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.sys.info import size_of
 
 from .connection import (
@@ -57,7 +56,7 @@ from navette.util.null_ptr import null_ptr
 # The handler receives a pointer to the per-stream context, reads
 # `ctx.request` (or for streaming bodies, repeatedly polls
 # `ctx.recv_body`), and writes the response into `ctx.resp_writer`.
-# It runs to completion in one call — it never suspends.
+# It runs to completion in one call — no `yield_to_caller`.
 #
 # For streaming POST bodies that need to span multiple DATA frames,
 # the handler should not block on body data that isn't there yet;
@@ -67,7 +66,7 @@ from navette.util.null_ptr import null_ptr
 # handlers are headers-only, so this is sufficient).
 
 comptime H2BodyFn = def (
-    Pointer[CoroStreamCtx, MutUntrackedOrigin]
+    UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) thin raises -> None
 
 
@@ -93,7 +92,7 @@ struct CoroStreamCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt32
-    var extra_data: Pointer[NoneType, MutUntrackedOrigin]
+    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
@@ -104,12 +103,12 @@ struct CoroStreamCtx(Movable):
         var request: Request,
         caps: Capabilities,
         stream_id: UInt32,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin],
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
         self.resp_writer = ResponseWriter()
-        self.caps = Capabilities(copy=caps)
+        self.caps = Capabilities(other=caps)
         self.stream_id = stream_id
         self.extra_data = extra_data
         self.request_ended = False
@@ -117,25 +116,24 @@ struct CoroStreamCtx(Movable):
         self.headers_sent = False
         self.unacked_bytes = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.unacked_bytes = move.unacked_bytes
+    def __init__(out self, *, deinit take: Self):
+        self.request = take.request^
+        self.recv_body = take.recv_body^
+        self.resp_writer = take.resp_writer^
+        self.caps = take.caps^
+        self.stream_id = take.stream_id
+        self.extra_data = take.extra_data
+        self.request_ended = take.request_ended
+        self.response_ended = take.response_ended
+        self.headers_sent = take.headers_sent
+        self.unacked_bytes = take.unacked_bytes
 
 
 # ---------------------------------------------------------------------------
 # Per-stream memory budget (R8 in the sprint roadmap)
 # ---------------------------------------------------------------------------
 #
-# Pre-Path-A: 64 KiB stack + ~400 B ucontext + ~200 B coroutine handle
-# = ~65 KiB.
+# Pre-Path-A: 64 KiB stack + ~400 B ucontext + ~200 B CoroHandle = ~65 KiB.
 # Post-Path-A: just sizeof(CoroStreamCtx) for the heap-allocated context.
 #
 # The hard cap is 1024 B. Today we land around 608 B, dominated by:
@@ -162,10 +160,10 @@ def _check_stream_ctx_size():
 # ---------------------------------------------------------------------------
 
 
-def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
+def _free_stream(ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
     """Hard-destroy the CoroStreamCtx allocation."""
-    ctx_ptr.unsafe_deinit_pointee()
-    ctx_ptr.unsafe_free()
+    ctx_ptr.destroy_pointee()
+    ctx_ptr.free()
 
 
 # ---------------------------------------------------------------------------
@@ -178,15 +176,14 @@ def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
 # initialises the block in place via `init_pointee_move`; on `release`,
 # the caller destroys the pointee then hands the bare memory back here.
 #
-# Why this exists: the pre-Path-A per-connection coroutine pool (boucle's
-# stackful tier, today `boucle.coroutine.StackPool`) implicitly warmed the
-# per-connection cache lines because it recycled 64 KiB stack frames at the
-# same address across requests. Path A's sync
+# Why this exists: the old `CoroutinePool` (boucle.stackful) implicitly
+# warmed the per-connection cache lines because it recycled 64 KiB
+# stack frames at the same address across requests. Path A's sync
 # handler killed that locality (every `_heap_alloc[CoroStreamCtx]` is
 # a fresh address), and the cleanest pinned bench measured a -7.8% RPS
 # regression on /json/50 — the workload most sensitive to L1/L2 reuse.
 #
-# Capacity 16 mirrors that pool's default capacity and matches
+# Capacity 16 mirrors the prior `CoroutinePool` default and matches
 # typical h2load `-m 10` active-streams-per-connection.
 
 struct CoroStreamCtxPool(Movable):
@@ -196,36 +193,36 @@ struct CoroStreamCtxPool(Movable):
 
     # Holds bare (typed, uninitialised) memory blocks — pointee has been
     # destroyed before re-entry, so this is *not* a list of live PtrBox.
-    var _free: List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]
+    var _free: List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 16):
-        self._free = List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]()
+        self._free = List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
+    def __init__(out self, *, deinit take: Self):
+        self._free = take._free^
+        self._capacity = take._capacity
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         for i in range(len(self._free)):
-            self._free[i].unsafe_free()
+            self._free[i].free()
 
-    def acquire(mut self) raises -> Pointer[CoroStreamCtx, MutUntrackedOrigin]:
+    def acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
-        return _heap_alloc[CoroStreamCtx](1)
+        return _heap_alloc[CoroStreamCtx](1).as_unsafe_any_origin()
 
     def release(
-        mut self, ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
+        mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
             self._free.append(ptr)
         else:
-            ptr.unsafe_free()
+            ptr.free()
 
     def idle_count(self) -> Int:
         return len(self._free)
@@ -245,7 +242,7 @@ struct H2CoroServer(Movable):
 
     var _conn: H2Connection
     var _body_fn: H2BodyFn
-    var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
+    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
@@ -256,7 +253,7 @@ struct H2CoroServer(Movable):
         out self,
         *,
         body_fn: H2BodyFn,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
     ) raises:
@@ -279,7 +276,7 @@ struct H2CoroServer(Movable):
         *,
         body_fn: H2BodyFn,
         config: H2Config,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
     ) raises:
@@ -294,15 +291,15 @@ struct H2CoroServer(Movable):
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._flush_outbound()
 
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self._body_fn = move._body_fn
-        self._extra_data = move._extra_data
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._ctx_pool = move._ctx_pool^
+    def __init__(out self, *, deinit take: Self):
+        self._conn = take._conn^
+        self._body_fn = take._body_fn
+        self._extra_data = take._extra_data
+        self._outbuf = take._outbuf^
+        self._streams = take._streams^
+        self._ctx_pool = take._ctx_pool^
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -343,13 +340,13 @@ struct H2CoroServer(Movable):
         return sid in self._streams
 
     def _release_stream(
-        mut self, ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
+        mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Destroy the CoroStreamCtx pointee and return its memory
         block to the per-connection pool (or free if over capacity).
         Recycling preserves L1/L2 locality across requests on the
         same connection — the JSON encoder's working set stays warm."""
-        ctx_ptr.unsafe_deinit_pointee()
+        ctx_ptr.destroy_pointee()
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self):
@@ -396,7 +393,7 @@ struct H2CoroServer(Movable):
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events to per-stream state."""
         for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+            var evt = H2Event(other=events[i])
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
                 self._on_request_received(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
@@ -415,15 +412,16 @@ struct H2CoroServer(Movable):
     def _on_request_received(mut self, evt: H2Event) raises:
         """Handle REQUEST_RECEIVED: parse headers, allocate CoroStreamCtx
         on heap, register in streams dict, and run the handler now."""
-        var req = request_from_h2_headers(evt.stream_id, evt.headers)
-        var stream_id = Int(evt.stream_id)
-        var stream_ended = evt.stream_ended
+        ref p = evt.as_headers()
+        var req = request_from_h2_headers(p.stream_id, p.headers)
+        var stream_id = Int(p.stream_id)
+        var stream_ended = p.stream_ended
 
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = CoroStreamCtx(
             request=req^,
             caps=Capabilities.for_h2(),
-            stream_id=evt.stream_id,
+            stream_id=p.stream_id,
             extra_data=self._extra_data,
         )
 
@@ -431,7 +429,7 @@ struct H2CoroServer(Movable):
             ctx.recv_body._set_end()
             ctx.request_ended = True
 
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._streams[stream_id] = PtrBox[CoroStreamCtx](ctx_ptr)
 
         # Run handler synchronously — Path A simplification.
@@ -442,65 +440,67 @@ struct H2CoroServer(Movable):
         control. Path A: handler ran already on REQUEST_RECEIVED, so
         DATA arriving here is body content for streaming clients —
         accumulate it and acknowledge."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        if len(evt.data) > 0:
-            var data_copy = evt.data.copy()
+        var ctx = ctx_ptr.take_pointee()
+        if len(p.data) > 0:
+            var data_copy = p.data.copy()
             ctx.recv_body._push(BodyFrame.data(data_copy^))
         if not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
-                evt.flow_controlled_length, evt.stream_id
+                p.flow_controlled_length, p.stream_id
             )
         else:
-            ctx.unacked_bytes += evt.flow_controlled_length
+            ctx.unacked_bytes += p.flow_controlled_length
         if ctx.unacked_bytes > 0 and not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
-                ctx.unacked_bytes, evt.stream_id
+                ctx.unacked_bytes, p.stream_id
             )
             ctx.unacked_bytes = 0
-        if evt.stream_ended and not ctx.request_ended:
+        if p.stream_ended and not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
-        if evt.stream_ended:
+        ctx_ptr.init_pointee_move(ctx^)
+        if p.stream_ended:
             self._maybe_cleanup_stream(sid)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
         """Handle TRAILERS_RECEIVED: convert headers, push as trailer
         BodyFrame.  Trailers always carry END_STREAM."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var trailer_headers = headers_from_h2(evt.headers)
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var trailer_headers = headers_from_h2(p.headers)
+        var ctx = ctx_ptr.take_pointee()
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """Handle STREAM_ENDED: mark the body as ended."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_id())
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended:
             return
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET: tear down the stream."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -536,10 +536,10 @@ struct H2CoroServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
+            var ctx = ctx_ptr.take_pointee()
             var made_progress = False
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 continue
             if not ctx.headers_sent and ctx.resp_writer._has_status():
                 var status_opt = ctx.resp_writer._take_status()
@@ -604,6 +604,6 @@ struct H2CoroServer(Movable):
                 self._conn.send_data(
                     UInt32(sid), pending_data[k].copy(), end_stream=False
                 )
-            ctx_ptr.unsafe_write(ctx^)
+            ctx_ptr.init_pointee_move(ctx^)
             if made_progress:
                 self._maybe_cleanup_stream(sid)

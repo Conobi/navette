@@ -1,59 +1,39 @@
 # src/h2/h2_streaming_server.mojo
 #
 # HTTP/2 server-side adapter for STREAMING handlers. Each stream gets a
-# 64 KiB stackful coroutine (boucle.coroutine) so the handler can suspend
+# 64 KiB stackful coroutine (boucle.stackful) so the handler can suspend
 # across upstream I/O boundaries (LLM token emission, SSE, gRPC server-
 # streaming, reverse proxy, file upload). Companion to
 # `src/h2/h2_sync_server.mojo` — that's the default tier; this is opt-in.
 #
 # R8' compile-time budget: size_of[H2StreamingCtx]() < 96 KiB.
-# R1' grep gate: this file IS allowed to import boucle.coroutine.
+# R1' grep gate: this file IS allowed to import boucle.stackful.
 #
 # Backpressure note: write_chunk calls H2Connection.send_data
 # directly and returns. H2 flow control is handled by H2Connection internally —
 # oversized writes are queued in _pending_data and drained on WINDOW_UPDATE.
 # No WouldBlock handling is needed at this layer.
 #
-# API note: boucle's coroutine handle is `Coroutine[State]`, parametric on a
-# typed state value that both the caller and the body can reach. This adapter
-# instantiates it with `State = Pointer[H2StreamingCtx, MutUntrackedOrigin]`,
-# so a body declared as `CoroutineBody[H2StreamingState]`, i.e.
-#   def (mut Yielder[H2StreamingState]) raises -> None
-# recovers its per-stream ctx with a plain `yld.state()[]` — no untyped
-# `user_data()` pointer and no `bitcast`, so a handler written against the
-# wrong ctx type is a compile error rather than a type confusion at runtime.
+# API note: boucle.stackful's CoroBody type is:
+#   fn (mut CoroYielder) raises -> None
+# The handler receives its per-stream ctx via yld.user_data() cast to
+# UnsafePointer[H2StreamingCtx, MutAnyOrigin]. This matches the CoroBody
+# signature exactly.
 #
-# `Yielder.suspend()` is the suspension primitive. The helper functions
-# next_chunk / write_chunk / finish wrap it, so handlers call them directly.
-#
-# `Coroutine` is a LINEAR type (`@explicit_destroy`, `Deinitable where False`):
-# it has no destructor, and every path that drops one must call `close()` or
-# the 64 KiB mmap'd stack leaks. `close()` further requires the coroutine to be
-# in CREATED or DONE state, so every teardown path here calls `cancel()` first
-# — that drains a SUSPENDED body to DONE, swallowing errors. See
-# `_free_streaming_stream` (both the method and the module-level twin), which
-# are the only two places that release a coroutine.
-#
-# HANDLER CONTRACT: a body must never suspend unconditionally. `cancel()`
-# resumes the body in a loop until it returns, so a body that suspends
-# without ever checking `yld.is_cancelled()` (or `ctx.cancelled`) makes
-# connection teardown spin — boucle's 1000-iteration debug_assert catches
-# that in a checked build, but a release build would livelock. The
-# next_chunk / write_chunk helpers below poll both flags, so handlers built
-# from them are safe by construction; handlers that call `yld.suspend()`
-# directly must poll one of the two themselves.
+# CoroYielder.yield_to_caller() is the suspension primitive (not .suspend()).
+# The helper functions next_chunk / write_chunk / finish call yield_to_caller
+# internally so handlers can use them directly.
 
 from std.collections import Dict, Optional
-from std.memory import Pointer
-from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
+from std.memory import Span, UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.sys.info import size_of
 
-from boucle.coroutine import (
-    Coroutine,
-    CoroutineBody,
-    StackPool,
-    Yielder,
+from boucle.stackful import (
+    CoroutinePool,
+    CoroHandle,
+    CoroYielder,
+    CoroBody,
 )
 
 from navette.h2.connection import (
@@ -93,33 +73,19 @@ from navette.util.null_ptr import null_ptr
 
 
 # ---------------------------------------------------------------------------
-# Coroutine type aliases — typed state channel
+# H2StreamingHandlerFn — handler type alias
 # ---------------------------------------------------------------------------
 #
-# The coroutine's typed state IS the per-stream ctx pointer. The ctx itself
-# stays owned by the adapter (`_streams` + `H2StreamingCtxPool`) because
-# non-coroutine code must reach it while the body is suspended AND after the
-# body has returned — `_drain_responses` flushes the frames buffered by
-# `finish()` on a later event-loop pass, which is strictly after the coroutine
-# reaches DONE.
+# Must match boucle.stackful.CoroBody exactly:
+#   fn (mut CoroYielder) raises -> None
 #
 # Inside the body, access the per-stream ctx via:
-#   var ctx_ptr = yld.state()[]
+#   var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
 #
 # The handler may call next_chunk(ctx_ptr, yld) / write_chunk(ctx_ptr, yld, bytes)
 # / finish(ctx_ptr, yld) to suspend across event-loop passes.
 
-comptime H2StreamingState = Pointer[H2StreamingCtx, MutUntrackedOrigin]
-"""Typed coroutine state for H2 streaming: a pointer to the per-stream ctx."""
-
-comptime H2StreamingCoro = Coroutine[H2StreamingState]
-"""Caller-side coroutine handle for one H2 request stream (linear type)."""
-
-comptime H2StreamingYielder = Yielder[H2StreamingState]
-"""Coroutine-side handle handed to an H2 streaming handler body."""
-
-comptime H2StreamingHandlerFn = CoroutineBody[H2StreamingState]
-"""Handler signature: `def (mut Yielder[H2StreamingState]) raises -> None`."""
+comptime H2StreamingHandlerFn = CoroBody
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +100,7 @@ struct H2StreamingCtx(Movable):
     Extends the sync-server CoroStreamCtx shape with:
       - body_frame_ring: incoming body frames drained by next_chunk()
       - cancelled:       set true by adapter on peer reset / GOAWAY
-      - coro_addr:       address of the heap slot holding this stream's
-                         H2StreamingCoro (null = none). The slot is owned by
-                         the ctx; `_free_streaming_stream` is the only place
-                         that cancel()s + close()s and frees it.
+      - coro_addr:       address of heap-allocated CoroHandle (0 = none)
 
     No writer_pending_chunk field — Option A: write_chunk does not suspend
     on backpressure; H2Connection's send_data queues oversized writes and
@@ -149,25 +112,25 @@ struct H2StreamingCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt32
-    var extra_data: Pointer[NoneType, MutUntrackedOrigin]
+    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
     var body_frame_ring: List[BodyFrame]
     var cancelled: Bool
-    var coro_addr: PtrBox[H2StreamingCoro]
+    var coro_addr: PtrBox[CoroHandle]
 
     def __init__(
         out self,
         var request: Request,
         caps: Capabilities,
         stream_id: UInt32,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin],
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
         self.resp_writer = ResponseWriter()
-        self.caps = Capabilities(copy=caps)
+        self.caps = Capabilities(other=caps)
         self.stream_id = stream_id
         self.extra_data = extra_data
         self.request_ended = False
@@ -175,23 +138,23 @@ struct H2StreamingCtx(Movable):
         self.headers_sent = False
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
-        self.coro_addr = PtrBox[H2StreamingCoro].null()
+        self.coro_addr = PtrBox[CoroHandle].null()
 
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.body_frame_ring = move.body_frame_ring^
-        self.cancelled = move.cancelled
-        self.coro_addr = move.coro_addr^
+    def __init__(out self, *, deinit take: Self):
+        self.request = take.request^
+        self.recv_body = take.recv_body^
+        self.resp_writer = take.resp_writer^
+        self.caps = take.caps^
+        self.stream_id = take.stream_id
+        self.extra_data = take.extra_data
+        self.request_ended = take.request_ended
+        self.response_ended = take.response_ended
+        self.headers_sent = take.headers_sent
+        self.body_frame_ring = take.body_frame_ring^
+        self.cancelled = take.cancelled
+        self.coro_addr = take.coro_addr^
 
-    def coro_ptr(self) -> Pointer[H2StreamingCoro, MutUntrackedOrigin]:
+    def coro_ptr(self) -> UnsafePointer[CoroHandle, MutAnyOrigin]:
         """Typed pointer into the coro's heap slot (null if none)."""
         return self.coro_addr.ptr()
 
@@ -200,8 +163,8 @@ struct H2StreamingCtx(Movable):
 # Per-stream memory budget (R8' in the sprint roadmap)
 # ---------------------------------------------------------------------------
 #
-# The 64 KiB stack (boucle.coroutine default) is mmap'd by the StackPool and
-# reached through coro_addr; it is not counted toward H2StreamingCtx's
+# 64 KiB stack (boucle.stackful default) is heap-allocated INSIDE the
+# CoroHandle (pointed to by coro_addr); not counted toward H2StreamingCtx's
 # direct size. The struct itself holds: Request + RecvBody + ResponseWriter +
 # Capabilities + stream_id + extra_data + coro_addr + 3 bools + body_frame_ring +
 # cancelled bool. Should land around the same size as the sync ctx (~600 B)
@@ -222,32 +185,15 @@ def _check_streaming_ctx_size():
 
 
 def next_chunk(
-    ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_],
-    mut yld: H2StreamingYielder,
+    ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin],
+    mut yld: CoroYielder,
 ) raises -> Optional[BodyFrame]:
     """Yield the next body chunk. Suspends if none ready. Returns None on EOF.
-
-    Polls cancellation between suspends, from BOTH sources: `ctx.cancelled`
-    (set by the adapter on peer reset / GOAWAY) and `yld.is_cancelled()` (set
-    by `Coroutine.cancel()`). Honouring the coroutine's own flag is what makes
-    `cancel()` terminate — it resumes the body in a loop until DONE, so a body
-    that only watched `ctx.cancelled` would spin forever if the adapter ever
-    cancelled without setting it.
-
-    Args:
-        ctx_ptr: Pointer to this stream's context.
-        yld: The coroutine-side yielder for this stream.
-
-    Returns:
-        The next BodyFrame, or None once the request body has ended.
-
-    Raises:
-        `H2StreamCancelled` if the stream is cancelled while waiting.
-    """
+    Polls cancellation between suspends."""
     while not ctx_ptr[].request_ended and len(ctx_ptr[].body_frame_ring) == 0:
-        if ctx_ptr[].cancelled or yld.is_cancelled():
+        if ctx_ptr[].cancelled:
             raise Error("H2StreamCancelled")
-        yld.suspend()
+        yld.yield_to_caller()
     if len(ctx_ptr[].body_frame_ring) > 0:
         # FIFO: pop(0) preserves arrival order. Default pop() is LIFO and
         # would deliver multi-chunk bodies to the handler in reverse order.
@@ -257,28 +203,20 @@ def next_chunk(
 
 
 def write_chunk(
-    ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_],
-    mut yld: H2StreamingYielder,
+    ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin],
+    mut yld: CoroYielder,
     var bytes: List[UInt8],
 ) raises:
-    """Buffer a body chunk for the adapter to send. Does NOT suspend on
+    """Send a body chunk via H2Connection.send_data. Does NOT suspend on
     backpressure — H2Connection.send_data queues oversized writes internally
-    and drains them when WINDOW_UPDATE arrives.
+    and drains them when WINDOW_UPDATE arrives. The yld parameter is
+    accepted for API symmetry (and future-proofing) but unused in this
+    implementation.
 
     The actual H2Connection.send_data call happens in the streaming server's
     _drain_responses on the next event-loop pass — write_chunk just buffers
-    the chunk into ctx.resp_writer for the drain to pick up.
-
-    Args:
-        ctx_ptr: Pointer to this stream's context.
-        yld: The coroutine-side yielder; consulted for cancellation only,
-            since this helper never suspends.
-        bytes: The chunk to buffer (ownership transferred in).
-
-    Raises:
-        `H2StreamCancelled` if the stream has been cancelled.
-    """
-    if ctx_ptr[].cancelled or yld.is_cancelled():
+    the chunk into ctx.resp_writer for the drain to pick up."""
+    if ctx_ptr[].cancelled:
         raise Error("H2StreamCancelled")
     # Buffer the data into resp_writer via try_send_body.
     # The adapter's _drain_responses calls H2Connection.send_data with
@@ -288,41 +226,30 @@ def write_chunk(
 
 
 def finish(
-    ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_],
-    mut yld: H2StreamingYielder,
+    ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin],
+    mut yld: CoroYielder,
 ) raises:
     """Close the response body. The handler should return immediately after
     this call. Adapter's _drain_responses sends the final END_STREAM on the
     next event-loop pass.
 
     Design note: finish() is synchronous — it buffers the end BodyFrame into
-    resp_writer but does NOT suspend. The handler returns and the coro reaches
-    DONE state. On the next feed call, _drain_responses processes the buffered
-    end frame and sets response_ended=True.
+    resp_writer but does NOT call yield_to_caller(). The handler returns and
+    the coro reaches DONE state. On the next feed call, _drain_responses
+    processes the buffered end frame and sets response_ended=True.
 
-    Why no suspend here? If finish() suspended, the coro would be SUSPENDED
-    when _maybe_cleanup_stream (called from _on_stream_ended) runs, and
-    `Coroutine.close()` debug_asserts on a non-CREATED/DONE phase. Keeping
-    finish() synchronous avoids that invariant violation and is simpler: the
-    handler just returns and the coro is DONE.
-
-    Args:
-        ctx_ptr: Pointer to this stream's context.
-        yld: The coroutine-side yielder, accepted for API symmetry with
-            next_chunk / write_chunk; unused because finish never suspends.
-    """
+    Why no yield_to_caller here? If finish() suspended, the coro would be in
+    SUSPENDED state when _maybe_cleanup_stream (called from _on_stream_ended)
+    runs — which triggers a boucle debug_assert when destroying the still-
+    suspended CoroHandle. Keeping finish() synchronous avoids that invariant
+    violation and is simpler: the handler just returns and the coro is DONE."""
     ctx_ptr[].resp_writer.end()
+    # yld is accepted for API symmetry; not used because finish is synchronous.
 
 
-def cancelled(ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_]) -> Bool:
-    """Report whether the adapter has cancelled this stream.
-
-    Args:
-        ctx_ptr: Pointer to this stream's context.
-
-    Returns:
-        True once the adapter has flagged the stream cancelled.
-    """
+def cancelled(
+    ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin]
+) -> Bool:
     return ctx_ptr[].cancelled
 
 
@@ -331,48 +258,18 @@ def cancelled(ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_]) -> Bool:
 # ---------------------------------------------------------------------------
 
 
-def _release_coro(ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_]):
-    """Cancel, close and free this stream's coroutine, if it still has one.
-
-    `Coroutine` is linear: it has no destructor, so dropping the heap slot
-    without `close()` leaks a 64 KiB mmap'd stack — one per request, which on
-    a server is an unbounded DoS vector. `close()` in turn debug_asserts
-    unless the coroutine is CREATED or DONE, so a still-SUSPENDED body must
-    first be drained by `cancel()`, which resumes it until it returns and
-    swallows any error it raises on the way out. `cancel()` is a no-op on an
-    already-DONE coroutine, so this is safe to call on every path.
-
-    `ctx.cancelled` is set first so handlers that poll the ctx flag (rather
-    than `yld.is_cancelled()`) also unwind on the very first resume.
-
-    Idempotent: clears `coro_addr` so a double call cannot double-free.
-
-    Args:
-        ctx_ptr: Pointer to the stream context owning the coroutine slot.
-    """
-    if not ctx_ptr[].coro_addr.is_some():
-        return
-    var coro_p = ctx_ptr[].coro_ptr()
-    ctx_ptr[].coro_addr = PtrBox[H2StreamingCoro].null()
-    ctx_ptr[].cancelled = True
-    coro_p[].cancel()
-    var coro = coro_p.unsafe_take_pointee()
-    coro^.close()
-    coro_p.unsafe_free()
-
-
-def _free_streaming_stream(ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_]):
+def _free_streaming_stream(ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin]):
     """DESTRUCTOR PATH ONLY. Bypasses the ctx pool. Runtime sites must use
     H2StreamingServer._free_streaming_stream() instead — this module-level
-    variant exists only because __deinit__(deinit self) cannot call mut-self
-    methods. ALWAYS call _streams.pop(sid) BEFORE calling this function.
-
-    Args:
-        ctx_ptr: Pointer to the stream context to tear down and free.
-    """
-    _release_coro(ctx_ptr)
-    ctx_ptr.unsafe_deinit_pointee()
-    ctx_ptr.unsafe_free()
+    variant exists only because __del__(deinit self) cannot call mut-self
+    methods. ALWAYS call _streams.pop(sid) BEFORE calling this function."""
+    if ctx_ptr[].coro_addr.is_some():
+        var coro_p = ctx_ptr[].coro_ptr()
+        coro_p.take_pointee().destroy()
+        coro_p.free()
+        ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
+    ctx_ptr.destroy_pointee()
+    ctx_ptr.free()
 
 
 # ---------------------------------------------------------------------------
@@ -391,36 +288,36 @@ struct H2StreamingCtxPool(Movable):
 
     # Holds bare (typed, uninitialised) memory blocks — pointee has been
     # destroyed before re-entry, so this is *not* a list of live PtrBox.
-    var _free: List[Pointer[H2StreamingCtx, MutUntrackedOrigin]]
+    var _free: List[UnsafePointer[H2StreamingCtx, MutAnyOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 4):
-        self._free = List[Pointer[H2StreamingCtx, MutUntrackedOrigin]]()
+        self._free = List[UnsafePointer[H2StreamingCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
+    def __init__(out self, *, deinit take: Self):
+        self._free = take._free^
+        self._capacity = take._capacity
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         for i in range(len(self._free)):
-            self._free[i].unsafe_free()
+            self._free[i].free()
 
-    def acquire(mut self) raises -> Pointer[H2StreamingCtx, MutUntrackedOrigin]:
+    def acquire(mut self) raises -> UnsafePointer[H2StreamingCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
-        return _heap_alloc[H2StreamingCtx](1)
+        return _heap_alloc[H2StreamingCtx](1).as_unsafe_any_origin()
 
     def release(
-        mut self, ptr: Pointer[H2StreamingCtx, MutUntrackedOrigin]
+        mut self, ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
             self._free.append(ptr)
         else:
-            ptr.unsafe_free()
+            ptr.free()
 
     def idle_count(self) -> Int:
         return len(self._free)
@@ -434,24 +331,23 @@ struct H2StreamingCtxPool(Movable):
 struct H2StreamingServer(Movable):
     """Drive per-stream stackful coroutines from an HTTP/2 H2Connection.
     Sans-IO: the caller feeds inbound TCP bytes via `feed()` and drains
-    outbound bytes via `drain()`. Each new request spawns an H2StreamingCoro
-    on a stack borrowed from a per-connection `StackPool`, which suspends
-    and resumes as body data and
+    outbound bytes via `drain()`. Each new request spawns a CoroHandle
+    (via CoroutinePool) that suspends and resumes as body data and
     write-drains occur.
 
-    The handler function must match H2StreamingHandlerFn:
-        def (mut Yielder[H2StreamingState]) raises -> None
+    The handler function must match CoroBody:
+        fn (mut CoroYielder) raises -> None
     Access per-stream ctx inside the handler via:
-        var ctx_ptr = yld.state()[]
+        var ctx_ptr = yld.user_data().bitcast[H2StreamingCtx]().as_unsafe_any_origin()
     """
 
     var _conn: H2Connection
     var _handler_fn: H2StreamingHandlerFn
-    var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
+    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[UInt8]
     var _streams: Dict[Int, PtrBox[H2StreamingCtx]]
     var _ctx_pool: H2StreamingCtxPool
-    var _coro_pool: StackPool
+    var _coro_pool: CoroutinePool
 
     # --- Constructors -------------------------------------------------------
 
@@ -459,7 +355,7 @@ struct H2StreamingServer(Movable):
         out self,
         *,
         handler_fn: H2StreamingHandlerFn,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
     ) raises:
@@ -475,7 +371,7 @@ struct H2StreamingServer(Movable):
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, PtrBox[H2StreamingCtx]]()
         self._ctx_pool = H2StreamingCtxPool(capacity=4)
-        self._coro_pool = StackPool(capacity=4)
+        self._coro_pool = CoroutinePool(capacity=4)
         self._flush_outbound()
 
     def __init__(
@@ -483,7 +379,7 @@ struct H2StreamingServer(Movable):
         *,
         handler_fn: H2StreamingHandlerFn,
         config: H2Config,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
     ) raises:
@@ -496,23 +392,27 @@ struct H2StreamingServer(Movable):
         self._outbuf = List[UInt8]()
         self._streams = Dict[Int, PtrBox[H2StreamingCtx]]()
         self._ctx_pool = H2StreamingCtxPool(capacity=4)
-        self._coro_pool = StackPool(capacity=4)
+        self._coro_pool = CoroutinePool(capacity=4)
         self._flush_outbound()
 
-    def __deinit__(deinit self):
-        """Close every live coroutine and free all heap-allocated contexts.
-
-        Uses the module-level `_free_streaming_stream`, which drains each
-        coroutine to DONE via `cancel()` before `close()`. Without that, a
-        connection torn down mid-request would drop SUSPENDED coroutines and
-        leak their stacks.
-        """
+    def __del__(deinit self):
+        """Destroy and free all heap-allocated stream contexts and coroutines."""
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
         for i in range(len(keys)):
             try:
-                _free_streaming_stream(self._streams[keys[i]].ptr())
+                var ctx_ptr = self._streams[keys[i]].ptr()
+                # Set cancelled so any resumed coro exits cleanly
+                ctx_ptr[].cancelled = True
+                if ctx_ptr[].coro_addr.is_some():
+                    var coro_p = ctx_ptr[].coro_ptr()
+                    if coro_p[].can_resume():
+                        try:
+                            coro_p[].resume()
+                        except:
+                            pass
+                _free_streaming_stream(ctx_ptr)
             except:
                 pass
 
@@ -573,21 +473,20 @@ struct H2StreamingServer(Movable):
         return sid in self._streams
 
     def _free_streaming_stream(
-        mut self, ctx_ptr: Pointer[H2StreamingCtx, MutUntrackedOrigin]
+        mut self, ctx_ptr: UnsafePointer[H2StreamingCtx, MutAnyOrigin]
     ):
-        """Cancel + close the stream's coroutine, destroy the H2StreamingCtx,
-        and return the
+        """Destroy the stream's CoroHandle + H2StreamingCtx and return the
         ctx slot to the per-connection pool. The pool's release() decides
         whether to keep the slot for reuse (under capacity) or free it
         (beyond capacity), so this restores the freelist that earlier
-        revisions silently bypassed by freeing ctx_ptr directly.
-        ALWAYS call _streams.pop(sid) BEFORE invoking this method.
-
-        Args:
-            ctx_ptr: Pointer to the stream context to tear down.
-        """
-        _release_coro(ctx_ptr)
-        ctx_ptr.unsafe_deinit_pointee()
+        revisions silently bypassed by calling ctx_ptr.free() directly.
+        ALWAYS call _streams.pop(sid) BEFORE invoking this method."""
+        if ctx_ptr[].coro_addr.is_some():
+            var coro_p = ctx_ptr[].coro_ptr()
+            coro_p.take_pointee().destroy()
+            coro_p.free()
+            ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
+        ctx_ptr.destroy_pointee()
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self):
@@ -652,9 +551,9 @@ struct H2StreamingServer(Movable):
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch all H2 events."""
         for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+            var evt = H2Event(other=events[i])
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
-                if Int(evt.stream_id) not in self._streams:
+                if Int(evt.as_headers().stream_id) not in self._streams:
                     self._on_request(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
                 self._on_data(evt)
@@ -672,49 +571,36 @@ struct H2StreamingServer(Movable):
 
     def _on_request(mut self, evt: H2Event) raises:
         """REQUEST_RECEIVED: parse headers into Request, allocate
-        an H2StreamingCtx plus its H2StreamingCoro (on a stack borrowed from
-        the per-connection StackPool), register in
+        H2StreamingCtx + CoroHandle (via CoroutinePool) on heap, register in
         streams dict, and do the first resume.
-        If evt.stream_ended==True (bodyless GET), set request_ended + recv_body._set_end()."""
-        var req = request_from_h2_headers(evt.stream_id, evt.headers)
-        var stream_id = Int(evt.stream_id)
+        If stream_ended==True (bodyless GET), set request_ended + recv_body._set_end()."""
+        ref p = evt.as_headers()
+        var req = request_from_h2_headers(p.stream_id, p.headers)
+        var stream_id = Int(p.stream_id)
 
         # Allocate ctx from pool
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = H2StreamingCtx(
             request=req^,
             caps=Capabilities.for_h2(),
-            stream_id=evt.stream_id,
+            stream_id=p.stream_id,
             extra_data=self._extra_data,
         )
 
         # stream_ended on REQUEST_RECEIVED = bodyless request (e.g. GET)
-        if evt.stream_ended:
+        if p.stream_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
 
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
 
-        # Spawn the coroutine on a pooled stack. Its typed state IS ctx_ptr,
-        # so the body reaches the context with yld.state()[] — no untyped
-        # user_data pointer and no bitcast.
-        #
-        # The coroutine is a linear type and cannot live in a Dict, so it is
-        # boxed in its own heap slot that the ctx owns. If either the slot
-        # allocation or the coroutine construction fails, the already-written
-        # ctx would otherwise be orphaned (it is not yet in self._streams and
-        # nothing else holds its pointer), so unwind it here before re-raising.
-        var coro_heap = _heap_alloc[H2StreamingCoro](1)
-        try:
-            coro_heap.unsafe_write(
-                H2StreamingCoro(self._handler_fn, ctx_ptr, self._coro_pool)
-            )
-        except e:
-            coro_heap.unsafe_free()
-            ctx_ptr.unsafe_deinit_pointee()
-            self._ctx_pool.release(ctx_ptr)
-            raise e^
-        ctx_ptr[].coro_addr = PtrBox[H2StreamingCoro](coro_heap)
+        # Acquire CoroHandle from pool; user_data = ctx_ptr reinterpreted as
+        # an opaque MutUntrackedOrigin pointer (boucle's CoroBody.user_data type).
+        var user_data = UnsafePointer[NoneType, MutUntrackedOrigin](
+            unsafe_from_address=Int(ctx_ptr)
+        )
+        var coro_heap = self._coro_pool.acquire(self._handler_fn, user_data)
+        ctx_ptr[].coro_addr = PtrBox[CoroHandle](coro_heap)
 
         # Insert BEFORE first resume so _drain_responses can find the stream
         self._streams[stream_id] = PtrBox[H2StreamingCtx](ctx_ptr)
@@ -725,89 +611,84 @@ struct H2StreamingServer(Movable):
     def _on_trailers(mut self, evt: H2Event) raises:
         """TRAILERS_RECEIVED: push as BodyFrame.trailers into body_frame_ring,
         resume coroutine."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        var trailer_headers = headers_from_h2(evt.headers)
+        var ctx = ctx_ptr.take_pointee()
+        var trailer_headers = headers_from_h2(p.headers)
         ctx.body_frame_ring.append(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._resume_stream(sid)
 
     def _on_data(mut self, evt: H2Event) raises:
         """DATA_RECEIVED: push data into body_frame_ring, resume coroutine.
         Also acknowledge received bytes for H2 flow control."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        if len(evt.data) > 0:
-            var data_copy = List[UInt8](copy=evt.data)
+        var ctx = ctx_ptr.take_pointee()
+        if len(p.data) > 0:
+            var data_copy = List[UInt8](copy=p.data)
             ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         # Acknowledge flow control bytes
         try:
-            self._conn.acknowledge_received_data(evt.flow_controlled_length, evt.stream_id)
+            self._conn.acknowledge_received_data(p.flow_controlled_length, p.stream_id)
         except:
             pass
-        if evt.stream_ended:
-            var ctx2 = ctx_ptr.unsafe_take_pointee()
+        if p.stream_ended:
+            var ctx2 = ctx_ptr.take_pointee()
             if not ctx2.request_ended:
                 ctx2.request_ended = True
                 ctx2.recv_body._set_end()
-            ctx_ptr.unsafe_write(ctx2^)
+            ctx_ptr.init_pointee_move(ctx2^)
         self._resume_stream(sid)
-        if evt.stream_ended:
+        if p.stream_ended:
             self._maybe_cleanup_stream(sid)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """STREAM_ENDED: mark body ended, resume coroutine."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_id())
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended:
             return
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._resume_stream(sid)
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
-        """STREAM_RESET: pop the stream, then tear it down.
-
-        `_free_streaming_stream` sets ctx.cancelled and drains the coroutine
-        to DONE with `cancel()` before closing it, so a handler suspended
-        mid-body unwinds instead of leaving a SUSPENDED coroutine that
-        `close()` would refuse.
-
-        Args:
-            evt: The STREAM_RESET event naming the stream to abort.
-        """
-        var sid = Int(evt.stream_id)
+        """STREAM_RESET: set cancelled, resume once for unwind,
+        then pop BEFORE free."""
+        var sid = Int(evt.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
+        ctx_ptr[].cancelled = True
+        if ctx_ptr[].coro_addr.is_some():
+            var coro_p = ctx_ptr[].coro_ptr()
+            if coro_p[].can_resume():
+                try:
+                    coro_p[].resume()
+                except:
+                    pass
         _ = self._streams.pop(sid)  # pop BEFORE free
         self._free_streaming_stream(ctx_ptr)
 
     def _on_goaway(mut self, evt: H2Event) raises:
-        """GOAWAY_RECEIVED / CONNECTION_TERMINATED: tear down ALL streams.
-
-        Each stream is popped before being freed; `_free_streaming_stream`
-        cancels and drains its coroutine to DONE before closing it.
-
-        Args:
-            evt: The GOAWAY / CONNECTION_TERMINATED event (unused; the whole
-                connection is going away).
-        """
+        """GOAWAY_RECEIVED / CONNECTION_TERMINATED: set cancelled for ALL streams,
+        resume each once for unwind, pop BEFORE free for each."""
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
@@ -816,6 +697,14 @@ struct H2StreamingServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
+            ctx_ptr[].cancelled = True
+            if ctx_ptr[].coro_addr.is_some():
+                var coro_p = ctx_ptr[].coro_ptr()
+                if coro_p[].can_resume():
+                    try:
+                        coro_p[].resume()
+                    except:
+                        pass
             _ = self._streams.pop(sid)  # pop BEFORE free
             self._free_streaming_stream(ctx_ptr)
 
@@ -844,9 +733,9 @@ struct H2StreamingServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
+            var ctx = ctx_ptr.take_pointee()
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 continue
             var made_progress = False
             # Send response headers if not yet sent
@@ -934,6 +823,6 @@ struct H2StreamingServer(Movable):
                     )
                 except:
                     pass
-            ctx_ptr.unsafe_write(ctx^)
+            ctx_ptr.init_pointee_move(ctx^)
             if made_progress:
                 self._maybe_cleanup_stream(sid)

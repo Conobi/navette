@@ -5,9 +5,8 @@
 # Mirrors src/h2/h2_handler_server.mojo patterns.
 
 from std.collections import Dict, Optional
-from std.memory import Pointer
-from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
+from std.memory import Span, UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
@@ -106,13 +105,13 @@ struct _H3StreamCtx(Movable):
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.detached = move.detached
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
+    def __init__(out self, *, deinit take: Self):
+        self.recv_body = take.recv_body^
+        self.resp_writer = take.resp_writer^
+        self.detached = take.detached
+        self.request_ended = take.request_ended
+        self.response_ended = take.response_ended
+        self.headers_sent = take.headers_sent
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +125,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _h3:      H3Connection
     var handler:  Self.H
     var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
+    var profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled via the IdempotentOnly / Tuned
@@ -137,7 +136,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     # 0-RTT-arrived request, the dispatch helper takes the fail-closed
     # branch (a config-invariant violation; misconfig_fail_closed bumps).
     var _early_data_filter_ptr: Optional[
-        Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
+        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate fn, propagated from
@@ -147,19 +146,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     to `_early_data_filter_ptr` per the truth-table for the predicate
     variant of the 0-RTT policy."""
 
-    # Test-only: when True the next `drain_datagrams` clears it and raises
-    # before touching the connection, so the server's refresh-on-raise
-    # path can be exercised. Never set by production code.
-    var _raise_on_next_drain: Bool
-
     def __init__(
         out self,
         *,
         var quic: QuicConnection,
         var handler: Self.H,
-        profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
+        profile_ptr: Optional[UnsafePointer[AcceptProfile, MutAnyOrigin]] = None,
         early_data_filter_ptr: Optional[
-            Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
+            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
@@ -173,26 +167,24 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._h3.profile_ptr = profile_ptr
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
-        self._raise_on_next_drain = False
 
-    def __init__(out self, *, deinit move: Self):
-        self._h3 = move._h3^
-        self.handler = move.handler^
-        self._streams = move._streams^
-        self.profile_ptr = move.profile_ptr
-        self._early_data_filter_ptr = move._early_data_filter_ptr
-        self._early_data_predicate_fn = move._early_data_predicate_fn
-        self._raise_on_next_drain = move._raise_on_next_drain
+    def __init__(out self, *, deinit take: Self):
+        self._h3 = take._h3^
+        self.handler = take.handler^
+        self._streams = take._streams^
+        self.profile_ptr = take.profile_ptr
+        self._early_data_filter_ptr = take._early_data_filter_ptr
+        self._early_data_predicate_fn = take._early_data_predicate_fn
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
         for i in range(len(keys)):
             try:
                 var p = self._streams[keys[i]].ptr()
-                p.unsafe_deinit_pointee()
-                p.unsafe_free()
+                p.destroy_pointee()
+                p.free()
             except:
                 pass
 
@@ -206,13 +198,12 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: Pointer[UInt8, MutUntrackedOrigin],
+        buf: UnsafePointer[UInt8, MutAnyOrigin],
         buf_len: Int,
         now: UInt64,
-        ecn_mark: UInt8 = UInt8(0),
     ) raises:
         """Feed one inbound QUIC datagram from a mutable buffer (zero-copy)."""
-        self._h3.feed_datagram_from_buffer(buf, buf_len, now, ecn_mark)
+        self._h3.feed_datagram_from_buffer(buf, buf_len, now)
 
         # Bracket _dispatch_h3_events
         comptime if PROFILE_ACCEPT:
@@ -238,31 +229,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self._drain_responses(now)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`.
-
-        Test-only: with `_raise_on_next_drain` set, clears it and raises
-        before the connection is touched, so no datagram is produced and no
-        state moves.
-        """
-        if self._raise_on_next_drain:
-            self._raise_on_next_drain = False
-            raise "H3HandlerServer: forced drain failure (test-only)"
         return self._h3.drain_datagrams(now)
 
     def should_close(self) -> Bool:
         return self._h3.is_closed()
-
-    def is_closing_or_draining(self) -> Bool:
-        """True once CLOSING, DRAINING or CLOSED (peer address is frozen)."""
-        return self._h3.is_closing_or_draining()
-
-    def timeout(self, now: UInt64) -> Optional[UInt64]:
-        """Earliest absolute deadline (µs) this connection needs servicing at."""
-        return self._h3.timeout(now)
-
-    def has_pending_egress(self) -> Bool:
-        """True when the last drain hit the cap and datagrams are still owed."""
-        return self._h3.has_pending_egress()
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
         """Send GOAWAY via the underlying H3Connection."""
@@ -315,14 +285,15 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def _on_request(mut self, ev: H3Event, now: UInt64) raises:
         """Parse pseudo-headers from QPACK fields, build Request, invoke handler."""
+        ref hp = ev.as_headers()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for i in range(len(hp.fields)):
+            var name = hp.fields[i].name
+            var value = hp.fields[i].value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -361,7 +332,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # `Early-Data: 1` into req_headers.
         var stream_is_zr = False
         if self._h3._quic.zero_rtt_enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, hp.stream_id)
             var outcome = apply_early_data_filter(
                 method_str,
                 path_str,
@@ -372,7 +343,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self.profile_ptr,
             )
             if outcome.should_send_425():
-                send_425_response(ev.stream_id, self._h3)
+                send_425_response(hp.stream_id, self._h3)
                 return
 
         var req = Request(
@@ -402,7 +373,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 resp,
                 Capabilities.for_h3(
                     is_early_data=stream_is_zr,
-                    stream_id=ev.stream_id,
+                    stream_id=hp.stream_id,
                     conn_id=conn_id_u64,
                     peer_addr=peer_addr_str^,
                 ),
@@ -412,37 +383,38 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
         var detached = body._state == 3
 
-        var ctx_ptr = _heap_alloc[_H3StreamCtx](1)
+        var ctx_ptr = _heap_alloc[_H3StreamCtx](1).as_unsafe_any_origin()
         var ctx = _H3StreamCtx()
         ctx.recv_body = body^
         ctx.resp_writer = resp^
         ctx.detached = detached
-        ctx_ptr.unsafe_write(ctx^)
-        self._streams[Int(ev.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
+        ctx_ptr.init_pointee_move(ctx^)
+        self._streams[Int(hp.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
 
     def _on_data(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
+        ref dp = ev.as_stream_data()
+        var sid = Int(dp.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var ctx = ctx_ptr.take_pointee()
+        var data_copy = List[UInt8](copy=dp.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
         if not ctx.detached:
             try:
                 self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)
             except:
                 pass
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_end().stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         if ctx.request_ended:
-            ctx_ptr.unsafe_write(ctx^)
+            ctx_ptr.init_pointee_move(ctx^)
             return
         ctx.request_ended = True
         ctx.recv_body._set_end()
@@ -451,20 +423,19 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
             except:
                 pass
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
+        ref rp = ev.as_stream_reset()
+        var sid = Int(rp.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        # Taken out of the slot purely so it is destroyed; nothing below
-        # reads it, and nothing it owns is touched before the block ends.
-        _ = ctx_ptr.unsafe_take_pointee()
-        var err = StreamError.rst_stream(UInt32(ev.error_code))
+        var ctx = ctx_ptr.take_pointee()
+        var err = StreamError.rst_stream(UInt32(rp.error_code))
         self.handler.on_reset(err)
         _ = self._streams.pop(sid)
-        ctx_ptr.unsafe_free()
+        ctx_ptr.free()
 
     # --- Internal: response drain --------------------------------------------
 
@@ -478,13 +449,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             if sid not in self._streams:
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
+            var ctx = ctx_ptr.take_pointee()
             if ctx.response_ended:
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 self._maybe_cleanup(sid)
                 continue
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 continue
             # Send response headers
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -536,7 +507,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                         pass
                     ctx.response_ended = True
                     break
-            ctx_ptr.unsafe_write(ctx^)
+            ctx_ptr.init_pointee_move(ctx^)
             self._maybe_cleanup(sid)
 
     def _maybe_cleanup(mut self, sid: Int) raises:
@@ -546,8 +517,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
             _ = self._streams.pop(sid)
-            ctx_ptr.unsafe_deinit_pointee()
-            ctx_ptr.unsafe_free()
+            ctx_ptr.destroy_pointee()
+            ctx_ptr.free()
 
     # --- Out-of-band response injection (cross-transport wake) ---------------
 
@@ -597,7 +568,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         try:
             ctx.resp_writer.send_status(status^, headers^)
             if len(body) > 0:
@@ -607,4 +578,4 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 ctx.resp_writer.end()
         except:
             pass
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)

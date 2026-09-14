@@ -17,18 +17,12 @@ from navette.h3.guard_predicates import (
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert, load_test_ca
 
 
-def test_h3event_zero_values() raises:
-    """H3Event initializes all non-kind fields to zero/empty."""
-    var ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
+def test_h3event_factory_roundtrip() raises:
+    """H3Event factory methods produce correct kind and payload type."""
+    var ev = H3Event.handshake_complete()
     assert_equal_int(Int(ev.kind), Int(H3Event.HANDSHAKE_COMPLETE), "kind")
-    assert_equal_int(Int(ev.stream_id), 0, "stream_id zero")
-    assert_equal_int(len(ev.fields), 0, "fields empty")
-    assert_equal_int(len(ev.data), 0, "data empty")
-    assert_true(not ev.fin, "fin false")
-    assert_equal_int(Int(ev.error_code), 0, "error_code zero")
-    assert_true(ev.reason == "", "reason empty")
-    assert_equal_int(Int(ev.last_stream_id), 0, "last_stream_id zero")
-    print("  test_h3event_zero_values: PASS")
+    assert_true(ev.payload.isa[NoneType](), "handshake_complete has NoneType payload")
+    print("  test_h3event_factory_roundtrip: PASS")
 
 
 def test_is_peer_initiated() raises:
@@ -298,11 +292,12 @@ def test_h3_datagram_round_trip() raises:
         var ev = evo.value().copy()
         if ev.kind == H3Event.DATAGRAM_RECEIVED:
             got_dg = True
-            if ev.stream_id == sid:
+            ref dp = ev.as_stream_data()
+            if dp.stream_id == sid:
                 matched_id = True
-            if len(ev.data) == 4:
-                if (ev.data[0] == UInt8(ord("p")) and ev.data[1] == UInt8(ord("o"))
-                        and ev.data[2] == UInt8(ord("n")) and ev.data[3] == UInt8(ord("g"))):
+            if len(dp.data) == 4:
+                if (dp.data[0] == UInt8(ord("p")) and dp.data[1] == UInt8(ord("o"))
+                        and dp.data[2] == UInt8(ord("n")) and dp.data[3] == UInt8(ord("g"))):
                     matched_data = True
     assert_true(got_dg, "server missed DATAGRAM_RECEIVED")
     assert_true(matched_id, "server reported wrong stream_id")
@@ -683,7 +678,7 @@ def test_h3_control_stream_cohort_exclusivity() raises:
 
 def main() raises:
     print("=== test_h3_connection ===")
-    test_h3event_zero_values()
+    test_h3event_factory_roundtrip()
     test_is_peer_initiated()
     test_is_request_stream()
     test_h3event_kind_constants()

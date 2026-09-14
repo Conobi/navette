@@ -148,18 +148,16 @@ def _synth_dcid() -> List[UInt8]:
 
 
 def _build_get_event(stream_id: UInt64) raises -> H3Event:
-    """Synthesise a finished `HEADERS_RECEIVED` GET event with the four
+    """Synthesise a `HEADERS_RECEIVED` GET event with the four
     pseudo-headers the adapter's QPACK walk requires."""
-    var ev = H3Event(H3Event.HEADERS_RECEIVED)
-    ev.stream_id = stream_id
-    ev.fin = True
-    ev.fields.append(QpackHeaderField(String(":method"), String("GET")))
-    ev.fields.append(QpackHeaderField(String(":scheme"), String("https")))
-    ev.fields.append(QpackHeaderField(String(":path"), String("/")))
-    ev.fields.append(
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField(String(":method"), String("GET")))
+    fields.append(QpackHeaderField(String(":scheme"), String("https")))
+    fields.append(QpackHeaderField(String(":path"), String("/")))
+    fields.append(
         QpackHeaderField(String(":authority"), String("localhost"))
     )
-    return ev^
+    return H3Event.headers_received(stream_id, fields^)^
 
 
 # ---------------------------------------------------------------------------

@@ -5,9 +5,8 @@
 # lifecycle callbacks.
 
 from std.collections import Dict
-from std.memory import Pointer
-from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
+from std.memory import Span, UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from .connection import (
     H2Connection,
@@ -66,14 +65,14 @@ struct _StreamCtx(Movable):
         self.headers_sent = False
         self.unacked_bytes = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.detached = move.detached
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.unacked_bytes = move.unacked_bytes
+    def __init__(out self, *, deinit take: Self):
+        self.recv_body = take.recv_body^
+        self.resp_writer = take.resp_writer^
+        self.detached = take.detached
+        self.request_ended = take.request_ended
+        self.response_ended = take.response_ended
+        self.headers_sent = take.headers_sent
+        self.unacked_bytes = take.unacked_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -118,14 +117,14 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._peer_addr = peer_addr^
         self._flush_outbound()
 
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self.handler = move.handler^
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._peer_addr = move._peer_addr^
+    def __init__(out self, *, deinit take: Self):
+        self._conn = take._conn^
+        self.handler = take.handler^
+        self._outbuf = take._outbuf^
+        self._streams = take._streams^
+        self._peer_addr = take._peer_addr^
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -133,8 +132,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         for i in range(len(keys)):
             try:
                 var p = self._streams[keys[i]].ptr()
-                p.unsafe_deinit_pointee()
-                p.unsafe_free()
+                p.destroy_pointee()
+                p.free()
             except:
                 pass
 
@@ -175,7 +174,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events to handler callbacks."""
         for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+            var evt = H2Event(other=events[i])
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
                 self._on_request_received(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
@@ -190,9 +189,10 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     def _on_request_received(mut self, evt: H2Event) raises:
         """Handle a REQUEST_RECEIVED event: parse headers, allocate stream
         context, invoke handler.on_request, and optionally on_request_end."""
-        var req = request_from_h2_headers(evt.stream_id, evt.headers)
-        var stream_id = Int(evt.stream_id)
-        var stream_ended = evt.stream_ended
+        ref p = evt.as_headers()
+        var req = request_from_h2_headers(p.stream_id, p.headers)
+        var stream_id = Int(p.stream_id)
+        var stream_ended = p.stream_ended
 
         # Create RecvBody and ResponseWriter as locals.  We keep them local
         # through all handler callbacks, then move into the heap context at
@@ -217,13 +217,13 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             self.handler.on_request_end(body, resp)
 
         # Now allocate stream context on the heap and move locals in.
-        var ctx_ptr = _heap_alloc[_StreamCtx](1)
+        var ctx_ptr = _heap_alloc[_StreamCtx](1).as_unsafe_any_origin()
         var ctx = _StreamCtx()
         ctx.recv_body = body^
         ctx.resp_writer = resp^
         ctx.detached = detached
         ctx.request_ended = stream_ended
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
 
         # Store in streams dict.
         self._streams[stream_id] = PtrBox[_StreamCtx](ctx_ptr)
@@ -232,57 +232,59 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         """Handle DATA_RECEIVED: push data into RecvBody, manage flow control,
         notify handler via on_body_available.  If the event carries
         END_STREAM, also mark the body ended and invoke on_request_end."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         # take_pointee moves the entire _StreamCtx out of the heap so we can
         # get mut borrows on body/resp without going through UnsafePointer.
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         # Push data into RecvBody
-        if len(evt.data) > 0:
-            var data_copy = evt.data.copy()
+        if len(p.data) > 0:
+            var data_copy = p.data.copy()
             ctx.recv_body._push(BodyFrame.data(data_copy^))
         # Flow control: acknowledge unless paused
         if not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
-                evt.flow_controlled_length, evt.stream_id
+                p.flow_controlled_length, p.stream_id
             )
         else:
-            ctx.unacked_bytes += evt.flow_controlled_length
+            ctx.unacked_bytes += p.flow_controlled_length
         # Notify handler (if body not detached)
         if not ctx.detached:
             self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)
         # Check if paused state cleared after handler consumed
         if ctx.unacked_bytes > 0 and not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
-                ctx.unacked_bytes, evt.stream_id
+                ctx.unacked_bytes, p.stream_id
             )
             ctx.unacked_bytes = 0
         # If END_STREAM was set on the DATA frame, mark body ended and
         # fire on_request_end.
-        if evt.stream_ended and not ctx.request_ended:
+        if p.stream_ended and not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
             if not ctx.detached:
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         # Move back into the heap
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         # Check if both sides are done — if so, free the context
-        if evt.stream_ended:
+        if p.stream_ended:
             self._maybe_cleanup_stream(sid)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
         """Handle TRAILERS_RECEIVED: convert headers, push as trailer BodyFrame.
         Trailers always carry END_STREAM (enforced by H2Connection), so also
         notify via on_body_available, mark body ended, fire on_request_end."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var trailer_headers = headers_from_h2(evt.headers)
+        var trailer_headers = headers_from_h2(p.headers)
         # take_pointee to get mut access to recv_body/resp_writer
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
         # Notify handler that new body frames (trailers) are available
         if not ctx.detached:
@@ -293,14 +295,14 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             ctx.recv_body._set_end()
             if not ctx.detached:
                 self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         # Trailers carry END_STREAM — check if both sides done
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """Handle STREAM_ENDED: mark the body as ended, notify handler via
         on_request_end if not detached."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_id())
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -308,29 +310,30 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         if ctx_ptr[].request_ended:
             return  # already ended (e.g. END_STREAM on HEADERS)
         # take_pointee to get mut access to body/resp
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
         if not ctx.detached:
             self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
         # Move back into the heap
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         # Check if both sides done — if response already finished, free now
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET: notify handler, clean up stream context."""
-        var sid = Int(evt.stream_id)
+        ref pr = evt.as_stream_reset()
+        var sid = Int(pr.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        var err = StreamError.rst_stream(evt.error_code)
-        ctx.recv_body._set_error(StreamError(copy=err))
+        var ctx = ctx_ptr.take_pointee()
+        var err = StreamError.rst_stream(pr.error_code)
+        ctx.recv_body._set_error(StreamError(other=err))
         self.handler.on_reset(err)
         # Free heap memory — both directions are dead after RST.
         # ctx was already taken out; just free the allocation.
-        ctx_ptr.unsafe_free()
+        ctx_ptr.free()
         # Remove from Dict.
         _ = self._streams.pop(sid)
 
@@ -341,8 +344,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var ctx_ptr = self._streams[stream_id].ptr()
         # Read through pointer — Bool is trivially copyable
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
-            ctx_ptr.unsafe_deinit_pointee()
-            ctx_ptr.unsafe_free()
+            ctx_ptr.destroy_pointee()
+            ctx_ptr.free()
             _ = self._streams.pop(stream_id)
 
     def _drain_responses(mut self) raises:
@@ -359,11 +362,11 @@ struct H2HandlerServer[H: StreamHandler](Movable):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
             # Use take_pointee to get mut access
-            var ctx = ctx_ptr.unsafe_take_pointee()
+            var ctx = ctx_ptr.take_pointee()
             var made_progress = False
             # Skip if response not started
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 continue
             # Send response headers if not yet sent
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -406,6 +409,6 @@ struct H2HandlerServer[H: StreamHandler](Movable):
                     made_progress = True
                     break
             # Move back into the heap and maybe cleanup
-            ctx_ptr.unsafe_write(ctx^)
+            ctx_ptr.init_pointee_move(ctx^)
             if made_progress:
                 self._maybe_cleanup_stream(sid)

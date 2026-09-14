@@ -131,19 +131,19 @@ def test_h2event_factory_methods() raises:
     ping_data.append(UInt8(8))
     var e3 = H2Event.ping_received(ping_data)
     assert_equal(e3.kind, H2_EVT_PING_RECEIVED, "ping_received kind")
-    assert_equal(len(e3.data), 8, "ping_received data length")
+    assert_equal(len(e3.as_ping_data()), 8, "ping_received data length")
 
     var e4 = H2Event.goaway_received(UInt32(3), UInt32(0), List[UInt8]())
     assert_equal(e4.kind, H2_EVT_GOAWAY_RECEIVED, "goaway_received kind")
-    assert_equal(Int(e4.last_stream_id), 3, "goaway last_stream_id")
+    assert_equal(Int(e4.as_goaway().last_stream_id), 3, "goaway last_stream_id")
 
     var e5 = H2Event.window_updated(UInt32(0), UInt32(1024))
     assert_equal(e5.kind, H2_EVT_WINDOW_UPDATED, "window_updated kind")
-    assert_equal(Int(e5.window_increment), 1024, "window_updated increment")
+    assert_equal(Int(e5.as_window().window_increment), 1024, "window_updated increment")
 
     var e6 = H2Event.connection_terminated(UInt32(0), UInt32(1), String("test"))
     assert_equal(e6.kind, H2_EVT_CONNECTION_TERMINATED, "connection_terminated kind")
-    assert_equal(Int(e6.error_code), 1, "connection_terminated error_code")
+    assert_equal(Int(e6.as_termination().error_code), 1, "connection_terminated error_code")
 
 
 def test_stream_state_and_constants() raises:
@@ -232,7 +232,7 @@ def test_server_rejects_bad_magic() raises:
     var events = server.receive_data(bad_magic)
     assert_true(len(events) >= 1, "server emitted event")
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
-    assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+    assert_equal(Int(events[0].as_termination().error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
     assert_true(server.is_closed(), "connection closed")
 
 
@@ -287,7 +287,7 @@ def test_settings_invalid_initial_window() raises:
     var events = server.receive_data(wire)
     assert_true(len(events) >= 1, "server emitted event")
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
-    assert_equal(Int(events[0].error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
+    assert_equal(Int(events[0].as_termination().error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
 
 
 def test_ping_roundtrip() raises:
@@ -323,9 +323,9 @@ def test_ping_roundtrip() raises:
     var events = server.receive_data(ping_wire)
     assert_true(len(events) >= 1, "server got event")
     assert_equal(events[0].kind, H2_EVT_PING_RECEIVED, "PingReceived")
-    assert_equal(len(events[0].data), 8, "ping data length")
+    assert_equal(len(events[0].as_ping_data()), 8, "ping data length")
     for i in range(8):
-        assert_equal(Int(events[0].data[i]), i + 1, "ping data byte " + String(i))
+        assert_equal(Int(events[0].as_ping_data()[i]), i + 1, "ping data byte " + String(i))
 
     # Server queued a PING ACK
     var pong_wire = server.data_to_send()
@@ -361,8 +361,8 @@ def test_goaway_receive() raises:
     var events = client.receive_data(goaway_wire)
     assert_true(len(events) >= 1, "client got event")
     assert_equal(events[0].kind, H2_EVT_GOAWAY_RECEIVED, "GoawayReceived")
-    assert_equal(Int(events[0].last_stream_id), 0, "last_stream_id")
-    assert_equal(Int(events[0].error_code), H2_NO_ERROR, "error_code")
+    assert_equal(Int(events[0].as_goaway().last_stream_id), 0, "last_stream_id")
+    assert_equal(Int(events[0].as_goaway().error_code), H2_NO_ERROR, "error_code")
 
 
 def test_goaway_send_draining() raises:
@@ -417,7 +417,7 @@ def test_stream_id_must_be_odd_for_server() raises:
     var events = server.receive_data(headers_wire)
     assert_true(len(events) >= 1, "server emitted event")
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
-    assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+    assert_equal(Int(events[0].as_termination().error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
 
 
 def test_stream_id_must_increase() raises:
@@ -530,7 +530,7 @@ def test_continuation_interleave_rejected() raises:
     var events = server.receive_data(ping_wire)
     assert_true(len(events) >= 1, "server emitted event")
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
-    assert_equal(Int(events[0].error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
+    assert_equal(Int(events[0].as_termination().error_code), H2_PROTOCOL_ERROR, "PROTOCOL_ERROR")
 
 
 def test_window_update_connection() raises:
@@ -559,8 +559,8 @@ def test_window_update_connection() raises:
     var events = server.receive_data(wu_wire)
     assert_true(len(events) >= 1, "server got event")
     assert_equal(events[0].kind, H2_EVT_WINDOW_UPDATED, "WindowUpdated")
-    assert_equal(Int(events[0].window_increment), 1024, "increment is 1024")
-    assert_equal(Int(events[0].stream_id), 0, "stream_id 0")
+    assert_equal(Int(events[0].as_window().window_increment), 1024, "increment is 1024")
+    assert_equal(Int(events[0].as_window().stream_id), 0, "stream_id 0")
 
 
 def test_window_update_overflow() raises:
@@ -590,7 +590,7 @@ def test_window_update_overflow() raises:
     var events = server.receive_data(wu_wire)
     assert_true(len(events) >= 1, "server emitted event")
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
-    assert_equal(Int(events[0].error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
+    assert_equal(Int(events[0].as_termination().error_code), H2_FLOW_CONTROL_ERROR, "FLOW_CONTROL_ERROR")
 
 
 def test_acknowledge_received_data() raises:

@@ -11,9 +11,8 @@
 # rename pass can unify both names — out of scope here.
 
 from std.collections import Dict, Optional
-from std.memory import Pointer
-from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
+from std.memory import Span, UnsafePointer
+from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.sys.info import size_of
 
 from navette.quic.connection import QuicConnection
@@ -51,11 +50,11 @@ from navette.util.null_ptr import null_ptr
 # The handler receives a pointer to the per-stream context, reads
 # `ctx.request` (or for streaming POST bodies, polls `ctx.recv_body`),
 # and writes the response into `ctx.resp_writer`. It runs to completion
-# in one call — it never suspends. Streaming-handler use cases are
+# in one call — no `yield_to_caller`. Streaming-handler use cases are
 # served by `src/h3/h3_streaming_server.mojo`.
 
 comptime H3BodyFn = def (
-    Pointer[CoroStreamCtx, MutUntrackedOrigin]
+    UnsafePointer[CoroStreamCtx, MutAnyOrigin]
 ) thin raises -> None
 
 
@@ -80,7 +79,7 @@ struct CoroStreamCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt64
-    var extra_data: Pointer[NoneType, MutUntrackedOrigin]
+    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
@@ -90,28 +89,28 @@ struct CoroStreamCtx(Movable):
         var request: Request,
         caps: Capabilities,
         stream_id: UInt64,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin],
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
         self.resp_writer = ResponseWriter()
-        self.caps = Capabilities(copy=caps)
+        self.caps = Capabilities(other=caps)
         self.stream_id = stream_id
         self.extra_data = extra_data
         self.request_ended = False
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
+    def __init__(out self, *, deinit take: Self):
+        self.request = take.request^
+        self.recv_body = take.recv_body^
+        self.resp_writer = take.resp_writer^
+        self.caps = take.caps^
+        self.stream_id = take.stream_id
+        self.extra_data = take.extra_data
+        self.request_ended = take.request_ended
+        self.response_ended = take.response_ended
+        self.headers_sent = take.headers_sent
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +137,10 @@ def _check_stream_ctx_size():
 # ---------------------------------------------------------------------------
 
 
-def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
+def _free_stream(ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]):
     """Hard-destroy the CoroStreamCtx allocation."""
-    ctx_ptr.unsafe_deinit_pointee()
-    ctx_ptr.unsafe_free()
+    ctx_ptr.destroy_pointee()
+    ctx_ptr.free()
 
 
 # ---------------------------------------------------------------------------
@@ -158,36 +157,36 @@ struct CoroStreamCtxPool(Movable):
     owns initialisation/destruction of the pointee; the pool only
     manages the underlying memory."""
 
-    var _free: List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]
+    var _free: List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 16):
-        self._free = List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]()
+        self._free = List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
+    def __init__(out self, *, deinit take: Self):
+        self._free = take._free^
+        self._capacity = take._capacity
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         for i in range(len(self._free)):
-            self._free[i].unsafe_free()
+            self._free[i].free()
 
-    def acquire(mut self) raises -> Pointer[CoroStreamCtx, MutUntrackedOrigin]:
+    def acquire(mut self) raises -> UnsafePointer[CoroStreamCtx, MutAnyOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
-        return _heap_alloc[CoroStreamCtx](1)
+        return _heap_alloc[CoroStreamCtx](1).as_unsafe_any_origin()
 
     def release(
-        mut self, ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
+        mut self, ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
             self._free.append(ptr)
         else:
-            ptr.unsafe_free()
+            ptr.free()
 
     def idle_count(self) -> Int:
         return len(self._free)
@@ -213,7 +212,7 @@ struct H3CoroServer(Movable):
 
     var _h3: H3Connection
     var _body_fn: H3BodyFn
-    var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
+    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[List[UInt8]]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
@@ -224,7 +223,7 @@ struct H3CoroServer(Movable):
     # filter dispatch helper takes the fail-closed branch for 0-RTT
     # requests.
     var _early_data_filter_ptr: Optional[
-        Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
+        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
     ]
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate fn, propagated from
@@ -233,10 +232,6 @@ struct H3CoroServer(Movable):
     Predicate. The dispatch helper consults this field in preference
     to `_early_data_filter_ptr` per the truth-table for the predicate
     variant of the 0-RTT policy."""
-    var _pending_response_streams: List[Int]
-    """Stream IDs whose handler has returned with pending response data
-    awaiting drain. Replaces the O(all-streams) key scan in
-    `_drain_responses` with an O(pending-only) iteration."""
 
     # --- Constructors -------------------------------------------------------
 
@@ -245,11 +240,11 @@ struct H3CoroServer(Movable):
         *,
         var quic: QuicConnection,
         body_fn: H3BodyFn,
-        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
         early_data_filter_ptr: Optional[
-            Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
+            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
@@ -263,20 +258,18 @@ struct H3CoroServer(Movable):
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
-        self._pending_response_streams = List[Int]()
 
-    def __init__(out self, *, deinit move: Self):
-        self._h3 = move._h3^
-        self._body_fn = move._body_fn
-        self._extra_data = move._extra_data
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._ctx_pool = move._ctx_pool^
-        self._early_data_filter_ptr = move._early_data_filter_ptr
-        self._early_data_predicate_fn = move._early_data_predicate_fn
-        self._pending_response_streams = move._pending_response_streams^
+    def __init__(out self, *, deinit take: Self):
+        self._h3 = take._h3^
+        self._body_fn = take._body_fn
+        self._extra_data = take._extra_data
+        self._outbuf = take._outbuf^
+        self._streams = take._streams^
+        self._ctx_pool = take._ctx_pool^
+        self._early_data_filter_ptr = take._early_data_filter_ptr
+        self._early_data_predicate_fn = take._early_data_predicate_fn
 
-    def __deinit__(deinit self):
+    def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
         var keys = List[Int]()
         for key in self._streams.keys():
@@ -292,7 +285,7 @@ struct H3CoroServer(Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: Pointer[UInt8, MutUntrackedOrigin],
+        buf: UnsafePointer[UInt8, MutAnyOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:
@@ -313,18 +306,8 @@ struct H3CoroServer(Movable):
             self._drain_responses(now)
         self._flush_outbound(now)
 
-    def drain(mut self, now: UInt64 = 0) -> List[List[UInt8]]:
-        """Drain queued outbound QUIC datagrams for the transport to write.
-
-        Also pulls whatever the connection can send right now, so egress
-        queued outside the ingress path (GOAWAY, timer-driven frames)
-        leaves without waiting for the peer's next datagram. Pass the
-        caller's clock; the default 0 cannot fire any armed timer.
-        """
-        try:
-            self._flush_outbound(now)
-        except:
-            pass
+    def drain(mut self) -> List[List[UInt8]]:
+        """Drain queued outbound QUIC datagrams for the transport to write."""
         var out = self._outbuf^
         self._outbuf = List[List[UInt8]]()
         return out^
@@ -343,11 +326,11 @@ struct H3CoroServer(Movable):
         return sid in self._streams
 
     def _release_stream(
-        mut self, ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
+        mut self, ctx_ptr: UnsafePointer[CoroStreamCtx, MutAnyOrigin]
     ):
         """Destroy the CoroStreamCtx pointee and return its memory block to the
         per-connection pool (or free if over capacity)."""
-        ctx_ptr.unsafe_deinit_pointee()
+        ctx_ptr.destroy_pointee()
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self, now: UInt64) raises:
@@ -400,7 +383,7 @@ struct H3CoroServer(Movable):
                 break
             var ev = ev_opt.unsafe_take()
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                if Int(ev.stream_id) not in self._streams:
+                if Int(ev.as_headers().stream_id) not in self._streams:
                     self._on_request(ev)
                 else:
                     self._on_trailers(ev)
@@ -419,15 +402,16 @@ struct H3CoroServer(Movable):
         """First HEADERS_RECEIVED: parse pseudo-fields into Request, allocate
         CoroStreamCtx on heap, register in streams dict, and run the handler
         synchronously (no coroutine spawn).
-        If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end()."""
+        A separate STREAM_ENDED event handles bodyless GETs."""
+        ref p = ev.as_headers()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for i in range(len(p.fields)):
+            var name = p.fields[i].name
+            var value = p.fields[i].value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -468,9 +452,9 @@ struct H3CoroServer(Movable):
         # so the helper is called with `profile_ptr=None`.
         var stream_is_zr = False
         if self._h3._quic.zero_rtt_enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, p.stream_id)
             var _no_profile = Optional[
-                Pointer[AcceptProfile, MutUntrackedOrigin]
+                UnsafePointer[AcceptProfile, MutAnyOrigin]
             ](None)
             var outcome = apply_early_data_filter(
                 method_str,
@@ -482,7 +466,7 @@ struct H3CoroServer(Movable):
                 _no_profile,
             )
             if outcome.should_send_425():
-                send_425_response(ev.stream_id, self._h3)
+                send_425_response(p.stream_id, self._h3)
                 return
 
         var req = Request(
@@ -492,79 +476,73 @@ struct H3CoroServer(Movable):
             headers=req_headers^,
         )
 
-        var stream_id = Int(ev.stream_id)
+        var stream_id = Int(p.stream_id)
 
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = CoroStreamCtx(
             request=req^,
             caps=Capabilities.for_h3(is_early_data=stream_is_zr),
-            stream_id=ev.stream_id,
+            stream_id=p.stream_id,
             extra_data=self._extra_data,
         )
 
-        # FIN on HEADERS = bodyless request (e.g. GET) — mark ended immediately
-        if ev.fin:
-            ctx.recv_body._set_end()
-            ctx.request_ended = True
-
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._streams[stream_id] = PtrBox[CoroStreamCtx](ctx_ptr)
 
         # Run handler synchronously — Path A simplification.
         self._run_handler(stream_id)
-        # Mark this stream for draining (handler may have queued response data).
-        if self._has_stream(stream_id):
-            self._pending_response_streams.append(stream_id)
 
     def _on_trailers(mut self, ev: H3Event) raises:
         """Second HEADERS_RECEIVED on an open stream = trailers.
         Push as BodyFrame.trailers (skip pseudo-headers)."""
-        var sid = Int(ev.stream_id)
+        ref p = ev.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         var trailer_headers = Headers()
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
+        for i in range(len(p.fields)):
+            var name = p.fields[i].name
             if not name.startswith(":"):
-                trailer_headers.add(name, ev.fields[i].value)
+                trailer_headers.add(name, p.fields[i].value)
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._maybe_cleanup_stream(sid)
 
     def _on_data(mut self, ev: H3Event) raises:
         """DATA_RECEIVED: push data into RecvBody.
         No flow-control ACK — QUIC handles FC internally."""
-        var sid = Int(ev.stream_id)
+        ref p = ev.as_stream_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var ctx = ctx_ptr.take_pointee()
+        var data_copy = List[UInt8](copy=p.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark the body as ended."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_end().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended:
             return
-        var ctx = ctx_ptr.unsafe_take_pointee()
+        var ctx = ctx_ptr.take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
-        ctx_ptr.unsafe_write(ctx^)
+        ctx_ptr.init_pointee_move(ctx^)
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
         """STREAM_RESET: tear down the stream."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -590,24 +568,27 @@ struct H3CoroServer(Movable):
 
     def _drain_responses(mut self, now: UInt64) raises:
         """Drain pending response data from stream contexts into the H3Connection.
-        Iterates only streams with pending responses (populated after
-        _run_handler), not the full _streams dict. Uses
-        take_pointee/init_pointee_move to safely interleave ctx access
-        with self._h3 mutations."""
-        var pending = self._pending_response_streams^
-        self._pending_response_streams = List[Int]()
-        for i in range(len(pending)):
-            var sid = pending[i]
+        Uses take_pointee/init_pointee_move to safely interleave ctx access
+        with self._h3 mutations.
+
+        R-2A-3: H3HandlerServer._drain_responses has identical logic but operates
+        on _H3StreamCtx (not CoroStreamCtx) so it cannot be called directly here.
+        Ported verbatim from h3_coro_server.mojo; flagged for a future dedup pass."""
+        var stream_ids = List[Int]()
+        for key in self._streams.keys():
+            stream_ids.append(key)
+        for i in range(len(stream_ids)):
+            var sid = stream_ids[i]
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
+            var ctx = ctx_ptr.take_pointee()
             if ctx.response_ended:
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 self._maybe_cleanup_stream(sid)
                 continue
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
+                ctx_ptr.init_pointee_move(ctx^)
                 continue
             # Send response headers
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -658,5 +639,5 @@ struct H3CoroServer(Movable):
                         pass
                     ctx.response_ended = True
                     break
-            ctx_ptr.unsafe_write(ctx^)
+            ctx_ptr.init_pointee_move(ctx^)
             self._maybe_cleanup_stream(sid)

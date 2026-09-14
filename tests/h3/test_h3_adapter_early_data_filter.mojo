@@ -135,16 +135,16 @@ def _build_h3_event(
 
     Includes the four pseudo-headers required by the adapter's QPACK
     walk (`:method`, `:scheme`, `:path`, `:authority`). No regular
-    headers — the test only exercises pseudo-header dispatch.
+    headers -- the test only exercises pseudo-header dispatch.
+    The `fin` parameter is kept for call-site compat but ignored
+    (H3Event.fin was dead code, now removed).
     """
-    var ev = H3Event(H3Event.HEADERS_RECEIVED)
-    ev.stream_id = stream_id
-    ev.fin = fin
-    ev.fields.append(QpackHeaderField(String(":method"), method))
-    ev.fields.append(QpackHeaderField(String(":scheme"), String("https")))
-    ev.fields.append(QpackHeaderField(String(":path"), String("/")))
-    ev.fields.append(QpackHeaderField(String(":authority"), String("localhost")))
-    return ev^
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField(String(":method"), method))
+    fields.append(QpackHeaderField(String(":scheme"), String("https")))
+    fields.append(QpackHeaderField(String(":path"), String("/")))
+    fields.append(QpackHeaderField(String(":authority"), String("localhost")))
+    return H3Event.headers_received(stream_id, fields^)^
 
 
 def _make_server(
@@ -285,7 +285,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     # accept path. Guards against a regression where the 425 short-circuit
     # is bolted on AFTER the per-stream-ctx allocation.
     assert_false(
-        Int(ev.stream_id) in server._streams,
+        Int(ev.as_headers().stream_id) in server._streams,
         String("rejected stream must not allocate _H3StreamCtx (handler skip)"),
     )
     _ = server._h3._quic.conn_handle
