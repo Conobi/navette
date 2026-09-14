@@ -196,7 +196,7 @@ struct DcidBuf(Copyable, Movable):
         self.data = move.data^
         self.len = move.len
 
-    def as_span(self) -> Span[UInt8, __origin_of(self)]:
+    def as_span(self) -> Span[UInt8, origin_of(self.data)]:
         """View the DCID bytes as a Span."""
         return Span(unsafe_ptr=self.data.unsafe_ptr(), length=Int(self.len))
 

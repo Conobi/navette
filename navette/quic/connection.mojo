@@ -2098,7 +2098,7 @@ struct QuicConnection(Movable):
     # ── Frame dispatch ───────────────────────────────────────────────
 
     def _dispatch_frame(
-        mut self, frame: Frame, space_idx: Int, now: UInt64
+        mut self, var frame: Frame, space_idx: Int, now: UInt64
     ) raises:
         """Route a parsed frame to its handler."""
         var tid = frame.type_id
