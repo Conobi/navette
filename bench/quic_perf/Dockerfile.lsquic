@@ -37,7 +37,7 @@ WORKDIR /src
 # BoringSSL must be cloned separately — it is NOT an lsquic submodule.
 # In-source build so lsquic's cmake finds ssl/libssl.a and crypto/libcrypto.a
 # at BORINGSSL_DIR/ssl/ and BORINGSSL_DIR/crypto/.
-RUN git clone --depth 1 https://github.com/google/boringssl.git /src/boringssl \
+RUN git clone --branch 0.20250807.0 --depth 1 https://github.com/google/boringssl.git /src/boringssl \
     && cd /src/boringssl \
     && cmake -DCMAKE_BUILD_TYPE=Release . \
     && make -j"$(nproc)" ssl crypto

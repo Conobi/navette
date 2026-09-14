@@ -43,7 +43,7 @@ docker run --rm --network host --cpuset-cpus=2-5 \
     --duration "$DURATION" \
     "${SESSION_ARGS[@]}" \
     --connect-to 127.0.0.1:8443 \
-    "https://127.0.0.1:8443/static/${PAYLOAD}.bin" \
+    "https://localhost:8443/static/${PAYLOAD}.bin" \
     > /tmp/client-stdout.log 2>&1 || true
 
 # tquic_client may exit non-zero when --duration ends; we still want stdout.
