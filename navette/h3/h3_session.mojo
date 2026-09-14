@@ -336,12 +336,10 @@ struct H3Session(Session):
                     ctx.status_code = 200
             elif not name.startswith(":"):
                 ctx.headers.add(name, value)
-        if ev.fin:
-            ctx.complete = True
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_response_data(mut self, ev: H3Event) raises:
-        """Accumulate DATA_RECEIVED payload; mark complete on fin."""
+        """Accumulate DATA_RECEIVED payload."""
         var sid = Int(ev.stream_id)
         var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
         try:
@@ -351,8 +349,6 @@ struct H3Session(Session):
         var ctx = ctx_ptr.take_pointee()
         for i in range(len(ev.data)):
             ctx.body_data.append(ev.data[i])
-        if ev.fin:
-            ctx.complete = True
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:

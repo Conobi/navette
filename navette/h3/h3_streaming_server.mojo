@@ -556,7 +556,7 @@ struct H3StreamingServer(Movable):
         """First HEADERS_RECEIVED: parse pseudo-fields into Request, allocate
         H3StreamingCtx + CoroHandle (via CoroutinePool) on heap, register in
         streams dict, and do the first resume.
-        If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end()."""
+        A separate STREAM_ENDED event handles bodyless GETs."""
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
@@ -639,11 +639,6 @@ struct H3StreamingServer(Movable):
             stream_id=ev.stream_id,
             extra_data=self._extra_data,
         )
-
-        # FIN on HEADERS = bodyless request (e.g. GET) — mark ended immediately
-        if ev.fin:
-            ctx.request_ended = True
-            ctx.recv_body._set_end()
 
         ctx_ptr.init_pointee_move(ctx^)
 
