@@ -1,12 +1,12 @@
 # QUIC Perf Bench Harness
 
-TQUIC-style HTTP/3 benchmark comparing navette's `h3_server` to the TQUIC reference, under matched payloads, matched concurrency, and CPU-saturating load.
+TQUIC-style HTTP/3 benchmark comparing navette's `h3_server` to the TQUIC and lsquic references, under matched payloads, matched concurrency, and CPU-saturating load.
 
 > **Status: calibrated.** End-to-end run validated against the TQUIC reference: `tquic_server` saturates core 0 at 87K req/s with `tquic_client` (88% CPU), confirming the harness exposes real saturation. `results/REFERENCE.md` has the current numbers; navette measures ~210× slower long-conn and ~2,500× slower short-conn than TQUIC on the same hardware, while using <6% of one core — the bottleneck is connection-establishment throughput, not steady-state stream work.
 
 ## What this measures
 
-The throughput (req/s, MB/s) and server CPU% of navette's H3 stack vs `tquic_server` (pinned to upstream `v1.0.0`, commit `4dcec0f`) over loopback, using both `tquic_client` (multi-threaded, drives to saturation) and `h2load-h3` (single-threaded, kept for regression tracking against our prior numbers). Methodology mirrors https://tquic.net/docs/further_readings/benchmark/.
+The throughput (req/s, MB/s) and server CPU% of navette's H3 stack vs `tquic_server` (pinned to upstream `v1.0.0`, commit `4dcec0f`) and lsquic `http_server` (pinned to tag `v4.9.4`) over loopback, using both `tquic_client` (multi-threaded, drives to saturation) and `h2load-h3` (single-threaded, kept for regression tracking against our prior numbers). Methodology mirrors https://tquic.net/docs/further_readings/benchmark/.
 
 ## What this is NOT
 
@@ -31,13 +31,14 @@ No host-side Mojo or Rust toolchain is required — all builds happen inside Doc
 
 ```bash
 make setup        # ~10 min first time, < 1 min on rebuild
-make bench-mvp    # ~5 min: 8 single-iter runs
+make bench-mvp    # ~8 min: 12 cells × 3 iters
 make summary      # prints Markdown table
 
 # Single cell:
 ./scripts/bench.sh navette 5k long-conn tquic_client
+./scripts/bench.sh lsquic 5k long-conn tquic_client
 
-# Full matrix with 3-iter median (~50 min):
+# Full matrix with 3-iter median (~75 min):
 make bench-full
 ```
 
@@ -61,7 +62,8 @@ make bench-full
 ## Per-script reference
 
 - `scripts/gen-payloads.sh` — idempotent generator for `1k.bin / 5k.bin / 15k.bin / 2m.bin`. Re-running is a no-op if files exist with correct sizes.
-- `scripts/start-server.sh <navette|tquic>` — starts the server in Docker pinned to core 0, mounts payloads + certs read-only, then calls `wait-ready.sh`.
+- `scripts/start-server.sh <navette|tquic|lsquic>` — starts the server in Docker pinned to core 0, mounts payloads + certs read-only, then calls `wait-ready.sh`.
+  The script handles three servers: `navette`, `tquic`, and `lsquic`. lsquic is launched with `-g` (sendmmsg) + `-j` (recvmmsg) for batched I/O and `-A 1` (Cubic CC).
 - `scripts/stop-server.sh` — `docker rm -f` for both possible container names. Idempotent.
 - `scripts/wait-ready.sh` — probes `127.0.0.1:8443` with a real QUIC handshake (`tquic_client --max-requests-per-conn 1`) every 200 ms for up to 10 s. **Does not use `nc -uz`** — UDP nc is unreliable for QUIC.
 - `scripts/resolve-server-pid.sh <container>` — echoes `docker inspect -f '{{.State.Pid}}'`. Unused by `bench.sh` since the switch to cgroup-level CPU sampling, kept for ad-hoc debugging.
@@ -112,6 +114,7 @@ make bench-full
 - **Server CPU% < 80 with `h2load`**: expected. h2load is single-threaded and saturates client-side first. h2load numbers should be read as "did navette regress between commits," not "is navette within X% of TQUIC."
 - **`requests_failed > 0`**: indicates connection errors or timeouts — investigate before trusting throughput numbers.
 - **Wide variance across iterations**: core 0 may be hosting kernel softirqs. Edit `start-server.sh` to use `--cpuset-cpus=4` and rerun.
+- **lsquic uses epoll, not io_uring.** Unlike navette (io_uring) and TQUIC (custom event loop), lsquic uses libevent/epoll. This means the three servers exercise different I/O strategies — differences in rps reflect both protocol-layer and I/O-layer efficiency.
 - **navette's `2m` rows look weak vs TQUIC**: expected until M4 flow-control auto-tuning lands. Mojo-net's M3 default stream FC window is 1 MiB, so 2 MiB transfers stall on `MAX_STREAM_DATA` updates.
 
 ## Troubleshooting
