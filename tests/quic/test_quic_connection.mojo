@@ -18,6 +18,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.packet_protect import PacketProtect
 from navette.quic.connection import (
     QuicConnection, QuicEvent, SentStreamFrame,
+    ConnectionClosedPayload, StreamResetPayload, StreamStoppedPayload,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING,
 )
@@ -842,9 +843,9 @@ def test_stream_data_transfer() raises:
         if not ev:
             break
         var e = ev.value().copy()
-        if e.type_id == QuicEvent.STREAM_OPENED and e.stream_id == sid:
+        if e.type_id == QuicEvent.STREAM_OPENED and e.payload.unsafe_get[UInt64]() == sid:
             server_saw_stream = True
-        if e.type_id == QuicEvent.STREAM_READABLE and e.stream_id == sid:
+        if e.type_id == QuicEvent.STREAM_READABLE and e.payload.unsafe_get[UInt64]() == sid:
             server_saw_stream = True
     assert_true(server_saw_stream, "server missed STREAM_OPENED/READABLE event")
 
@@ -864,7 +865,7 @@ def test_stream_data_transfer() raises:
         if not ev:
             break
         var e = ev.value().copy()
-        if e.type_id == QuicEvent.STREAM_READABLE and e.stream_id == sid:
+        if e.type_id == QuicEvent.STREAM_READABLE and e.payload.unsafe_get[UInt64]() == sid:
             client_saw_readable = True
     assert_true(client_saw_readable, "client missed STREAM_READABLE event")
 
@@ -1050,10 +1051,12 @@ def test_reset_stream() raises:
         if not ev:
             break
         var e = ev.value().copy()
-        if e.type_id == QuicEvent.STREAM_RESET and e.stream_id == sid:
-            saw_reset = True
-            assert_equal_int(Int(e.error_code), 42, "reset error_code")
-            assert_equal_int(Int(e.final_size), 7, "reset final_size (len('partial'))")
+        if e.type_id == QuicEvent.STREAM_RESET:
+            ref sr = e.payload.unsafe_get[StreamResetPayload]()
+            if sr.stream_id == sid:
+                saw_reset = True
+                assert_equal_int(Int(sr.error_code), 42, "reset error_code")
+                assert_equal_int(Int(sr.final_size), 7, "reset final_size (len('partial'))")
     assert_true(saw_reset, "server missed STREAM_RESET event")
 
     _ = tls^
@@ -1108,9 +1111,11 @@ def test_stop_sending() raises:
         if not ev:
             break
         var e = ev.value().copy()
-        if e.type_id == QuicEvent.STREAM_STOPPED and e.stream_id == sid:
-            saw_stopped = True
-            assert_equal_int(Int(e.error_code), 99, "stop_sending error_code")
+        if e.type_id == QuicEvent.STREAM_STOPPED:
+            ref ss = e.payload.unsafe_get[StreamStoppedPayload]()
+            if ss.stream_id == sid:
+                saw_stopped = True
+                assert_equal_int(Int(ss.error_code), 99, "stop_sending error_code")
     assert_true(saw_stopped, "client missed STREAM_STOPPED event")
 
     # Client send-side should have transitioned to RESET_SENT.
@@ -1139,8 +1144,10 @@ def test_stop_sending() raises:
         if not ev:
             break
         var e = ev.value().copy()
-        if e.type_id == QuicEvent.STREAM_RESET and e.stream_id == sid:
-            saw_reset = True
+        if e.type_id == QuicEvent.STREAM_RESET:
+            ref sr = e.payload.unsafe_get[StreamResetPayload]()
+            if sr.stream_id == sid:
+                saw_reset = True
     assert_true(saw_reset, "server missed STREAM_RESET after stop_sending")
 
     _ = tls^
@@ -4419,7 +4426,7 @@ def test_datagram_round_trip_client_to_server() raises:
         var e = ev.value().copy()
         if e.type_id == QuicEvent.DATAGRAM_RECEIVED:
             got_event = True
-            if _bytes_equal(e.datagram_payload, "hello-datagram"):
+            if _bytes_equal(e.payload.unsafe_get[List[UInt8]](), "hello-datagram"):
                 got_bytes_match = True
     assert_true(got_event, "server must emit DATAGRAM_RECEIVED")
     assert_true(got_bytes_match, "server datagram payload must match sender's bytes")
