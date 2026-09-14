@@ -18,14 +18,14 @@ from navette.util.null_ptr import null_ptr
 
 
 struct PtrBox[T: AnyType](Copyable, Movable):
-    var _ptr: UnsafePointer[Self.T, MutAnyOrigin]
+    var _ptr: UnsafePointer[Self.T, MutUntrackedOrigin]
 
-    def __init__(out self, ptr: UnsafePointer[Self.T, MutAnyOrigin]):
+    def __init__(out self, ptr: UnsafePointer[Self.T, MutUntrackedOrigin]):
         self._ptr = ptr
 
     @staticmethod
     def null() -> Self:
-        return PtrBox[Self.T](null_ptr[Self.T, MutAnyOrigin]())
+        return PtrBox[Self.T](null_ptr[Self.T, MutUntrackedOrigin]())
 
     def __init__(out self, *, other: Self):
         self._ptr = other._ptr
@@ -33,7 +33,7 @@ struct PtrBox[T: AnyType](Copyable, Movable):
     def __init__(out self, *, deinit take: Self):
         self._ptr = take._ptr
 
-    def ptr(self) -> UnsafePointer[Self.T, MutAnyOrigin]:
+    def ptr(self) -> UnsafePointer[Self.T, MutUntrackedOrigin]:
         return self._ptr
 
     def is_some(self) -> Bool:

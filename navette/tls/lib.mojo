@@ -857,7 +857,7 @@ struct SharedLibrary(Copyable, Movable):
     the inner `RustlsLibrary` (and its `OwnedDLHandle`) is destroyed.
     """
 
-    var _ptr: UnsafePointer[_SharedLibraryInner, MutAnyOrigin]
+    var _ptr: UnsafePointer[_SharedLibraryInner, MutUntrackedOrigin]
 
     def __init__(out self, var lib: RustlsLibrary):
         var p = _heap_alloc[_SharedLibraryInner](1).as_unsafe_any_origin()
