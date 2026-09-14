@@ -2,26 +2,26 @@
 #
 # Targets:
 #   setup       : build images + generate certs/payloads (idempotent)
-#   bench-mvp   : 8 cells × 3 iters = 24 runs (median absorbs cold-start noise)
-#   bench-full  : 32-cell × 3-iter matrix (~50 min)
+#   bench-mvp   : 12 cells × 3 iters = 36 runs (median absorbs cold-start noise)
+#   bench-full  : 48-cell × 3-iter matrix (~75 min)
 #   summary     : render Markdown table from results/*.json
 #   clean       : remove generated payloads, results, SUMMARY.md
 
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
 HERE      := $(REPO_ROOT)/bench/quic_perf
 
-SERVERS   := navette tquic
+SERVERS   := navette tquic lsquic
 PAYLOADS  := 1k 5k 15k 2m
 SCENARIOS := long-conn short-conn
 CLIENTS   := tquic_client h2load
 
 .PHONY: setup bench-mvp bench-full summary clean help \
-        build-navette build-tquic build-h2load gen-certs gen-payloads
+        build-navette build-tquic build-lsquic build-h2load gen-certs gen-payloads
 
 help:
 	@echo "Targets: setup bench-mvp bench-full summary clean"
 
-setup: build-navette build-tquic build-h2load gen-certs gen-payloads
+setup: build-navette build-tquic build-lsquic build-h2load gen-certs gen-payloads
 	@echo "[setup] all images built, certs and payloads ready"
 
 build-navette:
@@ -42,6 +42,15 @@ build-tquic:
 	        -f $(HERE)/Dockerfile.tquic $(HERE); \
 	else \
 	    echo "[setup] tquic-bench:latest exists (skip)"; \
+	fi
+
+build-lsquic:
+	@if ! docker image inspect lsquic-bench:latest >/dev/null 2>&1; then \
+	    echo "[setup] building lsquic-bench:latest"; \
+	    docker build -t lsquic-bench:latest \
+	        -f $(HERE)/Dockerfile.lsquic $(HERE); \
+	else \
+	    echo "[setup] lsquic-bench:latest exists (skip)"; \
 	fi
 
 build-h2load:
@@ -69,7 +78,7 @@ gen-payloads:
 	@$(HERE)/scripts/gen-payloads.sh
 
 bench-mvp:
-	@echo "[bench-mvp] 8 cells × 3 iters = 24 runs"
+	@echo "[bench-mvp] 12 cells × 3 iters = 36 runs"
 	@for server in $(SERVERS); do \
 	    for scenario in $(SCENARIOS); do \
 	        for client in tquic_client h2load; do \
@@ -80,7 +89,7 @@ bench-mvp:
 	@$(HERE)/scripts/summarize.py
 
 bench-full:
-	@echo "[bench-full] 32 cells × 3 iters = 96 runs"
+	@echo "[bench-full] 48 cells × 3 iters = 144 runs"
 	@for server in $(SERVERS); do \
 	    for payload in $(PAYLOADS); do \
 	        for scenario in $(SCENARIOS); do \
