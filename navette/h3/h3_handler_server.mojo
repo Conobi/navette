@@ -5,7 +5,8 @@
 # Mirrors src/h2/h2_handler_server.mojo patterns.
 
 from std.collections import Dict, Optional
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
@@ -105,13 +106,13 @@ struct _H3StreamCtx(Movable):
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.recv_body = take.recv_body^
-        self.resp_writer = take.resp_writer^
-        self.detached = take.detached
-        self.request_ended = take.request_ended
-        self.response_ended = take.response_ended
-        self.headers_sent = take.headers_sent
+    def __init__(out self, *, deinit move: Self):
+        self.recv_body = move.recv_body^
+        self.resp_writer = move.resp_writer^
+        self.detached = move.detached
+        self.request_ended = move.request_ended
+        self.response_ended = move.response_ended
+        self.headers_sent = move.headers_sent
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +169,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
 
-    def __init__(out self, *, deinit take: Self):
-        self._h3 = take._h3^
-        self.handler = take.handler^
-        self._streams = take._streams^
-        self.profile_ptr = take.profile_ptr
-        self._early_data_filter_ptr = take._early_data_filter_ptr
-        self._early_data_predicate_fn = take._early_data_predicate_fn
+    def __init__(out self, *, deinit move: Self):
+        self._h3 = move._h3^
+        self.handler = move.handler^
+        self._streams = move._streams^
+        self.profile_ptr = move.profile_ptr
+        self._early_data_filter_ptr = move._early_data_filter_ptr
+        self._early_data_predicate_fn = move._early_data_predicate_fn
 
     def __del__(deinit self):
         var keys = List[Int]()

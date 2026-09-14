@@ -13,7 +13,8 @@
 
 from std.collections import Dict, Optional
 from std.ffi import external_call
-from std.memory import UnsafePointer, Span
+from std.memory import UnsafePointer
+from std.collections import Span
 from std.utils import Variant
 from navette.util.owned_alloc import Owned
 
@@ -1006,13 +1007,12 @@ struct QuicConnection(Movable):
         # {0, 0xFFFFFFFF}; any non-zero value means "0-RTT opt-in".
         conn.zero_rtt_enabled = (config.max_early_data() != UInt32(0))
 
-        # Promote the config's early-data store into a raw pointer the
-        # decrypt path can call into without crossing the FFI. The pointer
-        # is valid for the connection's lifetime because the public surface
-        # keeps the config alive across all connections that reference it.
-        var store_ptr_opt = config.early_data_store()
-        if store_ptr_opt is not None:
-            conn._early_data_store_ptr = store_ptr_opt
+        # Promote the early-data store from config into a connection pointer.
+        var store_opt = config.early_data_store()
+        if store_opt is not None:
+            conn._early_data_store_ptr = Optional[
+                UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]
+            ](store_opt.value())
 
         comptime if PROFILE_ACCEPT:
             if profile_ptr is not None:
@@ -1501,11 +1501,10 @@ struct QuicConnection(Movable):
                 for entry in self.spaces[s].sent_packets.items():
                     for fi in range(len(entry.value.frames)):
                         if entry.value.frames[fi].is_crypto():
-                            if entry.value.frames[fi]._crypto:
-                                var cf = entry.value.frames[fi]._crypto.value().copy()
-                                self.crypto_streams[s].requeue(
-                                    cf.offset, Span(cf.data)
-                                )
+                            ref cf = entry.value.frames[fi].payload.unsafe_get[CryptoFrame]()
+                            self.crypto_streams[s].requeue(
+                                cf.offset, Span(cf.data)
+                            )
 
     # ── Stream frame handlers ────────────────────────────────────────
 
@@ -2467,11 +2466,10 @@ struct QuicConnection(Movable):
                 # original offset so the peer receives correct offsets.
                 for f in range(len(lost_pkt.frames)):
                     if lost_pkt.frames[f].is_crypto():
-                        if lost_pkt.frames[f]._crypto:
-                            var cf = lost_pkt.frames[f]._crypto.value().copy()
-                            self.crypto_streams[space_idx].requeue(
-                                cf.offset, Span(cf.data)
-                            )
+                        ref cf = lost_pkt.frames[f].payload.unsafe_get[CryptoFrame]()
+                        self.crypto_streams[space_idx].requeue(
+                            cf.offset, Span(cf.data)
+                        )
 
                 # Re-apply stream-layer loss handling for Application space.
                 if space_idx == 2:
@@ -4129,12 +4127,11 @@ struct QuicConnection(Movable):
                     for entry in self.spaces[s].sent_packets.items():
                         for fi in range(len(entry.value.frames)):
                             if entry.value.frames[fi].is_crypto():
-                                if entry.value.frames[fi]._crypto:
-                                    var cf = entry.value.frames[fi]._crypto.value().copy()
-                                    self.crypto_streams[s].requeue(
-                                        cf.offset, Span(cf.data)
-                                    )
-                                    requeued = True
+                                ref cf = entry.value.frames[fi].payload.unsafe_get[CryptoFrame]()
+                                self.crypto_streams[s].requeue(
+                                    cf.offset, Span(cf.data)
+                                )
+                                requeued = True
                     if requeued:
                         pto_space = s
                 if pto_space >= 0:

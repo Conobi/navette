@@ -11,7 +11,8 @@
 # rename pass can unify both names — out of scope here.
 
 from std.collections import Dict, Optional
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.sys.info import size_of
 
@@ -101,16 +102,16 @@ struct CoroStreamCtx(Movable):
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.request = take.request^
-        self.recv_body = take.recv_body^
-        self.resp_writer = take.resp_writer^
-        self.caps = take.caps^
-        self.stream_id = take.stream_id
-        self.extra_data = take.extra_data
-        self.request_ended = take.request_ended
-        self.response_ended = take.response_ended
-        self.headers_sent = take.headers_sent
+    def __init__(out self, *, deinit move: Self):
+        self.request = move.request^
+        self.recv_body = move.recv_body^
+        self.resp_writer = move.resp_writer^
+        self.caps = move.caps^
+        self.stream_id = move.stream_id
+        self.extra_data = move.extra_data
+        self.request_ended = move.request_ended
+        self.response_ended = move.response_ended
+        self.headers_sent = move.headers_sent
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +165,9 @@ struct CoroStreamCtxPool(Movable):
         self._free = List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
-    def __init__(out self, *, deinit take: Self):
-        self._free = take._free^
-        self._capacity = take._capacity
+    def __init__(out self, *, deinit move: Self):
+        self._free = move._free^
+        self._capacity = move._capacity
 
     def __del__(deinit self):
         for i in range(len(self._free)):
@@ -259,15 +260,15 @@ struct H3CoroServer(Movable):
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
 
-    def __init__(out self, *, deinit take: Self):
-        self._h3 = take._h3^
-        self._body_fn = take._body_fn
-        self._extra_data = take._extra_data
-        self._outbuf = take._outbuf^
-        self._streams = take._streams^
-        self._ctx_pool = take._ctx_pool^
-        self._early_data_filter_ptr = take._early_data_filter_ptr
-        self._early_data_predicate_fn = take._early_data_predicate_fn
+    def __init__(out self, *, deinit move: Self):
+        self._h3 = move._h3^
+        self._body_fn = move._body_fn
+        self._extra_data = move._extra_data
+        self._outbuf = move._outbuf^
+        self._streams = move._streams^
+        self._ctx_pool = move._ctx_pool^
+        self._early_data_filter_ptr = move._early_data_filter_ptr
+        self._early_data_predicate_fn = move._early_data_predicate_fn
 
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""

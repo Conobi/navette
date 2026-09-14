@@ -58,9 +58,9 @@ struct AckRange(Copyable, Movable):
         self.gap = other.gap
         self.ack_range = other.ack_range
 
-    def __init__(out self, *, deinit take: Self):
-        self.gap = take.gap
-        self.ack_range = take.ack_range
+    def __init__(out self, *, deinit move: Self):
+        self.gap = move.gap
+        self.ack_range = move.ack_range
 
 
 struct AckFrame(Copyable, Movable):
@@ -93,15 +93,15 @@ struct AckFrame(Copyable, Movable):
         self.ecn_ce = other.ecn_ce
         self.has_ecn = other.has_ecn
 
-    def __init__(out self, *, deinit take: Self):
-        self.largest_ack = take.largest_ack
-        self.ack_delay = take.ack_delay
-        self.first_ack_range = take.first_ack_range
-        self.ranges = take.ranges^
-        self.ecn_ect0 = take.ecn_ect0
-        self.ecn_ect1 = take.ecn_ect1
-        self.ecn_ce = take.ecn_ce
-        self.has_ecn = take.has_ecn
+    def __init__(out self, *, deinit move: Self):
+        self.largest_ack = move.largest_ack
+        self.ack_delay = move.ack_delay
+        self.first_ack_range = move.first_ack_range
+        self.ranges = move.ranges^
+        self.ecn_ect0 = move.ecn_ect0
+        self.ecn_ect1 = move.ecn_ect1
+        self.ecn_ce = move.ecn_ce
+        self.has_ecn = move.has_ecn
 
 
 struct CryptoFrame(Copyable, Movable):
@@ -120,9 +120,9 @@ struct CryptoFrame(Copyable, Movable):
         self.offset = other.offset
         self.data = List[UInt8](copy=other.data)
 
-    def __init__(out self, *, deinit take: Self):
-        self.offset = take.offset
-        self.data = take.data^
+    def __init__(out self, *, deinit move: Self):
+        self.offset = move.offset
+        self.data = move.data^
 
 
 struct StreamFrame(Copyable, Movable):
@@ -149,11 +149,11 @@ struct StreamFrame(Copyable, Movable):
         self.data = List[UInt8](copy=other.data)
         self.fin = other.fin
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.offset = take.offset
-        self.data = take.data^
-        self.fin = take.fin
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.offset = move.offset
+        self.data = move.data^
+        self.fin = move.fin
 
 
 struct ResetStreamFrame(Copyable, Movable):
@@ -171,10 +171,10 @@ struct ResetStreamFrame(Copyable, Movable):
         self.error_code = other.error_code
         self.final_size = other.final_size
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.error_code = take.error_code
-        self.final_size = take.final_size
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.error_code = move.error_code
+        self.final_size = move.final_size
 
 
 struct StopSendingFrame(Copyable, Movable):
@@ -189,9 +189,9 @@ struct StopSendingFrame(Copyable, Movable):
         self.stream_id = other.stream_id
         self.error_code = other.error_code
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.error_code = take.error_code
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.error_code = move.error_code
 
 
 struct MaxStreamDataFrame(Copyable, Movable):
@@ -206,9 +206,9 @@ struct MaxStreamDataFrame(Copyable, Movable):
         self.stream_id = other.stream_id
         self.maximum = other.maximum
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.maximum = take.maximum
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.maximum = move.maximum
 
 
 struct MaxStreamsFrame(Copyable, Movable):
@@ -223,9 +223,9 @@ struct MaxStreamsFrame(Copyable, Movable):
         self.maximum = other.maximum
         self.bidi = other.bidi
 
-    def __init__(out self, *, deinit take: Self):
-        self.maximum = take.maximum
-        self.bidi = take.bidi
+    def __init__(out self, *, deinit move: Self):
+        self.maximum = move.maximum
+        self.bidi = move.bidi
 
 
 struct StreamDataBlockedFrame(Copyable, Movable):
@@ -240,9 +240,9 @@ struct StreamDataBlockedFrame(Copyable, Movable):
         self.stream_id = other.stream_id
         self.maximum = other.maximum
 
-    def __init__(out self, *, deinit take: Self):
-        self.stream_id = take.stream_id
-        self.maximum = take.maximum
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.maximum = move.maximum
 
 
 struct StreamsBlockedFrame(Copyable, Movable):
@@ -257,9 +257,9 @@ struct StreamsBlockedFrame(Copyable, Movable):
         self.maximum = other.maximum
         self.bidi = other.bidi
 
-    def __init__(out self, *, deinit take: Self):
-        self.maximum = take.maximum
-        self.bidi = take.bidi
+    def __init__(out self, *, deinit move: Self):
+        self.maximum = move.maximum
+        self.bidi = move.bidi
 
 
 struct NewConnectionIdFrame(Copyable, Movable):
@@ -280,11 +280,11 @@ struct NewConnectionIdFrame(Copyable, Movable):
         self.cid = List[UInt8](copy=other.cid)
         self.stateless_reset_token = List[UInt8](copy=other.stateless_reset_token)
 
-    def __init__(out self, *, deinit take: Self):
-        self.sequence = take.sequence
-        self.retire_prior_to = take.retire_prior_to
-        self.cid = take.cid^
-        self.stateless_reset_token = take.stateless_reset_token^
+    def __init__(out self, *, deinit move: Self):
+        self.sequence = move.sequence
+        self.retire_prior_to = move.retire_prior_to
+        self.cid = move.cid^
+        self.stateless_reset_token = move.stateless_reset_token^
 
 
 struct ConnectionCloseFrame(Copyable, Movable):
@@ -305,11 +305,11 @@ struct ConnectionCloseFrame(Copyable, Movable):
         self.frame_type = other.frame_type
         self.reason = List[UInt8](copy=other.reason)
 
-    def __init__(out self, *, deinit take: Self):
-        self.is_transport = take.is_transport
-        self.error_code = take.error_code
-        self.frame_type = take.frame_type
-        self.reason = take.reason^
+    def __init__(out self, *, deinit move: Self):
+        self.is_transport = move.is_transport
+        self.error_code = move.error_code
+        self.frame_type = move.frame_type
+        self.reason = move.reason^
 
 
 # ── Tagged Frame container ────────────────────────────────────────────

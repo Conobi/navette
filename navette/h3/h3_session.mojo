@@ -6,7 +6,8 @@
 from std.collections import Dict
 from std.collections.deque import Deque
 from std.collections.optional import Optional
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
@@ -51,14 +52,14 @@ struct _H3ClientCtx(Movable):
         self.errored = False
         self.error_code = UInt64(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.handle_id = take.handle_id
-        self.status_code = take.status_code
-        self.headers = take.headers^
-        self.body_data = take.body_data^
-        self.complete = take.complete
-        self.errored = take.errored
-        self.error_code = take.error_code
+    def __init__(out self, *, deinit move: Self):
+        self.handle_id = move.handle_id
+        self.status_code = move.status_code
+        self.headers = move.headers^
+        self.body_data = move.body_data^
+        self.complete = move.complete
+        self.errored = move.errored
+        self.error_code = move.error_code
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +87,12 @@ struct H3Session(Session):
         self._next_id = UInt64(0)
         self.received_goaway = False
 
-    def __init__(out self, *, deinit take: Self):
-        self._h3 = take._h3^
-        self._streams = take._streams^
-        self._handle_to_stream = take._handle_to_stream^
-        self._next_id = take._next_id
-        self.received_goaway = take.received_goaway
+    def __init__(out self, *, deinit move: Self):
+        self._h3 = move._h3^
+        self._streams = move._streams^
+        self._handle_to_stream = move._handle_to_stream^
+        self._next_id = move._next_id
+        self.received_goaway = move.received_goaway
 
     def __del__(deinit self):
         """Free all heap-allocated client stream contexts."""

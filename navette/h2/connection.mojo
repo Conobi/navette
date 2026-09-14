@@ -119,14 +119,14 @@ struct H2Config(Copyable, Movable):
         self.header_table_size = other.header_table_size
         self.enable_connect_protocol = other.enable_connect_protocol
 
-    def __init__(out self, *, deinit take: Self):
-        self.client_side = take.client_side
-        self.initial_window_size = take.initial_window_size
-        self.max_concurrent_streams = take.max_concurrent_streams
-        self.max_frame_size = take.max_frame_size
-        self.max_header_list_size = take.max_header_list_size
-        self.header_table_size = take.header_table_size
-        self.enable_connect_protocol = take.enable_connect_protocol
+    def __init__(out self, *, deinit move: Self):
+        self.client_side = move.client_side
+        self.initial_window_size = move.initial_window_size
+        self.max_concurrent_streams = move.max_concurrent_streams
+        self.max_frame_size = move.max_frame_size
+        self.max_header_list_size = move.max_header_list_size
+        self.header_table_size = move.header_table_size
+        self.enable_connect_protocol = move.enable_connect_protocol
 
 
 # ---------------------------------------------------------------------------
@@ -176,14 +176,14 @@ struct H2Settings(Copyable, Movable):
         self.max_header_list_size = other.max_header_list_size
         self.enable_connect_protocol = other.enable_connect_protocol
 
-    def __init__(out self, *, deinit take: Self):
-        self.header_table_size = take.header_table_size
-        self.enable_push = take.enable_push
-        self.max_concurrent_streams = take.max_concurrent_streams
-        self.initial_window_size = take.initial_window_size
-        self.max_frame_size = take.max_frame_size
-        self.max_header_list_size = take.max_header_list_size
-        self.enable_connect_protocol = take.enable_connect_protocol
+    def __init__(out self, *, deinit move: Self):
+        self.header_table_size = move.header_table_size
+        self.enable_push = move.enable_push
+        self.max_concurrent_streams = move.max_concurrent_streams
+        self.initial_window_size = move.initial_window_size
+        self.max_frame_size = move.max_frame_size
+        self.max_header_list_size = move.max_header_list_size
+        self.enable_connect_protocol = move.enable_connect_protocol
 
 
 # ---------------------------------------------------------------------------
@@ -497,15 +497,15 @@ struct StreamState(Copyable, Movable):
         self.headers_end_stream = other.headers_end_stream
         self.data_received = other.data_received
 
-    def __init__(out self, *, deinit take: Self):
-        self.lifecycle = take.lifecycle
-        self.send_window = take.send_window
-        self.recv_window = take.recv_window
-        self.recv_window_consumed = take.recv_window_consumed
-        self.expects_continuation = take.expects_continuation
-        self.header_block_buffer = take.header_block_buffer^
-        self.headers_end_stream = take.headers_end_stream
-        self.data_received = take.data_received
+    def __init__(out self, *, deinit move: Self):
+        self.lifecycle = move.lifecycle
+        self.send_window = move.send_window
+        self.recv_window = move.recv_window
+        self.recv_window_consumed = move.recv_window_consumed
+        self.expects_continuation = move.expects_continuation
+        self.header_block_buffer = move.header_block_buffer^
+        self.headers_end_stream = move.headers_end_stream
+        self.data_received = move.data_received
 
 
 # ---------------------------------------------------------------------------
@@ -524,9 +524,9 @@ struct PendingDataChunk(Copyable, Movable):
         self.data = other.data.copy()
         self.end_stream = other.end_stream
 
-    def __init__(out self, *, deinit take: Self):
-        self.data = take.data^
-        self.end_stream = take.end_stream
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data^
+        self.end_stream = move.end_stream
 
 
 # ---------------------------------------------------------------------------
@@ -596,28 +596,28 @@ struct H2Connection(Movable):
         self._closed_stream_count = 0
         self._pending_data = Dict[Int, List[PendingDataChunk]]()
 
-    def __init__(out self, *, deinit take: Self):
-        self._config = take._config^
-        self._state = take._state
-        self._client_side = take._client_side
-        self._local_settings = take._local_settings^
-        self._remote_settings = take._remote_settings^
-        self._settings_acked = take._settings_acked
-        self._inbuf = take._inbuf^
-        self._outbuf = take._outbuf^
-        self._streams = take._streams^
-        self._next_stream_id = take._next_stream_id
-        self._last_recv_stream_id = take._last_recv_stream_id
-        self._active_stream_count = take._active_stream_count
-        self._send_window = take._send_window
-        self._recv_window = take._recv_window
-        self._recv_window_consumed = take._recv_window_consumed
-        self._hpack_encoder = take._hpack_encoder^
-        self._hpack_decoder = take._hpack_decoder^
-        self._expecting_continuation_for = take._expecting_continuation_for
-        self._client_magic_validated = take._client_magic_validated
-        self._closed_stream_count = take._closed_stream_count
-        self._pending_data = take._pending_data^
+    def __init__(out self, *, deinit move: Self):
+        self._config = move._config^
+        self._state = move._state
+        self._client_side = move._client_side
+        self._local_settings = move._local_settings^
+        self._remote_settings = move._remote_settings^
+        self._settings_acked = move._settings_acked
+        self._inbuf = move._inbuf^
+        self._outbuf = move._outbuf^
+        self._streams = move._streams^
+        self._next_stream_id = move._next_stream_id
+        self._last_recv_stream_id = move._last_recv_stream_id
+        self._active_stream_count = move._active_stream_count
+        self._send_window = move._send_window
+        self._recv_window = move._recv_window
+        self._recv_window_consumed = move._recv_window_consumed
+        self._hpack_encoder = move._hpack_encoder^
+        self._hpack_decoder = move._hpack_decoder^
+        self._expecting_continuation_for = move._expecting_continuation_for
+        self._client_magic_validated = move._client_magic_validated
+        self._closed_stream_count = move._closed_stream_count
+        self._pending_data = move._pending_data^
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""

@@ -13,7 +13,8 @@
 # can rename to H2StreamServer / H2StreamCtx if needed.
 
 from std.collections import Dict
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from std.sys.info import size_of
 
@@ -116,17 +117,17 @@ struct CoroStreamCtx(Movable):
         self.headers_sent = False
         self.unacked_bytes = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.request = take.request^
-        self.recv_body = take.recv_body^
-        self.resp_writer = take.resp_writer^
-        self.caps = take.caps^
-        self.stream_id = take.stream_id
-        self.extra_data = take.extra_data
-        self.request_ended = take.request_ended
-        self.response_ended = take.response_ended
-        self.headers_sent = take.headers_sent
-        self.unacked_bytes = take.unacked_bytes
+    def __init__(out self, *, deinit move: Self):
+        self.request = move.request^
+        self.recv_body = move.recv_body^
+        self.resp_writer = move.resp_writer^
+        self.caps = move.caps^
+        self.stream_id = move.stream_id
+        self.extra_data = move.extra_data
+        self.request_ended = move.request_ended
+        self.response_ended = move.response_ended
+        self.headers_sent = move.headers_sent
+        self.unacked_bytes = move.unacked_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +201,9 @@ struct CoroStreamCtxPool(Movable):
         self._free = List[UnsafePointer[CoroStreamCtx, MutAnyOrigin]]()
         self._capacity = capacity
 
-    def __init__(out self, *, deinit take: Self):
-        self._free = take._free^
-        self._capacity = take._capacity
+    def __init__(out self, *, deinit move: Self):
+        self._free = move._free^
+        self._capacity = move._capacity
 
     def __del__(deinit self):
         for i in range(len(self._free)):
@@ -291,13 +292,13 @@ struct H2CoroServer(Movable):
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._flush_outbound()
 
-    def __init__(out self, *, deinit take: Self):
-        self._conn = take._conn^
-        self._body_fn = take._body_fn
-        self._extra_data = take._extra_data
-        self._outbuf = take._outbuf^
-        self._streams = take._streams^
-        self._ctx_pool = take._ctx_pool^
+    def __init__(out self, *, deinit move: Self):
+        self._conn = move._conn^
+        self._body_fn = move._body_fn
+        self._extra_data = move._extra_data
+        self._outbuf = move._outbuf^
+        self._streams = move._streams^
+        self._ctx_pool = move._ctx_pool^
 
     def __del__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""

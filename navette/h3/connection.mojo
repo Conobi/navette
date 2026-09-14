@@ -5,12 +5,15 @@
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.utils import Variant
 
 from navette.quic.connection import (
     QuicConnection,
     QuicEvent,
+    ConnectionClosedPayload,
+    StreamResetPayload,
     CONN_CLOSING,
     CONN_DRAINING,
     CONN_CLOSED,
@@ -254,10 +257,10 @@ struct _H3StreamBuf(Copyable, Movable):
         self.type_byte = other.type_byte.copy()
         self.is_uni = other.is_uni
 
-    def __init__(out self, *, deinit take: Self):
-        self.buf = take.buf^
-        self.type_byte = take.type_byte^
-        self.is_uni = take.is_uni
+    def __init__(out self, *, deinit move: Self):
+        self.buf = move.buf^
+        self.type_byte = move.type_byte^
+        self.is_uni = move.is_uni
 
 
 # ---------------------------------------------------------------------------
@@ -321,29 +324,29 @@ struct H3Connection(Movable):
         self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
 
-    def __init__(out self, *, deinit take: Self):
-        self._quic = take._quic^
-        self._is_server = take._is_server
-        self._stream_bufs = take._stream_bufs^
-        self._h3_events = take._h3_events^
-        self._h3_events_head = take._h3_events_head
-        self._local_ctrl_sid = take._local_ctrl_sid^
-        self._local_qenc_sid = take._local_qenc_sid^
-        self._local_qdec_sid = take._local_qdec_sid^
-        self._init_done = take._init_done
-        self._peer_ctrl_sid = take._peer_ctrl_sid^
-        self._peer_qenc_sid = take._peer_qenc_sid^
-        self._peer_qdec_sid = take._peer_qdec_sid^
-        self._peer_ctrl_first_frame_seen = take._peer_ctrl_first_frame_seen
-        self._peer_ctrl_settings = take._peer_ctrl_settings
-        self._goaway_sent = take._goaway_sent^
-        self._peer_goaway_sid = take._peer_goaway_sid^
-        self._enc = take._enc^
-        self._dec = take._dec^
-        self._request_headers_seen = take._request_headers_seen^
-        self._local_h3_datagram_enabled = take._local_h3_datagram_enabled
-        self._peer_h3_datagram_enabled = take._peer_h3_datagram_enabled
-        self.profile_ptr = take.profile_ptr
+    def __init__(out self, *, deinit move: Self):
+        self._quic = move._quic^
+        self._is_server = move._is_server
+        self._stream_bufs = move._stream_bufs^
+        self._h3_events = move._h3_events^
+        self._h3_events_head = move._h3_events_head
+        self._local_ctrl_sid = move._local_ctrl_sid^
+        self._local_qenc_sid = move._local_qenc_sid^
+        self._local_qdec_sid = move._local_qdec_sid^
+        self._init_done = move._init_done
+        self._peer_ctrl_sid = move._peer_ctrl_sid^
+        self._peer_qenc_sid = move._peer_qenc_sid^
+        self._peer_qdec_sid = move._peer_qdec_sid^
+        self._peer_ctrl_first_frame_seen = move._peer_ctrl_first_frame_seen
+        self._peer_ctrl_settings = move._peer_ctrl_settings
+        self._goaway_sent = move._goaway_sent^
+        self._peer_goaway_sid = move._peer_goaway_sid^
+        self._enc = move._enc^
+        self._dec = move._dec^
+        self._request_headers_seen = move._request_headers_seen^
+        self._local_h3_datagram_enabled = move._local_h3_datagram_enabled
+        self._peer_h3_datagram_enabled = move._peer_h3_datagram_enabled
+        self.profile_ptr = move.profile_ptr
 
     @staticmethod
     def server(var quic: QuicConnection) raises -> H3Connection:
@@ -502,22 +505,26 @@ struct H3Connection(Movable):
                     self._bootstrap_local_streams(now)
                 self._h3_events.append(H3Event.handshake_complete()^)
             elif ev.type_id == QuicEvent.STREAM_OPENED:
-                if self._is_peer_initiated(ev.stream_id):
+                var stream_id = ev.payload.unsafe_get[UInt64]()
+                if self._is_peer_initiated(stream_id):
                     var sbuf = _H3StreamBuf()
-                    sbuf.is_uni = (ev.stream_id & UInt64(0x02)) != 0
-                    self._stream_bufs[Int(ev.stream_id)] = sbuf^
+                    sbuf.is_uni = (stream_id & UInt64(0x02)) != 0
+                    self._stream_bufs[Int(stream_id)] = sbuf^
             elif ev.type_id == QuicEvent.STREAM_READABLE:
+                var stream_id = ev.payload.unsafe_get[UInt64]()
                 try:
-                    self._drain_stream(ev.stream_id, now)
+                    self._drain_stream(stream_id, now)
                 except:
                     pass
             elif ev.type_id == QuicEvent.STREAM_RESET:
-                if self._is_request_stream(ev.stream_id):
-                    self._h3_events.append(H3Event.stream_reset(ev.stream_id, ev.error_code)^)
+                ref rst = ev.payload.unsafe_get[StreamResetPayload]()
+                if self._is_request_stream(rst.stream_id):
+                    self._h3_events.append(H3Event.stream_reset(rst.stream_id, rst.error_code)^)
             elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
-                self._h3_events.append(H3Event.connection_closed(ev.error_code, ev.reason)^)
+                ref cc = ev.payload.unsafe_get[ConnectionClosedPayload]()
+                self._h3_events.append(H3Event.connection_closed(cc.error_code, cc.reason)^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
-                self._dispatch_quic_datagram(ev.datagram_payload)
+                self._dispatch_quic_datagram(ev.payload.unsafe_get[List[UInt8]]())
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         """Drain outbound QUIC datagrams. Returns list of UDP payloads."""

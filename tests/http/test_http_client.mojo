@@ -3,7 +3,8 @@
 # Unit tests for M6a HttpClient (pool, dispatch, convenience API).
 
 from std.collections.optional import Optional
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 from navette.http.session_slot import SessionSlot, SessionSlotPtr
 from navette.http.handler import Capabilities, ALPN_H1, StreamHandler, RecvBody, ResponseWriter, StreamError
@@ -104,7 +105,7 @@ def test_client_attach_and_submit() raises:
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
     var origin = Origin(scheme="https", host="example.com", port=UInt16(443))
-    client.attach_session(Origin(other=origin), slot^)
+    client.attach_session(Origin(copy=origin), slot^)
     var hdrs = Headers()
     hdrs.add("Host", "example.com")
     var req = Request(
@@ -113,7 +114,7 @@ def test_client_attach_and_submit() raises:
         headers=hdrs^,
         body=RequestBody.empty(),
     )
-    var handle = client.submit(Origin(other=origin), req^)
+    var handle = client.submit(Origin(copy=origin), req^)
     assert_true(handle.id() > UInt64(0), "got handle")
 
 
@@ -127,7 +128,7 @@ def test_client_no_connection_raises() raises:
     )
     var raised = False
     try:
-        _ = client.submit(Origin(other=origin), req^)
+        _ = client.submit(Origin(copy=origin), req^)
     except:
         raised = True
     assert_true(raised, "should raise when no connection")
@@ -140,14 +141,14 @@ def test_client_idle_eviction() raises:
     var slot = SessionSlot.from_h1(session^)
     slot.mark_idle(UInt64(100))
     var origin = Origin(scheme="https", host="example.com", port=UInt16(443))
-    client.attach_session(Origin(other=origin), slot^)
+    client.attach_session(Origin(copy=origin), slot^)
     # At t=500, not expired (500 - 100 = 400 < 1000)
     client.close_idle(UInt64(500))
     var req = Request(
         Method.get(), String("/"),
         headers=Headers(), body=RequestBody.empty(),
     )
-    var handle = client.submit(Origin(other=origin), req^)
+    var handle = client.submit(Origin(copy=origin), req^)
     assert_true(handle.id() > UInt64(0), "still available")
 
 
@@ -158,7 +159,7 @@ def test_client_idle_eviction_expired() raises:
     var slot = SessionSlot.from_h1(session^)
     slot.mark_idle(UInt64(100))
     var origin = Origin(scheme="https", host="example.com", port=UInt16(443))
-    client.attach_session(Origin(other=origin), slot^)
+    client.attach_session(Origin(copy=origin), slot^)
     # At t=1200, expired (1200 - 100 = 1100 > 1000)
     client.close_idle(UInt64(1200))
     var req = Request(
@@ -167,7 +168,7 @@ def test_client_idle_eviction_expired() raises:
     )
     var raised = False
     try:
-        _ = client.submit(Origin(other=origin), req^)
+        _ = client.submit(Origin(copy=origin), req^)
     except:
         raised = True
     assert_true(raised, "evicted — no connection")
@@ -179,7 +180,7 @@ def test_client_get_convenience() raises:
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
     var origin = Origin(scheme="https", host="api.test", port=UInt16(443))
-    client.attach_session(Origin(other=origin), slot^)
+    client.attach_session(Origin(copy=origin), slot^)
     var handle = client.get("https://api.test/v1/data")
     assert_true(handle.id() > UInt64(0), "got handle from get()")
 
@@ -190,7 +191,7 @@ def test_client_loopback_roundtrip() raises:
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
     var origin = Origin(scheme="https", host="loop.test", port=UInt16(443))
-    client.attach_session(Origin(other=origin), slot^)
+    client.attach_session(Origin(copy=origin), slot^)
 
     var hdrs = Headers()
     hdrs.add("Host", "loop.test")
@@ -198,7 +199,7 @@ def test_client_loopback_roundtrip() raises:
         Method.get(), String("/hello"),
         headers=hdrs^, body=RequestBody.empty(),
     )
-    var handle = client.submit(Origin(other=origin), req^)
+    var handle = client.submit(Origin(copy=origin), req^)
 
     # Pump: drain from slot -> server -> feed back
     var server = H1HandlerServer[OkHandler](handler=OkHandler())
@@ -208,7 +209,7 @@ def test_client_loopback_roundtrip() raises:
     server.feed(Span(req_bytes))
     var resp_bytes = server.drain()
     p[].feed(Span(resp_bytes))
-    client.run_one(Origin(other=origin), handle)
+    client.run_one(Origin(copy=origin), handle)
 
     assert_true(handle.is_complete(), "complete")
     var resp = handle^.take_response()
@@ -220,13 +221,13 @@ def test_client_max_conns_h1() raises:
     var client = HttpClient.with_config(max_conns_h1=2)
     var origin = Origin(scheme="https", host="limited.test", port=UInt16(443))
     var s1 = H1Session()
-    client.attach_session(Origin(other=origin), SessionSlot.from_h1(s1^))
+    client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s1^))
     var s2 = H1Session()
-    client.attach_session(Origin(other=origin), SessionSlot.from_h1(s2^))
+    client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s2^))
     var s3 = H1Session()
     var raised = False
     try:
-        client.attach_session(Origin(other=origin), SessionSlot.from_h1(s3^))
+        client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s3^))
     except:
         raised = True
     assert_true(raised, "should reject 3rd H1 session")
@@ -237,11 +238,11 @@ def test_client_max_conns_mux() raises:
     var client = HttpClient.with_config(max_conns_mux=1)
     var origin = Origin(scheme="https", host="mux.test", port=UInt16(443))
     var s1 = H2Session()
-    client.attach_session(Origin(other=origin), SessionSlot.from_h2(s1^))
+    client.attach_session(Origin(copy=origin), SessionSlot.from_h2(s1^))
     var s2 = H2Session()
     var raised = False
     try:
-        client.attach_session(Origin(other=origin), SessionSlot.from_h2(s2^))
+        client.attach_session(Origin(copy=origin), SessionSlot.from_h2(s2^))
     except:
         raised = True
     assert_true(raised, "should reject 2nd H2 session")
@@ -252,14 +253,14 @@ def test_client_multiple_origins() raises:
     var client = HttpClient.default()
     var s1 = H1Session()
     var o1 = Origin(scheme="https", host="alpha.test", port=UInt16(443))
-    client.attach_session(Origin(other=o1), SessionSlot.from_h1(s1^))
+    client.attach_session(Origin(copy=o1), SessionSlot.from_h1(s1^))
     var s2 = H1Session()
     var o2 = Origin(scheme="https", host="beta.test", port=UInt16(443))
-    client.attach_session(Origin(other=o2), SessionSlot.from_h1(s2^))
+    client.attach_session(Origin(copy=o2), SessionSlot.from_h1(s2^))
     var r1 = Request(Method.get(), String("/a"), headers=Headers(), body=RequestBody.empty())
     var r2 = Request(Method.get(), String("/b"), headers=Headers(), body=RequestBody.empty())
-    var h1 = client.submit(Origin(other=o1), r1^)
-    var h2 = client.submit(Origin(other=o2), r2^)
+    var h1 = client.submit(Origin(copy=o1), r1^)
+    var h2 = client.submit(Origin(copy=o2), r2^)
     assert_true(h1.id() > UInt64(0), "h1 valid")
     assert_true(h2.id() > UInt64(0), "h2 valid")
 

@@ -10,7 +10,7 @@
 # Destructors call `rlsm_config_free`.
 from std.memory import UnsafePointer
 from navette.util.owned_alloc import Owned
-from std.memory import Span
+from std.collections import Span
 from std.utils import Variant
 
 from .lib import SharedLibrary
@@ -66,7 +66,7 @@ struct TlsClientConfig(Movable):
             insecure: If True, use a config that accepts any certificate.
                       Requires librustls_mojo.so built with --features insecure.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
         var rlib = self._lib.inner_ptr()
         if insecure:
             self._handle = rlib[].client_config_new_insecure()
@@ -75,13 +75,36 @@ struct TlsClientConfig(Movable):
         if self._handle < 0:
             raise "rlsm_client_config_new failed: " + rlib[].last_error()
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:
@@ -106,7 +129,7 @@ struct TlsClientConfig(Movable):
         var buf_ptr_buf = Owned[UInt8](len(buf))
         var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
-            buf_ptr[i] = buf[i]
+            buf_ptr[unsafe_offset=i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
@@ -132,7 +155,7 @@ struct TlsServerConfig(Movable):
         FFI call and freed before returning, so the caller's spans only
         need to be valid for the duration of `__init__`.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
@@ -140,12 +163,12 @@ struct TlsServerConfig(Movable):
         var cert_buf_buf = Owned[UInt8](cert_len)
         var cert_buf = cert_buf_buf.ptr()
         for i in range(cert_len):
-            cert_buf[i] = cert_pem[i]
+            cert_buf[unsafe_offset=i] = cert_pem[i]
 
         var key_buf_buf = Owned[UInt8](key_len)
         var key_buf = key_buf_buf.ptr()
         for i in range(key_len):
-            key_buf[i] = key_pem[i]
+            key_buf[unsafe_offset=i] = key_pem[i]
 
         var rlib = self._lib.inner_ptr()
         var handle = rlib[].server_config_new(
@@ -160,13 +183,36 @@ struct TlsServerConfig(Movable):
             raise "rlsm_server_config_new failed: " + rlib[].last_error()
         self._handle = handle
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:
@@ -191,7 +237,7 @@ struct TlsServerConfig(Movable):
         var buf_ptr_buf = Owned[UInt8](len(buf))
         var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
-            buf_ptr[i] = buf[i]
+            buf_ptr[unsafe_offset=i] = buf[i]
         var rc = self._lib.inner_ptr()[].config_set_alpn_protocols(
             self._handle, buf_ptr, Int32(len(buf))
         )
@@ -206,10 +252,9 @@ struct QuicServerConfig(Movable):
     var _handle: Int32
     var _max_early_data: UInt32
     var _early_data: Variant[NoneType, FilterStrategy, PredicateStrategy]
-    """Early-data strategy variant: NoneType when 0-RTT is off,
-    FilterStrategy for IdempotentOnly/Tuned (store + HTTP-method filter),
-    PredicateStrategy for user-supplied predicate (store + fn-pointer).
-    Replaces the former 3-Optional synchronised-population invariant."""
+    """Early-data strategy Variant: NoneType (Off), FilterStrategy
+    (IdempotentOnly/Tuned: store + filter), PredicateStrategy
+    (Predicate: store + user-supplied fn)."""
 
     def __init__(
         out self,
@@ -243,7 +288,7 @@ struct QuicServerConfig(Movable):
             cert_pem: PEM-encoded certificate chain bytes.
             key_pem: PEM-encoded private-key bytes.
             alpn: ALPN protocol id (default "h3").
-            max_early_data: legacy 0-RTT enable knob, kept for
+            max_early_data: Legacy 0-RTT enable knob, kept for
                 backward compatibility with existing callers. `None`
                 (omitted) defers entirely to `policy`. `UInt32(0)`
                 explicitly disables 0-RTT (rejection mode);
@@ -252,7 +297,7 @@ struct QuicServerConfig(Movable):
                 into the Optional; bare integer literals do not —
                 pass `UInt32(...)`. Prefer the `policy=` kwarg for
                 new code.
-            policy: public `EarlyDataPolicy` ctor kwarg (default
+            policy: Public `EarlyDataPolicy` ctor kwarg (default
                 `None`, meaning "kwarg omitted; honor the legacy
                 `max_early_data` reading unchanged"). When the caller
                 supplies a non-None policy, it overrides the legacy
@@ -336,7 +381,7 @@ struct QuicServerConfig(Movable):
         else:
             effective_max_early_data = UInt32(0)
 
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         var cert_len = len(cert_pem)
         var key_len = len(key_pem)
@@ -344,23 +389,23 @@ struct QuicServerConfig(Movable):
         var cert_buf_buf = Owned[UInt8](cert_len)
         var cert_buf = cert_buf_buf.ptr()
         for i in range(cert_len):
-            cert_buf[i] = cert_pem[i]
+            cert_buf[unsafe_offset=i] = cert_pem[i]
 
         var key_buf_buf = Owned[UInt8](key_len)
         var key_buf = key_buf_buf.ptr()
         for i in range(key_len):
-            key_buf[i] = key_pem[i]
+            key_buf[unsafe_offset=i] = key_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
         var alpn_buf_buf = Owned[UInt8](alpn_len)
         var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
-            alpn_buf[i] = alpn_bytes[i]
+            alpn_buf[unsafe_offset=i] = alpn_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
         var rlib = self._lib.inner_ptr()
         var rc = rlib[].quic_server_config_new(
             cert_buf, Int32(cert_len),
@@ -376,15 +421,15 @@ struct QuicServerConfig(Movable):
             self._max_early_data = UInt32(0)
             self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](NoneType())
             raise "quic_server_config_new failed: " + err
-        self._handle = out_handle[0]
+        self._handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above
         # (origin-tie should suffice; defensive against ASAP free).
         _ = out_handle_buf
         self._max_early_data = effective_max_early_data
-        # Variant-based early-data strategy: NoneType when off,
-        # FilterStrategy for IdempotentOnly/Tuned, PredicateStrategy
-        # for user-supplied predicate. The Variant makes the illegal
-        # state (filter + predicate both populated) unrepresentable.
+        # Synchronised-population invariant: when 0-RTT is enabled,
+        # exactly one of `_early_data_filter` / `_early_data_predicate_fn`
+        # is Some; the store is Some in both cases. When 0-RTT is
+        # disabled, all three are None.
         if effective_max_early_data == UInt32(0):
             self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](NoneType())
         elif policy is not None and policy.value().is_predicate():
@@ -404,7 +449,6 @@ struct QuicServerConfig(Movable):
                 )
             )
         else:
-            # IdempotentOnly, or the omitted-policy legacy path
             self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](
                 FilterStrategy(
                     InMemoryEarlyDataStore(),
@@ -412,15 +456,24 @@ struct QuicServerConfig(Movable):
                 )
             )
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
-        self._max_early_data = take._max_early_data
-        self._early_data = take._early_data^
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
+        self._max_early_data = move._max_early_data
+        self._early_data = move._early_data^
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
+        """Release the Rust-side config handle."""
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:
@@ -428,19 +481,14 @@ struct QuicServerConfig(Movable):
 
     @always_inline
     def max_early_data(self) -> UInt32:
-        """Return the max_early_data value set at construction. UInt32(0)
-        means 0-RTT is disabled (rejection mode); UInt32::MAX means
-        0-RTT decrypt is enabled (rustls QUIC constraint, RFC 9001 §4.6.1)."""
+        """Return the max_early_data value set at construction."""
         return self._max_early_data
 
-    def early_data_store(
-        self,
-    ) -> Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]]:
-        """Return a pointer to the early-data store, or None for Off.
+    def early_data_store(self) -> Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]]:
+        """Return a pointer to the early-data store, if any.
 
-        Both FilterStrategy and PredicateStrategy carry a store;
-        NoneType means 0-RTT is off. The pointer is valid for the
-        config's lifetime.
+        Covers both FilterStrategy and PredicateStrategy branches,
+        preventing callers from forgetting one.
         """
         if self._early_data.isa[FilterStrategy]():
             return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
@@ -454,7 +502,7 @@ struct QuicServerConfig(Movable):
                     UnsafePointer(to=self._early_data.unsafe_get[PredicateStrategy]().store)
                 )
             )
-        return None
+        return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](None)
 
 
 struct QuicClientConfig(Movable):
@@ -478,18 +526,18 @@ struct QuicClientConfig(Movable):
             insecure: If True, accept any server certificate.
                       Requires librustls_mojo.so built with --features insecure.
         """
-        self._lib = SharedLibrary(other=lib)
+        self._lib = SharedLibrary(copy=lib)
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
         var alpn_buf_buf = Owned[UInt8](alpn_len)
         var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
-            alpn_buf[i] = alpn_bytes[i]
+            alpn_buf[unsafe_offset=i] = alpn_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
 
         var rlib = self._lib.inner_ptr()
         var rc: Int32
@@ -506,13 +554,13 @@ struct QuicClientConfig(Movable):
             var err = rlib[].last_error()
             self._handle = Int32(-1)
             raise "quic_client_config_new failed: " + err
-        self._handle = out_handle[0]
+        self._handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
 
     def __init__(out self, *, _lib: SharedLibrary, _handle: Int32):
         """Private constructor for static factory methods."""
-        self._lib = SharedLibrary(other=_lib)
+        self._lib = SharedLibrary(copy=_lib)
         self._handle = _handle
 
     @staticmethod
@@ -532,18 +580,18 @@ struct QuicClientConfig(Movable):
         var ca_buf_buf = Owned[UInt8](ca_len)
         var ca_buf = ca_buf_buf.ptr()
         for i in range(ca_len):
-            ca_buf[i] = ca_pem[i]
+            ca_buf[unsafe_offset=i] = ca_pem[i]
 
         var alpn_bytes = alpn.as_bytes()
         var alpn_len = len(alpn_bytes)
         var alpn_buf_buf = Owned[UInt8](alpn_len)
         var alpn_buf = alpn_buf_buf.ptr()
         for i in range(alpn_len):
-            alpn_buf[i] = alpn_bytes[i]
+            alpn_buf[unsafe_offset=i] = alpn_bytes[i]
 
         var out_handle_buf = Owned[Int32](1)
         var out_handle = out_handle_buf.ptr()
-        out_handle[0] = Int32(-1)
+        out_handle[unsafe_offset=0] = Int32(-1)
         var rlib = lib.inner_ptr()
         var rc = rlib[].quic_client_config_with_ca(
             ca_buf, Int32(ca_len),
@@ -554,18 +602,41 @@ struct QuicClientConfig(Movable):
         if rc != 0:
             var err = rlib[].last_error()
             raise "quic_client_config_with_ca failed: " + err
-        var handle = out_handle[0]
+        var handle = out_handle[unsafe_offset=0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
         return QuicClientConfig(_lib=lib, _handle=handle)
 
-    def __init__(out self, *, deinit take: Self):
-        self._lib = take._lib^
-        self._handle = take._handle
+    def __init__(out self, *, deinit move: Self):
+        self._lib = move._lib^
+        self._handle = move._handle
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
+        """Release the Rust-side config handle.
+
+        A destructor may not raise. `config_free` can, but only from the
+        symbol lookup: the Rust side returns -1 for an unknown handle
+        rather than raising, and that status is already discarded here
+        because a config that is not in the table needs no freeing.
+
+        A lookup failure means the loaded librustls_mojo.so does not
+        export `rlsm_config_free`, i.e. it is not the library the handle
+        was created by. Swallowing it leaks one entry in the Rust
+        CONFIG_TABLE; the alternative in a destructor is aborting the
+        process while tearing a connection down, which is worse. Double
+        free is impossible: `deinit self` consumes the config, so this
+        runs exactly once per handle.
+        """
         if self._handle > 0:
-            _ = self._lib.inner_ptr()[].config_free(self._handle)
+            try:
+                _ = self._lib.inner_ptr()[].config_free(self._handle)
+            except:
+                pass
+        # Anchor: `inner_ptr()` returns an untracked pointer, so the checker
+        # cannot see that the call above depends on `_lib`. Without a later
+        # reference, ASAP destruction frees `_lib` at that line -- closing the
+        # dylib -- and the FFI call runs through a null handle.
+        _ = self._lib.inner_ptr()
 
     @always_inline
     def handle(self) -> Int32:

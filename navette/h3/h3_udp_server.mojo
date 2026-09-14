@@ -222,14 +222,14 @@ struct PendingDatagram(Copyable, Movable):
         self.addr_len = other.addr_len
         self.dcid = List[UInt8](copy=other.dcid)
 
-    def __init__(out self, *, deinit take: Self):
-        self.buf_id = take.buf_id
-        self.buf_ptr = take.buf_ptr
-        self.payload_ptr = take.payload_ptr
-        self.payload_len = take.payload_len
-        self.addr_offset = take.addr_offset
-        self.addr_len = take.addr_len
-        self.dcid = take.dcid^
+    def __init__(out self, *, deinit move: Self):
+        self.buf_id = move.buf_id
+        self.buf_ptr = move.buf_ptr
+        self.payload_ptr = move.payload_ptr
+        self.payload_len = move.payload_len
+        self.addr_offset = move.addr_offset
+        self.addr_len = move.addr_len
+        self.dcid = move.dcid^
 
 
 # ── Egress packet (queued for flush submission) ─────────────────────────────
@@ -265,11 +265,11 @@ struct EgressPacket(Movable):
         self.addr = addr^
         self.conn_idx = conn_idx
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.data = take.data^
-        self.addr = take.addr^
-        self.conn_idx = take.conn_idx
+        self.data = move.data^
+        self.addr = move.addr^
+        self.conn_idx = move.conn_idx
 
 
 # ── Connection slot + DCID demux entry ──────────────────────────────────────
@@ -293,9 +293,9 @@ struct _DcidEntry(Copyable, Movable):
         self.idx = other.idx
         self.generation = other.generation
 
-    def __init__(out self, *, deinit take: Self):
-        self.idx = take.idx
-        self.generation = take.generation
+    def __init__(out self, *, deinit move: Self):
+        self.idx = move.idx
+        self.generation = move.generation
 
 
 struct ConnSlot[H: StreamHandler](Copyable, Movable):
@@ -335,11 +335,11 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.dcids = List[UInt64](copy=other.dcids)
         self.generation = other.generation
 
-    def __init__(out self, *, deinit take: Self):
-        self.h3 = take.h3
-        self.addr = take.addr^
-        self.dcids = take.dcids^
-        self.generation = take.generation
+    def __init__(out self, *, deinit move: Self):
+        self.h3 = move.h3
+        self.addr = move.addr^
+        self.dcids = move.dcids^
+        self.generation = move.generation
 
 
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
@@ -526,31 +526,31 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self.profile = AcceptProfile()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.udp_handle = take.udp_handle^
-        self.transport_params = take.transport_params^
-        self.make_handler = take.make_handler
-        self.conn_slots = take.conn_slots^
-        self.conn_dcid_map = take.conn_dcid_map^
-        self.next_generation = take.next_generation
-        self._tls = take._tls^
-        self.server_config = take.server_config^
-        self.pending_rx = take.pending_rx^
-        self._inflight_bufs = take._inflight_bufs^
-        self._bufs_to_recycle = take._bufs_to_recycle^
-        self._pbuf_pool = take._pbuf_pool
-        self._msghdr_template = take._msghdr_template
-        self._multishot_active = take._multishot_active
-        self._recvmsg_cmp = take._recvmsg_cmp^
-        self._timeout_cmp = take._timeout_cmp^
-        self._send_pool = take._send_pool^
-        self._bufring = take._bufring^
-        self._egress_backlog = take._egress_backlog^
-        self._inject_egress = take._inject_egress^
-        self._needs_multishot_rearm = take._needs_multishot_rearm
-        self._timeout_ts = take._timeout_ts
-        self.profile = take.profile^
+        self.udp_handle = move.udp_handle^
+        self.transport_params = move.transport_params^
+        self.make_handler = move.make_handler
+        self.conn_slots = move.conn_slots^
+        self.conn_dcid_map = move.conn_dcid_map^
+        self.next_generation = move.next_generation
+        self._tls = move._tls^
+        self.server_config = move.server_config^
+        self.pending_rx = move.pending_rx^
+        self._inflight_bufs = move._inflight_bufs^
+        self._bufs_to_recycle = move._bufs_to_recycle^
+        self._pbuf_pool = move._pbuf_pool
+        self._msghdr_template = move._msghdr_template
+        self._multishot_active = move._multishot_active
+        self._recvmsg_cmp = move._recvmsg_cmp^
+        self._timeout_cmp = move._timeout_cmp^
+        self._send_pool = move._send_pool^
+        self._bufring = move._bufring^
+        self._egress_backlog = move._egress_backlog^
+        self._inject_egress = move._inject_egress^
+        self._needs_multishot_rearm = move._needs_multishot_rearm
+        self._timeout_ts = move._timeout_ts
+        self.profile = move.profile^
 
     def __del__(deinit self):
         """Free heap allocations owned by the server.

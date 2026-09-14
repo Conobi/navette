@@ -2,7 +2,8 @@
 #
 # SessionSlot — tagged enum wrapping H1/H2/H3 Sessions (M6a §5).
 
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.utils import Variant
 
 from navette.http.handler import Capabilities, ALPN_H1, ALPN_H2, ALPN_H3
@@ -30,9 +31,9 @@ struct SessionSlot(Movable):
         self.session = session^
         self.idle_since = idle_since
 
-    def __init__(out self, *, deinit take: Self):
-        self.session = take.session^
-        self.idle_since = take.idle_since
+    def __init__(out self, *, deinit move: Self):
+        self.session = move.session^
+        self.idle_since = move.idle_since
 
     @staticmethod
     def from_h1(var session: H1Session) -> Self:
@@ -186,8 +187,8 @@ struct SessionSlotPtr(Copyable, Movable):
     def __init__(out self, *, other: Self):
         self.addr = other.addr
 
-    def __init__(out self, *, deinit take: Self):
-        self.addr = take.addr
+    def __init__(out self, *, deinit move: Self):
+        self.addr = move.addr
 
     def ptr(self) -> UnsafePointer[SessionSlot, MutAnyOrigin]:
         return UnsafePointer[SessionSlot, MutAnyOrigin](

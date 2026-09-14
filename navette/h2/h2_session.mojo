@@ -7,7 +7,8 @@
 from std.collections import Dict
 from std.collections.deque import Deque
 from std.collections.optional import Optional
-from std.memory import Span, UnsafePointer
+from std.collections import Span
+from std.memory import UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
 
 from .header import Header
@@ -62,14 +63,14 @@ struct _ClientCtx(Movable):
         self.errored = False
         self.error_code = UInt32(0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.handle_id = take.handle_id
-        self.status_code = take.status_code
-        self.headers = take.headers^
-        self.body_data = take.body_data^
-        self.complete = take.complete
-        self.errored = take.errored
-        self.error_code = take.error_code
+    def __init__(out self, *, deinit move: Self):
+        self.handle_id = move.handle_id
+        self.status_code = move.status_code
+        self.headers = move.headers^
+        self.body_data = move.body_data^
+        self.complete = move.complete
+        self.errored = move.errored
+        self.error_code = move.error_code
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +114,12 @@ struct H2Session(Session):
         self._handle_to_stream = Dict[Int, Int]()
         self._flush_outbound()
 
-    def __init__(out self, *, deinit take: Self):
-        self._conn = take._conn^
-        self._outbuf = take._outbuf^
-        self._next_handle_id = take._next_handle_id
-        self._stream_ctxs = take._stream_ctxs^
-        self._handle_to_stream = take._handle_to_stream^
+    def __init__(out self, *, deinit move: Self):
+        self._conn = move._conn^
+        self._outbuf = move._outbuf^
+        self._next_handle_id = move._next_handle_id
+        self._stream_ctxs = move._stream_ctxs^
+        self._handle_to_stream = move._handle_to_stream^
 
     def __del__(deinit self):
         """Free all heap-allocated client stream contexts."""
