@@ -107,7 +107,7 @@ struct SentPacket(Copyable, Movable):
         ack_eliciting: Bool,
         in_flight: Bool,
         size: Int,
-        frames: List[Frame],
+        var frames: List[Frame],
         ecn_mark: UInt8 = UInt8(0),
     ):
         self.pn = pn
@@ -115,7 +115,7 @@ struct SentPacket(Copyable, Movable):
         self.ack_eliciting = ack_eliciting
         self.in_flight = in_flight
         self.size = size
-        self.frames = List[Frame](copy=frames)
+        self.frames = frames^
         self.ecn_mark = ecn_mark
 
     def __init__(out self, *, copy: Self):
@@ -172,6 +172,9 @@ struct PacketNumberSpace(Copyable, Movable):
     # Count of ack-eliciting entries in sent_packets; every removal path
     # (`on_ack_received`, `forget_sent`, `discard`) keeps it in step.
     var ae_in_flight: Int
+    # Pre-allocated scratch buffers reused across calls to avoid per-call heap allocs.
+    var _scratch_pns: List[Int]
+    var _scratch_ranges: List[AckRange]
 
     def __init__(out self, level: EncryptionLevel):
         self.level = level
@@ -195,6 +198,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.probe_pending = False
         self.time_of_last_ae_sent = None
         self.ae_in_flight = 0
+        self._scratch_pns = List[Int](capacity=256)
+        self._scratch_ranges = List[AckRange](capacity=64)
 
     def __init__(out self, *, copy: Self):
         self.level = EncryptionLevel(copy=copy.level)
@@ -218,6 +223,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.probe_pending = copy.probe_pending
         self.time_of_last_ae_sent = copy.time_of_last_ae_sent.copy()
         self.ae_in_flight = copy.ae_in_flight
+        self._scratch_pns = List[Int](capacity=256)
+        self._scratch_ranges = List[AckRange](capacity=64)
 
     def __init__(out self, *, deinit move: Self):
         self.level = move.level
@@ -241,6 +248,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.probe_pending = move.probe_pending
         self.time_of_last_ae_sent = move.time_of_last_ae_sent^
         self.ae_in_flight = move.ae_in_flight
+        self._scratch_pns = move._scratch_pns^
+        self._scratch_ranges = move._scratch_ranges^
 
     # ── PN allocation ────────────────────────────────────────────────
 
@@ -369,11 +378,10 @@ struct PacketNumberSpace(Copyable, Movable):
                 var new_start = self.ack_ranges[nxt].start if self.ack_ranges[nxt].start < self.ack_ranges[idx].start else self.ack_ranges[idx].start
                 var new_end = self.ack_ranges[idx].end if self.ack_ranges[idx].end > self.ack_ranges[nxt].end else self.ack_ranges[nxt].end
                 self.ack_ranges[idx] = AckRangeEntry(new_start, new_end)
-                var new_ranges = List[AckRangeEntry]()
-                for i in range(len(self.ack_ranges)):
-                    if i != nxt:
-                        new_ranges.append(AckRangeEntry(copy=self.ack_ranges[i]))
-                self.ack_ranges = new_ranges^
+                # In-place removal of nxt: shift subsequent elements left, pop tail.
+                for j in range(nxt, len(self.ack_ranges) - 1):
+                    self.ack_ranges[j] = AckRangeEntry(copy=self.ack_ranges[j + 1])
+                _ = self.ack_ranges.pop()
 
         # Check merge with the range above (higher .end, at idx-1).
         # Note: idx may have shifted after the previous merge, so re-check bounds.
@@ -385,11 +393,10 @@ struct PacketNumberSpace(Copyable, Movable):
                     var new_start = self.ack_ranges[idx].start if self.ack_ranges[idx].start < self.ack_ranges[prev].start else self.ack_ranges[prev].start
                     var new_end = self.ack_ranges[prev].end if self.ack_ranges[prev].end > self.ack_ranges[idx].end else self.ack_ranges[idx].end
                     self.ack_ranges[prev] = AckRangeEntry(new_start, new_end)
-                    var new_ranges = List[AckRangeEntry]()
-                    for i in range(len(self.ack_ranges)):
-                        if i != idx:
-                            new_ranges.append(AckRangeEntry(copy=self.ack_ranges[i]))
-                    self.ack_ranges = new_ranges^
+                    # In-place removal of idx: shift subsequent elements left, pop tail.
+                    for j in range(idx, len(self.ack_ranges) - 1):
+                        self.ack_ranges[j] = AckRangeEntry(copy=self.ack_ranges[j + 1])
+                    _ = self.ack_ranges.pop()
 
     def _sort_ack_ranges(mut self):
         """Sort ack_ranges by .end descending (insertion sort, small list)."""
@@ -423,14 +430,10 @@ struct PacketNumberSpace(Copyable, Movable):
         ack.ack_delay = self.ack_delay_field(now, ack_delay_exponent)
         ack.first_ack_range = self.ack_ranges[0].end - self.ack_ranges[0].start
 
-        var ranges = List[AckRange]()
+        var ranges = List[AckRange](capacity=len(self.ack_ranges))
         for i in range(1, len(self.ack_ranges)):
             var prev_start = self.ack_ranges[i - 1].start
             var curr_end = self.ack_ranges[i].end
-            # Gap encodes (unacked_count - 1); the decoder subtracts
-            # gap+2 from smallest_ack. With inclusive ranges,
-            # unacked_count = prev_start - curr_end - 1, so
-            # gap = prev_start - curr_end - 2.
             var gap = prev_start - curr_end - 2
             var ack_range = self.ack_ranges[i].end - self.ack_ranges[i].start
             ranges.append(AckRange(gap, ack_range))
@@ -453,16 +456,18 @@ struct PacketNumberSpace(Copyable, Movable):
 
     # ── Send tracking ────────────────────────────────────────────────
 
-    def on_packet_sent(mut self, pkt: SentPacket) raises:
+    def on_packet_sent(mut self, var pkt: SentPacket) raises:
         """Record a sent packet; an ack-eliciting one re-arms the PTO base."""
         var key = Int(pkt.pn)
         if key in self.sent_packets:
             if self.sent_packets[key].ack_eliciting:
                 self.ae_in_flight -= 1
-        self.sent_packets[key] = SentPacket(copy=pkt)
-        if pkt.ack_eliciting:
+        var ae = pkt.ack_eliciting
+        var ts = pkt.time_sent
+        self.sent_packets[key] = pkt^
+        if ae:
             self.ae_in_flight += 1
-            self.time_of_last_ae_sent = Optional[UInt64](pkt.time_sent)
+            self.time_of_last_ae_sent = Optional[UInt64](ts)
             self.probe_pending = False
 
     def forget_sent(mut self, pn: Int) raises -> Optional[SentPacket]:
@@ -496,7 +501,7 @@ struct PacketNumberSpace(Copyable, Movable):
         matching sent_packets, remove them, return newly acked list.
         Raises if any ACKed PN >= next_pn (security check)."""
         var acked = List[SentPacket]()
-        var acked_pns = List[Int]()
+        self._scratch_pns.clear()
 
         # Decode the ACK frame into PN ranges.
         # First range: [largest_ack - first_ack_range, largest_ack]
@@ -510,7 +515,7 @@ struct PacketNumberSpace(Copyable, Movable):
         # Collect PNs from first range.
         var pn = smallest
         while pn <= largest:
-            acked_pns.append(Int(pn))
+            self._scratch_pns.append(Int(pn))
             pn += 1
 
         # Process additional ranges.
@@ -527,7 +532,7 @@ struct PacketNumberSpace(Copyable, Movable):
             smallest = largest - ack_range
             pn = smallest
             while pn <= largest:
-                acked_pns.append(Int(pn))
+                self._scratch_pns.append(Int(pn))
                 pn += 1
             prev_smallest = smallest
 
@@ -538,8 +543,8 @@ struct PacketNumberSpace(Copyable, Movable):
 
         # Remove acked packets from sent_packets and collect them.
         # Single pop per PN: avoids the old in + [] + copy + pop (4 lookups).
-        for i in range(len(acked_pns)):
-            var key = acked_pns[i]
+        for i in range(len(self._scratch_pns)):
+            var key = self._scratch_pns[i]
             try:
                 var pkt = self.sent_packets.pop(key)
                 if pkt.ack_eliciting:

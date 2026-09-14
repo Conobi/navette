@@ -3,6 +3,7 @@
 # RFC 9204 (QPACK), RFC 7541 Appendix B (Huffman table)
 
 
+from std.collections import Span
 from navette.util.byte_string import bytes_to_string
 
 struct QpackStaticEntry(Copyable, Movable):
@@ -622,6 +623,53 @@ def huffman_encode(s: String) raises -> List[UInt8]:
     return result^
 
 
+def huffman_encode_into(mut buf: List[UInt8], s: String) raises:
+    """Huffman-encode a string, appending directly to buf."""
+    var table = _huffman_encode_table()
+    _huffman_encode_into_with_table(buf, s, table)
+
+
+def _huffman_encode_into_with_table(mut buf: List[UInt8], s: String, ref table: List[HuffmanEntry]) raises:
+    """Huffman-encode using a pre-built table."""
+    var acc: UInt64 = 0
+    var bits: Int = 0
+    var sbytes = s.as_bytes()
+
+    for i in range(len(sbytes)):
+        var sym = Int(sbytes[i])
+        if sym >= len(table):
+            raise "Huffman: symbol out of range: " + String(sym)
+        acc = (acc << UInt64(table[sym].nbits)) | UInt64(table[sym].code)
+        bits += Int(table[sym].nbits)
+        while bits >= 8:
+            bits -= 8
+            buf.append(UInt8((acc >> UInt64(bits)) & 0xFF))
+
+    if bits > 0:
+        var pad_bits_count = 8 - bits
+        var pad = UInt8(((UInt32(1) << UInt32(pad_bits_count)) - 1) & 0xFF)
+        var last_byte = UInt8((acc << UInt64(pad_bits_count)) & 0xFF) | pad
+        buf.append(last_byte)
+
+
+def huffman_encoded_len(s: String) raises -> Int:
+    """Return the byte length of the Huffman encoding without materializing it."""
+    var table = _huffman_encode_table()
+    return _huffman_encoded_len_with_table(s, table)
+
+
+def _huffman_encoded_len_with_table(s: String, ref table: List[HuffmanEntry]) raises -> Int:
+    """Compute Huffman byte length using a pre-built table."""
+    var total_bits: Int = 0
+    var sbytes = s.as_bytes()
+    for i in range(len(sbytes)):
+        var sym = Int(sbytes[i])
+        if sym >= len(table):
+            raise "Huffman: symbol out of range: " + String(sym)
+        total_bits += Int(table[sym].nbits)
+    return (total_bits + 7) // 8
+
+
 def _huffman_decode_with_tables(
     data: List[UInt8],
     trie: List[_HuffTrieNode],
@@ -751,6 +799,22 @@ def qpack_encode_int(value: UInt64, prefix_bits: UInt8) -> List[UInt8]:
     return result^
 
 
+def qpack_encode_int_into(mut buf: List[UInt8], value: UInt64, prefix_bits: UInt8) -> Int:
+    """Append a prefix-encoded integer to buf; return the index of the first byte."""
+    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
+    var start = len(buf)
+    if value < max_first:
+        buf.append(UInt8(value))
+        return start
+    buf.append(UInt8(max_first))
+    var v = value - max_first
+    while v >= 128:
+        buf.append(UInt8((v & 0x7F) | 0x80))
+        v >>= 7
+    buf.append(UInt8(v))
+    return start
+
+
 struct _IntDecodeResult(Copyable, Movable):
     var value: UInt64
     var new_offset: Int
@@ -799,22 +863,21 @@ struct _StrDecodeResult(Copyable, Movable):
 def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[UInt8]:
     """Encode a string literal per RFC 7541 §5.2 / RFC 9204 §4.1.2."""
     var result = List[UInt8]()
+    _qpack_encode_string_into(result, s, use_huffman)
+    return result^
+
+
+def _qpack_encode_string_into(mut buf: List[UInt8], s: String, use_huffman: Bool) raises:
+    """Append a QPACK string literal encoding directly to buf."""
     if use_huffman:
-        var huff = huffman_encode(s)
-        var len_bytes = qpack_encode_int(UInt64(len(huff)), 7)
-        len_bytes[0] |= 0x80  # Set H bit
-        for i in range(len(len_bytes)):
-            result.append(len_bytes[i])
-        for i in range(len(huff)):
-            result.append(huff[i])
+        var huff_len = huffman_encoded_len(s)
+        var idx = qpack_encode_int_into(buf, UInt64(huff_len), 7)
+        buf[idx] |= 0x80
+        huffman_encode_into(buf, s)
     else:
         var raw = s.as_bytes()
-        var len_bytes = qpack_encode_int(UInt64(len(raw)), 7)
-        for i in range(len(len_bytes)):
-            result.append(len_bytes[i])
-        for i in range(len(raw)):
-            result.append(raw[i])
-    return result^
+        _ = qpack_encode_int_into(buf, UInt64(len(raw)), 7)
+        buf.extend(Span(raw))
 
 
 def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
@@ -881,14 +944,17 @@ def _qpack_decode_string_with_tables(
 struct QpackEncoder(Copyable, Movable):
     var use_huffman: Bool
     var _static_table: List[QpackStaticEntry]
+    var _huff_encode: List[HuffmanEntry]
 
     def __init__(out self, use_huffman: Bool = True):
         self.use_huffman = use_huffman
         self._static_table = _qpack_static_table()
+        self._huff_encode = _huffman_encode_table()
 
     def __init__(out self, *, copy_from: Self):
         self.use_huffman = copy_from.use_huffman
         self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
+        self._huff_encode = List[HuffmanEntry](copy=copy_from._huff_encode)
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
         """Encode a header list as a QPACK field section block.
@@ -899,73 +965,64 @@ struct QpackEncoder(Copyable, Movable):
           - Literal Field Line With Name Reference (§4.5.4): 0 1 N T xxxx (N=0, T=1, 4-bit index)
           - Literal Field Line Without Name Reference (§4.5.6): 0 0 1 N H nnn | name | value
         """
-        var result = List[UInt8]()
+        var result = List[UInt8](capacity=128)
         result.append(0x00)  # Required Insert Count = 0
         result.append(0x00)  # S bit = 0, Delta Base = 0
 
         for i in range(len(headers)):
-            var field_bytes = self._encode_field(headers[i].name, headers[i].value)
-            for j in range(len(field_bytes)):
-                result.append(field_bytes[j])
+            self._encode_field_into(result, headers[i].name, headers[i].value)
 
         return result^
 
-    def _encode_field(self, name: String, value: String) raises -> List[UInt8]:
+    def _encode_field_into(self, mut buf: List[UInt8], name: String, value: String) raises:
+        """Append one encoded header field directly to buf."""
         # 1. Try exact static match → Indexed Static Field Line (§4.5.2)
-        var exact = Optional[Int](None)
+        var exact = -1
         for i in range(len(self._static_table)):
             if self._static_table[i].name == name and self._static_table[i].value == value:
                 exact = i
                 break
-        if exact.__bool__():
-            var idx = exact.value()
-            var idx_bytes = qpack_encode_int(UInt64(idx), 6)
-            idx_bytes[0] |= 0xC0  # bits 7-6 = 11
-            return idx_bytes^
+        if exact >= 0:
+            var idx = qpack_encode_int_into(buf, UInt64(exact), 6)
+            buf[idx] |= 0xC0
+            return
 
         # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
-        # Format: 0 1 N T xxxx where N=0 (may-index), T=1 (static)
-        # = 0101 xxxx = 0x50 with 4-bit index prefix
-        var name_match = Optional[Int](None)
+        var name_match = -1
         for i in range(len(self._static_table)):
             if self._static_table[i].name == name:
                 name_match = i
                 break
-        if name_match.__bool__():
-            var idx = name_match.value()
-            var idx_bytes = qpack_encode_int(UInt64(idx), 4)
-            idx_bytes[0] |= 0x50  # bits 7-6 = 0 1, bit 5 = N=0 (may-index), bit 4 = T=1 (static)
-            var result = List[UInt8]()
-            for i in range(len(idx_bytes)):
-                result.append(idx_bytes[i])
-            var val_bytes = _qpack_encode_string(value, self.use_huffman)
-            for i in range(len(val_bytes)):
-                result.append(val_bytes[i])
-            return result^
+        if name_match >= 0:
+            var idx = qpack_encode_int_into(buf, UInt64(name_match), 4)
+            buf[idx] |= 0x50
+            self._qpack_encode_string_into_cached(buf, value)
+            return
 
         # 3. Literal Without Name Reference (§4.5.6)
-        # Format: 0 0 1 N H nnn | name_bytes | H 7-bit-value-len | value_bytes
-        # bit 4 = N=0 (may-index), bit 3 = H (Huffman for name), bits 2:0 = 3-bit name length prefix
-        var result = List[UInt8]()
-        var name_raw = List[UInt8]()
-        var name_h_bit: UInt8 = 0x00
         if self.use_huffman:
-            name_raw = huffman_encode(name)
-            name_h_bit = 0x08  # bit 3 = H=1
+            var name_huff_len = _huffman_encoded_len_with_table(name, self._huff_encode)
+            var idx = qpack_encode_int_into(buf, UInt64(name_huff_len), 3)
+            buf[idx] |= 0x20 | 0x08
+            _huffman_encode_into_with_table(buf, name, self._huff_encode)
         else:
             var name_span = name.as_bytes()
-            for k in range(len(name_span)):
-                name_raw.append(name_span[k])
-        var name_len_bytes = qpack_encode_int(UInt64(len(name_raw)), 3)
-        name_len_bytes[0] |= 0x20 | name_h_bit  # 001 N=0 H nnn
-        for i in range(len(name_len_bytes)):
-            result.append(name_len_bytes[i])
-        for i in range(len(name_raw)):
-            result.append(name_raw[i])
-        var val_bytes = _qpack_encode_string(value, self.use_huffman)
-        for i in range(len(val_bytes)):
-            result.append(val_bytes[i])
-        return result^
+            var idx = qpack_encode_int_into(buf, UInt64(len(name_span)), 3)
+            buf[idx] |= 0x20
+            buf.extend(Span(name_span))
+        self._qpack_encode_string_into_cached(buf, value)
+
+    def _qpack_encode_string_into_cached(self, mut buf: List[UInt8], s: String) raises:
+        """Encode string using cached Huffman table."""
+        if self.use_huffman:
+            var huff_len = _huffman_encoded_len_with_table(s, self._huff_encode)
+            var idx = qpack_encode_int_into(buf, UInt64(huff_len), 7)
+            buf[idx] |= 0x80
+            _huffman_encode_into_with_table(buf, s, self._huff_encode)
+        else:
+            var raw = s.as_bytes()
+            _ = qpack_encode_int_into(buf, UInt64(len(raw)), 7)
+            buf.extend(Span(raw))
 
 
 # ---------------------------------------------------------------------------

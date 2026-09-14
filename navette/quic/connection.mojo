@@ -705,6 +705,13 @@ struct QuicConnection(Movable):
     # `feedback_zero_rtt_space_idx_vs_pn_space.md`).
     var _current_space_idx: Int
 
+    # Pre-allocated scratch buffers reused across send()/loss calls to
+    # avoid per-call heap allocations; .clear()'d before use.
+    var _scratch_lost_pns: List[Int]
+    var _scratch_frames: List[Frame]
+    var _scratch_sent_records: List[SentStreamFrame]
+    var _scratch_payload: List[UInt8]
+
     # ── Move constructor ─────────────────────────────────────────────
 
     def __init__(out self, *, deinit move: Self):
@@ -770,6 +777,10 @@ struct QuicConnection(Movable):
         self._zero_rtt_now_ms_override = move._zero_rtt_now_ms_override^
         self._early_data_store_ptr = move._early_data_store_ptr^
         self._current_space_idx = move._current_space_idx
+        self._scratch_lost_pns = move._scratch_lost_pns^
+        self._scratch_frames = move._scratch_frames^
+        self._scratch_sent_records = move._scratch_sent_records^
+        self._scratch_payload = move._scratch_payload^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -851,6 +862,10 @@ struct QuicConnection(Movable):
         # so 0-RTT-origin tagging fires only for streams created from
         # actual 0-RTT-decrypted packets (RFC 9001 §4.6).
         self._current_space_idx = -1
+        self._scratch_lost_pns = List[Int](capacity=64)
+        self._scratch_frames = List[Frame](capacity=8)
+        self._scratch_sent_records = List[SentStreamFrame](capacity=8)
+        self._scratch_payload = List[UInt8](capacity=6144)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -1222,7 +1237,9 @@ struct QuicConnection(Movable):
                 Span(unsafe_ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
             )
-            var header = header_result[0].copy()
+            var hdr_ptr = UnsafePointer(to=header_result[0])
+            var header = hdr_ptr.unsafe_take_pointee()
+            hdr_ptr.unsafe_write(PacketHeader())
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     ph_header_parse_us = monotonic_us() - ph_header_parse_us
@@ -2504,19 +2521,24 @@ struct QuicConnection(Movable):
         # materialization of 3 parallel lists.
         var largest_acked = self.spaces[space_idx].largest_acked_pn
         var ld = self.recovery.loss_delay()
-        var lost_pns = List[Int]()
+        self._scratch_lost_pns.clear()
         for entry in self.spaces[space_idx].sent_packets.items():
             var pn = entry.key
             if pn > largest_acked:
                 continue
             if largest_acked - pn >= K_PACKET_THRESHOLD:
-                lost_pns.append(pn)
+                self._scratch_lost_pns.append(pn)
                 continue
             if now >= entry.value.time_sent + ld:
-                lost_pns.append(pn)
+                self._scratch_lost_pns.append(pn)
 
-        if len(lost_pns) == 0:
+        if len(self._scratch_lost_pns) == 0:
             return
+
+        # Swap scratch out so the borrow checker sees separate variables.
+        var lost_pns_ptr = UnsafePointer(to=self._scratch_lost_pns)
+        var lost_pns = lost_pns_ptr.unsafe_take_pointee()
+        lost_pns_ptr.unsafe_write(List[Int]())
 
         # Evaluate persistent-congestion *before* popping lost packets, since
         # the detector reads sent_packets[pn].ack_eliciting / .time_sent.
@@ -2546,7 +2568,7 @@ struct QuicConnection(Movable):
             var pn_key = lost_pns[i]
             var maybe_lost = self.spaces[space_idx].forget_sent(pn_key)
             if maybe_lost:
-                var lost_pkt = maybe_lost.value().copy()
+                var lost_pkt = maybe_lost.take()
                 # Decrement ECT(0) in-flight on loss.
                 if lost_pkt.ecn_mark == ECN_ECT0:
                     if self.spaces[space_idx].ect0_in_flight > UInt64(0):
@@ -2566,6 +2588,9 @@ struct QuicConnection(Movable):
                 if space_idx == 2:
                     self._on_app_pkt_lost(pn_key)
 
+        # Recapture the buffer so its capacity is reused next call.
+        self._scratch_lost_pns = lost_pns^
+
         # Fan out to CC. `persistent=True` triggers cwnd reset to min_cwnd.
         self.recovery.cc.on_packets_lost(
             lost_records, self.recovery.smoothed_rtt, now, persistent
@@ -2584,7 +2609,7 @@ struct QuicConnection(Movable):
     def _detect_persistent_congestion(
         self,
         space_id: Int,
-        newly_lost_pns: List[Int],
+        ref newly_lost_pns: List[Int],
         peer_max_ack_delay_us: UInt64,
         now: UInt64,
     ) raises -> Bool:
@@ -3374,7 +3399,7 @@ struct QuicConnection(Movable):
     # ── Send path ────────────────────────────────────────────────────
 
     def send(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Build at most one datagram; empty when nothing is owed.
+        """Build at most one datagram; empty list when nothing is owed.
 
         Runs expired timers first, then plans one packet per keyed space in
         Initial → Handshake → Application order against a MAX_DATAGRAM_SIZE
@@ -3392,17 +3417,15 @@ struct QuicConnection(Movable):
         A raise mid-way drops the datagram; packets already committed stay
         recorded for loss recovery, the in-progress builder state is lost.
         """
-        var datagrams = List[List[UInt8]]()
-
         # Timers first — drain/close timers must fire even when the
         # connection is draining (otherwise we never reach CLOSED).
         self._check_timers(now)
 
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
-            return datagrams^
+            return List[List[UInt8]]()
         var closing = (self.state & CONN_CLOSING) != 0
         if closing and not self.close_owed:
-            return datagrams^
+            return List[List[UInt8]]()
 
         # Step 0: datagram budget with the per-datagram amplification clamp.
         var budget = self._datagram_budget()
@@ -3433,9 +3456,19 @@ struct QuicConnection(Movable):
                 continue
             var payload_budget = remaining - overhead
 
-            var frames = List[Frame]()
-            var sent_records = List[SentStreamFrame]()
-            var stream_payload = List[UInt8](capacity=6144)
+            # Swap pre-allocated buffers from connection scratch.
+            var fp = UnsafePointer(to=self._scratch_frames)
+            var frames = fp.unsafe_take_pointee()
+            frames.clear()
+            fp.unsafe_write(List[Frame]())
+            var srp = UnsafePointer(to=self._scratch_sent_records)
+            var sent_records = srp.unsafe_take_pointee()
+            sent_records.clear()
+            srp.unsafe_write(List[SentStreamFrame]())
+            var spp = UnsafePointer(to=self._scratch_payload)
+            var stream_payload = spp.unsafe_take_pointee()
+            stream_payload.clear()
+            spp.unsafe_write(List[UInt8]())
             var ack_reserve = 0
             var has_stream_data = False
             var ack_committed = False
@@ -3505,12 +3538,11 @@ struct QuicConnection(Movable):
                     has_control = True
                     break
             if has_control:
-                var writer = ByteWriter()
+                var writer = ByteWriter(capacity=256)
                 for fi in range(len(frames)):
                     if not frames[fi].is_crypto():
                         serialize_frame(frames[fi], writer)
-                var control_bytes = writer.finish()
-                stream_payload.extend(Span(control_bytes))
+                stream_payload.extend(Span(writer.buf))
             var payload = stream_payload^
             var plaintext = len(payload)
             if plaintext < _MIN_PLAINTEXT_LEN:
@@ -3521,7 +3553,7 @@ struct QuicConnection(Movable):
             ))
 
         if len(plans) == 0:
-            return datagrams^
+            return List[List[UInt8]]()
 
         # Datagram-level padding target (RFC 9000 §14.1), applied to the last
         # packet: client handshake datagrams (Initial or Handshake present,
@@ -3537,7 +3569,7 @@ struct QuicConnection(Movable):
         debug_assert(pad_to <= budget, "padding target exceeds the datagram budget")
 
         # Phase 2: allocate PNs, pad, protect, record.
-        var datagram = List[UInt8]()
+        var datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
         for i in range(len(plans)):
             var space_idx = plans[i].space_idx
             var pn = self.spaces[space_idx].alloc_pn()
@@ -3555,6 +3587,10 @@ struct QuicConnection(Movable):
                 if unpadded < pad_to:
                     padding = pad_to - unpadded
             self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
+            # Recapture payload buffer for reuse.
+            var plp = UnsafePointer(to=plans[i].payload)
+            self._scratch_payload = plp.unsafe_take_pointee()
+            plp.unsafe_write(List[UInt8]())
             var pkt_size = len(self.pkt_buf)
             datagram.extend(Span(self.pkt_buf))
 
@@ -3564,16 +3600,24 @@ struct QuicConnection(Movable):
             var is_ack_eliciting = _has_ack_eliciting(plans[i].frames) or plans[i].has_stream_data
             var in_flight = is_ack_eliciting or padding > 0
             var ect = self.ecn_mark()
+            # Only store CRYPTO frames in SentPacket — they're the only
+            # frames accessed post-send (for retransmission on loss/PTO).
+            # Application-space packets never carry CRYPTO, so this avoids
+            # allocating+copying the frames list in steady state.
+            var crypto_frames = List[Frame]()
+            for fi in range(len(plans[i].frames)):
+                if plans[i].frames[fi].is_crypto():
+                    crypto_frames.append(Frame(copy=plans[i].frames[fi]))
             var sent = SentPacket(
                 pn=pn,
                 time_sent=now,
                 ack_eliciting=is_ack_eliciting,
                 in_flight=in_flight,
                 size=pkt_size,
-                frames=plans[i].frames,
+                frames=crypto_frames^,
                 ecn_mark=ect,
             )
-            self.spaces[space_idx].on_packet_sent(sent)
+            self.spaces[space_idx].on_packet_sent(sent^)
             # Track ECT(0) in-flight count for bleaching check.
             if ect == ECN_ECT0:
                 self.spaces[space_idx].ect0_in_flight += UInt64(1)
@@ -3591,7 +3635,12 @@ struct QuicConnection(Movable):
             if space_idx == 2 and len(plans[i].sent_records) > 0:
                 var ptr = UnsafePointer(to=plans[i].sent_records)
                 self.app_frames_sent[Int(pn)] = ptr.unsafe_take_pointee()
-                ptr.init_pointee_move(List[SentStreamFrame]())
+                ptr.unsafe_write(List[SentStreamFrame]())
+
+            # Recapture frames list into scratch for reuse next send().
+            var rfp = UnsafePointer(to=plans[i].frames)
+            self._scratch_frames = rfp.unsafe_take_pointee()
+            rfp.unsafe_write(List[Frame]())
 
         if closing and all_close_committed:
             self.close_owed = False
@@ -3599,6 +3648,7 @@ struct QuicConnection(Movable):
 
         debug_assert(len(datagram) <= budget, "datagram exceeds its budget")
         self.bytes_sent += UInt64(len(datagram))
+        var datagrams = List[List[UInt8]](capacity=1)
         datagrams.append(datagram^)
         return datagrams^
 
@@ -3903,13 +3953,15 @@ struct QuicConnection(Movable):
         # scanning every stream.  Each drain pops consumed/stale entries and
         # leaves un-emitted entries (budget exhaustion) for the next packet.
 
-        # 5a. MAX_STREAM_DATA — drain control_max_stream_data.
-        var msd_remaining = List[Int]()
+        # 5a. MAX_STREAM_DATA — in-place drain of control_max_stream_data.
+        var msd_write = 0
         var msd_full = False
         for i in range(len(self.stream_map.control_max_stream_data)):
             var sid = self.stream_map.control_max_stream_data[i]
             if msd_full:
-                msd_remaining.append(sid)
+                if msd_write != i:
+                    self.stream_map.control_max_stream_data[msd_write] = sid
+                msd_write += 1
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
@@ -3919,7 +3971,9 @@ struct QuicConnection(Movable):
             var next_limit = p[].fc_recv.value().next_limit()
             var wl = 1 + varint_len(p[].id) + varint_len(next_limit)
             if used + wl > budget:
-                msd_remaining.append(sid)
+                if msd_write != i:
+                    self.stream_map.control_max_stream_data[msd_write] = sid
+                msd_write += 1
                 msd_full = True
                 continue
             var new_limit = p[].fc_recv.value().update_limit()
@@ -3931,15 +3985,18 @@ struct QuicConnection(Movable):
             rec.kind = SSF_MAX_STREAM_DATA
             rec.stream_id = p[].id
             sent_records.append(rec^)
-        self.stream_map.control_max_stream_data = msd_remaining^
+        while len(self.stream_map.control_max_stream_data) > msd_write:
+            _ = self.stream_map.control_max_stream_data.pop()
 
-        # 5b. RESET_STREAM — drain control_reset.
-        var rst_remaining = List[Int]()
+        # 5b. RESET_STREAM — in-place drain of control_reset.
+        var rst_write = 0
         var rst_full = False
         for i in range(len(self.stream_map.control_reset)):
             var sid = self.stream_map.control_reset[i]
             if rst_full:
-                rst_remaining.append(sid)
+                if rst_write != i:
+                    self.stream_map.control_reset[rst_write] = sid
+                rst_write += 1
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
@@ -3954,7 +4011,9 @@ struct QuicConnection(Movable):
             var f = Frame.reset_stream(rs_f)
             var wl = f.wire_len()
             if used + wl > budget:
-                rst_remaining.append(sid)
+                if rst_write != i:
+                    self.stream_map.control_reset[rst_write] = sid
+                rst_write += 1
                 rst_full = True
                 continue
             frames.append(f^)
@@ -3964,15 +4023,18 @@ struct QuicConnection(Movable):
             rec.kind = SSF_RESET_STREAM
             rec.stream_id = p[].id
             sent_records.append(rec^)
-        self.stream_map.control_reset = rst_remaining^
+        while len(self.stream_map.control_reset) > rst_write:
+            _ = self.stream_map.control_reset.pop()
 
-        # 5c. STOP_SENDING — drain control_stop_sending.
-        var ss_remaining = List[Int]()
+        # 5c. STOP_SENDING — in-place drain of control_stop_sending.
+        var ss_write = 0
         var ss_full = False
         for i in range(len(self.stream_map.control_stop_sending)):
             var sid = self.stream_map.control_stop_sending[i]
             if ss_full:
-                ss_remaining.append(sid)
+                if ss_write != i:
+                    self.stream_map.control_stop_sending[ss_write] = sid
+                ss_write += 1
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
@@ -3983,7 +4045,9 @@ struct QuicConnection(Movable):
             var f = Frame.stop_sending(ss_f)
             var wl = f.wire_len()
             if used + wl > budget:
-                ss_remaining.append(sid)
+                if ss_write != i:
+                    self.stream_map.control_stop_sending[ss_write] = sid
+                ss_write += 1
                 ss_full = True
                 continue
             frames.append(f^)
@@ -3993,7 +4057,8 @@ struct QuicConnection(Movable):
             rec.kind = SSF_STOP_SENDING
             rec.stream_id = p[].id
             sent_records.append(rec^)
-        self.stream_map.control_stop_sending = ss_remaining^
+        while len(self.stream_map.control_stop_sending) > ss_write:
+            _ = self.stream_map.control_stop_sending.pop()
 
         # 6. STREAM frames from sendable streams (Deque pop loop).
         # Pop at most `initial_len` entries for round-robin fairness; streams
@@ -4565,13 +4630,15 @@ struct QuicConnection(Movable):
         list is reset (not rebuilt) once drained."""
         if self._events_head >= len(self.events):
             if len(self.events) > 0:
-                self.events = List[QuicEvent]()
+                self.events.clear()
             self._events_head = 0
             return None
-        var ev = self.events[self._events_head].copy()
+        var ptr = UnsafePointer(to=self.events[self._events_head])
+        var ev = ptr.unsafe_take_pointee()
+        ptr.unsafe_write(QuicEvent(UInt8(0), QuicEventPayload(NoneType())))
         self._events_head += 1
         if self._events_head >= len(self.events):
-            self.events = List[QuicEvent]()
+            self.events.clear()
             self._events_head = 0
         return ev^
 
@@ -4750,7 +4817,9 @@ struct QuicConnection(Movable):
         if not p[].recv_buf or not p[].fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
         var result = p[].recv_buf.value().read(p[].fin_offset)
-        var data = result[0].copy()
+        var data_ptr = UnsafePointer(to=result[0])
+        var data = data_ptr.unsafe_take_pointee()
+        data_ptr.unsafe_write(List[UInt8]())
         var fin_reached = result[1]
         var drained = UInt64(len(data))
         if drained > 0:
@@ -4924,7 +4993,7 @@ def _generate_random_cid() raises -> List[UInt8]:
     return cid^
 
 
-def _has_ack_eliciting(frames: List[Frame]) -> Bool:
+def _has_ack_eliciting(ref frames: List[Frame]) -> Bool:
     """Check if any frame in the list is ack-eliciting."""
     for i in range(len(frames)):
         if frames[i].is_ack_eliciting():

@@ -5,7 +5,7 @@
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
-from std.memory import Pointer
+from std.memory import Pointer, UnsafePointer
 from std.collections import Span
 
 from navette.quic.connection import (
@@ -463,14 +463,17 @@ struct H3Connection(Movable):
         dropped: their packets are recorded in the PN spaces and loss
         detection retransmits them, exactly as a single dropped datagram.
         """
-        var out = List[List[UInt8]]()
+        var out = List[List[UInt8]](capacity=MAX_DATAGRAMS_PER_DRAIN)
         while len(out) < MAX_DATAGRAMS_PER_DRAIN:
             var batch = self._quic.send(now)
             if len(batch) == 0:
                 self.egress_capped = False
                 return out^
-            while len(batch) > 0:
-                out.append(batch.pop(0))
+            for bi in range(len(batch)):
+                var ptr = UnsafePointer(to=batch[bi])
+                var dg = ptr.unsafe_take_pointee()
+                ptr.unsafe_write(List[UInt8]())
+                out.append(dg^)
             if self._quic.is_closing():
                 # One CLOSE per trigger; nothing else may follow it.
                 self.egress_capped = False
@@ -485,7 +488,7 @@ struct H3Connection(Movable):
     ) raises:
         """QPACK-encode fields → HeadersFrame → send_stream_data."""
         var encoded = self._enc.encode(fields)
-        var hf = HeadersFrame(encoded)
+        var hf = HeadersFrame(encoded^)
         var wire = hf.encode()
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
@@ -510,7 +513,7 @@ struct H3Connection(Movable):
         var w = ByteWriter()
         varint_encode(w, last_stream_id)
         var payload = w.finish()
-        var raw = H3RawFrame(H3_FRAME_GOAWAY, payload)
+        var raw = H3RawFrame(H3_FRAME_GOAWAY, payload^)
         var wire = raw.encode()
         self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(wire), False)
         self._goaway_sent = Optional[UInt64](last_stream_id)
@@ -633,7 +636,7 @@ struct H3Connection(Movable):
         # compatibility with non-MASQUE/WebTransport tests.
         if self._local_h3_datagram_enabled:
             pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
-        var sf = SettingsFrame(pairs)
+        var sf = SettingsFrame(pairs^)
         var settings_wire = sf.encode()
         self._quic.send_stream_data(ctrl_sid, Span(settings_wire), False)
 
@@ -709,34 +712,31 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 t_start_buf = monotonic_us()
 
-        var new_bytes = recv_result[0].copy()
+        var data_ptr = UnsafePointer(to=recv_result[0])
+        var new_bytes = data_ptr.unsafe_take_pointee()
+        data_ptr.unsafe_write(List[UInt8]())
         var fin = recv_result[1]
 
         # Append new bytes to accumulator
-        var sbuf = self._stream_bufs[key].copy()
-        for i in range(len(new_bytes)):
-            sbuf.buf.append(new_bytes[i])
-        self._stream_bufs[key] = sbuf^
+        self._stream_bufs[key].buf.extend(Span(new_bytes))
 
         # Handle unidirectional stream type byte (first byte = stream type)
-        var sbuf2 = self._stream_bufs[key].copy()
-        if sbuf2.is_uni:
-            if not sbuf2.type_byte:
-                if len(sbuf2.buf) == 0:
-                    self._stream_bufs[key] = sbuf2^
+        if self._stream_bufs[key].is_uni:
+            if not self._stream_bufs[key].type_byte:
+                if len(self._stream_bufs[key].buf) == 0:
                     # B3a + B1 exit (return path 1 — UNI empty buf).
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
                             self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
-                var type_byte = sbuf2.buf[0]
-                var new_buf = List[UInt8]()
-                for i in range(1, len(sbuf2.buf)):
-                    new_buf.append(sbuf2.buf[i])
-                sbuf2.buf = new_buf^
-                sbuf2.type_byte = Optional[UInt8](type_byte)
-                self._stream_bufs[key] = sbuf2^
+                var type_byte = self._stream_bufs[key].buf[0]
+                # Strip type byte in-place — shift left by 1.
+                var slen = len(self._stream_bufs[key].buf)
+                for i in range(1, slen):
+                    self._stream_bufs[key].buf[i - 1] = self._stream_bufs[key].buf[i]
+                _ = self._stream_bufs[key].buf.pop()
+                self._stream_bufs[key].type_byte = Optional[UInt8](type_byte)
                 if type_byte == UInt8(0x00):
                     # RFC 9114 §6.2.1: at most one control stream per peer.
                     var existing_ctrl = self._peer_ctrl_sid.copy()
@@ -762,13 +762,9 @@ struct H3Connection(Movable):
                             self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
-            else:
-                self._stream_bufs[key] = sbuf2^
 
         # Reject server-initiated bidi from peer (RFC 9114 §6.1)
-        var sbuf3 = self._stream_bufs[key].copy()
-        if not sbuf3.is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
-            self._stream_bufs[key] = sbuf3^
+        if not self._stream_bufs[key].is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
             self._quic.close_app(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
             # B3a + B1 exit (return path 3 — bidi rejection).
             comptime if PROFILE_ACCEPT:
@@ -776,7 +772,6 @@ struct H3Connection(Movable):
                     self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                     self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
             return
-        self._stream_bufs[key] = sbuf3^
 
         # Determine if this is the peer control stream
         var is_ctrl = False
@@ -792,12 +787,10 @@ struct H3Connection(Movable):
         self._parse_frames_from_buf(stream_id, is_ctrl, now)
 
         # FIN on bidi request stream → STREAM_ENDED event
-        var sbuf4 = self._stream_bufs[key].copy()
-        if not sbuf4.is_uni and fin:
+        if not self._stream_bufs[key].is_uni and fin:
             var h3ev = H3Event(H3Event.STREAM_ENDED)
             h3ev.stream_id = stream_id
             self._h3_events.append(h3ev^)
-        self._stream_bufs[key] = sbuf4^
 
         # B1 exit (fall-through path 4).
         comptime if PROFILE_ACCEPT:
@@ -814,13 +807,9 @@ struct H3Connection(Movable):
             _ = t_start_parse
             _ = t_start_buf
         while True:
-            var sbuf = self._stream_bufs[key].copy()
-            if len(sbuf.buf) == 0:
-                self._stream_bufs[key] = sbuf^
+            if len(self._stream_bufs[key].buf) == 0:
                 break
-            # Make a separate copy for ByteReader (avoids lifetime conflict)
-            var buf_copy = List[UInt8](copy=sbuf.buf)
-            var r = ByteReader(Span(buf_copy))
+            var r = ByteReader(Span(self._stream_bufs[key].buf))
             var ok = True
             var frame = H3RawFrame(UInt64(0), List[UInt8]())
             var consumed = 0
@@ -837,18 +826,18 @@ struct H3Connection(Movable):
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_frame_parse(monotonic_us() - t_start_parse)
             if not ok:
-                self._stream_bufs[key] = sbuf^
                 break
             # B3b entry — wrap residual rebuild + Dict reassign.
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     t_start_buf = monotonic_us()
-            # Remove consumed bytes from front of buf
-            var new_buf = List[UInt8]()
-            for i in range(consumed, len(sbuf.buf)):
-                new_buf.append(sbuf.buf[i])
-            sbuf.buf = new_buf^
-            self._stream_bufs[key] = sbuf^
+            # Remove consumed bytes from front of buf — shift in-place.
+            var buf_len = len(self._stream_bufs[key].buf)
+            var remaining = buf_len - consumed
+            for i in range(remaining):
+                self._stream_bufs[key].buf[i] = self._stream_bufs[key].buf[consumed + i]
+            for _ in range(consumed):
+                _ = self._stream_bufs[key].buf.pop()
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
