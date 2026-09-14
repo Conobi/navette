@@ -265,11 +265,12 @@ def test_h3_streaming_post_with_body() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            for i in range(len(e.fields)):
-                if e.fields[i].name == ":status" and e.fields[i].value == "200":
+            ref hp = e.as_headers()
+            for i in range(len(hp.fields)):
+                if hp.fields[i].name == ":status" and hp.fields[i].value == "200":
                     got_200 = True
-                elif e.fields[i].name == "x-body-length":
-                    got_body_length = e.fields[i].value
+                elif hp.fields[i].name == "x-body-length":
+                    got_body_length = hp.fields[i].value
 
     assert_true(got_200, "did not receive 200 OK")
     assert_true(got_body_length == "11", "expected body length 11, got: " + got_body_length)
@@ -563,13 +564,12 @@ def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
         "white-box setup: stream must carry the artificial 0-RTT tag",
     )
 
-    var ev = H3Event(H3Event.HEADERS_RECEIVED)
-    ev.stream_id = UInt64(0)
-    ev.fin = True
-    ev.fields.append(QpackHeaderField(String(":method"), String("GET")))
-    ev.fields.append(QpackHeaderField(String(":scheme"), String("https")))
-    ev.fields.append(QpackHeaderField(String(":path"), String("/")))
-    ev.fields.append(QpackHeaderField(String(":authority"), String("localhost")))
+    var fields = List[QpackHeaderField]()
+    fields.append(QpackHeaderField(String(":method"), String("GET")))
+    fields.append(QpackHeaderField(String(":scheme"), String("https")))
+    fields.append(QpackHeaderField(String(":path"), String("/")))
+    fields.append(QpackHeaderField(String(":authority"), String("localhost")))
+    var ev = H3Event.headers_received(UInt64(0), fields^)
     server._on_request(ev)
 
     var sid = Int(0)
