@@ -6,6 +6,7 @@
 
 from std.collections import Dict, Optional
 from std.memory import Span, UnsafePointer
+from std.utils import Variant
 
 from navette.quic.connection import (
     QuicConnection,
@@ -55,7 +56,79 @@ comptime H3_FRAME_CANCEL_PUSH: UInt64 = 0x03
 
 
 # ---------------------------------------------------------------------------
-# H3Event — flat-tag event emitted by H3Connection
+# H3Event payload structs
+# ---------------------------------------------------------------------------
+
+
+struct H3HeadersPayload(Copyable, Movable):
+    """Payload for HEADERS_RECEIVED."""
+    var stream_id: UInt64
+    var fields: List[QpackHeaderField]
+
+    def __init__(out self, stream_id: UInt64, var fields: List[QpackHeaderField]):
+        self.stream_id = stream_id
+        self.fields = fields^
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.fields = List[QpackHeaderField](copy=other.fields)
+
+
+struct H3StreamDataPayload(Copyable, Movable):
+    """Payload for DATA_RECEIVED and DATAGRAM_RECEIVED."""
+    var stream_id: UInt64
+    var data: List[UInt8]
+
+    def __init__(out self, stream_id: UInt64, var data: List[UInt8]):
+        self.stream_id = stream_id
+        self.data = data^
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.data = List[UInt8](copy=other.data)
+
+
+struct H3StreamEndPayload(Copyable, Movable):
+    """Payload for STREAM_ENDED."""
+    var stream_id: UInt64
+
+    def __init__(out self, stream_id: UInt64):
+        self.stream_id = stream_id
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+
+
+struct H3StreamResetPayload(Copyable, Movable):
+    """Payload for STREAM_RESET."""
+    var stream_id: UInt64
+    var error_code: UInt64
+
+    def __init__(out self, stream_id: UInt64, error_code: UInt64):
+        self.stream_id = stream_id
+        self.error_code = error_code
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.error_code = other.error_code
+
+
+struct H3ConnectionClosedPayload(Copyable, Movable):
+    """Payload for CONNECTION_CLOSED."""
+    var error_code: UInt64
+    var reason: String
+
+    def __init__(out self, error_code: UInt64, var reason: String):
+        self.error_code = error_code
+        self.reason = reason^
+
+    def __init__(out self, *, other: Self):
+        self.error_code = other.error_code
+        self.reason = other.reason
+
+
+# ---------------------------------------------------------------------------
+# H3Event — event emitted by H3Connection
 # ---------------------------------------------------------------------------
 
 
