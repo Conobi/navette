@@ -10,6 +10,8 @@ from std.memory import Span, UnsafePointer
 from navette.quic.connection import (
     QuicConnection,
     QuicEvent,
+    ConnectionClosedPayload,
+    StreamResetPayload,
     CONN_CLOSING,
     CONN_DRAINING,
     CONN_CLOSED,
@@ -375,28 +377,32 @@ struct H3Connection(Movable):
                 var h3ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
                 self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.STREAM_OPENED:
-                if self._is_peer_initiated(ev.stream_id):
+                var stream_id = ev.payload.unsafe_get[UInt64]()
+                if self._is_peer_initiated(stream_id):
                     var sbuf = _H3StreamBuf()
-                    sbuf.is_uni = (ev.stream_id & UInt64(0x02)) != 0
-                    self._stream_bufs[Int(ev.stream_id)] = sbuf^
+                    sbuf.is_uni = (stream_id & UInt64(0x02)) != 0
+                    self._stream_bufs[Int(stream_id)] = sbuf^
             elif ev.type_id == QuicEvent.STREAM_READABLE:
+                var stream_id = ev.payload.unsafe_get[UInt64]()
                 try:
-                    self._drain_stream(ev.stream_id, now)
+                    self._drain_stream(stream_id, now)
                 except:
                     pass
             elif ev.type_id == QuicEvent.STREAM_RESET:
-                if self._is_request_stream(ev.stream_id):
+                ref sr = ev.payload.unsafe_get[StreamResetPayload]()
+                if self._is_request_stream(sr.stream_id):
                     var h3ev = H3Event(H3Event.STREAM_RESET)
-                    h3ev.stream_id = ev.stream_id
-                    h3ev.error_code = ev.error_code
+                    h3ev.stream_id = sr.stream_id
+                    h3ev.error_code = sr.error_code
                     self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
+                ref ccp = ev.payload.unsafe_get[ConnectionClosedPayload]()
                 var h3ev = H3Event(H3Event.CONNECTION_CLOSED)
-                h3ev.error_code = ev.error_code
-                h3ev.reason = ev.reason
+                h3ev.error_code = ccp.error_code
+                h3ev.reason = ccp.reason
                 self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
-                self._dispatch_quic_datagram(ev.datagram_payload)
+                self._dispatch_quic_datagram(ev.payload.unsafe_get[List[UInt8]]())
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         """Drain outbound QUIC datagrams. Returns list of UDP payloads."""
