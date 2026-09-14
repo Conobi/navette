@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+# lsquic reference server — multi-stage build.
+#
+# Pinned to tag v4.9.4 (2026-08-31, latest stable release) so numbers
+# are reproducible regardless of when the image is rebuilt.
+#
+# Build:
+#   docker build -t lsquic-bench:latest -f Dockerfile.lsquic .
+#
+# Usage (server selected at run time via --entrypoint):
+#   docker run --rm --network host --entrypoint /usr/local/bin/http_server \
+#       lsquic-bench:latest -s 0.0.0.0:8443 \
+#       -c localhost,/certs/server.crt,/certs/server.key -r /data -L crit -g -j
+
+# ---------------------------------------------------------------------------
+# Stage 1: build
+# ---------------------------------------------------------------------------
+FROM debian:bookworm AS build
+
+ARG LSQUIC_TAG=v4.9.4
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        cmake \
+        golang-go \
+        zlib1g-dev \
+        libevent-dev \
+        ca-certificates \
+        perl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+RUN git clone --branch "${LSQUIC_TAG}" --depth 1 --recurse-submodules \
+        https://github.com/litespeedtech/lsquic.git .
+
+# Build BoringSSL from the in-tree submodule (uses the version lsquic
+# was tested against).
+RUN cd boringssl \
+    && cmake -DCMAKE_BUILD_TYPE=Release . \
+    && make -j"$(nproc)"
+
+# Build lsquic — tests disabled (bench image only needs http_server).
+RUN cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBORINGSSL_DIR=/src/boringssl \
+        -DLSQUIC_TESTS=OFF \
+        . \
+    && make -j"$(nproc)"
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libevent-2.1-7 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /src/bin/http_server /usr/local/bin/http_server
+
+# No fixed entrypoint: the caller picks via --entrypoint.
+CMD ["/usr/local/bin/http_server", "--help"]
