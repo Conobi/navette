@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-for name in bench-h3 bench-tquic; do
+for name in bench-h3 bench-tquic bench-lsquic; do
     if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
         # Send SIGTERM with 10s grace so PROFILE_ACCEPT-on builds can flush
         # the SIGINT/SIGTERM handler's profile sidecar before the container

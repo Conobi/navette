@@ -19,6 +19,7 @@ REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 # Set when parallel workflows might overwrite navette-bench:latest.
 MOJO_NET_IMAGE="${MOJO_NET_IMAGE:-navette-bench:latest}"
 TQUIC_IMAGE="${TQUIC_IMAGE:-tquic-bench:latest}"
+LSQUIC_IMAGE="${LSQUIC_IMAGE:-lsquic-bench:latest}"
 
 # Always start from a clean slate.
 "$HERE/scripts/stop-server.sh"
@@ -70,6 +71,23 @@ case "$SERVER" in
             --log-level OFF \
             > /tmp/start-server.log
         CONTAINER=bench-tquic
+        ;;
+    lsquic)
+        docker run -d --name bench-lsquic \
+            --network host \
+            --cpuset-cpus=0 \
+            -v "$HERE/payloads:/data/static:ro" \
+            -v "$REPO_ROOT/certs:/certs:ro" \
+            --entrypoint /usr/local/bin/http_server \
+            "$LSQUIC_IMAGE" \
+            -s 0.0.0.0:8443 \
+            -c localhost,/certs/server.crt,/certs/server.key \
+            -r /data \
+            -L crit \
+            -g -j \
+            -A 1 \
+            > /tmp/start-server.log
+        CONTAINER=bench-lsquic
         ;;
     *)
         echo "[start-server] unknown server: $SERVER (expected navette or tquic)" >&2

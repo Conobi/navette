@@ -44,6 +44,7 @@ esac
 case "$SERVER" in
     navette) CONTAINER=bench-h3 ;;
     tquic)    CONTAINER=bench-tquic ;;
+    lsquic)   CONTAINER=bench-lsquic ;;
     *) echo "unknown server: $SERVER" >&2; exit 2 ;;
 esac
 
