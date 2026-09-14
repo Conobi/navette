@@ -62,6 +62,7 @@ from .payloads import (
     RstStreamPayload,
     decode_rst_stream_payload,
 )
+from std.utils import Variant
 from .hpack import HpackEncoder, HpackDecoder, HpackConfig
 from .header import Header
 
@@ -201,6 +202,139 @@ comptime H2_EVT_GOAWAY_RECEIVED = 9
 comptime H2_EVT_WINDOW_UPDATED = 10
 comptime H2_EVT_CONNECTION_TERMINATED = 11
 comptime H2_EVT_SETTINGS_CHANGED = 12
+
+
+# ---------------------------------------------------------------------------
+# H2Event payload structs
+# ---------------------------------------------------------------------------
+
+
+struct H2HeadersPayload(Copyable, Movable):
+    """Payload for REQUEST_RECEIVED, RESPONSE_RECEIVED, TRAILERS_RECEIVED."""
+    var stream_id: UInt32
+    var headers: List[Header]
+    var stream_ended: Bool
+
+    def __init__(out self, stream_id: UInt32, var headers: List[Header], stream_ended: Bool):
+        self.stream_id = stream_id
+        self.headers = headers^
+        self.stream_ended = stream_ended
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.headers = other.headers.copy()
+        self.stream_ended = other.stream_ended
+
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.headers = move.headers^
+        self.stream_ended = move.stream_ended
+
+
+struct H2DataPayload(Copyable, Movable):
+    """Payload for DATA_RECEIVED."""
+    var stream_id: UInt32
+    var data: List[UInt8]
+    var flow_controlled_length: Int
+    var stream_ended: Bool
+
+    def __init__(out self, stream_id: UInt32, var data: List[UInt8], flow_controlled_length: Int, stream_ended: Bool):
+        self.stream_id = stream_id
+        self.data = data^
+        self.flow_controlled_length = flow_controlled_length
+        self.stream_ended = stream_ended
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.data = other.data.copy()
+        self.flow_controlled_length = other.flow_controlled_length
+        self.stream_ended = other.stream_ended
+
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.data = move.data^
+        self.flow_controlled_length = move.flow_controlled_length
+        self.stream_ended = move.stream_ended
+
+
+struct H2StreamResetPayload(Copyable, Movable):
+    """Payload for STREAM_RESET."""
+    var stream_id: UInt32
+    var error_code: UInt32
+
+    def __init__(out self, stream_id: UInt32, error_code: UInt32):
+        self.stream_id = stream_id
+        self.error_code = error_code
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.error_code = other.error_code
+
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.error_code = move.error_code
+
+
+struct H2GoawayPayload(Copyable, Movable):
+    """Payload for GOAWAY_RECEIVED."""
+    var last_stream_id: UInt32
+    var error_code: UInt32
+    var data: List[UInt8]
+
+    def __init__(out self, last_stream_id: UInt32, error_code: UInt32, var data: List[UInt8]):
+        self.last_stream_id = last_stream_id
+        self.error_code = error_code
+        self.data = data^
+
+    def __init__(out self, *, other: Self):
+        self.last_stream_id = other.last_stream_id
+        self.error_code = other.error_code
+        self.data = other.data.copy()
+
+    def __init__(out self, *, deinit move: Self):
+        self.last_stream_id = move.last_stream_id
+        self.error_code = move.error_code
+        self.data = move.data^
+
+
+struct H2WindowPayload(Copyable, Movable):
+    """Payload for WINDOW_UPDATED."""
+    var stream_id: UInt32
+    var window_increment: UInt32
+
+    def __init__(out self, stream_id: UInt32, window_increment: UInt32):
+        self.stream_id = stream_id
+        self.window_increment = window_increment
+
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.window_increment = other.window_increment
+
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.window_increment = move.window_increment
+
+
+struct H2TerminationPayload(Copyable, Movable):
+    """Payload for CONNECTION_TERMINATED."""
+    var last_stream_id: UInt32
+    var error_code: UInt32
+    var message: String
+
+    def __init__(out self, last_stream_id: UInt32, error_code: UInt32, var message: String):
+        self.last_stream_id = last_stream_id
+        self.error_code = error_code
+        self.message = message^
+
+    def __init__(out self, *, other: Self):
+        self.last_stream_id = other.last_stream_id
+        self.error_code = other.error_code
+        self.message = other.message
+
+    def __init__(out self, *, deinit move: Self):
+        self.last_stream_id = move.last_stream_id
+        self.error_code = move.error_code
+        self.message = move.message^
 
 
 # ---------------------------------------------------------------------------
