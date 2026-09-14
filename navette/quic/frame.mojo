@@ -2,7 +2,8 @@
 # QUIC frame codec — RFC 9000 Section 19.
 # Parse/serialize for all 20 QUIC frame types.
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from std.utils import Variant
 
 # ── Frame type constants (RFC 9000 §19) ──────────────────────────────
 
@@ -42,6 +43,7 @@ comptime MAX_ACK_RANGES: Int = 256
 
 
 # ── Per-frame payload structs ─────────────────────────────────────────
+# (FramePayload alias is defined AFTER these structs so all types resolve.)
 
 
 struct AckRange(Copyable, Movable):
@@ -52,13 +54,13 @@ struct AckRange(Copyable, Movable):
         self.gap = gap
         self.ack_range = ack_range
 
-    def __init__(out self, *, copy: Self):
-        self.gap = copy.gap
-        self.ack_range = copy.ack_range
+    def __init__(out self, *, other: Self):
+        self.gap = other.gap
+        self.ack_range = other.ack_range
 
-    def __init__(out self, *, deinit move: Self):
-        self.gap = move.gap
-        self.ack_range = move.ack_range
+    def __init__(out self, *, deinit take: Self):
+        self.gap = take.gap
+        self.ack_range = take.ack_range
 
 
 struct AckFrame(Copyable, Movable):
@@ -81,25 +83,25 @@ struct AckFrame(Copyable, Movable):
         self.ecn_ce = UInt64(0)
         self.has_ecn = False
 
-    def __init__(out self, *, copy: Self):
-        self.largest_ack = copy.largest_ack
-        self.ack_delay = copy.ack_delay
-        self.first_ack_range = copy.first_ack_range
-        self.ranges = List[AckRange](copy=copy.ranges)
-        self.ecn_ect0 = copy.ecn_ect0
-        self.ecn_ect1 = copy.ecn_ect1
-        self.ecn_ce = copy.ecn_ce
-        self.has_ecn = copy.has_ecn
+    def __init__(out self, *, other: Self):
+        self.largest_ack = other.largest_ack
+        self.ack_delay = other.ack_delay
+        self.first_ack_range = other.first_ack_range
+        self.ranges = List[AckRange](copy=other.ranges)
+        self.ecn_ect0 = other.ecn_ect0
+        self.ecn_ect1 = other.ecn_ect1
+        self.ecn_ce = other.ecn_ce
+        self.has_ecn = other.has_ecn
 
-    def __init__(out self, *, deinit move: Self):
-        self.largest_ack = move.largest_ack
-        self.ack_delay = move.ack_delay
-        self.first_ack_range = move.first_ack_range
-        self.ranges = move.ranges^
-        self.ecn_ect0 = move.ecn_ect0
-        self.ecn_ect1 = move.ecn_ect1
-        self.ecn_ce = move.ecn_ce
-        self.has_ecn = move.has_ecn
+    def __init__(out self, *, deinit take: Self):
+        self.largest_ack = take.largest_ack
+        self.ack_delay = take.ack_delay
+        self.first_ack_range = take.first_ack_range
+        self.ranges = take.ranges^
+        self.ecn_ect0 = take.ecn_ect0
+        self.ecn_ect1 = take.ecn_ect1
+        self.ecn_ce = take.ecn_ce
+        self.has_ecn = take.has_ecn
 
 
 struct CryptoFrame(Copyable, Movable):
@@ -114,13 +116,13 @@ struct CryptoFrame(Copyable, Movable):
         self.offset = offset
         self.data = List[UInt8](copy=data)
 
-    def __init__(out self, *, copy: Self):
-        self.offset = copy.offset
-        self.data = List[UInt8](copy=copy.data)
+    def __init__(out self, *, other: Self):
+        self.offset = other.offset
+        self.data = List[UInt8](copy=other.data)
 
-    def __init__(out self, *, deinit move: Self):
-        self.offset = move.offset
-        self.data = move.data^
+    def __init__(out self, *, deinit take: Self):
+        self.offset = take.offset
+        self.data = take.data^
 
 
 struct StreamFrame(Copyable, Movable):
@@ -141,17 +143,17 @@ struct StreamFrame(Copyable, Movable):
         self.data = List[UInt8](copy=data)
         self.fin = fin
 
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.offset = copy.offset
-        self.data = List[UInt8](copy=copy.data)
-        self.fin = copy.fin
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.offset = other.offset
+        self.data = List[UInt8](copy=other.data)
+        self.fin = other.fin
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.offset = move.offset
-        self.data = move.data^
-        self.fin = move.fin
+    def __init__(out self, *, deinit take: Self):
+        self.stream_id = take.stream_id
+        self.offset = take.offset
+        self.data = take.data^
+        self.fin = take.fin
 
 
 struct ResetStreamFrame(Copyable, Movable):
@@ -164,15 +166,15 @@ struct ResetStreamFrame(Copyable, Movable):
         self.error_code = error_code
         self.final_size = final_size
 
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.error_code = copy.error_code
-        self.final_size = copy.final_size
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.error_code = other.error_code
+        self.final_size = other.final_size
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.error_code = move.error_code
-        self.final_size = move.final_size
+    def __init__(out self, *, deinit take: Self):
+        self.stream_id = take.stream_id
+        self.error_code = take.error_code
+        self.final_size = take.final_size
 
 
 struct StopSendingFrame(Copyable, Movable):
@@ -183,13 +185,13 @@ struct StopSendingFrame(Copyable, Movable):
         self.stream_id = stream_id
         self.error_code = error_code
 
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.error_code = copy.error_code
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.error_code = other.error_code
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.error_code = move.error_code
+    def __init__(out self, *, deinit take: Self):
+        self.stream_id = take.stream_id
+        self.error_code = take.error_code
 
 
 struct MaxStreamDataFrame(Copyable, Movable):
@@ -200,13 +202,13 @@ struct MaxStreamDataFrame(Copyable, Movable):
         self.stream_id = stream_id
         self.maximum = maximum
 
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.maximum = copy.maximum
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.maximum = other.maximum
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.maximum = move.maximum
+    def __init__(out self, *, deinit take: Self):
+        self.stream_id = take.stream_id
+        self.maximum = take.maximum
 
 
 struct MaxStreamsFrame(Copyable, Movable):
@@ -217,13 +219,13 @@ struct MaxStreamsFrame(Copyable, Movable):
         self.maximum = maximum
         self.bidi = bidi
 
-    def __init__(out self, *, copy: Self):
-        self.maximum = copy.maximum
-        self.bidi = copy.bidi
+    def __init__(out self, *, other: Self):
+        self.maximum = other.maximum
+        self.bidi = other.bidi
 
-    def __init__(out self, *, deinit move: Self):
-        self.maximum = move.maximum
-        self.bidi = move.bidi
+    def __init__(out self, *, deinit take: Self):
+        self.maximum = take.maximum
+        self.bidi = take.bidi
 
 
 struct StreamDataBlockedFrame(Copyable, Movable):
@@ -234,13 +236,13 @@ struct StreamDataBlockedFrame(Copyable, Movable):
         self.stream_id = stream_id
         self.maximum = maximum
 
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.maximum = copy.maximum
+    def __init__(out self, *, other: Self):
+        self.stream_id = other.stream_id
+        self.maximum = other.maximum
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.maximum = move.maximum
+    def __init__(out self, *, deinit take: Self):
+        self.stream_id = take.stream_id
+        self.maximum = take.maximum
 
 
 struct StreamsBlockedFrame(Copyable, Movable):
@@ -251,13 +253,13 @@ struct StreamsBlockedFrame(Copyable, Movable):
         self.maximum = maximum
         self.bidi = bidi
 
-    def __init__(out self, *, copy: Self):
-        self.maximum = copy.maximum
-        self.bidi = copy.bidi
+    def __init__(out self, *, other: Self):
+        self.maximum = other.maximum
+        self.bidi = other.bidi
 
-    def __init__(out self, *, deinit move: Self):
-        self.maximum = move.maximum
-        self.bidi = move.bidi
+    def __init__(out self, *, deinit take: Self):
+        self.maximum = take.maximum
+        self.bidi = take.bidi
 
 
 struct NewConnectionIdFrame(Copyable, Movable):
@@ -272,17 +274,17 @@ struct NewConnectionIdFrame(Copyable, Movable):
         self.cid = List[UInt8]()
         self.stateless_reset_token = List[UInt8]()
 
-    def __init__(out self, *, copy: Self):
-        self.sequence = copy.sequence
-        self.retire_prior_to = copy.retire_prior_to
-        self.cid = List[UInt8](copy=copy.cid)
-        self.stateless_reset_token = List[UInt8](copy=copy.stateless_reset_token)
+    def __init__(out self, *, other: Self):
+        self.sequence = other.sequence
+        self.retire_prior_to = other.retire_prior_to
+        self.cid = List[UInt8](copy=other.cid)
+        self.stateless_reset_token = List[UInt8](copy=other.stateless_reset_token)
 
-    def __init__(out self, *, deinit move: Self):
-        self.sequence = move.sequence
-        self.retire_prior_to = move.retire_prior_to
-        self.cid = move.cid^
-        self.stateless_reset_token = move.stateless_reset_token^
+    def __init__(out self, *, deinit take: Self):
+        self.sequence = take.sequence
+        self.retire_prior_to = take.retire_prior_to
+        self.cid = take.cid^
+        self.stateless_reset_token = take.stateless_reset_token^
 
 
 struct ConnectionCloseFrame(Copyable, Movable):
@@ -297,346 +299,184 @@ struct ConnectionCloseFrame(Copyable, Movable):
         self.frame_type = UInt64(0)
         self.reason = List[UInt8]()
 
-    def __init__(out self, *, copy: Self):
-        self.is_transport = copy.is_transport
-        self.error_code = copy.error_code
-        self.frame_type = copy.frame_type
-        self.reason = List[UInt8](copy=copy.reason)
+    def __init__(out self, *, other: Self):
+        self.is_transport = other.is_transport
+        self.error_code = other.error_code
+        self.frame_type = other.frame_type
+        self.reason = List[UInt8](copy=other.reason)
 
-    def __init__(out self, *, deinit move: Self):
-        self.is_transport = move.is_transport
-        self.error_code = move.error_code
-        self.frame_type = move.frame_type
-        self.reason = move.reason^
+    def __init__(out self, *, deinit take: Self):
+        self.is_transport = take.is_transport
+        self.error_code = take.error_code
+        self.frame_type = take.frame_type
+        self.reason = take.reason^
 
 
 # ── Tagged Frame container ────────────────────────────────────────────
 
+comptime FramePayload = Variant[
+    NoneType,              # Padding, Ping, HandshakeDone, Unknown
+    AckFrame,              # ACK, ACK_ECN
+    CryptoFrame,           # CRYPTO
+    StreamFrame,           # STREAM 0x08-0x0F
+    ResetStreamFrame,      # RESET_STREAM
+    StopSendingFrame,      # STOP_SENDING
+    UInt64,                # MAX_DATA, DATA_BLOCKED, RETIRE_CID
+    MaxStreamDataFrame,    # MAX_STREAM_DATA, STREAM_DATA_BLOCKED
+    MaxStreamsFrame,        # MAX_STREAMS_*, STREAMS_BLOCKED_*
+    NewConnectionIdFrame,  # NEW_CONNECTION_ID
+    ConnectionCloseFrame,  # CONNECTION_CLOSE_TRANSPORT/APP
+    List[UInt8],           # NEW_TOKEN, PATH_CHALLENGE, PATH_RESPONSE, DATAGRAM, DATAGRAM_LEN
+]
+
 
 struct Frame(Copyable, Movable):
-    var type_id: UInt64
-    var _ack: Optional[AckFrame]
-    var _crypto: Optional[CryptoFrame]
-    var _stream: Optional[StreamFrame]
-    var _reset_stream: Optional[ResetStreamFrame]
-    var _stop_sending: Optional[StopSendingFrame]
-    var _max_data: Optional[UInt64]
-    var _max_stream_data: Optional[MaxStreamDataFrame]
-    var _max_streams: Optional[MaxStreamsFrame]
-    var _new_cid: Optional[NewConnectionIdFrame]
-    var _retire_cid: Optional[UInt64]
-    var _conn_close: Optional[ConnectionCloseFrame]
-    var _new_token: Optional[List[UInt8]]
-    var _path_data: Optional[List[UInt8]]
-    # DATAGRAM payload (RFC 9221 §4). Storage shared by both the length-less
-    # (0x30) and length-prefixed (0x31) variants; the active type_id remembers
-    # which wire form to emit. Independent slot from _path_data so the F13-style
-    # "is the payload a path token" predicate stays unambiguous.
-    var _datagram: Optional[List[UInt8]]
+    """QUIC frame container with discriminated Variant payload.
 
-    def __init__(out self, type_id: UInt64):
+    `type_id` identifies the wire frame type (RFC 9000 section 19);
+    `payload` holds the active payload via a 12-element Variant.
+    Factory methods are the sole construction path, ensuring
+    type_id-payload consistency.
+    """
+
+    var type_id: UInt64
+    var payload: FramePayload
+
+    def __init__(out self, type_id: UInt64, var payload: FramePayload):
         self.type_id = type_id
-        self._ack = None
-        self._crypto = None
-        self._stream = None
-        self._reset_stream = None
-        self._stop_sending = None
-        self._max_data = None
-        self._max_stream_data = None
-        self._max_streams = None
-        self._new_cid = None
-        self._retire_cid = None
-        self._conn_close = None
-        self._new_token = None
-        self._path_data = None
-        self._datagram = None
+        self.payload = payload^
 
     def __init__(out self, *, copy: Self):
         self.type_id = copy.type_id
-        self._ack = Optional[AckFrame](copy=copy._ack)
-        self._crypto = Optional[CryptoFrame](copy=copy._crypto)
-        self._stream = Optional[StreamFrame](copy=copy._stream)
-        self._reset_stream = Optional[ResetStreamFrame](copy=copy._reset_stream)
-        self._stop_sending = Optional[StopSendingFrame](copy=copy._stop_sending)
-        self._max_data = Optional[UInt64](copy=copy._max_data)
-        self._max_stream_data = Optional[MaxStreamDataFrame](copy=copy._max_stream_data)
-        self._max_streams = Optional[MaxStreamsFrame](copy=copy._max_streams)
-        self._new_cid = Optional[NewConnectionIdFrame](copy=copy._new_cid)
-        self._retire_cid = Optional[UInt64](copy=copy._retire_cid)
-        self._conn_close = Optional[ConnectionCloseFrame](copy=copy._conn_close)
-        self._new_token = Optional[List[UInt8]](copy=copy._new_token)
-        self._path_data = Optional[List[UInt8]](copy=copy._path_data)
-        self._datagram = Optional[List[UInt8]](copy=copy._datagram)
+        self.payload = FramePayload(copy=copy.payload)
 
     def __init__(out self, *, deinit move: Self):
         self.type_id = move.type_id
-        self._ack = move._ack^
-        self._crypto = move._crypto^
-        self._stream = move._stream^
-        self._reset_stream = move._reset_stream^
-        self._stop_sending = move._stop_sending^
-        self._max_data = move._max_data^
-        self._max_stream_data = move._max_stream_data^
-        self._max_streams = move._max_streams^
-        self._new_cid = move._new_cid^
-        self._retire_cid = move._retire_cid^
-        self._conn_close = move._conn_close^
-        self._new_token = move._new_token^
-        self._path_data = move._path_data^
-        self._datagram = move._datagram^
+        self.payload = move.payload^
 
     # ── Factory methods ───────────────────────────────────────────────
 
     @staticmethod
     def padding() -> Frame:
-        return Frame(FRAME_PADDING)
+        return Frame(FRAME_PADDING, FramePayload(NoneType()))
 
     @staticmethod
     def ping() -> Frame:
-        return Frame(FRAME_PING)
+        return Frame(FRAME_PING, FramePayload(NoneType()))
 
     @staticmethod
     def ack(f: AckFrame) -> Frame:
-        var frame = Frame(FRAME_ACK if not f.has_ecn else FRAME_ACK_ECN)
-        frame._ack = AckFrame(copy=f)
-        return frame^
+        return Frame(
+            FRAME_ACK if not f.has_ecn else FRAME_ACK_ECN,
+            FramePayload(AckFrame(other=f)),
+        )
 
     @staticmethod
     def crypto(f: CryptoFrame) -> Frame:
-        var frame = Frame(FRAME_CRYPTO)
-        frame._crypto = CryptoFrame(copy=f)
-        return frame^
+        return Frame(FRAME_CRYPTO, FramePayload(CryptoFrame(other=f)))
 
     @staticmethod
-    def stream(f: StreamFrame) -> Frame:
-        # type_id will be computed at serialize time; store base
-        var frame = Frame(FRAME_STREAM_BASE)
-        frame._stream = StreamFrame(copy=f)
-        return frame^
+    def stream(f: StreamFrame, type_id: UInt64 = FRAME_STREAM_BASE) -> Frame:
+        return Frame(type_id, FramePayload(StreamFrame(other=f)))
 
     @staticmethod
     def reset_stream(f: ResetStreamFrame) -> Frame:
-        var frame = Frame(FRAME_RESET_STREAM)
-        frame._reset_stream = ResetStreamFrame(copy=f)
-        return frame^
+        return Frame(FRAME_RESET_STREAM, FramePayload(ResetStreamFrame(other=f)))
 
     @staticmethod
     def stop_sending(f: StopSendingFrame) -> Frame:
-        var frame = Frame(FRAME_STOP_SENDING)
-        frame._stop_sending = StopSendingFrame(copy=f)
-        return frame^
+        return Frame(FRAME_STOP_SENDING, FramePayload(StopSendingFrame(other=f)))
 
     @staticmethod
     def max_data(maximum: UInt64) -> Frame:
-        var frame = Frame(FRAME_MAX_DATA)
-        frame._max_data = maximum
-        return frame^
+        return Frame(FRAME_MAX_DATA, FramePayload(maximum))
 
     @staticmethod
     def max_stream_data(f: MaxStreamDataFrame) -> Frame:
-        var frame = Frame(FRAME_MAX_STREAM_DATA)
-        frame._max_stream_data = MaxStreamDataFrame(copy=f)
-        return frame^
+        return Frame(FRAME_MAX_STREAM_DATA, FramePayload(MaxStreamDataFrame(other=f)))
 
     @staticmethod
     def max_streams(f: MaxStreamsFrame) -> Frame:
-        var frame = Frame(FRAME_MAX_STREAMS_BIDI if f.bidi else FRAME_MAX_STREAMS_UNI)
-        frame._max_streams = MaxStreamsFrame(copy=f)
-        return frame^
+        return Frame(
+            FRAME_MAX_STREAMS_BIDI if f.bidi else FRAME_MAX_STREAMS_UNI,
+            FramePayload(MaxStreamsFrame(other=f)),
+        )
 
     @staticmethod
     def data_blocked(maximum: UInt64) -> Frame:
-        var frame = Frame(FRAME_DATA_BLOCKED)
-        frame._max_data = maximum
-        return frame^
+        return Frame(FRAME_DATA_BLOCKED, FramePayload(maximum))
 
     @staticmethod
     def stream_data_blocked(f: StreamDataBlockedFrame) -> Frame:
-        var frame = Frame(FRAME_STREAM_DATA_BLOCKED)
-        frame._max_stream_data = MaxStreamDataFrame(f.stream_id, f.maximum)
-        return frame^
+        return Frame(
+            FRAME_STREAM_DATA_BLOCKED,
+            FramePayload(MaxStreamDataFrame(f.stream_id, f.maximum)),
+        )
 
     @staticmethod
     def streams_blocked(f: StreamsBlockedFrame) -> Frame:
-        var frame = Frame(FRAME_STREAMS_BLOCKED_BIDI if f.bidi else FRAME_STREAMS_BLOCKED_UNI)
-        frame._max_streams = MaxStreamsFrame(f.maximum, f.bidi)
-        return frame^
+        return Frame(
+            FRAME_STREAMS_BLOCKED_BIDI if f.bidi else FRAME_STREAMS_BLOCKED_UNI,
+            FramePayload(MaxStreamsFrame(f.maximum, f.bidi)),
+        )
 
     @staticmethod
     def new_connection_id(f: NewConnectionIdFrame) -> Frame:
-        var frame = Frame(FRAME_NEW_CONNECTION_ID)
-        frame._new_cid = NewConnectionIdFrame(copy=f)
-        return frame^
+        return Frame(FRAME_NEW_CONNECTION_ID, FramePayload(NewConnectionIdFrame(other=f)))
 
     @staticmethod
     def retire_connection_id(sequence: UInt64) -> Frame:
-        var frame = Frame(FRAME_RETIRE_CONNECTION_ID)
-        frame._retire_cid = sequence
-        return frame^
+        return Frame(FRAME_RETIRE_CONNECTION_ID, FramePayload(sequence))
 
     @staticmethod
     def connection_close(f: ConnectionCloseFrame) -> Frame:
-        var frame = Frame(
-            FRAME_CONNECTION_CLOSE_TRANSPORT if f.is_transport else FRAME_CONNECTION_CLOSE_APP
+        return Frame(
+            FRAME_CONNECTION_CLOSE_TRANSPORT if f.is_transport else FRAME_CONNECTION_CLOSE_APP,
+            FramePayload(ConnectionCloseFrame(other=f)),
         )
-        frame._conn_close = ConnectionCloseFrame(copy=f)
-        return frame^
 
     @staticmethod
     def new_token(token: List[UInt8]) -> Frame:
-        var frame = Frame(FRAME_NEW_TOKEN)
-        frame._new_token = List[UInt8](copy=token)
-        return frame^
+        return Frame(FRAME_NEW_TOKEN, FramePayload(List[UInt8](copy=token)))
 
     @staticmethod
     def path_challenge(data: List[UInt8]) -> Frame:
-        var frame = Frame(FRAME_PATH_CHALLENGE)
-        frame._path_data = List[UInt8](copy=data)
-        return frame^
+        return Frame(FRAME_PATH_CHALLENGE, FramePayload(List[UInt8](copy=data)))
 
     @staticmethod
     def path_response(data: List[UInt8]) -> Frame:
-        var frame = Frame(FRAME_PATH_RESPONSE)
-        frame._path_data = List[UInt8](copy=data)
-        return frame^
+        return Frame(FRAME_PATH_RESPONSE, FramePayload(List[UInt8](copy=data)))
 
     @staticmethod
     def handshake_done() -> Frame:
-        return Frame(FRAME_HANDSHAKE_DONE)
+        return Frame(FRAME_HANDSHAKE_DONE, FramePayload(NoneType()))
 
     @staticmethod
     def datagram(payload: List[UInt8]) -> Frame:
-        """RFC 9221 §4 — build a DATAGRAM frame (type 0x30, no length prefix).
+        """RFC 9221 DATAGRAM (0x30, no length prefix).
 
-        The wire form is `type(0x30) + payload`; the payload extends to the
-        end of the QUIC packet. Use this variant when the DATAGRAM is the
-        last frame in the packet (or the only frame). The parser-side rule
-        in `parse_frame` honours the contract by consuming all remaining
-        bytes of the reader as the payload.
-
-        Note that DATAGRAM frames are NOT subject to congestion control,
-        flow control, or retransmission (RFC 9221 §5.4); a lost frame is
-        lost permanently. Callers requiring delivery semantics should use
-        STREAM frames instead.
+        Payload extends to end of QUIC packet. Not subject to congestion
+        control, flow control, or retransmission.
         """
-        var frame = Frame(FRAME_DATAGRAM)
-        frame._datagram = List[UInt8](copy=payload)
-        return frame^
+        return Frame(FRAME_DATAGRAM, FramePayload(List[UInt8](copy=payload)))
 
     @staticmethod
     def datagram_with_len(payload: List[UInt8]) -> Frame:
-        """RFC 9221 §4 — build a DATAGRAM_LEN frame (type 0x31, varint length).
+        """RFC 9221 DATAGRAM_LEN (0x31, varint length prefix).
 
-        Wire form: `type(0x31) + length(varint) + payload`. Use this variant
-        when the DATAGRAM is multiplexed with other frames in the same packet
-        (the length field lets the parser stop at the right byte). This is
-        the default outbound form chosen by `QuicConnection.send_datagram`
-        because it composes cleanly with ACKs/PING/etc. in the same flush.
-
-        Same loss/FC semantics as `datagram` (RFC 9221 §5.4 — DATAGRAMs are
-        NOT subject to congestion control, flow control, or retransmission).
+        Allows multiplexing with other frames in the same packet.
+        Not subject to congestion control, flow control, or retransmission.
         """
-        var frame = Frame(FRAME_DATAGRAM_LEN)
-        frame._datagram = List[UInt8](copy=payload)
-        return frame^
+        return Frame(FRAME_DATAGRAM_LEN, FramePayload(List[UInt8](copy=payload)))
 
     @staticmethod
     def unknown(type_id: UInt64) -> Frame:
-        """Sentinel factory for unknown QUIC frame types (RFC 9000 §12.4).
+        """Sentinel for unknown QUIC frame types (RFC 9000 section 12.4).
 
         Preserves the unknown wire `type_id` so the dispatch site can close
-        the connection with FRAME_ENCODING_ERROR (0x07). The returned Frame
-        carries no payload — `parse_frame` falls into this branch only when
-        no other FRAME_* arm matched, so subsequent frame bytes (if any) are
-        intentionally not decoded; the connection is fatally terminated.
+        with FRAME_ENCODING_ERROR. No payload is decoded.
         """
-        return Frame(type_id)
-
-    # ── Internal factory (takes ownership via mut) ────────────────────
-
-    @staticmethod
-    def _ack_move(mut f: AckFrame) -> Frame:
-        var frame = Frame(FRAME_ACK if not f.has_ecn else FRAME_ACK_ECN)
-        var empty = AckFrame()
-        # Swap to take ownership
-        var taken = f^
-        f = empty^
-        frame._ack = taken^
-        return frame^
-
-    @staticmethod
-    def _crypto_move(mut f: CryptoFrame) -> Frame:
-        var frame = Frame(FRAME_CRYPTO)
-        var empty = CryptoFrame()
-        var taken = f^
-        f = empty^
-        frame._crypto = taken^
-        return frame^
-
-    @staticmethod
-    def _stream_move(mut f: StreamFrame) -> Frame:
-        var frame = Frame(FRAME_STREAM_BASE)
-        var empty = StreamFrame()
-        var taken = f^
-        f = empty^
-        frame._stream = taken^
-        return frame^
-
-    @staticmethod
-    def _stream_move_with_type(mut f: StreamFrame, type_id: UInt64) -> Frame:
-        var frame = Frame(type_id)
-        var empty = StreamFrame()
-        var taken = f^
-        f = empty^
-        frame._stream = taken^
-        return frame^
-
-    @staticmethod
-    def _new_cid_move(mut f: NewConnectionIdFrame) -> Frame:
-        var frame = Frame(FRAME_NEW_CONNECTION_ID)
-        var empty = NewConnectionIdFrame()
-        var taken = f^
-        f = empty^
-        frame._new_cid = taken^
-        return frame^
-
-    @staticmethod
-    def _conn_close_move(mut f: ConnectionCloseFrame) -> Frame:
-        var frame = Frame(
-            FRAME_CONNECTION_CLOSE_TRANSPORT if f.is_transport else FRAME_CONNECTION_CLOSE_APP
-        )
-        var empty = ConnectionCloseFrame()
-        var taken = f^
-        f = empty^
-        frame._conn_close = taken^
-        return frame^
-
-    @staticmethod
-    def _new_token_move(mut token: List[UInt8]) -> Frame:
-        var frame = Frame(FRAME_NEW_TOKEN)
-        var empty = List[UInt8]()
-        var taken = token^
-        token = empty^
-        frame._new_token = taken^
-        return frame^
-
-    @staticmethod
-    def _path_challenge_move(mut data: List[UInt8]) -> Frame:
-        var frame = Frame(FRAME_PATH_CHALLENGE)
-        var empty = List[UInt8]()
-        var taken = data^
-        data = empty^
-        frame._path_data = taken^
-        return frame^
-
-    @staticmethod
-    def _path_response_move(mut data: List[UInt8]) -> Frame:
-        var frame = Frame(FRAME_PATH_RESPONSE)
-        var empty = List[UInt8]()
-        var taken = data^
-        data = empty^
-        frame._path_data = taken^
-        return frame^
+        return Frame(type_id, FramePayload(NoneType()))
 
     # ── Predicates ────────────────────────────────────────────────────
 
@@ -725,103 +565,6 @@ struct Frame(Copyable, Movable):
             return False
         return True
 
-    def wire_len(self) -> Int:
-        """Exact serialized length; must match `serialize_frame` byte for byte.
-
-        Lets the packet builder admit frames against a byte budget without
-        serializing them. STREAM frames always carry the LEN bit and omit the
-        offset field when it is 0, mirroring the serializer. Unknown frame
-        types (which the serializer rejects) report 0.
-        """
-        var tid = self.type_id
-        if tid == FRAME_PADDING or tid == FRAME_PING or tid == FRAME_HANDSHAKE_DONE:
-            return 1
-        if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
-            if not self._ack:
-                return 0
-            ref ack = self._ack.value()
-            var n = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
-            n += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
-            for i in range(len(ack.ranges)):
-                n += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
-            if ack.has_ecn:
-                n += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
-            return n
-        if tid == FRAME_RESET_STREAM:
-            if not self._reset_stream:
-                return 0
-            ref rs = self._reset_stream.value()
-            return 1 + varint_len(rs.stream_id) + varint_len(rs.error_code) + varint_len(rs.final_size)
-        if tid == FRAME_STOP_SENDING:
-            if not self._stop_sending:
-                return 0
-            ref ss = self._stop_sending.value()
-            return 1 + varint_len(ss.stream_id) + varint_len(ss.error_code)
-        if tid == FRAME_CRYPTO:
-            if not self._crypto:
-                return 0
-            ref cf = self._crypto.value()
-            return 1 + varint_len(cf.offset) + varint_len(UInt64(len(cf.data))) + len(cf.data)
-        if tid == FRAME_NEW_TOKEN:
-            if not self._new_token:
-                return 0
-            var tl = len(self._new_token.value())
-            return 1 + varint_len(UInt64(tl)) + tl
-        if (tid & UInt64(0xF8)) == FRAME_STREAM_BASE:
-            if not self._stream:
-                return 0
-            ref sf = self._stream.value()
-            var n = 1 + varint_len(sf.stream_id)
-            if sf.offset != UInt64(0):
-                n += varint_len(sf.offset)
-            return n + varint_len(UInt64(len(sf.data))) + len(sf.data)
-        if tid == FRAME_MAX_DATA or tid == FRAME_DATA_BLOCKED:
-            if not self._max_data:
-                return 0
-            return 1 + varint_len(self._max_data.value())
-        if tid == FRAME_MAX_STREAM_DATA or tid == FRAME_STREAM_DATA_BLOCKED:
-            if not self._max_stream_data:
-                return 0
-            ref msd = self._max_stream_data.value()
-            return 1 + varint_len(msd.stream_id) + varint_len(msd.maximum)
-        if (tid == FRAME_MAX_STREAMS_BIDI or tid == FRAME_MAX_STREAMS_UNI
-                or tid == FRAME_STREAMS_BLOCKED_BIDI or tid == FRAME_STREAMS_BLOCKED_UNI):
-            if not self._max_streams:
-                return 0
-            return 1 + varint_len(self._max_streams.value().maximum)
-        if tid == FRAME_NEW_CONNECTION_ID:
-            if not self._new_cid:
-                return 0
-            ref ncid = self._new_cid.value()
-            return (1 + varint_len(ncid.sequence) + varint_len(ncid.retire_prior_to)
-                    + 1 + len(ncid.cid) + len(ncid.stateless_reset_token))
-        if tid == FRAME_RETIRE_CONNECTION_ID:
-            if not self._retire_cid:
-                return 0
-            return 1 + varint_len(self._retire_cid.value())
-        if tid == FRAME_PATH_CHALLENGE or tid == FRAME_PATH_RESPONSE:
-            if not self._path_data:
-                return 0
-            return 1 + len(self._path_data.value())
-        if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            if not self._conn_close:
-                return 0
-            ref cc = self._conn_close.value()
-            var n = 1 + varint_len(cc.error_code)
-            if cc.is_transport:
-                n += varint_len(cc.frame_type)
-            return n + varint_len(UInt64(len(cc.reason))) + len(cc.reason)
-        if tid == FRAME_DATAGRAM:
-            if not self._datagram:
-                return 0
-            return 1 + len(self._datagram.value())
-        if tid == FRAME_DATAGRAM_LEN:
-            if not self._datagram:
-                return 0
-            var dl = len(self._datagram.value())
-            return 1 + varint_len(UInt64(dl)) + dl
-        return 0
-
     def is_ack_eliciting(self) -> Bool:
         # ACK-eliciting: everything EXCEPT PADDING, ACK/ACK_ECN, CONNECTION_CLOSE
         if self.type_id == FRAME_PADDING:
@@ -834,81 +577,76 @@ struct Frame(Copyable, Movable):
 
     # ── Accessors ─────────────────────────────────────────────────────
 
-    def as_ack(self) raises -> ref [self._ack._value] AckFrame:
-        if not self._ack:
+    def as_ack(self) raises -> ref [self.payload] AckFrame:
+        if not self.payload.isa[AckFrame]():
             raise "Frame is not an ACK frame"
-        return self._ack.value()
+        return self.payload.unsafe_get[AckFrame]()
 
-    def as_crypto(self) raises -> ref [self._crypto._value] CryptoFrame:
-        if not self._crypto:
+    def as_crypto(self) raises -> ref [self.payload] CryptoFrame:
+        if not self.payload.isa[CryptoFrame]():
             raise "Frame is not a CRYPTO frame"
-        return self._crypto.value()
+        return self.payload.unsafe_get[CryptoFrame]()
 
-    def as_stream(self) raises -> ref [self._stream._value] StreamFrame:
-        if not self._stream:
+    def as_stream(self) raises -> ref [self.payload] StreamFrame:
+        if not self.payload.isa[StreamFrame]():
             raise "Frame is not a STREAM frame"
-        return self._stream.value()
+        return self.payload.unsafe_get[StreamFrame]()
 
-    def as_reset_stream(self) raises -> ref [self._reset_stream._value] ResetStreamFrame:
-        if not self._reset_stream:
+    def as_reset_stream(self) raises -> ref [self.payload] ResetStreamFrame:
+        if not self.payload.isa[ResetStreamFrame]():
             raise "Frame is not a RESET_STREAM frame"
-        return self._reset_stream.value()
+        return self.payload.unsafe_get[ResetStreamFrame]()
 
-    def as_stop_sending(self) raises -> ref [self._stop_sending._value] StopSendingFrame:
-        if not self._stop_sending:
+    def as_stop_sending(self) raises -> ref [self.payload] StopSendingFrame:
+        if not self.payload.isa[StopSendingFrame]():
             raise "Frame is not a STOP_SENDING frame"
-        return self._stop_sending.value()
+        return self.payload.unsafe_get[StopSendingFrame]()
 
     def as_max_data(self) raises -> UInt64:
-        if not self._max_data:
+        if not self.payload.isa[UInt64]():
             raise "Frame is not a MAX_DATA/DATA_BLOCKED frame"
-        return self._max_data.value()
+        return self.payload.unsafe_get[UInt64]()
 
-    def as_max_stream_data(self) raises -> ref [self._max_stream_data._value] MaxStreamDataFrame:
-        if not self._max_stream_data:
+    def as_max_stream_data(self) raises -> ref [self.payload] MaxStreamDataFrame:
+        if not self.payload.isa[MaxStreamDataFrame]():
             raise "Frame is not a MAX_STREAM_DATA/STREAM_DATA_BLOCKED frame"
-        return self._max_stream_data.value()
+        return self.payload.unsafe_get[MaxStreamDataFrame]()
 
-    def as_max_streams(self) raises -> ref [self._max_streams._value] MaxStreamsFrame:
-        if not self._max_streams:
+    def as_max_streams(self) raises -> ref [self.payload] MaxStreamsFrame:
+        if not self.payload.isa[MaxStreamsFrame]():
             raise "Frame is not a MAX_STREAMS/STREAMS_BLOCKED frame"
-        return self._max_streams.value()
+        return self.payload.unsafe_get[MaxStreamsFrame]()
 
-    def as_new_connection_id(self) raises -> ref [self._new_cid._value] NewConnectionIdFrame:
-        if not self._new_cid:
+    def as_new_connection_id(self) raises -> ref [self.payload] NewConnectionIdFrame:
+        if not self.payload.isa[NewConnectionIdFrame]():
             raise "Frame is not a NEW_CONNECTION_ID frame"
-        return self._new_cid.value()
+        return self.payload.unsafe_get[NewConnectionIdFrame]()
 
     def as_retire_connection_id(self) raises -> UInt64:
-        if not self._retire_cid:
+        if not self.payload.isa[UInt64]():
             raise "Frame is not a RETIRE_CONNECTION_ID frame"
-        return self._retire_cid.value()
+        return self.payload.unsafe_get[UInt64]()
 
-    def as_connection_close(self) raises -> ref [self._conn_close._value] ConnectionCloseFrame:
-        if not self._conn_close:
+    def as_connection_close(self) raises -> ref [self.payload] ConnectionCloseFrame:
+        if not self.payload.isa[ConnectionCloseFrame]():
             raise "Frame is not a CONNECTION_CLOSE frame"
-        return self._conn_close.value()
+        return self.payload.unsafe_get[ConnectionCloseFrame]()
 
-    def as_new_token(self) raises -> ref [self._new_token._value] List[UInt8]:
-        if not self._new_token:
+    def as_new_token(self) raises -> ref [self.payload] List[UInt8]:
+        if not self.payload.isa[List[UInt8]]():
             raise "Frame is not a NEW_TOKEN frame"
-        return self._new_token.value()
+        return self.payload.unsafe_get[List[UInt8]]()
 
-    def as_path_data(self) raises -> ref [self._path_data._value] List[UInt8]:
-        if not self._path_data:
+    def as_path_data(self) raises -> ref [self.payload] List[UInt8]:
+        if not self.payload.isa[List[UInt8]]():
             raise "Frame is not a PATH_CHALLENGE/PATH_RESPONSE frame"
-        return self._path_data.value()
+        return self.payload.unsafe_get[List[UInt8]]()
 
-    def as_datagram_payload(self) raises -> ref [self._datagram._value] List[UInt8]:
-        """RFC 9221 §4 — return the carried DATAGRAM payload by reference.
-
-        Both wire variants (0x30 no-length, 0x31 length-prefixed) store their
-        bytes in `_datagram`; this accessor is variant-agnostic. Raises if
-        the frame is not a DATAGRAM — `is_datagram()` is the predicate.
-        """
-        if not self._datagram:
+    def as_datagram_payload(self) raises -> ref [self.payload] List[UInt8]:
+        """Both DATAGRAM wire variants (0x30 and 0x31) share this accessor."""
+        if not self.payload.isa[List[UInt8]]():
             raise "Frame is not a DATAGRAM frame"
-        return self._datagram.value()
+        return self.payload.unsafe_get[List[UInt8]]()
 
 
 # ── Parse functions ───────────────────────────────────────────────────
@@ -958,7 +696,10 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
             ack.ecn_ect1 = varint_decode(reader)
             ack.ecn_ce = varint_decode(reader)
             ack.has_ecn = True
-        return Frame._ack_move(ack)
+        return Frame(
+            FRAME_ACK if not ack.has_ecn else FRAME_ACK_ECN,
+            FramePayload(ack^),
+        )
 
     # RESET_STREAM (0x04)
     if frame_type == FRAME_RESET_STREAM:
@@ -981,13 +722,13 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
         var cf = CryptoFrame()
         cf.offset = offset
         cf.data = data^
-        return Frame._crypto_move(cf)
+        return Frame(FRAME_CRYPTO, FramePayload(cf^))
 
     # NEW_TOKEN (0x07)
     if frame_type == FRAME_NEW_TOKEN:
         var token_length = varint_decode(reader)
         var token = reader.read_bytes(Int(token_length))
-        return Frame._new_token_move(token)
+        return Frame(FRAME_NEW_TOKEN, FramePayload(token^))
 
     # STREAM (0x08-0x0F)
     if (frame_type & UInt64(0xF8)) == FRAME_STREAM_BASE:
@@ -1009,7 +750,7 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
         sf.offset = offset
         sf.data = data^
         sf.fin = has_fin
-        return Frame._stream_move_with_type(sf, frame_type)
+        return Frame(frame_type, FramePayload(sf^))
 
     # MAX_DATA (0x10)
     if frame_type == FRAME_MAX_DATA:
@@ -1063,7 +804,7 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
             raise "NEW_CONNECTION_ID: cid_length must be <= 20"
         ncid.cid = reader.read_bytes(cid_length)
         ncid.stateless_reset_token = reader.read_bytes(16)
-        return Frame._new_cid_move(ncid)
+        return Frame(FRAME_NEW_CONNECTION_ID, FramePayload(ncid^))
 
     # RETIRE_CONNECTION_ID (0x19)
     if frame_type == FRAME_RETIRE_CONNECTION_ID:
@@ -1073,12 +814,12 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
     # PATH_CHALLENGE (0x1A)
     if frame_type == FRAME_PATH_CHALLENGE:
         var data = reader.read_bytes(8)
-        return Frame._path_challenge_move(data)
+        return Frame(FRAME_PATH_CHALLENGE, FramePayload(data^))
 
     # PATH_RESPONSE (0x1B)
     if frame_type == FRAME_PATH_RESPONSE:
         var data = reader.read_bytes(8)
-        return Frame._path_response_move(data)
+        return Frame(FRAME_PATH_RESPONSE, FramePayload(data^))
 
     # CONNECTION_CLOSE (0x1C / 0x1D)
     if frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT or frame_type == FRAME_CONNECTION_CLOSE_APP:
@@ -1089,7 +830,10 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
             cc.frame_type = varint_decode(reader)
         var reason_length = varint_decode(reader)
         cc.reason = reader.read_bytes(Int(reason_length))
-        return Frame._conn_close_move(cc)
+        return Frame(
+            FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
+            FramePayload(cc^),
+        )
 
     # HANDSHAKE_DONE (0x1E)
     if frame_type == FRAME_HANDSHAKE_DONE:
@@ -1102,9 +846,7 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
     # the packet boundary, so consuming all remaining bytes is correct.
     if frame_type == FRAME_DATAGRAM:
         var data = reader.read_bytes(reader.remaining())
-        var frame = Frame(FRAME_DATAGRAM)
-        frame._datagram = data^
-        return frame^
+        return Frame(FRAME_DATAGRAM, FramePayload(data^))
 
     # DATAGRAM_LEN (0x31) — RFC 9221 §4. Length-prefixed variant; reads
     # exactly `length` bytes. Allows multiplexing with other frames in the
@@ -1112,9 +854,7 @@ def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
     if frame_type == FRAME_DATAGRAM_LEN:
         var length = varint_decode(reader)
         var data = reader.read_bytes(Int(length))
-        var frame = Frame(FRAME_DATAGRAM_LEN)
-        frame._datagram = data^
-        return frame^
+        return Frame(FRAME_DATAGRAM_LEN, FramePayload(data^))
 
     # F10 — RFC 9000 §12.4: unknown frame type. Surface the unknown type
     # back to the caller via the `Frame.unknown` sentinel so the dispatch
@@ -1129,44 +869,6 @@ def parse_frames[origin: Origin](mut reader: ByteReader[origin]) raises -> List[
     while reader.remaining() > 0:
         frames.append(parse_frame(reader))
     return frames^
-
-
-# ── Zero-alloc frame cursor ─────────────────────────────────────────────
-
-
-struct FrameCursor[origin: Origin]:
-    """Zero-alloc frame iterator over a packet's payload bytes.
-
-    Stores a Span and a position cursor, constructing a lightweight
-    ByteReader on each next() call.  No List[Frame] is ever allocated.
-    The origin parameter ties the cursor's lifetime to the input buffer
-    so the borrow checker guarantees the buffer outlives the cursor.
-    """
-
-    var _buf: Span[UInt8, Self.origin]
-    var _pos: Int
-    var _count: Int
-
-    def __init__(out self, buf: Span[UInt8, Self.origin]):
-        """Create a cursor over the given payload bytes."""
-        self._buf = buf
-        self._pos = 0
-        self._count = 0
-
-    def next(mut self) raises -> Optional[Frame]:
-        """Return the next frame, or None when the payload is exhausted."""
-        if self._pos >= len(self._buf):
-            return None
-        var reader = ByteReader(self._buf)
-        reader.pos = self._pos
-        var frame = parse_frame(reader)
-        self._pos = reader.pos
-        self._count += 1
-        return Optional[Frame](frame^)
-
-    def count(self) -> Int:
-        """Number of frames yielded so far."""
-        return self._count
 
 
 # ── Serialize functions ───────────────────────────────────────────────
@@ -1363,194 +1065,6 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
 def serialize_frames(frames: List[Frame], mut writer: ByteWriter) raises:
     for i in range(len(frames)):
         serialize_frame(frames[i], writer)
-
-
-# ── Direct STREAM frame writer ──────────────────────────────────────
-
-
-def write_stream_frame_direct(
-    mut pkt_buf: List[UInt8],
-    budget: Int,
-    stream_id: UInt64,
-    offset: UInt64,
-    data: Span[UInt8, _],
-    fin: Bool,
-) -> Int:
-    """Write a STREAM frame directly into pkt_buf, bypassing Frame allocation.
-
-    Appends the encoded STREAM frame (header + payload) to `pkt_buf` using
-    the reserve-copy-encode pattern: the type byte, varint fields, and data
-    bytes are written in one pass with no intermediate Frame or StreamFrame
-    struct.  Always sets the LEN bit; sets the OFF bit only when offset > 0.
-
-    Returns the total bytes written (header + data), or 0 if the budget
-    cannot hold even a minimal frame (header + 1 data byte, or a FIN-only
-    header).
-    """
-    var has_off = offset > UInt64(0)
-
-    # Fixed header: type byte + stream_id varint + optional offset varint.
-    var fixed_hdr = 1 + varint_len(stream_id)
-    if has_off:
-        fixed_hdr += varint_len(offset)
-
-    # Nothing to emit when there is no data and no FIN.
-    if len(data) == 0 and not fin:
-        return 0
-
-    # FIN-only: header + 1-byte length varint (encoding 0).
-    if len(data) == 0 and fin:
-        var total = fixed_hdr + 1  # varint_len(0) == 1
-        if total > budget:
-            return 0
-        var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02) | UInt64(0x01))
-        if has_off:
-            stype = stype | UInt8(0x04)
-        pkt_buf.append(stype)
-        varint_encode_raw(pkt_buf, stream_id)
-        if has_off:
-            varint_encode_raw(pkt_buf, offset)
-        varint_encode_raw(pkt_buf, UInt64(0))
-        return total
-
-    # Compute how much data fits.  Start by assuming a 2-byte length varint
-    # (covers payloads up to 16383); if the result turns out < 64 bytes the
-    # actual varint is 1 byte and we get one extra byte of room.
-    var max_data = budget - fixed_hdr - 2
-    if max_data <= 0:
-        # Try with 1-byte length varint.
-        max_data = budget - fixed_hdr - 1
-        if max_data <= 0:
-            return 0
-
-    var data_len = len(data)
-    if data_len > max_data:
-        data_len = max_data
-
-    # Recompute with the actual length-varint size.
-    var len_vl = varint_len(UInt64(data_len))
-    var room = budget - fixed_hdr - len_vl
-    if room <= 0:
-        return 0
-    if data_len > room:
-        data_len = room
-        # Shrinking might reduce the varint size; recompute once more.
-        len_vl = varint_len(UInt64(data_len))
-        room = budget - fixed_hdr - len_vl
-        if room <= 0:
-            return 0
-        if data_len > room:
-            data_len = room
-
-    # Type byte: LEN always set; OFF if offset > 0; FIN if fin AND we are
-    # writing all the remaining data (or the caller already sliced to the
-    # final chunk, so `fin` is authoritative).
-    var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02))
-    if has_off:
-        stype = stype | UInt8(0x04)
-    if fin:
-        stype = stype | UInt8(0x01)
-
-    pkt_buf.append(stype)
-    varint_encode_raw(pkt_buf, stream_id)
-    if has_off:
-        varint_encode_raw(pkt_buf, offset)
-    varint_encode_raw(pkt_buf, UInt64(data_len))
-    pkt_buf.extend(data[:data_len])
-
-    return fixed_hdr + len_vl + data_len
-
-
-# ── Direct ACK frame writer ───────────────────────────────────────────
-
-
-def write_ack_frame_direct(
-    mut payload: List[UInt8],
-    budget: Int,
-    ref ack: AckFrame,
-) -> Int:
-    """Write an ACK frame directly into a payload buffer, bypassing Frame allocation.
-
-    Returns bytes written, or 0 if the frame exceeds the budget.
-    """
-    var tid = FRAME_ACK_ECN if ack.has_ecn else FRAME_ACK
-    var size = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
-    size += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
-    for i in range(len(ack.ranges)):
-        size += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
-    if ack.has_ecn:
-        size += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
-
-    if size > budget:
-        return 0
-
-    varint_encode_raw(payload, tid)
-    varint_encode_raw(payload, ack.largest_ack)
-    varint_encode_raw(payload, ack.ack_delay)
-    varint_encode_raw(payload, UInt64(len(ack.ranges)))
-    varint_encode_raw(payload, ack.first_ack_range)
-    for i in range(len(ack.ranges)):
-        varint_encode_raw(payload, ack.ranges[i].gap)
-        varint_encode_raw(payload, ack.ranges[i].ack_range)
-    if ack.has_ecn:
-        varint_encode_raw(payload, ack.ecn_ect0)
-        varint_encode_raw(payload, ack.ecn_ect1)
-        varint_encode_raw(payload, ack.ecn_ce)
-
-    return size
-
-
-# ── Direct CRYPTO frame writer ───────────────────────────────────────
-
-
-def write_crypto_frame_direct(
-    mut payload: List[UInt8],
-    budget: Int,
-    offset: UInt64,
-    data: Span[UInt8, _],
-) -> Int:
-    """Write a CRYPTO frame directly into a payload buffer.
-
-    Truncates data to fit budget if necessary. Returns total bytes
-    written (header + data), or 0 if even the header + 1 byte exceeds
-    the budget.
-    """
-    # Fixed header: type varint (1 byte for 0x06) + offset varint.
-    var fixed_hdr = 1 + varint_len(offset)
-
-    # Start by assuming a 2-byte length varint (covers up to 16383);
-    # if the result turns out < 64 bytes the actual varint is 1 byte.
-    var max_data = budget - fixed_hdr - 2
-    if max_data <= 0:
-        max_data = budget - fixed_hdr - 1
-        if max_data <= 0:
-            return 0
-
-    var data_len = len(data)
-    if data_len > max_data:
-        data_len = max_data
-
-    # Recompute with the actual length-varint size.
-    var len_vl = varint_len(UInt64(data_len))
-    var room = budget - fixed_hdr - len_vl
-    if room <= 0:
-        return 0
-    if data_len > room:
-        data_len = room
-        # Shrinking might reduce the varint size; recompute once more.
-        len_vl = varint_len(UInt64(data_len))
-        room = budget - fixed_hdr - len_vl
-        if room <= 0:
-            return 0
-        if data_len > room:
-            data_len = room
-
-    varint_encode_raw(payload, FRAME_CRYPTO)
-    varint_encode_raw(payload, offset)
-    varint_encode_raw(payload, UInt64(data_len))
-    payload.extend(data[:data_len])
-
-    return fixed_hdr + len_vl + data_len
 
 
 # ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────

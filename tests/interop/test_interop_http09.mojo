@@ -169,7 +169,7 @@ def test_http09_loopback() raises:
         # STREAM_OPENED=9 or STREAM_READABLE=5
         if e.type_id == QuicEvent.STREAM_OPENED or e.type_id == QuicEvent.STREAM_READABLE:
             server_saw_stream = True
-            server_stream_id = e.stream_id
+            server_stream_id = e.payload.unsafe_get[UInt64]()
     assert_true(server_saw_stream, "server missed STREAM event")
 
     var srv_read = server.recv_stream_data(server_stream_id)
