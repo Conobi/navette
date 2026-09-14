@@ -7,7 +7,7 @@ from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.http.alt_svc import Origin
-from navette.http.session_slot import SessionSlot, SessionSlotPtr
+from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1, SLOT_H2, SLOT_H3
 from navette.http.session import RequestHandle
 from navette.http.request import Request, RequestBody
 from navette.http.response import Response
@@ -116,7 +116,7 @@ struct HttpClient(Movable):
     def attach_session(mut self, var origin: Origin, var slot: SessionSlot) raises:
         """Insert a session. Raises if per-host limit exceeded."""
         var max_conns = self._max_conns_h1
-        if slot.is_multiplexed():
+        if slot.kind == SLOT_H2 or slot.kind == SLOT_H3:
             max_conns = self._max_conns_mux
 
         if origin in self._pool:

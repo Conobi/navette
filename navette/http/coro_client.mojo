@@ -9,7 +9,7 @@ from std.collections import Span
 
 from navette.http.alt_svc import Origin, AltSvcCache, AltSvcEntry, parse_alt_svc
 from navette.http.client import HttpClient
-from navette.http.session_slot import SessionSlot, SessionSlotPtr
+from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1, SLOT_H2, SLOT_H3
 from navette.http.session import RequestHandle
 from navette.http.request import Request, RequestBody
 from navette.http.response import Response

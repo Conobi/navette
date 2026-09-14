@@ -2,9 +2,9 @@
 #
 # SessionSlot — tagged enum wrapping H1/H2/H3 Sessions (M6a §5).
 
+from std.collections.optional import Optional
+from std.memory import Pointer
 from std.collections import Span
-from std.memory import UnsafePointer
-from std.utils import Variant
 
 from navette.http.handler import Capabilities, ALPN_H1, ALPN_H2, ALPN_H3
 from navette.http.session import Session, RequestHandle
@@ -15,44 +15,70 @@ from navette.h2.h2_session import H2Session
 from navette.h3.h3_session import H3Session
 
 
+comptime SLOT_H1: UInt8 = 1
+comptime SLOT_H2: UInt8 = 2
+comptime SLOT_H3: UInt8 = 3
+
+
 struct SessionSlot(Movable):
-    """Tagged union holding one of H1Session/H2Session/H3Session.
+    """Tagged enum holding one of H1Session/H2Session/H3Session.
     Delegates Session-like methods to the active variant."""
 
-    var session: Variant[H1Session, H2Session, H3Session]
+    var kind: UInt8
+    var h1: Optional[H1Session]
+    var h2: Optional[H2Session]
+    var h3: Optional[H3Session]
     var idle_since: UInt64       # monotonic ms, 0 = active
 
     def __init__(
         out self,
         *,
-        var session: Variant[H1Session, H2Session, H3Session],
+        kind: UInt8,
+        var h1: Optional[H1Session],
+        var h2: Optional[H2Session],
+        var h3: Optional[H3Session],
         idle_since: UInt64,
     ):
-        self.session = session^
+        self.kind = kind
+        self.h1 = h1^
+        self.h2 = h2^
+        self.h3 = h3^
         self.idle_since = idle_since
 
     def __init__(out self, *, deinit move: Self):
-        self.session = move.session^
+        self.kind = move.kind
+        self.h1 = move.h1^
+        self.h2 = move.h2^
+        self.h3 = move.h3^
         self.idle_since = move.idle_since
 
     @staticmethod
     def from_h1(var session: H1Session) -> Self:
         return Self(
-            session=Variant[H1Session, H2Session, H3Session](session^),
+            kind=SLOT_H1,
+            h1=Optional[H1Session](session^),
+            h2=Optional[H2Session](),
+            h3=Optional[H3Session](),
             idle_since=UInt64(0),
         )
 
     @staticmethod
     def from_h2(var session: H2Session) -> Self:
         return Self(
-            session=Variant[H1Session, H2Session, H3Session](session^),
+            kind=SLOT_H2,
+            h1=Optional[H1Session](),
+            h2=Optional[H2Session](session^),
+            h3=Optional[H3Session](),
             idle_since=UInt64(0),
         )
 
     @staticmethod
     def from_h3(var session: H3Session) -> Self:
         return Self(
-            session=Variant[H1Session, H2Session, H3Session](session^),
+            kind=SLOT_H3,
+            h1=Optional[H1Session](),
+            h2=Optional[H2Session](),
+            h3=Optional[H3Session](session^),
             idle_since=UInt64(0),
         )
 
@@ -68,45 +94,41 @@ struct SessionSlot(Movable):
         """
         return Self.from_h1(H1Session())
 
-    def is_multiplexed(self) -> Bool:
-        """True for H2 or H3 sessions (connection-multiplexed protocols)."""
-        return not self.session.isa[H1Session]()
-
     def submit(mut self, var req: Request) raises -> RequestHandle:
         self.mark_active()
-        if self.session.isa[H1Session]():
-            return self.session.unsafe_get[H1Session]().submit(req^)
-        elif self.session.isa[H2Session]():
-            return self.session.unsafe_get[H2Session]().submit(req^)
+        if self.kind == SLOT_H1:
+            return self.h1.value().submit(req^)
+        elif self.kind == SLOT_H2:
+            return self.h2.value().submit(req^)
         else:
-            return self.session.unsafe_get[H3Session]().submit(req^)
+            return self.h3.value().submit(req^)
 
     def run_one(mut self, mut handle: RequestHandle) raises:
-        if self.session.isa[H1Session]():
-            self.session.unsafe_get[H1Session]().run_one(handle)
-        elif self.session.isa[H2Session]():
-            self.session.unsafe_get[H2Session]().run_one(handle)
+        if self.kind == SLOT_H1:
+            self.h1.value().run_one(handle)
+        elif self.kind == SLOT_H2:
+            self.h2.value().run_one(handle)
         else:
-            self.session.unsafe_get[H3Session]().run_one(handle)
+            self.h3.value().run_one(handle)
 
     def feed(mut self, data: Span[UInt8, _]) raises:
-        if self.session.isa[H1Session]():
-            self.session.unsafe_get[H1Session]().feed(data)
-        elif self.session.isa[H2Session]():
-            self.session.unsafe_get[H2Session]().feed(data)
+        if self.kind == SLOT_H1:
+            self.h1.value().feed(data)
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed(data)
         else:
-            self.session.unsafe_get[H3Session]().feed_datagram(data, UInt64(0))
+            self.h3.value().feed_datagram(data, UInt64(0))
 
     def drain(mut self) raises -> List[UInt8]:
-        if self.session.isa[H1Session]():
-            return self.session.unsafe_get[H1Session]().drain()
-        elif self.session.isa[H2Session]():
-            return self.session.unsafe_get[H2Session]().drain()
+        if self.kind == SLOT_H1:
+            return self.h1.value().drain()
+        elif self.kind == SLOT_H2:
+            return self.h2.value().drain()
         # H3 uses datagrams (List[List[UInt8]]) — concatenate into flat buffer.
         # M6c's HttpCoroClient will use drain_datagrams() directly for proper
         # UDP framing; this flat drain is a fallback for uniform API.
         var out = List[UInt8]()
-        var datagrams = self.session.unsafe_get[H3Session]().drain_datagrams(UInt64(0))
+        var datagrams = self.h3.value().drain_datagrams(UInt64(0))
         for i in range(len(datagrams)):
             out.extend(datagrams[i].copy())
         return out^
@@ -121,12 +143,12 @@ struct SessionSlot(Movable):
         threads the wall-clock `now` into the QUIC stack so PTO / loss
         detection get accurate samples.
         """
-        if self.session.isa[H1Session]():
-            self.session.unsafe_get[H1Session]().feed(data)
-        elif self.session.isa[H2Session]():
-            self.session.unsafe_get[H2Session]().feed(data)
+        if self.kind == SLOT_H1:
+            self.h1.value().feed(data)
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed(data)
         else:
-            self.session.unsafe_get[H3Session]().feed_datagram(data, now)
+            self.h3.value().feed_datagram(data, now)
 
     def drain_datagrams(
         mut self, now: UInt64
@@ -140,29 +162,29 @@ struct SessionSlot(Movable):
         microsecond monotonic time at the call site for correct PTO.
         """
         var out = List[List[UInt8]]()
-        if self.session.isa[H3Session]():
-            return self.session.unsafe_get[H3Session]().drain_datagrams(now)
+        if self.kind == SLOT_H3:
+            return self.h3.value().drain_datagrams(now)
         var stream: List[UInt8]
-        if self.session.isa[H1Session]():
-            stream = self.session.unsafe_get[H1Session]().drain()
+        if self.kind == SLOT_H1:
+            stream = self.h1.value().drain()
         else:
-            stream = self.session.unsafe_get[H2Session]().drain()
+            stream = self.h2.value().drain()
         if len(stream) > 0:
             out.append(stream^)
         return out^
 
     def feed_body(mut self, handle_id: UInt64, var frame: BodyFrame) raises:
-        if self.session.isa[H1Session]():
-            self.session.unsafe_get[H1Session]().feed_body(handle_id, frame^)
-        elif self.session.isa[H2Session]():
-            self.session.unsafe_get[H2Session]().feed_body(handle_id, frame^)
+        if self.kind == SLOT_H1:
+            self.h1.value().feed_body(handle_id, frame^)
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed_body(handle_id, frame^)
         else:
-            self.session.unsafe_get[H3Session]().feed_body(handle_id, frame^)
+            self.h3.value().feed_body(handle_id, frame^)
 
     def capabilities(self) -> Capabilities:
-        if self.session.isa[H1Session]():
+        if self.kind == SLOT_H1:
             return Capabilities.for_h1()
-        if self.session.isa[H2Session]():
+        if self.kind == SLOT_H2:
             return Capabilities.for_h2()
         return Capabilities.for_h3()
 
@@ -184,13 +206,13 @@ struct SessionSlotPtr(Copyable, Movable):
     def __init__(out self, addr: UInt64):
         self.addr = addr
 
-    def __init__(out self, *, other: Self):
-        self.addr = other.addr
+    def __init__(out self, *, copy: Self):
+        self.addr = copy.addr
 
     def __init__(out self, *, deinit move: Self):
         self.addr = move.addr
 
-    def ptr(self) -> UnsafePointer[SessionSlot, MutAnyOrigin]:
-        return UnsafePointer[SessionSlot, MutAnyOrigin](
+    def ptr(self) -> Pointer[SessionSlot, MutUntrackedOrigin]:
+        return Pointer[SessionSlot, MutUntrackedOrigin](
             unsafe_from_address=Int(self.addr)
         )

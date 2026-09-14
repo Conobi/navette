@@ -2,7 +2,7 @@
 # QUIC frame codec — RFC 9000 Section 19.
 # Parse/serialize for all 20 QUIC frame types.
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
 from std.utils import Variant
 
 # ── Frame type constants (RFC 9000 §19) ──────────────────────────────
@@ -564,6 +564,64 @@ struct Frame(Copyable, Movable):
         if tid == FRAME_DATAGRAM or tid == FRAME_DATAGRAM_LEN:
             return False
         return True
+
+    def wire_len(self) -> Int:
+        """Exact serialized length of this frame on the wire."""
+        var tid = self.type_id
+        if tid == FRAME_PADDING or tid == FRAME_PING or tid == FRAME_HANDSHAKE_DONE:
+            return 1
+        if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
+            ref ack = self.payload.unsafe_get[AckFrame]()
+            var n = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
+            n += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
+            for i in range(len(ack.ranges)):
+                n += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
+            if ack.has_ecn:
+                n += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
+            return n
+        if tid == FRAME_RESET_STREAM:
+            ref rs = self.payload.unsafe_get[ResetStreamFrame]()
+            return 1 + varint_len(rs.stream_id) + varint_len(rs.error_code) + varint_len(rs.final_size)
+        if tid == FRAME_STOP_SENDING:
+            ref ss = self.payload.unsafe_get[StopSendingFrame]()
+            return 1 + varint_len(ss.stream_id) + varint_len(ss.error_code)
+        if tid == FRAME_CRYPTO:
+            ref cf = self.payload.unsafe_get[CryptoFrame]()
+            return 1 + varint_len(cf.offset) + varint_len(UInt64(len(cf.data))) + len(cf.data)
+        if (tid & UInt64(0xF8)) == FRAME_STREAM_BASE:
+            ref sf = self.payload.unsafe_get[StreamFrame]()
+            var n = 1 + varint_len(sf.stream_id)
+            if sf.offset != UInt64(0):
+                n += varint_len(sf.offset)
+            return n + varint_len(UInt64(len(sf.data))) + len(sf.data)
+        if tid == FRAME_MAX_DATA or tid == FRAME_DATA_BLOCKED:
+            return 1 + varint_len(self.payload.unsafe_get[UInt64]())
+        if tid == FRAME_MAX_STREAM_DATA or tid == FRAME_STREAM_DATA_BLOCKED:
+            ref msd = self.payload.unsafe_get[MaxStreamDataFrame]()
+            return 1 + varint_len(msd.stream_id) + varint_len(msd.maximum)
+        if (tid == FRAME_MAX_STREAMS_BIDI or tid == FRAME_MAX_STREAMS_UNI
+                or tid == FRAME_STREAMS_BLOCKED_BIDI or tid == FRAME_STREAMS_BLOCKED_UNI):
+            return 1 + varint_len(self.payload.unsafe_get[MaxStreamsFrame]().maximum)
+        if tid == FRAME_NEW_CONNECTION_ID:
+            ref ncid = self.payload.unsafe_get[NewConnectionIdFrame]()
+            return (1 + varint_len(ncid.sequence) + varint_len(ncid.retire_prior_to)
+                    + 1 + len(ncid.cid) + len(ncid.stateless_reset_token))
+        if tid == FRAME_RETIRE_CONNECTION_ID:
+            return 1 + varint_len(self.payload.unsafe_get[UInt64]())
+        if tid == FRAME_PATH_CHALLENGE or tid == FRAME_PATH_RESPONSE:
+            return 1 + len(self.payload.unsafe_get[List[UInt8]]())
+        if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
+            ref cc = self.payload.unsafe_get[ConnectionCloseFrame]()
+            var n = 1 + varint_len(cc.error_code)
+            if cc.is_transport:
+                n += varint_len(cc.frame_type)
+            return n + varint_len(UInt64(len(cc.reason))) + len(cc.reason)
+        if tid == FRAME_DATAGRAM:
+            return 1 + len(self.payload.unsafe_get[List[UInt8]]())
+        if tid == FRAME_DATAGRAM_LEN:
+            var dl = len(self.payload.unsafe_get[List[UInt8]]())
+            return 1 + varint_len(UInt64(dl)) + dl
+        return 0
 
     def is_ack_eliciting(self) -> Bool:
         # ACK-eliciting: everything EXCEPT PADDING, ACK/ACK_ECN, CONNECTION_CLOSE
@@ -1144,3 +1202,232 @@ def frame_allowed_in_packet_type(frame_type: UInt64, packet_type_value: UInt8) -
         return one_rtt
 
     return False
+struct FrameCursor[origin: Origin]:
+    """Zero-alloc frame iterator over a packet's payload bytes.
+
+    Stores a Span and a position cursor, constructing a lightweight
+    ByteReader on each next() call.  No List[Frame] is ever allocated.
+    The origin parameter ties the cursor's lifetime to the input buffer
+    so the borrow checker guarantees the buffer outlives the cursor.
+    """
+
+    var _buf: Span[UInt8, Self.origin]
+    var _pos: Int
+    var _count: Int
+
+    def __init__(out self, buf: Span[UInt8, Self.origin]):
+        """Create a cursor over the given payload bytes."""
+        self._buf = buf
+        self._pos = 0
+        self._count = 0
+
+    def next(mut self) raises -> Optional[Frame]:
+        """Return the next frame, or None when the payload is exhausted."""
+        if self._pos >= len(self._buf):
+            return None
+        var reader = ByteReader(self._buf)
+        reader.pos = self._pos
+        var frame = parse_frame(reader)
+        self._pos = reader.pos
+        self._count += 1
+        return Optional[Frame](frame^)
+
+    def count(self) -> Int:
+        """Number of frames yielded so far."""
+        return self._count
+
+
+# ── Serialize functions ───────────────────────────────────────────────
+
+
+# ── Direct STREAM frame writer ──────────────────────────────────────
+
+
+def write_stream_frame_direct(
+    mut pkt_buf: List[UInt8],
+    budget: Int,
+    stream_id: UInt64,
+    offset: UInt64,
+    data: Span[UInt8, _],
+    fin: Bool,
+) -> Int:
+    """Write a STREAM frame directly into pkt_buf, bypassing Frame allocation.
+
+    Appends the encoded STREAM frame (header + payload) to `pkt_buf` using
+    the reserve-copy-encode pattern: the type byte, varint fields, and data
+    bytes are written in one pass with no intermediate Frame or StreamFrame
+    struct.  Always sets the LEN bit; sets the OFF bit only when offset > 0.
+
+    Returns the total bytes written (header + data), or 0 if the budget
+    cannot hold even a minimal frame (header + 1 data byte, or a FIN-only
+    header).
+    """
+    var has_off = offset > UInt64(0)
+
+    # Fixed header: type byte + stream_id varint + optional offset varint.
+    var fixed_hdr = 1 + varint_len(stream_id)
+    if has_off:
+        fixed_hdr += varint_len(offset)
+
+    # Nothing to emit when there is no data and no FIN.
+    if len(data) == 0 and not fin:
+        return 0
+
+    # FIN-only: header + 1-byte length varint (encoding 0).
+    if len(data) == 0 and fin:
+        var total = fixed_hdr + 1  # varint_len(0) == 1
+        if total > budget:
+            return 0
+        var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02) | UInt64(0x01))
+        if has_off:
+            stype = stype | UInt8(0x04)
+        pkt_buf.append(stype)
+        varint_encode_raw(pkt_buf, stream_id)
+        if has_off:
+            varint_encode_raw(pkt_buf, offset)
+        varint_encode_raw(pkt_buf, UInt64(0))
+        return total
+
+    # Compute how much data fits.  Start by assuming a 2-byte length varint
+    # (covers payloads up to 16383); if the result turns out < 64 bytes the
+    # actual varint is 1 byte and we get one extra byte of room.
+    var max_data = budget - fixed_hdr - 2
+    if max_data <= 0:
+        # Try with 1-byte length varint.
+        max_data = budget - fixed_hdr - 1
+        if max_data <= 0:
+            return 0
+
+    var data_len = len(data)
+    if data_len > max_data:
+        data_len = max_data
+
+    # Recompute with the actual length-varint size.
+    var len_vl = varint_len(UInt64(data_len))
+    var room = budget - fixed_hdr - len_vl
+    if room <= 0:
+        return 0
+    if data_len > room:
+        data_len = room
+        # Shrinking might reduce the varint size; recompute once more.
+        len_vl = varint_len(UInt64(data_len))
+        room = budget - fixed_hdr - len_vl
+        if room <= 0:
+            return 0
+        if data_len > room:
+            data_len = room
+
+    # Type byte: LEN always set; OFF if offset > 0; FIN if fin AND we are
+    # writing all the remaining data (or the caller already sliced to the
+    # final chunk, so `fin` is authoritative).
+    var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02))
+    if has_off:
+        stype = stype | UInt8(0x04)
+    if fin:
+        stype = stype | UInt8(0x01)
+
+    pkt_buf.append(stype)
+    varint_encode_raw(pkt_buf, stream_id)
+    if has_off:
+        varint_encode_raw(pkt_buf, offset)
+    varint_encode_raw(pkt_buf, UInt64(data_len))
+    pkt_buf.extend(data[:data_len])
+
+    return fixed_hdr + len_vl + data_len
+
+
+# ── Direct ACK frame writer ───────────────────────────────────────────
+
+
+def write_ack_frame_direct(
+    mut payload: List[UInt8],
+    budget: Int,
+    ref ack: AckFrame,
+) -> Int:
+    """Write an ACK frame directly into a payload buffer, bypassing Frame allocation.
+
+    Returns bytes written, or 0 if the frame exceeds the budget.
+    """
+    var tid = FRAME_ACK_ECN if ack.has_ecn else FRAME_ACK
+    var size = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
+    size += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
+    for i in range(len(ack.ranges)):
+        size += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
+    if ack.has_ecn:
+        size += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
+
+    if size > budget:
+        return 0
+
+    varint_encode_raw(payload, tid)
+    varint_encode_raw(payload, ack.largest_ack)
+    varint_encode_raw(payload, ack.ack_delay)
+    varint_encode_raw(payload, UInt64(len(ack.ranges)))
+    varint_encode_raw(payload, ack.first_ack_range)
+    for i in range(len(ack.ranges)):
+        varint_encode_raw(payload, ack.ranges[i].gap)
+        varint_encode_raw(payload, ack.ranges[i].ack_range)
+    if ack.has_ecn:
+        varint_encode_raw(payload, ack.ecn_ect0)
+        varint_encode_raw(payload, ack.ecn_ect1)
+        varint_encode_raw(payload, ack.ecn_ce)
+
+    return size
+
+
+# ── Direct CRYPTO frame writer ───────────────────────────────────────
+
+
+def write_crypto_frame_direct(
+    mut payload: List[UInt8],
+    budget: Int,
+    offset: UInt64,
+    data: Span[UInt8, _],
+) -> Int:
+    """Write a CRYPTO frame directly into a payload buffer.
+
+    Truncates data to fit budget if necessary. Returns total bytes
+    written (header + data), or 0 if even the header + 1 byte exceeds
+    the budget.
+    """
+    # Fixed header: type varint (1 byte for 0x06) + offset varint.
+    var fixed_hdr = 1 + varint_len(offset)
+
+    # Start by assuming a 2-byte length varint (covers up to 16383);
+    # if the result turns out < 64 bytes the actual varint is 1 byte.
+    var max_data = budget - fixed_hdr - 2
+    if max_data <= 0:
+        max_data = budget - fixed_hdr - 1
+        if max_data <= 0:
+            return 0
+
+    var data_len = len(data)
+    if data_len > max_data:
+        data_len = max_data
+
+    # Recompute with the actual length-varint size.
+    var len_vl = varint_len(UInt64(data_len))
+    var room = budget - fixed_hdr - len_vl
+    if room <= 0:
+        return 0
+    if data_len > room:
+        data_len = room
+        # Shrinking might reduce the varint size; recompute once more.
+        len_vl = varint_len(UInt64(data_len))
+        room = budget - fixed_hdr - len_vl
+        if room <= 0:
+            return 0
+        if data_len > room:
+            data_len = room
+
+    varint_encode_raw(payload, FRAME_CRYPTO)
+    varint_encode_raw(payload, offset)
+    varint_encode_raw(payload, UInt64(data_len))
+    payload.extend(data[:data_len])
+
+    return fixed_hdr + len_vl + data_len
+
+
+# ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────
+
+

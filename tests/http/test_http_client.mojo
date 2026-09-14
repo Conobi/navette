@@ -3,10 +3,10 @@
 # Unit tests for M6a HttpClient (pool, dispatch, convenience API).
 
 from std.collections.optional import Optional
+from std.memory import Pointer
 from std.collections import Span
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
-from navette.http.session_slot import SessionSlot, SessionSlotPtr
+from std.memory.alloc import unsafe_alloc as _heap_alloc
+from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1
 from navette.http.handler import Capabilities, ALPN_H1, StreamHandler, RecvBody, ResponseWriter, StreamError
 from navette.http.request import Request, RequestBody
 from navette.http.method import Method
@@ -26,7 +26,7 @@ def test_session_slot_from_h1() raises:
     """SessionSlot wraps H1Session and delegates submit."""
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
-    assert_true(slot.session.isa[H1Session](), "session is H1")
+    assert_equal_int(Int(slot.kind), Int(SLOT_H1), "kind")
     assert_true(not slot.is_idle(), "should be active initially")
     var caps = slot.capabilities()
     assert_equal_int(caps.alpn, ALPN_H1, "alpn")
@@ -64,7 +64,7 @@ def test_session_slot_ptr_round_trip() raises:
     """SessionSlotPtr stores on heap and retrieves."""
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
-    var ptr = _heap_alloc[SessionSlot](1).as_unsafe_any_origin()
+    var ptr = _heap_alloc[SessionSlot](1)
     ptr.init_pointee_move(slot^)
     var slot_ptr = SessionSlotPtr(UInt64(Int(ptr)))
     # Access through pointer
@@ -78,7 +78,7 @@ def test_session_slot_ptr_round_trip() raises:
 struct OkHandler(StreamHandler):
     def __init__(out self):
         pass
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
     def on_request(
         mut self, var req: Request, mut body: RecvBody,

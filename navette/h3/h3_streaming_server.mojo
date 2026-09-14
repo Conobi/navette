@@ -1,13 +1,13 @@
 # src/h3/h3_streaming_server.mojo
 #
 # HTTP/3 server-side adapter for STREAMING handlers. Each stream gets a
-# 64 KiB stackful coroutine (boucle.stackful) so the handler can suspend
+# 64 KiB stackful coroutine (boucle.coroutine) so the handler can suspend
 # across upstream I/O boundaries (LLM token emission, SSE, gRPC server-
 # streaming, reverse proxy, file upload). Companion to
 # `src/h3/h3_sync_server.mojo` — that's the default tier; this is opt-in.
 #
 # R8' compile-time budget: size_of[H3StreamingCtx]() < 96 KiB.
-# R1' grep gate: this file IS allowed to import boucle.stackful.
+# R1' grep gate: this file IS allowed to import boucle.coroutine.
 #
 # Backpressure note: write_chunk calls H3Connection.send_data
 # directly and returns. H3 does not surface FC backpressure to the caller;
@@ -17,27 +17,46 @@
 # send buffers (bounded by the QUIC stream window). Production rate
 # limiting is the handler's responsibility, not the streaming-server's.
 #
-# API note: boucle.stackful's CoroBody type is:
-#   fn (mut CoroYielder) raises -> None
-# The handler receives its per-stream ctx via yld.user_data() cast to
-# UnsafePointer[H3StreamingCtx, MutAnyOrigin]. This matches the CoroBody
-# signature exactly.
+# API note: boucle's coroutine handle is `Coroutine[State]`, parametric on a
+# typed state value that both the caller and the body can reach. This adapter
+# instantiates it with `State = Pointer[H3StreamingCtx, MutUntrackedOrigin]`,
+# so a body declared as `CoroutineBody[H3StreamingState]`, i.e.
+#   def (mut Yielder[H3StreamingState]) raises -> None
+# recovers its per-stream ctx with a plain `yld.state()[]` — no untyped
+# `user_data()` pointer and no `bitcast`, so a handler written against the
+# wrong ctx type is a compile error rather than a type confusion at runtime.
 #
-# CoroYielder.yield_to_caller() is the suspension primitive (not .suspend()).
-# The helper functions next_chunk / write_chunk / finish call yield_to_caller
-# internally so handlers can use them directly.
+# `Yielder.suspend()` is the suspension primitive. The helper functions
+# next_chunk / write_chunk / finish wrap it, so handlers call them directly.
+#
+# `Coroutine` is a LINEAR type (`@explicit_destroy`, `Deinitable where False`):
+# it has no destructor, and every path that drops one must call `close()` or
+# the 64 KiB mmap'd stack leaks. `close()` further requires the coroutine to be
+# in CREATED or DONE state, so every teardown path here calls `cancel()` first
+# — that drains a SUSPENDED body to DONE, swallowing errors. See
+# `_free_streaming_stream` (both the method and the module-level twin), which
+# are the only two places that release a coroutine.
+#
+# HANDLER CONTRACT: a body must never suspend unconditionally. `cancel()`
+# resumes the body in a loop until it returns, so a body that suspends
+# without ever checking `yld.is_cancelled()` (or `ctx.cancelled`) makes
+# connection teardown spin — boucle's 1000-iteration debug_assert catches
+# that in a checked build, but a release build would livelock. The
+# next_chunk / write_chunk helpers below poll both flags, so handlers built
+# from them are safe by construction; handlers that call `yld.suspend()`
+# directly must poll one of the two themselves.
 
 from std.collections import Dict, Optional
+from std.memory import Pointer
 from std.collections import Span
-from std.memory import UnsafePointer
-from std.memory.unsafe_pointer import alloc as _heap_alloc
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.sys.info import size_of
 
-from boucle.stackful import (
-    CoroutinePool,
-    CoroHandle,
-    CoroYielder,
-    CoroBody,
+from boucle.coroutine import (
+    Coroutine,
+    CoroutineBody,
+    StackPool,
+    Yielder,
 )
 
 from navette.quic.connection import QuicConnection
@@ -69,19 +88,33 @@ from navette.util.null_ptr import null_ptr
 
 
 # ---------------------------------------------------------------------------
-# H3StreamingHandlerFn — handler type alias
+# Coroutine type aliases — typed state channel
 # ---------------------------------------------------------------------------
 #
-# Must match boucle.stackful.CoroBody exactly:
-#   fn (mut CoroYielder) raises -> None
+# The coroutine's typed state IS the per-stream ctx pointer. The ctx itself
+# stays owned by the adapter (`_streams` + `H3StreamingCtxPool`) because
+# non-coroutine code must reach it while the body is suspended AND after the
+# body has returned — `_drain_responses` flushes the frames buffered by
+# `finish()` on a later event-loop pass, which is strictly after the coroutine
+# reaches DONE.
 #
 # Inside the body, access the per-stream ctx via:
-#   var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
+#   var ctx_ptr = yld.state()[]
 #
 # The handler may call next_chunk(ctx_ptr, yld) / write_chunk(ctx_ptr, yld, bytes)
 # / finish(ctx_ptr, yld) to suspend across event-loop passes.
 
-comptime H3StreamingHandlerFn = CoroBody
+comptime H3StreamingState = Pointer[H3StreamingCtx, MutUntrackedOrigin]
+"""Typed coroutine state for H3 streaming: a pointer to the per-stream ctx."""
+
+comptime H3StreamingCoro = Coroutine[H3StreamingState]
+"""Caller-side coroutine handle for one H3 request stream (linear type)."""
+
+comptime H3StreamingYielder = Yielder[H3StreamingState]
+"""Coroutine-side handle handed to an H3 streaming handler body."""
+
+comptime H3StreamingHandlerFn = CoroutineBody[H3StreamingState]
+"""Handler signature: `def (mut Yielder[H3StreamingState]) raises -> None`."""
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +129,10 @@ struct H3StreamingCtx(Movable):
     Extends the sync-server CoroStreamCtx shape with:
       - body_frame_ring: incoming body frames drained by next_chunk()
       - cancelled:       set true by adapter on peer reset / GOAWAY
-      - coro_addr:       address of heap-allocated CoroHandle (0 = none)
+      - coro_addr:       address of the heap slot holding this stream's
+                         H3StreamingCoro (null = none). The slot is owned by
+                         the ctx; `_free_streaming_stream` is the only place
+                         that cancel()s + close()s and frees it.
 
     No writer_pending_chunk field — Option A: write_chunk does not suspend
     on backpressure; QUIC's send_data absorbs output transparently.
@@ -107,25 +143,25 @@ struct H3StreamingCtx(Movable):
     var resp_writer: ResponseWriter
     var caps: Capabilities
     var stream_id: UInt64
-    var extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
+    var extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
     var body_frame_ring: List[BodyFrame]
     var cancelled: Bool
-    var coro_addr: PtrBox[CoroHandle]
+    var coro_addr: PtrBox[H3StreamingCoro]
 
     def __init__(
         out self,
         var request: Request,
         caps: Capabilities,
         stream_id: UInt64,
-        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin],
+        extra_data: Pointer[NoneType, MutUntrackedOrigin],
     ):
         self.request = request^
         self.recv_body = RecvBody()
         self.resp_writer = ResponseWriter()
-        self.caps = Capabilities(other=caps)
+        self.caps = Capabilities(copy=caps)
         self.stream_id = stream_id
         self.extra_data = extra_data
         self.request_ended = False
@@ -133,7 +169,7 @@ struct H3StreamingCtx(Movable):
         self.headers_sent = False
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
-        self.coro_addr = PtrBox[CoroHandle].null()
+        self.coro_addr = PtrBox[H3StreamingCoro].null()
 
     def __init__(out self, *, deinit move: Self):
         self.request = move.request^
@@ -149,7 +185,7 @@ struct H3StreamingCtx(Movable):
         self.cancelled = move.cancelled
         self.coro_addr = move.coro_addr^
 
-    def coro_ptr(self) -> UnsafePointer[CoroHandle, MutAnyOrigin]:
+    def coro_ptr(self) -> Pointer[H3StreamingCoro, MutUntrackedOrigin]:
         """Typed pointer into the coro's heap slot (null if none)."""
         return self.coro_addr.ptr()
 
@@ -158,8 +194,8 @@ struct H3StreamingCtx(Movable):
 # Per-stream memory budget (R8' in the sprint roadmap)
 # ---------------------------------------------------------------------------
 #
-# 64 KiB stack (boucle.stackful default) is heap-allocated INSIDE the
-# CoroHandle (pointed to by coro_addr); not counted toward H3StreamingCtx's
+# The 64 KiB stack (boucle.coroutine default) is mmap'd by the StackPool and
+# reached through coro_addr; it is not counted toward H3StreamingCtx's
 # direct size. The struct itself holds: Request + RecvBody + ResponseWriter +
 # Capabilities + stream_id + extra_data + coro_addr + 3 bools + body_frame_ring +
 # cancelled bool. Should land around the same size as the sync ctx (~600 B)
@@ -180,15 +216,32 @@ def _check_streaming_ctx_size():
 
 
 def next_chunk(
-    ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin],
-    mut yld: CoroYielder,
+    ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_],
+    mut yld: H3StreamingYielder,
 ) raises -> Optional[BodyFrame]:
     """Yield the next body chunk. Suspends if none ready. Returns None on EOF.
-    Polls cancellation between suspends."""
+
+    Polls cancellation between suspends, from BOTH sources: `ctx.cancelled`
+    (set by the adapter on peer reset / GOAWAY) and `yld.is_cancelled()` (set
+    by `Coroutine.cancel()`). Honouring the coroutine's own flag is what makes
+    `cancel()` terminate — it resumes the body in a loop until DONE, so a body
+    that only watched `ctx.cancelled` would spin forever if the adapter ever
+    cancelled without setting it.
+
+    Args:
+        ctx_ptr: Pointer to this stream's context.
+        yld: The coroutine-side yielder for this stream.
+
+    Returns:
+        The next BodyFrame, or None once the request body has ended.
+
+    Raises:
+        `H3StreamCancelled` if the stream is cancelled while waiting.
+    """
     while not ctx_ptr[].request_ended and len(ctx_ptr[].body_frame_ring) == 0:
-        if ctx_ptr[].cancelled:
+        if ctx_ptr[].cancelled or yld.is_cancelled():
             raise Error("H3StreamCancelled")
-        yld.yield_to_caller()
+        yld.suspend()
     if len(ctx_ptr[].body_frame_ring) > 0:
         # FIFO: pop(0) preserves arrival order. Default pop() is LIFO and
         # would deliver multi-chunk bodies to the handler in reverse order.
@@ -198,21 +251,30 @@ def next_chunk(
 
 
 def write_chunk(
-    ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin],
-    mut yld: CoroYielder,
+    ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_],
+    mut yld: H3StreamingYielder,
     var bytes: List[UInt8],
 ) raises:
-    """Send a body chunk via H3Connection.send_data. Does NOT suspend on
+    """Buffer a body chunk for the adapter to send. Does NOT suspend on
     backpressure — H3's send_data does not surface WouldBlock; QUIC's
-    per-stream FC absorbs slow consumers internally. The yld parameter is
-    accepted for API symmetry (and future-proofing) but unused in this
-    implementation. If the handler emits faster than the QUIC stream window
-    can accept, data accumulates in QuicConnection's internal buffers.
+    per-stream FC absorbs slow consumers internally. If the handler emits
+    faster than the QUIC stream window can accept, data accumulates in
+    QuicConnection's internal buffers.
 
     The actual H3Connection.send_data call happens in the streaming server's
     _drain_responses on the next event-loop pass — write_chunk just buffers
-    the chunk into ctx.resp_writer for the drain to pick up."""
-    if ctx_ptr[].cancelled:
+    the chunk into ctx.resp_writer for the drain to pick up.
+
+    Args:
+        ctx_ptr: Pointer to this stream's context.
+        yld: The coroutine-side yielder; consulted for cancellation only,
+            since this helper never suspends.
+        bytes: The chunk to buffer (ownership transferred in).
+
+    Raises:
+        `H3StreamCancelled` if the stream has been cancelled.
+    """
+    if ctx_ptr[].cancelled or yld.is_cancelled():
         raise Error("H3StreamCancelled")
     # Buffer the data into resp_writer via try_send_body.
     # The adapter's _drain_responses calls H3Connection.send_data with
@@ -222,30 +284,41 @@ def write_chunk(
 
 
 def finish(
-    ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin],
-    mut yld: CoroYielder,
+    ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_],
+    mut yld: H3StreamingYielder,
 ) raises:
     """Close the response body. The handler should return immediately after
     this call. Adapter's _drain_responses sends the final FIN on the next
     event-loop pass.
 
     Design note: finish() is synchronous — it buffers the end BodyFrame into
-    resp_writer but does NOT call yield_to_caller(). The handler returns and
-    the coro reaches DONE state. On the next feed_datagram call, _drain_responses
-    processes the buffered end frame and sets response_ended=True.
+    resp_writer but does NOT suspend. The handler returns and the coro reaches
+    DONE state. On the next feed_datagram call, _drain_responses processes the
+    buffered end frame and sets response_ended=True.
 
-    Why no yield_to_caller here? If finish() suspended, the coro would be in
-    SUSPENDED state when _maybe_cleanup_stream (called from _on_stream_ended)
-    runs — which triggers a boucle debug_assert when destroying the still-
-    suspended CoroHandle. Keeping finish() synchronous avoids that invariant
-    violation and is simpler: the handler just returns and the coro is DONE."""
+    Why no suspend here? If finish() suspended, the coro would be SUSPENDED
+    when _maybe_cleanup_stream (called from _on_stream_ended) runs, and
+    `Coroutine.close()` debug_asserts on a non-CREATED/DONE phase. Keeping
+    finish() synchronous avoids that invariant violation and is simpler: the
+    handler just returns and the coro is DONE.
+
+    Args:
+        ctx_ptr: Pointer to this stream's context.
+        yld: The coroutine-side yielder, accepted for API symmetry with
+            next_chunk / write_chunk; unused because finish never suspends.
+    """
     ctx_ptr[].resp_writer.end()
-    # yld is accepted for API symmetry; not used because finish is synchronous.
 
 
-def cancelled(
-    ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin]
-) -> Bool:
+def cancelled(ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_]) -> Bool:
+    """Report whether the adapter has cancelled this stream.
+
+    Args:
+        ctx_ptr: Pointer to this stream's context.
+
+    Returns:
+        True once the adapter has flagged the stream cancelled.
+    """
     return ctx_ptr[].cancelled
 
 
@@ -254,18 +327,48 @@ def cancelled(
 # ---------------------------------------------------------------------------
 
 
-def _free_streaming_stream(ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin]):
+def _release_coro(ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_]):
+    """Cancel, close and free this stream's coroutine, if it still has one.
+
+    `Coroutine` is linear: it has no destructor, so dropping the heap slot
+    without `close()` leaks a 64 KiB mmap'd stack — one per request, which on
+    a server is an unbounded DoS vector. `close()` in turn debug_asserts
+    unless the coroutine is CREATED or DONE, so a still-SUSPENDED body must
+    first be drained by `cancel()`, which resumes it until it returns and
+    swallows any error it raises on the way out. `cancel()` is a no-op on an
+    already-DONE coroutine, so this is safe to call on every path.
+
+    `ctx.cancelled` is set first so handlers that poll the ctx flag (rather
+    than `yld.is_cancelled()`) also unwind on the very first resume.
+
+    Idempotent: clears `coro_addr` so a double call cannot double-free.
+
+    Args:
+        ctx_ptr: Pointer to the stream context owning the coroutine slot.
+    """
+    if not ctx_ptr[].coro_addr.is_some():
+        return
+    var coro_p = ctx_ptr[].coro_ptr()
+    ctx_ptr[].coro_addr = PtrBox[H3StreamingCoro].null()
+    ctx_ptr[].cancelled = True
+    coro_p[].cancel()
+    var coro = coro_p.unsafe_take_pointee()
+    coro^.close()
+    coro_p.unsafe_free()
+
+
+def _free_streaming_stream(ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_]):
     """DESTRUCTOR PATH ONLY. Bypasses the ctx pool. Runtime sites must use
     H3StreamingServer._free_streaming_stream() instead — this module-level
-    variant exists only because __del__(deinit self) cannot call mut-self
-    methods. ALWAYS call _streams.pop(sid) BEFORE calling this function."""
-    if ctx_ptr[].coro_addr.is_some():
-        var coro_p = ctx_ptr[].coro_ptr()
-        coro_p.take_pointee().destroy()
-        coro_p.free()
-        ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
-    ctx_ptr.destroy_pointee()
-    ctx_ptr.free()
+    variant exists only because __deinit__(deinit self) cannot call mut-self
+    methods. ALWAYS call _streams.pop(sid) BEFORE calling this function.
+
+    Args:
+        ctx_ptr: Pointer to the stream context to tear down and free.
+    """
+    _release_coro(ctx_ptr)
+    ctx_ptr.unsafe_deinit_pointee()
+    ctx_ptr.unsafe_free()
 
 
 # ---------------------------------------------------------------------------
@@ -282,36 +385,36 @@ struct H3StreamingCtxPool(Movable):
     owns initialisation/destruction of the pointee; the pool only
     manages the underlying memory."""
 
-    var _free: List[UnsafePointer[H3StreamingCtx, MutAnyOrigin]]
+    var _free: List[Pointer[H3StreamingCtx, MutUntrackedOrigin]]
     var _capacity: Int
 
     def __init__(out self, *, capacity: Int = 4):
-        self._free = List[UnsafePointer[H3StreamingCtx, MutAnyOrigin]]()
+        self._free = List[Pointer[H3StreamingCtx, MutUntrackedOrigin]]()
         self._capacity = capacity
 
     def __init__(out self, *, deinit move: Self):
         self._free = move._free^
         self._capacity = move._capacity
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         for i in range(len(self._free)):
-            self._free[i].free()
+            self._free[i].unsafe_free()
 
-    def acquire(mut self) raises -> UnsafePointer[H3StreamingCtx, MutAnyOrigin]:
+    def acquire(mut self) raises -> Pointer[H3StreamingCtx, MutUntrackedOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
         if len(self._free) > 0:
             return self._free.pop()
-        return _heap_alloc[H3StreamingCtx](1).as_unsafe_any_origin()
+        return _heap_alloc[H3StreamingCtx](1)
 
     def release(
-        mut self, ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin]
+        mut self, ptr: Pointer[H3StreamingCtx, MutUntrackedOrigin]
     ):
         """Return a slot whose pointee has already been destroyed.
         Beyond capacity → free; under capacity → keep for reuse."""
         if len(self._free) < self._capacity:
             self._free.append(ptr)
         else:
-            ptr.free()
+            ptr.unsafe_free()
 
     def idle_count(self) -> Int:
         return len(self._free)
@@ -326,27 +429,28 @@ struct H3StreamingServer(Movable):
     """Drive per-stream stackful coroutines from an HTTP/3 H3Connection.
     Sans-IO: the caller feeds inbound QUIC datagrams via
     `feed_datagram_from_buffer()` and drains outbound datagrams via `drain()`.
-    Each new request spawns a CoroHandle (via CoroutinePool) that suspends
-    and resumes as body data and write-drains occur.
+    Each new request spawns an H3StreamingCoro on a stack borrowed from a
+    per-connection `StackPool`, which suspends and resumes as body data and
+    write-drains occur.
 
     Note: `_h3: H3Connection` already wraps and owns the `QuicConnection`
     internally (H3Connection._quic field). A separate top-level `_quic`
     field is intentionally absent to avoid double-ownership — mirrors
     H3CoroServer and H3HandlerServer patterns.
 
-    The handler function must match CoroBody:
-        fn (mut CoroYielder) raises -> None
+    The handler function must match H3StreamingHandlerFn:
+        def (mut Yielder[H3StreamingState]) raises -> None
     Access per-stream ctx inside the handler via:
-        var ctx_ptr = yld.user_data().bitcast[H3StreamingCtx]().as_unsafe_any_origin()
+        var ctx_ptr = yld.state()[]
     """
 
     var _h3: H3Connection
     var _handler_fn: H3StreamingHandlerFn
-    var _extra_data: UnsafePointer[NoneType, MutUntrackedOrigin]
+    var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[List[UInt8]]
     var _streams: Dict[Int, PtrBox[H3StreamingCtx]]
     var _ctx_pool: H3StreamingCtxPool
-    var _coro_pool: CoroutinePool
+    var _coro_pool: StackPool
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled in the config; None for rejection-mode
@@ -354,7 +458,7 @@ struct H3StreamingServer(Movable):
     # filter dispatch helper takes the fail-closed branch for 0-RTT
     # requests.
     var _early_data_filter_ptr: Optional[
-        UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+        Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
     ]
     var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
     """User-supplied 0-RTT predicate fn, propagated from
@@ -371,11 +475,11 @@ struct H3StreamingServer(Movable):
         *,
         var quic: QuicConnection,
         handler_fn: H3StreamingHandlerFn,
-        extra_data: UnsafePointer[NoneType, MutUntrackedOrigin] = null_ptr[
+        extra_data: Pointer[NoneType, MutUntrackedOrigin] = null_ptr[
             NoneType, MutUntrackedOrigin
         ](),
         early_data_filter_ptr: Optional[
-            UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
+            Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
@@ -387,28 +491,24 @@ struct H3StreamingServer(Movable):
         self._outbuf = List[List[UInt8]]()
         self._streams = Dict[Int, PtrBox[H3StreamingCtx]]()
         self._ctx_pool = H3StreamingCtxPool(capacity=4)
-        self._coro_pool = CoroutinePool(capacity=4)
+        self._coro_pool = StackPool(capacity=4)
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
 
-    def __del__(deinit self):
-        """Destroy and free all heap-allocated stream contexts and coroutines."""
+    def __deinit__(deinit self):
+        """Close every live coroutine and free all heap-allocated contexts.
+
+        Uses the module-level `_free_streaming_stream`, which drains each
+        coroutine to DONE via `cancel()` before `close()`. Without that, a
+        connection torn down mid-request would drop SUSPENDED coroutines and
+        leak their stacks.
+        """
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
         for i in range(len(keys)):
             try:
-                var ctx_ptr = self._streams[keys[i]].ptr()
-                # Set cancelled so any resumed coro exits cleanly
-                ctx_ptr[].cancelled = True
-                if ctx_ptr[].coro_addr.is_some():
-                    var coro_p = ctx_ptr[].coro_ptr()
-                    if coro_p[].can_resume():
-                        try:
-                            coro_p[].resume()
-                        except:
-                            pass
-                _free_streaming_stream(ctx_ptr)
+                _free_streaming_stream(self._streams[keys[i]].ptr())
             except:
                 pass
 
@@ -416,7 +516,7 @@ struct H3StreamingServer(Movable):
 
     def feed_datagram_from_buffer(
         mut self,
-        buf: UnsafePointer[UInt8, MutAnyOrigin],
+        buf: Pointer[UInt8, MutUntrackedOrigin],
         buf_len: Int,
         now: UInt64,
     ) raises:
@@ -457,20 +557,21 @@ struct H3StreamingServer(Movable):
         return sid in self._streams
 
     def _free_streaming_stream(
-        mut self, ctx_ptr: UnsafePointer[H3StreamingCtx, MutAnyOrigin]
+        mut self, ctx_ptr: Pointer[H3StreamingCtx, MutUntrackedOrigin]
     ):
-        """Destroy the stream's CoroHandle + H3StreamingCtx and return the
+        """Cancel + close the stream's coroutine, destroy the H3StreamingCtx,
+        and return the
         ctx slot to the per-connection pool. The pool's release() decides
         whether to keep the slot for reuse (under capacity) or free it
         (beyond capacity), so this restores the freelist that earlier
         revisions silently bypassed by calling ctx_ptr.free() directly.
-        ALWAYS call _streams.pop(sid) BEFORE invoking this method."""
-        if ctx_ptr[].coro_addr.is_some():
-            var coro_p = ctx_ptr[].coro_ptr()
-            coro_p.take_pointee().destroy()
-            coro_p.free()
-            ctx_ptr[].coro_addr = PtrBox[CoroHandle].null()
-        ctx_ptr.destroy_pointee()
+        ALWAYS call _streams.pop(sid) BEFORE invoking this method.
+
+        Args:
+            ctx_ptr: Pointer to the stream context to tear down.
+        """
+        _release_coro(ctx_ptr)
+        ctx_ptr.unsafe_deinit_pointee()
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self, now: UInt64) raises:
@@ -538,7 +639,7 @@ struct H3StreamingServer(Movable):
                 break
             var ev = ev_opt.unsafe_take()
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                if Int(ev.as_headers().stream_id) not in self._streams:
+                if Int(ev.stream_id) not in self._streams:
                     self._on_request(ev)
                 else:
                     self._on_trailers(ev)
@@ -555,18 +656,26 @@ struct H3StreamingServer(Movable):
 
     def _on_request(mut self, ev: H3Event) raises:
         """First HEADERS_RECEIVED: parse pseudo-fields into Request, allocate
-        H3StreamingCtx + CoroHandle (via CoroutinePool) on heap, register in
-        streams dict, and do the first resume.
-        A separate STREAM_ENDED event handles bodyless GETs."""
-        ref hp = ev.as_headers()
+        an H3StreamingCtx plus its H3StreamingCoro (on a stack borrowed from
+        the per-connection StackPool), register in the streams dict, and do
+        the first resume.
+        If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end().
+
+        Args:
+            ev: The HEADERS_RECEIVED event opening this stream.
+
+        Raises:
+            If coroutine creation fails; the partially built context is
+            released before the error propagates, so no stream is leaked.
+        """
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(hp.fields)):
-            var name = hp.fields[i].name
-            var value = hp.fields[i].value
+        for i in range(len(ev.fields)):
+            var name = ev.fields[i].name
+            var value = ev.fields[i].value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -607,9 +716,9 @@ struct H3StreamingServer(Movable):
         # so the helper is called with `profile_ptr=None`.
         var stream_is_zr = False
         if self._h3._quic.zero_rtt_enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, hp.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
             var _no_profile = Optional[
-                UnsafePointer[AcceptProfile, MutAnyOrigin]
+                Pointer[AcceptProfile, MutUntrackedOrigin]
             ](None)
             var outcome = apply_early_data_filter(
                 method_str,
@@ -621,7 +730,7 @@ struct H3StreamingServer(Movable):
                 _no_profile,
             )
             if outcome.should_send_425():
-                send_425_response(hp.stream_id, self._h3)
+                send_425_response(ev.stream_id, self._h3)
                 return
 
         var req = Request(
@@ -631,25 +740,44 @@ struct H3StreamingServer(Movable):
             headers=req_headers^,
         )
 
-        var stream_id = Int(hp.stream_id)
+        var stream_id = Int(ev.stream_id)
 
         # Allocate ctx from pool
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = H3StreamingCtx(
             request=req^,
             caps=Capabilities.for_h3(is_early_data=stream_is_zr),
-            stream_id=hp.stream_id,
+            stream_id=ev.stream_id,
             extra_data=self._extra_data,
         )
 
-        ctx_ptr.init_pointee_move(ctx^)
+        # FIN on HEADERS = bodyless request (e.g. GET) — mark ended immediately
+        if ev.fin:
+            ctx.request_ended = True
+            ctx.recv_body._set_end()
 
-        # Acquire CoroHandle from pool; user_data = ctx_ptr cast to NoneType ptr
-        var user_data = UnsafePointer[NoneType, MutUntrackedOrigin](
-            unsafe_from_address=Int(ctx_ptr)
-        )
-        var coro_heap = self._coro_pool.acquire(self._handler_fn, user_data)
-        ctx_ptr[].coro_addr = PtrBox[CoroHandle](coro_heap)
+        ctx_ptr.unsafe_write(ctx^)
+
+        # Spawn the coroutine on a pooled stack. Its typed state IS ctx_ptr,
+        # so the body reaches the context with yld.state()[] — no untyped
+        # user_data pointer and no bitcast.
+        #
+        # The coroutine is a linear type and cannot live in a Dict, so it is
+        # boxed in its own heap slot that the ctx owns. If either the slot
+        # allocation or the coroutine construction fails, the already-written
+        # ctx would otherwise be orphaned (it is not yet in self._streams and
+        # nothing else holds its pointer), so unwind it here before re-raising.
+        var coro_heap = _heap_alloc[H3StreamingCoro](1)
+        try:
+            coro_heap.unsafe_write(
+                H3StreamingCoro(self._handler_fn, ctx_ptr, self._coro_pool)
+            )
+        except e:
+            coro_heap.unsafe_free()
+            ctx_ptr.unsafe_deinit_pointee()
+            self._ctx_pool.release(ctx_ptr)
+            raise e^
+        ctx_ptr[].coro_addr = PtrBox[H3StreamingCoro](coro_heap)
 
         # Insert BEFORE first resume so _drain_responses can find the stream
         self._streams[stream_id] = PtrBox[H3StreamingCtx](ctx_ptr)
@@ -660,74 +788,80 @@ struct H3StreamingServer(Movable):
     def _on_trailers(mut self, ev: H3Event) raises:
         """Second HEADERS_RECEIVED on an open stream = trailers.
         Push as BodyFrame.trailers into body_frame_ring, resume coroutine."""
-        ref tp = ev.as_headers()
-        var sid = Int(tp.stream_id)
+        var sid = Int(ev.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         var trailer_headers = Headers()
-        for i in range(len(tp.fields)):
-            var name = tp.fields[i].name
+        for i in range(len(ev.fields)):
+            var name = ev.fields[i].name
             if not name.startswith(":"):
-                trailer_headers.add(name, tp.fields[i].value)
+                trailer_headers.add(name, ev.fields[i].value)
         ctx.body_frame_ring.append(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._resume_stream(sid)
 
     def _on_data(mut self, ev: H3Event) raises:
         """DATA_RECEIVED: push data into body_frame_ring, resume coroutine.
         No flow-control ACK — QUIC handles FC internally."""
-        ref dp = ev.as_stream_data()
-        var sid = Int(dp.stream_id)
+        var sid = Int(ev.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.take_pointee()
-        var data_copy = List[UInt8](copy=dp.data)
+        var ctx = ctx_ptr.unsafe_take_pointee()
+        var data_copy = List[UInt8](copy=ev.data)
         ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._resume_stream(sid)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark body ended, resume coroutine."""
-        var sid = Int(ev.as_stream_end().stream_id)
+        var sid = Int(ev.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended:
             return
-        var ctx = ctx_ptr.take_pointee()
+        var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.request_ended = True
         ctx.recv_body._set_end()
-        ctx_ptr.init_pointee_move(ctx^)
+        ctx_ptr.unsafe_write(ctx^)
         self._resume_stream(sid)
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
-        """STREAM_RESET / STOP_SENDING: set cancelled, resume once for unwind,
-        then pop BEFORE free."""
-        var sid = Int(ev.as_stream_reset().stream_id)
+        """STREAM_RESET / STOP_SENDING: pop the stream, then tear it down.
+
+        `_free_streaming_stream` sets ctx.cancelled and drains the coroutine
+        to DONE with `cancel()` before closing it, so a handler suspended
+        mid-body unwinds instead of leaving a SUSPENDED coroutine that
+        `close()` would refuse.
+
+        Args:
+            ev: The STREAM_RESET event naming the stream to abort.
+        """
+        var sid = Int(ev.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        ctx_ptr[].cancelled = True
-        if ctx_ptr[].coro_addr.is_some():
-            var coro_p = ctx_ptr[].coro_ptr()
-            if coro_p[].can_resume():
-                try:
-                    coro_p[].resume()
-                except:
-                    pass
         _ = self._streams.pop(sid)  # pop BEFORE free
+        # _free_streaming_stream sets cancelled and drains the coro to DONE.
         self._free_streaming_stream(ctx_ptr)
 
     def _on_goaway(mut self, ev: H3Event) raises:
-        """GOAWAY_RECEIVED / CONNECTION_CLOSED: set cancelled for ALL streams,
-        resume each once for unwind, pop BEFORE free for each."""
+        """GOAWAY_RECEIVED / CONNECTION_CLOSED: tear down ALL streams.
+
+        Each stream is popped before being freed; `_free_streaming_stream`
+        cancels and drains its coroutine to DONE before closing it.
+
+        Args:
+            ev: The GOAWAY / CONNECTION_CLOSED event (unused; the whole
+                connection is going away).
+        """
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
@@ -736,15 +870,8 @@ struct H3StreamingServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            ctx_ptr[].cancelled = True
-            if ctx_ptr[].coro_addr.is_some():
-                var coro_p = ctx_ptr[].coro_ptr()
-                if coro_p[].can_resume():
-                    try:
-                        coro_p[].resume()
-                    except:
-                        pass
             _ = self._streams.pop(sid)  # pop BEFORE free
+            # _free_streaming_stream sets cancelled and drains the coro to DONE.
             self._free_streaming_stream(ctx_ptr)
 
     # --- Response draining --------------------------------------------------
@@ -766,9 +893,9 @@ struct H3StreamingServer(Movable):
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.take_pointee()
+            var ctx = ctx_ptr.unsafe_take_pointee()
             if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.init_pointee_move(ctx^)
+                ctx_ptr.unsafe_write(ctx^)
                 continue
             # Send response headers if not yet sent
             if not ctx.headers_sent and ctx.resp_writer._has_status():
@@ -819,5 +946,5 @@ struct H3StreamingServer(Movable):
                         pass
                     ctx.response_ended = True
                     break
-            ctx_ptr.init_pointee_move(ctx^)
+            ctx_ptr.unsafe_write(ctx^)
             self._maybe_cleanup_stream(sid)
