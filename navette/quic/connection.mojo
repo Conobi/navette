@@ -3459,7 +3459,7 @@ struct QuicConnection(Movable):
 
             var frames = List[Frame]()
             var sent_records = List[SentStreamFrame]()
-            var stream_payload = List[UInt8]()
+            var stream_payload = List[UInt8](capacity=6144)
             var ack_reserve = 0
             var has_stream_data = False
             var ack_committed = False
@@ -3523,13 +3523,17 @@ struct QuicConnection(Movable):
             # stream_payload already contains ACK (direct-written first)
             # + CRYPTO (direct-written by _build_frames_for_space).
             # Serialize remaining control frames (non-CRYPTO) via ByteWriter.
-            var writer = ByteWriter()
+            var has_control = False
             for fi in range(len(frames)):
                 if not frames[fi].is_crypto():
-                    serialize_frame(frames[fi], writer)
-            var control_bytes = writer.finish()
-            # Assemble payload: stream_payload (ACK + CRYPTO + STREAM) + control frames.
-            if len(control_bytes) > 0:
+                    has_control = True
+                    break
+            if has_control:
+                var writer = ByteWriter()
+                for fi in range(len(frames)):
+                    if not frames[fi].is_crypto():
+                        serialize_frame(frames[fi], writer)
+                var control_bytes = writer.finish()
                 stream_payload.extend(Span(control_bytes))
             var payload = stream_payload^
             var plaintext = len(payload)
@@ -4570,20 +4574,17 @@ struct QuicConnection(Movable):
         # before anything mutates, then every expired space fires and
         # pto_count is incremented exactly once — the backoff must not hide a
         # second expired space behind the first one's doubled interval.
-        var fire = List[Bool](capacity=3)
-        var any_fire = False
-        for s in range(3):
-            var d = self._pto_deadline(s)
-            var expired = False
-            if d:
-                expired = d.value() <= now
-            fire.append(expired)
-            if expired:
-                any_fire = True
-        if not any_fire:
+        var d0 = self._pto_deadline(0)
+        var d1 = self._pto_deadline(1)
+        var d2 = self._pto_deadline(2)
+        var fire0 = d0.__bool__() and d0.value() <= now
+        var fire1 = d1.__bool__() and d1.value() <= now
+        var fire2 = d2.__bool__() and d2.value() <= now
+        if not (fire0 or fire1 or fire2):
             return
         for s in range(3):
-            if not fire[s]:
+            var should_fire = fire0 if s == 0 else (fire1 if s == 1 else fire2)
+            if not should_fire:
                 continue
             # Re-queue this space's unacknowledged CRYPTO data (the cursor
             # already consumed the original bytes) unless some is still
