@@ -1634,9 +1634,7 @@ struct QuicConnection(Movable):
                 self.events.append(QuicEvent.stream_opened(new_ids[i]))
                 var nkey = Int(new_ids[i])
                 if nkey in self.stream_map.streams:
-                    var s = Stream(copy=self.stream_map.streams[nkey])
-                    s.is_zero_rtt = is_zr
-                    self.stream_map.streams[nkey] = s^
+                    self.stream_map.streams[nkey][].is_zero_rtt = is_zr
 
         # 2. Get stream (returns a copy).
         var stream = self.stream_map.get_stream(key)
@@ -4044,7 +4042,7 @@ struct QuicConnection(Movable):
                 break
             var conn_delta = UInt64(0)
             var drop_sendable = False
-            ref stream = self.stream_map.streams[sid]
+            ref stream = self.stream_map.stream_ref(sid)
             if not stream.send_state or not stream.send_buf or not stream.fc_send:
                 # Orphan — remove from sendable (ref's last use is above).
                 self.stream_map.remove_sendable(sid)

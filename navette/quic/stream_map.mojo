@@ -7,6 +7,8 @@
 
 from std.collections import Dict, Optional
 from std.collections.deque import Deque
+from std.memory import Pointer, UnsafePointer
+from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.quic.flow_control import FlowControl, CONN_FC_MAX_WINDOW
 from navette.quic.stream import (
     Stream,
@@ -26,7 +28,10 @@ struct StreamMap(Movable):
     """
 
     # ── Collection ────────────────────────────────────────────────────────────
-    var streams: Dict[Int, Stream]
+    # Streams are heap-allocated and stored by pointer so that in-place
+    # mutation (`stream_ref`/`stream_ptr`) never has to copy the ~5KB+
+    # Stream (SendBuf/RecvBuf included) out of and back into the Dict.
+    var streams: Dict[Int, UnsafePointer[Stream, MutUntrackedOrigin]]
     var is_server: Bool
 
     # ── Connection-level flow control ─────────────────────────────────────────
@@ -91,7 +96,7 @@ struct StreamMap(Movable):
         local_window_bidi_remote: UInt64,
         local_window_uni: UInt64,
     ):
-        self.streams = Dict[Int, Stream]()
+        self.streams = Dict[Int, UnsafePointer[Stream, MutUntrackedOrigin]]()
         self.is_server = is_server
 
         self.conn_fc_recv = FlowControl(conn_recv_limit, conn_recv_window, CONN_FC_MAX_WINDOW)
@@ -171,6 +176,20 @@ struct StreamMap(Movable):
         self.streams_blocked_at_bidi = move.streams_blocked_at_bidi
         self.streams_blocked_at_uni = move.streams_blocked_at_uni
 
+    def __deinit__(deinit self):
+        """Free every stream still owned by this map.
+
+        Streams removed via `maybe_cleanup` already free their pointer on
+        the way out; this only catches whatever is still open when the
+        connection (and therefore this StreamMap) is torn down.
+        """
+        for entry in self.streams.items():
+            try:
+                entry.value.unsafe_deinit_pointee()
+                entry.value.unsafe_free()
+            except:
+                pass
+
     # ── Handshake completion ─────────────────────────────────────────────────
 
     def set_peer_limits(
@@ -204,8 +223,9 @@ struct StreamMap(Movable):
         # Retroactively bump fc_send for any peer-initiated streams that
         # were created with the default 0 limits (only happens on the
         # server when peer opened streams via 0-RTT before its TPs were
-        # parsed). Iterate by snapshotted key list because we mutate
-        # the Dict mid-iteration.
+        # parsed). Iterate by snapshotted key list — mutation below goes
+        # through the existing pointer (no insert/remove on `self.streams`),
+        # but snapshotting keeps this loop robust to future changes here.
         var stream_ids = List[Int]()
         for key in self.streams.keys():
             stream_ids.append(key)
@@ -213,8 +233,8 @@ struct StreamMap(Movable):
             var sid = stream_ids[i]
             if sid not in self.streams:
                 continue
-            var stream = Stream(copy=self.streams[sid])
-            if not stream.fc_send:
+            var p = self.streams[sid]
+            if not p[].fc_send:
                 continue
             # Pick the matching peer limit for this stream's direction.
             # Bidi streams use the limit appropriate to "who initiated":
@@ -236,10 +256,21 @@ struct StreamMap(Movable):
                     # Peer-initiated uni stream — local endpoint never
                     # sends, so fc_send is unused; skip.
                     continue
-            var fc = stream.fc_send.value().copy()
+            var fc = p[].fc_send.value().copy()
             fc.ensure_limit(target_limit)
-            stream.fc_send = fc^
-            self.streams[sid] = stream^
+            p[].fc_send = fc^
+
+    # ── Internal: pointer-backed storage ─────────────────────────────────────
+
+    def _insert_stream(mut self, stream_id: Int, var stream: Stream):
+        """Heap-allocate a slot for a brand-new stream and insert it.
+
+        Caller guarantees `stream_id` is not already present — an existing
+        entry would leak its pointer. Use `set_stream` to replace one.
+        """
+        var p = _heap_alloc[Stream](1)
+        p.unsafe_write(stream^)
+        self.streams[stream_id] = p
 
     # ── Local stream creation (§4.2) ─────────────────────────────────────────
 
@@ -263,7 +294,7 @@ struct StreamMap(Movable):
                 fc_recv_limit=self.local_stream_fc_window_bidi_local,
                 fc_recv_window=self.local_stream_fc_window_bidi_local,
             )
-            self.streams[Int(id)] = stream^
+            self._insert_stream(Int(id), stream^)
             self.local_opened_bidi += UInt64(1)
             return id
         else:
@@ -279,7 +310,7 @@ struct StreamMap(Movable):
                 id,
                 fc_send_limit=self.peer_stream_fc_limit_uni,
             )
-            self.streams[Int(id)] = stream^
+            self._insert_stream(Int(id), stream^)
             self.local_opened_uni += UInt64(1)
             return id
 
@@ -348,14 +379,14 @@ struct StreamMap(Movable):
                         fc_recv_limit=self.local_stream_fc_window_bidi_remote,
                         fc_recv_window=self.local_stream_fc_window_bidi_remote,
                     )
-                    self.streams[Int(peer_id)] = stream^
+                    self._insert_stream(Int(peer_id), stream^)
                 else:
                     var stream = Stream.new_remote_uni(
                         peer_id,
                         fc_recv_limit=self.local_stream_fc_window_uni,
                         fc_recv_window=self.local_stream_fc_window_uni,
                     )
-                    self.streams[Int(peer_id)] = stream^
+                    self._insert_stream(Int(peer_id), stream^)
                 new_ids.append(peer_id)
 
             i += UInt64(1)
@@ -376,27 +407,46 @@ struct StreamMap(Movable):
         """Get a copy of the stream. Raises if not found."""
         if stream_id not in self.streams:
             raise "stream not found: id=" + String(stream_id)
-        return Stream(copy=self.streams[stream_id])
+        return Stream(copy=self.streams[stream_id][])
 
-    def set_stream(mut self, stream_id: Int, var stream: Stream):
-        """Update (replace) a stream in the Dict."""
-        self.streams[stream_id] = stream^
+    def set_stream(mut self, stream_id: Int, var stream: Stream) raises:
+        """Replace a stream in place through its existing pointer.
+
+        `stream_id` must already be present — typically the same id just
+        returned by `get_stream`/`stream_ref`. No new allocation: the old
+        pointee is dropped and the new value written into the same slot.
+        """
+        var p = self.streams[stream_id]
+        p.unsafe_deinit_pointee()
+        p.unsafe_write(stream^)
 
     def has_stream(self, stream_id: Int) -> Bool:
         """Cheaper `stream_id in self.streams` for callers about to take a ref."""
         return stream_id in self.streams
 
-    def stream_ref(ref self, stream_id: Int) raises -> ref [self.streams[stream_id]] Stream:
-        """Borrow the stream in place; raises like `get_stream` when absent.
+    def stream_ptr(self, stream_id: Int) raises -> UnsafePointer[Stream, MutUntrackedOrigin]:
+        """Direct pointer to the stream for in-place mutation — no copy.
 
-        While the returned ref is live the caller must not insert into or
-        remove from `streams` (`add_stream`, `maybe_cleanup`) nor call any
-        `mut self` method of this map: the Dict may rehash and the ref would
-        dangle. Read-only access to sibling fields is fine.
+        The pointer stays valid until `maybe_cleanup` removes this
+        `stream_id` or this map is destroyed; the caller must not hold it
+        past either.
         """
         if stream_id not in self.streams:
             raise "stream not found: id=" + String(stream_id)
         return self.streams[stream_id]
+
+    def stream_ref(ref self, stream_id: Int) raises -> ref [MutAnyOrigin] Stream:
+        """Borrow the stream in place; raises like `get_stream` when absent.
+
+        While the returned ref is live the caller must not remove this
+        stream (`maybe_cleanup`) or destroy this map (`__deinit__`) — the
+        pointee would be freed out from under the ref. Unlike the old
+        `Dict[Int, Stream]` storage, inserting into `streams` (rehashing
+        the Dict) is safe: the pointee's heap address never moves.
+        """
+        if stream_id not in self.streams:
+            raise "stream not found: id=" + String(stream_id)
+        return self.streams[stream_id][]
 
     # ── Stream cleanup (§4.3) ────────────────────────────────────────────────
 
@@ -405,8 +455,7 @@ struct StreamMap(Movable):
         if stream_id not in self.streams:
             return False
 
-        var s = Stream(copy=self.streams[stream_id])
-        if not s.is_fully_closed():
+        if not self.streams[stream_id][].is_fully_closed():
             return False
 
         # Track peer-initiated completions for MAX_STREAMS update
@@ -417,7 +466,9 @@ struct StreamMap(Movable):
             else:
                 self.peer_completed_uni += UInt64(1)
 
-        _ = self.streams.pop(stream_id)
+        var p = self.streams.pop(stream_id)
+        p.unsafe_deinit_pointee()
+        p.unsafe_free()
         self.remove_sendable(stream_id)
         self.check_max_streams_update()
         return True

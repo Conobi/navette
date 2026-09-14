@@ -76,7 +76,7 @@ def stream_is_zero_rtt(
     var key = Int(stream_id)
     if key not in quic.stream_map.streams:
         return False
-    return quic.stream_map.streams[key].is_zero_rtt
+    return quic.stream_map.streams[key][].is_zero_rtt
 
 
 @fieldwise_init
