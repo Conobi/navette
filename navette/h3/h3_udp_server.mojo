@@ -107,7 +107,7 @@ from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
 from navette.quic.connection import QuicConnection
-from navette.quic.packet import is_long_header_initial, extract_dcid
+from navette.quic.packet import is_long_header_initial, extract_dcid, DcidBuf
 from navette.quic.path_validator import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
@@ -345,7 +345,7 @@ struct PendingDatagram(Copyable, Movable):
     var payload_len: Int
     var name_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var name_len: Int
-    var dcid: List[UInt8]
+    var dcid: DcidBuf
     var ecn_mark: UInt8
     var dgram_idx: Int
 
@@ -355,7 +355,7 @@ struct PendingDatagram(Copyable, Movable):
         payload_len: Int,
         name_ptr: Pointer[UInt8, MutUntrackedOrigin],
         name_len: Int,
-        var dcid: List[UInt8],
+        var dcid: DcidBuf,
         ecn_mark: UInt8,
         dgram_idx: Int,
     ):
@@ -372,7 +372,7 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = copy.payload_len
         self.name_ptr = copy.name_ptr
         self.name_len = copy.name_len
-        self.dcid = List[UInt8](copy=copy.dcid)
+        self.dcid = DcidBuf(copy=copy.dcid)
         self.ecn_mark = copy.ecn_mark
         self.dgram_idx = copy.dgram_idx
 
@@ -1283,7 +1283,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     var seg_span = Span[UInt8, MutUntrackedOrigin](
                         unsafe_ptr=seg_ptr, length=seg_len,
                     )
-                    var dcid: List[UInt8]
+                    var dcid: DcidBuf
                     try:
                         dcid = extract_dcid(seg_span)
                     except:
@@ -1305,7 +1305,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     )
             else:
                 # Non-GRO: single datagram, refcount 1.
-                var dcid: List[UInt8]
+                var dcid: DcidBuf
                 try:
                     dcid = extract_dcid(payload)
                 except:
@@ -1461,7 +1461,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             var pd = self.pending_rx[i].copy()
 
             # DCID-keyed demux. pd.dcid extracted during _drain_recv_stream.
-            var dcid_u64 = dcid_to_u64(Span(pd.dcid))
+            var dcid_u64 = dcid_to_u64(pd.dcid.as_span())
             var conn_idx = self._find_conn_by_dcid(dcid_u64)
 
             # RFC 9000 §12.4: only long-header Initial packets create new
@@ -1479,7 +1479,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 # the accept-profile pointer through both layers).
                 var h3_ptr: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
                 try:
-                    h3_ptr = self._construct_conn_handler(Span(pd.dcid), now)
+                    h3_ptr = self._construct_conn_handler(pd.dcid.as_span(), now)
                 except e:
                     print("H3UdpServer: conn construction error:", e)
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)

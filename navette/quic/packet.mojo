@@ -171,35 +171,54 @@ def is_long_header_zero_rtt(payload: Span[UInt8, _]) -> Bool:
     return (first & 0x30) == 0x10
 
 
-def extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
-    """Extract the DCID from an incoming QUIC packet.
+struct DcidBuf(Copyable, Movable):
+    """Fixed-size DCID buffer (max 20 bytes per RFC 9000)."""
+    var data: InlineArray[UInt8, 20]
+    var len: UInt8
 
-    For long-header packets:
-      byte 0: header byte (high bit set)
-      bytes 1-4: version
-      byte 5: DCID length
-      bytes 6..6+dcid_len: DCID
+    def __init__(out self):
+        self.data = InlineArray[UInt8, 20](fill=UInt8(0))
+        self.len = 0
 
-    For short-header packets, delegates to `parse_packet_header` with the
-    server convention of an 8-byte local CID length.
-    """
+    def __init__(out self, src: Span[UInt8, _]):
+        """Construct from a Span, copying up to 20 bytes."""
+        self.data = InlineArray[UInt8, 20](fill=UInt8(0))
+        var n = min(len(src), 20)
+        for i in range(n):
+            self.data[i] = src[i]
+        self.len = UInt8(n)
+
+    def __init__(out self, *, copy: Self):
+        self.data = InlineArray[UInt8, 20](copy=copy.data)
+        self.len = copy.len
+
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data^
+        self.len = move.len
+
+    def as_span(self) -> Span[UInt8, __origin_of(self)]:
+        """View the DCID bytes as a Span."""
+        return Span(unsafe_ptr=self.data.unsafe_ptr(), length=Int(self.len))
+
+
+def extract_dcid(data: Span[UInt8, _]) raises -> DcidBuf:
+    """Extract the DCID from an incoming QUIC packet."""
     if len(data) < 6:
         raise "extract_dcid: packet too short"
 
     var first = Int(data[0])
     if (first & 0x80) != 0:
-        # Long header — extract DCID directly.
         var dcid_len = Int(data[5])
         if len(data) < 6 + dcid_len:
             raise "extract_dcid: packet too short for DCID"
-        var dcid = List[UInt8](capacity=dcid_len)
-        for i in range(dcid_len):
-            dcid.append(data[6 + i])
-        return dcid^
+        var buf = DcidBuf()
+        for i in range(min(dcid_len, 20)):
+            buf.data[i] = data[6 + i]
+        buf.len = UInt8(min(dcid_len, 20))
+        return buf^
     else:
-        # Short header — use the full parser with assumed 8-byte CID.
         var result = parse_packet_header(data, 8)
-        return List[UInt8](copy=result[0].dcid)
+        return DcidBuf(Span(result[0].dcid))
 
 
 # --- parse_packet_header ---

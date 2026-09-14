@@ -24,7 +24,7 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
-from navette.quic.packet import is_long_header_initial, extract_dcid
+from navette.quic.packet import is_long_header_initial, extract_dcid, DcidBuf
 from navette.quic.cid import dcid_to_u64
 from navette.runtime.socket_helpers import udp_listener
 from navette.h3.h3_handler_server import H3HandlerServer
@@ -286,7 +286,7 @@ struct PendingDatagram(Copyable, Movable):
     var payload_len: Int
     var name_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var name_len: Int
-    var dcid: List[UInt8]
+    var dcid: DcidBuf
     var dgram_idx: Int
     # Arrival-to-processing queueing-tail instrumentation.
     # Read only when PROFILE_ACCEPT is True; off-build the value is always 0
@@ -299,7 +299,7 @@ struct PendingDatagram(Copyable, Movable):
         payload_len: Int,
         name_ptr: Pointer[UInt8, MutUntrackedOrigin],
         name_len: Int,
-        var dcid: List[UInt8],
+        var dcid: DcidBuf,
         dgram_idx: Int,
         arrival_us: UInt64 = UInt64(0),
     ):
@@ -316,7 +316,7 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = copy.payload_len
         self.name_ptr = copy.name_ptr
         self.name_len = copy.name_len
-        self.dcid = List[UInt8](copy=copy.dcid)
+        self.dcid = DcidBuf(copy=copy.dcid)
         self.dgram_idx = copy.dgram_idx
         self.arrival_us = copy.arrival_us
 
@@ -600,7 +600,7 @@ struct H3UdpHandler(Movable):
             var name = hdr.name()
 
             # Extract DCID from the payload.
-            var dcid: List[UInt8]
+            var dcid: DcidBuf
             try:
                 dcid = extract_dcid(payload)
             except:
@@ -808,7 +808,7 @@ struct H3UdpHandler(Movable):
                     self.profile.record_arrival_lat(UInt64(0))
             # DCID-keyed lookup. pd.dcid was extracted at _drain_recv_stream
             # (long+short header).
-            var dcid_u64 = dcid_to_u64(Span(pd.dcid))
+            var dcid_u64 = dcid_to_u64(pd.dcid.as_span())
             var conn_idx = self._find_conn_by_dcid(dcid_u64)
 
             # Strict new-conn gate per RFC 9000 section 12.4: only long-header Initial
@@ -826,7 +826,7 @@ struct H3UdpHandler(Movable):
 
             comptime if PROFILE_ACCEPT:
                 if conn_idx >= 0:
-                    if not self.conn_h3s[conn_idx][]._h3._quic.is_expected_dcid(Span(pd.dcid)):
+                    if not self.conn_h3s[conn_idx][]._h3._quic.is_expected_dcid(pd.dcid.as_span()):
                         try:
                             self.profile.record_dcid_mismatch()
                         except:
@@ -840,7 +840,10 @@ struct H3UdpHandler(Movable):
                 var tp = default_transport_params()
                 if tp.max_idle_timeout == UInt64(0):
                     tp.max_idle_timeout = SERVER_DEFAULT_IDLE_TIMEOUT_MS
-                var dcid_copy = List[UInt8](copy=pd.dcid)
+                var dcid_copy = List[UInt8](capacity=Int(pd.dcid.len))
+                var _dcid_span = pd.dcid.as_span()
+                for _i in range(len(_dcid_span)):
+                    dcid_copy.append(_dcid_span[_i])
                 var quic: QuicConnection
                 try:
                     comptime if PROFILE_ACCEPT:
@@ -848,7 +851,7 @@ struct H3UdpHandler(Movable):
                             SharedLibrary(copy=self.tls_lib),
                             self.server_config,
                             tp,
-                            Span(pd.dcid),
+                            pd.dcid.as_span(),
                             Span(dcid_copy),
                             now,
                             self._profile_ptr(),
@@ -858,7 +861,7 @@ struct H3UdpHandler(Movable):
                             SharedLibrary(copy=self.tls_lib),
                             self.server_config,
                             tp,
-                            Span(pd.dcid),
+                            pd.dcid.as_span(),
                             Span(dcid_copy),
                             now,
                         )

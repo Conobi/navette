@@ -39,7 +39,7 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
-from navette.quic.packet import extract_dcid
+from navette.quic.packet import extract_dcid, DcidBuf
 from navette.runtime.socket_helpers import udp_listener
 from navette.h3.h3_streaming_server import H3StreamingServer
 
@@ -228,7 +228,7 @@ struct H3StreamingUdpHandler(Movable):
                 if len(payload) == 0:
                     continue
 
-                var dcid: List[UInt8]
+                var dcid: DcidBuf
                 try:
                     dcid = extract_dcid(payload)
                 except:
@@ -245,14 +245,17 @@ struct H3StreamingUdpHandler(Movable):
                 var conn_idx = self._find_conn(addr_key)
                 if conn_idx < 0:
                     var tp = default_transport_params()
-                    var dcid_copy = List[UInt8](copy=dcid)
+                    var dcid_copy = List[UInt8](capacity=Int(dcid.len))
+                    var _ds = dcid.as_span()
+                    for _i in range(len(_ds)):
+                        dcid_copy.append(_ds[_i])
                     var quic: QuicConnection
                     try:
                         quic = QuicConnection.server(
                             SharedLibrary(copy=self.tls_lib),
                             self.server_config,
                             tp,
-                            Span(dcid),
+                            dcid.as_span(),
                             Span(dcid_copy),
                             now,
                         )
