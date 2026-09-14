@@ -21,9 +21,9 @@ This is **not** the HttpArena leaderboard harness. For "do we beat nginx in Http
 | Docker ≥ 20.10 with `--network host` | All images run on host networking | `docker version` |
 | Docker CLI with `stats` access | CPU sampling | `docker stats --no-stream --help` |
 | `python3` ≥ 3.10 (stdlib only) | Output parsers + summarizer | `python3 --version` |
-| `git` | Repo root resolution + tquic source checkout in Docker | `git --version` |
+| `git` | Repo root resolution + source checkouts in Docker | `git --version` |
 | ≥ 4 free physical cores | Server pinned to 1, client to 4 | `nproc` |
-| ≥ 8 GB RAM | Build TQUIC + run two QUIC stacks under load | `free -h` |
+| ≥ 8 GB RAM | Build TQUIC/lsquic + run QUIC stacks under load | `free -h` |
 
 No host-side Mojo or Rust toolchain is required — all builds happen inside Docker.
 

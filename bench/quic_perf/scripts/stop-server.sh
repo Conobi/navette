@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent teardown: remove both possible containers if present.
+# Idempotent teardown: remove all bench containers if present.
 
 set -euo pipefail
 

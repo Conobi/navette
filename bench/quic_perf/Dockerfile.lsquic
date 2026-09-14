@@ -34,17 +34,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /src
 
-RUN git clone --branch "${LSQUIC_TAG}" --depth 1 --recurse-submodules \
-        https://github.com/litespeedtech/lsquic.git .
-
-# Build BoringSSL from the in-tree submodule (uses the version lsquic
-# was tested against).
-RUN cd boringssl \
+# BoringSSL must be cloned separately — it is NOT an lsquic submodule.
+# In-source build so lsquic's cmake finds ssl/libssl.a and crypto/libcrypto.a
+# at BORINGSSL_DIR/ssl/ and BORINGSSL_DIR/crypto/.
+RUN git clone --depth 1 https://github.com/google/boringssl.git /src/boringssl \
+    && cd /src/boringssl \
     && cmake -DCMAKE_BUILD_TYPE=Release . \
     && make -j"$(nproc)"
 
+RUN git clone --branch "${LSQUIC_TAG}" --depth 1 --recurse-submodules \
+        https://github.com/litespeedtech/lsquic.git /src/lsquic
+
 # Build lsquic — tests disabled (bench image only needs http_server).
-RUN cmake \
+RUN cd /src/lsquic \
+    && cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBORINGSSL_DIR=/src/boringssl \
         -DLSQUIC_TESTS=OFF \
@@ -61,7 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libevent-2.1-7 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /src/bin/http_server /usr/local/bin/http_server
+COPY --from=build /src/lsquic/bin/http_server /usr/local/bin/http_server
 
 # No fixed entrypoint: the caller picks via --entrypoint.
 CMD ["/usr/local/bin/http_server", "--help"]

@@ -2,12 +2,12 @@
 # Launch the server under test, pinned to core 0, with all volumes mounted.
 # Calls wait-ready.sh after the container is up.
 #
-# Usage: start-server.sh <navette|tquic>
+# Usage: start-server.sh <navette|tquic|lsquic>
 
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-    echo "usage: start-server.sh <navette|tquic>" >&2
+    echo "usage: start-server.sh <navette|tquic|lsquic>" >&2
     exit 2
 fi
 
@@ -90,7 +90,7 @@ case "$SERVER" in
         CONTAINER=bench-lsquic
         ;;
     *)
-        echo "[start-server] unknown server: $SERVER (expected navette or tquic)" >&2
+        echo "[start-server] unknown server: $SERVER (expected navette, tquic, or lsquic)" >&2
         exit 2
         ;;
 esac

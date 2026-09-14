@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bench.sh <server> <payload> <scenario> <client> [--iters N]
-#     server   : navette | tquic
+#     server   : navette | tquic | lsquic
 #     payload  : 1k | 5k | 15k | 2m
 #     scenario : long-conn | short-conn
 #     client   : tquic_client | h2load
