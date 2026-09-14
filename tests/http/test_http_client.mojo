@@ -5,7 +5,7 @@
 from std.collections.optional import Optional
 from std.memory import Span, UnsafePointer
 from std.memory.unsafe_pointer import alloc as _heap_alloc
-from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1
+from navette.http.session_slot import SessionSlot, SessionSlotPtr
 from navette.http.handler import Capabilities, ALPN_H1, StreamHandler, RecvBody, ResponseWriter, StreamError
 from navette.http.request import Request, RequestBody
 from navette.http.method import Method
@@ -25,7 +25,7 @@ def test_session_slot_from_h1() raises:
     """SessionSlot wraps H1Session and delegates submit."""
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
-    assert_equal_int(Int(slot.kind), Int(SLOT_H1), "kind")
+    assert_true(slot.session.isa[H1Session](), "session is H1")
     assert_true(not slot.is_idle(), "should be active initially")
     var caps = slot.capabilities()
     assert_equal_int(caps.alpn, ALPN_H1, "alpn")

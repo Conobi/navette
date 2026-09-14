@@ -9,7 +9,7 @@ Covers:
 from std.memory import Span
 
 from navette.http.headers import Headers
-from navette.tls.config import QuicServerConfig
+from navette.tls.config import QuicServerConfig, FilterStrategy, PredicateStrategy
 from navette.tls.early_data_filter import FilterDecision
 from navette.tls.early_data_policy import EarlyDataPolicy
 from navette.tls.lib import TlsBackend
@@ -37,15 +37,15 @@ def test_ctor_with_policy_predicate() raises:
         String("policy=predicate must produce max_early_data=u32::MAX"),
     )
     assert_true(
-        cfg._early_data_store is not None,
+        not cfg._early_data.isa[NoneType](),
         String("Predicate must install default store"),
     )
     assert_true(
-        cfg._early_data_filter is None,
+        not cfg._early_data.isa[FilterStrategy](),
         String("Predicate must NOT install IdempotentOnlyFilter"),
     )
     assert_true(
-        cfg._early_data_predicate_fn is not None,
+        cfg._early_data.isa[PredicateStrategy](),
         String("Predicate must populate predicate-fn slot"),
     )
     _ = cfg._handle
@@ -63,7 +63,7 @@ def test_ctor_with_policy_off_predicate_fn_none() raises:
         policy=EarlyDataPolicy.off(),
     )
     assert_true(
-        cfg._early_data_predicate_fn is None,
+        not cfg._early_data.isa[PredicateStrategy](),
         String("Off must leave predicate-fn None"),
     )
     _ = cfg._handle
@@ -81,11 +81,11 @@ def test_ctor_with_policy_idempotent_only_predicate_fn_none() raises:
         policy=EarlyDataPolicy.idempotent_only(),
     )
     assert_true(
-        cfg._early_data_predicate_fn is None,
+        not cfg._early_data.isa[PredicateStrategy](),
         String("IdempotentOnly must leave predicate-fn None"),
     )
     assert_true(
-        cfg._early_data_filter is not None,
+        cfg._early_data.isa[FilterStrategy](),
         String("IdempotentOnly must populate filter slot"),
     )
     _ = cfg._handle
@@ -104,7 +104,7 @@ def test_ctor_legacy_max_early_data_predicate_fn_none() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     assert_true(
-        cfg._early_data_predicate_fn is None,
+        not cfg._early_data.isa[PredicateStrategy](),
         String("Legacy max_early_data must leave predicate-fn None"),
     )
     _ = cfg._handle

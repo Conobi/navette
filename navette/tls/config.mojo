@@ -11,6 +11,7 @@
 from std.memory import UnsafePointer
 from navette.util.owned_alloc import Owned
 from std.memory import Span
+from std.utils import Variant
 
 from .lib import SharedLibrary
 from navette.tls.early_data_filter import (
@@ -19,6 +20,34 @@ from navette.tls.early_data_filter import (
 )
 from navette.tls.early_data_policy import EarlyDataPolicy
 from navette.tls.early_data_store import InMemoryEarlyDataStore
+
+
+struct FilterStrategy(Movable):
+    """IdempotentOnly / Tuned: store + HTTP-method filter."""
+    var store: InMemoryEarlyDataStore
+    var filter: IdempotentOnlyFilter
+
+    def __init__(out self, var store: InMemoryEarlyDataStore, var filter: IdempotentOnlyFilter):
+        self.store = store^
+        self.filter = filter^
+
+    def __init__(out self, *, deinit move: Self):
+        self.store = move.store^
+        self.filter = move.filter^
+
+
+struct PredicateStrategy(Movable):
+    """Predicate: store + user-supplied predicate function."""
+    var store: InMemoryEarlyDataStore
+    var predicate_fn: EarlyDataPredicateFn
+
+    def __init__(out self, var store: InMemoryEarlyDataStore, predicate_fn: EarlyDataPredicateFn):
+        self.store = store^
+        self.predicate_fn = predicate_fn
+
+    def __init__(out self, *, deinit move: Self):
+        self.store = move.store^
+        self.predicate_fn = move.predicate_fn
 
 
 struct TlsClientConfig(Movable):
@@ -176,22 +205,11 @@ struct QuicServerConfig(Movable):
     var _lib: SharedLibrary
     var _handle: Int32
     var _max_early_data: UInt32
-    var _early_data_store: Optional[InMemoryEarlyDataStore]
-    var _early_data_filter: Optional[IdempotentOnlyFilter]
-    """RFC 8470 HTTP early-data filter. Population is per policy
-    variant: Off (or legacy `max_early_data == 0`) populates neither
-    this field nor `_early_data_predicate_fn`; IdempotentOnly / Tuned
-    (or legacy `max_early_data > 0` with `policy` omitted) populate
-    this struct filter, paired with `_early_data_store`; Predicate
-    enables 0-RTT (`max_early_data = u32::MAX`) but leaves this field
-    `None` and populates `_early_data_predicate_fn` instead. The
-    H3-layer dispatch helper reads this field to decide whether to
-    admit or reject (425) a 0-RTT-tagged request."""
-    var _early_data_predicate_fn: Optional[EarlyDataPredicateFn]
-    """User-supplied 0-RTT predicate function from
-    `EarlyDataPolicy.predicate(...)`. Populated only when the policy
-    is the Predicate variant; mutually exclusive with
-    `_early_data_filter` (the synchronised-population invariant)."""
+    var _early_data: Variant[NoneType, FilterStrategy, PredicateStrategy]
+    """Early-data strategy variant: NoneType when 0-RTT is off,
+    FilterStrategy for IdempotentOnly/Tuned (store + HTTP-method filter),
+    PredicateStrategy for user-supplied predicate (store + fn-pointer).
+    Replaces the former 3-Optional synchronised-population invariant."""
 
     def __init__(
         out self,
@@ -356,66 +374,49 @@ struct QuicServerConfig(Movable):
             var err = rlib[].last_error()
             self._handle = Int32(-1)
             self._max_early_data = UInt32(0)
-            self._early_data_store = None
-            self._early_data_filter = None
-            self._early_data_predicate_fn = None
+            self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](NoneType())
             raise "quic_server_config_new failed: " + err
         self._handle = out_handle[0]
         # Keep out_handle_buf alive across the post-FFI `[0]` read above
         # (origin-tie should suffice; defensive against ASAP free).
         _ = out_handle_buf
         self._max_early_data = effective_max_early_data
-        # Synchronised-population invariant: when 0-RTT is enabled,
-        # exactly one of `_early_data_filter` / `_early_data_predicate_fn`
-        # is Some; the store is Some in both cases. When 0-RTT is
-        # disabled, all three are None.
+        # Variant-based early-data strategy: NoneType when off,
+        # FilterStrategy for IdempotentOnly/Tuned, PredicateStrategy
+        # for user-supplied predicate. The Variant makes the illegal
+        # state (filter + predicate both populated) unrepresentable.
         if effective_max_early_data == UInt32(0):
-            self._early_data_store = None
-            self._early_data_filter = None
-            self._early_data_predicate_fn = None
+            self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](NoneType())
         elif policy is not None and policy.value().is_predicate():
-            # Predicate variant: default store, no struct filter,
-            # carry the fn-pointer.
-            self._early_data_store = Optional[InMemoryEarlyDataStore](
-                InMemoryEarlyDataStore()
-            )
-            self._early_data_filter = None
-            self._early_data_predicate_fn = policy.value().predicate_fn()
-        elif policy is not None and policy.value().is_tuned():
-            # Tuned: thread the caller's store config through to
-            # the in-memory store. `store_config()` returns Some
-            # by construction whenever `is_tuned()` is true, so
-            # the inner `.value()` is safe here.
-            self._early_data_store = Optional[InMemoryEarlyDataStore](
-                InMemoryEarlyDataStore(
-                    config=policy.value().store_config().value().copy()
+            self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](
+                PredicateStrategy(
+                    InMemoryEarlyDataStore(),
+                    policy.value().predicate_fn().value(),
                 )
             )
-            self._early_data_filter = Optional[IdempotentOnlyFilter](
-                IdempotentOnlyFilter()
+        elif policy is not None and policy.value().is_tuned():
+            self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](
+                FilterStrategy(
+                    InMemoryEarlyDataStore(
+                        config=policy.value().store_config().value().copy()
+                    ),
+                    IdempotentOnlyFilter(),
+                )
             )
-            self._early_data_predicate_fn = None
         else:
             # IdempotentOnly, or the omitted-policy legacy path
-            # (`max_early_data > 0` without `policy=`): install
-            # the default store config so the synchronised-
-            # population invariant holds for both enable
-            # surfaces.
-            self._early_data_store = Optional[InMemoryEarlyDataStore](
-                InMemoryEarlyDataStore()
+            self._early_data = Variant[NoneType, FilterStrategy, PredicateStrategy](
+                FilterStrategy(
+                    InMemoryEarlyDataStore(),
+                    IdempotentOnlyFilter(),
+                )
             )
-            self._early_data_filter = Optional[IdempotentOnlyFilter](
-                IdempotentOnlyFilter()
-            )
-            self._early_data_predicate_fn = None
 
     def __init__(out self, *, deinit take: Self):
         self._lib = take._lib^
         self._handle = take._handle
         self._max_early_data = take._max_early_data
-        self._early_data_store = take._early_data_store^
-        self._early_data_filter = take._early_data_filter^
-        self._early_data_predicate_fn = take._early_data_predicate_fn
+        self._early_data = take._early_data^
 
     def __del__(deinit self):
         if self._handle > 0:
@@ -431,6 +432,29 @@ struct QuicServerConfig(Movable):
         means 0-RTT is disabled (rejection mode); UInt32::MAX means
         0-RTT decrypt is enabled (rustls QUIC constraint, RFC 9001 §4.6.1)."""
         return self._max_early_data
+
+    def early_data_store(
+        self,
+    ) -> Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]]:
+        """Return a pointer to the early-data store, or None for Off.
+
+        Both FilterStrategy and PredicateStrategy carry a store;
+        NoneType means 0-RTT is off. The pointer is valid for the
+        config's lifetime.
+        """
+        if self._early_data.isa[FilterStrategy]():
+            return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                rebind[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                    UnsafePointer(to=self._early_data.unsafe_get[FilterStrategy]().store)
+                )
+            )
+        if self._early_data.isa[PredicateStrategy]():
+            return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                rebind[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                    UnsafePointer(to=self._early_data.unsafe_get[PredicateStrategy]().store)
+                )
+            )
+        return None
 
 
 struct QuicClientConfig(Movable):

@@ -72,7 +72,7 @@ from boucle._sys.linux.raw import (
 from boucle._sys.linux.raw.ctypes import c_void
 
 from navette.tls.lib import TlsBackend
-from navette.tls.config import QuicServerConfig
+from navette.tls.config import QuicServerConfig, FilterStrategy, PredicateStrategy
 from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFilter
 from navette.http.handler import StreamHandler
 from navette.http.headers import Headers
@@ -922,30 +922,25 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # Per-conn StreamHandler — produced by the user-supplied factory.
         var handler = self.make_handler()
 
-        # Promote QuicServerConfig._early_data_filter into a raw pointer the
-        # H3 adapter dispatches via on `_on_request`. Mirrors how
-        # `QuicConnection.server` promotes the `_early_data_store`
-        # reference — the pointer is valid for the connection's lifetime
-        # because `self.server_config` outlives every connection here.
-        # `rebind` lifts the inferred config-bound origin to `MutAnyOrigin`
-        # so the pointer can be stored alongside the existing
-        # `_early_data_store_ptr` shape.
+        # Extract early-data filter/predicate from the Variant-based config.
+        # The pointer is valid for the connection's lifetime because
+        # `self.server_config` outlives every connection here.
         var early_data_filter_ptr_opt = Optional[
             UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
         ](None)
-        if self.server_config._early_data_filter is not None:
+        if self.server_config._early_data.isa[FilterStrategy]():
             var filter_ptr = rebind[
                 UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
-            ](UnsafePointer(to=self.server_config._early_data_filter.value()))
+            ](UnsafePointer(to=self.server_config._early_data.unsafe_get[FilterStrategy]().filter))
             early_data_filter_ptr_opt = Optional[
                 UnsafePointer[IdempotentOnlyFilter, MutAnyOrigin]
             ](filter_ptr)
 
-        # Thread the policy's predicate-fn (if any) into the per-connection
-        # adapter ctor. The fn-pointer is Optional[EarlyDataPredicateFn] —
-        # trivially copyable in Mojo 1.0.0b1 — so no pointer-lifetime
-        # threading is needed (unlike the IdempotentOnlyFilter struct above).
-        var predicate_fn_opt = self.server_config._early_data_predicate_fn
+        var predicate_fn_opt = Optional[EarlyDataPredicateFn](None)
+        if self.server_config._early_data.isa[PredicateStrategy]():
+            predicate_fn_opt = Optional[EarlyDataPredicateFn](
+                self.server_config._early_data.unsafe_get[PredicateStrategy]().predicate_fn
+            )
 
         var h3 = H3HandlerServer[Self.H](
             quic=quic^,
