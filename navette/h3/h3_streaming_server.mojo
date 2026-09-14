@@ -537,7 +537,7 @@ struct H3StreamingServer(Movable):
                 break
             var ev = ev_opt.unsafe_take()
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                if Int(ev.stream_id) not in self._streams:
+                if Int(ev.as_headers().stream_id) not in self._streams:
                     self._on_request(ev)
                 else:
                     self._on_trailers(ev)
@@ -557,14 +557,15 @@ struct H3StreamingServer(Movable):
         H3StreamingCtx + CoroHandle (via CoroutinePool) on heap, register in
         streams dict, and do the first resume.
         A separate STREAM_ENDED event handles bodyless GETs."""
+        ref hp = ev.as_headers()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for i in range(len(hp.fields)):
+            var name = hp.fields[i].name
+            var value = hp.fields[i].value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -605,7 +606,7 @@ struct H3StreamingServer(Movable):
         # so the helper is called with `profile_ptr=None`.
         var stream_is_zr = False
         if self._h3._quic.zero_rtt_enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, hp.stream_id)
             var _no_profile = Optional[
                 UnsafePointer[AcceptProfile, MutAnyOrigin]
             ](None)
@@ -619,7 +620,7 @@ struct H3StreamingServer(Movable):
                 _no_profile,
             )
             if outcome.should_send_425():
-                send_425_response(ev.stream_id, self._h3)
+                send_425_response(hp.stream_id, self._h3)
                 return
 
         var req = Request(
@@ -629,14 +630,14 @@ struct H3StreamingServer(Movable):
             headers=req_headers^,
         )
 
-        var stream_id = Int(ev.stream_id)
+        var stream_id = Int(hp.stream_id)
 
         # Allocate ctx from pool
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = H3StreamingCtx(
             request=req^,
             caps=Capabilities.for_h3(is_early_data=stream_is_zr),
-            stream_id=ev.stream_id,
+            stream_id=hp.stream_id,
             extra_data=self._extra_data,
         )
 
@@ -658,16 +659,17 @@ struct H3StreamingServer(Movable):
     def _on_trailers(mut self, ev: H3Event) raises:
         """Second HEADERS_RECEIVED on an open stream = trailers.
         Push as BodyFrame.trailers into body_frame_ring, resume coroutine."""
-        var sid = Int(ev.stream_id)
+        ref tp = ev.as_headers()
+        var sid = Int(tp.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
         var trailer_headers = Headers()
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
+        for i in range(len(tp.fields)):
+            var name = tp.fields[i].name
             if not name.startswith(":"):
-                trailer_headers.add(name, ev.fields[i].value)
+                trailer_headers.add(name, tp.fields[i].value)
         ctx.body_frame_ring.append(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
@@ -678,19 +680,20 @@ struct H3StreamingServer(Movable):
     def _on_data(mut self, ev: H3Event) raises:
         """DATA_RECEIVED: push data into body_frame_ring, resume coroutine.
         No flow-control ACK — QUIC handles FC internally."""
-        var sid = Int(ev.stream_id)
+        ref dp = ev.as_stream_data()
+        var sid = Int(dp.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var data_copy = List[UInt8](copy=dp.data)
         ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
         ctx_ptr.init_pointee_move(ctx^)
         self._resume_stream(sid)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark body ended, resume coroutine."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_end().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -706,7 +709,7 @@ struct H3StreamingServer(Movable):
     def _on_stream_reset(mut self, ev: H3Event) raises:
         """STREAM_RESET / STOP_SENDING: set cancelled, resume once for unwind,
         then pop BEFORE free."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()

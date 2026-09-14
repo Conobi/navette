@@ -319,16 +319,17 @@ struct H3Session(Session):
 
     def _on_response_headers(mut self, ev: H3Event) raises:
         """Parse :status and regular headers from HEADERS_RECEIVED event."""
-        var sid = Int(ev.stream_id)
+        ref hp = ev.as_headers()
+        var sid = Int(hp.stream_id)
         var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
         var ctx = ctx_ptr.take_pointee()
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for i in range(len(hp.fields)):
+            var name = hp.fields[i].name
+            var value = hp.fields[i].value
             if name == ":status":
                 try:
                     ctx.status_code = atol(value)
@@ -340,20 +341,21 @@ struct H3Session(Session):
 
     def _on_response_data(mut self, ev: H3Event) raises:
         """Accumulate DATA_RECEIVED payload."""
-        var sid = Int(ev.stream_id)
+        ref dp = ev.as_stream_data()
+        var sid = Int(dp.stream_id)
         var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
         var ctx = ctx_ptr.take_pointee()
-        for i in range(len(ev.data)):
-            ctx.body_data.append(ev.data[i])
+        for i in range(len(dp.data)):
+            ctx.body_data.append(dp.data[i])
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark stream complete."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_end().stream_id)
         var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
@@ -365,7 +367,8 @@ struct H3Session(Session):
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
         """STREAM_RESET: mark stream errored."""
-        var sid = Int(ev.stream_id)
+        ref rp = ev.as_stream_reset()
+        var sid = Int(rp.stream_id)
         var ctx_ptr: UnsafePointer[_H3ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
@@ -373,6 +376,6 @@ struct H3Session(Session):
             return
         var ctx = ctx_ptr.take_pointee()
         ctx.errored = True
-        ctx.error_code = ev.error_code
+        ctx.error_code = rp.error_code
         ctx.complete = True
         ctx_ptr.init_pointee_move(ctx^)

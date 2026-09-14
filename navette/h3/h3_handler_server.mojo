@@ -285,14 +285,15 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def _on_request(mut self, ev: H3Event, now: UInt64) raises:
         """Parse pseudo-headers from QPACK fields, build Request, invoke handler."""
+        ref hp = ev.as_headers()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for i in range(len(hp.fields)):
+            var name = hp.fields[i].name
+            var value = hp.fields[i].value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -331,7 +332,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # `Early-Data: 1` into req_headers.
         var stream_is_zr = False
         if self._h3._quic.zero_rtt_enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, hp.stream_id)
             var outcome = apply_early_data_filter(
                 method_str,
                 path_str,
@@ -342,7 +343,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self.profile_ptr,
             )
             if outcome.should_send_425():
-                send_425_response(ev.stream_id, self._h3)
+                send_425_response(hp.stream_id, self._h3)
                 return
 
         var req = Request(
@@ -372,7 +373,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 resp,
                 Capabilities.for_h3(
                     is_early_data=stream_is_zr,
-                    stream_id=ev.stream_id,
+                    stream_id=hp.stream_id,
                     conn_id=conn_id_u64,
                     peer_addr=peer_addr_str^,
                 ),
@@ -388,15 +389,16 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx.resp_writer = resp^
         ctx.detached = detached
         ctx_ptr.init_pointee_move(ctx^)
-        self._streams[Int(ev.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
+        self._streams[Int(hp.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
 
     def _on_data(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
+        ref dp = ev.as_stream_data()
+        var sid = Int(dp.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var data_copy = List[UInt8](copy=dp.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
         if not ctx.detached:
             try:
@@ -406,7 +408,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_end().stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -424,12 +426,13 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
+        ref rp = ev.as_stream_reset()
+        var sid = Int(rp.stream_id)
         if sid not in self._streams:
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var err = StreamError.rst_stream(UInt32(ev.error_code))
+        var err = StreamError.rst_stream(UInt32(rp.error_code))
         self.handler.on_reset(err)
         _ = self._streams.pop(sid)
         ctx_ptr.free()

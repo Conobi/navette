@@ -383,7 +383,7 @@ struct H3CoroServer(Movable):
                 break
             var ev = ev_opt.unsafe_take()
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                if Int(ev.stream_id) not in self._streams:
+                if Int(ev.as_headers().stream_id) not in self._streams:
                     self._on_request(ev)
                 else:
                     self._on_trailers(ev)
@@ -403,14 +403,15 @@ struct H3CoroServer(Movable):
         CoroStreamCtx on heap, register in streams dict, and run the handler
         synchronously (no coroutine spawn).
         A separate STREAM_ENDED event handles bodyless GETs."""
+        ref p = ev.as_headers()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for i in range(len(p.fields)):
+            var name = p.fields[i].name
+            var value = p.fields[i].value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -451,7 +452,7 @@ struct H3CoroServer(Movable):
         # so the helper is called with `profile_ptr=None`.
         var stream_is_zr = False
         if self._h3._quic.zero_rtt_enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, p.stream_id)
             var _no_profile = Optional[
                 UnsafePointer[AcceptProfile, MutAnyOrigin]
             ](None)
@@ -465,7 +466,7 @@ struct H3CoroServer(Movable):
                 _no_profile,
             )
             if outcome.should_send_425():
-                send_425_response(ev.stream_id, self._h3)
+                send_425_response(p.stream_id, self._h3)
                 return
 
         var req = Request(
@@ -475,13 +476,13 @@ struct H3CoroServer(Movable):
             headers=req_headers^,
         )
 
-        var stream_id = Int(ev.stream_id)
+        var stream_id = Int(p.stream_id)
 
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = CoroStreamCtx(
             request=req^,
             caps=Capabilities.for_h3(is_early_data=stream_is_zr),
-            stream_id=ev.stream_id,
+            stream_id=p.stream_id,
             extra_data=self._extra_data,
         )
 
@@ -494,16 +495,17 @@ struct H3CoroServer(Movable):
     def _on_trailers(mut self, ev: H3Event) raises:
         """Second HEADERS_RECEIVED on an open stream = trailers.
         Push as BodyFrame.trailers (skip pseudo-headers)."""
-        var sid = Int(ev.stream_id)
+        ref p = ev.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
         var trailer_headers = Headers()
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
+        for i in range(len(p.fields)):
+            var name = p.fields[i].name
             if not name.startswith(":"):
-                trailer_headers.add(name, ev.fields[i].value)
+                trailer_headers.add(name, p.fields[i].value)
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
@@ -514,18 +516,19 @@ struct H3CoroServer(Movable):
     def _on_data(mut self, ev: H3Event) raises:
         """DATA_RECEIVED: push data into RecvBody.
         No flow-control ACK — QUIC handles FC internally."""
-        var sid = Int(ev.stream_id)
+        ref p = ev.as_stream_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var data_copy = List[UInt8](copy=p.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:
         """STREAM_ENDED: mark the body as ended."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_end().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -539,7 +542,7 @@ struct H3CoroServer(Movable):
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
         """STREAM_RESET: tear down the stream."""
-        var sid = Int(ev.stream_id)
+        var sid = Int(ev.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
