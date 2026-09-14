@@ -14,6 +14,7 @@
 from std.collections import Dict, Optional
 from std.ffi import external_call
 from std.memory import UnsafePointer, Span
+from std.utils import Variant
 from navette.util.owned_alloc import Owned
 
 from navette.tls.lib import SharedLibrary
@@ -26,6 +27,7 @@ from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION,
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.frame import (
     Frame,
+    FramePayload,
     AckFrame,
     CryptoFrame,
     ConnectionCloseFrame,
@@ -286,11 +288,90 @@ struct SentStreamFrame(Copyable, Movable):
         self.cid_seq = take.cid_seq
 
 
+# ── QuicEvent payload structs ────────────────────────────────────────
+
+
+struct ConnectionClosedPayload(Copyable, Movable):
+    """Payload for QuicEvent.CONNECTION_CLOSED."""
+
+    var error_code: UInt64
+    var reason: String
+
+    def __init__(out self, error_code: UInt64, var reason: String):
+        self.error_code = error_code
+        self.reason = reason^
+
+    def __init__(out self, *, copy: Self):
+        self.error_code = copy.error_code
+        self.reason = copy.reason
+
+    def __init__(out self, *, deinit move: Self):
+        self.error_code = move.error_code
+        self.reason = move.reason^
+
+
+struct StreamResetPayload(Copyable, Movable):
+    """Payload for QuicEvent.STREAM_RESET."""
+
+    var stream_id: UInt64
+    var error_code: UInt64
+    var final_size: UInt64
+
+    def __init__(out self, stream_id: UInt64, error_code: UInt64, final_size: UInt64):
+        self.stream_id = stream_id
+        self.error_code = error_code
+        self.final_size = final_size
+
+    def __init__(out self, *, copy: Self):
+        self.stream_id = copy.stream_id
+        self.error_code = copy.error_code
+        self.final_size = copy.final_size
+
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.error_code = move.error_code
+        self.final_size = move.final_size
+
+
+struct StreamStoppedPayload(Copyable, Movable):
+    """Payload for QuicEvent.STREAM_STOPPED."""
+
+    var stream_id: UInt64
+    var error_code: UInt64
+
+    def __init__(out self, stream_id: UInt64, error_code: UInt64):
+        self.stream_id = stream_id
+        self.error_code = error_code
+
+    def __init__(out self, *, copy: Self):
+        self.stream_id = copy.stream_id
+        self.error_code = copy.error_code
+
+    def __init__(out self, *, deinit move: Self):
+        self.stream_id = move.stream_id
+        self.error_code = move.error_code
+
+
+comptime QuicEventPayload = Variant[
+    NoneType,                  # HANDSHAKE_COMPLETE
+    ConnectionClosedPayload,   # CONNECTION_CLOSED
+    TransportParams,           # PEER_TRANSPORT_PARAMS
+    UInt64,                    # STREAM_READABLE, STREAM_WRITABLE, STREAM_OPENED (stream_id)
+    StreamResetPayload,        # STREAM_RESET
+    StreamStoppedPayload,      # STREAM_STOPPED
+    List[UInt8],               # DATAGRAM_RECEIVED
+]
+
+
 # ── QuicEvent ────────────────────────────────────────────────────────
 
 
 struct QuicEvent(Copyable, Movable):
-    """Event emitted by QuicConnection for the application layer."""
+    """Event emitted by QuicConnection for the application layer.
+
+    `type_id` identifies the event kind; `payload` holds the
+    event-specific data via a 7-element Variant.
+    """
 
     comptime HANDSHAKE_COMPLETE: UInt8 = 1
     comptime CONNECTION_CLOSED: UInt8 = 2
@@ -300,112 +381,71 @@ struct QuicEvent(Copyable, Movable):
     comptime STREAM_RESET: UInt8 = 7
     comptime STREAM_STOPPED: UInt8 = 8
     comptime STREAM_OPENED: UInt8 = 9
-    # RFC 9221 §5: a QUIC DATAGRAM frame was received and decoded. The
-    # payload bytes are owned by the event (in `datagram_payload`) so the
-    # caller can drain QuicEvent without re-borrowing into the connection.
     comptime DATAGRAM_RECEIVED: UInt8 = 10
 
     var type_id: UInt8
-    var error_code: UInt64
-    var reason: String
-    var transport_params: Optional[TransportParams]
-    var stream_id: UInt64
-    var final_size: UInt64
-    # Owned DATAGRAM payload (RFC 9221 §5 received-frame path). Only
-    # populated when type_id == DATAGRAM_RECEIVED; the field stays an empty
-    # List for every other event kind to keep the struct copyable without
-    # an Optional branch in the hot path.
-    var datagram_payload: List[UInt8]
+    var payload: QuicEventPayload
 
-    def __init__(out self, type_id: UInt8):
+    def __init__(out self, type_id: UInt8, var payload: QuicEventPayload):
         self.type_id = type_id
-        self.error_code = UInt64(0)
-        self.reason = String("")
-        self.transport_params = None
-        self.stream_id = UInt64(0)
-        self.final_size = UInt64(0)
-        self.datagram_payload = List[UInt8]()
+        self.payload = payload^
 
-    def __init__(out self, *, other: Self):
-        self.type_id = other.type_id
-        self.error_code = other.error_code
-        self.reason = other.reason
-        self.transport_params = other.transport_params.copy()
-        self.stream_id = other.stream_id
-        self.final_size = other.final_size
-        self.datagram_payload = List[UInt8](copy=other.datagram_payload)
+    def __init__(out self, *, copy: Self):
+        self.type_id = copy.type_id
+        self.payload = QuicEventPayload(copy=copy.payload)
 
-    def __init__(out self, *, deinit take: Self):
-        self.type_id = take.type_id
-        self.error_code = take.error_code
-        self.reason = take.reason^
-        self.transport_params = take.transport_params^
-        self.stream_id = take.stream_id
-        self.final_size = take.final_size
-        self.datagram_payload = take.datagram_payload^
+    def __init__(out self, *, deinit move: Self):
+        self.type_id = move.type_id
+        self.payload = move.payload^
 
     @staticmethod
     def handshake_complete() -> QuicEvent:
-        return QuicEvent(QuicEvent.HANDSHAKE_COMPLETE)
+        return QuicEvent(QuicEvent.HANDSHAKE_COMPLETE, QuicEventPayload(NoneType()))
 
     @staticmethod
-    def connection_closed(error_code: UInt64, reason: String) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.CONNECTION_CLOSED)
-        ev.error_code = error_code
-        ev.reason = reason
-        return ev^
+    def connection_closed(error_code: UInt64, var reason: String) -> QuicEvent:
+        return QuicEvent(
+            QuicEvent.CONNECTION_CLOSED,
+            QuicEventPayload(ConnectionClosedPayload(error_code, reason^)),
+        )
 
     @staticmethod
     def peer_transport_params(params: TransportParams) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.PEER_TRANSPORT_PARAMS)
-        ev.transport_params = TransportParams(other=params)
-        return ev^
+        return QuicEvent(
+            QuicEvent.PEER_TRANSPORT_PARAMS,
+            QuicEventPayload(TransportParams(other=params)),
+        )
 
     @staticmethod
     def stream_readable(stream_id: UInt64) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.STREAM_READABLE)
-        ev.stream_id = stream_id
-        return ev^
+        return QuicEvent(QuicEvent.STREAM_READABLE, QuicEventPayload(stream_id))
 
     @staticmethod
     def stream_writable(stream_id: UInt64) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.STREAM_WRITABLE)
-        ev.stream_id = stream_id
-        return ev^
+        return QuicEvent(QuicEvent.STREAM_WRITABLE, QuicEventPayload(stream_id))
 
     @staticmethod
     def stream_reset(stream_id: UInt64, error_code: UInt64, final_size: UInt64) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.STREAM_RESET)
-        ev.stream_id = stream_id
-        ev.error_code = error_code
-        ev.final_size = final_size
-        return ev^
+        return QuicEvent(
+            QuicEvent.STREAM_RESET,
+            QuicEventPayload(StreamResetPayload(stream_id, error_code, final_size)),
+        )
 
     @staticmethod
     def stream_stopped(stream_id: UInt64, error_code: UInt64) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.STREAM_STOPPED)
-        ev.stream_id = stream_id
-        ev.error_code = error_code
-        return ev^
+        return QuicEvent(
+            QuicEvent.STREAM_STOPPED,
+            QuicEventPayload(StreamStoppedPayload(stream_id, error_code)),
+        )
 
     @staticmethod
     def stream_opened(stream_id: UInt64) -> QuicEvent:
-        var ev = QuicEvent(QuicEvent.STREAM_OPENED)
-        ev.stream_id = stream_id
-        return ev^
+        return QuicEvent(QuicEvent.STREAM_OPENED, QuicEventPayload(stream_id))
 
     @staticmethod
-    def datagram_received(payload: List[UInt8]) -> QuicEvent:
-        """RFC 9221 §5 — a peer-sent QUIC DATAGRAM has been parsed.
-
-        `payload` carries the inner bytes of the DATAGRAM frame (no length
-        prefix). The event owns its copy of the payload so the caller can
-        drain QuicEvent independently from the QuicConnection's frame
-        ownership lifetime.
-        """
-        var ev = QuicEvent(QuicEvent.DATAGRAM_RECEIVED)
-        ev.datagram_payload = List[UInt8](copy=payload)
-        return ev^
+    def datagram_received(var payload: List[UInt8]) -> QuicEvent:
+        """Surface a received DATAGRAM to the application (RFC 9221)."""
+        return QuicEvent(QuicEvent.DATAGRAM_RECEIVED, QuicEventPayload(payload^))
 
 
 # ── QuicConnection ───────────────────────────────────────────────────
@@ -2024,37 +2064,33 @@ struct QuicConnection(Movable):
 
         # ACK
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
-            if frame._ack:
-                var ack_frame = frame._ack.value().copy()
-                self._handle_ack(ack_frame, space_idx, now)
+            self._handle_ack(frame.payload.unsafe_get[AckFrame](), space_idx, now)
             return
 
         # CRYPTO
         if tid == FRAME_CRYPTO:
-            if frame._crypto:
-                var cf = frame._crypto.value().copy()
-                self.crypto_streams[space_idx].receive(
-                    cf.offset, Span(cf.data)
-                )
+            ref cf = frame.payload.unsafe_get[CryptoFrame]()
+            self.crypto_streams[space_idx].receive(
+                cf.offset, Span(cf.data)
+            )
             return
 
         # CONNECTION_CLOSE
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            if frame._conn_close:
-                var cc = frame._conn_close.value().copy()
-                self.state = self.state | CONN_DRAINING
-                # Start drain timer: 3 * PTO.
-                var pto = self.recovery.pto_timeout(
-                    self.local_params.max_ack_delay * 1000
-                )
-                self.drain_timer = now + 3 * pto
-                # Build reason string from bytes.
-                var reason = String("")
-                for i in range(len(cc.reason)):
-                    reason += chr(Int(cc.reason[i]))
-                self.events.append(
-                    QuicEvent.connection_closed(cc.error_code, reason)
-                )
+            ref cc = frame.payload.unsafe_get[ConnectionCloseFrame]()
+            self.state = self.state | CONN_DRAINING
+            # Start drain timer: 3 * PTO.
+            var pto = self.recovery.pto_timeout(
+                self.local_params.max_ack_delay * 1000
+            )
+            self.drain_timer = now + 3 * pto
+            # Build reason string from bytes.
+            var reason = String("")
+            for i in range(len(cc.reason)):
+                reason += chr(Int(cc.reason[i]))
+            self.events.append(
+                QuicEvent.connection_closed(cc.error_code, reason)
+            )
             return
 
         # HANDSHAKE_DONE (client receives from server)
@@ -2093,131 +2129,119 @@ struct QuicConnection(Movable):
 
         # NEW_CONNECTION_ID: validate encoding, then hand off to CidManager.
         if tid == FRAME_NEW_CONNECTION_ID:
-            if frame._new_cid:
-                var nc = frame._new_cid.value().copy()
-                # F22 — RFC 9000 §19.15: `retire_prior_to` MUST NOT exceed
-                # `sequence`. Close with FRAME_ENCODING_ERROR (0x07).
-                var _v_cid_rpt = check_new_connection_id_retire_prior(
-                    nc.sequence, nc.retire_prior_to
-                )
-                if _v_cid_rpt:
-                    var _vv = _v_cid_rpt.value().copy()
-                    self.close_transport(_vv.error_code, _vv.tag, now)
-                    return
-                # F23 — RFC 9000 §19.15: connection id `Length` MUST be in
-                # 1..20. A zero-length CID is FRAME_ENCODING_ERROR (0x07).
-                var _v_cid_len = check_new_connection_id_length(
-                    UInt64(len(nc.cid))
-                )
-                if _v_cid_len:
-                    var _vv2 = _v_cid_len.value().copy()
-                    self.close_transport(_vv2.error_code, _vv2.tag, now)
-                    return
-                self.cid_mgr.on_new_connection_id(
-                    nc.sequence,
-                    nc.retire_prior_to,
-                    List[UInt8](copy=nc.cid),
-                    List[UInt8](copy=nc.stateless_reset_token),
-                )
+            ref nc = frame.payload.unsafe_get[NewConnectionIdFrame]()
+            # F22 — retire_prior_to MUST NOT exceed sequence. Close with
+            # FRAME_ENCODING_ERROR (0x07).
+            var _v_cid_rpt = check_new_connection_id_retire_prior(
+                nc.sequence, nc.retire_prior_to
+            )
+            if _v_cid_rpt:
+                var _vv = _v_cid_rpt.value().copy()
+                self.close_transport(_vv.error_code, _vv.tag, now)
+                return
+            # F23 — connection id Length MUST be in 1..20. A zero-length
+            # CID is FRAME_ENCODING_ERROR (0x07).
+            var _v_cid_len = check_new_connection_id_length(
+                UInt64(len(nc.cid))
+            )
+            if _v_cid_len:
+                var _vv2 = _v_cid_len.value().copy()
+                self.close_transport(_vv2.error_code, _vv2.tag, now)
+                return
+            self.cid_mgr.on_new_connection_id(
+                nc.sequence,
+                nc.retire_prior_to,
+                List[UInt8](copy=nc.cid),
+                List[UInt8](copy=nc.stateless_reset_token),
+            )
             return
 
         # RETIRE_CONNECTION_ID: hand off to CidManager.
         if tid == FRAME_RETIRE_CONNECTION_ID:
-            if frame._retire_cid:
-                self.cid_mgr.on_retire_connection_id(frame._retire_cid.value())
+            self.cid_mgr.on_retire_connection_id(frame.payload.unsafe_get[UInt64]())
             return
 
         # STREAM frames (0x08-0x0F).
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
-            if frame._stream:
-                var sf = frame._stream.value().copy()
-                self._handle_stream_frame(sf)
+            self._handle_stream_frame(frame.payload.unsafe_get[StreamFrame]())
             return
 
         if tid == FRAME_RESET_STREAM:
-            if frame._reset_stream:
-                var rf = frame._reset_stream.value().copy()
-                self._handle_reset_stream(rf)
+            self._handle_reset_stream(frame.payload.unsafe_get[ResetStreamFrame]())
             return
 
         if tid == FRAME_STOP_SENDING:
-            if frame._stop_sending:
-                var ssf = frame._stop_sending.value().copy()
-                self._handle_stop_sending(ssf)
+            self._handle_stop_sending(frame.payload.unsafe_get[StopSendingFrame]())
             return
 
         if tid == FRAME_MAX_DATA:
-            if frame._max_data:
-                self.stream_map.conn_fc_send.ensure_limit(frame._max_data.value())
-                # Reset blocked_at so we can emit DATA_BLOCKED again at the new limit.
-                self.stream_map.conn_fc_send.blocked_at = UInt64(0)
+            self.stream_map.conn_fc_send.ensure_limit(frame.payload.unsafe_get[UInt64]())
+            # Reset blocked_at so we can emit DATA_BLOCKED again at the new limit.
+            self.stream_map.conn_fc_send.blocked_at = UInt64(0)
             return
 
         if tid == FRAME_MAX_STREAM_DATA:
-            if frame._max_stream_data:
-                var msd = frame._max_stream_data.value().copy()
-                var key = Int(msd.stream_id)
-                # F18 / F19 — RFC 9000 §19.10: MAX_STREAM_DATA must target a
-                # stream the recipient sends on. Unknown stream id → F18;
-                # known but recv-only stream → F19. Both are
-                # STREAM_STATE_ERROR. Computed before any state mutation.
-                var _exists = key in self.stream_map.streams
-                var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
-                    msd.stream_id, self.is_server
-                )
-                var _ctx_msd = MaxStreamDataCtx(
-                    stream_id=msd.stream_id,
-                    exists=_exists,
-                    has_send_side=_has_send,
-                )
-                var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
-                if _verdict_msd:
-                    var _v_msd = _verdict_msd.value().copy()
-                    self.close_transport(_v_msd.error_code, _v_msd.tag, now)
-                    return
-                var stream = self.stream_map.get_stream(key)
-                if stream.fc_send:
-                    var fc = stream.fc_send.value().copy()
-                    var old_limit = fc.limit
-                    fc.ensure_limit(msd.maximum)
-                    var grew = fc.limit > old_limit
-                    if grew:
-                        fc.blocked_at = UInt64(0)   # allow re-emission at new limit
-                    stream.fc_send = fc^
-                    self.stream_map.set_stream(key, stream^)
-                    if grew:
-                        self.events.append(QuicEvent.stream_writable(msd.stream_id))
+            ref msd = frame.payload.unsafe_get[MaxStreamDataFrame]()
+            var key = Int(msd.stream_id)
+            # F18 / F19 — MAX_STREAM_DATA must target a
+            # stream the recipient sends on. Unknown stream id → F18;
+            # known but recv-only stream → F19. Both are
+            # STREAM_STATE_ERROR. Computed before any state mutation.
+            var _exists = key in self.stream_map.streams
+            var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
+                msd.stream_id, self.is_server
+            )
+            var _ctx_msd = MaxStreamDataCtx(
+                stream_id=msd.stream_id,
+                exists=_exists,
+                has_send_side=_has_send,
+            )
+            var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
+            if _verdict_msd:
+                var _v_msd = _verdict_msd.value().copy()
+                self.close_transport(_v_msd.error_code, _v_msd.tag, now)
+                return
+            var stream = self.stream_map.get_stream(key)
+            if stream.fc_send:
+                var fc = stream.fc_send.value().copy()
+                var old_limit = fc.limit
+                fc.ensure_limit(msd.maximum)
+                var grew = fc.limit > old_limit
+                if grew:
+                    fc.blocked_at = UInt64(0)   # allow re-emission at new limit
+                stream.fc_send = fc^
+                self.stream_map.set_stream(key, stream^)
+                if grew:
+                    self.events.append(QuicEvent.stream_writable(msd.stream_id))
             return
 
         if tid == FRAME_MAX_STREAMS_BIDI:
-            if frame._max_streams:
-                var ms = frame._max_streams.value().copy()
-                # F20 — RFC 9000 §19.11: a MAX_STREAMS value > 2^60 cannot
-                # encode a valid stream id. Close with FRAME_ENCODING_ERROR.
-                var _v_ms_bidi = check_max_streams_value(ms.maximum)
-                if _v_ms_bidi:
-                    var _vv = _v_ms_bidi.value().copy()
-                    self.close_transport(_vv.error_code, _vv.tag, now)
-                    return
-                if ms.maximum > self.stream_map.peer_max_streams_bidi:
-                    self.stream_map.peer_max_streams_bidi = ms.maximum
-                    # Peer granted more streams; reset dedup so we re-notify if we hit the new limit.
-                    self.stream_map.needs_streams_blocked_bidi = False
-                    self.stream_map.streams_blocked_at_bidi = UInt64(0)
+            ref ms = frame.payload.unsafe_get[MaxStreamsFrame]()
+            # F20 — a MAX_STREAMS value > 2^60 cannot
+            # encode a valid stream id. Close with FRAME_ENCODING_ERROR.
+            var _v_ms_bidi = check_max_streams_value(ms.maximum)
+            if _v_ms_bidi:
+                var _vv = _v_ms_bidi.value().copy()
+                self.close_transport(_vv.error_code, _vv.tag, now)
+                return
+            if ms.maximum > self.stream_map.peer_max_streams_bidi:
+                self.stream_map.peer_max_streams_bidi = ms.maximum
+                # Peer granted more streams; reset dedup so we re-notify if we hit the new limit.
+                self.stream_map.needs_streams_blocked_bidi = False
+                self.stream_map.streams_blocked_at_bidi = UInt64(0)
             return
 
         if tid == FRAME_MAX_STREAMS_UNI:
-            if frame._max_streams:
-                var ms = frame._max_streams.value().copy()
-                var _v_ms_uni = check_max_streams_value(ms.maximum)
-                if _v_ms_uni:
-                    var _vv = _v_ms_uni.value().copy()
-                    self.close_transport(_vv.error_code, _vv.tag, now)
-                    return
-                if ms.maximum > self.stream_map.peer_max_streams_uni:
-                    self.stream_map.peer_max_streams_uni = ms.maximum
-                    self.stream_map.needs_streams_blocked_uni = False
-                    self.stream_map.streams_blocked_at_uni = UInt64(0)
+            ref ms = frame.payload.unsafe_get[MaxStreamsFrame]()
+            var _v_ms_uni = check_max_streams_value(ms.maximum)
+            if _v_ms_uni:
+                var _vv = _v_ms_uni.value().copy()
+                self.close_transport(_vv.error_code, _vv.tag, now)
+                return
+            if ms.maximum > self.stream_map.peer_max_streams_uni:
+                self.stream_map.peer_max_streams_uni = ms.maximum
+                self.stream_map.needs_streams_blocked_uni = False
+                self.stream_map.streams_blocked_at_uni = UInt64(0)
             return
 
         # *_BLOCKED frames: informational only. STREAMS_BLOCKED
@@ -2227,13 +2251,12 @@ struct QuicConnection(Movable):
         # informational.
         if (tid == FRAME_STREAMS_BLOCKED_BIDI
                 or tid == FRAME_STREAMS_BLOCKED_UNI):
-            if frame._max_streams:
-                var sb = frame._max_streams.value().copy()
-                var _v_sb = check_streams_blocked_value(sb.maximum)
-                if _v_sb:
-                    var _vv = _v_sb.value().copy()
-                    self.close_transport(_vv.error_code, _vv.tag, now)
-                    return
+            ref sb = frame.payload.unsafe_get[MaxStreamsFrame]()
+            var _v_sb = check_streams_blocked_value(sb.maximum)
+            if _v_sb:
+                var _vv = _v_sb.value().copy()
+                self.close_transport(_vv.error_code, _vv.tag, now)
+                return
             return
         if (tid == FRAME_DATA_BLOCKED
                 or tid == FRAME_STREAM_DATA_BLOCKED):
@@ -3665,7 +3688,7 @@ struct QuicConnection(Movable):
             var frame_len = UInt64(len(sf.data))
             var frame_offset = sf.offset
             var frame_fin = sf.fin
-            frames.append(Frame._stream_move(sf))
+            frames.append(Frame(FRAME_STREAM_BASE, FramePayload(sf^)))
             # Flow-control accounting (only "new" bytes past received mark).
             var prev_end = frame_offset + frame_len
             if prev_end > fc.received:
