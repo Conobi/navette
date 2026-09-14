@@ -678,7 +678,7 @@ def test_h3_control_stream_cohort_exclusivity() raises:
 
 def main() raises:
     print("=== test_h3_connection ===")
-    test_h3event_zero_values()
+    test_h3event_factory_roundtrip()
     test_is_peer_initiated()
     test_is_request_stream()
     test_h3event_kind_constants()
