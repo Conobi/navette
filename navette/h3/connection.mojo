@@ -270,6 +270,7 @@ struct H3Connection(Movable):
     var _is_server:                  Bool
     var _stream_bufs:                Dict[Int, _H3StreamBuf]
     var _h3_events:                  List[H3Event]
+    var _h3_events_head:             Int
     var _local_ctrl_sid:             Optional[UInt64]
     var _local_qenc_sid:             Optional[UInt64]
     var _local_qdec_sid:             Optional[UInt64]
@@ -301,6 +302,7 @@ struct H3Connection(Movable):
         self._is_server = is_server
         self._stream_bufs = Dict[Int, _H3StreamBuf]()
         self._h3_events = List[H3Event]()
+        self._h3_events_head = 0
         self._local_ctrl_sid = Optional[UInt64]()
         self._local_qenc_sid = Optional[UInt64]()
         self._local_qdec_sid = Optional[UInt64]()
@@ -324,6 +326,7 @@ struct H3Connection(Movable):
         self._is_server = take._is_server
         self._stream_bufs = take._stream_bufs^
         self._h3_events = take._h3_events^
+        self._h3_events_head = take._h3_events_head
         self._local_ctrl_sid = take._local_ctrl_sid^
         self._local_qenc_sid = take._local_qenc_sid^
         self._local_qdec_sid = take._local_qdec_sid^
@@ -438,14 +441,20 @@ struct H3Connection(Movable):
         return (stream_id & UInt64(0x02)) == 0
 
     def poll_event(mut self) -> Optional[H3Event]:
-        """Return the next pending H3Event, or None if the queue is empty."""
-        if len(self._h3_events) == 0:
+        """Return the next pending H3Event, or None if the queue is empty.
+
+        O(1): advances a head cursor instead of rebuilding the list; the
+        list is cleared once the cursor reaches its end.
+        """
+        if self._h3_events_head >= len(self._h3_events):
+            self._h3_events.clear()
+            self._h3_events_head = 0
             return Optional[H3Event]()
-        var ev = H3Event(other=self._h3_events[0])
-        var rest = List[H3Event]()
-        for i in range(1, len(self._h3_events)):
-            rest.append(H3Event(other=self._h3_events[i]))
-        self._h3_events = rest^
+        var ev = H3Event(other=self._h3_events[self._h3_events_head])
+        self._h3_events_head += 1
+        if self._h3_events_head >= len(self._h3_events):
+            self._h3_events.clear()
+            self._h3_events_head = 0
         return Optional[H3Event](ev^)
 
     # --- Transport API -------------------------------------------------------
