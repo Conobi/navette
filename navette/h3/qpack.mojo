@@ -681,7 +681,7 @@ def _huffman_decode_with_tables(
     """
     if len(data) == 0:
         return String("")
-    var result = String("")
+    var buf = List[UInt8](capacity=len(data) * 2)
 
     # 64-bit sliding accumulator; valid bits live in the LOW `acc_bits`
     # positions of `acc`. We extract from the top via shift.
@@ -707,10 +707,9 @@ def _huffman_decode_with_tables(
         # Tier 1: 8-bit root fast-path. Only valid at root with ≥8 bits.
         if node == 0 and acc_bits >= 8:
             var top8 = Int((acc >> UInt64(acc_bits - 8)) & UInt64(0xFF))
-            var e = fast[top8].copy()
-            if e.consumed > 0:
-                result += chr(e.symbol)
-                acc_bits -= e.consumed
+            if fast[top8].consumed > 0:
+                buf.append(UInt8(fast[top8].symbol))
+                acc_bits -= fast[top8].consumed
                 bits_since_root = 0
                 all_ones_since_root = True
                 continue
@@ -718,13 +717,13 @@ def _huffman_decode_with_tables(
         # No bits left → we're done; validate end state.
         if acc_bits == 0:
             if node == 0:
-                return result
+                return bytes_to_string(buf^)
             # Mid-symbol: only acceptable if walked ≤7 all-1 bits since root.
             if bits_since_root > 7:
                 raise "Huffman: truncated input (mid-symbol at EOF)"
             if not all_ones_since_root:
                 raise "Huffman: invalid padding (not all-ones)"
-            return result
+            return bytes_to_string(buf^)
 
         # Tier 2: single bit-by-bit trie walk.
         var bit = Int((acc >> UInt64(acc_bits - 1)) & UInt64(1))
@@ -743,7 +742,7 @@ def _huffman_decode_with_tables(
             if sym == 256:
                 # RFC 7541 §5.2: EOS in stream → decompression error.
                 raise "Huffman: explicit EOS in stream"
-            result += chr(sym)
+            buf.append(UInt8(sym))
             node = 0
             bits_since_root = 0
             all_ones_since_root = True
@@ -926,7 +925,7 @@ def _qpack_decode_string_with_tables(
     var pos = ir.new_offset
     if pos + length > len(data):
         raise "QPACK: string data truncated"
-    var raw = List[UInt8]()
+    var raw = List[UInt8](capacity=length)
     for i in range(length):
         raw.append(data[pos + i])
     pos += length
@@ -1107,8 +1106,7 @@ struct QpackDecoder(Copyable, Movable):
                     # Static table reference
                     if idx < 0 or idx >= len(self._static_table):
                         raise "QPACK: invalid static table index"
-                    var entry = self._static_table[idx].copy()
-                    result.append(QpackHeaderField(entry.name, entry.value))
+                    result.append(QpackHeaderField(self._static_table[idx].name, self._static_table[idx].value))
                 else:
                     raise "QPACK: dynamic table not supported (indexed)"
 
@@ -1125,8 +1123,7 @@ struct QpackDecoder(Copyable, Movable):
                 if t_bit:
                     if idx < 0 or idx >= len(self._static_table):
                         raise "QPACK: invalid static table index"
-                    var entry = self._static_table[idx].copy()
-                    result.append(QpackHeaderField(entry.name, value))
+                    result.append(QpackHeaderField(self._static_table[idx].name, value))
                 else:
                     raise "QPACK: dynamic table not supported (literal name ref)"
 
@@ -1139,7 +1136,7 @@ struct QpackDecoder(Copyable, Movable):
                 var name_len = Int(name_len_r.value)
                 if pos + name_len > len(data):
                     raise "QPACK: §4.5.6 name data truncated"
-                var name_raw = List[UInt8]()
+                var name_raw = List[UInt8](capacity=name_len)
                 for j in range(name_len):
                     name_raw.append(data[pos + j])
                 pos += name_len

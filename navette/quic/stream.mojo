@@ -244,6 +244,31 @@ struct RecvBuf(Copyable, Movable):
         # Use a clamped view of data (skip already-consumed prefix bytes)
         var clamped = data[data_skip:]
 
+        # Fast path: contiguous append to the last (or only) segment.
+        # This is the steady-state case for in-order delivery.
+        if len(self.seg_offsets) > 0:
+            var last_idx = len(self.seg_offsets) - 1
+            var last_end = self._seg_end(last_idx)
+            if new_start == last_end and new_end >= last_end:
+                self.seg_data[last_idx].extend(clamped)
+                return
+            # Also handle append to segment 0 when there's only 1 segment
+            if len(self.seg_offsets) == 1:
+                var seg0_end = self._seg_end(0)
+                if new_start >= self.seg_offsets[0] and new_start <= seg0_end:
+                    # Overlapping or adjacent — extend in place
+                    if new_end > seg0_end:
+                        var skip = Int(seg0_end - new_start)
+                        self.seg_data[0].extend(clamped[skip:])
+                    return
+        elif len(self.seg_offsets) == 0:
+            # Empty buffer — first segment
+            var new_seg = List[UInt8](capacity=len(clamped))
+            new_seg.extend(clamped)
+            self.seg_offsets.append(new_start)
+            self.seg_data.append(new_seg^)
+            return
+
         # Find all segments that overlap or are adjacent to [new_start, new_end)
         var first_affected = -1
         var last_affected = -1
@@ -258,8 +283,7 @@ struct RecvBuf(Copyable, Movable):
         if first_affected == -1:
             # No overlap: insert as a new segment at sorted position
             var new_seg = List[UInt8](capacity=len(clamped))
-            for i in range(len(clamped)):
-                new_seg.append(clamped[i])
+            new_seg.extend(clamped)
             # Find insertion point
             var insert_pos = len(self.seg_offsets)
             for i in range(len(self.seg_offsets)):
@@ -273,7 +297,7 @@ struct RecvBuf(Copyable, Movable):
                 if i == insert_pos:
                     new_offsets.append(new_start)
                     new_segs.append(new_seg^)
-                    new_seg = List[UInt8]()  # clear after move
+                    new_seg = List[UInt8]()
                 new_offsets.append(self.seg_offsets[i])
                 new_segs.append(List[UInt8](copy=self.seg_data[i]))
             if insert_pos == len(self.seg_offsets):
@@ -283,7 +307,6 @@ struct RecvBuf(Copyable, Movable):
             self.seg_data = new_segs^
         else:
             # Merge: build a new merged segment
-            # The merged region spans from merged_start to merged_end
             var merged_start = new_start
             if self.seg_offsets[first_affected] < merged_start:
                 merged_start = self.seg_offsets[first_affected]
@@ -296,26 +319,20 @@ struct RecvBuf(Copyable, Movable):
             for _ in range(merged_len):
                 merged.append(UInt8(0))
 
-            # Track which bytes have been written
-            var written = List[Bool](capacity=merged_len)
-            for _ in range(merged_len):
-                written.append(False)
-
             # First: copy all existing segment data (they take priority)
             for i in range(first_affected, last_affected + 1):
                 var seg_off = self.seg_offsets[i]
                 var dst_start = Int(seg_off - merged_start)
                 for j in range(len(self.seg_data[i])):
                     merged[dst_start + j] = self.seg_data[i][j]
-                    written[dst_start + j] = True
 
-            # Then: copy new data only for positions not yet written
+            # Then: copy new data for positions past existing coverage
             var dst_base = Int(new_start - merged_start)
             for j in range(len(clamped)):
                 var dst_idx = dst_base + j
-                if dst_idx >= 0 and dst_idx < merged_len and not written[dst_idx]:
-                    merged[dst_idx] = clamped[j]
-                    written[dst_idx] = True
+                if dst_idx >= 0 and dst_idx < merged_len:
+                    if merged[dst_idx] == UInt8(0):
+                        merged[dst_idx] = clamped[j]
 
             # Rebuild seg lists replacing first..last with the merged segment
             var new_offsets = List[UInt64]()
@@ -327,11 +344,10 @@ struct RecvBuf(Copyable, Movable):
                 elif i == first_affected:
                     new_offsets.append(merged_start)
                     new_segs.append(merged^)
-                    merged = List[UInt8]()  # clear after move
+                    merged = List[UInt8]()
                 elif i > last_affected:
                     new_offsets.append(self.seg_offsets[i])
                     new_segs.append(List[UInt8](copy=self.seg_data[i]))
-                # else: skip merged segments (first_affected < i <= last_affected)
             self.seg_offsets = new_offsets^
             self.seg_data = new_segs^
 

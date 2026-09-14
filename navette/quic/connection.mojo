@@ -711,6 +711,9 @@ struct QuicConnection(Movable):
     var _scratch_frames: List[Frame]
     var _scratch_sent_records: List[SentStreamFrame]
     var _scratch_payload: List[UInt8]
+    var _scratch_datagram: List[UInt8]
+    var _scratch_plans: List[_PacketPlan]
+    var _scratch_control: List[UInt8]
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -781,6 +784,9 @@ struct QuicConnection(Movable):
         self._scratch_frames = move._scratch_frames^
         self._scratch_sent_records = move._scratch_sent_records^
         self._scratch_payload = move._scratch_payload^
+        self._scratch_datagram = move._scratch_datagram^
+        self._scratch_plans = move._scratch_plans^
+        self._scratch_control = move._scratch_control^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -866,6 +872,9 @@ struct QuicConnection(Movable):
         self._scratch_frames = List[Frame](capacity=8)
         self._scratch_sent_records = List[SentStreamFrame](capacity=8)
         self._scratch_payload = List[UInt8](capacity=6144)
+        self._scratch_datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
+        self._scratch_plans = List[_PacketPlan](capacity=3)
+        self._scratch_control = List[UInt8](capacity=256)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -3439,7 +3448,10 @@ struct QuicConnection(Movable):
         var ade = self.local_params.ack_delay_exponent
 
         # Phase 1: plan packets (frames + serialized plaintext) per space.
-        var plans = List[_PacketPlan]()
+        var pp = UnsafePointer(to=self._scratch_plans)
+        var plans = pp.unsafe_take_pointee()
+        plans.clear()
+        pp.unsafe_write(List[_PacketPlan]())
         var used = 0
         var all_close_committed = True
         var end_assembly = False
@@ -3538,11 +3550,22 @@ struct QuicConnection(Movable):
                     has_control = True
                     break
             if has_control:
-                var writer = ByteWriter(capacity=256)
+                var cp = UnsafePointer(to=self._scratch_control)
+                var control_buf = cp.unsafe_take_pointee()
+                control_buf.clear()
+                cp.unsafe_write(List[UInt8]())
+                var writer = ByteWriter()
+                var wbp = UnsafePointer(to=writer.buf)
+                var empty = wbp.unsafe_take_pointee()
+                _ = empty
+                wbp.unsafe_write(control_buf^)
                 for fi in range(len(frames)):
                     if not frames[fi].is_crypto():
                         serialize_frame(frames[fi], writer)
                 stream_payload.extend(Span(writer.buf))
+                var wbp2 = UnsafePointer(to=writer.buf)
+                self._scratch_control = wbp2.unsafe_take_pointee()
+                wbp2.unsafe_write(List[UInt8]())
             var payload = stream_payload^
             var plaintext = len(payload)
             if plaintext < _MIN_PLAINTEXT_LEN:
@@ -3569,7 +3592,10 @@ struct QuicConnection(Movable):
         debug_assert(pad_to <= budget, "padding target exceeds the datagram budget")
 
         # Phase 2: allocate PNs, pad, protect, record.
-        var datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
+        var dp = UnsafePointer(to=self._scratch_datagram)
+        var datagram = dp.unsafe_take_pointee()
+        datagram.clear()
+        dp.unsafe_write(List[UInt8]())
         for i in range(len(plans)):
             var space_idx = plans[i].space_idx
             var pn = self.spaces[space_idx].alloc_pn()
@@ -3645,6 +3671,9 @@ struct QuicConnection(Movable):
         if closing and all_close_committed:
             self.close_owed = False
             self.close_last_sent = now
+
+        # Recapture scratch plans for reuse next send().
+        self._scratch_plans = plans^
 
         debug_assert(len(datagram) <= budget, "datagram exceeds its budget")
         self.bytes_sent += UInt64(len(datagram))
@@ -3772,7 +3801,7 @@ struct QuicConnection(Movable):
             if max_data > 0:
                 var maybe = self.crypto_streams[space_idx].next_crypto_frame(max_data)
                 if maybe:
-                    var cf = maybe.value().copy()
+                    var cf = maybe.take()
                     var written = write_crypto_frame_direct(
                         stream_payload, budget - used, cf.offset, Span(cf.data)
                     )
@@ -4359,7 +4388,7 @@ struct QuicConnection(Movable):
             return
         var records = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
-            var rec = SentStreamFrame(copy=records[i])
+            ref rec = records[i]
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
@@ -4383,22 +4412,6 @@ struct QuicConnection(Movable):
                     if ss == SEND_RESET_SENT:
                         p[].send_state = Optional[UInt8](SEND_RESET_RECVD)
                 _ = self.stream_map.maybe_cleanup(key)
-            elif rec.kind == SSF_STOP_SENDING:
-                # STOP_SENDING ACK does not change recv state; peer must send
-                # RESET_STREAM for that. Nothing to do.
-                pass
-            elif rec.kind == SSF_MAX_DATA:
-                pass
-            elif rec.kind == SSF_MAX_STREAM_DATA:
-                pass
-            elif rec.kind == SSF_MAX_STREAMS_BIDI:
-                pass
-            elif rec.kind == SSF_MAX_STREAMS_UNI:
-                pass
-            elif rec.kind == SSF_NEW_CID:
-                pass
-            elif rec.kind == SSF_RETIRE_CID:
-                pass
 
     def _on_app_pkt_lost(mut self, pn: Int) raises:
         """Re-queue stream-layer frames for retransmission on packet loss."""
@@ -4406,7 +4419,7 @@ struct QuicConnection(Movable):
             return
         var records = self.app_frames_sent.pop(pn)
         for i in range(len(records)):
-            var rec = SentStreamFrame(copy=records[i])
+            ref rec = records[i]
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:

@@ -500,7 +500,7 @@ struct PacketNumberSpace(Copyable, Movable):
         """Process an incoming ACK frame: decode ranges into PN sets, find
         matching sent_packets, remove them, return newly acked list.
         Raises if any ACKed PN >= next_pn (security check)."""
-        var acked = List[SentPacket]()
+        var acked = List[SentPacket](capacity=16)
         self._scratch_pns.clear()
 
         # Decode the ACK frame into PN ranges.
