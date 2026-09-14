@@ -383,14 +383,13 @@ struct RecvBuf(Copyable, Movable):
 
         self.read_offset = deliver_end
 
-        # Remove the consumed segment
-        var new_offsets = List[UInt64]()
-        var new_segs = List[List[UInt8]]()
-        for i in range(1, len(self.seg_offsets)):
-            new_offsets.append(self.seg_offsets[i])
-            new_segs.append(List[UInt8](copy=self.seg_data[i]))
-        self.seg_offsets = new_offsets^
-        self.seg_data = new_segs^
+        # Remove the consumed first segment.
+        if len(self.seg_offsets) == 1:
+            self.seg_offsets.clear()
+            self.seg_data.clear()
+        else:
+            _ = self.seg_offsets.pop(0)
+            _ = self.seg_data.pop(0)
 
         # Check fin
         var fin_reached = False

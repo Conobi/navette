@@ -470,9 +470,8 @@ struct H3Connection(Movable):
                 self.egress_capped = False
                 return out^
             for bi in range(len(batch)):
-                var ptr = UnsafePointer(to=batch[bi])
-                var dg = ptr.unsafe_take_pointee()
-                ptr.unsafe_write(List[UInt8]())
+                var dg = List[UInt8]()
+                swap(dg, batch[bi])
                 out.append(dg^)
             if self._quic.is_closing():
                 # One CLOSE per trigger; nothing else may follow it.
@@ -712,9 +711,8 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 t_start_buf = monotonic_us()
 
-        var data_ptr = UnsafePointer(to=recv_result[0])
-        var new_bytes = data_ptr.unsafe_take_pointee()
-        data_ptr.unsafe_write(List[UInt8]())
+        var new_bytes = List[UInt8]()
+        swap(new_bytes, recv_result[0])
         var fin = recv_result[1]
 
         # Append new bytes to accumulator
@@ -842,11 +840,11 @@ struct H3Connection(Movable):
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
             if is_ctrl:
-                self._handle_control_frame(stream_id, frame, now)
+                self._handle_control_frame(stream_id, frame^, now)
             else:
-                self._handle_request_frame(stream_id, frame, now)
+                self._handle_request_frame(stream_id, frame^, now)
 
-    def _handle_control_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
+    def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on the peer control stream."""
         # F32 — first frame on the peer ctrl stream MUST be SETTINGS
         # (RFC 9114 §6.2.1). Tracks first-frame state via the existing
@@ -920,7 +918,7 @@ struct H3Connection(Movable):
 
         # else: unknown frame types are ignored (RFC 9114 §7.2.8)
 
-    def _handle_request_frame(mut self, stream_id: UInt64, frame: H3RawFrame, now: UInt64) raises:
+    def _handle_request_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on a request/response bidi stream."""
         # F31 — DATA before HEADERS on a request-bidi stream is illegal
         # (RFC 9114 §4.1). The predicate keys on (frame_type, headers_seen)
@@ -971,7 +969,7 @@ struct H3Connection(Movable):
         elif frame.frame_type == H3_FRAME_DATA:
             var h3ev = H3Event(H3Event.DATA_RECEIVED)
             h3ev.stream_id = stream_id
-            h3ev.data = List[UInt8](copy=frame.payload)
+            swap(h3ev.data, frame.payload)
             self._h3_events.append(h3ev^)
 
         elif frame.frame_type == H3_FRAME_SETTINGS or frame.frame_type == H3_FRAME_GOAWAY:

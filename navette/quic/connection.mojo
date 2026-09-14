@@ -713,7 +713,6 @@ struct QuicConnection(Movable):
     var _scratch_payload: List[UInt8]
     var _scratch_datagram: List[UInt8]
     var _scratch_plans: List[_PacketPlan]
-    var _scratch_control: List[UInt8]
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -786,7 +785,6 @@ struct QuicConnection(Movable):
         self._scratch_payload = move._scratch_payload^
         self._scratch_datagram = move._scratch_datagram^
         self._scratch_plans = move._scratch_plans^
-        self._scratch_control = move._scratch_control^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -874,7 +872,6 @@ struct QuicConnection(Movable):
         self._scratch_payload = List[UInt8](capacity=6144)
         self._scratch_datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
         self._scratch_plans = List[_PacketPlan](capacity=3)
-        self._scratch_control = List[UInt8](capacity=256)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -1246,9 +1243,8 @@ struct QuicConnection(Movable):
                 Span(unsafe_ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
             )
-            var hdr_ptr = UnsafePointer(to=header_result[0])
-            var header = hdr_ptr.unsafe_take_pointee()
-            hdr_ptr.unsafe_write(PacketHeader())
+            var header = PacketHeader()
+            swap(header, header_result[0])
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     ph_header_parse_us = monotonic_us() - ph_header_parse_us
@@ -2545,9 +2541,8 @@ struct QuicConnection(Movable):
             return
 
         # Swap scratch out so the borrow checker sees separate variables.
-        var lost_pns_ptr = UnsafePointer(to=self._scratch_lost_pns)
-        var lost_pns = lost_pns_ptr.unsafe_take_pointee()
-        lost_pns_ptr.unsafe_write(List[Int]())
+        var lost_pns = List[Int]()
+        swap(lost_pns, self._scratch_lost_pns)
 
         # Evaluate persistent-congestion *before* popping lost packets, since
         # the detector reads sent_packets[pn].ack_eliciting / .time_sent.
@@ -3448,10 +3443,9 @@ struct QuicConnection(Movable):
         var ade = self.local_params.ack_delay_exponent
 
         # Phase 1: plan packets (frames + serialized plaintext) per space.
-        var pp = UnsafePointer(to=self._scratch_plans)
-        var plans = pp.unsafe_take_pointee()
+        var plans = List[_PacketPlan]()
+        swap(plans, self._scratch_plans)
         plans.clear()
-        pp.unsafe_write(List[_PacketPlan]())
         var used = 0
         var all_close_committed = True
         var end_assembly = False
@@ -3469,18 +3463,15 @@ struct QuicConnection(Movable):
             var payload_budget = remaining - overhead
 
             # Swap pre-allocated buffers from connection scratch.
-            var fp = UnsafePointer(to=self._scratch_frames)
-            var frames = fp.unsafe_take_pointee()
+            var frames = List[Frame]()
+            swap(frames, self._scratch_frames)
             frames.clear()
-            fp.unsafe_write(List[Frame]())
-            var srp = UnsafePointer(to=self._scratch_sent_records)
-            var sent_records = srp.unsafe_take_pointee()
+            var sent_records = List[SentStreamFrame]()
+            swap(sent_records, self._scratch_sent_records)
             sent_records.clear()
-            srp.unsafe_write(List[SentStreamFrame]())
-            var spp = UnsafePointer(to=self._scratch_payload)
-            var stream_payload = spp.unsafe_take_pointee()
+            var stream_payload = List[UInt8]()
+            swap(stream_payload, self._scratch_payload)
             stream_payload.clear()
-            spp.unsafe_write(List[UInt8]())
             var ack_reserve = 0
             var has_stream_data = False
             var ack_committed = False
@@ -3550,22 +3541,11 @@ struct QuicConnection(Movable):
                     has_control = True
                     break
             if has_control:
-                var cp = UnsafePointer(to=self._scratch_control)
-                var control_buf = cp.unsafe_take_pointee()
-                control_buf.clear()
-                cp.unsafe_write(List[UInt8]())
-                var writer = ByteWriter()
-                var wbp = UnsafePointer(to=writer.buf)
-                var empty = wbp.unsafe_take_pointee()
-                _ = empty
-                wbp.unsafe_write(control_buf^)
+                var writer = ByteWriter(capacity=256)
                 for fi in range(len(frames)):
                     if not frames[fi].is_crypto():
                         serialize_frame(frames[fi], writer)
                 stream_payload.extend(Span(writer.buf))
-                var wbp2 = UnsafePointer(to=writer.buf)
-                self._scratch_control = wbp2.unsafe_take_pointee()
-                wbp2.unsafe_write(List[UInt8]())
             var payload = stream_payload^
             var plaintext = len(payload)
             if plaintext < _MIN_PLAINTEXT_LEN:
@@ -3592,10 +3572,9 @@ struct QuicConnection(Movable):
         debug_assert(pad_to <= budget, "padding target exceeds the datagram budget")
 
         # Phase 2: allocate PNs, pad, protect, record.
-        var dp = UnsafePointer(to=self._scratch_datagram)
-        var datagram = dp.unsafe_take_pointee()
+        var datagram = List[UInt8]()
+        swap(datagram, self._scratch_datagram)
         datagram.clear()
-        dp.unsafe_write(List[UInt8]())
         for i in range(len(plans)):
             var space_idx = plans[i].space_idx
             var pn = self.spaces[space_idx].alloc_pn()
@@ -3614,9 +3593,7 @@ struct QuicConnection(Movable):
                     padding = pad_to - unpadded
             self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
             # Recapture payload buffer for reuse.
-            var plp = UnsafePointer(to=plans[i].payload)
-            self._scratch_payload = plp.unsafe_take_pointee()
-            plp.unsafe_write(List[UInt8]())
+            swap(self._scratch_payload, plans[i].payload)
             var pkt_size = len(self.pkt_buf)
             datagram.extend(Span(self.pkt_buf))
 
@@ -3657,16 +3634,13 @@ struct QuicConnection(Movable):
                 _ = self.recovery.pacer.refill_and_check(_pace_rate, now)
                 self.recovery.pacer.on_sent(UInt64(pkt_size))
             # Stream-layer frame records for ACK / loss processing.
-            # Move instead of copy — plans[i] is not accessed after this.
             if space_idx == 2 and len(plans[i].sent_records) > 0:
-                var ptr = UnsafePointer(to=plans[i].sent_records)
-                self.app_frames_sent[Int(pn)] = ptr.unsafe_take_pointee()
-                ptr.unsafe_write(List[SentStreamFrame]())
+                var moved_records = List[SentStreamFrame]()
+                swap(moved_records, plans[i].sent_records)
+                self.app_frames_sent[Int(pn)] = moved_records^
 
             # Recapture frames list into scratch for reuse next send().
-            var rfp = UnsafePointer(to=plans[i].frames)
-            self._scratch_frames = rfp.unsafe_take_pointee()
-            rfp.unsafe_write(List[Frame]())
+            swap(self._scratch_frames, plans[i].frames)
 
         if closing and all_close_committed:
             self.close_owed = False
@@ -4646,9 +4620,8 @@ struct QuicConnection(Movable):
                 self.events.clear()
             self._events_head = 0
             return None
-        var ptr = UnsafePointer(to=self.events[self._events_head])
-        var ev = ptr.unsafe_take_pointee()
-        ptr.unsafe_write(QuicEvent(UInt8(0), QuicEventPayload(NoneType())))
+        var ev = QuicEvent(UInt8(0), QuicEventPayload(NoneType()))
+        swap(ev, self.events[self._events_head])
         self._events_head += 1
         if self._events_head >= len(self.events):
             self.events.clear()
@@ -4830,9 +4803,8 @@ struct QuicConnection(Movable):
         if not p[].recv_buf or not p[].fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
         var result = p[].recv_buf.value().read(p[].fin_offset)
-        var data_ptr = UnsafePointer(to=result[0])
-        var data = data_ptr.unsafe_take_pointee()
-        data_ptr.unsafe_write(List[UInt8]())
+        var data = List[UInt8]()
+        swap(data, result[0])
         var fin_reached = result[1]
         var drained = UInt64(len(data))
         if drained > 0:
