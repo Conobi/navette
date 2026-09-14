@@ -130,6 +130,15 @@ struct H3ConnectionClosedPayload(Copyable, Movable):
 # ---------------------------------------------------------------------------
 # H3Event — event emitted by H3Connection
 # ---------------------------------------------------------------------------
+comptime H3EventPayload = Variant[
+    NoneType,                  # HANDSHAKE_COMPLETE, SETTINGS_RECEIVED
+    H3HeadersPayload,         # HEADERS_RECEIVED
+    H3StreamDataPayload,      # DATA_RECEIVED, DATAGRAM_RECEIVED
+    H3StreamEndPayload,       # STREAM_ENDED
+    H3StreamResetPayload,     # STREAM_RESET
+    UInt64,                    # GOAWAY_RECEIVED (last_stream_id)
+    H3ConnectionClosedPayload, # CONNECTION_CLOSED
+]
 
 
 struct H3Event(Copyable, Movable):
@@ -143,49 +152,86 @@ struct H3Event(Copyable, Movable):
     comptime STREAM_RESET:       UInt8 = 6
     comptime GOAWAY_RECEIVED:    UInt8 = 7
     comptime CONNECTION_CLOSED:  UInt8 = 8
-    # RFC 9297 §2 — an H3-framed datagram has been received. `stream_id`
-    # carries the associated request stream id (quarter_id * 4); `data`
+    # RFC 9297 -- an H3-framed datagram has been received. The stream_id
+    # carries the associated request stream id (quarter_id * 4); data
     # holds the payload bytes following the quarter-stream-ID varint.
     comptime DATAGRAM_RECEIVED:  UInt8 = 9
 
-    var kind:          UInt8
-    var stream_id:     UInt64
-    var fields:        List[QpackHeaderField]
-    var data:          List[UInt8]
-    var fin:           Bool
-    var error_code:    UInt64
-    var reason:        String
-    var last_stream_id: UInt64
+    var kind: UInt8
+    var payload: H3EventPayload
 
-    def __init__(out self, kind: UInt8):
+    def __init__(out self, kind: UInt8, var payload: H3EventPayload):
+        """Construct from kind discriminant and payload variant."""
         self.kind = kind
-        self.stream_id = UInt64(0)
-        self.fields = List[QpackHeaderField]()
-        self.data = List[UInt8]()
-        self.fin = False
-        self.error_code = UInt64(0)
-        self.reason = String("")
-        self.last_stream_id = UInt64(0)
+        self.payload = payload^
 
     def __init__(out self, *, other: Self):
         self.kind = other.kind
-        self.stream_id = other.stream_id
-        self.fields = List[QpackHeaderField](copy=other.fields)
-        self.data = List[UInt8](copy=other.data)
-        self.fin = other.fin
-        self.error_code = other.error_code
-        self.reason = other.reason
-        self.last_stream_id = other.last_stream_id
+        self.payload = H3EventPayload(copy=other.payload)
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.stream_id = take.stream_id
-        self.fields = take.fields^
-        self.data = take.data^
-        self.fin = take.fin
-        self.error_code = take.error_code
-        self.reason = take.reason^
-        self.last_stream_id = take.last_stream_id
+    # -- Accessor helpers --
+
+    def as_headers(self) -> ref [self.payload] H3HeadersPayload:
+        """Access H3HeadersPayload for HEADERS_RECEIVED."""
+        return self.payload.unsafe_get[H3HeadersPayload]()
+
+    def as_stream_data(self) -> ref [self.payload] H3StreamDataPayload:
+        """Access H3StreamDataPayload for DATA_RECEIVED/DATAGRAM_RECEIVED."""
+        return self.payload.unsafe_get[H3StreamDataPayload]()
+
+    def as_stream_end(self) -> ref [self.payload] H3StreamEndPayload:
+        """Access H3StreamEndPayload for STREAM_ENDED."""
+        return self.payload.unsafe_get[H3StreamEndPayload]()
+
+    def as_stream_reset(self) -> ref [self.payload] H3StreamResetPayload:
+        """Access H3StreamResetPayload for STREAM_RESET."""
+        return self.payload.unsafe_get[H3StreamResetPayload]()
+
+    def as_connection_closed(self) -> ref [self.payload] H3ConnectionClosedPayload:
+        """Access H3ConnectionClosedPayload for CONNECTION_CLOSED."""
+        return self.payload.unsafe_get[H3ConnectionClosedPayload]()
+
+    def as_goaway_stream_id(self) -> UInt64:
+        """Access last_stream_id for GOAWAY_RECEIVED."""
+        return self.payload.unsafe_get[UInt64]()
+
+    # -- Factory methods --
+
+    @staticmethod
+    def handshake_complete() -> Self:
+        return Self(Self.HANDSHAKE_COMPLETE, H3EventPayload(NoneType()))
+
+    @staticmethod
+    def settings_received() -> Self:
+        return Self(Self.SETTINGS_RECEIVED, H3EventPayload(NoneType()))
+
+    @staticmethod
+    def headers_received(stream_id: UInt64, var fields: List[QpackHeaderField]) -> Self:
+        return Self(Self.HEADERS_RECEIVED, H3EventPayload(H3HeadersPayload(stream_id, fields^)))
+
+    @staticmethod
+    def data_received(stream_id: UInt64, var data: List[UInt8]) -> Self:
+        return Self(Self.DATA_RECEIVED, H3EventPayload(H3StreamDataPayload(stream_id, data^)))
+
+    @staticmethod
+    def stream_ended(stream_id: UInt64) -> Self:
+        return Self(Self.STREAM_ENDED, H3EventPayload(H3StreamEndPayload(stream_id)))
+
+    @staticmethod
+    def stream_reset(stream_id: UInt64, error_code: UInt64) -> Self:
+        return Self(Self.STREAM_RESET, H3EventPayload(H3StreamResetPayload(stream_id, error_code)))
+
+    @staticmethod
+    def goaway_received(last_stream_id: UInt64) -> Self:
+        return Self(Self.GOAWAY_RECEIVED, H3EventPayload(last_stream_id))
+
+    @staticmethod
+    def connection_closed(error_code: UInt64, reason: String) -> Self:
+        return Self(Self.CONNECTION_CLOSED, H3EventPayload(H3ConnectionClosedPayload(error_code, reason)))
+
+    @staticmethod
+    def datagram_received(stream_id: UInt64, var data: List[UInt8]) -> Self:
+        return Self(Self.DATAGRAM_RECEIVED, H3EventPayload(H3StreamDataPayload(stream_id, data^)))
 
 
 # ---------------------------------------------------------------------------
@@ -445,8 +491,7 @@ struct H3Connection(Movable):
                 if not self._init_done:
                     self._init_done = True
                     self._bootstrap_local_streams(now)
-                var h3ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
-                self._h3_events.append(h3ev^)
+                self._h3_events.append(H3Event.handshake_complete()^)
             elif ev.type_id == QuicEvent.STREAM_OPENED:
                 if self._is_peer_initiated(ev.stream_id):
                     var sbuf = _H3StreamBuf()
@@ -459,15 +504,9 @@ struct H3Connection(Movable):
                     pass
             elif ev.type_id == QuicEvent.STREAM_RESET:
                 if self._is_request_stream(ev.stream_id):
-                    var h3ev = H3Event(H3Event.STREAM_RESET)
-                    h3ev.stream_id = ev.stream_id
-                    h3ev.error_code = ev.error_code
-                    self._h3_events.append(h3ev^)
+                    self._h3_events.append(H3Event.stream_reset(ev.stream_id, ev.error_code)^)
             elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
-                var h3ev = H3Event(H3Event.CONNECTION_CLOSED)
-                h3ev.error_code = ev.error_code
-                h3ev.reason = ev.reason
-                self._h3_events.append(h3ev^)
+                self._h3_events.append(H3Event.connection_closed(ev.error_code, ev.reason)^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
                 self._dispatch_quic_datagram(ev.datagram_payload)
 
@@ -598,10 +637,7 @@ struct H3Connection(Movable):
         var rest = List[UInt8]()
         for i in range(r.pos, len(payload)):
             rest.append(payload[i])
-        var h3ev = H3Event(H3Event.DATAGRAM_RECEIVED)
-        h3ev.stream_id = stream_id
-        h3ev.data = rest^
-        self._h3_events.append(h3ev^)
+        self._h3_events.append(H3Event.datagram_received(stream_id, rest^)^)
 
     def _bootstrap_local_streams(mut self, now: UInt64) raises:
         """Open 3 uni streams, write type varints, send SETTINGS. Guarded by _init_done."""
@@ -793,9 +829,7 @@ struct H3Connection(Movable):
         # FIN on bidi request stream → STREAM_ENDED event
         var sbuf4 = self._stream_bufs[key].copy()
         if not sbuf4.is_uni and fin:
-            var h3ev = H3Event(H3Event.STREAM_ENDED)
-            h3ev.stream_id = stream_id
-            self._h3_events.append(h3ev^)
+            self._h3_events.append(H3Event.stream_ended(stream_id)^)
         self._stream_bufs[key] = sbuf4^
 
         # B1 exit (fall-through path 4).
@@ -898,16 +932,13 @@ struct H3Connection(Movable):
             if peer_h3d:
                 if peer_h3d.value() != UInt64(0):
                     self._peer_h3_datagram_enabled = True
-            var h3ev = H3Event(H3Event.SETTINGS_RECEIVED)
-            self._h3_events.append(h3ev^)
+            self._h3_events.append(H3Event.settings_received()^)
 
         elif frame.frame_type == H3_FRAME_GOAWAY:
             var r = ByteReader(Span(frame.payload))
             var last_sid = varint_decode(r)
             self._peer_goaway_sid = Optional[UInt64](last_sid)
-            var h3ev = H3Event(H3Event.GOAWAY_RECEIVED)
-            h3ev.last_stream_id = last_sid
-            self._h3_events.append(h3ev^)
+            self._h3_events.append(H3Event.goaway_received(last_sid)^)
 
         else:
             # F33 — DATA on the peer ctrl stream (RFC 9114 §7.2.1).
@@ -973,16 +1004,10 @@ struct H3Connection(Movable):
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)
             self._request_headers_seen[Int(stream_id)] = True
-            var h3ev = H3Event(H3Event.HEADERS_RECEIVED)
-            h3ev.stream_id = stream_id
-            h3ev.fields = fields^
-            self._h3_events.append(h3ev^)
+            self._h3_events.append(H3Event.headers_received(stream_id, fields^)^)
 
         elif frame.frame_type == H3_FRAME_DATA:
-            var h3ev = H3Event(H3Event.DATA_RECEIVED)
-            h3ev.stream_id = stream_id
-            h3ev.data = List[UInt8](copy=frame.payload)
-            self._h3_events.append(h3ev^)
+            self._h3_events.append(H3Event.data_received(stream_id, List[UInt8](copy=frame.payload))^)
 
         elif frame.frame_type == H3_FRAME_SETTINGS or frame.frame_type == H3_FRAME_GOAWAY:
             # Forbidden on request streams (RFC 9114 §7.2.5)
