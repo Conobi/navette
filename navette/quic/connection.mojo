@@ -1410,13 +1410,13 @@ struct QuicConnection(Movable):
                 if header.is_long_header:
                     var _f12_verdict = check_long_reserved_bits(first_byte)
                     if _f12_verdict:
-                        var _v12 = _f12_verdict.value().copy()
+                        var _v12 = _f12_verdict.take()
                         self.close_transport(_v12.error_code, _v12.tag, now)
                         return
                 else:
                     var _f14_verdict = check_short_reserved_bits(first_byte)
                     if _f14_verdict:
-                        var _v14 = _f14_verdict.value().copy()
+                        var _v14 = _f14_verdict.take()
                         self.close_transport(_v14.error_code, _v14.tag, now)
                         return
 
@@ -1488,12 +1488,12 @@ struct QuicConnection(Movable):
                         break
                     if not maybe_frame:
                         break
-                    ref frame = maybe_frame.value()
+                    var frame = maybe_frame.take()
                     if closing and not frame.is_connection_close():
                         continue
                     if frame.is_ack_eliciting():
                         ack_eliciting = True
-                    self._dispatch_frame(frame, space_idx, now)
+                    self._dispatch_frame(frame^, space_idx, now)
                 self._current_space_idx = -1
                 if _f10_parse_failed:
                     self.close_transport(
@@ -1507,7 +1507,7 @@ struct QuicConnection(Movable):
                 # existing `decrypt_ok = False` short-circuit.
                 var _f11_verdict = predicate_f11_no_frames(cursor.count())
                 if _f11_verdict:
-                    var _v11 = _f11_verdict.value().copy()
+                    var _v11 = _f11_verdict.take()
                     self.close_transport(_v11.error_code, _v11.tag, now)
                     return
                 comptime if PROFILE_ACCEPT:
@@ -1723,7 +1723,7 @@ struct QuicConnection(Movable):
         )
         var _f15_verdict = predicate_f15_reset_on_server_uni(_f15_ctx)
         if _f15_verdict:
-            var v = _f15_verdict.value().copy()
+            var v = _f15_verdict.take()
             self.close_transport(v.error_code, v.tag, monotonic_us())
             return
 
@@ -1793,7 +1793,7 @@ struct QuicConnection(Movable):
         )
         var _f16_verdict = predicate_f16_stop_sending_local_not_created(_f16_ctx)
         if _f16_verdict:
-            var v = _f16_verdict.value().copy()
+            var v = _f16_verdict.take()
             self.close_transport(v.error_code, v.tag, monotonic_us())
             return
 
@@ -2157,14 +2157,14 @@ struct QuicConnection(Movable):
         # ACK
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
             if frame._ack:
-                var ack_frame = frame._ack.value().copy()
+                var ack_frame = frame._ack.take()
                 self._handle_ack(ack_frame, space_idx, now)
             return
 
         # CRYPTO
         if tid == FRAME_CRYPTO:
             if frame._crypto:
-                var cf = frame._crypto.value().copy()
+                var cf = frame._crypto.take()
                 self.crypto_streams[space_idx].receive(
                     cf.offset, Span(cf.data)
                 )
@@ -2173,7 +2173,7 @@ struct QuicConnection(Movable):
         # CONNECTION_CLOSE
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
             if frame._conn_close:
-                var cc = frame._conn_close.value().copy()
+                var cc = frame._conn_close.take()
                 self.state = self.state | CONN_DRAINING
                 # Start drain timer: 3 * PTO (RFC 9000 §10.2).
                 self.drain_timer = now + 3 * self._pto_interval()
@@ -2223,14 +2223,14 @@ struct QuicConnection(Movable):
         # NEW_CONNECTION_ID: validate encoding, then hand off to CidManager.
         if tid == FRAME_NEW_CONNECTION_ID:
             if frame._new_cid:
-                var nc = frame._new_cid.value().copy()
+                var nc = frame._new_cid.take()
                 # F22 — RFC 9000 §19.15: `retire_prior_to` MUST NOT exceed
                 # `sequence`. Close with FRAME_ENCODING_ERROR (0x07).
                 var _v_cid_rpt = check_new_connection_id_retire_prior(
                     nc.sequence, nc.retire_prior_to
                 )
                 if _v_cid_rpt:
-                    var _vv = _v_cid_rpt.value().copy()
+                    var _vv = _v_cid_rpt.take()
                     self.close_transport(_vv.error_code, _vv.tag, now)
                     return
                 # F23 — RFC 9000 §19.15: connection id `Length` MUST be in
@@ -2239,7 +2239,7 @@ struct QuicConnection(Movable):
                     UInt64(len(nc.cid))
                 )
                 if _v_cid_len:
-                    var _vv2 = _v_cid_len.value().copy()
+                    var _vv2 = _v_cid_len.take()
                     self.close_transport(_vv2.error_code, _vv2.tag, now)
                     return
                 self.cid_mgr.on_new_connection_id(
@@ -2259,19 +2259,19 @@ struct QuicConnection(Movable):
         # STREAM frames (0x08-0x0F).
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
             if frame._stream:
-                var sf = frame._stream.value().copy()
+                var sf = frame._stream.take()
                 self._handle_stream_frame(sf)
             return
 
         if tid == FRAME_RESET_STREAM:
             if frame._reset_stream:
-                var rf = frame._reset_stream.value().copy()
+                var rf = frame._reset_stream.take()
                 self._handle_reset_stream(rf)
             return
 
         if tid == FRAME_STOP_SENDING:
             if frame._stop_sending:
-                var ssf = frame._stop_sending.value().copy()
+                var ssf = frame._stop_sending.take()
                 self._handle_stop_sending(ssf)
             return
 
@@ -2284,7 +2284,7 @@ struct QuicConnection(Movable):
 
         if tid == FRAME_MAX_STREAM_DATA:
             if frame._max_stream_data:
-                var msd = frame._max_stream_data.value().copy()
+                var msd = frame._max_stream_data.take()
                 var key = Int(msd.stream_id)
                 # F18 / F19 — RFC 9000 §19.10: MAX_STREAM_DATA must target a
                 # stream the recipient sends on. Unknown stream id → F18;
@@ -2301,7 +2301,7 @@ struct QuicConnection(Movable):
                 )
                 var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
                 if _verdict_msd:
-                    var _v_msd = _verdict_msd.value().copy()
+                    var _v_msd = _verdict_msd.take()
                     self.close_transport(_v_msd.error_code, _v_msd.tag, now)
                     return
                 var stream = self.stream_map.get_stream(key)
@@ -2325,12 +2325,12 @@ struct QuicConnection(Movable):
 
         if tid == FRAME_MAX_STREAMS_BIDI:
             if frame._max_streams:
-                var ms = frame._max_streams.value().copy()
+                var ms = frame._max_streams.take()
                 # F20 — RFC 9000 §19.11: a MAX_STREAMS value > 2^60 cannot
                 # encode a valid stream id. Close with FRAME_ENCODING_ERROR.
                 var _v_ms_bidi = check_max_streams_value(ms.maximum)
                 if _v_ms_bidi:
-                    var _vv = _v_ms_bidi.value().copy()
+                    var _vv = _v_ms_bidi.take()
                     self.close_transport(_vv.error_code, _vv.tag, now)
                     return
                 if ms.maximum > self.stream_map.peer_max_streams_bidi:
@@ -2342,10 +2342,10 @@ struct QuicConnection(Movable):
 
         if tid == FRAME_MAX_STREAMS_UNI:
             if frame._max_streams:
-                var ms = frame._max_streams.value().copy()
+                var ms = frame._max_streams.take()
                 var _v_ms_uni = check_max_streams_value(ms.maximum)
                 if _v_ms_uni:
-                    var _vv = _v_ms_uni.value().copy()
+                    var _vv = _v_ms_uni.take()
                     self.close_transport(_vv.error_code, _vv.tag, now)
                     return
                 if ms.maximum > self.stream_map.peer_max_streams_uni:
@@ -2362,10 +2362,10 @@ struct QuicConnection(Movable):
         if (tid == FRAME_STREAMS_BLOCKED_BIDI
                 or tid == FRAME_STREAMS_BLOCKED_UNI):
             if frame._max_streams:
-                var sb = frame._max_streams.value().copy()
+                var sb = frame._max_streams.take()
                 var _v_sb = check_streams_blocked_value(sb.maximum)
                 if _v_sb:
-                    var _vv = _v_sb.value().copy()
+                    var _vv = _v_sb.take()
                     self.close_transport(_vv.error_code, _vv.tag, now)
                     return
             return
