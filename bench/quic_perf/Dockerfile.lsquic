@@ -40,7 +40,7 @@ WORKDIR /src
 RUN git clone --depth 1 https://github.com/google/boringssl.git /src/boringssl \
     && cd /src/boringssl \
     && cmake -DCMAKE_BUILD_TYPE=Release . \
-    && make -j"$(nproc)"
+    && make -j"$(nproc)" ssl crypto
 
 RUN git clone --branch "${LSQUIC_TAG}" --depth 1 --recurse-submodules \
         https://github.com/litespeedtech/lsquic.git /src/lsquic
