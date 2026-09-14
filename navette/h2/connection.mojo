@@ -225,11 +225,6 @@ struct H2HeadersPayload(Copyable, Movable):
         self.headers = other.headers.copy()
         self.stream_ended = other.stream_ended
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.headers = move.headers^
-        self.stream_ended = move.stream_ended
-
 
 struct H2DataPayload(Copyable, Movable):
     """Payload for DATA_RECEIVED."""
@@ -250,12 +245,6 @@ struct H2DataPayload(Copyable, Movable):
         self.flow_controlled_length = other.flow_controlled_length
         self.stream_ended = other.stream_ended
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.data = move.data^
-        self.flow_controlled_length = move.flow_controlled_length
-        self.stream_ended = move.stream_ended
-
 
 struct H2StreamResetPayload(Copyable, Movable):
     """Payload for STREAM_RESET."""
@@ -269,10 +258,6 @@ struct H2StreamResetPayload(Copyable, Movable):
     def __init__(out self, *, other: Self):
         self.stream_id = other.stream_id
         self.error_code = other.error_code
-
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.error_code = move.error_code
 
 
 struct H2GoawayPayload(Copyable, Movable):
@@ -291,11 +276,6 @@ struct H2GoawayPayload(Copyable, Movable):
         self.error_code = other.error_code
         self.data = other.data.copy()
 
-    def __init__(out self, *, deinit move: Self):
-        self.last_stream_id = move.last_stream_id
-        self.error_code = move.error_code
-        self.data = move.data^
-
 
 struct H2WindowPayload(Copyable, Movable):
     """Payload for WINDOW_UPDATED."""
@@ -309,10 +289,6 @@ struct H2WindowPayload(Copyable, Movable):
     def __init__(out self, *, other: Self):
         self.stream_id = other.stream_id
         self.window_increment = other.window_increment
-
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.window_increment = move.window_increment
 
 
 struct H2TerminationPayload(Copyable, Movable):
@@ -331,166 +307,128 @@ struct H2TerminationPayload(Copyable, Movable):
         self.error_code = other.error_code
         self.message = other.message
 
-    def __init__(out self, *, deinit move: Self):
-        self.last_stream_id = move.last_stream_id
-        self.error_code = move.error_code
-        self.message = move.message^
-
 
 # ---------------------------------------------------------------------------
 # H2Event — tagged union for connection events
 # ---------------------------------------------------------------------------
-struct H2Event(Copyable, Movable):
-    var kind: Int
-    var stream_id: UInt32
-    var headers: List[Header]
-    var data: List[UInt8]
-    var error_code: UInt32
-    var stream_ended: Bool
-    var last_stream_id: UInt32
-    var window_increment: UInt32
-    var flow_controlled_length: Int
-    var message: String
+comptime H2EventPayload = Variant[
+    NoneType,              # SETTINGS_ACKNOWLEDGED, SETTINGS_CHANGED
+    List[UInt8],           # PING_RECEIVED, PING_ACKNOWLEDGED
+    H2HeadersPayload,     # REQUEST/RESPONSE/TRAILERS_RECEIVED
+    H2DataPayload,        # DATA_RECEIVED
+    UInt32,                # STREAM_ENDED (stream_id)
+    H2StreamResetPayload, # STREAM_RESET
+    H2GoawayPayload,      # GOAWAY_RECEIVED
+    H2WindowPayload,      # WINDOW_UPDATED
+    H2TerminationPayload, # CONNECTION_TERMINATED
+]
 
-    def __init__(out self):
-        self.kind = 0
-        self.stream_id = UInt32(0)
-        self.headers = List[Header]()
-        self.data = List[UInt8]()
-        self.error_code = UInt32(0)
-        self.stream_ended = False
-        self.last_stream_id = UInt32(0)
-        self.window_increment = UInt32(0)
-        self.flow_controlled_length = 0
-        self.message = String("")
+
+struct H2Event(Copyable, Movable):
+    """Tagged union for H2 connection events."""
+    var kind: Int
+    var payload: H2EventPayload
+
+    def __init__(out self, kind: Int, var payload: H2EventPayload):
+        """Construct from kind discriminant and payload variant."""
+        self.kind = kind
+        self.payload = payload^
 
     def __init__(out self, *, other: Self):
         self.kind = other.kind
-        self.stream_id = other.stream_id
-        self.headers = other.headers.copy()
-        self.data = other.data.copy()
-        self.error_code = other.error_code
-        self.stream_ended = other.stream_ended
-        self.last_stream_id = other.last_stream_id
-        self.window_increment = other.window_increment
-        self.flow_controlled_length = other.flow_controlled_length
-        self.message = other.message
+        self.payload = H2EventPayload(copy=other.payload)
 
-    def __init__(out self, *, deinit take: Self):
-        self.kind = take.kind
-        self.stream_id = take.stream_id
-        self.headers = take.headers^
-        self.data = take.data^
-        self.error_code = take.error_code
-        self.stream_ended = take.stream_ended
-        self.last_stream_id = take.last_stream_id
-        self.window_increment = take.window_increment
-        self.flow_controlled_length = take.flow_controlled_length
-        self.message = take.message^
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind
+        self.payload = move.payload^
+
+    # -- Accessor helpers (dispatch sites use these) --
+
+    def as_headers(self) -> ref [self.payload] H2HeadersPayload:
+        """Access H2HeadersPayload for REQUEST/RESPONSE/TRAILERS_RECEIVED."""
+        return self.payload.unsafe_get[H2HeadersPayload]()
+
+    def as_data(self) -> ref [self.payload] H2DataPayload:
+        """Access H2DataPayload for DATA_RECEIVED."""
+        return self.payload.unsafe_get[H2DataPayload]()
+
+    def as_stream_reset(self) -> ref [self.payload] H2StreamResetPayload:
+        """Access H2StreamResetPayload for STREAM_RESET."""
+        return self.payload.unsafe_get[H2StreamResetPayload]()
+
+    def as_goaway(self) -> ref [self.payload] H2GoawayPayload:
+        """Access H2GoawayPayload for GOAWAY_RECEIVED."""
+        return self.payload.unsafe_get[H2GoawayPayload]()
+
+    def as_window(self) -> ref [self.payload] H2WindowPayload:
+        """Access H2WindowPayload for WINDOW_UPDATED."""
+        return self.payload.unsafe_get[H2WindowPayload]()
+
+    def as_termination(self) -> ref [self.payload] H2TerminationPayload:
+        """Access H2TerminationPayload for CONNECTION_TERMINATED."""
+        return self.payload.unsafe_get[H2TerminationPayload]()
+
+    def as_stream_id(self) -> UInt32:
+        """STREAM_ENDED payload -- just a stream_id."""
+        return self.payload.unsafe_get[UInt32]()
+
+    def as_ping_data(self) -> ref [self.payload] List[UInt8]:
+        """Access opaque ping data for PING_RECEIVED/PING_ACKNOWLEDGED."""
+        return self.payload.unsafe_get[List[UInt8]]()
+
+    # -- Factory methods --
 
     @staticmethod
     def settings_acknowledged() -> Self:
-        var e = Self()
-        e.kind = H2_EVT_SETTINGS_ACKNOWLEDGED
-        return e^
+        return Self(H2_EVT_SETTINGS_ACKNOWLEDGED, H2EventPayload(NoneType()))
 
     @staticmethod
     def settings_changed() -> Self:
-        var e = Self()
-        e.kind = H2_EVT_SETTINGS_CHANGED
-        return e^
+        return Self(H2_EVT_SETTINGS_CHANGED, H2EventPayload(NoneType()))
 
     @staticmethod
     def ping_received(opaque_data: List[UInt8]) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_PING_RECEIVED
-        e.data = opaque_data.copy()
-        return e^
+        return Self(H2_EVT_PING_RECEIVED, H2EventPayload(opaque_data.copy()))
 
     @staticmethod
     def ping_acknowledged(opaque_data: List[UInt8]) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_PING_ACKNOWLEDGED
-        e.data = opaque_data.copy()
-        return e^
+        return Self(H2_EVT_PING_ACKNOWLEDGED, H2EventPayload(opaque_data.copy()))
 
     @staticmethod
     def goaway_received(last_stream_id: UInt32, error_code: UInt32, debug_data: List[UInt8]) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_GOAWAY_RECEIVED
-        e.last_stream_id = last_stream_id
-        e.error_code = error_code
-        e.data = debug_data.copy()
-        return e^
+        return Self(H2_EVT_GOAWAY_RECEIVED, H2EventPayload(H2GoawayPayload(last_stream_id, error_code, debug_data.copy())))
 
     @staticmethod
     def window_updated(stream_id: UInt32, increment: UInt32) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_WINDOW_UPDATED
-        e.stream_id = stream_id
-        e.window_increment = increment
-        return e^
+        return Self(H2_EVT_WINDOW_UPDATED, H2EventPayload(H2WindowPayload(stream_id, increment)))
 
     @staticmethod
     def connection_terminated(last_stream_id: UInt32, error_code: UInt32, message: String) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_CONNECTION_TERMINATED
-        e.last_stream_id = last_stream_id
-        e.error_code = error_code
-        e.message = message
-        return e^
+        return Self(H2_EVT_CONNECTION_TERMINATED, H2EventPayload(H2TerminationPayload(last_stream_id, error_code, message)))
 
     @staticmethod
     def request_received(stream_id: UInt32, headers: List[Header], stream_ended: Bool) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_REQUEST_RECEIVED
-        e.stream_id = stream_id
-        e.headers = headers.copy()
-        e.stream_ended = stream_ended
-        return e^
+        return Self(H2_EVT_REQUEST_RECEIVED, H2EventPayload(H2HeadersPayload(stream_id, headers.copy(), stream_ended)))
 
     @staticmethod
     def response_received(stream_id: UInt32, headers: List[Header], stream_ended: Bool) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_RESPONSE_RECEIVED
-        e.stream_id = stream_id
-        e.headers = headers.copy()
-        e.stream_ended = stream_ended
-        return e^
+        return Self(H2_EVT_RESPONSE_RECEIVED, H2EventPayload(H2HeadersPayload(stream_id, headers.copy(), stream_ended)))
 
     @staticmethod
     def data_received(stream_id: UInt32, data: List[UInt8], flow_controlled_length: Int, stream_ended: Bool) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_DATA_RECEIVED
-        e.stream_id = stream_id
-        e.data = data.copy()
-        e.flow_controlled_length = flow_controlled_length
-        e.stream_ended = stream_ended
-        return e^
+        return Self(H2_EVT_DATA_RECEIVED, H2EventPayload(H2DataPayload(stream_id, data.copy(), flow_controlled_length, stream_ended)))
 
     @staticmethod
     def stream_reset(stream_id: UInt32, error_code: UInt32) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_STREAM_RESET
-        e.stream_id = stream_id
-        e.error_code = error_code
-        return e^
+        return Self(H2_EVT_STREAM_RESET, H2EventPayload(H2StreamResetPayload(stream_id, error_code)))
 
     @staticmethod
     def make_stream_ended(stream_id: UInt32) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_STREAM_ENDED
-        e.stream_id = stream_id
-        return e^
+        return Self(H2_EVT_STREAM_ENDED, H2EventPayload(stream_id))
 
     @staticmethod
     def trailers_received(stream_id: UInt32, headers: List[Header]) -> Self:
-        var e = Self()
-        e.kind = H2_EVT_TRAILERS_RECEIVED
-        e.stream_id = stream_id
-        e.headers = headers.copy()
-        e.stream_ended = True
-        return e^
+        return Self(H2_EVT_TRAILERS_RECEIVED, H2EventPayload(H2HeadersPayload(stream_id, headers.copy(), True)))
 
 
 # ---------------------------------------------------------------------------
