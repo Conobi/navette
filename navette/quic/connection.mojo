@@ -1509,7 +1509,7 @@ struct QuicConnection(Movable):
 
     # ── Stream frame handlers ────────────────────────────────────────
 
-    def _handle_stream_frame(mut self, stream_frame: StreamFrame) raises:
+    def _handle_stream_frame(mut self, ref stream_frame: StreamFrame) raises:
         """Process an incoming STREAM frame (RFC 9000 §19.8)."""
         var stream_id = stream_frame.stream_id
         var offset = stream_frame.offset
@@ -2308,7 +2308,7 @@ struct QuicConnection(Movable):
     # ── ACK handling ─────────────────────────────────────────────────
 
     def _handle_ack(
-        mut self, ack_frame: AckFrame, space_idx: Int, now: UInt64
+        mut self, ref ack_frame: AckFrame, space_idx: Int, now: UInt64
     ) raises:
         """Process an ACK frame: update recovery, detect losses."""
         # Get newly acked packets.

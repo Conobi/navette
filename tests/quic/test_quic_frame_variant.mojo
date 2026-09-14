@@ -4,6 +4,7 @@ Verifies that every factory method produces a Frame whose type_id and
 active Variant type agree.
 """
 
+from std.sys.info import size_of
 from navette.quic.frame import (
     Frame, FramePayload,
     AckFrame, CryptoFrame, StreamFrame, ResetStreamFrame,
@@ -120,6 +121,12 @@ def test_accessor_roundtrip() raises:
     _assert(f4.as_retire_connection_id() == UInt64(7), "retire_cid accessor")
 
 
+def test_frame_sizeof_regression_gate() raises:
+    """Frame must stay under 120 bytes — prevents reintroduction of the product-type anti-pattern."""
+    comptime frame_size = size_of[Frame]()
+    _assert(frame_size < 120, "Frame size regression: expected < 120 bytes, got " + String(frame_size))
+
+
 def main() raises:
     print("test_quic_frame_variant:")
 
@@ -133,6 +140,10 @@ def main() raises:
 
     print("  accessor_roundtrip ...", end="")
     test_accessor_roundtrip()
+    print(" PASS")
+
+    print("  frame_sizeof_regression_gate ...", end="")
+    test_frame_sizeof_regression_gate()
     print(" PASS")
 
     print("All test_quic_frame_variant tests passed.")

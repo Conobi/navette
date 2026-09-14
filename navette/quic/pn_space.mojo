@@ -491,7 +491,7 @@ struct PacketNumberSpace(Copyable, Movable):
 
     # ── ACK processing ───────────────────────────────────────────────
 
-    def on_ack_received(mut self, ack: AckFrame) raises -> List[SentPacket]:
+    def on_ack_received(mut self, ref ack: AckFrame) raises -> List[SentPacket]:
         """Process an incoming ACK frame: decode ranges into PN sets, find
         matching sent_packets, remove them, return newly acked list.
         Raises if any ACKed PN >= next_pn (security check)."""
