@@ -696,14 +696,16 @@ def test_response_round_trip() raises:
         if events[i].kind == H2_EVT_RESPONSE_RECEIVED:
             got_response = True
             # Extract :status from headers
-            for j in range(len(events[i].headers)):
-                if events[i].headers[j].name == ":status":
-                    response_status = events[i].headers[j].value
+            ref hdrs = events[i].as_headers().headers
+            for j in range(len(hdrs)):
+                if hdrs[j].name == ":status":
+                    response_status = hdrs[j].value
         elif events[i].kind == H2_EVT_DATA_RECEIVED:
             got_data = True
-            for j in range(len(events[i].data)):
-                received_data += chr(Int(events[i].data[j]))
-            if events[i].stream_ended:
+            ref dp = events[i].as_data()
+            for j in range(len(dp.data)):
+                received_data += chr(Int(dp.data[j]))
+            if dp.stream_ended:
                 got_stream_ended = True
         elif events[i].kind == H2_EVT_STREAM_ENDED:
             got_stream_ended = True

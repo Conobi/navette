@@ -173,20 +173,21 @@ def test_submit_get() raises:
     for i in range(len(events)):
         if events[i].kind == H2_EVT_REQUEST_RECEIVED:
             found = True
+            ref hdrs = events[i].as_headers().headers
             # Check that :method is GET
             var got_method = String("")
-            for j in range(len(events[i].headers)):
-                if events[i].headers[j].name == ":method":
-                    got_method = events[i].headers[j].value
+            for j in range(len(hdrs)):
+                if hdrs[j].name == ":method":
+                    got_method = hdrs[j].value
             if got_method != "GET":
                 raise Error(
                     "expected :method GET, got '" + got_method + "'"
                 )
             # Check that :path is /
             var got_path = String("")
-            for j in range(len(events[i].headers)):
-                if events[i].headers[j].name == ":path":
-                    got_path = events[i].headers[j].value
+            for j in range(len(hdrs)):
+                if hdrs[j].name == ":path":
+                    got_path = hdrs[j].value
             if got_path != "/":
                 raise Error(
                     "expected :path /, got '" + got_path + "'"

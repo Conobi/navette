@@ -412,15 +412,16 @@ struct H2CoroServer(Movable):
     def _on_request_received(mut self, evt: H2Event) raises:
         """Handle REQUEST_RECEIVED: parse headers, allocate CoroStreamCtx
         on heap, register in streams dict, and run the handler now."""
-        var req = request_from_h2_headers(evt.stream_id, evt.headers)
-        var stream_id = Int(evt.stream_id)
-        var stream_ended = evt.stream_ended
+        ref p = evt.as_headers()
+        var req = request_from_h2_headers(p.stream_id, p.headers)
+        var stream_id = Int(p.stream_id)
+        var stream_ended = p.stream_ended
 
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = CoroStreamCtx(
             request=req^,
             caps=Capabilities.for_h2(),
-            stream_id=evt.stream_id,
+            stream_id=p.stream_id,
             extra_data=self._extra_data,
         )
 
@@ -439,40 +440,42 @@ struct H2CoroServer(Movable):
         control. Path A: handler ran already on REQUEST_RECEIVED, so
         DATA arriving here is body content for streaming clients —
         accumulate it and acknowledge."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        if len(evt.data) > 0:
-            var data_copy = evt.data.copy()
+        if len(p.data) > 0:
+            var data_copy = p.data.copy()
             ctx.recv_body._push(BodyFrame.data(data_copy^))
         if not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
-                evt.flow_controlled_length, evt.stream_id
+                p.flow_controlled_length, p.stream_id
             )
         else:
-            ctx.unacked_bytes += evt.flow_controlled_length
+            ctx.unacked_bytes += p.flow_controlled_length
         if ctx.unacked_bytes > 0 and not ctx.recv_body.is_paused():
             self._conn.acknowledge_received_data(
-                ctx.unacked_bytes, evt.stream_id
+                ctx.unacked_bytes, p.stream_id
             )
             ctx.unacked_bytes = 0
-        if evt.stream_ended and not ctx.request_ended:
+        if p.stream_ended and not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
         ctx_ptr.init_pointee_move(ctx^)
-        if evt.stream_ended:
+        if p.stream_ended:
             self._maybe_cleanup_stream(sid)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
         """Handle TRAILERS_RECEIVED: convert headers, push as trailer
         BodyFrame.  Trailers always carry END_STREAM."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
-        var trailer_headers = headers_from_h2(evt.headers)
+        var trailer_headers = headers_from_h2(p.headers)
         var ctx = ctx_ptr.take_pointee()
         ctx.recv_body._push(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
@@ -483,7 +486,7 @@ struct H2CoroServer(Movable):
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """Handle STREAM_ENDED: mark the body as ended."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_id())
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -497,7 +500,7 @@ struct H2CoroServer(Movable):
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET: tear down the stream."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()

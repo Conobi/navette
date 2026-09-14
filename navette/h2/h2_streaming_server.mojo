@@ -553,7 +553,7 @@ struct H2StreamingServer(Movable):
         for i in range(len(events)):
             var evt = H2Event(other=events[i])
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
-                if Int(evt.stream_id) not in self._streams:
+                if Int(evt.as_headers().stream_id) not in self._streams:
                     self._on_request(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
                 self._on_data(evt)
@@ -573,21 +573,22 @@ struct H2StreamingServer(Movable):
         """REQUEST_RECEIVED: parse headers into Request, allocate
         H2StreamingCtx + CoroHandle (via CoroutinePool) on heap, register in
         streams dict, and do the first resume.
-        If evt.stream_ended==True (bodyless GET), set request_ended + recv_body._set_end()."""
-        var req = request_from_h2_headers(evt.stream_id, evt.headers)
-        var stream_id = Int(evt.stream_id)
+        If stream_ended==True (bodyless GET), set request_ended + recv_body._set_end()."""
+        ref p = evt.as_headers()
+        var req = request_from_h2_headers(p.stream_id, p.headers)
+        var stream_id = Int(p.stream_id)
 
         # Allocate ctx from pool
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = H2StreamingCtx(
             request=req^,
             caps=Capabilities.for_h2(),
-            stream_id=evt.stream_id,
+            stream_id=p.stream_id,
             extra_data=self._extra_data,
         )
 
         # stream_ended on REQUEST_RECEIVED = bodyless request (e.g. GET)
-        if evt.stream_ended:
+        if p.stream_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
 
@@ -610,12 +611,13 @@ struct H2StreamingServer(Movable):
     def _on_trailers(mut self, evt: H2Event) raises:
         """TRAILERS_RECEIVED: push as BodyFrame.trailers into body_frame_ring,
         resume coroutine."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_headers()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        var trailer_headers = headers_from_h2(evt.headers)
+        var trailer_headers = headers_from_h2(p.headers)
         ctx.body_frame_ring.append(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
@@ -626,33 +628,34 @@ struct H2StreamingServer(Movable):
     def _on_data(mut self, evt: H2Event) raises:
         """DATA_RECEIVED: push data into body_frame_ring, resume coroutine.
         Also acknowledge received bytes for H2 flow control."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_data()
+        var sid = Int(p.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.take_pointee()
-        if len(evt.data) > 0:
-            var data_copy = List[UInt8](copy=evt.data)
+        if len(p.data) > 0:
+            var data_copy = List[UInt8](copy=p.data)
             ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
         ctx_ptr.init_pointee_move(ctx^)
         # Acknowledge flow control bytes
         try:
-            self._conn.acknowledge_received_data(evt.flow_controlled_length, evt.stream_id)
+            self._conn.acknowledge_received_data(p.flow_controlled_length, p.stream_id)
         except:
             pass
-        if evt.stream_ended:
+        if p.stream_ended:
             var ctx2 = ctx_ptr.take_pointee()
             if not ctx2.request_ended:
                 ctx2.request_ended = True
                 ctx2.recv_body._set_end()
             ctx_ptr.init_pointee_move(ctx2^)
         self._resume_stream(sid)
-        if evt.stream_ended:
+        if p.stream_ended:
             self._maybe_cleanup_stream(sid)
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """STREAM_ENDED: mark body ended, resume coroutine."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_id())
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
@@ -668,7 +671,7 @@ struct H2StreamingServer(Movable):
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """STREAM_RESET: set cancelled, resume once for unwind,
         then pop BEFORE free."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_reset().stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()

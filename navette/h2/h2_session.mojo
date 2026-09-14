@@ -324,46 +324,48 @@ struct H2Session(Session):
 
     def _on_response_received(mut self, evt: H2Event) raises:
         """Handle RESPONSE_RECEIVED: extract :status and headers, store on ctx."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_headers()
+        var sid = Int(p.stream_id)
         var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
             return
         # Use the canonical pseudo-header parser for validation
-        var resp = response_from_h2_headers(evt.headers)
+        var resp = response_from_h2_headers(p.headers)
         var ctx = ctx_ptr.take_pointee()
         ctx.status_code = Int(resp.status.code())
         ctx.headers = Headers(other=resp.headers)
-        if evt.stream_ended:
+        if p.stream_ended:
             ctx.complete = True
         ctx_ptr.init_pointee_move(ctx^)
 
     def _on_data_received(mut self, evt: H2Event) raises:
         """Handle DATA_RECEIVED: append data to ctx, acknowledge for flow control."""
-        var sid = Int(evt.stream_id)
+        ref p = evt.as_data()
+        var sid = Int(p.stream_id)
         var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
         except:
             return
         var ctx = ctx_ptr.take_pointee()
-        for j in range(len(evt.data)):
-            ctx.body_data.append(evt.data[j])
+        for j in range(len(p.data)):
+            ctx.body_data.append(p.data[j])
         ctx_ptr.init_pointee_move(ctx^)
         # Acknowledge received data for flow control
-        if evt.flow_controlled_length > 0:
+        if p.flow_controlled_length > 0:
             self._conn.acknowledge_received_data(
-                evt.flow_controlled_length, evt.stream_id
+                p.flow_controlled_length, p.stream_id
             )
-        if evt.stream_ended:
+        if p.stream_ended:
             var ctx2 = ctx_ptr.take_pointee()
             ctx2.complete = True
             ctx_ptr.init_pointee_move(ctx2^)
 
     def _on_trailers_received(mut self, evt: H2Event) raises:
         """Handle TRAILERS_RECEIVED: trailers imply stream ended."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_headers().stream_id)
         var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
@@ -375,7 +377,7 @@ struct H2Session(Session):
 
     def _on_stream_ended(mut self, evt: H2Event) raises:
         """Handle STREAM_ENDED: mark ctx complete."""
-        var sid = Int(evt.stream_id)
+        var sid = Int(evt.as_stream_id())
         var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
@@ -387,7 +389,8 @@ struct H2Session(Session):
 
     def _on_stream_reset(mut self, evt: H2Event) raises:
         """Handle STREAM_RESET: mark ctx errored."""
-        var sid = Int(evt.stream_id)
+        ref pr = evt.as_stream_reset()
+        var sid = Int(pr.stream_id)
         var ctx_ptr: UnsafePointer[_ClientCtx, MutAnyOrigin]
         try:
             ctx_ptr = self._stream_ctxs[sid].ptr()
@@ -395,6 +398,6 @@ struct H2Session(Session):
             return
         var ctx = ctx_ptr.take_pointee()
         ctx.errored = True
-        ctx.error_code = evt.error_code
+        ctx.error_code = pr.error_code
         ctx.complete = True
         ctx_ptr.init_pointee_move(ctx^)

@@ -259,11 +259,12 @@ def test_h2_streaming_post_with_body() raises:
     var got_body_length = String("")
     for i in range(len(client_events)):
         if client_events[i].kind == H2_EVT_RESPONSE_RECEIVED:
-            for j in range(len(client_events[i].headers)):
-                if client_events[i].headers[j].name == ":status" and client_events[i].headers[j].value == "200":
+            ref hdrs = client_events[i].as_headers().headers
+            for j in range(len(hdrs)):
+                if hdrs[j].name == ":status" and hdrs[j].value == "200":
                     got_200 = True
-                elif client_events[i].headers[j].name == "x-body-length":
-                    got_body_length = client_events[i].headers[j].value
+                elif hdrs[j].name == "x-body-length":
+                    got_body_length = hdrs[j].value
 
     assert_true(got_200, "did not receive 200 OK")
     assert_true(got_body_length == "11", "expected body length 11, got: " + got_body_length)
