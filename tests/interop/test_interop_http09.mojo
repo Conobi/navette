@@ -48,16 +48,18 @@ def _establish_handshake(
     mut now: UInt64,
 ) raises -> UInt64:
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -75,16 +77,18 @@ def _pump(
     mut now: UInt64,
     rounds: Int = 3,
 ) raises -> UInt64:
+    var a_dg = List[List[UInt8]](capacity=1)
+    var b_dg = List[List[UInt8]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
-        var a_dg = a.send(now)
-        for i in range(len(a_dg)):
+        var a_n = a.send(now, a_dg)
+        for i in range(a_n):
             try:
                 b.recv(Span(a_dg[i]), now)
             except:
                 pass
-        var b_dg = b.send(now)
-        for i in range(len(b_dg)):
+        var b_n = b.send(now, b_dg)
+        for i in range(b_n):
             try:
                 a.recv(Span(b_dg[i]), now)
             except:

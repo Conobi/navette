@@ -50,16 +50,18 @@ def _establish(
     mut now: UInt64,
 ) raises -> UInt64:
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -77,16 +79,18 @@ def _pump(
     mut now: UInt64,
     rounds: Int = 3,
 ) raises -> UInt64:
+    var a_dg = List[List[UInt8]](capacity=1)
+    var b_dg = List[List[UInt8]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
-        var a_dg = a.send(now)
-        for i in range(len(a_dg)):
+        var a_n = a.send(now, a_dg)
+        for i in range(a_n):
             try:
                 b.recv(Span(a_dg[i]), now)
             except:
                 pass
-        var b_dg = b.send(now)
-        for i in range(len(b_dg)):
+        var b_n = b.send(now, b_dg)
+        for i in range(b_n):
             try:
                 a.recv(Span(b_dg[i]), now)
             except:
@@ -141,7 +145,8 @@ def test_ecn_recv_counts_ce_mark() raises:
 
     # Client sends a datagram; server receives it with ECN_CE mark.
     now += UInt64(10_000)
-    var c_dg = client.send(now)
+    var c_dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, c_dg)
     var ce_before = server.spaces[2].recv_ecn.ce
     for i in range(len(c_dg)):
         try:
@@ -184,7 +189,8 @@ def test_ecn_ack_includes_ecn_counts() raises:
     client.send_stream_data(sid, Span(data), False)
 
     now += UInt64(10_000)
-    var c_dg = client.send(now)
+    var c_dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, c_dg)
     for i in range(len(c_dg)):
         try:
             server.recv(Span(c_dg[i]), now, ecn_mark=ECN_CE)
@@ -234,7 +240,8 @@ def test_ecn_probing_to_capable() raises:
 
     # Client sends (ECT0 probes); server receives them with ECT0 mark.
     now += UInt64(10_000)
-    var c_dg = client.send(now)
+    var c_dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, c_dg)
     for i in range(len(c_dg)):
         try:
             server.recv(Span(c_dg[i]), now, ecn_mark=ECN_ECT0)
@@ -243,7 +250,8 @@ def test_ecn_probing_to_capable() raises:
 
     # Server ACK will carry ECN counts (ect0 > 0). Client processes ACK.
     now += UInt64(10_000)
-    var s_dg = server.send(now)
+    var s_dg = List[List[UInt8]](capacity=1)
+    _ = server.send(now, s_dg)
     for i in range(len(s_dg)):
         try:
             client.recv(Span(s_dg[i]), now)
@@ -297,7 +305,8 @@ def test_ecn_probing_to_disabled_no_counts() raises:
 
     # Client sends (ECT0 probes); server receives WITHOUT ecn_mark (NOT_ECT).
     now += UInt64(10_000)
-    var c_dg2 = client.send(now)
+    var c_dg2 = List[List[UInt8]](capacity=1)
+    _ = client.send(now, c_dg2)
     for i in range(len(c_dg2)):
         try:
             # No ecn_mark argument -> defaults to ECN_NOT_ECT (bleaching simulation).
@@ -307,15 +316,17 @@ def test_ecn_probing_to_disabled_no_counts() raises:
 
     # Server ACK has no ECN counts; client processes it.
     # Pump several rounds to ensure ACK is generated and processed.
+    var s_dg2 = List[List[UInt8]](capacity=1)
+    var c_ack = List[List[UInt8]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
-        var s_dg2 = server.send(now)
+        _ = server.send(now, s_dg2)
         for i in range(len(s_dg2)):
             try:
                 client.recv(Span(s_dg2[i]), now)
             except:
                 pass
-        var c_ack = client.send(now)
+        _ = client.send(now, c_ack)
         for i in range(len(c_ack)):
             try:
                 server.recv(Span(c_ack[i]), now)
@@ -396,7 +407,8 @@ def test_ecn_ce_triggers_congestion() raises:
     var data = _to_bytes("ping")
     client.send_stream_data(sid, Span(data), False)
     now += UInt64(10_000)
-    var c_dg = client.send(now)
+    var c_dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, c_dg)
     assert_true(len(c_dg) > 0, "client must produce datagrams")
 
     # Step 2: Server receives client's packets with ECN_CE mark.
@@ -414,7 +426,8 @@ def test_ecn_ce_triggers_congestion() raises:
     )
 
     # Step 3: Server sends ACK with ECN counts (has_ecn=True, ecn_ce=1).
-    var s_dg = server.send(now)
+    var s_dg = List[List[UInt8]](capacity=1)
+    _ = server.send(now, s_dg)
     assert_true(len(s_dg) > 0, "server must produce ACK")
 
     # Step 4: Client receives ACK → _handle_ack → _process_ecn_feedback →
@@ -477,7 +490,8 @@ def test_ecn_bleaching_disables() raises:
 
     # Client sends; server receives WITHOUT ecn_mark (simulating bleaching: path stripped ECT0).
     now += UInt64(10_000)
-    var c_dg3 = client.send(now)
+    var c_dg3 = List[List[UInt8]](capacity=1)
+    _ = client.send(now, c_dg3)
     for i in range(len(c_dg3)):
         try:
             server.recv(Span(c_dg3[i]), now)
@@ -487,7 +501,8 @@ def test_ecn_bleaching_disables() raises:
     # Server ACK has no ECN counts; when client processes it with ect0_in_flight>0
     # but ack has_ecn=False, the bleaching check fires.
     now += UInt64(10_000)
-    var s_dg3 = server.send(now)
+    var s_dg3 = List[List[UInt8]](capacity=1)
+    _ = server.send(now, s_dg3)
     for i in range(len(s_dg3)):
         try:
             client.recv(Span(s_dg3[i]), now)

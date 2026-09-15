@@ -143,10 +143,11 @@ def _recv_datagram(fd: Int32) raises -> List[UInt8]:
 
 def _drive_handshake(mut quic: QuicConnection, fd: Int32) raises:
     """Pump send/recv until the QUIC handshake completes."""
+    var send_buf = List[List[UInt8]](capacity=1)
     for _ in range(600):  # 600 × 100ms poll = 60s max (interop runner default)
         var now = monotonic_us()
-        var out = quic.send(now)
-        _send_datagrams(fd, out)
+        _ = quic.send(now, send_buf)
+        _send_datagrams(fd, send_buf)
         if quic.is_established():
             return
         if udp_poll(fd, 100):
@@ -165,11 +166,12 @@ def _fetch_file(
     """Send HTTP/0.9 GET for path, collect the full response."""
     var stream_id = http09_request(quic, path)
     var response = List[UInt8]()
+    var send_buf = List[List[UInt8]](capacity=1)
 
     for _ in range(1000):
         var now = monotonic_us()
-        var out = quic.send(now)
-        _send_datagrams(fd, out)
+        _ = quic.send(now, send_buf)
+        _send_datagrams(fd, send_buf)
 
         # Poll for incoming data
         if udp_poll(fd, 50):

@@ -44,16 +44,18 @@ def _establish_handshake(
     mut now: UInt64,
 ) raises -> UInt64:
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -209,7 +211,8 @@ def test_handshake_padding_still_works() raises:
     )
 
     # Drive one round of send: client should emit a padded Initial datagram.
-    var dgrams = client.send(now)
+    var dgrams = List[List[UInt8]](capacity=1)
+    _ = client.send(now, dgrams)
     assert_true(len(dgrams) >= 1, "client must emit at least one datagram on first send")
 
     # The first datagram must be padded to >= MIN_DATAGRAM_SIZE (1200 bytes)

@@ -7,7 +7,8 @@
 #
 # Usage:
 #   var conn = QuicConnection.client(lib, cfg, "example.com", tp, now)
-#   var datagrams = conn.send(now)       # Initial with ClientHello
+#   var datagrams = List[List[UInt8]](capacity=1)
+#   _ = conn.send(now, datagrams)        # Initial with ClientHello
 #   conn.recv(response_bytes, now)       # Feed server reply
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
 
@@ -2297,14 +2298,20 @@ struct QuicConnection(Movable):
 
     # ── Send path ────────────────────────────────────────────────────
 
-    def send(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Build at most one datagram; empty list when nothing is owed."""
+    def send(mut self, now: UInt64, mut out: List[List[UInt8]]) raises -> Int:
+        """Build at most one datagram into `out`; returns 0 or 1.
+
+        `out` is cleared (length reset, capacity kept) and reused across
+        calls so the caller amortizes the outer List allocation instead of
+        getting a fresh one back on every call.
+        """
+        out.clear()
         self._check_timers(now)
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
-            return List[List[UInt8]]()
+            return 0
         var closing = (self.state & CONN_CLOSING) != 0
         if closing and not self.close.owed:
-            return List[List[UInt8]]()
+            return 0
         var budget = self._datagram_budget()
         if self.is_server and not self._addr_validated():
             var allowance = self._amp_allowance()
@@ -2349,12 +2356,16 @@ struct QuicConnection(Movable):
             if r[1]:
                 end_assembly = True
         if len(plans) == 0:
-            return List[List[UInt8]]()
+            return 0
         var result = self._commit_plans_to_datagram(
             plans, budget, closing, all_close_committed, now,
         )
         self._scratch_plans = plans^
-        return result^
+        for i in range(len(result)):
+            var dg = List[UInt8]()
+            swap(dg, result[i])
+            out.append(dg^)
+        return len(out)
 
     def _plan_space_packet(
         mut self,

@@ -108,16 +108,18 @@ def _establish_handshake(
     events produced by their own actions.
     """
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -140,16 +142,18 @@ def _pump(
     Used after the handshake to propagate application-level frames (STREAM,
     RESET_STREAM, STOP_SENDING, NEW_CONNECTION_ID …) in both directions.
     """
+    var a_dg = List[List[UInt8]](capacity=1)
+    var b_dg = List[List[UInt8]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
-        var a_dg = a.send(now)
-        for i in range(len(a_dg)):
+        var a_n = a.send(now, a_dg)
+        for i in range(a_n):
             try:
                 b.recv(Span(a_dg[i]), now)
             except:
                 pass
-        var b_dg = b.send(now)
-        for i in range(len(b_dg)):
+        var b_n = b.send(now, b_dg)
+        for i in range(b_n):
             try:
                 a.recv(Span(b_dg[i]), now)
             except:
@@ -231,16 +235,18 @@ def test_loopback_handshake() raises:
     # Drive handshake to completion.
     var max_rounds = 20
     var established = False
+    var client_dgrams = List[List[UInt8]](capacity=1)
+    var server_dgrams = List[List[UInt8]](capacity=1)
     for round_idx in range(max_rounds):
         now += UInt64(10_000)
-        var client_dgrams = client.send(now)
-        for i in range(len(client_dgrams)):
+        var client_n = client.send(now, client_dgrams)
+        for i in range(client_n):
             try:
                 server.recv(Span(client_dgrams[i]), now)
             except e:
                 print("  [round " + String(round_idx) + "] server.recv: " + String(e))
-        var server_dgrams = server.send(now)
-        for i in range(len(server_dgrams)):
+        var server_n = server.send(now, server_dgrams)
+        for i in range(server_n):
             try:
                 client.recv(Span(server_dgrams[i]), now)
             except e:
@@ -309,16 +315,18 @@ def test_connection_close() raises:
     )
 
     # Complete handshake.
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -342,16 +350,18 @@ def test_connection_close() raises:
     client.close_transport(UInt64(0), String("done"), now)
 
     # Pump a few rounds so the server receives CONNECTION_CLOSE.
+    var client_dgrams = List[List[UInt8]](capacity=1)
+    var server_dgrams = List[List[UInt8]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
-        var client_dgrams = client.send(now)
-        for i in range(len(client_dgrams)):
+        var client_n = client.send(now, client_dgrams)
+        for i in range(client_n):
             try:
                 server.recv(Span(client_dgrams[i]), now)
             except:
                 pass
-        var server_dgrams = server.send(now)
-        for i in range(len(server_dgrams)):
+        var server_n = server.send(now, server_dgrams)
+        for i in range(server_n):
             try:
                 client.recv(Span(server_dgrams[i]), now)
             except:
@@ -373,7 +383,8 @@ def test_connection_close() raises:
 
     # Advance time past drain timer.
     now += UInt64(10_000_000)
-    _ = server.send(now)
+    var _dg = List[List[UInt8]](capacity=1)
+    _ = server.send(now, _dg)
     assert_true(server.is_closed(), "server not closed after drain timeout")
 
     _ = tls^
@@ -406,16 +417,18 @@ def test_idle_timeout() raises:
     )
 
     # Complete handshake.
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -438,7 +451,8 @@ def test_idle_timeout() raises:
     now += UInt64(10_000_000)
 
     # Trigger idle timeout check.
-    _ = client.send(now)
+    var _dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg)
 
     assert_true(client.is_closed(), "client not closed after idle timeout")
 
@@ -488,15 +502,17 @@ def test_handshake_with_loss() raises:
 
     # Round 1: client sends Initial (ClientHello) -> server receives it.
     now += UInt64(10_000)
-    var client_dgrams_r1 = client.send(now)
-    assert_true(len(client_dgrams_r1) > 0, "client should send Initial")
-    for i in range(len(client_dgrams_r1)):
+    var client_dgrams_r1 = List[List[UInt8]](capacity=1)
+    var client_n_r1 = client.send(now, client_dgrams_r1)
+    assert_true(client_n_r1 > 0, "client should send Initial")
+    for i in range(client_n_r1):
         server.recv(Span(client_dgrams_r1[i]), now)
 
     # Server sends response (ServerHello + certs) -> DROPPED (not fed to client).
     now += UInt64(10_000)
-    var server_dgrams_r1 = server.send(now)
-    assert_true(len(server_dgrams_r1) > 0, "server should send response")
+    var server_dgrams_r1 = List[List[UInt8]](capacity=1)
+    var server_n_r1 = server.send(now, server_dgrams_r1)
+    assert_true(server_n_r1 > 0, "server should send response")
     # Intentionally NOT feeding server_dgrams_r1 to client.
 
     # Advance time past the client's PTO timeout.
@@ -505,11 +521,12 @@ def test_handshake_with_loss() raises:
     now = client_deadline.value() + UInt64(1)
 
     # Round 2: client PTO fires, should retransmit Initial CRYPTO.
-    var client_dgrams_r2 = client.send(now)
-    assert_true(len(client_dgrams_r2) > 0, "client should retransmit after PTO")
+    var client_dgrams_r2 = List[List[UInt8]](capacity=1)
+    var client_n_r2 = client.send(now, client_dgrams_r2)
+    assert_true(client_n_r2 > 0, "client should retransmit after PTO")
 
     # Feed retransmission to server.
-    for i in range(len(client_dgrams_r2)):
+    for i in range(client_n_r2):
         try:
             server.recv(Span(client_dgrams_r2[i]), now)
         except:
@@ -517,16 +534,18 @@ def test_handshake_with_loss() raises:
 
     # Continue normal handshake loop to completion.
     var established = False
+    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[UInt8]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
                 pass
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
@@ -613,16 +632,18 @@ def test_handshake_with_retry() raises:
 
     # 5. Complete handshake normally.
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -663,19 +684,21 @@ def test_coalesced_packets() raises:
     # Client sends its Initial flight (the ClientHello spans two 1200-byte
     # datagrams; each send() returns at most one).
     now += UInt64(10_000)
-    var client_dgrams = client.send(now)
-    assert_true(len(client_dgrams) > 0, "client should send Initial")
+    var client_dgrams = List[List[UInt8]](capacity=1)
+    var client_n = client.send(now, client_dgrams)
+    assert_true(client_n > 0, "client should send Initial")
     for _ in range(8):
-        for i in range(len(client_dgrams)):
+        for i in range(client_n):
             server.recv(Span(client_dgrams[i]), now)
-        client_dgrams = client.send(now)
-        if len(client_dgrams) == 0:
+        client_n = client.send(now, client_dgrams)
+        if client_n == 0:
             break
 
     # Server sends response -- should contain coalesced data.
     now += UInt64(10_000)
-    var server_dgrams = server.send(now)
-    assert_true(len(server_dgrams) > 0, "server should send response")
+    var server_dgrams = List[List[UInt8]](capacity=1)
+    var server_n = server.send(now, server_dgrams)
+    assert_true(server_n > 0, "server should send response")
 
     # Verify at least one datagram is large (contains coalesced Initial + Handshake).
     var has_large = False
@@ -694,16 +717,18 @@ def test_coalesced_packets() raises:
 
     # Continue handshake to completion.
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -743,7 +768,8 @@ def test_anti_amplification() raises:
 
     # Client sends Initial (padded to 1200 bytes).
     now += UInt64(10_000)
-    var client_dgrams = client.send(now)
+    var client_dgrams = List[List[UInt8]](capacity=1)
+    _ = client.send(now, client_dgrams)
     assert_true(len(client_dgrams) > 0, "client should send Initial")
 
     # Measure total client bytes.
@@ -757,7 +783,8 @@ def test_anti_amplification() raises:
 
     # Server sends response -- measure total bytes.
     now += UInt64(10_000)
-    var server_dgrams = server.send(now)
+    var server_dgrams = List[List[UInt8]](capacity=1)
+    _ = server.send(now, server_dgrams)
 
     var server_bytes = 0
     for i in range(len(server_dgrams)):
@@ -786,16 +813,18 @@ def test_anti_amplification() raises:
             pass
 
     var established = False
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -909,11 +938,13 @@ def _drive_response(
     var body = List[UInt8]()
     var server_dgs = 0
     var fin_seen = False
+    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[UInt8]](capacity=1)
     for _ in range(max_rounds):
         now += UInt64(10_000)
-        var s_dg = server.send(now)
-        server_dgs += len(s_dg)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        server_dgs += s_n
+        for i in range(s_n):
             client.recv(Span(s_dg[i]), now)
         var got = client.recv_stream_data(sid)
         for i in range(len(got[0])):
@@ -921,8 +952,8 @@ def _drive_response(
         if got[1]:
             fin_seen = True
             break
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             server.recv(Span(c_dg[i]), now)
     assert_true(fin_seen, "client never saw FIN on the response stream")
     return Tuple[List[UInt8], Int](body^, server_dgs)
@@ -1019,6 +1050,8 @@ def test_64kb_body_across_sends_intact() raises:
     var expected = _pattern_bytes(4 * CHUNK, 3)
     var body = List[UInt8]()
     var fin_seen = False
+    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[UInt8]](capacity=1)
     for c in range(4):
         var chunk = List[UInt8](capacity=CHUNK)
         for i in range(CHUNK):
@@ -1028,29 +1061,29 @@ def test_64kb_body_across_sends_intact() raises:
         # partially-drained send buffer.
         for _ in range(3):
             now += UInt64(10_000)
-            var s_dg = server.send(now)
-            for i in range(len(s_dg)):
+            var s_n = server.send(now, s_dg)
+            for i in range(s_n):
                 client.recv(Span(s_dg[i]), now)
             var got = client.recv_stream_data(sid)
             for i in range(len(got[0])):
                 body.append(got[0][i])
-            var c_dg = client.send(now)
-            for i in range(len(c_dg)):
+            var c_n = client.send(now, c_dg)
+            for i in range(c_n):
                 server.recv(Span(c_dg[i]), now)
     for _ in range(400):
         if fin_seen:
             break
         now += UInt64(10_000)
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             client.recv(Span(s_dg[i]), now)
         var got = client.recv_stream_data(sid)
         for i in range(len(got[0])):
             body.append(got[0][i])
         if got[1]:
             fin_seen = True
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             server.recv(Span(c_dg[i]), now)
     assert_true(fin_seen, "client never saw FIN on the 64 kB response")
     assert_equal_int(len(body), 4 * CHUNK, "64 kB response length")
@@ -1945,13 +1978,15 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Build outgoing packets from each side (drop datagrams; just track PN).
     now_a += UInt64(10_000)
-    _ = client_a.send(now_a)
+    var _dg1 = List[List[UInt8]](capacity=1)
+    _ = client_a.send(now_a, _dg1)
     var c_pn_a = _last_app_pn(client_a)
     assert_true(
         _app_has_kind(client_a, c_pn_a, SSF_RESET_STREAM, Int(sid_a)),
         "client: RESET_STREAM in initial build",
     )
-    _ = server_a.send(now_a)
+    var _dg2 = List[List[UInt8]](capacity=1)
+    _ = server_a.send(now_a, _dg2)
     var s_pn_a = _last_app_pn(server_a)
     assert_true(
         _app_has_kind(server_a, s_pn_a, SSF_STOP_SENDING, Int(sid_a)),
@@ -1964,14 +1999,16 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Next build must re-emit both frames.
     now_a += UInt64(10_000)
-    _ = client_a.send(now_a)
+    var _dg3 = List[List[UInt8]](capacity=1)
+    _ = client_a.send(now_a, _dg3)
     var c_pn_a2 = _last_app_pn(client_a)
     assert_true(
         _app_has_kind(client_a, c_pn_a2, SSF_RESET_STREAM, Int(sid_a)),
         "client re-emits RESET_STREAM after loss",
     )
 
-    _ = server_a.send(now_a)
+    var _dg4 = List[List[UInt8]](capacity=1)
+    _ = server_a.send(now_a, _dg4)
     var s_pn_a2 = _last_app_pn(server_a)
     assert_true(
         _app_has_kind(server_a, s_pn_a2, SSF_STOP_SENDING, Int(sid_a)),
@@ -2013,7 +2050,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Build server packet; it should include MAX_STREAM_DATA and MAX_DATA.
     now_b += UInt64(10_000)
-    _ = server_b.send(now_b)
+    var _dg5 = List[List[UInt8]](capacity=1)
+    _ = server_b.send(now_b, _dg5)
     var s_pn_b = _last_app_pn(server_b)
     assert_true(
         _app_has_kind(server_b, s_pn_b, SSF_MAX_STREAM_DATA, Int(sid_b)),
@@ -2027,7 +2065,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     # Lose it; next build must re-emit.
     server_b._on_app_pkt_lost(s_pn_b)
     now_b += UInt64(10_000)
-    _ = server_b.send(now_b)
+    var _dg6 = List[List[UInt8]](capacity=1)
+    _ = server_b.send(now_b, _dg6)
     var s_pn_b2 = _last_app_pn(server_b)
     assert_true(
         _app_has_kind(server_b, s_pn_b2, SSF_MAX_STREAM_DATA, Int(sid_b)),
@@ -2061,7 +2100,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Build server packet; should include the NEW_CONNECTION_ID replacement.
     now_c += UInt64(10_000)
-    _ = server_c.send(now_c)
+    var _dg7 = List[List[UInt8]](capacity=1)
+    _ = server_c.send(now_c, _dg7)
     var s_pn_c = _last_app_pn(server_c)
     assert_true(
         _app_has_kind(server_c, s_pn_c, SSF_NEW_CID, 0),
@@ -2071,7 +2111,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     # Lose the packet; clear_advertised restores the pending state.
     server_c._on_app_pkt_lost(s_pn_c)
     now_c += UInt64(10_000)
-    _ = server_c.send(now_c)
+    var _dg8 = List[List[UInt8]](capacity=1)
+    _ = server_c.send(now_c, _dg8)
     var s_pn_c2 = _last_app_pn(server_c)
     assert_true(
         _app_has_kind(server_c, s_pn_c2, SSF_NEW_CID, 0),
@@ -2356,7 +2397,8 @@ def test_pacer_delays_burst() raises:
 
     # Flush one round so the packet is sent and pacer tokens are consumed.
     now += UInt64(10_000)
-    _ = client.send(now)
+    var _dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg)
 
     # Call timeout() with the current `now`; some timer (PTO or pacer) must be active.
     var deadline = client.timeout(now)
@@ -2444,7 +2486,8 @@ def test_blocked_frames_emitted_on_conn_fc_stall() raises:
 
     # send() should detect the stall and set blocked_at.
     now += UInt64(10_000)
-    _ = client.send(now)
+    var _dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg)
 
     assert_true(
         client.stream_map.conn_fc_send.blocked_at == client.stream_map.conn_fc_send.limit,
@@ -2480,12 +2523,14 @@ def test_blocked_not_re_emitted_at_same_limit() raises:
     # Exhaust FC, first send sets blocked_at.
     client.stream_map.conn_fc_send.received = client.stream_map.conn_fc_send.limit
     now += UInt64(10_000)
-    _ = client.send(now)
+    var _dg1 = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg1)
     var blocked_after_first = client.stream_map.conn_fc_send.blocked_at
 
     # Second send at the same limit must not change blocked_at.
     now += UInt64(10_000)
-    _ = client.send(now)
+    var _dg2 = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg2)
     var blocked_after_second = client.stream_map.conn_fc_send.blocked_at
 
     assert_true(
@@ -2523,7 +2568,8 @@ def test_blocked_cleared_on_max_data_increase() raises:
     var old_limit = client.stream_map.conn_fc_send.limit
     client.stream_map.conn_fc_send.received = old_limit
     now += UInt64(10_000)
-    _ = client.send(now)
+    var _dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg)
     assert_true(
         client.stream_map.conn_fc_send.blocked_at == old_limit,
         "blocked_at should be set after stall",
@@ -2580,16 +2626,18 @@ def test_ecn_disabled_after_probing() raises:
     client.send_stream_data(sid, Span(hello), False)
 
     # Pump several rounds; server always receives without ECN marks.
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -2722,7 +2770,8 @@ def test_streams_blocked_bidi_emitted() raises:
         "needs_streams_blocked_bidi must be set after failed open_stream",
     )
 
-    _ = client.send(now)
+    var _dg = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg)
 
     assert_equal_int(
         Int(client.stream_map.streams_blocked_at_bidi),
@@ -2764,12 +2813,14 @@ def test_streams_blocked_dedup_no_resend() raises:
         pass
 
     # First send → emits STREAMS_BLOCKED, sets dedup field.
-    _ = client.send(now)
+    var _dg1 = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg1)
     var after_first = client.stream_map.streams_blocked_at_bidi
 
     # Second send at same limit → dedup: field must not change.
     now += UInt64(10_000)
-    _ = client.send(now)
+    var _dg2 = List[List[UInt8]](capacity=1)
+    _ = client.send(now, _dg2)
     assert_equal_int(
         Int(client.stream_map.streams_blocked_at_bidi),
         Int(after_first),
@@ -3539,16 +3590,18 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
 
     # Drive the handshake. The server should reach _on_handshake_complete,
     # decode the peer TPs, detect F03, and queue a CONNECTION_CLOSE.
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:

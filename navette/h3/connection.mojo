@@ -191,6 +191,12 @@ struct H3Connection(Movable):
     # rather than because `send()` ran dry; the server treats such a
     # connection as due for another drain right now.
     var egress_capped:               Bool
+    # Reusable out-parameter for `QuicConnection.send`, which emits at most
+    # one datagram per call; `drain_datagrams` calls it in a loop and moves
+    # each result into its own accumulator, so this buffer amortizes the
+    # outer List allocation across every `send()` call instead of just
+    # across one `drain_datagrams` invocation.
+    var _send_scratch:               List[List[UInt8]]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
@@ -216,6 +222,7 @@ struct H3Connection(Movable):
         self._local_h3_datagram_enabled = False
         self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
+        self._send_scratch = List[List[UInt8]](capacity=1)
 
     def __init__(out self, *, deinit move: Self):
         self._quic = move._quic^
@@ -241,6 +248,7 @@ struct H3Connection(Movable):
         self.profile_ptr = move.profile_ptr
         self._h3_events_head = move._h3_events_head
         self.egress_capped = move.egress_capped
+        self._send_scratch = move._send_scratch^
 
     @staticmethod
     def server(var quic: QuicConnection) raises -> H3Connection:
@@ -465,13 +473,13 @@ struct H3Connection(Movable):
         """
         var out = List[List[UInt8]](capacity=MAX_DATAGRAMS_PER_DRAIN)
         while len(out) < MAX_DATAGRAMS_PER_DRAIN:
-            var batch = self._quic.send(now)
-            if len(batch) == 0:
+            var n = self._quic.send(now, self._send_scratch)
+            if n == 0:
                 self.egress_capped = False
                 return out^
-            for bi in range(len(batch)):
+            for bi in range(n):
                 var dg = List[UInt8]()
-                swap(dg, batch[bi])
+                swap(dg, self._send_scratch[bi])
                 out.append(dg^)
             if self._quic.is_closing():
                 # One CLOSE per trigger; nothing else may follow it.

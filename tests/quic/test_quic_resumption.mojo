@@ -202,17 +202,19 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
         p_ptr,
     )
 
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     var established1 = False
     for _ in range(30):
         now += UInt64(10_000)
-        var c_dg = client1.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client1.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server1.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server1.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server1.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client1.recv(Span(s_dg[i]), now)
             except:
@@ -226,14 +228,14 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # client1.  rustls issues 2 tickets by default; 8 rounds is enough.
     for _ in range(8):
         now += UInt64(10_000)
-        var s_dg = server1.send(now)
-        for i in range(len(s_dg)):
+        var s_n2 = server1.send(now, s_dg)
+        for i in range(s_n2):
             try:
                 client1.recv(Span(s_dg[i]), now)
             except:
                 pass
-        var c_dg = client1.send(now)
-        for i in range(len(c_dg)):
+        var c_n2 = client1.send(now, c_dg)
+        for i in range(c_n2):
             try:
                 server1.recv(Span(c_dg[i]), now)
             except:
@@ -260,17 +262,19 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
         p_ptr,
     )
 
+    var c2_dg = List[List[UInt8]](capacity=1)
+    var s2_dg = List[List[UInt8]](capacity=1)
     var established2 = False
     for _ in range(30):
         now += UInt64(10_000)
-        var c2_dg = client2.send(now)
-        for i in range(len(c2_dg)):
+        var c2_n = client2.send(now, c2_dg)
+        for i in range(c2_n):
             try:
                 server2.recv(Span(c2_dg[i]), now)
             except:
                 pass
-        var s2_dg = server2.send(now)
-        for i in range(len(s2_dg)):
+        var s2_n = server2.send(now, s2_dg)
+        for i in range(s2_n):
             try:
                 client2.recv(Span(s2_dg[i]), now)
             except:
@@ -338,17 +342,19 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     )
 
     # Inline handshake loop — no helper with mut QuicConnection.
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     var established = False
     for _ in range(30):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
@@ -427,17 +433,19 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     )
 
     # Drive the handshake to completion (inline — no helper with mut params).
+    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[UInt8]](capacity=1)
     var established = False
     for _ in range(30):
         now += UInt64(10_000)
-        var c_dg = client.send(now)
-        for i in range(len(c_dg)):
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
-        var s_dg = server.send(now)
-        for i in range(len(s_dg)):
+        var s_n = server.send(now, s_dg)
+        for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:

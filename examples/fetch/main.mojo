@@ -718,6 +718,7 @@ def _request_via_h3(
     # The QUIC stack handles its own PTO-driven retransmits as long as
     # we keep calling send(now) with the current clock each iteration.
     var hs_deadline = _monotonic_ms() + UInt64(3000)
+    var send_buf = List[List[UInt8]](capacity=1)
     while not quic.is_established():
         if _monotonic_ms() > hs_deadline:
             raise (
@@ -726,9 +727,9 @@ def _request_via_h3(
                 + ". Retry with --http2 or --http1.1."
             )
         now = _monotonic_ms() * UInt64(1000)
-        var out_dgs = quic.send(now)
-        for i in range(len(out_dgs)):
-            _udp_send(sock.raw(), out_dgs[i])
+        var n = quic.send(now, send_buf)
+        for i in range(n):
+            _udp_send(sock.raw(), send_buf[i])
         if quic.is_established():
             break
         var dgram = _udp_recv_blocking(sock.raw())

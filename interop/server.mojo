@@ -141,6 +141,10 @@ def main() raises:
     var stream_buf_keys = List[UInt64]()
     var stream_buf_vals = List[List[UInt8]]()
 
+    # Reused across every send() call so the outer List allocation is
+    # amortized instead of a fresh one on every datagram attempt.
+    var send_buf = List[List[UInt8]](capacity=1)
+
     # Event loop.
     while True:
         # Compute timeout from all connections.
@@ -211,9 +215,9 @@ def main() raises:
 
             # Send outgoing datagrams.
             try:
-                var out = cp[].send(now)
-                for di in range(len(out)):
-                    udp_sendto(udp_fd, Span(out[di]), Span(conn_addrs[ci]))
+                var n = cp[].send(now, send_buf)
+                for di in range(n):
+                    udp_sendto(udp_fd, Span(send_buf[di]), Span(conn_addrs[ci]))
             except e:
                 print("interop-server: send error: " + String(e))
 
