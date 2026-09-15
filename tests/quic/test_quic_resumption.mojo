@@ -194,8 +194,8 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var client1 = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid1_a = List[UInt8](copy=client1.initial_dcid)
-    var dcid1_b = List[UInt8](copy=client1.initial_dcid)
+    var dcid1_a = List[UInt8](client1.initial_dcid.as_span())
+    var dcid1_b = List[UInt8](client1.initial_dcid.as_span())
     var server1 = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid1_a), Span(dcid1_b), now,
@@ -252,8 +252,8 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var client2 = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid2_a = List[UInt8](copy=client2.initial_dcid)
-    var dcid2_b = List[UInt8](copy=client2.initial_dcid)
+    var dcid2_a = List[UInt8](client2.initial_dcid.as_span())
+    var dcid2_b = List[UInt8](client2.initial_dcid.as_span())
     var server2 = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid2_a), Span(dcid2_b), now,
@@ -327,8 +327,8 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid_a = List[UInt8](copy=client.initial_dcid)
-    var dcid_b = List[UInt8](copy=client.initial_dcid)
+    var dcid_a = List[UInt8](client.initial_dcid.as_span())
+    var dcid_b = List[UInt8](client.initial_dcid.as_span())
     # Attach profile before driving the handshake so the server connection
     # has a live profile_ptr when _on_handshake_complete fires.
     var server = QuicConnection.server(
@@ -417,8 +417,8 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid_a = List[UInt8](copy=client.initial_dcid)
-    var dcid_b = List[UInt8](copy=client.initial_dcid)
+    var dcid_a = List[UInt8](client.initial_dcid.as_span())
+    var dcid_b = List[UInt8](client.initial_dcid.as_span())
     # Attach profile so server can accumulate fresh_conn_ffi_us_total.
     var server = QuicConnection.server(
         tls.shared(), server_config, params,

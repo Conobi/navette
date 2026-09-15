@@ -6,6 +6,7 @@
 from std.collections import Optional, Span
 
 from navette.quic.codec import varint_len
+from navette.quic.cid_buf import CidBuf
 from navette.quic.frame import (
     Frame,
     ConnectionCloseFrame,
@@ -153,12 +154,8 @@ def build_packet(
         var header = PacketHeader()
         header.is_long_header = True
         header.version = UInt32(1)
-        header.dcid = List[UInt8](capacity=len(peer_cid))
-        for b in peer_cid:
-            header.dcid.append(b)
-        header.scid = List[UInt8](capacity=len(local_cid))
-        for b in local_cid:
-            header.scid.append(b)
+        header.dcid = CidBuf.from_span(peer_cid)
+        header.scid = CidBuf.from_span(local_cid)
         if space_idx == 0:
             header.packet_type = PacketType.initial()
             header.token = List[UInt8]()

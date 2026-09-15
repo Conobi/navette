@@ -69,7 +69,7 @@ def _extract_dcid(data: Span[UInt8, _]) raises -> List[UInt8]:
     else:
         # Short header — use parser with assumed 8-byte CID.
         var result = parse_packet_header(data, 8)
-        return List[UInt8](copy=result[0].dcid)
+        return List[UInt8](result[0].dcid.as_span())
 
 
 def _create_server_config(

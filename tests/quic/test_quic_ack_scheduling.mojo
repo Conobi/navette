@@ -230,8 +230,8 @@ struct _Pair:
         self.client = QuicConnection.client(
             self.tls.shared(), client_config, "localhost", client_params, now,
         )
-        var orig_dcid = List[UInt8](copy=self.client.initial_dcid)
-        var client_dcid = List[UInt8](copy=self.client.initial_dcid)
+        var orig_dcid = List[UInt8](self.client.initial_dcid.as_span())
+        var client_dcid = List[UInt8](self.client.initial_dcid.as_span())
         self.server = QuicConnection.server(
             self.tls.shared(), server_config, server_params,
             Span(orig_dcid), Span(client_dcid), now,

@@ -126,8 +126,8 @@ def test_ecn_recv_counts_ce_mark() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -171,8 +171,8 @@ def test_ecn_ack_includes_ecn_counts() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -213,8 +213,8 @@ def test_ecn_probing_to_capable() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -272,8 +272,8 @@ def test_ecn_probing_to_disabled_no_counts() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -344,8 +344,8 @@ def test_ecn_disabled_no_ecn_mark() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -375,8 +375,8 @@ def test_ecn_ce_triggers_congestion() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -450,8 +450,8 @@ def test_ecn_bleaching_disables() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)

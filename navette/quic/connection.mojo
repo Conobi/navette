@@ -28,6 +28,7 @@ from navette.tls.early_data_store import (
     InMemoryEarlyDataStore, ReplayDecision,
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
+from navette.quic.cid_buf import CidBuf
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us, ProfileState
 from navette.quic.zero_rtt import (
@@ -374,9 +375,9 @@ struct QuicConnection(Movable):
     var _lib: SharedLibrary
     var local_params: TransportParams
     var peer_params: Optional[TransportParams]
-    var local_cid: List[UInt8]
-    var peer_cid: List[UInt8]
-    var initial_dcid: List[UInt8]
+    var local_cid: CidBuf
+    var peer_cid: CidBuf
+    var initial_dcid: CidBuf
     var bytes_received: UInt64
     var bytes_sent: UInt64
     var events: List[QuicEvent]
@@ -449,9 +450,9 @@ struct QuicConnection(Movable):
         lib: SharedLibrary,
         conn_handle: Int32,
         local_params: TransportParams,
-        local_cid: List[UInt8],
-        peer_cid: List[UInt8],
-        initial_dcid: List[UInt8],
+        local_cid: CidBuf,
+        peer_cid: CidBuf,
+        initial_dcid: CidBuf,
         now: UInt64,
     ) raises:
         self.is_server = is_server
@@ -470,9 +471,9 @@ struct QuicConnection(Movable):
         self._lib = SharedLibrary(copy=lib)
         self.local_params = TransportParams(copy=local_params)
         self.peer_params = None
-        self.local_cid = List[UInt8](copy=local_cid)
-        self.peer_cid = List[UInt8](copy=peer_cid)
-        self.initial_dcid = List[UInt8](copy=initial_dcid)
+        self.local_cid = CidBuf(copy=local_cid)
+        self.peer_cid = CidBuf(copy=peer_cid)
+        self.initial_dcid = CidBuf(copy=initial_dcid)
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
         self.events = List[QuicEvent]()
@@ -543,8 +544,8 @@ struct QuicConnection(Movable):
         )
         self.cid_mgr = CidManager(
             lib=self._lib,
-            initial_local_cid=List[UInt8](copy=local_cid),
-            initial_remote_cid=List[UInt8](copy=peer_cid),
+            initial_local_cid=List[UInt8](local_cid.as_span()),
+            initial_remote_cid=List[UInt8](peer_cid.as_span()),
             local_active_limit=UInt64(2),
             peer_active_limit=UInt64(2),
         )
@@ -614,8 +615,9 @@ struct QuicConnection(Movable):
         )
         var conn = QuicConnection(
             is_server=False, lib=lib, conn_handle=conn_handle,
-            local_params=params_copy, local_cid=local_cid,
-            peer_cid=dcid, initial_dcid=dcid, now=now,
+            local_params=params_copy, local_cid=CidBuf.from_span(Span(local_cid)),
+            peer_cid=CidBuf.from_span(Span(dcid)),
+            initial_dcid=CidBuf.from_span(Span(dcid)), now=now,
         )
         conn.protect.derive_initial_keys(Span(dcid), is_client=True)
         conn._drive_handshake(now)
@@ -632,6 +634,15 @@ struct QuicConnection(Movable):
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
     ) raises -> QuicConnection:
         """Create a QUIC server connection."""
+        # RFC 9000 caps CIDs at 20 bytes. `CidBuf.from_span` aborts the
+        # whole process on an over-length span, so an unvalidated caller
+        # (or a wire-derived DCID that skipped `extract_dcid`'s clamp)
+        # must be rejected here via `raise` instead of reaching that
+        # abort — a remote DoS otherwise.
+        if len(orig_dcid) > 20:
+            raise "QuicConnection.server: orig_dcid exceeds 20 bytes"
+        if len(client_dcid) > 20:
+            raise "QuicConnection.server: client_dcid exceeds 20 bytes"
         var config_handle = config.handle()
         var profile_arrival_us = monotonic_us()
         var local_cid = _generate_random_cid()
@@ -648,16 +659,11 @@ struct QuicConnection(Movable):
         var conn_handle = _create_server_tls_conn(
             lib, config_handle, tp_bytes, profile_ptr,
         )
-        var peer_cid = List[UInt8](capacity=len(orig_dcid))
-        for i in range(len(orig_dcid)):
-            peer_cid.append(orig_dcid[i])
-        var initial_dcid = List[UInt8](capacity=len(client_dcid))
-        for i in range(len(client_dcid)):
-            initial_dcid.append(client_dcid[i])
         var conn = QuicConnection(
             is_server=True, lib=lib, conn_handle=conn_handle,
-            local_params=params_copy, local_cid=local_cid,
-            peer_cid=peer_cid, initial_dcid=initial_dcid, now=now,
+            local_params=params_copy, local_cid=CidBuf.from_span(Span(local_cid)),
+            peer_cid=CidBuf.from_span(orig_dcid),
+            initial_dcid=CidBuf.from_span(client_dcid), now=now,
         )
         conn.prof.ptr = profile_ptr
         conn.prof.first_initial_us = profile_arrival_us
@@ -730,7 +736,7 @@ struct QuicConnection(Movable):
             ph_hdr = self.prof.elapsed(ph_hdr)
             if header.is_long_header and len(header.scid) > 0:
                 if header.packet_type == PacketType.initial():
-                    self.peer_cid = List[UInt8](copy=header.scid)
+                    self.peer_cid = CidBuf(copy=header.scid)
             var classify = self._classify_recv_packet(
                 header, remaining_ptr, remaining_len,
             )
@@ -1537,7 +1543,7 @@ struct QuicConnection(Movable):
         self.cid_mgr.on_new_connection_id(
             nc.sequence,
             nc.retire_prior_to,
-            List[UInt8](copy=nc.cid),
+            List[UInt8](nc.cid.as_span()),
             List[UInt8](copy=nc.stateless_reset_token),
         )
 
@@ -2041,8 +2047,9 @@ struct QuicConnection(Movable):
         self._apply_peer_transport_params(now)
         # Seed Application-space PN skip RNG from local_cid.
         var pn_skip_seed = UInt64(0)
-        for i in range(min(Int(8), Int(len(self.local_cid)))):
-            pn_skip_seed = (pn_skip_seed << 8) | UInt64(self.local_cid[i])
+        var local_cid_span = self.local_cid.as_span()
+        for i in range(min(Int(8), Int(len(local_cid_span)))):
+            pn_skip_seed = (pn_skip_seed << 8) | UInt64(local_cid_span[i])
         if pn_skip_seed == 0:
             pn_skip_seed = UInt64(0xDEADBEEFCAFEB00F)
         self.spaces[2].pn_skip_rng  = pn_skip_seed
@@ -2792,7 +2799,7 @@ struct QuicConnection(Movable):
             var ncid = NewConnectionIdFrame()
             ncid.sequence = entry.sequence
             ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
-            ncid.cid = List[UInt8](copy=entry.cid)
+            ncid.cid = CidBuf.from_span(Span(entry.cid))
             ncid.stateless_reset_token = List[UInt8](copy=entry.reset_token)
             var f = Frame.new_connection_id(ncid)
             var wl = f.wire_len()
@@ -3113,7 +3120,7 @@ struct QuicConnection(Movable):
         """Delegate to packet_builder.build_packet."""
         build_packet(
             self.pkt_buf, self.protect,
-            Span(self.peer_cid), Span(self.local_cid),
+            self.peer_cid.as_span(), self.local_cid.as_span(),
             space_idx, pn, pn_len, payload,
             self._header_len(space_idx), padding,
         )
@@ -3459,18 +3466,20 @@ struct QuicConnection(Movable):
         NEW_CONNECTION_ID emission lands, expand this accessor to a set
         membership over all active local CIDs.
         """
-        if len(dcid) == len(self.initial_dcid):
+        var initial_span = self.initial_dcid.as_span()
+        if len(dcid) == len(initial_span):
             var match_initial = True
             for i in range(len(dcid)):
-                if dcid[i] != self.initial_dcid[i]:
+                if dcid[i] != initial_span[i]:
                     match_initial = False
                     break
             if match_initial:
                 return True
-        if len(dcid) == len(self.local_cid):
+        var local_span = self.local_cid.as_span()
+        if len(dcid) == len(local_span):
             var match_local = True
             for i in range(len(dcid)):
-                if dcid[i] != self.local_cid[i]:
+                if dcid[i] != local_span[i]:
                     match_local = False
                     break
             if match_local:

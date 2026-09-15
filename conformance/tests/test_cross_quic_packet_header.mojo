@@ -101,7 +101,7 @@ def main() raises:
 
         # destination_cid_hex
         var exp_dcid = String(expected["destination_cid_hex"])
-        var got_dcid = hex_encode(result[0].dcid)
+        var got_dcid = hex_encode(List[UInt8](result[0].dcid.as_span()))
         assert_true(
             got_dcid == exp_dcid,
             vid + ": dcid mismatch: got " + got_dcid + " expected " + exp_dcid,
@@ -109,7 +109,7 @@ def main() raises:
 
         # source_cid_hex
         var exp_scid = String(expected["source_cid_hex"])
-        var got_scid = hex_encode(result[0].scid)
+        var got_scid = hex_encode(List[UInt8](result[0].scid.as_span()))
         assert_true(
             got_scid == exp_scid,
             vid + ": scid mismatch: got " + got_scid + " expected " + exp_scid,

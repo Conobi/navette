@@ -1232,7 +1232,7 @@ def test_inject_response_refreshes_deadline() raises:
         _ = h.pump(c)
     var sid = _send_get(c)
     _ = h.pump(c)
-    var conn_id = dcid_to_u64(Span(h.server_conn(0)[]._h3._quic.local_cid))
+    var conn_id = dcid_to_u64(h.server_conn(0)[]._h3._quic.local_cid.as_span())
     assert_true(h.srv[].has_stream(conn_id, Int(sid)), "the unanswered request stream is open")
     _settle(h)
 

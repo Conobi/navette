@@ -219,8 +219,8 @@ def test_loopback_handshake() raises:
     )
 
     # Two copies of DCID to avoid aliasing.
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
 
     # Create server.
     var server = QuicConnection.server(
@@ -301,8 +301,8 @@ def test_connection_close() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -398,8 +398,8 @@ def test_idle_timeout() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -477,8 +477,8 @@ def test_handshake_with_loss() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
 
     # Create server.
     var server = QuicConnection.server(
@@ -560,7 +560,7 @@ def test_handshake_with_retry() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var client_initial_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_initial_dcid = List[UInt8](client.initial_dcid.as_span())
 
     # 2. Simulate server-side Retry token generation.
     #    server_secret: 16 random bytes.
@@ -605,7 +605,7 @@ def test_handshake_with_retry() raises:
 
     # 4. Create server with the original DCID from token validation.
     var orig_dcid = List[UInt8](copy=recovered_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -653,8 +653,8 @@ def test_coalesced_packets() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -734,8 +734,8 @@ def test_anti_amplification() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -826,8 +826,8 @@ def test_stream_data_transfer() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -948,8 +948,8 @@ def test_response_5kb_wire_unchanged() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -998,8 +998,8 @@ def test_64kb_body_across_sends_intact() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1077,8 +1077,8 @@ def test_multi_stream() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1136,8 +1136,8 @@ def test_unidirectional_stream() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1199,8 +1199,8 @@ def test_reset_stream() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1263,8 +1263,8 @@ def test_stop_sending() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1353,8 +1353,8 @@ def test_cid_issuance() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1405,8 +1405,8 @@ def test_flow_control_error_on_overflow() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1472,8 +1472,8 @@ def test_conn_flow_control_error_on_overflow() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1520,8 +1520,8 @@ def test_final_size_error_on_reset_mismatch() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1585,8 +1585,8 @@ def test_max_stream_data_and_max_data_cycle() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1680,8 +1680,8 @@ def test_max_streams_linear_growth() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1801,8 +1801,8 @@ def test_cid_retire_triggers_reissue() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1921,8 +1921,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var params_a = _default_params()
 
     var client_a = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params_a, now_a)
-    var orig_dcid_a = List[UInt8](copy=client_a.initial_dcid)
-    var cli_dcid_a = List[UInt8](copy=client_a.initial_dcid)
+    var orig_dcid_a = List[UInt8](client_a.initial_dcid.as_span())
+    var cli_dcid_a = List[UInt8](client_a.initial_dcid.as_span())
     var server_a = QuicConnection.server(
         tls.shared(), srv_cfg, params_a, Span(orig_dcid_a), Span(cli_dcid_a), now_a,
     )
@@ -1990,8 +1990,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var client_params_b = _default_params()
 
     var client_b = QuicConnection.client(tls.shared(), cli_cfg, "localhost", client_params_b, now_b)
-    var orig_dcid_b = List[UInt8](copy=client_b.initial_dcid)
-    var cli_dcid_b = List[UInt8](copy=client_b.initial_dcid)
+    var orig_dcid_b = List[UInt8](client_b.initial_dcid.as_span())
+    var cli_dcid_b = List[UInt8](client_b.initial_dcid.as_span())
     var server_b = QuicConnection.server(
         tls.shared(), srv_cfg, server_params_b, Span(orig_dcid_b), Span(cli_dcid_b), now_b,
     )
@@ -2044,8 +2044,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var params_c = _default_params()
 
     var client_c = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params_c, now_c)
-    var orig_dcid_c = List[UInt8](copy=client_c.initial_dcid)
-    var cli_dcid_c = List[UInt8](copy=client_c.initial_dcid)
+    var orig_dcid_c = List[UInt8](client_c.initial_dcid.as_span())
+    var cli_dcid_c = List[UInt8](client_c.initial_dcid.as_span())
     var server_c = QuicConnection.server(
         tls.shared(), srv_cfg, params_c, Span(orig_dcid_c), Span(cli_dcid_c), now_c,
     )
@@ -2099,8 +2099,8 @@ def test_anti_amp_ok_extract_parity() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2180,8 +2180,8 @@ def test_persistent_congestion_end_to_end() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2336,8 +2336,8 @@ def test_pacer_delays_burst() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2388,8 +2388,8 @@ def test_cubic_cwnd_gates_send_path() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2430,8 +2430,8 @@ def test_blocked_frames_emitted_on_conn_fc_stall() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2468,8 +2468,8 @@ def test_blocked_not_re_emitted_at_same_limit() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2510,8 +2510,8 @@ def test_blocked_cleared_on_max_data_increase() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2555,8 +2555,8 @@ def test_ecn_disabled_after_probing() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2617,8 +2617,8 @@ def test_pn_skip_active_after_handshake() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2665,8 +2665,8 @@ def test_pn_skip_next_in_valid_range() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2698,8 +2698,8 @@ def test_streams_blocked_bidi_emitted() raises:
     var params = _default_params()
     var now = UInt64(1_000_000)
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -2746,8 +2746,8 @@ def test_streams_blocked_dedup_no_resend() raises:
     var params = _default_params()
     var now = UInt64(1_000_000)
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -2909,8 +2909,8 @@ def test_is_expected_dcid_initial_and_local() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -2923,7 +2923,7 @@ def test_is_expected_dcid_initial_and_local() raises:
     )
 
     # Expected DCID #2: matches local_cid (server-chosen SCID).
-    var local = List[UInt8](copy=server.local_cid)
+    var local = List[UInt8](server.local_cid.as_span())
     assert_true(
         server.is_expected_dcid(Span(local)),
         "is_expected_dcid should match local_cid",
@@ -2962,8 +2962,8 @@ def test_quic_connection_dcid_lengths_are_8_bytes() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -3530,8 +3530,8 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", bad_params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, good_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -3752,8 +3752,8 @@ def _build_server_for_rx_test() raises -> QuicConnection:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4482,8 +4482,8 @@ def test_send_datagram_refused_when_peer_disabled() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4525,8 +4525,8 @@ def test_send_datagram_refused_when_oversize() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4581,8 +4581,8 @@ def test_datagram_round_trip_client_to_server() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4642,8 +4642,8 @@ def test_timeout_pacer_clause_order() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,

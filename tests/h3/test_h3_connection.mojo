@@ -156,8 +156,8 @@ def test_h3_send_datagram_refused_when_peer_disabled() raises:
     var params = _h3_datagram_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -210,8 +210,8 @@ def test_h3_send_datagram_rejects_non_bidi_stream_id() raises:
     var params = _h3_datagram_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -256,8 +256,8 @@ def test_h3_datagram_round_trip() raises:
     var params = _h3_datagram_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -318,8 +318,8 @@ def test_h3_control_stream_setup() raises:
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )

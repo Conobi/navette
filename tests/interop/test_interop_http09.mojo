@@ -143,8 +143,8 @@ def test_http09_loopback() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client.initial_dcid)
-    var client_dcid = List[UInt8](copy=client.initial_dcid)
+    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now,
     )

@@ -11,6 +11,7 @@
 from std.python import Python, PythonObject
 
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode
+from navette.quic.cid_buf import CidBuf
 from navette.quic.packet import (
     PacketHeader,
     PacketType,
@@ -113,12 +114,12 @@ def test_packet_header_vectors() raises:
 
         # destination_cid_hex
         var exp_dcid = String(expected["destination_cid_hex"])
-        var got_dcid = hex_encode(result[0].dcid)
+        var got_dcid = hex_encode(List[UInt8](result[0].dcid.as_span()))
         assert_equal_str(got_dcid, exp_dcid, vid + ".dcid")
 
         # source_cid_hex
         var exp_scid = String(expected["source_cid_hex"])
-        var got_scid = hex_encode(result[0].scid)
+        var got_scid = hex_encode(List[UInt8](result[0].scid.as_span()))
         assert_equal_str(got_scid, exp_scid, vid + ".scid")
 
         # token_hex
@@ -212,8 +213,8 @@ def test_roundtrip_initial() raises:
     hdr.is_long_header = True
     hdr.packet_type = PacketType.initial()
     hdr.version = UInt32(1)
-    hdr.dcid = hex_decode("0102030405060708")
-    hdr.scid = hex_decode("aabbccdd")
+    hdr.dcid = CidBuf.from_span(Span(hex_decode("0102030405060708")))
+    hdr.scid = CidBuf.from_span(Span(hex_decode("aabbccdd")))
     hdr.token = hex_decode("cafebabe")
     hdr.payload_length = UInt64(100)
 
@@ -226,8 +227,8 @@ def test_roundtrip_initial() raises:
     assert_true(result[0].is_long_header, "roundtrip initial: expected long header")
     assert_true(result[0].packet_type == PacketType.initial(), "roundtrip initial: wrong packet type")
     assert_equal_int(Int(result[0].version), 1, "roundtrip initial: version")
-    assert_equal_str(hex_encode(result[0].dcid), "0102030405060708", "roundtrip initial: dcid")
-    assert_equal_str(hex_encode(result[0].scid), "aabbccdd", "roundtrip initial: scid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip initial: dcid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip initial: scid")
     assert_equal_str(hex_encode(result[0].token), "cafebabe", "roundtrip initial: token")
     assert_equal_int(Int(result[0].payload_length), 100, "roundtrip initial: payload_length")
     print("  roundtrip_initial: PASS")
@@ -238,8 +239,8 @@ def test_roundtrip_handshake() raises:
     hdr.is_long_header = True
     hdr.packet_type = PacketType.handshake()
     hdr.version = UInt32(1)
-    hdr.dcid = hex_decode("aabbccdd")
-    hdr.scid = hex_decode("11223344")
+    hdr.dcid = CidBuf.from_span(Span(hex_decode("aabbccdd")))
+    hdr.scid = CidBuf.from_span(Span(hex_decode("11223344")))
     hdr.payload_length = UInt64(50)
 
     var w = ByteWriter()
@@ -251,8 +252,8 @@ def test_roundtrip_handshake() raises:
     assert_true(result[0].is_long_header, "roundtrip handshake: expected long header")
     assert_true(result[0].packet_type == PacketType.handshake(), "roundtrip handshake: wrong packet type")
     assert_equal_int(Int(result[0].version), 1, "roundtrip handshake: version")
-    assert_equal_str(hex_encode(result[0].dcid), "aabbccdd", "roundtrip handshake: dcid")
-    assert_equal_str(hex_encode(result[0].scid), "11223344", "roundtrip handshake: scid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "aabbccdd", "roundtrip handshake: dcid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "11223344", "roundtrip handshake: scid")
     assert_equal_int(Int(result[0].payload_length), 50, "roundtrip handshake: payload_length")
     print("  roundtrip_handshake: PASS")
 
@@ -267,7 +268,7 @@ def test_roundtrip_short_header() raises:
 
     assert_true(not result[0].is_long_header, "roundtrip short: expected short header")
     assert_true(result[0].packet_type == PacketType.one_rtt(), "roundtrip short: wrong packet type")
-    assert_equal_str(hex_encode(result[0].dcid), "0102030405060708", "roundtrip short: dcid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip short: dcid")
     print("  roundtrip_short_header: PASS")
 
 
@@ -290,8 +291,8 @@ def test_roundtrip_version_negotiation() raises:
         "roundtrip VN: wrong packet type",
     )
     assert_equal_int(Int(result[0].version), 0, "roundtrip VN: version")
-    assert_equal_str(hex_encode(result[0].dcid), "0102030405060708", "roundtrip VN: dcid")
-    assert_equal_str(hex_encode(result[0].scid), "aabbccdd", "roundtrip VN: scid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip VN: dcid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip VN: scid")
     assert_equal_int(len(result[0].supported_versions), 2, "roundtrip VN: version count")
     assert_equal_int(Int(result[0].supported_versions[0]), 1, "roundtrip VN: version[0]")
     assert_equal_int(
@@ -324,8 +325,8 @@ def test_roundtrip_retry() raises:
     assert_true(result[0].is_long_header, "roundtrip retry: expected long header")
     assert_true(result[0].packet_type == PacketType.retry(), "roundtrip retry: wrong packet type")
     assert_equal_int(Int(result[0].version), 1, "roundtrip retry: version")
-    assert_equal_str(hex_encode(result[0].dcid), "0102030405060708", "roundtrip retry: dcid")
-    assert_equal_str(hex_encode(result[0].scid), "aabbccdd", "roundtrip retry: scid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip retry: dcid")
+    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip retry: scid")
     assert_equal_str(hex_encode(result[0].token), "cafebabe", "roundtrip retry: token")
     assert_equal_str(
         hex_encode(result[0].retry_integrity_tag),

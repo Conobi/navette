@@ -390,7 +390,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # the response across an out-of-band round-trip (e.g. a reverse
         # proxy forwarding to a different transport) records this pair and
         # later addresses the open stream via `inject_response`.
-        var conn_id_u64 = dcid_to_u64(Span(self._h3._quic.local_cid))
+        var conn_id_u64 = dcid_to_u64(self._h3._quic.local_cid.as_span())
         # Read peer address at request dispatch time (not connection time)
         # because QUIC connections can migrate (RFC 9000 §9).
         var peer_key = self._h3.peer_addr_copy()

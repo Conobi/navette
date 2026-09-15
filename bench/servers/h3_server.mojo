@@ -24,7 +24,8 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams, default_transport_params
-from navette.quic.packet import is_long_header_initial, extract_dcid, DcidBuf
+from navette.quic.packet import is_long_header_initial, extract_dcid
+from navette.quic.cid_buf import CidBuf
 from navette.quic.cid import dcid_to_u64
 from navette.runtime.socket_helpers import udp_listener
 from navette.h3.h3_handler_server import H3HandlerServer
@@ -210,8 +211,8 @@ def _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
 
     Pinned to 8-byte DCIDs (server SCID length is pinned at 8 bytes;
     client Initial DCIDs are RFC 9000 minimum 8). Span parameter
-    so call sites pass `Span(quic.initial_dcid)` or `Span(pd.dcid)`
-    without consuming the source list.
+    so call sites pass `quic.initial_dcid.as_span()` or `pd.dcid.as_span()`
+    without consuming the source buffer.
     """
     var key = String()
     var hex_bytes = _HEX_DIGITS.as_bytes()
@@ -286,7 +287,7 @@ struct PendingDatagram(Copyable, Movable):
     var payload_len: Int
     var name_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var name_len: Int
-    var dcid: DcidBuf
+    var dcid: CidBuf
     var dgram_idx: Int
     # Arrival-to-processing queueing-tail instrumentation.
     # Read only when PROFILE_ACCEPT is True; off-build the value is always 0
@@ -299,7 +300,7 @@ struct PendingDatagram(Copyable, Movable):
         payload_len: Int,
         name_ptr: Pointer[UInt8, MutUntrackedOrigin],
         name_len: Int,
-        var dcid: DcidBuf,
+        var dcid: CidBuf,
         dgram_idx: Int,
         arrival_us: UInt64 = UInt64(0),
     ):
@@ -316,7 +317,7 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = copy.payload_len
         self.name_ptr = copy.name_ptr
         self.name_len = copy.name_len
-        self.dcid = DcidBuf(copy=copy.dcid)
+        self.dcid = CidBuf(copy=copy.dcid)
         self.dgram_idx = copy.dgram_idx
         self.arrival_us = copy.arrival_us
 
@@ -600,7 +601,7 @@ struct H3UdpHandler(Movable):
             var name = hdr.name()
 
             # Extract DCID from the payload.
-            var dcid: DcidBuf
+            var dcid: CidBuf
             try:
                 dcid = extract_dcid(payload)
             except:
@@ -882,8 +883,8 @@ struct H3UdpHandler(Movable):
                 debug_assert(len(quic.initial_dcid) == 8, "initial_dcid != 8 bytes")
                 debug_assert(len(quic.local_cid) == 8, "local_cid != 8 bytes")
 
-                var icid_u64 = dcid_to_u64(Span(quic.initial_dcid))
-                var lcid_u64 = dcid_to_u64(Span(quic.local_cid))
+                var icid_u64 = dcid_to_u64(quic.initial_dcid.as_span())
+                var lcid_u64 = dcid_to_u64(quic.local_cid.as_span())
 
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]

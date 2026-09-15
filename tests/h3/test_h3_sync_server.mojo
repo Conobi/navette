@@ -140,8 +140,8 @@ def test_h3_sync_simple_get() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -193,8 +193,8 @@ def test_h3_sync_goaway() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -232,8 +232,8 @@ def test_h3_sync_multiple_streams() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -303,8 +303,8 @@ def test_h3_sync_error_propagation() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )

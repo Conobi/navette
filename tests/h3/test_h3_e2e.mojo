@@ -144,8 +144,8 @@ def test_h3_simple_get() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -200,8 +200,8 @@ def test_h3_post_with_body() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -276,8 +276,8 @@ def test_h3_session_get() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -326,8 +326,8 @@ def test_h3_multi_request() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -375,8 +375,8 @@ def test_h3_goaway() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -476,8 +476,8 @@ def test_h3_drain_terminates() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -525,8 +525,8 @@ def test_h3_drain_cap_is_observable() raises:
     var body_size = 200_000
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](copy=client_quic.initial_dcid)
-    var client_dcid = List[UInt8](copy=client_quic.initial_dcid)
+    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )

@@ -3,6 +3,7 @@
 # RFC 9000 Section 17 (headers), Appendix A (PN decode).
 
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_into, varint_decode, varint_len
+from navette.quic.cid_buf import CidBuf
 
 # --- Constants ---
 
@@ -79,8 +80,8 @@ struct PacketHeader(Copyable, Movable):
     var is_long_header: Bool
     var packet_type: PacketType
     var version: UInt32
-    var dcid: List[UInt8]
-    var scid: List[UInt8]
+    var dcid: CidBuf
+    var scid: CidBuf
     var token: List[UInt8]
     var payload_length: UInt64
     var pn_offset: Int
@@ -91,8 +92,8 @@ struct PacketHeader(Copyable, Movable):
         self.is_long_header = False
         self.packet_type = PacketType.one_rtt()
         self.version = UInt32(0)
-        self.dcid = List[UInt8]()
-        self.scid = List[UInt8]()
+        self.dcid = CidBuf.empty()
+        self.scid = CidBuf.empty()
         self.token = List[UInt8]()
         self.payload_length = UInt64(0)
         self.pn_offset = 0
@@ -103,8 +104,8 @@ struct PacketHeader(Copyable, Movable):
         self.is_long_header = copy.is_long_header
         self.packet_type = copy.packet_type
         self.version = copy.version
-        self.dcid = List[UInt8](copy=copy.dcid)
-        self.scid = List[UInt8](copy=copy.scid)
+        self.dcid = CidBuf(copy=copy.dcid)
+        self.scid = CidBuf(copy=copy.scid)
         self.token = List[UInt8](copy=copy.token)
         self.payload_length = copy.payload_length
         self.pn_offset = copy.pn_offset
@@ -171,38 +172,15 @@ def is_long_header_zero_rtt(payload: Span[UInt8, _]) -> Bool:
     return (first & 0x30) == 0x10
 
 
-struct DcidBuf(Copyable, Movable):
-    """Fixed-size DCID buffer (max 20 bytes per RFC 9000)."""
-    var data: InlineArray[UInt8, 20]
-    var len: UInt8
+def extract_dcid(data: Span[UInt8, _]) raises -> CidBuf:
+    """Extract the DCID from an incoming QUIC packet.
 
-    def __init__(out self):
-        self.data = InlineArray[UInt8, 20](fill=UInt8(0))
-        self.len = 0
-
-    def __init__(out self, src: Span[UInt8, _]):
-        """Construct from a Span, copying up to 20 bytes."""
-        self.data = InlineArray[UInt8, 20](fill=UInt8(0))
-        var n = min(len(src), 20)
-        for i in range(n):
-            self.data[i] = src[i]
-        self.len = UInt8(n)
-
-    def __init__(out self, *, copy: Self):
-        self.data = InlineArray[UInt8, 20](copy=copy.data)
-        self.len = copy.len
-
-    def __init__(out self, *, deinit move: Self):
-        self.data = move.data^
-        self.len = move.len
-
-    def as_span(self) -> Span[UInt8, origin_of(self.data)]:
-        """View the DCID bytes as a Span."""
-        return Span(unsafe_ptr=self.data.unsafe_ptr(), length=Int(self.len))
-
-
-def extract_dcid(data: Span[UInt8, _]) raises -> DcidBuf:
-    """Extract the DCID from an incoming QUIC packet."""
+    The long-header branch reads the DCID length directly off the wire
+    (byte 5) before any RFC 9000 validation has run, so it is clamped to
+    20 bytes here rather than handed to `CidBuf.from_span` unclamped —
+    that call aborts the process on an over-length span, which would
+    turn a malformed/malicious packet into a remote DoS.
+    """
     if len(data) < 6:
         raise "extract_dcid: packet too short"
 
@@ -211,14 +189,11 @@ def extract_dcid(data: Span[UInt8, _]) raises -> DcidBuf:
         var dcid_len = Int(data[5])
         if len(data) < 6 + dcid_len:
             raise "extract_dcid: packet too short for DCID"
-        var buf = DcidBuf()
-        for i in range(min(dcid_len, 20)):
-            buf.data[i] = data[6 + i]
-        buf.len = UInt8(min(dcid_len, 20))
-        return buf^
+        var n = min(dcid_len, 20)
+        return CidBuf.from_span(data[6 : 6 + n])
     else:
         var result = parse_packet_header(data, 8)
-        return DcidBuf(Span(result[0].dcid))
+        return result[0].dcid.copy()
 
 
 # --- parse_packet_header ---
@@ -248,13 +223,13 @@ def parse_packet_header[
         var dcid_len = Int(reader.read_u8())
         if dcid_len > 20:
             raise "DCID length exceeds 20"
-        header.dcid = reader.read_bytes(dcid_len)
+        header.dcid = CidBuf.from_span(reader.read_span(dcid_len))
 
         # Read SCID.
         var scid_len = Int(reader.read_u8())
         if scid_len > 20:
             raise "SCID length exceeds 20"
-        header.scid = reader.read_bytes(scid_len)
+        header.scid = CidBuf.from_span(reader.read_span(scid_len))
 
         if version == 0:
             # Version Negotiation: fixed bit is undefined for VN packets.
@@ -313,7 +288,7 @@ def parse_packet_header[
 
         if reader.remaining() < local_cid_len:
             raise "packet too short for DCID"
-        header.dcid = reader.read_bytes(local_cid_len)
+        header.dcid = CidBuf.from_span(reader.read_span(local_cid_len))
         header.pn_offset = 1 + local_cid_len
         return Tuple[PacketHeader, Int](header^, reader.pos)
 
@@ -338,16 +313,12 @@ def serialize_long_header(header: PacketHeader, mut writer: ByteWriter) raises:
     writer.write_u32_be(header.version)
 
     # DCID.
-    if len(header.dcid) > 20:
-        raise "DCID length exceeds 20"
     writer.write_u8(UInt8(len(header.dcid)))
-    writer.write_bytes(Span[UInt8, origin_of(header.dcid)](header.dcid))
+    writer.write_bytes(header.dcid.as_span())
 
     # SCID.
-    if len(header.scid) > 20:
-        raise "SCID length exceeds 20"
     writer.write_u8(UInt8(len(header.scid)))
-    writer.write_bytes(Span[UInt8, origin_of(header.scid)](header.scid))
+    writer.write_bytes(header.scid.as_span())
 
     if header.packet_type == PacketType.initial():
         # Token length + token.
@@ -392,16 +363,12 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
     buf.append(UInt8(header.version & 0xFF))
 
     # DCID.
-    if len(header.dcid) > 20:
-        raise "DCID length exceeds 20"
     buf.append(UInt8(len(header.dcid)))
-    buf.extend(Span[UInt8, origin_of(header.dcid)](header.dcid))
+    buf.extend(header.dcid.as_span())
 
     # SCID.
-    if len(header.scid) > 20:
-        raise "SCID length exceeds 20"
     buf.append(UInt8(len(header.scid)))
-    buf.extend(Span[UInt8, origin_of(header.scid)](header.scid))
+    buf.extend(header.scid.as_span())
 
     if header.packet_type == PacketType.initial():
         # Token length + token.

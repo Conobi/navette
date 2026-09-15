@@ -1,4 +1,5 @@
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
+from navette.quic.cid_buf import CidBuf
 from navette.quic.frame import (
     Frame,
     AckFrame,
@@ -380,8 +381,10 @@ def test_roundtrip_new_connection_id() raises:
     ncid.sequence = UInt64(5)
     ncid.retire_prior_to = UInt64(3)
     # 8-byte CID
+    var cid_bytes = List[UInt8]()
     for i in range(8):
-        ncid.cid.append(UInt8(i + 1))
+        cid_bytes.append(UInt8(i + 1))
+    ncid.cid = CidBuf.from_span(Span(cid_bytes))
     # 16-byte stateless reset token
     for i in range(16):
         ncid.stateless_reset_token.append(UInt8(i + 0x10))
@@ -392,7 +395,7 @@ def test_roundtrip_new_connection_id() raises:
     _assert_eq(rn.sequence, UInt64(5), "sequence")
     _assert_eq(rn.retire_prior_to, UInt64(3), "retire_prior_to")
     _assert_eq_int(len(rn.cid), 8, "cid length")
-    _assert_bytes_eq(rn.cid, ncid.cid, "cid")
+    _assert_bytes_eq(List[UInt8](rn.cid.as_span()), List[UInt8](ncid.cid.as_span()), "cid")
     _assert_eq_int(len(rn.stateless_reset_token), 16, "token length")
     _assert_bytes_eq(rn.stateless_reset_token, ncid.stateless_reset_token, "reset token")
     print("  roundtrip_new_connection_id: PASS")
@@ -861,7 +864,7 @@ def test_vectors() raises:
                 pass
             try:
                 var cid_hex = String(expected["connection_id_hex"])
-                var actual_cid_hex = _bytes_to_hex(ncid.cid)
+                var actual_cid_hex = _bytes_to_hex(List[UInt8](ncid.cid.as_span()))
                 if actual_cid_hex != cid_hex:
                     raise "vector " + vec_id + " connection_id_hex: got " + actual_cid_hex + " expected " + cid_hex
             except e:
@@ -1231,7 +1234,7 @@ def test_wire_len_exact() raises:
         var ncid = NewConnectionIdFrame()
         ncid.sequence = m
         ncid.retire_prior_to = UInt64(0)
-        ncid.cid = _fill(8, m)
+        ncid.cid = CidBuf.from_span(Span(_fill(8, m)))
         ncid.stateless_reset_token = _fill(16, m)
         _check_wire_len(Frame.new_connection_id(ncid), "NEW_CONNECTION_ID")
         for si in range(len(sizes)):

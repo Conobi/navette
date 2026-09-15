@@ -106,8 +106,9 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
+from navette.quic.cid_buf import CidBuf
 from navette.quic.connection import QuicConnection
-from navette.quic.packet import is_long_header_initial, extract_dcid, DcidBuf
+from navette.quic.packet import is_long_header_initial, extract_dcid
 from navette.quic.path import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
@@ -345,7 +346,7 @@ struct PendingDatagram(Copyable, Movable):
     var payload_len: Int
     var name_ptr: Pointer[UInt8, MutUntrackedOrigin]
     var name_len: Int
-    var dcid: DcidBuf
+    var dcid: CidBuf
     var ecn_mark: UInt8
     var dgram_idx: Int
 
@@ -355,7 +356,7 @@ struct PendingDatagram(Copyable, Movable):
         payload_len: Int,
         name_ptr: Pointer[UInt8, MutUntrackedOrigin],
         name_len: Int,
-        var dcid: DcidBuf,
+        var dcid: CidBuf,
         ecn_mark: UInt8,
         dgram_idx: Int,
     ):
@@ -372,7 +373,7 @@ struct PendingDatagram(Copyable, Movable):
         self.payload_len = copy.payload_len
         self.name_ptr = copy.name_ptr
         self.name_len = copy.name_len
-        self.dcid = DcidBuf(copy=copy.dcid)
+        self.dcid = CidBuf(copy=copy.dcid)
         self.ecn_mark = copy.ecn_mark
         self.dgram_idx = copy.dgram_idx
 
@@ -1283,7 +1284,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     var seg_span = Span[UInt8, MutUntrackedOrigin](
                         unsafe_ptr=seg_ptr, length=seg_len,
                     )
-                    var dcid: DcidBuf
+                    var dcid: CidBuf
                     try:
                         dcid = extract_dcid(seg_span)
                     except:
@@ -1305,7 +1306,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     )
             else:
                 # Non-GRO: single datagram, refcount 1.
-                var dcid: DcidBuf
+                var dcid: CidBuf
                 try:
                     dcid = extract_dcid(payload)
                 except:
@@ -1491,8 +1492,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     "local_cid != 8 bytes",
                 )
 
-                var icid_u64 = dcid_to_u64(Span(h3_ptr[]._h3._quic.initial_dcid))
-                var lcid_u64 = dcid_to_u64(Span(h3_ptr[]._h3._quic.local_cid))
+                var icid_u64 = dcid_to_u64(h3_ptr[]._h3._quic.initial_dcid.as_span())
+                var lcid_u64 = dcid_to_u64(h3_ptr[]._h3._quic.local_cid.as_span())
 
                 # Build peer address from the delivery header name region
                 # for sendmsg routing. Stored as a raw sockaddr blob (16 or
