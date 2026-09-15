@@ -20,7 +20,7 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.event import QuicEvent
-from navette.quic.profile import AcceptProfile
+from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
@@ -240,8 +240,8 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
                 pass
 
     # Check counters: after first handshake (Full), full_total == 1, resumed == 0.
-    var full1   = p_ptr[].handshakes_full_total
-    var resumed1 = p_ptr[].handshakes_resumed_total
+    var full1   = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
+    var resumed1 = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
     assert_true(
         full1 == UInt64(1) and resumed1 == UInt64(0),
         "first conn: expected full=1 resumed=0, got full="
@@ -281,8 +281,8 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     assert_true(established2, "second handshake did not complete")
 
     # Check counters: after second handshake (Resumed), resumed_total == 1.
-    var full2    = p_ptr[].handshakes_full_total
-    var resumed2 = p_ptr[].handshakes_resumed_total
+    var full2    = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
+    var resumed2 = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
     assert_true(
         full2 == UInt64(1) and resumed2 == UInt64(1),
         "second conn: expected full=1 resumed=1, got full="
@@ -359,8 +359,8 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     assert_true(established, "handshake did not complete in double-count test")
 
     # After the handshake, exactly one counter should have been incremented.
-    var full_after_hs    = p_ptr[].handshakes_full_total
-    var resumed_after_hs = p_ptr[].handshakes_resumed_total
+    var full_after_hs    = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
+    var resumed_after_hs = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
     assert_true(
         full_after_hs + resumed_after_hs == UInt64(1),
         "expected exactly 1 increment after handshake, got full="
@@ -372,8 +372,8 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     server._on_handshake_complete(now + UInt64(1_000))
     server._on_handshake_complete(now + UInt64(2_000))
 
-    var full_final    = p_ptr[].handshakes_full_total
-    var resumed_final = p_ptr[].handshakes_resumed_total
+    var full_final    = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
+    var resumed_final = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
     assert_true(
         full_final + resumed_final == UInt64(1),
         "double-count guard failed: counter went from 1 to "
@@ -452,7 +452,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var bucket_sum = UInt64(0)
     for i in range(24):
         bucket_sum = bucket_sum + p_ptr[].fresh_conn_ffi_us_buckets[i]
-    var total_samples = bucket_sum + p_ptr[].fresh_conn_ffi_us_overflow
+    var total_samples = bucket_sum + p_ptr[].get(CounterId.FRESH_CONN_FFI_US_OVERFLOW)
     assert_true(
         total_samples == UInt64(1),
         "expected exactly 1 sample in fresh_conn_ffi_us histogram, got "
