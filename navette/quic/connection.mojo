@@ -838,25 +838,14 @@ struct QuicConnection(Movable):
         now: UInt64,
         ecn_mark: UInt8 = UInt8(0),
     ) raises:
-        """Process an incoming UDP datagram from a mutable buffer.
-
-        Zero-copy variant: operates directly on the caller's buffer for
-        header unprotection and payload decryption, eliminating intermediate
-        copies where possible.
-        """
-        var t_iter_start = UInt64(0)
-        var ph_header_parse_us = UInt64(0)
-        var ph_hp_us = UInt64(0)
-        var ph_aead_us = UInt64(0)
-        var ph_frame_parse_us = UInt64(0)
-        var ph_sm_us = UInt64(0)
-
+        """Process an incoming UDP datagram from a mutable buffer."""
+        var t_iter = UInt64(0)
+        var ph_hdr = UInt64(0)
+        var ph_hp = UInt64(0)
+        var ph_ae = UInt64(0)
+        var ph_fp = UInt64(0)
+        var ph_sm = UInt64(0)
         self.bytes_received += UInt64(buf_len)
-
-        # RFC 9000 §10.2: a draining or closed endpoint drops everything
-        # before decrypt. A closing endpoint owes at most one CLOSE per PTO
-        # in response to peer datagrams (§10.2.1), does not refresh its idle
-        # timer, and acts on nothing but a CONNECTION_CLOSE frame below.
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         var closing = (self.state & CONN_CLOSING) != 0
@@ -865,415 +854,296 @@ struct QuicConnection(Movable):
                 self.close.owed = True
         else:
             self.idle_timer = now
-
-        # Track the lowest encryption level at which we process a packet
-        # in this datagram, used for implicit CRYPTO retransmission below.
-        var lowest_recv_space = 3  # sentinel: nothing processed yet
-
+        var lowest_recv_space = 3
         var offset = 0
         while offset < buf_len:
             if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
                 break
-            t_iter_start = self.prof.begin_iter()
-
-            # Skip datagram-level zero padding (RFC 9000 §12.4).
-            # A zero first byte is never a valid QUIC packet (long headers
-            # require bit 7, short headers require bit 6).
+            t_iter = self.prof.begin_iter()
             if buf[unsafe_offset=offset] == 0:
                 break
-
             var remaining_len = buf_len - offset
             var remaining_ptr = buf.unsafe_offset(offset)
-
-            # 2. Parse packet header from a Span backed by the caller's
-            # buffer directly. The prior implementation copied
-            # `remaining_ptr[0..remaining_len]` into a `List[UInt8]` to
-            # construct a Span — once per coalesced QUIC packet. Eliminated
-            # via `Span(unsafe_ptr=remaining_ptr, length=remaining_len)`
-            # since `parse_packet_header` only reads the buffer.
-            ph_header_parse_us = self.prof.stamp()
-            var header_result = parse_packet_header(
+            ph_hdr = self.prof.stamp()
+            var hr = parse_packet_header(
                 Span(unsafe_ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
             )
             var header = PacketHeader()
-            swap(header, header_result[0])
-            ph_header_parse_us = self.prof.elapsed(ph_header_parse_us)
-
-            # 2b. Adopt peer's SCID as peer_cid (RFC 9000 §7.2).
+            swap(header, hr[0])
+            ph_hdr = self.prof.elapsed(ph_hdr)
             if header.is_long_header and len(header.scid) > 0:
                 if header.packet_type == PacketType.initial():
                     self.peer_cid = List[UInt8](copy=header.scid)
-
-            # 2c. 0-RTT detection — runs BEFORE packet_type_to_space() so
-            # we can override space_idx with ZERO_RTT_SPACE_IDX on every
-            # 0-RTT path. The F30 guard (CRYPTO-in-0-RTT →
-            # PROTOCOL_VIOLATION) fires off space_idx regardless of
-            # whether the decrypt itself succeeded.
-            #
-            # Three paths (RFC 9001 §4.2, §4.6, §5.5, §5.7):
-            #   A. Slot 3 keys already installed — fall through to the
-            #      standard decrypt continuation with space_idx =
-            #      ZERO_RTT_SPACE_IDX (3, NOT the Application PN space 2;
-            #      the dispatch sentinel is what makes the F30 guard fire
-            #      on CRYPTO frames in 0-RTT).
-            #   B. Slot 3 empty AND 0-RTT enabled by config — lazy-install
-            #      via the server FFI. On success: fall through. On
-            #      failure (rc=1 keys-not-yet-available, or an rc=-1 FFI
-            #      raise — both folded into the same path): buffer the
-            #      packet (unless we are already draining, in which case
-            #      silent-drop) and skip ahead.
-            #   C. 0-RTT disabled by config (max_early_data == 0) —
-            #      rejection mode: skip past the packet boundary so
-            #      coalesced packets after it are still processed.
             var space_idx: Int = -1
             if header.is_long_header and header.packet_type == PacketType.zero_rtt():
-                var skip = header.pn_offset + Int(header.payload_length)
-                if skip > remaining_len:
-                    break  # Truncated
-
-                if self.protect.has_keys(ZERO_RTT_KEY_SLOT_IDX):
-                    # Keys installed; decrypt through slot 3.
-                    space_idx = ZERO_RTT_SPACE_IDX
-                elif self._zero_rtt_enabled():
-                    # Path B — lazy install. Buffer-or-drop on fail.
-                    # An rc=-1 FFI raise (anomalous handle/state) folds
-                    # into the same failure handling as the rc=1
-                    # keys-not-yet-available return: no exception from
-                    # 0-RTT key installation propagates out of
-                    # recv_from_buffer, and non-0-RTT coalesced packets
-                    # in the same datagram keep processing.
-                    var ok = False
-                    try:
-                        ok = self.protect.install_zero_rtt_read_keys(
-                            self.conn_handle
-                        )
-                    except:
-                        # ok keeps its False initializer — failure path.
-                        pass
-                    self.prof.record_zero_rtt_install(ok)
-                    if not ok:
-                        if not self.zrtt.draining:
-                            var pkt_bytes = Span(
-                                unsafe_ptr=remaining_ptr,
-                                length=skip,
-                            )
-                            _ = self._buffer_zero_rtt_or_drop(pkt_bytes)
-                        offset += skip
-                        continue
-                    space_idx = ZERO_RTT_SPACE_IDX
-                else:
-                    # Path C — 0-RTT disabled. Preserve rejection-mode skip.
-                    offset += skip
+                var r = self._handle_zero_rtt_detection(
+                    header, remaining_ptr, remaining_len,
+                )
+                if r[1] > 0:
+                    offset += r[1]
                     continue
-
-                # ──────────────────────────────────────────────────────
-                # Anti-replay check (RFC 9001 §9.2 + RFC 8446 §8).
-                # Fires AT MOST ONCE per connection; the tristate guards
-                # subsequent 0-RTT packets so each one inherits the
-                # decision without re-crossing the FFI or store.
-                # ──────────────────────────────────────────────────────
-                if self.zrtt.replay_decision == UInt8(0):
-                    var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
-                    var auth_len = UInt(0)
-                    var rc = self._invoke_replay_authenticator_ffi(
-                        auth_buf, auth_len,
-                    )
-
-                    if rc != Int32(0):
-                        # FFI anomaly: 0-RTT keys installed but no
-                        # authenticator reachable. Fail closed without
-                        # discarding the keys — subsequent 0-RTT packets
-                        # short-circuit through Path A.
-                        self.zrtt.replay_decision = UInt8(2)
-                        self.prof.record_replay_reject_no_authenticator()
-                    elif self.zrtt.early_data_store_ptr is None:
-                        # 0-RTT enabled at config level but the store
-                        # pointer never got promoted (defensive — should
-                        # not occur). Fail closed.
-                        self.zrtt.replay_decision = UInt8(2)
-                        self.prof.record_replay_reject_no_authenticator()
-                    else:
-                        var auth_span = Span(
-                            unsafe_ptr=auth_buf.unsafe_ptr(), length=32,
-                        )
-                        var now_ms: UInt64
-                        if self.zrtt.now_ms_override is not None:
-                            now_ms = self.zrtt.now_ms_override.value()
-                        else:
-                            now_ms = monotonic_us() // UInt64(1_000)
-                        var raised = False
-                        var decision = ReplayDecision.accept()
-                        try:
-                            var store_ptr = self.zrtt.early_data_store_ptr.value()
-                            decision = store_ptr[].check_and_record(
-                                auth_span, now_ms
-                            )
-                        except:
-                            raised = True
-                        if raised:
-                            self.zrtt.replay_decision = UInt8(2)
-                            self.prof.record_replay_reject_no_authenticator()
-                        elif decision.is_accept():
-                            self.zrtt.replay_decision = UInt8(1)
-                            self.prof.record_replay_accept()
-                        elif decision.is_duplicate():
-                            self.zrtt.replay_decision = UInt8(2)
-                            self.prof.record_replay_reject_duplicate()
-                        elif decision.is_per_key_quota():
-                            self.zrtt.replay_decision = UInt8(2)
-                            self.prof.record_replay_reject_per_key_quota()
-                        else:  # is_global_ceiling
-                            self.zrtt.replay_decision = UInt8(2)
-                            self.prof.record_replay_reject_global_ceiling()
-
-                if self.zrtt.replay_decision == UInt8(2):
-                    # Silent-drop: advance past this 0-RTT packet, keep
-                    # the connection alive (RFC 9001 §4.1). We do NOT
-                    # call _discard_zero_rtt_keys here; the slot stays
-                    # populated so subsequent 0-RTT packets short-circuit
-                    # through Path A and never repopulate
-                    # `zero_rtt_install_successes`. HANDSHAKE_DONE clears
-                    # the slot via `_discard_zero_rtt_keys`.
-                    offset += skip
-                    continue
-                # else: tristate == 1 (accept) — fall through to the
-                # standard decrypt continuation below.
+                if r[0] < 0:
+                    break
+                space_idx = r[0]
             else:
-                # 3. Map to PN space (non-0-RTT path).
                 space_idx = packet_type_to_space(header.packet_type)
-
             if space_idx < 0:
-                break  # VN, Retry — skip (no packet-number space)
-
-            # Explicit dispatch-space → key-slot mapping. The 0-RTT
-            # dispatch sentinel (ZERO_RTT_SPACE_IDX) and the 0-RTT key
-            # slot (ZERO_RTT_KEY_SLOT_IDX) are independent constants
-            # that happen to share the value 3 today; mapping by
-            # identity (never by numeric coincidence) means either
-            # constant can move without silently breaking the other.
-            var key_slot: Int
-            if space_idx == ZERO_RTT_SPACE_IDX:
-                key_slot = ZERO_RTT_KEY_SLOT_IDX
-            else:
-                key_slot = space_idx
-
+                break
+            var key_slot = ZERO_RTT_KEY_SLOT_IDX if space_idx == ZERO_RTT_SPACE_IDX else space_idx
             if not self.protect.has_keys(key_slot):
-                # No keys for this level. For long-header packets we can
-                # compute the packet boundary and skip to the next coalesced
-                # packet (RFC 9000 §12.2). Short headers consume the rest.
                 if header.is_long_header:
                     var skip = header.pn_offset + Int(header.payload_length)
                     if skip > remaining_len:
-                        break  # Truncated
+                        break
                     offset += skip
                     continue
                 break
-
-            # 4. Determine packet boundary.
-            var pkt_len: Int
-            if header.is_long_header:
-                pkt_len = header.pn_offset + Int(header.payload_length)
-            else:
-                pkt_len = remaining_len
-
+            var pkt_len = header.pn_offset + Int(header.payload_length) if header.is_long_header else remaining_len
             if pkt_len > remaining_len:
-                break  # Truncated packet
-
-            # 5. Use buffer directly — no pkt_buf copy needed.
-            var pkt_ptr = remaining_ptr
-
-            # 6-12. Decrypt and process. On failure, stop processing
-            # remaining coalesced packets (RFC 9000 §12.2).
+                break
             var decrypt_ok = True
             try:
-                # 6. Unprotect header in-place (zero-copy).
-                ph_hp_us = self.prof.stamp()
-                var hp_result = self.protect.unprotect_header_ptr(
-                    key_slot, pkt_ptr, pkt_len, header.pn_offset
+                var result = self._decrypt_and_dispatch_packet(
+                    header, remaining_ptr, pkt_len, space_idx,
+                    key_slot, closing, now, ecn_mark,
                 )
-                ph_hp_us = self.prof.elapsed(ph_hp_us)
-                var first_byte = hp_result[0]
-                var pn_length = hp_result[1]
-
-                # F12 / F14 — RFC 9000 §17.2 / §17.3.1: header reserved
-                # bits MUST be 0 after header protection is removed. Long
-                # headers use mask 0x0C; 1-RTT (short) headers use mask
-                # 0x18. Close with PROTOCOL_VIOLATION on any set bit; the
-                # outer try/except would otherwise swallow a raise.
-                if header.is_long_header:
-                    var _f12_verdict = check_long_reserved_bits(first_byte)
-                    if _f12_verdict:
-                        var _v12 = _f12_verdict.take()
-                        self.close_transport(_v12.error_code, _v12.tag, now)
-                        return
-                else:
-                    var _f14_verdict = check_short_reserved_bits(first_byte)
-                    if _f14_verdict:
-                        var _v14 = _f14_verdict.take()
-                        self.close_transport(_v14.error_code, _v14.tag, now)
-                        return
-
-                # 7. Decode packet number.
-                # `space_idx` is the DISPATCH sentinel for 0-RTT. RFC
-                # 9000 §12.3 places 0-RTT and 1-RTT in the same Application
-                # PN space, so the PN bookkeeping uses index 2 for both.
-                # `pn_space_idx` is the valid `self.spaces[]` index; only
-                # the F30-dispatch code path keeps the sentinel value.
-                # Identity comparison, not magnitude — the sentinel's
-                # numeric value is free as long as it avoids 0..2.
-                var pn_space_idx = 2 if space_idx == ZERO_RTT_SPACE_IDX else space_idx
-                var truncated_pn = UInt64(0)
-                for i in range(pn_length):
-                    truncated_pn = (truncated_pn << 8) | UInt64(
-                        pkt_ptr[unsafe_offset=header.pn_offset + i]
-                    )
-                var largest = UInt64(0)
-                if self.spaces[pn_space_idx].largest_recv_pn >= 0:
-                    largest = UInt64(self.spaces[pn_space_idx].largest_recv_pn)
-                var full_pn = pn_decode(truncated_pn, pn_length, largest)
-
-                # 8. Decrypt payload in-place (zero-copy).
-                var header_len = header.pn_offset + pn_length
-                ph_aead_us = self.prof.stamp()
-                var plaintext_len = self.protect.decrypt_payload_in_place(
-                    key_slot, full_pn, header_len, pkt_ptr, pkt_len
-                )
-                ph_aead_us = self.prof.elapsed(ph_aead_us)
-
-                # 9. Server validates address on first Handshake decrypt.
-                if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
-                    self.state = self.state | CONN_ADDR_VALIDATED
-
-                # 10. Parse and dispatch frames via zero-alloc FrameCursor.
-                # FrameCursor iterates over the payload Span in-place,
-                # constructing one Frame at a time without a List[Frame]
-                # allocation.  The Span is backed by the caller's buffer
-                # directly (no copy).
-                ph_frame_parse_us = self.prof.stamp()
-                var cursor = FrameCursor(
-                    Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
-                )
-                # F10 — RFC 9000 §12.4: any parse failure inside a packet
-                # already authenticated by AEAD is FRAME_ENCODING_ERROR.
-                # The try/except is per-frame so _dispatch_frame raises
-                # propagate to the outer handler, not here.
-                var _f10_parse_failed = False
-                var ack_eliciting = False
-                # Bookend the per-packet space_idx around the per-frame
-                # loop. `_handle_stream_frame` (invoked deep inside
-                # `_dispatch_frame`) consumes this to tag newly-created
-                # peer-initiated streams at insertion-time. Resetting AFTER
-                # the loop guarantees no per-packet state leaks into the
-                # next packet's dispatch.
-                self._current_space_idx = space_idx
-                while True:
-                    var maybe_frame = Optional[Frame]()
-                    try:
-                        maybe_frame = cursor.next()
-                    except:
-                        _f10_parse_failed = True
-                        break
-                    if not maybe_frame:
-                        break
-                    var frame = maybe_frame.take()
-                    if closing and not frame.is_connection_close():
-                        continue
-                    if frame.is_ack_eliciting():
-                        ack_eliciting = True
-                    self._dispatch_frame(frame^, space_idx, now)
-                self._current_space_idx = -1
-                if _f10_parse_failed:
-                    self.close_transport(
-                        UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
-                    )
+                ph_hp = result[1]
+                ph_ae = result[2]
+                ph_fp = result[3]
+                if not closing and result[0] < lowest_recv_space:
+                    lowest_recv_space = result[0]
+            except:
+                if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
                     return
-                # F11 — RFC 9000 §12.4: a packet containing no frames is a
-                # PROTOCOL_VIOLATION. Use close_transport instead of raising
-                # so the connection-level CONNECTION_CLOSE is queued; the
-                # outer for-loop over coalesced packets is aborted via the
-                # existing `decrypt_ok = False` short-circuit.
-                var _f11_verdict = predicate_f11_no_frames(cursor.count())
-                if _f11_verdict:
-                    var _v11 = _f11_verdict.take()
-                    self.close_transport(_v11.error_code, _v11.tag, now)
-                    return
-                ph_frame_parse_us = self.prof.elapsed(ph_frame_parse_us)
-
-                if not closing:
-                    # 11. Update PN space — `pn_space_idx` collapses the 0-RTT
-                    # dispatch sentinel (3) onto the Application PN space (2)
-                    # per RFC 9000 §12.3.
-                    self.spaces[pn_space_idx].on_packet_received(
-                        full_pn, ack_eliciting, now,
-                        self.local_params.max_ack_delay * 1000,
-                    )
-
-                    # ECN accounting: count marks seen on received packets.
-                    if self.ecn.state != ECN_STATE_DISABLED:
-                        if ecn_mark == ECN_CE:
-                            self.spaces[pn_space_idx].recv_ecn.ce += UInt64(1)
-                        elif ecn_mark == ECN_ECT0:
-                            self.spaces[pn_space_idx].recv_ecn.ect0 += UInt64(1)
-                        elif ecn_mark == ECN_ECT1:
-                            self.spaces[pn_space_idx].recv_ecn.ect1 += UInt64(1)
-
-                    # Track lowest processed space for retransmission logic.
-                    # Use `pn_space_idx` so 0-RTT (sentinel 3) doesn't widen
-                    # the tracker beyond the valid Application PN space.
-                    if pn_space_idx < lowest_recv_space:
-                        lowest_recv_space = pn_space_idx
-            except e:
-                # Decryption or frame processing failed for this packet.
-                # Per RFC 9000 §12.2, stop processing remaining coalesced
-                # packets (they may use keys we don't have yet).
-                _ = e
                 decrypt_ok = False
-
             if not decrypt_ok:
                 break
-
-            # 12. Drive handshake OUTSIDE try/except so TLS errors
-            # propagate to the caller (they are fatal, not recoverable).
             if not closing:
-                ph_sm_us = self.prof.stamp()
+                ph_sm = self.prof.stamp()
                 self._drive_handshake(now)
-                # RFC 9001 §5.7 — replay any 0-RTT packets that arrived
-                # ahead of the Initial that derives their keys.
-                # Idempotent (empty-buffer no-op); the re-entry guard
-                # inside the drain prevents Path B from re-buffering its
-                # own drained packets.
                 self._drain_zero_rtt_buffer(now, ecn_mark)
-                ph_sm_us = self.prof.elapsed(ph_sm_us)
-
-            self.prof.end_iter(
-                t_iter_start, ph_hp_us, ph_aead_us,
-                ph_header_parse_us, ph_frame_parse_us, ph_sm_us,
-            )
-
+                ph_sm = self.prof.elapsed(ph_sm)
+            self.prof.end_iter(t_iter, ph_hp, ph_ae, ph_hdr, ph_fp, ph_sm)
             offset += pkt_len
+        self._retransmit_crypto_if_needed(lowest_recv_space, closing)
 
-        # Implicit CRYPTO retransmission (RFC 9002 §6.2.4 spirit).
-        # When we receive a packet at a lower encryption level than one
-        # where we have unacked CRYPTO, the peer likely did not get our
-        # higher-level response.  Re-queue unacked CRYPTO data so the
-        # next send() retransmits it.  This is critical for the server
-        # which cannot PTO while amplification-limited.
-        if lowest_recv_space < 3 and not closing:
-            for s in range(lowest_recv_space + 1, 3):
-                if not self.protect.has_keys(s):
-                    continue
-                if self.crypto_streams[s].has_unsent():
-                    continue
-                if len(self.spaces[s].sent_packets) == 0:
-                    continue
-                for entry in self.spaces[s].sent_packets.items():
-                    for fi in range(len(entry.value.frames)):
-                        if entry.value.frames[fi].is_crypto():
-                            ref cf = entry.value.frames[fi].as_crypto()
-                            self.crypto_streams[s].requeue(
-                                cf.offset, Span(cf.data)
-                            )
+    def _handle_zero_rtt_detection(
+        mut self,
+        ref header: PacketHeader,
+        remaining_ptr: Pointer[mut=True, T=UInt8, origin=_],
+        remaining_len: Int,
+    ) raises -> Tuple[Int, Int]:
+        """Detect and handle a 0-RTT packet: key install, anti-replay.
+
+        Returns (space_idx, skip). space_idx=ZERO_RTT_SPACE_IDX on
+        success; space_idx=-1 with skip>0 means advance offset; skip=0
+        with space_idx=-1 means break (truncated).
+        """
+        var skip = header.pn_offset + Int(header.payload_length)
+        if skip > remaining_len:
+            return (-1, 0)
+
+        if self.protect.has_keys(ZERO_RTT_KEY_SLOT_IDX):
+            pass  # Path A — keys installed, fall through.
+        elif self._zero_rtt_enabled():
+            # Path B — lazy install. Buffer-or-drop on fail.
+            var ok = False
+            try:
+                ok = self.protect.install_zero_rtt_read_keys(
+                    self.conn_handle
+                )
+            except:
+                pass
+            self.prof.record_zero_rtt_install(ok)
+            if not ok:
+                if not self.zrtt.draining:
+                    var pkt_bytes = Span(
+                        unsafe_ptr=remaining_ptr, length=skip,
+                    )
+                    _ = self._buffer_zero_rtt_or_drop(pkt_bytes)
+                return (-1, skip)
+        else:
+            # Path C — 0-RTT disabled.
+            return (-1, skip)
+
+        # Anti-replay check — fires at most once per connection.
+        if self.zrtt.replay_decision == UInt8(0):
+            var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
+            var auth_len = UInt(0)
+            var rc = self._invoke_replay_authenticator_ffi(
+                auth_buf, auth_len,
+            )
+            if rc != Int32(0):
+                self.zrtt.replay_decision = UInt8(2)
+                self.prof.record_replay_reject_no_authenticator()
+            elif self.zrtt.early_data_store_ptr is None:
+                self.zrtt.replay_decision = UInt8(2)
+                self.prof.record_replay_reject_no_authenticator()
+            else:
+                var auth_span = Span(
+                    unsafe_ptr=auth_buf.unsafe_ptr(), length=32,
+                )
+                var now_ms: UInt64
+                if self.zrtt.now_ms_override is not None:
+                    now_ms = self.zrtt.now_ms_override.value()
+                else:
+                    now_ms = monotonic_us() // UInt64(1_000)
+                var raised = False
+                var decision = ReplayDecision.accept()
+                try:
+                    var store_ptr = self.zrtt.early_data_store_ptr.value()
+                    decision = store_ptr[].check_and_record(
+                        auth_span, now_ms
+                    )
+                except:
+                    raised = True
+                if raised:
+                    self.zrtt.replay_decision = UInt8(2)
+                    self.prof.record_replay_reject_no_authenticator()
+                elif decision.is_accept():
+                    self.zrtt.replay_decision = UInt8(1)
+                    self.prof.record_replay_accept()
+                elif decision.is_duplicate():
+                    self.zrtt.replay_decision = UInt8(2)
+                    self.prof.record_replay_reject_duplicate()
+                elif decision.is_per_key_quota():
+                    self.zrtt.replay_decision = UInt8(2)
+                    self.prof.record_replay_reject_per_key_quota()
+                else:
+                    self.zrtt.replay_decision = UInt8(2)
+                    self.prof.record_replay_reject_global_ceiling()
+
+        if self.zrtt.replay_decision == UInt8(2):
+            return (-1, skip)
+        return (ZERO_RTT_SPACE_IDX, 0)
+
+    def _decrypt_and_dispatch_packet(
+        mut self,
+        ref header: PacketHeader,
+        pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
+        pkt_len: Int,
+        space_idx: Int,
+        key_slot: Int,
+        closing: Bool,
+        now: UInt64,
+        ecn_mark: UInt8,
+    ) raises -> Tuple[Int, UInt64, UInt64, UInt64]:
+        """Decrypt, parse frames, dispatch, update PN/ECN state.
+
+        Returns (pn_space_idx, hp_us, aead_us, frame_parse_us).
+        Raises on decrypt failure or after close_transport.
+        """
+        var ph_hp_us = self.prof.stamp()
+        var hp_result = self.protect.unprotect_header_ptr(
+            key_slot, pkt_ptr, pkt_len, header.pn_offset
+        )
+        ph_hp_us = self.prof.elapsed(ph_hp_us)
+        var first_byte = hp_result[0]
+        var pn_length = hp_result[1]
+
+        if header.is_long_header:
+            var _f12_verdict = check_long_reserved_bits(first_byte)
+            if _f12_verdict:
+                var _v12 = _f12_verdict.take()
+                self.close_transport(_v12.error_code, _v12.tag, now)
+                raise Error("reserved bits")
+        else:
+            var _f14_verdict = check_short_reserved_bits(first_byte)
+            if _f14_verdict:
+                var _v14 = _f14_verdict.take()
+                self.close_transport(_v14.error_code, _v14.tag, now)
+                raise Error("reserved bits")
+
+        var pn_space_idx = 2 if space_idx == ZERO_RTT_SPACE_IDX else space_idx
+        var truncated_pn = UInt64(0)
+        for i in range(pn_length):
+            truncated_pn = (truncated_pn << 8) | UInt64(
+                pkt_ptr[unsafe_offset=header.pn_offset + i]
+            )
+        var largest = UInt64(0)
+        if self.spaces[pn_space_idx].largest_recv_pn >= 0:
+            largest = UInt64(self.spaces[pn_space_idx].largest_recv_pn)
+        var full_pn = pn_decode(truncated_pn, pn_length, largest)
+
+        var header_len = header.pn_offset + pn_length
+        var ph_aead_us = self.prof.stamp()
+        var plaintext_len = self.protect.decrypt_payload_in_place(
+            key_slot, full_pn, header_len, pkt_ptr, pkt_len
+        )
+        ph_aead_us = self.prof.elapsed(ph_aead_us)
+
+        if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
+            self.state = self.state | CONN_ADDR_VALIDATED
+
+        var ph_frame_parse_us = self.prof.stamp()
+        var cursor = FrameCursor(
+            Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
+        )
+        var _f10_parse_failed = False
+        var ack_eliciting = False
+        self._current_space_idx = space_idx
+        while True:
+            var maybe_frame = Optional[Frame]()
+            try:
+                maybe_frame = cursor.next()
+            except:
+                _f10_parse_failed = True
+                break
+            if not maybe_frame:
+                break
+            var frame = maybe_frame.take()
+            if closing and not frame.is_connection_close():
+                continue
+            if frame.is_ack_eliciting():
+                ack_eliciting = True
+            self._dispatch_frame(frame^, space_idx, now)
+        self._current_space_idx = -1
+        if _f10_parse_failed:
+            self.close_transport(
+                UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
+            )
+            raise Error("frame parse")
+        var _f11_verdict = predicate_f11_no_frames(cursor.count())
+        if _f11_verdict:
+            var _v11 = _f11_verdict.take()
+            self.close_transport(_v11.error_code, _v11.tag, now)
+            raise Error("no frames")
+        ph_frame_parse_us = self.prof.elapsed(ph_frame_parse_us)
+
+        if not closing:
+            self.spaces[pn_space_idx].on_packet_received(
+                full_pn, ack_eliciting, now,
+                self.local_params.max_ack_delay * 1000,
+            )
+            if self.ecn.state != ECN_STATE_DISABLED:
+                if ecn_mark == ECN_CE:
+                    self.spaces[pn_space_idx].recv_ecn.ce += UInt64(1)
+                elif ecn_mark == ECN_ECT0:
+                    self.spaces[pn_space_idx].recv_ecn.ect0 += UInt64(1)
+                elif ecn_mark == ECN_ECT1:
+                    self.spaces[pn_space_idx].recv_ecn.ect1 += UInt64(1)
+
+        return (pn_space_idx, ph_hp_us, ph_aead_us, ph_frame_parse_us)
+
+    def _retransmit_crypto_if_needed(mut self, lowest_recv_space: Int, closing: Bool):
+        """Re-queue unacked CRYPTO when receiving at a lower encryption level."""
+        if lowest_recv_space >= 3 or closing:
+            return
+        for s in range(lowest_recv_space + 1, 3):
+            if not self.protect.has_keys(s):
+                continue
+            if self.crypto_streams[s].has_unsent():
+                continue
+            if len(self.spaces[s].sent_packets) == 0:
+                continue
+            for entry in self.spaces[s].sent_packets.items():
+                for fi in range(len(entry.value.frames)):
+                    if entry.value.frames[fi].is_crypto():
+                        ref cf = entry.value.frames[fi].as_crypto()
+                        self.crypto_streams[s].requeue(
+                            cf.offset, Span(cf.data)
+                        )
 
     # ── Stream frame handlers ────────────────────────────────────────
 
