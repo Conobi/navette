@@ -12,8 +12,8 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.quic.flow_control import FlowControl, CONN_FC_MAX_WINDOW
 from navette.quic.stream import (
     Stream,
-    SEND_READY,
-    RECV_RECV,
+    SendState,
+    RecvState,
     stream_is_bidi,
     stream_is_local,
 )

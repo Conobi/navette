@@ -8,22 +8,58 @@ from navette.quic.frame import StreamFrame
 
 # ── Send-side states (RFC 9000 §3.1) ─────────────────────────────────────────
 
-comptime SEND_READY: UInt8 = 0
-comptime SEND_SEND: UInt8 = 1
-comptime SEND_DATA_SENT: UInt8 = 2
-comptime SEND_DATA_RECVD: UInt8 = 3     # terminal
-comptime SEND_RESET_SENT: UInt8 = 4
-comptime SEND_RESET_RECVD: UInt8 = 5    # terminal
+
+@fieldwise_init
+struct SendState(Equatable, ImplicitlyCopyable):
+    """Send-side stream state machine (RFC 9000, Section 3.1)."""
+
+    var _value: UInt8
+
+    comptime READY       = SendState(0)
+    comptime SEND        = SendState(1)
+    comptime DATA_SENT   = SendState(2)
+    comptime DATA_RECVD  = SendState(3)   # terminal
+    comptime RESET_SENT  = SendState(4)
+    comptime RESET_RECVD = SendState(5)   # terminal
+
+    def __eq__(self, other: Self) -> Bool:
+        return self._value == other._value
+
+    def __ne__(self, other: Self) -> Bool:
+        return self._value != other._value
+
+    def is_terminal(self) -> Bool:
+        """True for DATA_RECVD and RESET_RECVD."""
+        return self == Self.DATA_RECVD or self == Self.RESET_RECVD
+
 
 # ── Recv-side states (RFC 9000 §3.2) ─────────────────────────────────────────
 
-comptime RECV_RECV: UInt8 = 0
-comptime RECV_SIZE_KNOWN: UInt8 = 1
-comptime RECV_DATA_RECVD: UInt8 = 2
-comptime RECV_DATA_READ: UInt8 = 3      # terminal
-comptime RECV_STOP_SENDING_SENT: UInt8 = 4
-comptime RECV_RESET_RECVD: UInt8 = 5
-comptime RECV_RESET_READ: UInt8 = 6     # terminal
+
+@fieldwise_init
+struct RecvState(Equatable, ImplicitlyCopyable):
+    """Recv-side stream state machine (RFC 9000, Section 3.2)."""
+
+    var _value: UInt8
+
+    comptime RECV              = RecvState(0)
+    comptime SIZE_KNOWN        = RecvState(1)
+    comptime DATA_RECVD        = RecvState(2)
+    comptime DATA_READ         = RecvState(3)   # terminal
+    comptime STOP_SENDING_SENT = RecvState(4)
+    comptime RESET_RECVD       = RecvState(5)
+    comptime RESET_READ        = RecvState(6)   # terminal
+
+    def __eq__(self, other: Self) -> Bool:
+        return self._value == other._value
+
+    def __ne__(self, other: Self) -> Bool:
+        return self._value != other._value
+
+    def is_terminal(self) -> Bool:
+        """True for DATA_READ and RESET_READ."""
+        return self == Self.DATA_READ or self == Self.RESET_READ
+
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
@@ -43,14 +79,14 @@ def stream_is_client_initiated(id: UInt64) -> Bool:
     return (id & UInt64(0x01)) == 0
 
 
-def send_state_is_terminal(state: UInt8) -> Bool:
+def send_state_is_terminal(state: SendState) -> Bool:
     """True for send-side terminal states (DATA_RECVD, RESET_RECVD)."""
-    return state == SEND_DATA_RECVD or state == SEND_RESET_RECVD
+    return state.is_terminal()
 
 
-def recv_state_is_terminal(state: UInt8) -> Bool:
+def recv_state_is_terminal(state: RecvState) -> Bool:
     """True for recv-side terminal states (DATA_READ, RESET_READ)."""
-    return state == RECV_DATA_READ or state == RECV_RESET_READ
+    return state.is_terminal()
 
 
 # ── RecvBuf ───────────────────────────────────────────────────────────────────
@@ -281,75 +317,85 @@ struct RecvBuf(Copyable, Movable):
                 last_affected = i
 
         if first_affected == -1:
-            # No overlap: insert as a new segment at sorted position
-            var new_seg = List[UInt8](capacity=len(clamped))
-            new_seg.extend(clamped)
-            # Find insertion point
-            var insert_pos = len(self.seg_offsets)
-            for i in range(len(self.seg_offsets)):
-                if new_start < self.seg_offsets[i]:
-                    insert_pos = i
-                    break
-            # Rebuild with new segment inserted
-            var new_offsets = List[UInt64]()
-            var new_segs = List[List[UInt8]]()
-            for i in range(len(self.seg_offsets)):
-                if i == insert_pos:
-                    new_offsets.append(new_start)
-                    new_segs.append(new_seg^)
-                    new_seg = List[UInt8]()
-                new_offsets.append(self.seg_offsets[i])
-                new_segs.append(List[UInt8](copy=self.seg_data[i]))
-            if insert_pos == len(self.seg_offsets):
+            self._insert_gap(new_start, clamped)
+        else:
+            self._insert_merge(new_start, new_end, clamped, first_affected, last_affected)
+
+    def _insert_gap(mut self, new_start: UInt64, data: Span[UInt8, _]):
+        """Insert non-overlapping segment at sorted position."""
+        var new_seg = List[UInt8](capacity=len(data))
+        new_seg.extend(data)
+        var insert_pos = len(self.seg_offsets)
+        for i in range(len(self.seg_offsets)):
+            if new_start < self.seg_offsets[i]:
+                insert_pos = i
+                break
+        var new_offsets = List[UInt64]()
+        var new_segs = List[List[UInt8]]()
+        for i in range(len(self.seg_offsets)):
+            if i == insert_pos:
                 new_offsets.append(new_start)
                 new_segs.append(new_seg^)
-            self.seg_offsets = new_offsets^
-            self.seg_data = new_segs^
-        else:
-            # Merge: build a new merged segment
-            var merged_start = new_start
-            if self.seg_offsets[first_affected] < merged_start:
-                merged_start = self.seg_offsets[first_affected]
-            var merged_end = new_end
-            if self._seg_end(last_affected) > merged_end:
-                merged_end = self._seg_end(last_affected)
+                new_seg = List[UInt8]()
+            new_offsets.append(self.seg_offsets[i])
+            new_segs.append(List[UInt8](copy=self.seg_data[i]))
+        if insert_pos == len(self.seg_offsets):
+            new_offsets.append(new_start)
+            new_segs.append(new_seg^)
+        self.seg_offsets = new_offsets^
+        self.seg_data = new_segs^
 
-            var merged_len = Int(merged_end - merged_start)
-            var merged = List[UInt8](capacity=merged_len)
-            for _ in range(merged_len):
-                merged.append(UInt8(0))
+    def _insert_merge(
+        mut self,
+        new_start: UInt64,
+        new_end: UInt64,
+        data: Span[UInt8, _],
+        first_affected: Int,
+        last_affected: Int,
+    ):
+        """Merge overlapping segments with accept-first-copy semantics."""
+        var merged_start = new_start
+        if self.seg_offsets[first_affected] < merged_start:
+            merged_start = self.seg_offsets[first_affected]
+        var merged_end = new_end
+        if self._seg_end(last_affected) > merged_end:
+            merged_end = self._seg_end(last_affected)
 
-            # First: copy all existing segment data (they take priority)
-            for i in range(first_affected, last_affected + 1):
-                var seg_off = self.seg_offsets[i]
-                var dst_start = Int(seg_off - merged_start)
-                for j in range(len(self.seg_data[i])):
-                    merged[dst_start + j] = self.seg_data[i][j]
+        var merged_len = Int(merged_end - merged_start)
+        var merged = List[UInt8](capacity=merged_len)
+        for _ in range(merged_len):
+            merged.append(UInt8(0))
 
-            # Then: copy new data for positions past existing coverage
-            var dst_base = Int(new_start - merged_start)
-            for j in range(len(clamped)):
-                var dst_idx = dst_base + j
-                if dst_idx >= 0 and dst_idx < merged_len:
-                    if merged[dst_idx] == UInt8(0):
-                        merged[dst_idx] = clamped[j]
+        # Lay down new data as the base.
+        var dst_base = Int(new_start - merged_start)
+        for j in range(len(data)):
+            var dst_idx = dst_base + j
+            if dst_idx >= 0 and dst_idx < merged_len:
+                merged[dst_idx] = data[j]
 
-            # Rebuild seg lists replacing first..last with the merged segment
-            var new_offsets = List[UInt64]()
-            var new_segs = List[List[UInt8]]()
-            for i in range(len(self.seg_offsets)):
-                if i < first_affected:
-                    new_offsets.append(self.seg_offsets[i])
-                    new_segs.append(List[UInt8](copy=self.seg_data[i]))
-                elif i == first_affected:
-                    new_offsets.append(merged_start)
-                    new_segs.append(merged^)
-                    merged = List[UInt8]()
-                elif i > last_affected:
-                    new_offsets.append(self.seg_offsets[i])
-                    new_segs.append(List[UInt8](copy=self.seg_data[i]))
-            self.seg_offsets = new_offsets^
-            self.seg_data = new_segs^
+        # Overlay existing segment data (takes priority).
+        for i in range(first_affected, last_affected + 1):
+            var seg_off = self.seg_offsets[i]
+            var dst_start = Int(seg_off - merged_start)
+            for j in range(len(self.seg_data[i])):
+                merged[dst_start + j] = self.seg_data[i][j]
+
+        # Rebuild seg lists replacing first..last with the merged segment.
+        var new_offsets = List[UInt64]()
+        var new_segs = List[List[UInt8]]()
+        for i in range(len(self.seg_offsets)):
+            if i < first_affected:
+                new_offsets.append(self.seg_offsets[i])
+                new_segs.append(List[UInt8](copy=self.seg_data[i]))
+            elif i == first_affected:
+                new_offsets.append(merged_start)
+                new_segs.append(merged^)
+                merged = List[UInt8]()
+            elif i > last_affected:
+                new_offsets.append(self.seg_offsets[i])
+                new_segs.append(List[UInt8](copy=self.seg_data[i]))
+        self.seg_offsets = new_offsets^
+        self.seg_data = new_segs^
 
     def read(mut self, fin_offset: Optional[UInt64]) -> Tuple[List[UInt8], Bool]:
         """Drain contiguous bytes starting from read_offset.
@@ -641,8 +687,8 @@ struct Stream(Copyable, Movable):
     var id: UInt64
     var is_bidi: Bool
     var is_local: Bool
-    var send_state: Optional[UInt8]
-    var recv_state: Optional[UInt8]
+    var send_state: Optional[SendState]
+    var recv_state: Optional[RecvState]
     var send_buf: Optional[SendBuf]
     var recv_buf: Optional[RecvBuf]
     var fc_send: Optional[FlowControl]
@@ -698,56 +744,6 @@ struct Stream(Copyable, Movable):
         self.incremental = False
         self.is_zero_rtt = False
 
-    def __init__(out self, *, copy: Self):
-        self.id = copy.id
-        self.is_bidi = copy.is_bidi
-        self.is_local = copy.is_local
-        self.send_state = Optional[UInt8](copy=copy.send_state)
-        self.recv_state = Optional[UInt8](copy=copy.recv_state)
-        self.send_buf = Optional[SendBuf](copy=copy.send_buf)
-        self.recv_buf = Optional[RecvBuf](copy=copy.recv_buf)
-        self.fc_send = Optional[FlowControl](copy=copy.fc_send)
-        self.fc_recv = Optional[FlowControl](copy=copy.fc_recv)
-        self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
-        self.recv_highest_offset = copy.recv_highest_offset
-        self.send_fin_offset = Optional[UInt64](copy=copy.send_fin_offset)
-        self.reset_error = Optional[UInt64](copy=copy.reset_error)
-        self.stop_error = Optional[UInt64](copy=copy.stop_error)
-        self.needs_max_stream_data = copy.needs_max_stream_data
-        self.needs_reset_stream = copy.needs_reset_stream
-        self.needs_stop_sending = copy.needs_stop_sending
-        self.reset_stream_final_size = copy.reset_stream_final_size
-        self.reset_stream_error = copy.reset_stream_error
-        self.stop_sending_error = copy.stop_sending_error
-        self.urgency = copy.urgency
-        self.incremental = copy.incremental
-        self.is_zero_rtt = copy.is_zero_rtt
-
-    def __init__(out self, *, deinit move: Self):
-        self.id = move.id
-        self.is_bidi = move.is_bidi
-        self.is_local = move.is_local
-        self.send_state = move.send_state^
-        self.recv_state = move.recv_state^
-        self.send_buf = move.send_buf^
-        self.recv_buf = move.recv_buf^
-        self.fc_send = move.fc_send^
-        self.fc_recv = move.fc_recv^
-        self.fin_offset = move.fin_offset^
-        self.recv_highest_offset = move.recv_highest_offset
-        self.send_fin_offset = move.send_fin_offset^
-        self.reset_error = move.reset_error^
-        self.stop_error = move.stop_error^
-        self.needs_max_stream_data = move.needs_max_stream_data
-        self.needs_reset_stream = move.needs_reset_stream
-        self.needs_stop_sending = move.needs_stop_sending
-        self.reset_stream_final_size = move.reset_stream_final_size
-        self.reset_stream_error = move.reset_stream_error
-        self.stop_sending_error = move.stop_sending_error
-        self.urgency = move.urgency
-        self.incremental = move.incremental
-        self.is_zero_rtt = move.is_zero_rtt
-
     # ── Factory methods ───────────────────────────────────────────────────────
 
     @staticmethod
@@ -758,14 +754,7 @@ struct Stream(Copyable, Movable):
         fc_recv_window: UInt64,
     ) -> Stream:
         """Create a local bidirectional stream (both send and recv sides)."""
-        var s = Stream(id, True, True)
-        s.send_state = SEND_READY
-        s.recv_state = RECV_RECV
-        s.send_buf = SendBuf()
-        s.recv_buf = RecvBuf(fc_recv_window)
-        s.fc_send = FlowControl(fc_send_limit, fc_send_limit)
-        s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window, STREAM_FC_MAX_WINDOW)
-        return s^
+        return Stream._new_bidi(id, True, fc_send_limit, fc_recv_limit, fc_recv_window)
 
     @staticmethod
     def new_remote_bidi(
@@ -775,9 +764,20 @@ struct Stream(Copyable, Movable):
         fc_recv_window: UInt64,
     ) -> Stream:
         """Create a remote bidirectional stream (both send and recv sides)."""
-        var s = Stream(id, True, False)
-        s.send_state = SEND_READY
-        s.recv_state = RECV_RECV
+        return Stream._new_bidi(id, False, fc_send_limit, fc_recv_limit, fc_recv_window)
+
+    @staticmethod
+    def _new_bidi(
+        id: UInt64,
+        is_local: Bool,
+        fc_send_limit: UInt64,
+        fc_recv_limit: UInt64,
+        fc_recv_window: UInt64,
+    ) -> Stream:
+        """Shared bidirectional stream constructor."""
+        var s = Stream(id, True, is_local)
+        s.send_state = SendState.READY
+        s.recv_state = RecvState.RECV
         s.send_buf = SendBuf()
         s.recv_buf = RecvBuf(fc_recv_window)
         s.fc_send = FlowControl(fc_send_limit, fc_send_limit)
@@ -788,7 +788,7 @@ struct Stream(Copyable, Movable):
     def new_local_uni(id: UInt64, fc_send_limit: UInt64) -> Stream:
         """Create a local unidirectional stream (send-side only)."""
         var s = Stream(id, False, True)
-        s.send_state = SEND_READY
+        s.send_state = SendState.READY
         s.send_buf = SendBuf()
         s.fc_send = FlowControl(fc_send_limit, fc_send_limit)
         return s^
@@ -801,7 +801,7 @@ struct Stream(Copyable, Movable):
     ) -> Stream:
         """Create a remote unidirectional stream (recv-side only)."""
         var s = Stream(id, False, False)
-        s.recv_state = RECV_RECV
+        s.recv_state = RecvState.RECV
         s.recv_buf = RecvBuf(fc_recv_window)
         s.fc_recv = FlowControl(fc_recv_limit, fc_recv_window, STREAM_FC_MAX_WINDOW)
         return s^
