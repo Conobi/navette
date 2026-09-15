@@ -62,7 +62,7 @@ from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
 from navette.quic.path_validator import PathKey
 from navette.quic.pn_space import SentPacket
 from navette.quic.cc.cc_trait import AckedPacket, LostPacket
-from navette.quic.stream import SEND_RESET_SENT
+from navette.quic.stream import SendState
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.ecn import ECN_STATE_DISABLED
 from navette.quic.retry import (
@@ -1310,9 +1310,8 @@ def test_stop_sending() raises:
         Bool(cli_stream.send_state),
         "client stream lost send_state after stop_sending",
     )
-    assert_equal_int(
-        Int(cli_stream.send_state.value()),
-        Int(SEND_RESET_SENT),
+    assert_true(
+        cli_stream.send_state.value() == SendState.RESET_SENT,
         "client send_state should be RESET_SENT after stop_sending",
     )
 
@@ -1387,7 +1386,7 @@ def test_flow_control_error_on_overflow() raises:
 
     The legacy raise path was rewritten into a queued CONNECTION_CLOSE
     so the outer try/except at recv_from_buffer no longer swallows the
-    violation. Verified via `server.pending_close`.
+    violation. Verified via `server.close.pending`.
     """
     var tls = TlsBackend("lib/librustls_mojo.so")
     var ck = generate_ephemeral_cert()
@@ -1426,10 +1425,10 @@ def test_flow_control_error_on_overflow() raises:
     var sf = StreamFrame(sid, UInt64(0), data, False)
     server._handle_stream_frame(sf)
     assert_true(
-        Bool(server.pending_close),
-        "server.pending_close not set after stream FC overflow",
+        Bool(server.close.pending),
+        "server.close.pending not set after stream FC overflow",
     )
-    var cc = server.pending_close.value().copy()
+    var cc = server.close.pending.value().copy()
     assert_equal_int(
         Int(cc.error_code), 0x03, "FLOW_CONTROL_ERROR code on stream FC overflow"
     )
@@ -2563,10 +2562,10 @@ def test_ecn_disabled_after_probing() raises:
     _drain_events(server)
 
     # Reset to PROBING with 1 probe needed.
-    client.ecn_state = UInt8(0)   # ECN_STATE_PROBING
-    client.ecn_probe_pkts_needed = 1
-    client.ecn_probe_pkts_sent = 0
-    client.ecn_probe_first_pn = UInt64(0)
+    client.ecn.state = UInt8(0)   # ECN_STATE_PROBING
+    client.ecn.pkts_needed = 1
+    client.ecn.pkts_sent = 0
+    client.ecn.first_pn = UInt64(0)
     # Clear server recv_ecn so ACK carries no ECN counts.
     server.spaces[2].recv_ecn.ect0 = UInt64(0)
     server.spaces[2].recv_ecn.ect1 = UInt64(0)
@@ -2594,7 +2593,7 @@ def test_ecn_disabled_after_probing() raises:
                 pass
 
     assert_true(
-        client.ecn_state == ECN_STATE_DISABLED,
+        client.ecn.state == ECN_STATE_DISABLED,
         "client ECN state should be DISABLED when probes sent but path strips marks",
     )
 
@@ -3499,7 +3498,7 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
       * NOT raise an exception out of `_on_handshake_complete` (close + return
         contract: errors on the TLS-error path must surface as a queued
         CONNECTION_CLOSE, not a raise that the I/O loop would swallow).
-      * Set `pending_close` with `error_code == 0x08`
+      * Set `close.pending` with `error_code == 0x08`
         (TRANSPORT_PARAMETER_ERROR, RFC 9000 §20.1).
       * Embed `[QUIC-TP-ORIGINAL-DCID-FORBIDDEN]` in the reason so the
         out-of-process scenario binary can grep for it as proof the violation
@@ -3551,14 +3550,14 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
                 client.recv(Span(s_dg[i]), now)
             except:
                 pass
-        if server.pending_close:
+        if server.close.pending:
             break
 
     assert_true(
-        Bool(server.pending_close),
-        "server.pending_close not set after F03 violation",
+        Bool(server.close.pending),
+        "server.close.pending not set after F03 violation",
     )
-    var cc = server.pending_close.value().copy()
+    var cc = server.close.pending.value().copy()
     assert_equal_int(
         Int(cc.error_code), 0x08,
         "server CONNECTION_CLOSE error_code must be TRANSPORT_PARAMETER_ERROR",
@@ -3696,10 +3695,10 @@ def test_drive_handshake_tls_error_emits_crypto_close() raises:
     server._drive_handshake(now)
 
     assert_true(
-        Bool(server.pending_close),
-        "server.pending_close not set after TLS read_hs failure",
+        Bool(server.close.pending),
+        "server.close.pending not set after TLS read_hs failure",
     )
-    var cc = server.pending_close.value().copy()
+    var cc = server.close.pending.value().copy()
     assert_true(cc.is_transport, "must use transport-CC (0x1c) for TLS alert")
 
     var code = Int(cc.error_code)
@@ -3732,7 +3731,7 @@ def _build_server_for_rx_test() raises -> QuicConnection:
 
     Reuses the same factory path the established tests rely on, but does
     not drive a handshake — the RX handlers exercised here only touch
-    `pending_path_responses` and `path_validator`, so the handshake state
+    `path.pending_responses` and `path.validator`, so the handshake state
     is irrelevant.
     """
     var tls = TlsBackend("lib/librustls_mojo.so")
@@ -3768,19 +3767,19 @@ def test_path_challenge_recorded_for_response() raises:
         data.append(UInt8(0x10 + i))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
     assert_equal_int(
-        len(conn.pending_path_responses),
+        len(conn.path.pending_responses),
         1,
         "expected exactly one pending PATH_RESPONSE",
     )
     assert_equal_int(
-        len(conn.pending_path_responses[0]),
+        len(conn.path.pending_responses[0]),
         8,
         "expected pending PATH_RESPONSE token to be 8 bytes",
     )
     # Verify exact bytes preserved.
     for i in range(8):
         assert_equal_int(
-            Int(conn.pending_path_responses[0][i]),
+            Int(conn.path.pending_responses[0][i]),
             Int(UInt8(0x10 + i)),
             "PATH_RESPONSE token byte mismatch at index " + String(i),
         )
@@ -3796,20 +3795,20 @@ def test_path_response_handler_no_op_without_pending_challenge() raises:
     var from_addr = PathKey.from_v4(
         UInt8(127), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
     )
-    # Should neither raise nor mutate `path_validator.pending`. The C5
+    # Should neither raise nor mutate `path.validator.pending`. The C5
     # signature added `from_addr` for the §8.2 addr+token match; with no
     # pending challenges the inner `on_response` returns None and the
     # handler is a pure no-op.
     conn.on_path_response_received(Span(data), from_addr^, UInt64(2000))
     assert_equal_int(
-        len(conn.path_validator.pending),
+        len(conn.path.validator.pending),
         0,
-        "path_validator.pending must stay empty (no challenges started yet)",
+        "path.validator.pending must stay empty (no challenges started yet)",
     )
     assert_equal_int(
-        len(conn.pending_path_responses),
+        len(conn.path.pending_responses),
         0,
-        "pending_path_responses must stay empty when handling a response",
+        "path.pending_responses must stay empty when handling a response",
     )
     print("  test_path_response_handler_no_op_without_pending_challenge: PASS")
 
@@ -3822,7 +3821,7 @@ def test_emit_path_response_drains_pending() raises:
         data.append(UInt8(0x55))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
     assert_equal_int(
-        len(conn.pending_path_responses),
+        len(conn.path.pending_responses),
         1,
         "expected one pending PATH_RESPONSE after challenge RX",
     )
@@ -3833,9 +3832,9 @@ def test_emit_path_response_drains_pending() raises:
         "emitted frame must be PATH_RESPONSE",
     )
     assert_equal_int(
-        len(conn.pending_path_responses),
+        len(conn.path.pending_responses),
         0,
-        "pending_path_responses must be drained after emit",
+        "path.pending_responses must be drained after emit",
     )
     print("  test_emit_path_response_drains_pending: PASS")
 
@@ -3848,7 +3847,7 @@ def test_start_path_challenge_queues_emission() raises:
     )
     conn.start_path_challenge(target^, UInt64(1000))
     assert_equal_int(
-        len(conn.path_validator.pending),
+        len(conn.path.validator.pending),
         1,
         "expected one pending challenge after start_path_challenge",
     )
@@ -4114,10 +4113,10 @@ def test_path_validation_full_round_trip() raises:
         UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
     ), UInt64(1000))
     assert_equal_int(
-        len(conn.path_validator.pending), 1,
+        len(conn.path.validator.pending), 1,
         "challenge queued before response arrives",
     )
-    var token = List[UInt8](copy=conn.path_validator.pending[0].token)
+    var token = List[UInt8](copy=conn.path.validator.pending[0].token)
 
     # PATH_RESPONSE with the matching token, arriving from addr_b.
     conn.on_path_response_received(
@@ -4125,19 +4124,19 @@ def test_path_validation_full_round_trip() raises:
     )
 
     # peer_addr swapped to addr_b.
-    var current_peer = PathKey(copy=conn.peer_addr)
+    var current_peer = PathKey(copy=conn.path.peer_addr)
     assert_true(
         current_peer == addr_b,
         "peer_addr promoted to validated path",
     )
     # Validator's pending list drained, current set.
     assert_equal_int(
-        len(conn.path_validator.pending), 0,
+        len(conn.path.validator.pending), 0,
         "matched challenge removed from pending",
     )
     assert_true(
-        Bool(conn.path_validator.current),
-        "path_validator.current populated post-match",
+        Bool(conn.path.validator.current),
+        "path.validator.current populated post-match",
     )
     # CID rotation per RFC 9000 §9.5 MUST.
     assert_equal_int(
@@ -4179,7 +4178,7 @@ def test_path_validation_rejects_wrong_addr() raises:
     conn.bootstrap_peer_addr(addr_a^)
 
     conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
-    var token = List[UInt8](copy=conn.path_validator.pending[0].token)
+    var token = List[UInt8](copy=conn.path.validator.pending[0].token)
 
     # Response carries the matching token but arrives from a third addr.
     conn.on_path_response_received(
@@ -4187,7 +4186,7 @@ def test_path_validation_rejects_wrong_addr() raises:
     )
 
     # peer_addr UNCHANGED — addr_a still the validated path.
-    var peer_now = PathKey(copy=conn.peer_addr)
+    var peer_now = PathKey(copy=conn.path.peer_addr)
     var addr_a_cmp = PathKey.from_v4(
         UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
     )
@@ -4197,7 +4196,7 @@ def test_path_validation_rejects_wrong_addr() raises:
     )
     # Pending challenge still in flight.
     assert_equal_int(
-        len(conn.path_validator.pending), 1,
+        len(conn.path.validator.pending), 1,
         "challenge still pending — mismatched response is a silent no-op",
     )
     # No CID rotation, no retire queued.
@@ -4232,7 +4231,7 @@ def test_path_validation_defers_without_spare_cid() raises:
     conn.bootstrap_peer_addr(addr_a^)
 
     conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
-    var token = List[UInt8](copy=conn.path_validator.pending[0].token)
+    var token = List[UInt8](copy=conn.path.validator.pending[0].token)
 
     conn.on_path_response_received(
         Span(token), PathKey(copy=addr_b), UInt64(2000)
@@ -4241,7 +4240,7 @@ def test_path_validation_defers_without_spare_cid() raises:
     # The matched challenge is REMOVED (validator's on_response is the
     # one that pops + marks `current`); CID rotation fails → peer_addr
     # does NOT swap.
-    var peer_now = PathKey(copy=conn.peer_addr)
+    var peer_now = PathKey(copy=conn.path.peer_addr)
     var addr_a_cmp = PathKey.from_v4(
         UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
     )
@@ -4256,7 +4255,7 @@ def test_path_validation_defers_without_spare_cid() raises:
     # Validator did record the validated path internally (the response
     # was a real match); the deferral is at the connection layer.
     assert_true(
-        Bool(conn.path_validator.current),
+        Bool(conn.path.validator.current),
         "validator marks the path validated even when conn defers promotion",
     )
     print("  test_path_validation_defers_without_spare_cid: PASS")
@@ -4293,16 +4292,16 @@ def test_disable_active_migration_triggers_close() raises:
 
     conn.on_ingress_from(PathKey(copy=addr_b), 1200, UInt64(2000))
 
-    # Post-condition: CLOSING set, pending_close holds the right tag.
+    # Post-condition: CLOSING set, close.pending holds the right tag.
     assert_true(
         (conn.state & CONN_CLOSING) != 0,
         "CONN_CLOSING set after migration-disabled violation",
     )
     assert_true(
-        Bool(conn.pending_close),
+        Bool(conn.close.pending),
         "pending CONNECTION_CLOSE frame queued",
     )
-    var cc = conn.pending_close.value().copy()
+    var cc = conn.close.pending.value().copy()
     assert_true(
         cc.is_transport,
         "close uses transport namespace (PROTOCOL_VIOLATION)",
@@ -4327,7 +4326,7 @@ def test_disable_active_migration_triggers_close() raises:
     # No PATH_CHALLENGE was queued on the disabled connection — the
     # close pre-empts validation entirely.
     assert_equal_int(
-        len(conn.path_validator.pending), 0,
+        len(conn.path.validator.pending), 0,
         "no PATH_CHALLENGE emitted when migration is disabled",
     )
     print("  test_disable_active_migration_triggers_close: PASS")
@@ -4408,7 +4407,7 @@ def test_anti_amp_per_path_in_flusher() raises:
     )
 
     # Credit 1000 received bytes; budget = 3 * 1000 - 0 = 3000.
-    conn.path_validator.record_received_bytes(
+    conn.path.validator.record_received_bytes(
         PathKey(copy=addr_b), 1000
     )
     assert_true(
@@ -4720,7 +4719,7 @@ def test_timeout_pacer_clause_order() raises:
 
     # Row 5: CLOSING -> close/idle min; no PTO, ACK or pacer term.
     client.close_transport(UInt64(0x0A), String("row 5"), now)
-    var expect5 = client.close_timer
+    var expect5 = client.close.timer
     var idle5 = client.idle_timer + UInt64(30_000) * UInt64(1_000)
     if idle5 < expect5:
         expect5 = idle5

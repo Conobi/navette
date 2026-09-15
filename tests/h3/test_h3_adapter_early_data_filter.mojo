@@ -480,7 +480,7 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
 def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
     """AC zero-rtt-disabled-requests-skip-dispatch (defect-demonstrating,
     Red-Gated): on a connection with 0-RTT disabled (rejection-mode
-    config -> zero_rtt_enabled=False), a 1-RTT request proceeds to the
+    config -> zrtt.enabled=False), a 1-RTT request proceeds to the
     handler WITHOUT consulting the early-data dispatch — every
     zero_rtt_http_filter_* counter stays zero and caps.is_early_data is
     False. Pre-gate, the 1-RTT row bumps 1rtt_bypassed unconditionally,
@@ -554,7 +554,7 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     """AC misconfig-fail-closed-row-preserved (invariant-preservation
     pin — passes pre-gate by design, Red-Gate exempt): a 0-RTT-ENABLED
     connection with BOTH filter pointers None and a 0-RTT-tagged stream
-    still gets 425 + misconfig_fail_closed. The zero_rtt_enabled gate
+    still gets 425 + misconfig_fail_closed. The zrtt.enabled gate
     must not bypass the fail-closed row."""
     var lib = TlsBackend("lib/librustls_mojo.so")
     var ck = load_test_cert()

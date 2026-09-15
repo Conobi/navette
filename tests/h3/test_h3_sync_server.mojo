@@ -348,7 +348,7 @@ def _gate_probe_body(
 
 def test_h3_sync_zero_rtt_disabled_gate_skips_dispatch() raises:
     """AC sibling-adapters-gate-skips-dispatch (sync adapter; Red-Gated):
-    with zero_rtt_enabled=False (rejection-mode config) and a stream
+    with zrtt.enabled=False (rejection-mode config) and a stream
     ARTIFICIALLY tagged is_zero_rtt=True (white-box — deliberately
     violates the keys-never-install invariant to expose the gate), the
     request must proceed with caps.is_early_data=False. Pre-gate, the

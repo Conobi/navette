@@ -13,7 +13,7 @@ io_uring loop:
 
   * `test_udp_construction_wires_profile` — both `profile_ptr` slots
     (`H3HandlerServer.profile_ptr` and the inner
-    `H3Connection._quic.profile_ptr`) are non-None after construction, and
+    `H3Connection._quic.prof.ptr`) are non-None after construction, and
     the policy-on config also wires the early-data filter pointer.
   * `test_http_filter_counters_live_through_udp_construction` — a 1-RTT
     request driven through the constructed handler bumps
@@ -22,7 +22,7 @@ io_uring loop:
     chain (the defect-demonstration: pre-fix construction never passed
     `profile_ptr`, so this counter would stay at 0).
 
-The 1-RTT counter only fires when 0-RTT is ENABLED (the `zero_rtt_enabled`
+The 1-RTT counter only fires when 0-RTT is ENABLED (the `zrtt.enabled`
 gate, Task 9), so the server is built with
 `EarlyDataPolicy.idempotent_only()` — a policy-ON config that also
 populates `_early_data_filter`.
@@ -115,7 +115,7 @@ def _make_policy_on_server() raises -> H3UdpServer[StubHandler]:
     `EarlyDataPolicy.idempotent_only()`.
 
     The policy-on config sets `max_early_data = u32::MAX`
-    (`zero_rtt_enabled = True` at conn creation) AND populates
+    (`zrtt.enabled = True` at conn creation) AND populates
     `_early_data_filter`, so construction wires the early-data filter
     pointer as well as both profile pointers.
     """
@@ -175,9 +175,9 @@ def test_udp_construction_wires_profile() raises:
 
     if h3_ptr[].profile_ptr is None:
         raise Error("H3HandlerServer.profile_ptr must be wired (got None)")
-    if h3_ptr[]._h3._quic.profile_ptr is None:
+    if h3_ptr[]._h3._quic.prof.ptr is None:
         raise Error(
-            "inner QuicConnection.profile_ptr must be wired (got None)"
+            "inner QuicConnection.prof.ptr must be wired (got None)"
         )
     if h3_ptr[]._early_data_filter_ptr is None:
         raise Error(

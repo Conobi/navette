@@ -51,7 +51,7 @@ def _synth_dcid() -> List[UInt8]:
 
 def _make_server_conn(mut cfg: QuicServerConfig, lib: TlsBackend) raises -> QuicConnection:
     """Construct a server QuicConnection sharing the caller's config so
-    `_early_data_store_ptr` references the store owned by that config."""
+    `zrtt.early_data_store_ptr` references the store owned by that config."""
     var tp = default_transport_params()
     var dcid_a = _synth_dcid()
     var dcid_b = _synth_dcid()
@@ -72,14 +72,14 @@ def _make_server_config(lib: TlsBackend, max_early_data: UInt32) raises -> QuicS
 
 
 def test_replay_decision_default_is_unchecked() raises:
-    """The tristate _zero_rtt_replay_decision starts at 0 (unchecked)
+    """The tristate zrtt.replay_decision starts at 0 (unchecked)
     on every freshly-constructed connection."""
     var tls = TlsBackend("lib/librustls_mojo.so")
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     assert_equal_int(
-        Int(conn._zero_rtt_replay_decision), 0,
-        "fresh connection must have _zero_rtt_replay_decision = 0",
+        Int(conn.zrtt.replay_decision), 0,
+        "fresh connection must have zrtt.replay_decision = 0",
     )
     _ = conn.is_server
     _ = cfg.max_early_data()
@@ -95,7 +95,7 @@ def test_replay_check_accept_transitions_to_1() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+    conn.prof.ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
         Pointer(to=prof).unsafe_origin_cast[
             MutUntrackedOrigin
         ]()
@@ -108,7 +108,7 @@ def test_replay_check_accept_transitions_to_1() raises:
     )
 
     assert_equal_int(
-        Int(conn._zero_rtt_replay_decision), 1,
+        Int(conn.zrtt.replay_decision), 1,
         "accept branch MUST set tristate to 1",
     )
     comptime if PROFILE_ACCEPT:
@@ -131,7 +131,7 @@ def test_replay_check_reject_duplicate_transitions_to_2() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+    conn.prof.ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
         Pointer(to=prof).unsafe_origin_cast[
             MutUntrackedOrigin
         ]()
@@ -144,7 +144,7 @@ def test_replay_check_reject_duplicate_transitions_to_2() raises:
     )
 
     assert_equal_int(
-        Int(conn._zero_rtt_replay_decision), 2,
+        Int(conn.zrtt.replay_decision), 2,
         "duplicate branch MUST set tristate to 2",
     )
     comptime if PROFILE_ACCEPT:
@@ -154,7 +154,7 @@ def test_replay_check_reject_duplicate_transitions_to_2() raises:
         )
     # Silent rejection: NO CONNECTION_CLOSE queued by the helper.
     assert_false(
-        Bool(conn.pending_close),
+        Bool(conn.close.pending),
         "silent rejection must NOT queue CONNECTION_CLOSE",
     )
     _ = conn.is_server
@@ -176,11 +176,11 @@ def test_replay_check_reject_does_not_call_discard_zero_rtt_keys() raises:
         "fresh connection has empty 0-RTT slot",
     )
     # Mirror the reject transition.
-    conn._zero_rtt_replay_decision = UInt8(2)
+    conn.zrtt.replay_decision = UInt8(2)
     # The reject branch does NOT call _discard_zero_rtt_keys. Slot 3
     # stays empty (already empty) and the buffer also stays empty.
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 0,
+        len(conn.zrtt.buffer), 0,
         "buffer unchanged by reject",
     )
     _ = conn.is_server
@@ -202,7 +202,7 @@ def test_record_replay_methods_route_to_correct_buckets() raises:
         var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
         var conn = _make_server_conn(cfg, tls)
         var prof = AcceptProfile()
-        conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+        conn.prof.ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
             Pointer(to=prof).unsafe_origin_cast[
             MutUntrackedOrigin
         ]()
@@ -252,7 +252,7 @@ def test_record_replay_methods_route_to_correct_buckets() raises:
 
 
 def test_now_ms_override_seam_returns_set_value() raises:
-    """The Optional[UInt64] _zero_rtt_now_ms_override field is None by
+    """The Optional[UInt64] zrtt.now_ms_override field is None by
     default and reads back as Some(v) after assignment. Production
     callers leave it None and the integration falls through to
     `monotonic_us() // 1000`."""
@@ -260,16 +260,16 @@ def test_now_ms_override_seam_returns_set_value() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     assert_true(
-        conn._zero_rtt_now_ms_override is None,
+        conn.zrtt.now_ms_override is None,
         "default must be None",
     )
-    conn._zero_rtt_now_ms_override = Optional[UInt64](UInt64(5_000))
+    conn.zrtt.now_ms_override = Optional[UInt64](UInt64(5_000))
     assert_true(
-        conn._zero_rtt_now_ms_override is not None,
+        conn.zrtt.now_ms_override is not None,
         "set value reads as not-None",
     )
     assert_equal_int(
-        Int(conn._zero_rtt_now_ms_override.value()), 5_000,
+        Int(conn.zrtt.now_ms_override.value()), 5_000,
         "set value reads back correctly",
     )
     _ = conn.is_server
@@ -278,22 +278,22 @@ def test_now_ms_override_seam_returns_set_value() raises:
 
 def test_early_data_store_ptr_populated_when_zero_rtt_enabled() raises:
     """The server factory promotes `QuicServerConfig._early_data_store`
-    into the connection's `_early_data_store_ptr`. A 0-RTT-enabled
+    into the connection's `zrtt.early_data_store_ptr`. A 0-RTT-enabled
     config must populate it; a rejection-mode config must leave it None."""
     var tls = TlsBackend("lib/librustls_mojo.so")
     var cfg_on = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn_on = _make_server_conn(cfg_on, tls)
     assert_true(
-        conn_on._early_data_store_ptr is not None,
-        "0-RTT-enabled config must populate _early_data_store_ptr",
+        conn_on.zrtt.early_data_store_ptr is not None,
+        "0-RTT-enabled config must populate zrtt.early_data_store_ptr",
     )
     _ = conn_on.is_server
 
     var cfg_off = _make_server_config(tls, UInt32(0))
     var conn_off = _make_server_conn(cfg_off, tls)
     assert_true(
-        conn_off._early_data_store_ptr is None,
-        "rejection-mode config must leave _early_data_store_ptr as None",
+        conn_off.zrtt.early_data_store_ptr is None,
+        "rejection-mode config must leave zrtt.early_data_store_ptr as None",
     )
     _ = conn_off.is_server
     print("  test_early_data_store_ptr_populated_when_zero_rtt_enabled: PASS")
@@ -302,19 +302,19 @@ def test_early_data_store_ptr_populated_when_zero_rtt_enabled() raises:
 def test_replay_decision_is_idempotent_in_committed_state() raises:
     """Once the tristate reaches 1 (accept) or 2 (reject), it never
     transitions again. The production integration guards via
-    `if self._zero_rtt_replay_decision == 0:` so subsequent packets
+    `if self.zrtt.replay_decision == 0:` so subsequent packets
     short-circuit the FFI + store call."""
     var tls = TlsBackend("lib/librustls_mojo.so")
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
 
     # Pin to accept.
-    conn._zero_rtt_replay_decision = UInt8(1)
-    assert_equal_int(Int(conn._zero_rtt_replay_decision), 1, "stays at 1")
+    conn.zrtt.replay_decision = UInt8(1)
+    assert_equal_int(Int(conn.zrtt.replay_decision), 1, "stays at 1")
 
     # Pin to reject.
-    conn._zero_rtt_replay_decision = UInt8(2)
-    assert_equal_int(Int(conn._zero_rtt_replay_decision), 2, "stays at 2")
+    conn.zrtt.replay_decision = UInt8(2)
+    assert_equal_int(Int(conn.zrtt.replay_decision), 2, "stays at 2")
     _ = conn.is_server
     print("  test_replay_decision_is_idempotent_in_committed_state: PASS")
 
@@ -332,7 +332,7 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     var cfg = _make_server_config(tls, UInt32(0xFFFFFFFF))
     var conn = _make_server_conn(cfg, tls)
     var prof = AcceptProfile()
-    conn.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+    conn.prof.ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
         Pointer(to=prof).unsafe_origin_cast[
             MutUntrackedOrigin
         ]()
@@ -346,7 +346,7 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     )
 
     assert_equal_int(
-        Int(conn._zero_rtt_replay_decision), 2,
+        Int(conn.zrtt.replay_decision), 2,
         "rc != 0 MUST set tristate to 2",
     )
     comptime if PROFILE_ACCEPT:
@@ -362,7 +362,7 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     # Second anomaly on a fresh conn: store raises.
     var conn2 = _make_server_conn(cfg, tls)
     var prof2 = AcceptProfile()
-    conn2.profile_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
+    conn2.prof.ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
         Pointer(to=prof2).unsafe_origin_cast[
             MutUntrackedOrigin
         ]()
@@ -373,7 +373,7 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
         simulated_raises=True,
     )
     assert_equal_int(
-        Int(conn2._zero_rtt_replay_decision), 2,
+        Int(conn2.zrtt.replay_decision), 2,
         "raises path MUST set tristate to 2",
     )
     comptime if PROFILE_ACCEPT:
@@ -413,7 +413,7 @@ def test_replay_check_per_key_quota_counter_routes_correctly() raises:
     assert_true(d2.is_duplicate(), "2nd duplicates")
     assert_true(d3.is_per_key_quota(), "3rd per_key_quota_exhausted")
     # Mirror the integration's branching.
-    conn._zero_rtt_replay_decision = UInt8(2)
+    conn.zrtt.replay_decision = UInt8(2)
     prof.record_zero_rtt_replay_reject_per_key_quota()
     assert_equal_int(
         Int(prof.zero_rtt_replay_reject_per_key_quota), 1,

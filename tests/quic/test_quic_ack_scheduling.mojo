@@ -640,7 +640,7 @@ def test_close_reason_bounded() raises:
     for _ in range(2048):
         reason += "x"
     p.client.close_app(UInt64(0x0100), reason, now)
-    assert_equal_int(len(p.client.pending_close.value().reason), MAX_CLOSE_REASON_BYTES, "reason truncated")
+    assert_equal_int(len(p.client.close.pending.value().reason), MAX_CLOSE_REASON_BYTES, "reason truncated")
     var dgs = p.client.send(now)
     assert_equal_int(len(dgs), 1, "one datagram")
     assert_true(len(dgs[0]) <= MAX_DATAGRAM_SIZE, "within budget")
@@ -715,7 +715,7 @@ def test_bundle_predicate_sound() raises:
             p.server.stream_map.needs_max_streams_bidi = True
         elif k == 3:
             var d = _bytes(8)
-            p.server.pending_path_responses.append(d^)
+            p.server.path.pending_responses.append(d^)
         elif k == 4:
             p.server.cid_mgr.requeue_retire(UInt64(rng.below(4)))
         elif k == 5:
@@ -838,7 +838,7 @@ def test_crypto_split_lossless() raises:
 
 def _fingerprint(conn: QuicConnection) -> String:
     var s = String(Int(conn.state)) + "/" + String(conn.recovery.pto_count)
-    s += "/" + String(Int(conn.close_timer)) + "/" + String(Int(conn.drain_timer))
+    s += "/" + String(Int(conn.close.timer)) + "/" + String(Int(conn.close.drain_timer))
     for i in range(3):
         s += "/" + String(conn.spaces[i].ack_needed) + String(conn.spaces[i].probe_pending)
         s += String(Bool(conn.spaces[i].ack_deadline))
@@ -1091,7 +1091,7 @@ def test_ack_scheduling_suspended_in_closing() raises:
     var fp = _fingerprint(p.server)
     var rec_before = p.server.bytes_received
     var d2 = _bytes(30)
-    p.client.pending_close = None
+    p.client.close.pending = None
     p.client.state = p.client.state & ~CONN_CLOSING
     # Craft one more client datagram by reopening the client's send path.
     var sid = p.client.open_stream(True)

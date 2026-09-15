@@ -7,20 +7,9 @@
 
 from tests._test_util import assert_true, assert_false, assert_equal_int
 from navette.quic.stream import (
-    # State constants
-    SEND_READY,
-    SEND_SEND,
-    SEND_DATA_SENT,
-    SEND_DATA_RECVD,
-    SEND_RESET_SENT,
-    SEND_RESET_RECVD,
-    RECV_RECV,
-    RECV_SIZE_KNOWN,
-    RECV_DATA_RECVD,
-    RECV_DATA_READ,
-    RECV_STOP_SENDING_SENT,
-    RECV_RESET_RECVD,
-    RECV_RESET_READ,
+    # State enums
+    SendState,
+    RecvState,
     # Helper functions
     stream_is_bidi,
     stream_is_local,
@@ -73,23 +62,23 @@ def test_stream_id_helpers() raises:
 
 
 def test_send_state_terminal() raises:
-    assert_true(send_state_is_terminal(SEND_DATA_RECVD), "SEND_DATA_RECVD is terminal")
-    assert_true(send_state_is_terminal(SEND_RESET_RECVD), "SEND_RESET_RECVD is terminal")
-    assert_false(send_state_is_terminal(SEND_READY), "SEND_READY is not terminal")
-    assert_false(send_state_is_terminal(SEND_SEND), "SEND_SEND is not terminal")
-    assert_false(send_state_is_terminal(SEND_DATA_SENT), "SEND_DATA_SENT is not terminal")
-    assert_false(send_state_is_terminal(SEND_RESET_SENT), "SEND_RESET_SENT is not terminal")
+    assert_true(send_state_is_terminal(SendState.DATA_RECVD), "SEND_DATA_RECVD is terminal")
+    assert_true(send_state_is_terminal(SendState.RESET_RECVD), "SEND_RESET_RECVD is terminal")
+    assert_false(send_state_is_terminal(SendState.READY), "SEND_READY is not terminal")
+    assert_false(send_state_is_terminal(SendState.SEND), "SEND_SEND is not terminal")
+    assert_false(send_state_is_terminal(SendState.DATA_SENT), "SEND_DATA_SENT is not terminal")
+    assert_false(send_state_is_terminal(SendState.RESET_SENT), "SEND_RESET_SENT is not terminal")
     print("  test_send_state_terminal: PASS")
 
 
 def test_recv_state_terminal() raises:
-    assert_true(recv_state_is_terminal(RECV_DATA_READ), "RECV_DATA_READ is terminal")
-    assert_true(recv_state_is_terminal(RECV_RESET_READ), "RECV_RESET_READ is terminal")
-    assert_false(recv_state_is_terminal(RECV_RECV), "RECV_RECV is not terminal")
-    assert_false(recv_state_is_terminal(RECV_SIZE_KNOWN), "RECV_SIZE_KNOWN is not terminal")
-    assert_false(recv_state_is_terminal(RECV_DATA_RECVD), "RECV_DATA_RECVD is not terminal")
-    assert_false(recv_state_is_terminal(RECV_STOP_SENDING_SENT), "RECV_STOP_SENDING_SENT is not terminal")
-    assert_false(recv_state_is_terminal(RECV_RESET_RECVD), "RECV_RESET_RECVD is not terminal")
+    assert_true(recv_state_is_terminal(RecvState.DATA_READ), "RECV_DATA_READ is terminal")
+    assert_true(recv_state_is_terminal(RecvState.RESET_READ), "RECV_RESET_READ is terminal")
+    assert_false(recv_state_is_terminal(RecvState.RECV), "RECV_RECV is not terminal")
+    assert_false(recv_state_is_terminal(RecvState.SIZE_KNOWN), "RECV_SIZE_KNOWN is not terminal")
+    assert_false(recv_state_is_terminal(RecvState.DATA_RECVD), "RECV_DATA_RECVD is not terminal")
+    assert_false(recv_state_is_terminal(RecvState.STOP_SENDING_SENT), "RECV_STOP_SENDING_SENT is not terminal")
+    assert_false(recv_state_is_terminal(RecvState.RESET_RECVD), "RECV_RESET_RECVD is not terminal")
     print("  test_recv_state_terminal: PASS")
 
 
@@ -510,8 +499,8 @@ def test_stream_bidi_lifecycle() raises:
     assert_true(s.is_local, "bidi lifecycle: is_local")
     assert_true(s.send_state.__bool__(), "bidi lifecycle: send_state present")
     assert_true(s.recv_state.__bool__(), "bidi lifecycle: recv_state present")
-    assert_equal_int(Int(s.send_state.value()), Int(SEND_READY), "bidi lifecycle: send_state = SEND_READY")
-    assert_equal_int(Int(s.recv_state.value()), Int(RECV_RECV), "bidi lifecycle: recv_state = RECV_RECV")
+    assert_true(s.send_state.value() == SendState.READY, "bidi lifecycle: send_state = SEND_READY")
+    assert_true(s.recv_state.value() == RecvState.RECV, "bidi lifecycle: recv_state = RECV_RECV")
     assert_true(s.send_buf.__bool__(), "bidi lifecycle: send_buf present")
     assert_true(s.recv_buf.__bool__(), "bidi lifecycle: recv_buf present")
     assert_true(s.fc_send.__bool__(), "bidi lifecycle: fc_send present")
@@ -556,12 +545,12 @@ def test_stream_fully_closed_bidi() raises:
     assert_false(s.is_fully_closed(), "fully closed bidi: False initially")
 
     # Set both states to terminal
-    s.send_state = SEND_DATA_RECVD
-    s.recv_state = RECV_DATA_READ
+    s.send_state = SendState.DATA_RECVD
+    s.recv_state = RecvState.DATA_READ
     assert_true(s.is_fully_closed(), "fully closed bidi: True when both terminal")
 
     # Only send terminal
-    s.recv_state = RECV_RECV
+    s.recv_state = RecvState.RECV
     assert_false(s.is_fully_closed(), "fully closed bidi: False when only send terminal")
 
     print("  test_stream_fully_closed_bidi: PASS")
@@ -571,13 +560,13 @@ def test_stream_fully_closed_uni() raises:
     # Local uni: only send side
     var s_local = Stream.new_local_uni(UInt64(2), UInt64(65536))
     assert_false(s_local.is_fully_closed(), "fully closed local uni: False initially")
-    s_local.send_state = SEND_DATA_RECVD
+    s_local.send_state = SendState.DATA_RECVD
     assert_true(s_local.is_fully_closed(), "fully closed local uni: True when send terminal")
 
     # Remote uni: only recv side
     var s_remote = Stream.new_remote_uni(UInt64(3), UInt64(65536), UInt64(65536))
     assert_false(s_remote.is_fully_closed(), "fully closed remote uni: False initially")
-    s_remote.recv_state = RECV_DATA_READ
+    s_remote.recv_state = RecvState.DATA_READ
     assert_true(s_remote.is_fully_closed(), "fully closed remote uni: True when recv terminal")
 
     print("  test_stream_fully_closed_uni: PASS")
@@ -590,8 +579,8 @@ def test_stream_remote_bidi() raises:
     assert_false(s.is_local, "remote bidi: not local")
     assert_true(s.send_state.__bool__(), "remote bidi: send_state present")
     assert_true(s.recv_state.__bool__(), "remote bidi: recv_state present")
-    assert_equal_int(Int(s.send_state.value()), Int(SEND_READY), "remote bidi: send_state = SEND_READY")
-    assert_equal_int(Int(s.recv_state.value()), Int(RECV_RECV), "remote bidi: recv_state = RECV_RECV")
+    assert_true(s.send_state.value() == SendState.READY, "remote bidi: send_state = SEND_READY")
+    assert_true(s.recv_state.value() == RecvState.RECV, "remote bidi: recv_state = RECV_RECV")
 
     print("  test_stream_remote_bidi: PASS")
 

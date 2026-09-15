@@ -220,10 +220,10 @@ def test_ecn_probing_to_capable() raises:
     _drain_events(server)
 
     # Reset client ECN state to PROBING with 1 probe needed.
-    client.ecn_state = ECN_STATE_PROBING
-    client.ecn_probe_pkts_needed = 1
-    client.ecn_probe_pkts_sent = 0
-    client.ecn_probe_first_pn = UInt64(0)
+    client.ecn.state = ECN_STATE_PROBING
+    client.ecn.pkts_needed = 1
+    client.ecn.pkts_sent = 0
+    client.ecn.first_pn = UInt64(0)
 
     # Open a stream so client has a packet to send (the probe).
     var sid = client.open_stream(True)
@@ -249,7 +249,7 @@ def test_ecn_probing_to_capable() raises:
             pass
 
     assert_true(
-        client.ecn_state == ECN_STATE_CAPABLE,
+        client.ecn.state == ECN_STATE_CAPABLE,
         "client ECN state should be CAPABLE after probe ACK with ECN counts",
     )
 
@@ -279,10 +279,10 @@ def test_ecn_probing_to_disabled_no_counts() raises:
     _drain_events(server)
 
     # Reset client ECN state to PROBING.
-    client.ecn_state = ECN_STATE_PROBING
-    client.ecn_probe_pkts_needed = 1
-    client.ecn_probe_pkts_sent = 0
-    client.ecn_probe_first_pn = UInt64(0)
+    client.ecn.state = ECN_STATE_PROBING
+    client.ecn.pkts_needed = 1
+    client.ecn.pkts_sent = 0
+    client.ecn.first_pn = UInt64(0)
     # Clear server recv_ecn so its ACK has no ECN counts.
     server.spaces[2].recv_ecn.ect0 = UInt64(0)
     server.spaces[2].recv_ecn.ect1 = UInt64(0)
@@ -321,7 +321,7 @@ def test_ecn_probing_to_disabled_no_counts() raises:
                 pass
 
     assert_true(
-        client.ecn_state == ECN_STATE_DISABLED,
+        client.ecn.state == ECN_STATE_DISABLED,
         "client ECN state should be DISABLED when ACK carries no ECN counts",
     )
 
@@ -350,7 +350,7 @@ def test_ecn_disabled_no_ecn_mark() raises:
     _drain_events(client)
     _drain_events(server)
 
-    client.ecn_state = ECN_STATE_DISABLED
+    client.ecn.state = ECN_STATE_DISABLED
     assert_true(
         client.ecn_mark() == ECN_NOT_ECT,
         "ecn_mark() must return ECN_NOT_ECT when state is DISABLED",
@@ -382,7 +382,7 @@ def test_ecn_ce_triggers_congestion() raises:
     _drain_events(server)
 
     # Set client to CAPABLE so ECN feedback is processed.
-    client.ecn_state = ECN_STATE_CAPABLE
+    client.ecn.state = ECN_STATE_CAPABLE
     # Inflate cwnd above initial window so reduction is observable.
     client.recovery.cc.cubic._cwnd_value = UInt64(500_000)
     client.recovery.cc.cubic.ssthresh = UInt64(1_000_000)
@@ -458,7 +458,7 @@ def test_ecn_bleaching_disables() raises:
 
     # Client is CAPABLE; set up conditions for bleaching detection:
     # ect0_in_flight > 0 but ACK from server carries no ECN counts.
-    client.ecn_state = ECN_STATE_CAPABLE
+    client.ecn.state = ECN_STATE_CAPABLE
     # Ensure server recv_ecn is zero so it won't set has_ecn in ACK.
     server.spaces[2].recv_ecn.ect0 = UInt64(0)
     server.spaces[2].recv_ecn.ect1 = UInt64(0)
@@ -493,7 +493,7 @@ def test_ecn_bleaching_disables() raises:
             pass
 
     assert_true(
-        client.ecn_state == ECN_STATE_DISABLED,
+        client.ecn.state == ECN_STATE_DISABLED,
         "client ECN state should be DISABLED when ECT0 packets sent but ACK has no ECN counts (bleaching)",
     )
 

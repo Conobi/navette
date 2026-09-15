@@ -531,7 +531,7 @@ def _gate_probe_streaming(mut yld: H3StreamingYielder) raises:
 
 def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
     """AC sibling-adapters-gate-skips-dispatch (streaming adapter;
-    Red-Gated): with zero_rtt_enabled=False and a stream ARTIFICIALLY
+    Red-Gated): with zrtt.enabled=False and a stream ARTIFICIALLY
     tagged is_zero_rtt=True (white-box), the request must proceed with
     caps.is_early_data=False. Pre-gate the both-None fail-closed row
     yields 425 and skips ctx registration, so the registration

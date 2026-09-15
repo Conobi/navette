@@ -8,9 +8,8 @@
 from tests._test_util import assert_true, assert_false, assert_equal_int
 from navette.quic.stream_map import StreamMap
 from navette.quic.stream import (
-    SEND_DATA_RECVD,
-    RECV_DATA_READ,
-    RECV_RECV,
+    SendState,
+    RecvState,
     Stream,
 )
 
@@ -283,8 +282,8 @@ def test_maybe_cleanup_bidi_both_terminal() raises:
 
     # Mark both sides terminal
     var s = sm.get_stream(Int(id))
-    s.send_state = SEND_DATA_RECVD
-    s.recv_state = RECV_DATA_READ
+    s.send_state = SendState.DATA_RECVD
+    s.recv_state = RecvState.DATA_READ
     sm.set_stream(Int(id), s^)
 
     var removed = sm.maybe_cleanup(Int(id))
@@ -302,8 +301,8 @@ def test_maybe_cleanup_bidi_one_terminal() raises:
 
     # Mark only send side terminal
     var s = sm.get_stream(Int(id))
-    s.send_state = SEND_DATA_RECVD
-    # recv_state stays RECV_RECV (not terminal)
+    s.send_state = SendState.DATA_RECVD
+    # recv_state stays RecvState.RECV (not terminal)
     sm.set_stream(Int(id), s^)
 
     var removed = sm.maybe_cleanup(Int(id))
@@ -322,8 +321,8 @@ def test_maybe_cleanup_peer_bidi_increments_completed() raises:
 
     # Mark both sides terminal
     var s = sm.get_stream(0)
-    s.send_state = SEND_DATA_RECVD
-    s.recv_state = RECV_DATA_READ
+    s.send_state = SendState.DATA_RECVD
+    s.recv_state = RecvState.DATA_READ
     sm.set_stream(0, s^)
 
     var removed = sm.maybe_cleanup(0)
@@ -350,8 +349,8 @@ def test_max_streams_update_threshold() raises:
     # Create and close one peer bidi stream
     _ = sm.get_or_create_peer_stream(UInt64(0))
     var s = sm.get_stream(0)
-    s.send_state = SEND_DATA_RECVD
-    s.recv_state = RECV_DATA_READ
+    s.send_state = SendState.DATA_RECVD
+    s.recv_state = RecvState.DATA_READ
     sm.set_stream(0, s^)
     _ = sm.maybe_cleanup(0)
 

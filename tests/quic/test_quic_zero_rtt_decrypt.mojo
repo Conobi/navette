@@ -176,8 +176,8 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
     assert_true(
-        conn.zero_rtt_enabled,
-        "zero_rtt_enabled must be True when max_early_data != 0",
+        conn.zrtt.enabled,
+        "zrtt.enabled must be True when max_early_data != 0",
     )
 
     # Client-initiated bidi stream id 0 — legal peer stream on a server.
@@ -193,7 +193,7 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
 
     # The F30 guard must NOT fire for STREAM in 0-RTT — connection still alive.
     assert_false(
-        Bool(conn.pending_close),
+        Bool(conn.close.pending),
         "STREAM in 0-RTT must NOT trip the F30 guard",
     )
 
@@ -232,10 +232,10 @@ def test_decrypt_zero_rtt_crypto_trips_f30_guard() raises:
     conn._dispatch_frame(frame^, ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
-        Bool(conn.pending_close),
-        "F30 guard must fire — pending_close must be set",
+        Bool(conn.close.pending),
+        "F30 guard must fire — close.pending must be set",
     )
-    var cc = conn.pending_close.value().copy()
+    var cc = conn.close.pending.value().copy()
     assert_equal_int(
         Int(cc.error_code), 0x0A,
         "F30 closes with PROTOCOL_VIOLATION (0x0A)",
@@ -260,7 +260,7 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     of bounds in `_handle_ack`.
 
     Sub-case A covers ACK (type 0x02); sub-case B covers ACK_ECN (type
-    0x03). Each sub-case uses a fresh connection because `pending_close`
+    0x03). Each sub-case uses a fresh connection because `close.pending`
     is sticky — once set, a second dispatch on the same conn would
     vacuously see an already-closed connection.
     """
@@ -276,10 +276,10 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     conn._dispatch_frame(frame^, ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
-        Bool(conn.pending_close),
-        "ACK-in-0-RTT guard must fire — pending_close must be set",
+        Bool(conn.close.pending),
+        "ACK-in-0-RTT guard must fire — close.pending must be set",
     )
-    var cc = conn.pending_close.value().copy()
+    var cc = conn.close.pending.value().copy()
     assert_equal_int(
         Int(cc.error_code), 0x0A,
         "ACK-in-0-RTT closes with PROTOCOL_VIOLATION (0x0A)",
@@ -305,10 +305,10 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     conn2._dispatch_frame(frame_ecn^, ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
-        Bool(conn2.pending_close),
-        "ACK_ECN-in-0-RTT guard must fire — pending_close must be set",
+        Bool(conn2.close.pending),
+        "ACK_ECN-in-0-RTT guard must fire — close.pending must be set",
     )
-    var cc_ecn = conn2.pending_close.value().copy()
+    var cc_ecn = conn2.close.pending.value().copy()
     assert_equal_int(
         Int(cc_ecn.error_code), 0x0A,
         "ACK_ECN-in-0-RTT closes with PROTOCOL_VIOLATION (0x0A)",
@@ -388,7 +388,7 @@ def test_zero_rtt_buffer_respects_packet_cap() raises:
         "17th packet must be dropped — packet cap is 16",
     )
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 16,
+        len(conn.zrtt.buffer), 16,
         "buffer length must stay at 16 after over-cap call",
     )
     _ = conn.is_server
@@ -417,11 +417,11 @@ def test_zero_rtt_buffer_respects_byte_cap_boundary() raises:
             "exact-fit packet #" + String(i) + " must be buffered (16 × 2048 = 32768)",
         )
     assert_equal_int(
-        len(conn_a.zero_rtt_buffer), 16,
+        len(conn_a.zrtt.buffer), 16,
         "all 16 exact-fit packets must be buffered",
     )
     assert_equal_int(
-        conn_a.zero_rtt_buffer_bytes, 32768,
+        conn_a.zrtt.buffer_bytes, 32768,
         "byte total must equal 16 × 2048 at the exact-fit boundary",
     )
     _ = conn_a.is_server
@@ -443,7 +443,7 @@ def test_zero_rtt_buffer_respects_byte_cap_boundary() raises:
         "16th 2049-byte packet must be dropped — 15×2049 + 2049 = 32784 > 32768",
     )
     assert_equal_int(
-        len(conn_b.zero_rtt_buffer), 15,
+        len(conn_b.zrtt.buffer), 15,
         "exactly 15 packets buffered before the byte cap fires",
     )
     _ = conn_b.is_server
@@ -472,11 +472,11 @@ def test_zero_rtt_buffer_drains_idempotently() raises:
     for _ in range(3):
         _ = conn._buffer_zero_rtt_or_drop(Span(small))
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 3,
+        len(conn.zrtt.buffer), 3,
         "pre-drain: 3 packets buffered",
     )
     assert_equal_int(
-        conn.zero_rtt_buffer_bytes, 9,
+        conn.zrtt.buffer_bytes, 9,
         "pre-drain: 9 bytes buffered",
     )
 
@@ -485,18 +485,18 @@ def test_zero_rtt_buffer_drains_idempotently() raises:
     conn._drain_zero_rtt_buffer(now, ecn_mark)
 
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 0,
+        len(conn.zrtt.buffer), 0,
         "post-drain: buffer must be empty",
     )
     assert_equal_int(
-        conn.zero_rtt_buffer_bytes, 0,
-        "post-drain: zero_rtt_buffer_bytes must be 0",
+        conn.zrtt.buffer_bytes, 0,
+        "post-drain: zrtt.buffer_bytes must be 0",
     )
 
     # Idempotent: second call is a no-op (early return on empty buffer).
     conn._drain_zero_rtt_buffer(now, ecn_mark)
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 0,
+        len(conn.zrtt.buffer), 0,
         "second drain call must be a no-op",
     )
     _ = conn.is_server
@@ -515,19 +515,19 @@ def test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys() raises:
     var ok = conn._buffer_zero_rtt_or_drop(Span(pkt))
     assert_true(ok, "pre-discard packet must be buffered")
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 1,
+        len(conn.zrtt.buffer), 1,
         "pre-discard: 1 packet buffered",
     )
 
     conn._discard_zero_rtt_keys()
 
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 0,
+        len(conn.zrtt.buffer), 0,
         "post-discard: buffer must be empty",
     )
     assert_equal_int(
-        conn.zero_rtt_buffer_bytes, 0,
-        "post-discard: zero_rtt_buffer_bytes must be 0",
+        conn.zrtt.buffer_bytes, 0,
+        "post-discard: zrtt.buffer_bytes must be 0",
     )
     _ = conn.is_server
     print("  test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys: PASS")
@@ -549,13 +549,13 @@ def test_zero_rtt_buffer_cleared_at_connection_destroy() raises:
         for _ in range(4):
             _ = conn._buffer_zero_rtt_or_drop(Span(pkt))
         assert_equal_int(
-            len(conn.zero_rtt_buffer), 4,
+            len(conn.zrtt.buffer), 4,
             "pre-destroy: 4 packets buffered",
         )
         # Extend conn lifetime past the length read so ASAP-destruction
         # doesn't fire __del__ early.
         _ = conn.is_server
-    # End of scope — conn.__del__ fires. zero_rtt_buffer's nested Lists
+    # End of scope — conn.__del__ fires. zrtt.buffer's nested Lists
     # are freed transitively. No crash = pass.
 
     print("  test_zero_rtt_buffer_cleared_at_connection_destroy: PASS")
@@ -607,7 +607,7 @@ def test_accept_profile_replay_counters_increment_independently() raises:
 def test_drain_survives_mid_packet_raise() raises:
     """AC drain-survives-mid-packet-raise: the drain continues past a
     silently-dropped middle 0-RTT packet — packets one and three still
-    replay, and `_draining_zero_rtt` resets to False.
+    replay, and `zrtt.draining` resets to False.
 
     What this test actually exercises (Fix-2 drain-mode containment):
     the middle 0-RTT packet is dropped at the Path B install-fold
@@ -678,11 +678,11 @@ def test_drain_survives_mid_packet_raise() raises:
         " packet three (a lone pn=1 receipt would leave start=1)",
     )
     assert_false(
-        conn._draining_zero_rtt,
-        "_draining_zero_rtt must be False after the drain",
+        conn.zrtt.draining,
+        "zrtt.draining must be False after the drain",
     )
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 0,
+        len(conn.zrtt.buffer), 0,
         "buffer fully drained",
     )
     _ = conn.is_server
@@ -693,7 +693,7 @@ def test_install_raise_folds_into_failure_path() raises:
     """AC install-raise-folds-into-failure-path: with the pinned
     negative-handle fault, `recv_from_buffer` does NOT raise on a 0-RTT
     packet whose key install fails with rc=-1, and the packet lands in
-    `zero_rtt_buffer` (pre-drain mode), exactly like the rc=1
+    `zrtt.buffer` (pre-drain mode), exactly like the rc=1
     keys-not-yet-available path.
 
     The datagram contains ONLY the 0-RTT packet — with no successfully
@@ -721,8 +721,8 @@ def test_install_raise_folds_into_failure_path() raises:
     _ = buf_owned
 
     assert_equal_int(
-        len(conn.zero_rtt_buffer), 1,
-        "0-RTT packet lands in zero_rtt_buffer after the contained"
+        len(conn.zrtt.buffer), 1,
+        "0-RTT packet lands in zrtt.buffer after the contained"
         " install raise (buffer-or-drop path, pre-drain mode)",
     )
     _ = conn.is_server
@@ -780,8 +780,8 @@ def test_coalesced_survivors_still_processed() raises:
         " despite the preceding 0-RTT install raise",
     )
     assert_false(
-        conn._draining_zero_rtt,
-        "_draining_zero_rtt must be False after the feed",
+        conn.zrtt.draining,
+        "zrtt.draining must be False after the feed",
     )
     _ = conn.is_server
     print("  test_coalesced_survivors_still_processed: PASS")
@@ -790,14 +790,14 @@ def test_coalesced_survivors_still_processed() raises:
 def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
     """AC one-rtt-acks-unaffected: an ACK frame dispatched with
     `space_idx=2` (1-RTT / Application space) MUST NOT trip the
-    ACK-in-0-RTT guard — `pending_close` stays unset after dispatch.
+    ACK-in-0-RTT guard — `close.pending` stays unset after dispatch.
 
     Scope: the 0-RTT guard is checked BEFORE `_handle_ack`; if `_handle_ack`
     subsequently raises (e.g. "ACK for unsent packet" when the sent-pkt table
     is empty), that raise originates downstream of the guard and does not
     contradict the guard's non-firing. The test wraps `_dispatch_frame` in
-    a try/except so it can inspect `pending_close` after the call regardless
-    of whether `_handle_ack` itself raises. A `pending_close` that is unset
+    a try/except so it can inspect `close.pending` after the call regardless
+    of whether `_handle_ack` itself raises. A `close.pending` that is unset
     when the except branch is entered confirms the guard did not run — no
     close_transport call was made before the handler raised.
     """
@@ -818,7 +818,7 @@ def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
         pass
 
     assert_false(
-        Bool(conn.pending_close),
+        Bool(conn.close.pending),
         "ACK in 1-RTT space MUST NOT trip the 0-RTT guard — connection must stay open",
     )
     _ = conn.is_server
