@@ -18,6 +18,12 @@ webpki-roots = "1"
 hex = "0.4"
 rcgen = "0.12"
 
+# Server-side TLS 1.3 handshake cost as the H3 server pays it (the "crypto
+# floor"). Plain `fn main`, no criterion: `cargo bench --bench handshake`.
+[[bench]]
+name = "handshake"
+harness = false
+
 [features]
 default = []
 skip-locks = []

@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 # TQUIC reference server + client — multi-stage build.
 #
-# Pinned to upstream commit 4dcec0f2fcd6fd4a49366e2c759a169e4e81c48e (tag v1.0.0)
-# so numbers are reproducible regardless of when the image is rebuilt.
+# Pinned to upstream commit d87a9a072475e381e64bfeb5732f2f505c2c28b7 (tag v1.6.0,
+# 2025-02-25, latest release) so numbers are reproducible regardless of when
+# the image is rebuilt.
 #
 # Build:
 #   docker build -t tquic-bench:latest -f Dockerfile.tquic .
@@ -18,7 +19,7 @@
 # ---------------------------------------------------------------------------
 FROM rust:1.88-bookworm AS build
 
-ARG TQUIC_COMMIT=4dcec0f2fcd6fd4a49366e2c759a169e4e81c48e
+ARG TQUIC_COMMIT=d87a9a072475e381e64bfeb5732f2f505c2c28b7
 
 ENV DEBIAN_FRONTEND=noninteractive
 

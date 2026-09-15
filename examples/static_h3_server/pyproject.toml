@@ -1,0 +1,43 @@
+[project]
+name = "navette-example-static-h3-server"
+version = "0.0.0"
+description = "static_h3_server — fast static-payload HTTP/3 server using navette"
+requires-python = ">=3.11"
+dependencies = [
+    "navette",
+    "boucle",
+    "mojox>=0.5",
+    "mojo-compiler==1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "mojo==1.0.0",
+]
+
+[build-system]
+requires = [
+    "mojox-build>=0.5",
+    "mojox-core>=0.5",
+    "mojo-compiler==1.0.0",
+    "mojo-compiler-mojo-libs==1.0.0",
+    "navette",
+    "boucle",
+]
+build-backend = "mojox_build"
+
+[tool.mojox]
+packages = []
+test-roots = []
+# Line tables keep -O3 codegen but let perf/lldb attribute samples to source lines.
+flags = ["--debug-level", "line-tables"]
+binaries = [
+    { source = "main.mojo", name = "static_h3_server" },
+]
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.sources]
+navette     = { path = "../..", editable = true }
+boucle      = { git = "https://github.com/Conobi/boucle" }

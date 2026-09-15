@@ -32,5 +32,5 @@ def main():
     var haystack = String(GUARD_TAG_TEST) + " trailing"
     print("case3-contains:", "[H3-TEST]" in haystack)
     # case 4: substring `in` with the comptime symbol directly — this is the
-    # form Mojo unit tests use: `tag in connection.pending_close.reason`.
+    # form Mojo unit tests use: `tag in connection.close.pending.reason`.
     print("case4-comptime-in-string:", GUARD_TAG_TEST in haystack)

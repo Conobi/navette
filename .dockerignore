@@ -12,3 +12,17 @@ tests
 examples
 scripts
 *.md
+**/target
+.claude
+bench/quic_perf/results
+bench/ab/results
+bench/ab/report.py
+bench/ab/run.sh
+bench/ab/build.sh
+.research
+bench/alloc_count
+bench/flare_compare
+bench/compare
+__pycache__
+*.mojopkg
+*.pyc

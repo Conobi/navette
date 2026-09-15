@@ -33,9 +33,8 @@ for t in "${TESTS[@]}"; do
     fi
     TOTAL=$((TOTAL + 1))
     echo "--- $t ---"
-    cd "$CONFORMANCE_DIR"
-    rm -f ./*.mojopkg 2>/dev/null || true
-    if uv run --project "$REPO_ROOT" mojox run -I "$CONFORMANCE_DIR" -I "$REPO_ROOT" -D ASSERT=all "tests/$t.mojo"; then
+    rm -f "$CONFORMANCE_DIR"/*.mojopkg 2>/dev/null || true
+    if uv run --project "$REPO_ROOT" mojox run -D ASSERT=all "conformance/tests/$t.mojo"; then
         PASSED=$((PASSED + 1))
     else
         echo "FAILED: $t"
