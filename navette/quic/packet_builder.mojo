@@ -25,7 +25,6 @@ from navette.quic.packet_protect import PacketProtect
 
 comptime AEAD_TAG_LEN: Int = 16
 comptime MAX_PN_LEN: Int = 4
-comptime HP_SAMPLE_LEN: Int = 16
 comptime ANTI_AMP_HEADER_FUDGE: UInt64 = 100
 comptime MIN_PLAINTEXT_LEN: Int = 4
 comptime MAX_DATAGRAM_SIZE: Int = 1200
