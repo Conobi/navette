@@ -2615,46 +2615,20 @@ struct QuicConnection(Movable):
     # ── Send path ────────────────────────────────────────────────────
 
     def send(mut self, now: UInt64) raises -> List[List[UInt8]]:
-        """Build at most one datagram; empty list when nothing is owed.
-
-        Runs expired timers first, then plans one packet per keyed space in
-        Initial → Handshake → Application order against a MAX_DATAGRAM_SIZE
-        budget (clamped to the amplification allowance on an unvalidated
-        server). Per space: a CLOSING connection emits only its CLOSE; else
-        the ACK candidate is sized and reserved, the congestion gate is
-        evaluated (bypassed by a pending PTO probe), and only then do the
-        state-consuming builders run. ACK-only and CLOSE-only packets bypass
-        congestion control but never the amplification limit. Padding to
-        1200 bytes (client handshake datagrams, server ack-eliciting Initial)
-        is appended to the last packet at serialization time.
-
-        Empty return is the drain loop's termination condition: a CLOSING
-        connection returns its CLOSE datagram once per trigger, then empty.
-        A raise mid-way drops the datagram; packets already committed stay
-        recorded for loss recovery, the in-progress builder state is lost.
-        """
-        # Timers first — drain/close timers must fire even when the
-        # connection is draining (otherwise we never reach CLOSED).
+        """Build at most one datagram; empty list when nothing is owed."""
         self._check_timers(now)
-
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
             return List[List[UInt8]]()
         var closing = (self.state & CONN_CLOSING) != 0
         if closing and not self.close.owed:
             return List[List[UInt8]]()
-
-        # Step 0: datagram budget with the per-datagram amplification clamp.
         var budget = self._datagram_budget()
         if self.is_server and not self._addr_validated():
             var allowance = self._amp_allowance()
             if allowance < budget:
                 budget = allowance
-        # Step 1b: an ack-eliciting server Initial must be padded to 1200, so
-        # it is deferred until the allowance covers a full datagram.
         var server_initial_deferred = self.is_server and budget < MAX_DATAGRAM_SIZE
         var ade = self.local_params.ack_delay_exponent
-
-        # Phase 1: plan packets (frames + serialized plaintext) per space.
         var plans = List[_PacketPlan]()
         swap(plans, self._scratch_plans)
         plans.clear()
@@ -2673,106 +2647,136 @@ struct QuicConnection(Movable):
                     all_close_committed = False
                 continue
             var payload_budget = remaining - overhead
-
-            # Swap pre-allocated buffers from connection scratch.
-            var frames = List[Frame]()
-            swap(frames, self._scratch_frames)
-            frames.clear()
-            var sent_records = List[SentStreamFrame]()
-            swap(sent_records, self._scratch_sent_records)
-            sent_records.clear()
-            var stream_payload = List[UInt8]()
-            swap(stream_payload, self._scratch_payload)
-            stream_payload.clear()
-            var ack_reserve = 0
-            var has_stream_data = False
-            var ack_committed = False
-            if closing:
-                # Step 1: CLOSE-only packet in every keyed space.
-                var cf = self._close_frame_for_space(space_idx)
-                if cf.wire_len() > payload_budget:
+            var r = self._plan_space_packet(
+                space_idx, closing, server_initial_deferred,
+                ade, payload_budget, overhead, now,
+            )
+            if not r[0]:
+                if closing:
                     all_close_committed = False
-                    continue
-                frames.append(cf^)
-            else:
-                var deferred = server_initial_deferred and space_idx == 0
-                # Step 2: ACK candidate, reserved before the gate.
-                var may_bundle = (not deferred) and self._space_has_other_sendable(space_idx)
-                var maybe_ack = self.spaces[space_idx].peek_ack_frame(
-                    now, ade, bundle=may_bundle
-                )
-                var reserve = 0
-                var has_ack = False
-                if maybe_ack:
-                    ref ack_ref = maybe_ack.value()
-                    ack_reserve = write_ack_frame_direct(stream_payload, payload_budget, ack_ref)
-                    reserve = ack_reserve
-                    if reserve <= 0:
-                        continue
-                    has_ack = True
-                var base = len(frames)
-                # Step 3: congestion gate (cwnd + pacer), bypassed on PTO.
-                var gate_open = self.spaces[space_idx].probe_pending or self._cc_open(
-                    now, space_idx, overhead + _MIN_PLAINTEXT_LEN
-                )
-                # Step 4: the state-consuming builders.
-                if gate_open and not deferred:
-                    self._build_frames_for_space(
-                        space_idx, now, frames, sent_records, stream_payload,
-                        payload_budget - reserve,
-                    )
-                    if (self.spaces[space_idx].probe_pending
-                            and not _has_ack_eliciting(frames)
-                            and len(stream_payload) == ack_reserve
-                            and reserve + 1 <= payload_budget):
-                        frames.append(Frame.ping())
-                # Step 5: decide the packet.
-                has_stream_data = len(stream_payload) > ack_reserve
-                if len(frames) > base or has_stream_data:
-                    ack_committed = has_ack
-                elif has_ack and self.spaces[space_idx].ack_needed:
-                    ack_committed = True
-                else:
-                    if deferred and self.crypto_streams[0].has_unsent():
-                        end_assembly = True
-                    continue
-                if deferred and self.crypto_streams[0].has_unsent():
+                if r[1]:
                     end_assembly = True
-
-            # stream_payload already contains ACK (direct-written first)
-            # + CRYPTO (direct-written by _build_frames_for_space).
-            # Serialize remaining control frames (non-CRYPTO) via ByteWriter.
-            var has_control = False
-            for fi in range(len(frames)):
-                if not frames[fi].is_crypto():
-                    has_control = True
-                    break
-            if has_control:
-                var wbuf = List[UInt8]()
-                swap(wbuf, self._scratch_writer_buf)
-                wbuf.clear()
-                var writer = ByteWriter()
-                swap(writer.buf, wbuf)
-                for fi in range(len(frames)):
-                    if not frames[fi].is_crypto():
-                        serialize_frame(frames[fi], writer)
-                stream_payload.extend(Span(writer.buf))
-                swap(self._scratch_writer_buf, writer.buf)
-            var payload = stream_payload^
-            var plaintext = len(payload)
+                continue
+            var plan = r[0].take()
+            var plaintext = len(plan.payload)
             if plaintext < _MIN_PLAINTEXT_LEN:
                 plaintext = _MIN_PLAINTEXT_LEN
             used += overhead + plaintext
-            plans.append(_PacketPlan(
-                space_idx, frames^, sent_records^, payload^, ack_committed, has_stream_data,
-            ))
-
+            plans.append(plan^)
+            if r[1]:
+                end_assembly = True
         if len(plans) == 0:
             return List[List[UInt8]]()
+        var result = self._commit_plans_to_datagram(
+            plans, budget, closing, all_close_committed, now,
+        )
+        self._scratch_plans = plans^
+        return result^
 
-        # Datagram-level padding target (RFC 9000 §14.1), applied to the last
-        # packet: client handshake datagrams (Initial or Handshake present,
-        # not yet established); server datagrams with an ack-eliciting Initial.
+    def _plan_space_packet(
+        mut self,
+        space_idx: Int,
+        closing: Bool,
+        server_initial_deferred: Bool,
+        ade: UInt64,
+        payload_budget: Int,
+        overhead: Int,
+        now: UInt64,
+    ) raises -> Tuple[Optional[_PacketPlan], Bool]:
+        """Plan one packet for a PN space.
+
+        Returns (plan, should_end_assembly). Plan is None if nothing to send.
+        """
+        var frames = List[Frame]()
+        swap(frames, self._scratch_frames)
+        frames.clear()
+        var sent_records = List[SentStreamFrame]()
+        swap(sent_records, self._scratch_sent_records)
+        sent_records.clear()
+        var stream_payload = List[UInt8]()
+        swap(stream_payload, self._scratch_payload)
+        stream_payload.clear()
+        var ack_reserve = 0
+        var has_stream_data = False
+        var ack_committed = False
+        var should_end = False
+        if closing:
+            var cf = self._close_frame_for_space(space_idx)
+            if cf.wire_len() > payload_budget:
+                return (None, False)
+            frames.append(cf^)
+        else:
+            var deferred = server_initial_deferred and space_idx == 0
+            var may_bundle = (not deferred) and self._space_has_other_sendable(space_idx)
+            var maybe_ack = self.spaces[space_idx].peek_ack_frame(
+                now, ade, bundle=may_bundle
+            )
+            var reserve = 0
+            var has_ack = False
+            if maybe_ack:
+                ref ack_ref = maybe_ack.value()
+                ack_reserve = write_ack_frame_direct(stream_payload, payload_budget, ack_ref)
+                reserve = ack_reserve
+                if reserve <= 0:
+                    return (None, False)
+                has_ack = True
+            var base = len(frames)
+            var gate_open = self.spaces[space_idx].probe_pending or self._cc_open(
+                now, space_idx, overhead + _MIN_PLAINTEXT_LEN
+            )
+            if gate_open and not deferred:
+                self._build_frames_for_space(
+                    space_idx, now, frames, sent_records, stream_payload,
+                    payload_budget - reserve,
+                )
+                if (self.spaces[space_idx].probe_pending
+                        and not _has_ack_eliciting(frames)
+                        and len(stream_payload) == ack_reserve
+                        and reserve + 1 <= payload_budget):
+                    frames.append(Frame.ping())
+            has_stream_data = len(stream_payload) > ack_reserve
+            if len(frames) > base or has_stream_data:
+                ack_committed = has_ack
+            elif has_ack and self.spaces[space_idx].ack_needed:
+                ack_committed = True
+            else:
+                if deferred and self.crypto_streams[0].has_unsent():
+                    should_end = True
+                return (None, should_end)
+            if deferred and self.crypto_streams[0].has_unsent():
+                should_end = True
+        # Serialize control frames into stream_payload.
+        var has_control = False
+        for fi in range(len(frames)):
+            if not frames[fi].is_crypto():
+                has_control = True
+                break
+        if has_control:
+            var wbuf = List[UInt8]()
+            swap(wbuf, self._scratch_writer_buf)
+            wbuf.clear()
+            var writer = ByteWriter()
+            swap(writer.buf, wbuf)
+            for fi in range(len(frames)):
+                if not frames[fi].is_crypto():
+                    serialize_frame(frames[fi], writer)
+            stream_payload.extend(Span(writer.buf))
+            swap(self._scratch_writer_buf, writer.buf)
+        var plan = _PacketPlan(
+            space_idx, frames^, sent_records^, stream_payload^,
+            ack_committed, has_stream_data,
+        )
+        return (Optional[_PacketPlan](plan^), should_end)
+
+    def _commit_plans_to_datagram(
+        mut self,
+        mut plans: List[_PacketPlan],
+        budget: Int,
+        closing: Bool,
+        all_close_committed: Bool,
+        now: UInt64,
+    ) raises -> List[List[UInt8]]:
+        """Allocate PNs, build+encrypt packets, coalesce into a datagram."""
         var pad_to = 0
         for i in range(len(plans)):
             var s = plans[i].space_idx
@@ -2782,8 +2786,6 @@ struct QuicConnection(Movable):
             elif (s == 0 or s == 1) and (self.state & CONN_ESTABLISHED) == 0:
                 pad_to = MAX_DATAGRAM_SIZE
         debug_assert(pad_to <= budget, "padding target exceeds the datagram budget")
-
-        # Phase 2: allocate PNs, pad, protect, record.
         var datagram = List[UInt8]()
         swap(datagram, self._scratch_datagram)
         datagram.clear()
@@ -2794,73 +2796,49 @@ struct QuicConnection(Movable):
             if self.spaces[space_idx].largest_acked_pn >= 0:
                 largest_acked = UInt64(self.spaces[space_idx].largest_acked_pn)
             var pn_len = pn_encode_length(pn, largest_acked)
-
             var padding = 0
             if i == len(plans) - 1 and pad_to > 0:
-                # Padding is added on top of the raw payload; `_build_packet`
-                # only applies its 4-byte minimum when the sum is shorter.
                 var hdr = self._header_len(space_idx) - _MAX_PN_LEN + pn_len
                 var unpadded = len(datagram) + hdr + len(plans[i].payload) + _AEAD_TAG_LEN
                 if unpadded < pad_to:
                     padding = pad_to - unpadded
             self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
-            # Recapture payload buffer for reuse.
             swap(self._scratch_payload, plans[i].payload)
             var pkt_size = len(self.pkt_buf)
             datagram.extend(Span(self.pkt_buf))
-
-            # Step 6: commit.
             if plans[i].ack_committed:
                 self.spaces[space_idx].mark_ack_sent()
             var is_ack_eliciting = _has_ack_eliciting(plans[i].frames) or plans[i].has_stream_data
             var in_flight = is_ack_eliciting or padding > 0
             var ect = self.ecn_mark()
-            # Only store CRYPTO frames in SentPacket — they're the only
-            # frames accessed post-send (for retransmission on loss/PTO).
-            # Application-space packets never carry CRYPTO, so this avoids
-            # allocating+copying the frames list in steady state.
             var crypto_frames = List[Frame]()
             for fi in range(len(plans[i].frames)):
                 if plans[i].frames[fi].is_crypto():
                     crypto_frames.append(Frame(copy=plans[i].frames[fi]))
             var sent = SentPacket(
-                pn=pn,
-                time_sent=now,
-                ack_eliciting=is_ack_eliciting,
-                in_flight=in_flight,
-                size=pkt_size,
-                frames=crypto_frames^,
-                ecn_mark=ect,
+                pn=pn, time_sent=now, ack_eliciting=is_ack_eliciting,
+                in_flight=in_flight, size=pkt_size,
+                frames=crypto_frames^, ecn_mark=ect,
             )
             self.spaces[space_idx].on_packet_sent(sent^)
-            # Track ECT(0) in-flight count for bleaching check.
             if ect == ECN_ECT0:
                 self.spaces[space_idx].ect0_in_flight += UInt64(1)
                 if self.ecn.pkts_sent == 0:
                     self.ecn.first_pn = pn
                 self.ecn.pkts_sent += 1
             self.recovery.on_packet_sent(pkt_size, in_flight, pn, now)
-            # Pacer token: Application space, ack-eliciting packets only.
             if space_idx == 2 and is_ack_eliciting:
                 var _pace_rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
                 _ = self.recovery.pacer.refill_and_check(_pace_rate, now)
                 self.recovery.pacer.on_sent(UInt64(pkt_size))
-            # Stream-layer frame records for ACK / loss processing.
             if space_idx == 2 and len(plans[i].sent_records) > 0:
                 var moved_records = List[SentStreamFrame]()
                 swap(moved_records, plans[i].sent_records)
                 self.app_frames_sent[Int(pn)] = moved_records^
-
-            # Recapture frames list into scratch for reuse next send().
             swap(self._scratch_frames, plans[i].frames)
-
         if closing and all_close_committed:
             self.close.owed = False
             self.close.last_sent = now
-
-        # Recapture scratch plans for reuse next send().
-        self._scratch_plans = plans^
-
         debug_assert(len(datagram) <= budget, "datagram exceeds its budget")
         self.bytes_sent += UInt64(len(datagram))
         var datagrams = List[List[UInt8]](capacity=1)
