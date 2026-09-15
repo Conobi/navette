@@ -3,6 +3,7 @@
 # AcceptProfile (counter struct + report formatters), monotonic_us
 # (sans-I/O CLOCK_MONOTONIC), and PROFILE_ACCEPT (comptime opt-in).
 
+from std.collections import Optional
 from std.ffi import external_call
 from std.memory import Pointer
 
@@ -784,6 +785,211 @@ struct AcceptProfile(Copyable, Movable):
         s += ', "p99": ' + String(lp99) + ', "max": ' + String(lmax)
         s += ', "count": ' + String(len(self.hs_latency_us)) + "}\n  }\n}\n"
         return s^
+
+
+# ── ProfileState ─────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct ProfileState(Movable):
+    """Per-connection profiling accumulators and handshake timing."""
+
+    var ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
+    var first_initial_us: UInt64
+    var rustls_us_accum: UInt64
+    var first_iter_done: Bool
+    var fresh_conn_ffi_us_total: UInt64
+    var read_hs_call_count: UInt64
+    var read_hs_input_marshalling_us_total: UInt64
+    var read_hs_state_machine_us_total: UInt64
+    var read_hs_output_alloc_us_total: UInt64
+    var read_hs_output_marshalling_us_total: UInt64
+    var accept_us: UInt64
+    var hs_cpu_us_total: UInt64
+    var hs_wait_us_total: UInt64
+
+    # ── Profiling helpers ────────────────────────────────────────────
+
+    def stamp(self) -> UInt64:
+        """Return monotonic_us() if profiling is compiled-in and active."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                return monotonic_us()
+        return UInt64(0)
+
+    def elapsed(self, start: UInt64) -> UInt64:
+        """Return monotonic_us() - start if profiling is active."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                return monotonic_us() - start
+        return UInt64(0)
+
+    def is_active(self) -> Bool:
+        """True when profiling is compiled-in and the pointer is set."""
+        comptime if PROFILE_ACCEPT:
+            return self.ptr is not None
+        return False
+
+    def begin_iter(mut self) -> UInt64:
+        """Start a recv_from_buffer per-packet iteration bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                if self.first_iter_done:
+                    self.rustls_us_accum = UInt64(0)
+                return monotonic_us()
+        return UInt64(0)
+
+    def end_iter(
+        mut self,
+        t_start: UInt64,
+        hp_us: UInt64,
+        aead_us: UInt64,
+        header_parse_us: UInt64,
+        frame_parse_us: UInt64,
+        sm_us: UInt64,
+    ):
+        """Close the per-packet iteration bracket and record metrics."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var total_us = monotonic_us() - t_start
+                self.ptr.value()[].record_pkt(
+                    total_us=total_us,
+                    ffi_us=self.rustls_us_accum,
+                    hp_us=hp_us,
+                    aead_us=aead_us,
+                    header_parse_us=header_parse_us,
+                    frame_parse_us=frame_parse_us,
+                    sm_us=sm_us,
+                )
+                self.first_iter_done = True
+
+    def record_zero_rtt_install(mut self, ok: Bool):
+        """Delegate 0-RTT key install outcome to AcceptProfile."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                if ok:
+                    self.ptr.value()[].record(CounterId.ZERO_RTT_INSTALL_SUCCESSES)
+                else:
+                    self.ptr.value()[].record(CounterId.ZERO_RTT_INSTALL_ATTEMPTS)
+
+    def record_handshake_arrival(mut self):
+        """Delegate handshake arrival to AcceptProfile."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.HS_ARRIVALS)
+
+    def begin_drive(mut self) -> UInt64:
+        """Start the _drive_handshake body bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].active_drive_count = self.ptr.value()[].active_drive_count + UInt32(1)
+                return monotonic_us()
+        return UInt64(0)
+
+    def end_drive(mut self, t_start: UInt64):
+        """Close the _drive_handshake body bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None and t_start > UInt64(0):
+                self.hs_cpu_us_total = self.hs_cpu_us_total + (monotonic_us() - t_start)
+                if self.ptr.value()[].active_drive_count > UInt32(0):
+                    self.ptr.value()[].active_drive_count = self.ptr.value()[].active_drive_count - UInt32(1)
+
+    def stamp_ffi(mut self) -> UInt64:
+        """Stamp and pre-subtract from rustls_us_accum for FFI brackets."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t = monotonic_us()
+                self.rustls_us_accum -= t
+                return t
+        return UInt64(0)
+
+    def record_ffi_read_hs_end(
+        mut self,
+        t_start: UInt64,
+        input_marshalling_us: UInt64,
+        out_sm_us: UInt64,
+        out_lookup_us: UInt64,
+    ):
+        """Close the read_hs FFI bracket with sub-leg accumulation."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t_end = monotonic_us()
+                self.rustls_us_accum += t_end
+                var delta = t_end - t_start
+                self.ptr.value()[].record_ffi_read_hs(delta)
+                self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + delta
+                self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
+                self.ptr.value()[].record_read_hs_us_per_call(delta)
+                self.read_hs_input_marshalling_us_total = self.read_hs_input_marshalling_us_total + input_marshalling_us
+                self.read_hs_state_machine_us_total = self.read_hs_state_machine_us_total + out_sm_us
+                self.read_hs_output_alloc_us_total = self.read_hs_output_alloc_us_total + out_lookup_us
+                self.read_hs_output_marshalling_us_total = self.read_hs_output_marshalling_us_total + UInt64(0)
+                self.ptr.value()[].record_read_hs_input_marshalling_us(input_marshalling_us)
+                self.ptr.value()[].record_read_hs_state_machine_us(out_sm_us)
+                self.ptr.value()[].record_read_hs_output_alloc_us(out_lookup_us)
+                self.ptr.value()[].record_read_hs_output_marshalling_us(UInt64(0))
+
+    def record_ffi_write_hs_end(mut self, t_start: UInt64):
+        """Close the write_hs FFI bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t_end = monotonic_us()
+                self.rustls_us_accum += t_end
+                var delta = t_end - t_start
+                self.ptr.value()[].record_ffi_write_hs(delta)
+                self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + delta
+
+    def record_ffi_take_keys_end(mut self, t_start: UInt64):
+        """Close the take_keys FFI bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t_end = monotonic_us()
+                self.rustls_us_accum += t_end
+                var delta = t_end - t_start
+                self.ptr.value()[].record_ffi_take_keys(delta)
+                self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + delta
+
+    def record_hs_complete(mut self, now: UInt64):
+        """Record handshake-completion latency."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None and self.first_initial_us > UInt64(0):
+                self.ptr.value()[].record_handshake_complete(now - self.first_initial_us)
+
+    def record_replay_accept(mut self):
+        """Bump zero_rtt_replay_accept."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_ACCEPT)
+
+    def record_replay_reject_duplicate(mut self):
+        """Bump zero_rtt_replay_reject_duplicate."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
+
+    def record_replay_reject_per_key_quota(mut self):
+        """Bump zero_rtt_replay_reject_per_key_quota."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
+
+    def record_replay_reject_global_ceiling(mut self):
+        """Bump zero_rtt_replay_reject_global_ceiling."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)
+
+    def record_replay_reject_no_authenticator(mut self):
+        """Bump zero_rtt_replay_reject_no_authenticator."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
+
+    def record_zero_rtt_drain_dropped(mut self):
+        """Bump zero_rtt_drain_dropped."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record(CounterId.ZERO_RTT_DRAIN_DROPPED)
 
 
 # ── Free functions ──

@@ -49,6 +49,7 @@ from navette.http.handler import (
     StreamHandler,
 )
 from navette.quic.frame import StreamFrame
+from navette.quic.profile import CounterId
 from navette.quic.trans_param import default_transport_params
 from navette.runtime.socket_helpers import udp_listener
 from navette.tls.config import QuicServerConfig
@@ -203,7 +204,7 @@ def test_http_filter_counters_live_through_udp_construction() raises:
     var h3_ptr = server._construct_conn_handler(Span(dcid), UInt64(1_000_000))
 
     # Precondition: the counter starts at zero.
-    if server.profile.zero_rtt_http_filter_1rtt_bypassed != 0:
+    if server.profile.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED) != 0:
         raise Error("precondition: 1rtt_bypassed must start at 0")
 
     # Force a 1-RTT (Application-space) stream into the QUIC stream_map via
@@ -225,11 +226,11 @@ def test_http_filter_counters_live_through_udp_construction() raises:
     var ev = _build_get_event(stream_id)
     h3_ptr[]._on_request(ev, UInt64(1_000_001))
 
-    if server.profile.zero_rtt_http_filter_1rtt_bypassed != 1:
+    if server.profile.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED) != 1:
         raise Error(
             "1rtt_bypassed must be 1 after a 1-RTT request flows through"
             " the wired profile pointer (got "
-            + String(Int(server.profile.zero_rtt_http_filter_1rtt_bypassed))
+            + String(Int(server.profile.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)))
             + ")"
         )
 
