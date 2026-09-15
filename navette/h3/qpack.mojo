@@ -23,9 +23,9 @@ struct QpackHeaderField(Copyable, Movable):
     var name: String
     var value: String
 
-    def __init__(out self, name: String, value: String):
-        self.name = name
-        self.value = value
+    def __init__(out self, var name: String, var value: String):
+        self.name = name^
+        self.value = value^
 
     def __init__(out self, *, copy_from: Self):
         self.name = copy_from.name
@@ -1070,6 +1070,34 @@ struct QpackDecoder(Copyable, Movable):
         self._huff_fast = copy_from._huff_fast.copy()
         self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
         self._scratch_decode_buf = List[UInt8](capacity=256)
+
+    def _decode_string(mut self, ref data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
+        """Decode a QPACK string literal, reusing scratch decode buffer."""
+        if offset >= len(data):
+            raise "QPACK: truncated string at offset " + String(offset)
+        var h_bit = (data[offset] & 0x80) != 0
+        var ir = qpack_decode_int(data, offset, 7)
+        var length = Int(ir.value)
+        var pos = ir.new_offset
+        if pos + length > len(data):
+            raise "QPACK: string data truncated"
+        var end = pos + length
+        if h_bit:
+            var raw = List[UInt8](capacity=length)
+            for i in range(pos, end):
+                raw.append(data[i])
+            pos = end
+            return _StrDecodeResult(
+                _huffman_decode_into_buf(raw, self._huff_trie, self._huff_fast, self._scratch_decode_buf),
+                pos,
+            )
+        else:
+            var raw = List[UInt8](capacity=length)
+            for i in range(pos, end):
+                raw.append(data[i])
+            pos = end
+            var s = bytes_to_string(raw^)
+            return _StrDecodeResult(s, pos)
 
     def decode(mut self, data: List[UInt8]) raises -> List[QpackHeaderField]:
         """Decode a QPACK field section block.
