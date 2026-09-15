@@ -49,6 +49,7 @@ struct ByteReader[origin: Origin]:
         return v
 
     def read_bytes(mut self, n: Int) raises -> List[UInt8]:
+        """Read n bytes, returning an owned copy."""
         if self.pos + n > len(self._buf):
             raise "ByteReader: underflow reading " + String(n) + " bytes"
         var result = List[UInt8](capacity=n)
@@ -56,6 +57,14 @@ struct ByteReader[origin: Origin]:
             result.append(self._buf[self.pos + i])
         self.pos += n
         return result^
+
+    def read_span(mut self, n: Int) raises -> Span[UInt8, Self.origin]:
+        """Read n bytes as a zero-copy Span view into the underlying buffer."""
+        if self.pos + n > len(self._buf):
+            raise "ByteReader: underflow reading " + String(n) + " bytes"
+        var result = self._buf[self.pos : self.pos + n]
+        self.pos += n
+        return result
 
     def skip(mut self, n: Int) raises:
         if self.pos + n > len(self._buf):

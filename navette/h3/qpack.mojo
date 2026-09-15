@@ -671,9 +671,9 @@ def _huffman_encoded_len_with_table(s: String, ref table: List[HuffmanEntry]) ra
 
 
 def _huffman_decode_with_tables(
-    data: List[UInt8],
-    trie: List[_HuffTrieNode],
-    fast: List[_HuffFast],
+    ref data: List[UInt8],
+    ref trie: List[_HuffTrieNode],
+    ref fast: List[_HuffFast],
 ) raises -> String:
     """Inner decode loop. Caller passes precomputed tables so they can be
     amortized across multiple decode calls (e.g. all string literals in one
@@ -925,13 +925,19 @@ def _qpack_decode_string_with_tables(
     var pos = ir.new_offset
     if pos + length > len(data):
         raise "QPACK: string data truncated"
-    var raw = List[UInt8](capacity=length)
-    for i in range(length):
-        raw.append(data[pos + i])
-    pos += length
+    var end = pos + length
     if h_bit:
-        return _StrDecodeResult(_huffman_decode_with_tables(raw, trie, fast), pos)
+        # Pass slice to Huffman decoder to avoid copy.
+        var slice = List[UInt8](capacity=length)
+        for i in range(pos, end):
+            slice.append(data[i])
+        pos = end
+        return _StrDecodeResult(_huffman_decode_with_tables(slice, trie, fast), pos)
     else:
+        var raw = List[UInt8](capacity=length)
+        for i in range(pos, end):
+            raw.append(data[i])
+        pos = end
         var s = bytes_to_string(raw^)
         return _StrDecodeResult(s, pos)
 
@@ -1040,6 +1046,7 @@ struct QpackDecoder(Copyable, Movable):
     var _huff_trie: List[_HuffTrieNode]
     var _huff_fast: List[_HuffFast]
     var _static_table: List[QpackStaticEntry]
+    var _scratch_decode_buf: List[UInt8]
 
     def __init__(out self):
         # The trie/fast-table builders only raise on a malformed encode table,
@@ -1056,13 +1063,15 @@ struct QpackDecoder(Copyable, Movable):
             self._huff_trie = List[_HuffTrieNode]()
             self._huff_fast = List[_HuffFast]()
         self._static_table = _qpack_static_table()
+        self._scratch_decode_buf = List[UInt8](capacity=256)
 
     def __init__(out self, *, copy_from: Self):
         self._huff_trie = copy_from._huff_trie.copy()
         self._huff_fast = copy_from._huff_fast.copy()
         self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
+        self._scratch_decode_buf = List[UInt8](capacity=256)
 
-    def decode(self, data: List[UInt8]) raises -> List[QpackHeaderField]:
+    def decode(mut self, data: List[UInt8]) raises -> List[QpackHeaderField]:
         """Decode a QPACK field section block.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
