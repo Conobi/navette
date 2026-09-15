@@ -16,7 +16,8 @@ from std.collections import Optional
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
-from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.connection import QuicConnection
+from navette.quic.event import QuicEvent
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.packet import parse_packet_header
 from interop.file_io import read_file, getenv, getenv_opt, setenv

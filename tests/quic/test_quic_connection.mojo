@@ -18,10 +18,12 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.packet_protect import PacketProtect
 from navette.quic.connection import (
-    QuicConnection, QuicEvent, SentStreamFrame,
-    ConnectionClosedPayload, StreamResetPayload, StreamStoppedPayload,
+    QuicConnection, SentStreamFrame,
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING,
+)
+from navette.quic.event import (
+    QuicEvent, ConnectionClosedPayload, StreamResetPayload, StreamStoppedPayload,
 )
 from navette.quic.guard_predicates import (
     check_long_reserved_bits,

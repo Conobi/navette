@@ -24,7 +24,8 @@ from std.collections import Span
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
-from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.connection import QuicConnection
+from navette.quic.event import QuicEvent
 from navette.quic.frame import Frame, StreamFrame, CryptoFrame, AckFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.guard_tags import (

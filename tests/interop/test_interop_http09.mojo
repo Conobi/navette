@@ -12,7 +12,8 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
-from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.connection import QuicConnection
+from navette.quic.event import QuicEvent
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert, load_test_ca
 from interop.http09 import http09_request, http09_collect, http09_parse_path, http09_serve

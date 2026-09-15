@@ -17,7 +17,8 @@ from navette.util.owned_alloc import Owned
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicClientConfig
-from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.connection import QuicConnection
+from navette.quic.event import QuicEvent
 from navette.quic.trans_param import default_transport_params
 from interop.file_io import read_file, write_file, getenv, getenv_opt, basename, setenv
 from interop.http09 import http09_request, http09_collect

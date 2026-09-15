@@ -10,12 +10,12 @@ from std.collections import Span
 
 from navette.quic.connection import (
     QuicConnection,
-    QuicEvent,
-    ConnectionClosedPayload,
-    StreamResetPayload,
     CONN_CLOSING,
     CONN_DRAINING,
     CONN_CLOSED,
+)
+from navette.quic.event import (
+    QuicEvent, ConnectionClosedPayload, StreamResetPayload,
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
 from navette.quic.path_validator import PathKey

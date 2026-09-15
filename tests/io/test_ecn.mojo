@@ -11,7 +11,8 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
-from navette.quic.connection import QuicConnection, QuicEvent
+from navette.quic.connection import QuicConnection
+from navette.quic.event import QuicEvent
 from navette.quic.ecn import (
     ECN_NOT_ECT, ECN_ECT0, ECN_ECT1, ECN_CE,
     ECN_STATE_PROBING, ECN_STATE_CAPABLE, ECN_STATE_DISABLED,
