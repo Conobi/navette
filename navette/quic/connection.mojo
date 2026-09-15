@@ -34,6 +34,17 @@ from navette.quic.zero_rtt import (
     ZeroRttState, ZERO_RTT_BUFFER_MAX_PKTS, ZERO_RTT_BUFFER_MAX_BYTES,
     invoke_replay_authenticator_ffi, drive_replay_check_for_test,
 )
+from navette.quic.packet_builder import (
+    SentStreamFrame,
+    PacketPlan,
+    SSF_STREAM, SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA,
+    SSF_MAX_STREAM_DATA, SSF_MAX_STREAMS_BIDI, SSF_MAX_STREAMS_UNI,
+    SSF_NEW_CID, SSF_RETIRE_CID,
+    AEAD_TAG_LEN, MAX_PN_LEN, MIN_PLAINTEXT_LEN, MAX_DATAGRAM_SIZE,
+    MAX_CLOSE_REASON_BYTES, ANTI_AMP_HEADER_FUDGE,
+    datagram_budget, amp_allowance, header_len,
+    build_packet, seal_packet,
+)
 from navette.quic.frame import (
     Frame,
     FrameCursor,
@@ -173,21 +184,8 @@ comptime CONN_CLOSED: UInt8 = 0x80
 
 # ── Constants ────────────────────────────────────────────────────────
 
-comptime _AEAD_TAG_LEN: Int = 16
-comptime _MAX_PN_LEN: Int = 4   # maximum packet-number length (bytes)
-comptime _HP_SAMPLE_LEN: Int = 16  # header-protection sample length
-comptime ANTI_AMP_HEADER_FUDGE: UInt64 = 100
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
-# Every datagram `send()` returns fits this many bytes; PMTUD is not
-# implemented, so the peer's max_udp_payload_size is only asserted >= this.
-comptime MAX_DATAGRAM_SIZE: Int = 1200
-# CONNECTION_CLOSE reason phrases are truncated here so three coalesced
-# CLOSE packets (one per keyed space) always fit one datagram.
-comptime MAX_CLOSE_REASON_BYTES: Int = 256
-# Smallest possible packet: header + 4-byte PN budget + 4-byte plaintext
-# minimum (header-protection sample) + AEAD tag; see `_min_packet_cost`.
-comptime _MIN_PLAINTEXT_LEN: Int = 4
 
 
 
@@ -325,74 +323,6 @@ def _tls_guard_tag_for(
 # space, used for ACK and loss processing.  STREAM/CRYPTO retransmission
 # for Initial/Handshake is still handled via SentPacket.frames.
 
-comptime SSF_STREAM: UInt8 = 0
-comptime SSF_RESET_STREAM: UInt8 = 1
-comptime SSF_STOP_SENDING: UInt8 = 2
-comptime SSF_MAX_DATA: UInt8 = 3
-comptime SSF_MAX_STREAM_DATA: UInt8 = 4
-comptime SSF_MAX_STREAMS_BIDI: UInt8 = 5
-comptime SSF_MAX_STREAMS_UNI: UInt8 = 6
-comptime SSF_NEW_CID: UInt8 = 7
-comptime SSF_RETIRE_CID: UInt8 = 8
-
-
-struct SentStreamFrame(Copyable, Movable):
-    """Record of a stream-layer frame sent in the Application space.
-
-    Used to re-apply state on ACK (confirm transitions, release FC credit)
-    and on loss (re-queue data, clear `advertised`/`needs_*` flags).
-    """
-
-    var kind: UInt8
-    var stream_id: UInt64
-    var offset: UInt64
-    var length: UInt64
-    var fin: Bool
-    var cid_seq: UInt64
-
-    def __init__(out self):
-        self.kind = UInt8(0)
-        self.stream_id = UInt64(0)
-        self.offset = UInt64(0)
-        self.length = UInt64(0)
-        self.fin = False
-        self.cid_seq = UInt64(0)
-
-
-
-# ── _PacketPlan ──────────────────────────────────────────────────────
-
-
-struct _PacketPlan(Copyable, Movable):
-    """One packet of a datagram between frame assembly and encryption.
-
-    `send()` plans every keyed space first so that datagram-level padding can
-    land in the last packet; only then are packet numbers allocated and the
-    packets protected and recorded.
-    """
-
-    var space_idx: Int
-    var frames: List[Frame]
-    var sent_records: List[SentStreamFrame]
-    var payload: List[UInt8]
-    var ack_committed: Bool
-    var has_stream_data: Bool
-
-    def __init__(
-        out self,
-        space_idx: Int,
-        var frames: List[Frame],
-        var sent_records: List[SentStreamFrame],
-        var payload: List[UInt8],
-        ack_committed: Bool,
-        has_stream_data: Bool = False,
-    ):
-        self.space_idx = space_idx
-        self.frames = frames^
-        self.sent_records = sent_records^
-        self.payload = payload^
-        self.ack_committed = ack_committed
-        self.has_stream_data = has_stream_data
 
 
 
@@ -521,7 +451,7 @@ struct QuicConnection(Movable):
     var _scratch_sent_records: List[SentStreamFrame]
     var _scratch_payload: List[UInt8]
     var _scratch_datagram: List[UInt8]
-    var _scratch_plans: List[_PacketPlan]
+    var _scratch_plans: List[PacketPlan]
     var _scratch_writer_buf: List[UInt8]
 
     # ── Private constructor (used by factory methods) ────────────────
@@ -611,7 +541,7 @@ struct QuicConnection(Movable):
         self._scratch_sent_records = List[SentStreamFrame](capacity=8)
         self._scratch_payload = List[UInt8](capacity=6144)
         self._scratch_datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
-        self._scratch_plans = List[_PacketPlan](capacity=3)
+        self._scratch_plans = List[PacketPlan](capacity=3)
         self._scratch_writer_buf = List[UInt8](capacity=256)
         self.stream_map = StreamMap(
             is_server=is_server,
@@ -2470,7 +2400,7 @@ struct QuicConnection(Movable):
                 budget = allowance
         var server_initial_deferred = self.is_server and budget < MAX_DATAGRAM_SIZE
         var ade = self.local_params.ack_delay_exponent
-        var plans = List[_PacketPlan]()
+        var plans = List[PacketPlan]()
         swap(plans, self._scratch_plans)
         plans.clear()
         var used = 0
@@ -2481,9 +2411,9 @@ struct QuicConnection(Movable):
                 break
             if not self.protect.has_keys(space_idx):
                 continue
-            var overhead = self._header_len(space_idx) + _MAX_PN_LEN + _AEAD_TAG_LEN
+            var overhead = self._header_len(space_idx) + MAX_PN_LEN + AEAD_TAG_LEN
             var remaining = budget - used
-            if remaining < overhead + _MIN_PLAINTEXT_LEN:
+            if remaining < overhead + MIN_PLAINTEXT_LEN:
                 if closing:
                     all_close_committed = False
                 continue
@@ -2500,8 +2430,8 @@ struct QuicConnection(Movable):
                 continue
             var plan = r[0].take()
             var plaintext = len(plan.payload)
-            if plaintext < _MIN_PLAINTEXT_LEN:
-                plaintext = _MIN_PLAINTEXT_LEN
+            if plaintext < MIN_PLAINTEXT_LEN:
+                plaintext = MIN_PLAINTEXT_LEN
             used += overhead + plaintext
             plans.append(plan^)
             if r[1]:
@@ -2523,7 +2453,7 @@ struct QuicConnection(Movable):
         payload_budget: Int,
         overhead: Int,
         now: UInt64,
-    ) raises -> Tuple[Optional[_PacketPlan], Bool]:
+    ) raises -> Tuple[Optional[PacketPlan], Bool]:
         """Plan one packet for a PN space.
 
         Returns (plan, should_end_assembly). Plan is None if nothing to send.
@@ -2563,7 +2493,7 @@ struct QuicConnection(Movable):
                 has_ack = True
             var base = len(frames)
             var gate_open = self.spaces[space_idx].probe_pending or self._cc_open(
-                now, space_idx, overhead + _MIN_PLAINTEXT_LEN
+                now, space_idx, overhead + MIN_PLAINTEXT_LEN
             )
             if gate_open and not deferred:
                 self._build_frames_for_space(
@@ -2590,7 +2520,7 @@ struct QuicConnection(Movable):
             space_idx, frames^, sent_records^, stream_payload^,
             ack_committed, has_stream_data,
         )
-        return (Optional[_PacketPlan](plan^), should_end)
+        return (Optional[PacketPlan](plan^), should_end)
 
     def _finalize_packet_plan(
         mut self,
@@ -2600,8 +2530,8 @@ struct QuicConnection(Movable):
         var stream_payload: List[UInt8],
         ack_committed: Bool,
         has_stream_data: Bool,
-    ) raises -> _PacketPlan:
-        """Serialize control frames and assemble a _PacketPlan."""
+    ) raises -> PacketPlan:
+        """Serialize control frames and assemble a PacketPlan."""
         var has_control = False
         for fi in range(len(frames)):
             if not frames[fi].is_crypto():
@@ -2618,14 +2548,14 @@ struct QuicConnection(Movable):
                     serialize_frame(frames[fi], writer)
             stream_payload.extend(Span(writer.buf))
             swap(self._scratch_writer_buf, writer.buf)
-        return _PacketPlan(
+        return PacketPlan(
             space_idx, frames^, sent_records^, stream_payload^,
             ack_committed, has_stream_data,
         )
 
     def _commit_plans_to_datagram(
         mut self,
-        mut plans: List[_PacketPlan],
+        mut plans: List[PacketPlan],
         budget: Int,
         closing: Bool,
         all_close_committed: Bool,
@@ -2653,8 +2583,8 @@ struct QuicConnection(Movable):
             var pn_len = pn_encode_length(pn, largest_acked)
             var padding = 0
             if i == len(plans) - 1 and pad_to > 0:
-                var hdr = self._header_len(space_idx) - _MAX_PN_LEN + pn_len
-                var unpadded = len(datagram) + hdr + len(plans[i].payload) + _AEAD_TAG_LEN
+                var hdr = self._header_len(space_idx) - MAX_PN_LEN + pn_len
+                var unpadded = len(datagram) + hdr + len(plans[i].payload) + AEAD_TAG_LEN
                 if unpadded < pad_to:
                     padding = pad_to - unpadded
             self._build_packet(space_idx, pn, pn_len, plans[i].payload, padding)
@@ -2701,31 +2631,16 @@ struct QuicConnection(Movable):
         return datagrams^
 
     def _datagram_budget(self) -> Int:
-        """MAX_DATAGRAM_SIZE; the peer's max_udp_payload_size is only asserted."""
-        if self.peer_params:
-            debug_assert(
-                self.peer_params.value().max_udp_payload_size >= UInt64(MAX_DATAGRAM_SIZE),
-                "peer max_udp_payload_size below 1200",
-            )
-        return MAX_DATAGRAM_SIZE
+        """Delegate to packet_builder.datagram_budget."""
+        return datagram_budget()
 
     def _amp_allowance(self) -> Int:
-        """Bytes an unvalidated server may still send (RFC 9000 §8.1), saturating at 0."""
-        var cap = 3 * self.bytes_received
-        var spent = self.bytes_sent + ANTI_AMP_HEADER_FUDGE
-        if spent >= cap:
-            return 0
-        return Int(cap - spent)
+        """Delegate to packet_builder.amp_allowance."""
+        return amp_allowance(self.bytes_received, self.bytes_sent)
 
     def _header_len(self, space_idx: Int) -> Int:
-        """Budgeted header bytes including a 4-byte PN and a 2-byte Length
-        varint for long headers; the encoder may use fewer (accepted slack)."""
-        if space_idx == 0:
-            # Token is always empty on this path (varint_len(0) == 1).
-            return 7 + len(self.peer_cid) + len(self.local_cid) + 1 + 2 + _MAX_PN_LEN
-        if space_idx == 1:
-            return 7 + len(self.peer_cid) + len(self.local_cid) + 2 + _MAX_PN_LEN
-        return 1 + len(self.peer_cid) + _MAX_PN_LEN
+        """Delegate to packet_builder.header_len."""
+        return header_len(space_idx, len(self.local_cid), len(self.peer_cid))
 
     def _cc_open(self, now: UInt64, space_idx: Int, min_cost: Int) -> Bool:
         """Congestion gate: cwnd has room for a minimum packet and, in the
@@ -2862,7 +2777,7 @@ struct QuicConnection(Movable):
 
     def _max_app_payload(self) -> Int:
         """Largest plaintext a 1-RTT packet can carry in an empty datagram."""
-        return MAX_DATAGRAM_SIZE - self._header_len(2) - _AEAD_TAG_LEN
+        return MAX_DATAGRAM_SIZE - self._header_len(2) - AEAD_TAG_LEN
 
     def _emit_one_stream_frame(
         mut self,
@@ -3290,75 +3205,12 @@ struct QuicConnection(Movable):
         payload: List[UInt8],
         padding: Int = 0,
     ) raises:
-        """Build a complete encrypted QUIC packet into self.pkt_buf.
-
-        Reuses the per-connection buffer to avoid per-packet allocation.
-        The caller reads from self.pkt_buf after this returns.
-        """
-        self.pkt_buf.clear()
-
-        var plaintext_len = len(payload) + padding
-        if plaintext_len < _MIN_PLAINTEXT_LEN:
-            plaintext_len = _MIN_PLAINTEXT_LEN
-        var payload_ciphertext_len = plaintext_len + _AEAD_TAG_LEN
-
-        if space_idx == 0 or space_idx == 1:
-            # Long header (Initial or Handshake).
-            var header = PacketHeader()
-            header.is_long_header = True
-            header.version = UInt32(1)
-            header.dcid = List[UInt8](copy=self.peer_cid)
-            header.scid = List[UInt8](copy=self.local_cid)
-            if space_idx == 0:
-                header.packet_type = PacketType.initial()
-                header.token = List[UInt8]()
-            else:
-                header.packet_type = PacketType.handshake()
-            header.payload_length = UInt64(pn_len + payload_ciphertext_len)
-            serialize_long_header_into(header, self.pkt_buf)
-        else:
-            # Short header (1-RTT / Application).
-            serialize_short_header_into(Span(self.peer_cid), self.pkt_buf)
-
-        self._seal_packet(space_idx, pn, pn_len, payload, plaintext_len)
-
-    def _seal_packet(
-        mut self,
-        space_idx: Int,
-        pn: UInt64,
-        pn_len: Int,
-        payload: List[UInt8],
-        plaintext_len: Int,
-    ) raises:
-        """Encode PN, append payload, encrypt and protect header in pkt_buf."""
-        self.pkt_buf[0] = (self.pkt_buf[0] & 0xFC) | UInt8(pn_len - 1)
-
-        var pn_offset = len(self.pkt_buf)
-        debug_assert(
-            pn_offset + pn_len <= self._header_len(space_idx),
-            "header exceeds its budgeted length",
-        )
-
-        var truncated = pn_truncate(pn, pn_len)
-        for i in range(pn_len):
-            var shift = UInt64((pn_len - 1 - i) * 8)
-            self.pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
-
-        self.pkt_buf.extend(Span(payload))
-        for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
-            self.pkt_buf.append(UInt8(0))
-
-        var total_len = len(self.pkt_buf)
-        var pkt_ptr = self.pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
-
-        var header_len = pn_offset + pn_len
-        _ = self.protect.encrypt_payload_in_place(
-            space_idx, pn, pkt_ptr, header_len,
-            plaintext_len, total_len,
-        )
-
-        self.protect.protect_header_ptr(
-            space_idx, pkt_ptr, total_len, pn_offset, pn_len,
+        """Delegate to packet_builder.build_packet."""
+        build_packet(
+            self.pkt_buf, self.protect,
+            Span(self.peer_cid), Span(self.local_cid),
+            space_idx, pn, pn_len, payload,
+            self._header_len(space_idx), padding,
         )
 
     # ── Application-space frame ACK/loss handling ─────────────

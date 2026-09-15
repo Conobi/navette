@@ -11,8 +11,11 @@ from std.collections import Span
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import (
-    QuicConnection, QuicEvent, SentStreamFrame, SSF_STREAM,
+    QuicConnection, QuicEvent,
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING, CONN_HANDSHAKING,
+)
+from navette.quic.packet_builder import (
+    SentStreamFrame, SSF_STREAM,
     MAX_DATAGRAM_SIZE, MAX_CLOSE_REASON_BYTES,
 )
 from navette.quic.cc.cubic import Cubic
