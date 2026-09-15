@@ -589,6 +589,9 @@ struct Frame(Copyable, Movable):
         if tid == FRAME_CRYPTO:
             ref cf = self.payload.unsafe_get[CryptoFrame]()
             return 1 + varint_len(cf.offset) + varint_len(UInt64(len(cf.data))) + len(cf.data)
+        if tid == FRAME_NEW_TOKEN:
+            var token_len = len(self.payload.unsafe_get[List[UInt8]]())
+            return 1 + varint_len(UInt64(token_len)) + token_len
         if (tid & UInt64(0xF8)) == FRAME_STREAM_BASE:
             ref sf = self.payload.unsafe_get[StreamFrame]()
             var n = 1 + varint_len(sf.stream_id)
