@@ -22,7 +22,7 @@ from navette.quic.event import (
     ConnectionClosedPayload, StreamResetPayload, StreamStoppedPayload,
 )
 
-from navette.tls.lib import SharedLibrary
+from navette.tls.lib import SharedLibrary, RustlsLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.early_data_store import (
     InMemoryEarlyDataStore, ReplayDecision,
@@ -192,6 +192,77 @@ comptime _MIN_PLAINTEXT_LEN: Int = 4
 
 
 # ── TLS alert -> guard-tag mapping ───────────────────────────────────
+
+
+def _create_server_tls_conn(
+    lib: SharedLibrary,
+    config_handle: Int32,
+    tp_bytes: List[UInt8],
+    profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]],
+) raises -> Int32:
+    """Create a QUIC server TLS connection via FFI, return conn handle."""
+    var tp_len = len(tp_bytes)
+    var tp_buf_buf = Owned[UInt8](tp_len)
+    var tp_buf = tp_buf_buf.ptr()
+    for i in range(tp_len):
+        tp_buf[unsafe_offset=i] = tp_bytes[i]
+    var out_handle_buf = Owned[Int32](1)
+    var out_handle = out_handle_buf.ptr()
+    out_handle[unsafe_offset=0] = Int32(-1)
+    var rlib = lib.inner_ptr()
+    var t_tls_start: UInt64 = 0
+    comptime if PROFILE_ACCEPT:
+        t_tls_start = monotonic_us()
+    var rc = rlib[].quic_server_conn_new(
+        config_handle, Int32(1), tp_buf, Int32(tp_len), out_handle,
+    )
+    comptime if PROFILE_ACCEPT:
+        if profile_ptr is not None:
+            profile_ptr.value()[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
+    if rc < 0:
+        var err = rlib[].last_error()
+        raise "quic_server_conn_new failed: " + err
+    var conn_handle = out_handle[unsafe_offset=0]
+    _ = out_handle_buf
+    if conn_handle < 0:
+        raise "quic_server_conn_new returned invalid handle"
+    return conn_handle
+
+
+def _create_client_tls_conn(
+    lib: SharedLibrary,
+    config_handle: Int32,
+    server_name: String,
+    tp_bytes: List[UInt8],
+) raises -> Int32:
+    """Create a QUIC client TLS connection via FFI, return conn handle."""
+    var sni_bytes = server_name.as_bytes()
+    var sni_len = len(sni_bytes)
+    var sni_buf_buf = Owned[UInt8](sni_len)
+    var sni_buf = sni_buf_buf.ptr()
+    for i in range(sni_len):
+        sni_buf[unsafe_offset=i] = sni_bytes[i]
+    var tp_len = len(tp_bytes)
+    var tp_buf_buf = Owned[UInt8](tp_len)
+    var tp_buf = tp_buf_buf.ptr()
+    for i in range(tp_len):
+        tp_buf[unsafe_offset=i] = tp_bytes[i]
+    var out_handle_buf = Owned[Int32](1)
+    var out_handle = out_handle_buf.ptr()
+    out_handle[unsafe_offset=0] = Int32(-1)
+    var rlib = lib.inner_ptr()
+    var rc = rlib[].quic_client_conn_new(
+        config_handle, Int32(1), sni_buf, Int32(sni_len),
+        tp_buf, Int32(tp_len), out_handle,
+    )
+    if rc < 0:
+        var err = rlib[].last_error()
+        raise "quic_client_conn_new failed: " + err
+    var conn_handle = out_handle[unsafe_offset=0]
+    _ = out_handle_buf
+    if conn_handle < 0:
+        raise "quic_client_conn_new returned invalid handle"
+    return conn_handle
 
 
 def _tls_guard_tag_for(
@@ -611,82 +682,26 @@ struct QuicConnection(Movable):
         local_params: TransportParams,
         now: UInt64,
     ) raises -> QuicConnection:
-        """Create a QUIC client connection.
-
-        Derives initial keys, creates TLS connection, and drives the
-        initial write_hs to generate ClientHello CRYPTO data.
-        """
+        """Create a QUIC client connection."""
         var config_handle = config.handle()
-        # 1. Generate random 8-byte DCID and local CID.
         var dcid = _generate_random_cid()
         var local_cid = _generate_random_cid()
-
-        # 2. Serialize local transport params.
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
         params_copy.initial_scid = List[UInt8](copy=local_cid)
         _apply_m3c_defaults(params_copy)
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
-
-        # 3. Create QUIC client TLS connection.
-        var sni_bytes = server_name.as_bytes()
-        var sni_len = len(sni_bytes)
-        var sni_buf_buf = Owned[UInt8](sni_len)
-        var sni_buf = sni_buf_buf.ptr()
-        for i in range(sni_len):
-            sni_buf[unsafe_offset=i] = sni_bytes[i]
-
-        var tp_len = len(tp_bytes)
-        var tp_buf_buf = Owned[UInt8](tp_len)
-        var tp_buf = tp_buf_buf.ptr()
-        for i in range(tp_len):
-            tp_buf[unsafe_offset=i] = tp_bytes[i]
-
-        var out_handle_buf = Owned[Int32](1)
-        var out_handle = out_handle_buf.ptr()
-        out_handle[unsafe_offset=0] = Int32(-1)
-
-        var rlib = lib.inner_ptr()
-        var rc = rlib[].quic_client_conn_new(
-            config_handle,
-            Int32(1),  # QUIC version 1
-            sni_buf,
-            Int32(sni_len),
-            tp_buf,
-            Int32(tp_len),
-            out_handle,
+        var conn_handle = _create_client_tls_conn(
+            lib, config_handle, server_name, tp_bytes,
         )
-
-        if rc < 0:
-            var err = rlib[].last_error()
-            raise "quic_client_conn_new failed: " + err
-
-        var conn_handle = out_handle[unsafe_offset=0]
-        # Keep out_handle_buf alive across the post-FFI `[0]` read above.
-        _ = out_handle_buf
-
-        if conn_handle < 0:
-            raise "quic_client_conn_new returned invalid handle"
-
-        # 4. Build connection object.
         var conn = QuicConnection(
-            is_server=False,
-            lib=lib,
-            conn_handle=conn_handle,
-            local_params=params_copy,
-            local_cid=local_cid,
-            peer_cid=dcid,
-            initial_dcid=dcid,
-            now=now,
+            is_server=False, lib=lib, conn_handle=conn_handle,
+            local_params=params_copy, local_cid=local_cid,
+            peer_cid=dcid, initial_dcid=dcid, now=now,
         )
-
-        # 5. Derive initial keys from DCID (client side).
         conn.protect.derive_initial_keys(Span(dcid), is_client=True)
-
-        # 6. Drive initial write_hs to get ClientHello CRYPTO data.
         conn._drive_handshake(now)
-
         return conn^
 
     @staticmethod
@@ -699,122 +714,46 @@ struct QuicConnection(Movable):
         now: UInt64,
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
     ) raises -> QuicConnection:
-        """Create a QUIC server connection.
-
-        Derives initial keys from the client's DCID and waits for
-        the client Initial to drive the handshake.
-        """
+        """Create a QUIC server connection."""
         var config_handle = config.handle()
-        # Stamp arrival timestamp BEFORE any FFI call so that
-        # handshake-latency does not under-report by Initial-key-derivation.
-        # The stamp is unconditional (8 bytes).
         var profile_arrival_us = monotonic_us()
-
-        # 1. Generate random 8-byte local CID (server's SCID).
         var local_cid = _generate_random_cid()
-
-        # 2. Serialize local transport params.
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
         params_copy.initial_scid = List[UInt8](copy=local_cid)
         _apply_m3c_defaults(params_copy)
-        # Server sets original_dcid to prove it received the client's Initial.
         var orig_dcid_list = List[UInt8](capacity=len(orig_dcid))
         for i in range(len(orig_dcid)):
             orig_dcid_list.append(orig_dcid[i])
         params_copy.original_dcid = orig_dcid_list^
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
-
-        # 3. Create QUIC server TLS connection.
-        var tp_len = len(tp_bytes)
-        var tp_buf_buf = Owned[UInt8](tp_len)
-        var tp_buf = tp_buf_buf.ptr()
-        for i in range(tp_len):
-            tp_buf[unsafe_offset=i] = tp_bytes[i]
-
-        var out_handle_buf = Owned[Int32](1)
-        var out_handle = out_handle_buf.ptr()
-        out_handle[unsafe_offset=0] = Int32(-1)
-
-        var rlib = lib.inner_ptr()
-        # alloc_tls_handle_us bracket — rustls TLS session alloc FFI call.
-        var t_tls_start: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            t_tls_start = monotonic_us()
-        var rc = rlib[].quic_server_conn_new(
-            config_handle,
-            Int32(1),  # QUIC version 1
-            tp_buf,
-            Int32(tp_len),
-            out_handle,
+        var conn_handle = _create_server_tls_conn(
+            lib, config_handle, tp_bytes, profile_ptr,
         )
-        comptime if PROFILE_ACCEPT:
-            if profile_ptr is not None:
-                profile_ptr.value()[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
-
-        if rc < 0:
-            var err = rlib[].last_error()
-            raise "quic_server_conn_new failed: " + err
-
-        var conn_handle = out_handle[unsafe_offset=0]
-        # Keep out_handle_buf alive across the post-FFI `[0]` read above.
-        _ = out_handle_buf
-
-        if conn_handle < 0:
-            raise "quic_server_conn_new returned invalid handle"
-
-        # 4. Build peer_cid from orig_dcid.
         var peer_cid = List[UInt8](capacity=len(orig_dcid))
         for i in range(len(orig_dcid)):
             peer_cid.append(orig_dcid[i])
-
-        # 5. Build initial_dcid from client_dcid.
         var initial_dcid = List[UInt8](capacity=len(client_dcid))
         for i in range(len(client_dcid)):
             initial_dcid.append(client_dcid[i])
-
-        # 6. Build connection object.
         var conn = QuicConnection(
-            is_server=True,
-            lib=lib,
-            conn_handle=conn_handle,
-            local_params=params_copy,
-            local_cid=local_cid,
-            peer_cid=peer_cid,
-            initial_dcid=initial_dcid,
-            now=now,
+            is_server=True, lib=lib, conn_handle=conn_handle,
+            local_params=params_copy, local_cid=local_cid,
+            peer_cid=peer_cid, initial_dcid=initial_dcid, now=now,
         )
-
-
-        # Plan B: thread prof.ptr + stamp arrival timestamp into the
-        # newly-constructed connection.
         conn.prof.ptr = profile_ptr
         conn.prof.first_initial_us = profile_arrival_us
-        conn.prof.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
-
-        # Cache the server config's 0-RTT opt-in signal once. The per-packet
-        # decrypt path reads `conn.zrtt.enabled` instead of re-crossing
-        # the FFI on every datagram. rustls QUIC constrains the value to
-        # {0, 0xFFFFFFFF}; any non-zero value means "0-RTT opt-in".
+        conn.prof.accept_us = profile_arrival_us
         conn.zrtt.enabled = (config.max_early_data() != UInt32(0))
-
-        # Promote the QuicServerConfig._early_data_store handle into a raw
-        # pointer the decrypt path can call into without crossing the FFI.
         var store_opt = config.early_data_store()
         if store_opt is not None:
             var store_ptr = store_opt.value().unsafe_origin_cast[MutUntrackedOrigin]()
             conn.zrtt.early_data_store_ptr = Optional[
                 Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
             ](store_ptr)
-
         conn.prof.record_handshake_arrival()
-
-        # 7. Derive initial keys from client's DCID (server side).
         conn.protect.derive_initial_keys(client_dcid, is_client=False)
-
-        # 8. Server address validation deferred until Handshake decrypt.
-
         return conn^
 
     # ── Receive path ─────────────────────────────────────────────────
@@ -875,33 +814,17 @@ struct QuicConnection(Movable):
             if header.is_long_header and len(header.scid) > 0:
                 if header.packet_type == PacketType.initial():
                     self.peer_cid = List[UInt8](copy=header.scid)
-            var space_idx: Int = -1
-            if header.is_long_header and header.packet_type == PacketType.zero_rtt():
-                var r = self._handle_zero_rtt_detection(
-                    header, remaining_ptr, remaining_len,
-                )
-                if r[1] > 0:
-                    offset += r[1]
-                    continue
-                if r[0] < 0:
-                    break
-                space_idx = r[0]
-            else:
-                space_idx = packet_type_to_space(header.packet_type)
-            if space_idx < 0:
+            var classify = self._classify_recv_packet(
+                header, remaining_ptr, remaining_len,
+            )
+            if classify[0] == 2:
                 break
-            var key_slot = ZERO_RTT_KEY_SLOT_IDX if space_idx == ZERO_RTT_SPACE_IDX else space_idx
-            if not self.protect.has_keys(key_slot):
-                if header.is_long_header:
-                    var skip = header.pn_offset + Int(header.payload_length)
-                    if skip > remaining_len:
-                        break
-                    offset += skip
-                    continue
-                break
-            var pkt_len = header.pn_offset + Int(header.payload_length) if header.is_long_header else remaining_len
-            if pkt_len > remaining_len:
-                break
+            if classify[0] == 1:
+                offset += classify[3]
+                continue
+            var space_idx = classify[1]
+            var key_slot = classify[2]
+            var pkt_len = classify[3]
             var decrypt_ok = True
             try:
                 var result = self._decrypt_and_dispatch_packet(
@@ -927,6 +850,128 @@ struct QuicConnection(Movable):
             self.prof.end_iter(t_iter, ph_hp, ph_ae, ph_hdr, ph_fp, ph_sm)
             offset += pkt_len
         self._retransmit_crypto_if_needed(lowest_recv_space, closing)
+
+    def _classify_recv_packet(
+        mut self,
+        ref header: PacketHeader,
+        remaining_ptr: Pointer[mut=True, T=UInt8, origin=_],
+        remaining_len: Int,
+    ) raises -> Tuple[Int, Int, Int, Int]:
+        """Classify a packet: 0-RTT detection, space mapping, key check.
+
+        Returns (action, space_idx, key_slot, pkt_len).
+        action: 0=proceed, 1=skip pkt_len bytes, 2=break.
+        """
+        var space_idx: Int = -1
+        if header.is_long_header and header.packet_type == PacketType.zero_rtt():
+            var r = self._handle_zero_rtt_detection(
+                header, remaining_ptr, remaining_len,
+            )
+            if r[1] > 0:
+                return (1, -1, -1, r[1])
+            if r[0] < 0:
+                return (2, -1, -1, 0)
+            space_idx = r[0]
+        else:
+            space_idx = packet_type_to_space(header.packet_type)
+        if space_idx < 0:
+            return (2, -1, -1, 0)
+        var key_slot = ZERO_RTT_KEY_SLOT_IDX if space_idx == ZERO_RTT_SPACE_IDX else space_idx
+        if not self.protect.has_keys(key_slot):
+            if header.is_long_header:
+                var skip = header.pn_offset + Int(header.payload_length)
+                if skip > remaining_len:
+                    return (2, -1, -1, 0)
+                return (1, -1, -1, skip)
+            return (2, -1, -1, 0)
+        var pkt_len = header.pn_offset + Int(header.payload_length) if header.is_long_header else remaining_len
+        if pkt_len > remaining_len:
+            return (2, -1, -1, 0)
+        return (0, space_idx, key_slot, pkt_len)
+
+    def _run_anti_replay_check(mut self) raises:
+        """Execute the one-shot anti-replay check against the early data store."""
+        var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
+        var auth_len = UInt(0)
+        var rc = self._invoke_replay_authenticator_ffi(auth_buf, auth_len)
+        if rc != Int32(0):
+            self.zrtt.replay_decision = UInt8(2)
+            self.prof.record_replay_reject_no_authenticator()
+            return
+        if self.zrtt.early_data_store_ptr is None:
+            self.zrtt.replay_decision = UInt8(2)
+            self.prof.record_replay_reject_no_authenticator()
+            return
+        var auth_span = Span(unsafe_ptr=auth_buf.unsafe_ptr(), length=32)
+        var now_ms: UInt64
+        if self.zrtt.now_ms_override is not None:
+            now_ms = self.zrtt.now_ms_override.value()
+        else:
+            now_ms = monotonic_us() // UInt64(1_000)
+        var raised = False
+        var decision = ReplayDecision.accept()
+        try:
+            var store_ptr = self.zrtt.early_data_store_ptr.value()
+            decision = store_ptr[].check_and_record(auth_span, now_ms)
+        except:
+            raised = True
+        if raised:
+            self.zrtt.replay_decision = UInt8(2)
+            self.prof.record_replay_reject_no_authenticator()
+        elif decision.is_accept():
+            self.zrtt.replay_decision = UInt8(1)
+            self.prof.record_replay_accept()
+        elif decision.is_duplicate():
+            self.zrtt.replay_decision = UInt8(2)
+            self.prof.record_replay_reject_duplicate()
+        elif decision.is_per_key_quota():
+            self.zrtt.replay_decision = UInt8(2)
+            self.prof.record_replay_reject_per_key_quota()
+        else:
+            self.zrtt.replay_decision = UInt8(2)
+            self.prof.record_replay_reject_global_ceiling()
+
+    def _parse_and_dispatch_frames(
+        mut self,
+        pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
+        header_len: Int,
+        plaintext_len: Int,
+        space_idx: Int,
+        closing: Bool,
+        now: UInt64,
+    ) raises -> Bool:
+        """Parse frames via FrameCursor and dispatch each. Returns ack_eliciting."""
+        var cursor = FrameCursor(
+            Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
+        )
+        var parse_failed = False
+        var ack_eliciting = False
+        self._current_space_idx = space_idx
+        while True:
+            var maybe_frame = Optional[Frame]()
+            try:
+                maybe_frame = cursor.next()
+            except:
+                parse_failed = True
+                break
+            if not maybe_frame:
+                break
+            var frame = maybe_frame.take()
+            if closing and not frame.is_connection_close():
+                continue
+            if frame.is_ack_eliciting():
+                ack_eliciting = True
+            self._dispatch_frame(frame^, space_idx, now)
+        self._current_space_idx = -1
+        if parse_failed:
+            self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
+            raise Error("frame parse")
+        var _f11_verdict = predicate_f11_no_frames(cursor.count())
+        if _f11_verdict:
+            var _v11 = _f11_verdict.take()
+            self.close_transport(_v11.error_code, _v11.tag, now)
+            raise Error("no frames")
+        return ack_eliciting
 
     def _handle_zero_rtt_detection(
         mut self,
@@ -967,52 +1012,8 @@ struct QuicConnection(Movable):
             # Path C — 0-RTT disabled.
             return (-1, skip)
 
-        # Anti-replay check — fires at most once per connection.
         if self.zrtt.replay_decision == UInt8(0):
-            var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
-            var auth_len = UInt(0)
-            var rc = self._invoke_replay_authenticator_ffi(
-                auth_buf, auth_len,
-            )
-            if rc != Int32(0):
-                self.zrtt.replay_decision = UInt8(2)
-                self.prof.record_replay_reject_no_authenticator()
-            elif self.zrtt.early_data_store_ptr is None:
-                self.zrtt.replay_decision = UInt8(2)
-                self.prof.record_replay_reject_no_authenticator()
-            else:
-                var auth_span = Span(
-                    unsafe_ptr=auth_buf.unsafe_ptr(), length=32,
-                )
-                var now_ms: UInt64
-                if self.zrtt.now_ms_override is not None:
-                    now_ms = self.zrtt.now_ms_override.value()
-                else:
-                    now_ms = monotonic_us() // UInt64(1_000)
-                var raised = False
-                var decision = ReplayDecision.accept()
-                try:
-                    var store_ptr = self.zrtt.early_data_store_ptr.value()
-                    decision = store_ptr[].check_and_record(
-                        auth_span, now_ms
-                    )
-                except:
-                    raised = True
-                if raised:
-                    self.zrtt.replay_decision = UInt8(2)
-                    self.prof.record_replay_reject_no_authenticator()
-                elif decision.is_accept():
-                    self.zrtt.replay_decision = UInt8(1)
-                    self.prof.record_replay_accept()
-                elif decision.is_duplicate():
-                    self.zrtt.replay_decision = UInt8(2)
-                    self.prof.record_replay_reject_duplicate()
-                elif decision.is_per_key_quota():
-                    self.zrtt.replay_decision = UInt8(2)
-                    self.prof.record_replay_reject_per_key_quota()
-                else:
-                    self.zrtt.replay_decision = UInt8(2)
-                    self.prof.record_replay_reject_global_ceiling()
+            self._run_anti_replay_check()
 
         if self.zrtt.replay_decision == UInt8(2):
             return (-1, skip)
@@ -1077,38 +1078,9 @@ struct QuicConnection(Movable):
             self.state = self.state | CONN_ADDR_VALIDATED
 
         var ph_frame_parse_us = self.prof.stamp()
-        var cursor = FrameCursor(
-            Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
+        var ack_eliciting = self._parse_and_dispatch_frames(
+            pkt_ptr, header_len, plaintext_len, space_idx, closing, now,
         )
-        var _f10_parse_failed = False
-        var ack_eliciting = False
-        self._current_space_idx = space_idx
-        while True:
-            var maybe_frame = Optional[Frame]()
-            try:
-                maybe_frame = cursor.next()
-            except:
-                _f10_parse_failed = True
-                break
-            if not maybe_frame:
-                break
-            var frame = maybe_frame.take()
-            if closing and not frame.is_connection_close():
-                continue
-            if frame.is_ack_eliciting():
-                ack_eliciting = True
-            self._dispatch_frame(frame^, space_idx, now)
-        self._current_space_idx = -1
-        if _f10_parse_failed:
-            self.close_transport(
-                UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
-            )
-            raise Error("frame parse")
-        var _f11_verdict = predicate_f11_no_frames(cursor.count())
-        if _f11_verdict:
-            var _v11 = _f11_verdict.take()
-            self.close_transport(_v11.error_code, _v11.tag, now)
-            raise Error("no frames")
         ph_frame_parse_us = self.prof.elapsed(ph_frame_parse_us)
 
         if not closing:
@@ -1153,86 +1125,34 @@ struct QuicConnection(Movable):
         var offset = stream_frame.offset
         var data_len = UInt64(len(stream_frame.data))
         var fin = stream_frame.fin
-
-        # 1. Create peer stream if needed.
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
-            if stream_is_local(stream_id, self.is_server):
-                raise "PROTOCOL_VIOLATION: frame for unknown locally-initiated stream"
-            var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
-            # Tag every freshly-created peer-initiated stream with the
-            # current packet's dispatch space_idx. `_current_space_idx`
-            # is bookended by the per-packet dispatch loop; this branch
-            # only runs the FIRST time a key appears in `streams`, so
-            # `is_zero_rtt` is set ONCE at insertion-time and the
-            # monotonic-once invariant holds for the stream's lifetime
-            # (existing streams skip this branch entirely on subsequent
-            # STREAM frames). RFC 9001 §4.6 / RFC 8470.
-            var is_zr = (self._current_space_idx == ZERO_RTT_SPACE_IDX)
-            for i in range(len(new_ids)):
-                self.events.append(QuicEvent.stream_opened(new_ids[i]))
-                var nkey = Int(new_ids[i])
-                if nkey in self.stream_map.streams:
-                    self.stream_map.streams[nkey][].is_zero_rtt = is_zr
-
-        # 2. Get stream pointer for direct in-place mutation.
+        self._ensure_peer_stream_exists(key, stream_id)
         var p = self.stream_map.stream_ptr(key)
-
-        # 3. Validate direction: no incoming STREAM on a local uni stream.
         if not p[].is_bidi and p[].is_local:
             raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
-
-        # 4. Validate recv state: must be in RECV or SIZE_KNOWN.
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: no recv state"
         var rs = p[].recv_state.value()
         if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN:
-            # Terminal or post-reset — silently drop.
             return
-
-        # 5. Per-stream flow-control enforcement.
         if not p[].fc_recv:
             raise "internal: missing fc_recv"
-        # F01 — RFC 9000 §4.1: a STREAM frame whose offset+data_len
-        # exceeds the per-stream flow-control window MUST close the
-        # connection with FLOW_CONTROL_ERROR. Saturating-overflow inputs
-        # (`offset + data_len < offset`) are also covered by the
-        # predicate.
         if stream_offset_exceeds_fc(offset, data_len, p[].fc_recv.value().limit):
-            self.close_transport(
-                UInt64(0x03),  # FLOW_CONTROL_ERROR
-                String(GUARD_TAG_STREAM_LARGE_OFFSET),
-                monotonic_us(),
-            )
+            self.close_transport(UInt64(0x03), String(GUARD_TAG_STREAM_LARGE_OFFSET), monotonic_us())
             return
-
-        # 6. Write to the receive buffer (may update stream.fin_offset).
         if not p[].recv_buf:
             raise "internal: missing recv_buf"
         var new_bytes = p[].recv_buf.value().write(
             offset, Span(stream_frame.data), fin, p[].fin_offset
         )
-
-        # 7. Track highest offset observed on this stream.
-        var prev_highest = p[].recv_highest_offset
-        if offset + data_len > prev_highest:
+        if offset + data_len > p[].recv_highest_offset:
             p[].recv_highest_offset = offset + data_len
-
-        # 8. Connection-level flow-control check.
         if not self.stream_map.conn_fc_recv.check_limit(new_bytes):
             raise "FLOW_CONTROL_ERROR: connection FC exceeded"
-
-        # 9. Bump FC counters.
         p[].fc_recv.value().add_received(new_bytes)
         self.stream_map.conn_fc_recv.add_received(new_bytes)
-
-        # 10. Emit readable event if data is now deliverable.
-        var had_readable = p[].recv_buf.value().has_readable()
-
-        if had_readable:
+        if p[].recv_buf.value().has_readable():
             self.events.append(QuicEvent.stream_readable(stream_id))
-
-        # 11. Recv-state transitions on FIN.
         if fin:
             if rs == RecvState.RECV:
                 p[].recv_state = Optional[RecvState](RecvState.SIZE_KNOWN)
@@ -1240,6 +1160,20 @@ struct QuicConnection(Movable):
             if rs == RecvState.SIZE_KNOWN:
                 if p[].recv_buf.value().is_complete(p[].fin_offset):
                     p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
+
+    def _ensure_peer_stream_exists(mut self, key: Int, stream_id: UInt64) raises:
+        """Create a peer-initiated stream if it doesn't exist yet."""
+        if key in self.stream_map.streams:
+            return
+        if stream_is_local(stream_id, self.is_server):
+            raise "PROTOCOL_VIOLATION: frame for unknown locally-initiated stream"
+        var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+        var is_zr = (self._current_space_idx == ZERO_RTT_SPACE_IDX)
+        for i in range(len(new_ids)):
+            self.events.append(QuicEvent.stream_opened(new_ids[i]))
+            var nkey = Int(new_ids[i])
+            if nkey in self.stream_map.streams:
+                self.stream_map.streams[nkey][].is_zero_rtt = is_zr
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
         """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
@@ -1855,30 +1789,7 @@ struct QuicConnection(Movable):
             for i in range(len(acked)):
                 self._on_app_pkt_acked(Int(acked[i].pn))
 
-        # Update RTT from the largest newly acked packet.
-        var largest_acked_pn = ack_frame.largest_ack
-        # Find the sent packet matching largest_ack for RTT.
-        for i in range(len(acked)):
-            if acked[i].pn == largest_acked_pn:
-                var rtt_sample = now - acked[i].time_sent
-                if now >= acked[i].time_sent:
-                    # Convert ack_delay using peer's exponent when available.
-                    var ade = self.local_params.ack_delay_exponent
-                    var mad = self.local_params.max_ack_delay
-                    if self.peer_params:
-                        ade = self.peer_params.value().ack_delay_exponent
-                        mad = self.peer_params.value().max_ack_delay
-                    var ack_delay_us = ack_frame.ack_delay * (
-                        UInt64(1) << ade
-                    )
-                    var max_ack_delay_us = mad * 1000
-                    self.recovery.update_rtt(
-                        rtt_sample,
-                        ack_delay_us,
-                        max_ack_delay_us,
-                        self.handshake_confirmed,
-                    )
-                break
+        self._update_rtt_from_ack(acked, ack_frame, now)
 
         # Release bytes for acked packets and fan out to congestion controller.
         # Also advance the per-space last_ae_acked_time_sent tracker used by
@@ -1929,6 +1840,26 @@ struct QuicConnection(Movable):
         #   has no ECN counts) and CE increments for congestion signaling.
         if self.ecn.state != ECN_STATE_DISABLED:
             self._process_ecn_feedback(space_idx, ack_frame, ect0_acked_count, now)
+
+    def _update_rtt_from_ack(
+        mut self, acked: List[SentPacket], ref ack_frame: AckFrame, now: UInt64,
+    ):
+        """Update RTT estimate from the largest newly acked packet."""
+        var largest_acked_pn = ack_frame.largest_ack
+        for i in range(len(acked)):
+            if acked[i].pn == largest_acked_pn:
+                if now >= acked[i].time_sent:
+                    var rtt_sample = now - acked[i].time_sent
+                    var ade = self.local_params.ack_delay_exponent
+                    var mad = self.local_params.max_ack_delay
+                    if self.peer_params:
+                        ade = self.peer_params.value().ack_delay_exponent
+                        mad = self.peer_params.value().max_ack_delay
+                    var ack_delay_us = ack_frame.ack_delay * (UInt64(1) << ade)
+                    self.recovery.update_rtt(
+                        rtt_sample, ack_delay_us, mad * 1000, self.handshake_confirmed,
+                    )
+                break
 
     # ── Loss detection ───────────────────────────────────────────────
 
@@ -1982,30 +1913,7 @@ struct QuicConnection(Movable):
                     )
                 )
 
-        # Process lost packets (teardown + retransmission hooks).
-        for i in range(len(lost_pns)):
-            var pn_key = lost_pns[i]
-            var maybe_lost = self.spaces[space_idx].forget_sent(pn_key)
-            if maybe_lost:
-                var lost_pkt = maybe_lost.take()
-                # Decrement ECT(0) in-flight on loss.
-                if lost_pkt.ecn_mark == ECN_ECT0:
-                    if self.spaces[space_idx].ect0_in_flight > UInt64(0):
-                        self.spaces[space_idx].ect0_in_flight -= UInt64(1)
-                self.recovery.on_packet_lost(lost_pkt.size, lost_pkt.in_flight)
-
-                # Re-queue CRYPTO frames for retransmission at their
-                # original offset so the peer receives correct offsets.
-                for f in range(len(lost_pkt.frames)):
-                    if lost_pkt.frames[f].is_crypto():
-                        ref cf = lost_pkt.frames[f].as_crypto()
-                        self.crypto_streams[space_idx].requeue(
-                            cf.offset, Span(cf.data)
-                        )
-
-                # Re-apply stream-layer loss handling for Application space.
-                if space_idx == 2:
-                    self._on_app_pkt_lost(pn_key)
+        self._process_lost_packets(space_idx, lost_pns)
 
         # Recapture the buffer so its capacity is reused next call.
         self._scratch_lost_pns = lost_pns^
@@ -2024,6 +1932,26 @@ struct QuicConnection(Movable):
         )
 
     # ── Persistent-congestion detection (RFC 9002 §7.6.2) ────────────
+
+    def _process_lost_packets(mut self, space_idx: Int, lost_pns: List[Int]) raises:
+        """Teardown lost packets: release bytes, requeue CRYPTO, notify streams."""
+        for i in range(len(lost_pns)):
+            var pn_key = lost_pns[i]
+            var maybe_lost = self.spaces[space_idx].forget_sent(pn_key)
+            if maybe_lost:
+                var lost_pkt = maybe_lost.take()
+                if lost_pkt.ecn_mark == ECN_ECT0:
+                    if self.spaces[space_idx].ect0_in_flight > UInt64(0):
+                        self.spaces[space_idx].ect0_in_flight -= UInt64(1)
+                self.recovery.on_packet_lost(lost_pkt.size, lost_pkt.in_flight)
+                for f in range(len(lost_pkt.frames)):
+                    if lost_pkt.frames[f].is_crypto():
+                        ref cf = lost_pkt.frames[f].as_crypto()
+                        self.crypto_streams[space_idx].requeue(
+                            cf.offset, Span(cf.data)
+                        )
+                if space_idx == 2:
+                    self._on_app_pkt_lost(pn_key)
 
     def _detect_persistent_congestion(
         self,
@@ -2150,317 +2078,230 @@ struct QuicConnection(Movable):
         """Drain crypto data and feed/read from TLS state machine."""
         if self.conn_handle < 0:
             return
-
         var t_drive_start = self.prof.begin_drive()
-
         var lib = self._lib.inner_ptr()
+        self._feed_crypto_to_tls(lib, now)
+        self._drain_tls_output(lib)
+        var hs_state = lib[].quic_conn_is_handshaking(self.conn_handle)
+        if hs_state == Int32(0):
+            self._on_handshake_complete(now)
+        self.prof.end_drive(t_drive_start)
 
-        # 1. Drain contiguous CRYPTO bytes from each space's crypto_stream
-        #    and feed them to the TLS engine.
+    def _feed_crypto_to_tls(
+        mut self,
+        lib: Pointer[mut=True, T=RustlsLibrary, origin=_],
+        now: UInt64,
+    ) raises:
+        """Feed pending CRYPTO bytes from each space to the TLS engine."""
         for level in range(3):
-            if self.crypto_streams[level].has_pending():
-                var crypto_data = self.crypto_streams[level].drain()
-                if len(crypto_data) > 0:
-                    var t_input_start = self.prof.stamp()
-                    var data_buf_owned = Owned[UInt8](len(crypto_data))
-                    var data_buf = data_buf_owned.ptr()
-                    for i in range(len(crypto_data)):
-                        data_buf[unsafe_offset=i] = crypto_data[i]
-                    var input_marshalling_us = self.prof.elapsed(t_input_start)
-
-                    var t_start = self.prof.stamp_ffi()
-                    # out-param locals always declared (zero-cost; comptime
-                    # branch chooses 5-arg wired call vs legacy 3-arg below).
-                    # Slot order matches src/tls/lib.mojo:499 quic_conn_read_hs:
-                    #   slot 1: out_state_machine_us (rustls read_hs body µs)
-                    #   slot 2: out_handle_lookup_us (with_mut handle-table lookup µs)
-                    var rc: Int32 = Int32(0)
-                    var out_sm_us: UInt64 = UInt64(0)
-                    var out_lookup_us: UInt64 = UInt64(0)
-                    comptime if PROFILE_ACCEPT:
-                        if self.prof.is_active():
-                            rc = lib[].quic_conn_read_hs(
-                                self.conn_handle,
-                                data_buf,
-                                Int32(len(crypto_data)),
-                                Pointer(to=out_sm_us),
-                                Pointer(to=out_lookup_us),
-                            )
-                        else:
-                            rc = lib[].quic_conn_read_hs(
-                                self.conn_handle,
-                                data_buf,
-                                Int32(len(crypto_data)),
-                            )
-                    else:
-                        rc = lib[].quic_conn_read_hs(
-                            self.conn_handle,
-                            data_buf,
-                            Int32(len(crypto_data)),
-                        )
-                    self.prof.record_ffi_read_hs_end(
-                        t_start, input_marshalling_us, out_sm_us, out_lookup_us,
+            if not self.crypto_streams[level].has_pending():
+                continue
+            var crypto_data = self.crypto_streams[level].drain()
+            if len(crypto_data) == 0:
+                continue
+            var t_input_start = self.prof.stamp()
+            var data_buf_owned = Owned[UInt8](len(crypto_data))
+            var data_buf = data_buf_owned.ptr()
+            for i in range(len(crypto_data)):
+                data_buf[unsafe_offset=i] = crypto_data[i]
+            var input_marshalling_us = self.prof.elapsed(t_input_start)
+            var t_start = self.prof.stamp_ffi()
+            var rc: Int32 = Int32(0)
+            var out_sm_us: UInt64 = UInt64(0)
+            var out_lookup_us: UInt64 = UInt64(0)
+            comptime if PROFILE_ACCEPT:
+                if self.prof.is_active():
+                    rc = lib[].quic_conn_read_hs(
+                        self.conn_handle, data_buf,
+                        Int32(len(crypto_data)),
+                        Pointer(to=out_sm_us), Pointer(to=out_lookup_us),
                     )
+                else:
+                    rc = lib[].quic_conn_read_hs(
+                        self.conn_handle, data_buf, Int32(len(crypto_data)),
+                    )
+            else:
+                rc = lib[].quic_conn_read_hs(
+                    self.conn_handle, data_buf, Int32(len(crypto_data)),
+                )
+            self.prof.record_ffi_read_hs_end(
+                t_start, input_marshalling_us, out_sm_us, out_lookup_us,
+            )
+            if rc < 0:
+                var alert_code = lib[].quic_conn_alert(self.conn_handle)
+                var crypto_error = UInt64(0x0100) | UInt64(alert_code)
+                self.close_transport(crypto_error, _tls_guard_tag_for(alert_code, self.current_level, self.handshake_confirmed, String(GUARD_TAG_TLS_KEYUPDATE_1RTT)), now)
+                return
 
-                    if rc < 0:
-                        # Close + return on the TLS-error path. The I/O loop's
-                        # catch-all would swallow a raise here, leaving the
-                        # connection stuck in CONN_HANDSHAKING; instead we
-                        # surface the rustls alert as a CRYPTO_ERROR
-                        # CONNECTION_CLOSE (RFC 9001 §4.8: 0x0100 | alert).
-                        # `_tls_guard_tag_for` disambiguates the 10/50 alert
-                        # codes between F25 (Handshake KeyUpdate) and F29
-                        # (1-RTT EndOfEarlyData) by encryption level; the
-                        # `fallback` argument is the GUARD-TAG used when the
-                        # alert byte isn't in {10, 47, 50, 120}, kept visible
-                        # at the call site for grep-traceability.
-                        var alert_code = lib[].quic_conn_alert(self.conn_handle)
-                        var crypto_error = UInt64(0x0100) | UInt64(alert_code)
-                        self.close_transport(crypto_error, _tls_guard_tag_for(alert_code, self.current_level, self.handshake_confirmed, String(GUARD_TAG_TLS_KEYUPDATE_1RTT)), now)
-                        return
-
-        # 2. Loop write_hs to drain TLS output.
+    def _drain_tls_output(
+        mut self,
+        lib: Pointer[mut=True, T=RustlsLibrary, origin=_],
+    ) raises:
+        """Loop write_hs to drain TLS output and install new keys."""
         var out_buf_owned = Owned[UInt8](_WRITE_HS_BUF_SIZE)
         var out_buf = out_buf_owned.ptr()
         var out_written_owned = Owned[Int32](1)
         var out_written = out_written_owned.ptr()
         var out_kc_owned = Owned[UInt8](1)
         var out_kc = out_kc_owned.ptr()
-
         while True:
             out_written[unsafe_offset=0] = Int32(0)
             out_kc[unsafe_offset=0] = UInt8(0)
-
             var t_start = self.prof.stamp_ffi()
             var rc = lib[].quic_conn_write_hs(
-                self.conn_handle,
-                out_buf,
-                Int32(_WRITE_HS_BUF_SIZE),
-                out_written,
-                out_kc,
+                self.conn_handle, out_buf,
+                Int32(_WRITE_HS_BUF_SIZE), out_written, out_kc,
             )
             self.prof.record_ffi_write_hs_end(t_start)
-
             if rc < 0:
                 var err = lib[].last_error()
                 raise "quic_conn_write_hs failed: " + err
-
             var kc = out_kc[unsafe_offset=0]
             var written = Int(out_written[unsafe_offset=0])
-
-            # The data output in this write_hs call belongs to the CURRENT
-            # level (before any key change). Capture it first, then install
-            # new keys.
-            #
-            # kc: 0=none, 1=Handshake keys ready, 2=1-RTT keys ready.
-
-            # Write TLS bytes at the CURRENT level before advancing.
             if written > 0:
                 var target_level = self.current_level
                 var tls_data = List[UInt8](capacity=written)
                 for i in range(written):
                     tls_data.append(out_buf[unsafe_offset=i])
                 self.crypto_streams[target_level].write(Span(tls_data))
-
-            # Now handle key change AFTER writing data.
             if kc != UInt8(0):
-                var keys_handle_buf_owned = Owned[Int32](1)
-                var keys_handle_buf = keys_handle_buf_owned.ptr()
-                keys_handle_buf[unsafe_offset=0] = Int32(-1)
-
-                var t_start = self.prof.stamp_ffi()
-                var take_rc = lib[].quic_conn_take_keys(
-                    self.conn_handle, keys_handle_buf
-                )
-                self.prof.record_ffi_take_keys_end(t_start)
-
-                if take_rc < 0:
-                    var err = lib[].last_error()
-                    raise "quic_conn_take_keys failed: " + err
-
-                var new_keys = keys_handle_buf[unsafe_offset=0]
-                # Keep keys_handle_buf alive across the post-FFI `[0]` read.
-                _ = keys_handle_buf_owned
-
-                if kc == UInt8(1):
-                    # Handshake keys.
-                    self.protect.set_keys(1, new_keys)
-                    self.current_level = 1
-                elif kc == UInt8(2):
-                    # 1-RTT (Application) keys.
-                    self.protect.set_keys(2, new_keys)
-                    self.current_level = 2
-
+                self._install_new_keys(lib, kc)
             if written == 0 and kc == UInt8(0):
-                break  # No more TLS output and no key change
+                break
 
-        # 3. Check if handshake is complete.
-        var hs_state = lib[].quic_conn_is_handshaking(self.conn_handle)
-        if hs_state == Int32(0):
-            # Handshake complete.
-            self._on_handshake_complete(now)
-
-        self.prof.end_drive(t_drive_start)
+    def _install_new_keys(
+        mut self,
+        lib: Pointer[mut=True, T=RustlsLibrary, origin=_],
+        kc: UInt8,
+    ) raises:
+        """Take keys from TLS and install at the appropriate level."""
+        var keys_handle_buf_owned = Owned[Int32](1)
+        var keys_handle_buf = keys_handle_buf_owned.ptr()
+        keys_handle_buf[unsafe_offset=0] = Int32(-1)
+        var t_start = self.prof.stamp_ffi()
+        var take_rc = lib[].quic_conn_take_keys(
+            self.conn_handle, keys_handle_buf
+        )
+        self.prof.record_ffi_take_keys_end(t_start)
+        if take_rc < 0:
+            var err = lib[].last_error()
+            raise "quic_conn_take_keys failed: " + err
+        var new_keys = keys_handle_buf[unsafe_offset=0]
+        _ = keys_handle_buf_owned
+        if kc == UInt8(1):
+            self.protect.set_keys(1, new_keys)
+            self.current_level = 1
+        elif kc == UInt8(2):
+            self.protect.set_keys(2, new_keys)
+            self.current_level = 2
 
     def _on_handshake_complete(mut self, now: UInt64) raises:
         """Called when TLS reports handshake is complete."""
         if (self.state & CONN_ESTABLISHED) != 0:
-            return  # Already processed
-
+            return
         if self.is_server:
             self.prof.record_hs_complete(now)
-
-        # Increment full/resumed counter exactly once per server connection.
-        # Runtime gate only (not @parameter if PROFILE_ACCEPT:) so the test
-        # build (PROFILE_ACCEPT=False) can verify the increment by attaching a
-        # prof.ptr directly.
-        # prof.ptr is null when PROFILE_ACCEPT=False (no bench attachment),
-        # so the runtime branch is paid at most once per server handshake.
-        if self.is_server and self.prof.ptr is not None:
-            var hs_kind = self._lib.inner_ptr()[].quic_conn_handshake_kind(self.conn_handle)
-            if hs_kind == Int32(1) or hs_kind == Int32(3):
-                self.prof.ptr.value()[].record_handshake_full()
-            elif hs_kind == Int32(2):
-                self.prof.ptr.value()[].record_handshake_resumed()
-            elif hs_kind == Int32(0):
-                raise (
-                    "_on_handshake_complete: handshake_kind=0 with "
-                    + "is_handshaking==false (rustls state-machine "
-                    + "invariant broken)"
-                )
-            # hs_kind == -2 (client path) or -1 (invalid handle): no-op.
-            # is_server gate above already excludes client; -1 means the conn
-            # handle was freed mid-call (should never happen in practice).
-
-            # Record per-fresh-conn FFI total at handshake-complete.
-            # Fires once per server connection regardless of resumption
-            # status, gated by is_server (runtime) + prof.ptr != 0 (runtime).
-            # Under PROFILE_ACCEPT=False, prof.fresh_conn_ffi_us_total stays 0
-            # (no increments in the comptime-gated bracket sites) but the
-            # record still fires — bucket[0] gets 1 sample (value=0 maps
-            # to bucket index 0 in _per_pkt_bucket).
-            self.prof.ptr.value()[].record_fresh_conn_ffi_us(self.prof.fresh_conn_ffi_us_total)
-            # Record per-handshake read_hs call count.
-            self.prof.ptr.value()[].record_read_hs_per_handshake_count(Int(self.prof.read_hs_call_count))
-            # Per-FD wait vs CPU breakdown.
-            if self.prof.accept_us > UInt64(0):
-                var now_hs = monotonic_us()
-                var wall_us = now_hs - self.prof.accept_us
-                if wall_us >= self.prof.hs_cpu_us_total:
-                    self.prof.hs_wait_us_total = wall_us - self.prof.hs_cpu_us_total
-                else:
-                    self.prof.hs_wait_us_total = UInt64(0)
-                self.prof.ptr.value()[].record_hs_cpu_us_per_handshake(self.prof.hs_cpu_us_total)
-                self.prof.ptr.value()[].record_hs_wait_us_per_handshake(self.prof.hs_wait_us_total)
-
-        # Clear HANDSHAKING flag.
+        self._record_handshake_profile_stats()
         self.state = self.state & ~CONN_HANDSHAKING
+        self._apply_peer_transport_params(now)
+        # Seed Application-space PN skip RNG from local_cid.
+        var pn_skip_seed = UInt64(0)
+        for i in range(min(Int(8), Int(len(self.local_cid)))):
+            pn_skip_seed = (pn_skip_seed << 8) | UInt64(self.local_cid[i])
+        if pn_skip_seed == 0:
+            pn_skip_seed = UInt64(0xDEADBEEFCAFEB00F)
+        self.spaces[2].pn_skip_rng  = pn_skip_seed
+        self.spaces[2].pn_skip_next = 200 + (pn_skip_seed % 300)
+        self._promote_to_established()
 
-        # Read peer transport params.
+    def _record_handshake_profile_stats(mut self) raises:
+        """Record handshake kind, FFI totals, and CPU/wait breakdown."""
+        if not self.is_server or self.prof.ptr is None:
+            return
+        var hs_kind = self._lib.inner_ptr()[].quic_conn_handshake_kind(self.conn_handle)
+        if hs_kind == Int32(1) or hs_kind == Int32(3):
+            self.prof.ptr.value()[].record_handshake_full()
+        elif hs_kind == Int32(2):
+            self.prof.ptr.value()[].record_handshake_resumed()
+        elif hs_kind == Int32(0):
+            raise (
+                "_on_handshake_complete: handshake_kind=0 with "
+                + "is_handshaking==false (rustls state-machine "
+                + "invariant broken)"
+            )
+        self.prof.ptr.value()[].record_fresh_conn_ffi_us(self.prof.fresh_conn_ffi_us_total)
+        self.prof.ptr.value()[].record_read_hs_per_handshake_count(Int(self.prof.read_hs_call_count))
+        if self.prof.accept_us > UInt64(0):
+            var now_hs = monotonic_us()
+            var wall_us = now_hs - self.prof.accept_us
+            if wall_us >= self.prof.hs_cpu_us_total:
+                self.prof.hs_wait_us_total = wall_us - self.prof.hs_cpu_us_total
+            else:
+                self.prof.hs_wait_us_total = UInt64(0)
+            self.prof.ptr.value()[].record_hs_cpu_us_per_handshake(self.prof.hs_cpu_us_total)
+            self.prof.ptr.value()[].record_hs_wait_us_per_handshake(self.prof.hs_wait_us_total)
+
+    def _apply_peer_transport_params(mut self, now: UInt64) raises:
+        """Read, parse, validate, and apply peer transport parameters."""
         var tp_buf_owned = Owned[UInt8](_TP_BUF_SIZE)
         var tp_buf = tp_buf_owned.ptr()
         var tp_written_owned = Owned[Int32](1)
         var tp_written = tp_written_owned.ptr()
         tp_written[unsafe_offset=0] = Int32(0)
-
         var lib = self._lib.inner_ptr()
         var rc = lib[].quic_conn_transport_params(
-            self.conn_handle,
-            tp_buf,
-            Int32(_TP_BUF_SIZE),
-            tp_written,
+            self.conn_handle, tp_buf, Int32(_TP_BUF_SIZE), tp_written,
         )
-
-        if rc == Int32(0) and Int(tp_written[unsafe_offset=0]) > 0:
-            var tp_len = Int(tp_written[unsafe_offset=0])
-            var tp_bytes = List[UInt8](capacity=tp_len)
-            for i in range(tp_len):
-                tp_bytes.append(tp_buf[unsafe_offset=i])
-            # Keep the out-buffers alive across the post-FFI reads above
-            # (tp_written[0] and the tp_buf[i] copy loop).
-            _ = tp_written_owned
-            _ = tp_buf_owned
-
-            # Parse the peer's transport parameters. The parser raises with a
-            # GUARD_TAG_TP_* bracketed prefix on §18.2 range violations
-            # (F07/F08/F09); any other parse error here is still a
-            # TRANSPORT_PARAMETER_ERROR per RFC 9000 §20.1. We follow the
-            # "close + return" model: queue a transport CONNECTION_CLOSE
-            # (0x1c) with error_code 0x08 and the raised string as the
-            # reason, then return without raising so the I/O loop does not
-            # swallow this on its catch-all path.
-            var peer_tp: TransportParams
+        if rc != Int32(0) or Int(tp_written[unsafe_offset=0]) <= 0:
+            return
+        var tp_len = Int(tp_written[unsafe_offset=0])
+        var tp_bytes = List[UInt8](capacity=tp_len)
+        for i in range(tp_len):
+            tp_bytes.append(tp_buf[unsafe_offset=i])
+        _ = tp_written_owned
+        _ = tp_buf_owned
+        var peer_tp: TransportParams
+        try:
+            peer_tp = parse_transport_params(Span(tp_bytes))
+        except e:
+            self.close_transport(UInt64(0x08), String(e), now)
+            return
+        if self.is_server:
             try:
-                peer_tp = parse_transport_params(Span(tp_bytes))
+                validate_client_transport_params(peer_tp)
             except e:
                 self.close_transport(UInt64(0x08), String(e), now)
                 return
+        self.peer_params = TransportParams(copy=peer_tp)
+        self.events.append(QuicEvent.peer_transport_params(peer_tp))
+        var peer = self.peer_params.value().copy()
+        self.stream_map.set_peer_limits(
+            max_streams_bidi=peer.initial_max_streams_bidi,
+            max_streams_uni=peer.initial_max_streams_uni,
+            stream_fc_bidi_local=peer.initial_max_stream_data_bidi_local,
+            stream_fc_bidi_remote=peer.initial_max_stream_data_bidi_remote,
+            stream_fc_uni=peer.initial_max_stream_data_uni,
+            conn_fc_send_limit=peer.initial_max_data,
+        )
+        self.cid_mgr.peer_active_limit = peer.active_connection_id_limit
+        self.cid_mgr.retire_queue_cap = Int(peer.active_connection_id_limit) * 8
+        _ = self.cid_mgr.issue_new_cid()
 
-            # Server-side §7.3 + §18.2 validation: required ISCID (F02) and
-            # forbidden server-only fields (F03-F06). Each violation raises
-            # with the matching GUARD_TAG_TP_* prefix, which we propagate
-            # verbatim through close_transport so the out-of-process
-            # scenarios can grep the reason phrase.
-            if self.is_server:
-                try:
-                    validate_client_transport_params(peer_tp)
-                except e:
-                    self.close_transport(UInt64(0x08), String(e), now)
-                    return
-
-            self.peer_params = TransportParams(copy=peer_tp)
-            self.events.append(QuicEvent.peer_transport_params(peer_tp))
-
-            # Propagate peer limits into StreamMap and CidManager.
-            var peer = self.peer_params.value().copy()
-            self.stream_map.set_peer_limits(
-                max_streams_bidi=peer.initial_max_streams_bidi,
-                max_streams_uni=peer.initial_max_streams_uni,
-                stream_fc_bidi_local=peer.initial_max_stream_data_bidi_local,
-                stream_fc_bidi_remote=peer.initial_max_stream_data_bidi_remote,
-                stream_fc_uni=peer.initial_max_stream_data_uni,
-                conn_fc_send_limit=peer.initial_max_data,
-            )
-            self.cid_mgr.peer_active_limit = peer.active_connection_id_limit
-            self.cid_mgr.retire_queue_cap = Int(peer.active_connection_id_limit) * 8
-
-            # Issue a spare local CID (seq=1) so the peer has a backup.
-            _ = self.cid_mgr.issue_new_cid()
-
-        # Seed Application-space PN skip RNG from local_cid (per-connection).
-        # Initial and Handshake spaces retain pn_skip_rng=0 (skip disabled).
-        var pn_skip_seed = UInt64(0)
-        for i in range(min(Int(8), Int(len(self.local_cid)))):
-            pn_skip_seed = (pn_skip_seed << 8) | UInt64(self.local_cid[i])
-        if pn_skip_seed == 0:
-            pn_skip_seed = UInt64(0xDEADBEEFCAFEB00F)  # degenerate fallback (1-in-2^64)
-        self.spaces[2].pn_skip_rng  = pn_skip_seed
-        self.spaces[2].pn_skip_next = 200 + (pn_skip_seed % 300)
-
+    def _promote_to_established(mut self) raises:
+        """Transition to ESTABLISHED, discard handshake keys, queue event."""
         if self.is_server:
-            # Server: set ESTABLISHED, discard Initial & Handshake, queue HANDSHAKE_DONE.
             self.state = self.state | CONN_ESTABLISHED
             self.handshake_confirmed = True
             self._discard_initial_space()
             self._discard_handshake_space()
-            # RFC 9001 §4.1.3 — discard 0-RTT decrypt keys at handshake-complete.
-            # Placed AFTER CONN_ESTABLISHED is set so re-entry is blocked by the
-            # early-return; BEFORE any subsequent control flow that could exit
-            # without firing the discard.
             self._discard_zero_rtt_keys()
             self.send_handshake_done = True
             self.events.append(QuicEvent.handshake_complete())
         else:
-            # Client: discard Initial. If handshake_confirmed (via 1-RTT ACK),
-            # also set ESTABLISHED and discard Handshake.
             self._discard_initial_space()
             if self.handshake_confirmed:
                 self.state = self.state | CONN_ESTABLISHED
                 self._discard_handshake_space()
-                # RFC 9001 §4.1.3 — discard 0-RTT keys at handshake-complete.
-                # No-op on the client side because slot 3 is unpopulated on
-                # clients today; wired here for symmetry so a future
-                # client-side install (if one is ever added) is also covered.
                 self._discard_zero_rtt_keys()
                 self.events.append(QuicEvent.handshake_complete())
 
@@ -2745,7 +2586,22 @@ struct QuicConnection(Movable):
                 return (None, should_end)
             if deferred and self.crypto_streams[0].has_unsent():
                 should_end = True
-        # Serialize control frames into stream_payload.
+        var plan = self._finalize_packet_plan(
+            space_idx, frames^, sent_records^, stream_payload^,
+            ack_committed, has_stream_data,
+        )
+        return (Optional[_PacketPlan](plan^), should_end)
+
+    def _finalize_packet_plan(
+        mut self,
+        space_idx: Int,
+        var frames: List[Frame],
+        var sent_records: List[SentStreamFrame],
+        var stream_payload: List[UInt8],
+        ack_committed: Bool,
+        has_stream_data: Bool,
+    ) raises -> _PacketPlan:
+        """Serialize control frames and assemble a _PacketPlan."""
         var has_control = False
         for fi in range(len(frames)):
             if not frames[fi].is_crypto():
@@ -2762,11 +2618,10 @@ struct QuicConnection(Movable):
                     serialize_frame(frames[fi], writer)
             stream_payload.extend(Span(writer.buf))
             swap(self._scratch_writer_buf, writer.buf)
-        var plan = _PacketPlan(
+        return _PacketPlan(
             space_idx, frames^, sent_records^, stream_payload^,
             ack_committed, has_stream_data,
         )
-        return (Optional[_PacketPlan](plan^), should_end)
 
     def _commit_plans_to_datagram(
         mut self,
@@ -3003,51 +2858,89 @@ struct QuicConnection(Movable):
                 self.initial_cids_emitted = True
 
             self._build_app_frames(frames, sent_records, stream_payload, budget, used)
-
-            # RFC 9000 §8.2 / §17.2.4: PATH_RESPONSE and PATH_CHALLENGE are
-            # 1-RTT-only (F13 already closes Initial/Handshake at RX). Each
-            # frame is 9 bytes; the emitters drain their queues wholesale, so
-            # a batch is taken only when the whole batch fits.
-            var n_resp = len(self.path.pending_responses)
-            if n_resp > 0 and used + 9 * n_resp <= budget:
-                var path_responses = self.emit_path_response_frames()
-                for i in range(len(path_responses)):
-                    ref pr = path_responses[i]
-                    frames.append(pr.copy())
-                used += 9 * n_resp
-            var n_chal = len(self.path.validator.pending)
-            if n_chal > 0 and used + 9 * n_chal <= budget:
-                var path_challenges = self.emit_path_challenge_frames(now)
-                for i in range(len(path_challenges)):
-                    ref pc = path_challenges[i]
-                    frames.append(pc.copy())
-                used += 9 * n_chal
-
-            # RFC 9221 §5: drain outbound DATAGRAM payloads into 1-RTT
-            # DATAGRAM_LEN (0x31) frames so they compose with stream/ACK
-            # frames in the same packet. Entries are consumed from a head
-            # index (no per-pop rebuild); the list is reset once empty. We do
-            # NOT append entries to `sent_records`: DATAGRAMs are not
-            # retransmitted on loss (RFC 9221 §5.4), so loss-recovery must
-            # treat the carrying packet's DATAGRAMs as discarded.
-            while self._outbound_dg_head < len(self.pending_outbound_datagrams):
-                var dl = len(self.pending_outbound_datagrams[self._outbound_dg_head])
-                var wl = 1 + varint_len(UInt64(dl)) + dl
-                if used + wl > budget:
-                    if wl > self._max_app_payload():
-                        raise "DATAGRAM frame of " + String(wl) + " bytes can never fit a packet"
-                    break
-                var head = List[UInt8](copy=self.pending_outbound_datagrams[self._outbound_dg_head])
-                self._outbound_dg_head += 1
-                frames.append(Frame.datagram_with_len(head^))
-                used += wl
-            if self._outbound_dg_head >= len(self.pending_outbound_datagrams):
-                self.pending_outbound_datagrams = List[List[UInt8]]()
-                self._outbound_dg_head = 0
+            self._build_path_and_datagram_frames(frames, used, budget, now)
 
     def _max_app_payload(self) -> Int:
         """Largest plaintext a 1-RTT packet can carry in an empty datagram."""
         return MAX_DATAGRAM_SIZE - self._header_len(2) - _AEAD_TAG_LEN
+
+    def _emit_one_stream_frame(
+        mut self,
+        sid: Int,
+        p: UnsafePointer[Stream, MutUntrackedOrigin],
+        ss: SendState,
+        limit: Int,
+        mut sent_records: List[SentStreamFrame],
+        mut stream_payload: List[UInt8],
+        budget: Int,
+        used: Int,
+    ) raises -> Optional[Tuple[Int, UInt64]]:
+        """Emit a single STREAM frame for one stream. Returns (new_used, conn_delta) or None."""
+        var meta = p[].send_buf.value().prepare_frame(limit)
+        if not meta:
+            return None
+        var frame_meta = meta.value()
+        var frame_offset = frame_meta[0]
+        var chunk_size = frame_meta[1]
+        var frame_fin = frame_meta[2]
+        var frame_len = UInt64(chunk_size)
+        var data_view = p[].send_buf.value().data_span(frame_offset, chunk_size)
+        var wl = write_stream_frame_direct(
+            stream_payload, budget=budget - used,
+            stream_id=p[].id, offset=frame_offset, data=data_view, fin=frame_fin,
+        )
+        debug_assert(wl > 0 and used + wl <= budget, "STREAM frame exceeds its charge")
+        var new_used = used + wl
+        var conn_delta = UInt64(0)
+        var prev_end = frame_offset + frame_len
+        if prev_end > p[].fc_send.value().received:
+            conn_delta = prev_end - p[].fc_send.value().received
+            p[].fc_send.value().add_received(conn_delta)
+        if ss == SendState.READY:
+            p[].send_state = Optional[SendState](SendState.SEND)
+        if frame_fin and p[].send_buf.value().fin_offset:
+            p[].send_state = Optional[SendState](SendState.DATA_SENT)
+        var rec = SentStreamFrame()
+        rec.kind = SSF_STREAM
+        rec.stream_id = p[].id
+        rec.offset = frame_offset
+        rec.length = frame_len
+        rec.fin = frame_fin
+        sent_records.append(rec^)
+        return Tuple[Int, UInt64](new_used, conn_delta)
+
+    def _build_path_and_datagram_frames(
+        mut self, mut frames: List[Frame], mut used: Int, budget: Int, now: UInt64,
+    ) raises:
+        """Append PATH_RESPONSE, PATH_CHALLENGE, and DATAGRAM frames."""
+        var n_resp = len(self.path.pending_responses)
+        if n_resp > 0 and used + 9 * n_resp <= budget:
+            var path_responses = self.emit_path_response_frames()
+            for i in range(len(path_responses)):
+                ref pr = path_responses[i]
+                frames.append(pr.copy())
+            used += 9 * n_resp
+        var n_chal = len(self.path.validator.pending)
+        if n_chal > 0 and used + 9 * n_chal <= budget:
+            var path_challenges = self.emit_path_challenge_frames(now)
+            for i in range(len(path_challenges)):
+                ref pc = path_challenges[i]
+                frames.append(pc.copy())
+            used += 9 * n_chal
+        while self._outbound_dg_head < len(self.pending_outbound_datagrams):
+            var dl = len(self.pending_outbound_datagrams[self._outbound_dg_head])
+            var wl = 1 + varint_len(UInt64(dl)) + dl
+            if used + wl > budget:
+                if wl > self._max_app_payload():
+                    raise "DATAGRAM frame of " + String(wl) + " bytes can never fit a packet"
+                break
+            var head = List[UInt8](copy=self.pending_outbound_datagrams[self._outbound_dg_head])
+            self._outbound_dg_head += 1
+            frames.append(Frame.datagram_with_len(head^))
+            used += wl
+        if self._outbound_dg_head >= len(self.pending_outbound_datagrams):
+            self.pending_outbound_datagrams = List[List[UInt8]]()
+            self._outbound_dg_head = 0
 
     def _build_app_frames(
         mut self,
@@ -3288,8 +3181,6 @@ struct QuicConnection(Movable):
             if conn_avail == 0:
                 self.stream_map.sendable_queue.appendleft(sid)
                 break
-            var conn_delta = UInt64(0)
-            var drop_sendable = False
             var p = self.stream_map.stream_ptr(sid)
             if not p[].send_state or not p[].send_buf or not p[].fc_send:
                 self.stream_map.remove_sendable(sid)
@@ -3320,45 +3211,17 @@ struct QuicConnection(Movable):
                 limit = max_bytes_per_frame
             if room < limit:
                 limit = room
-            var meta = p[].send_buf.value().prepare_frame(limit)
-            if not meta:
+            var emitted = self._emit_one_stream_frame(
+                sid, p, ss, limit, sent_records, stream_payload, budget, used,
+            )
+            if not emitted:
                 self.stream_map.remove_sendable(sid)
                 continue
-            var frame_meta = meta.value()
-            var frame_offset = frame_meta[0]
-            var chunk_size = frame_meta[1]
-            var frame_fin = frame_meta[2]
-            var frame_len = UInt64(chunk_size)
-            var data_view = p[].send_buf.value().data_span(frame_offset, chunk_size)
-            var wl = write_stream_frame_direct(
-                stream_payload,
-                budget=budget - used,
-                stream_id=p[].id,
-                offset=frame_offset,
-                data=data_view,
-                fin=frame_fin,
-            )
-            debug_assert(wl > 0 and used + wl <= budget, "STREAM frame exceeds its charge")
-            used += wl
-            var prev_end = frame_offset + frame_len
-            if prev_end > p[].fc_send.value().received:
-                conn_delta = prev_end - p[].fc_send.value().received
-                p[].fc_send.value().add_received(conn_delta)
-            if ss == SendState.READY:
-                p[].send_state = Optional[SendState](SendState.SEND)
-            if frame_fin and p[].send_buf.value().fin_offset:
-                p[].send_state = Optional[SendState](SendState.DATA_SENT)
-            var rec = SentStreamFrame()
-            rec.kind = SSF_STREAM
-            rec.stream_id = p[].id
-            rec.offset = frame_offset
-            rec.length = frame_len
-            rec.fin = frame_fin
-            sent_records.append(rec^)
-            drop_sendable = not p[].send_buf.value().has_pending()
+            used = emitted.value()[0]
+            var conn_delta = emitted.value()[1]
             if conn_delta > 0:
                 self.stream_map.conn_fc_send.add_received(conn_delta)
-            if drop_sendable:
+            if not p[].send_buf.value().has_pending():
                 self.stream_map.remove_sendable(sid)
             else:
                 self.stream_map.sendable_queue.append(sid)
