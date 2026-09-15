@@ -78,7 +78,7 @@ def test_ack_range_insert() raises:
     space.on_packet_received(UInt64(5), False)
     space.on_packet_received(UInt64(6), False)
 
-    _assert_eq(len(space.ack_ranges), 3, "range count")
+    _assert_eq(space.ack_ranges_len, 3, "range count")
     # Ranges sorted by .end descending.
     _assert_eq_u64(space.ack_ranges[0].start, UInt64(5), "r0.start")
     _assert_eq_u64(space.ack_ranges[0].end, UInt64(6), "r0.end")
@@ -343,7 +343,7 @@ def test_duplicate_pn_ignored() raises:
     var space = PacketNumberSpace(EncryptionLevel.initial())
     space.on_packet_received(UInt64(5), False)
     space.on_packet_received(UInt64(5), False)  # Duplicate
-    _assert_eq(len(space.ack_ranges), 1, "range count after duplicate")
+    _assert_eq(space.ack_ranges_len, 1, "range count after duplicate")
     _assert_eq_u64(space.ack_ranges[0].start, UInt64(5), "start")
     _assert_eq_u64(space.ack_ranges[0].end, UInt64(5), "end")
     print("    PASS test_duplicate_pn_ignored")
@@ -354,11 +354,11 @@ def test_ack_range_merge() raises:
     var space = PacketNumberSpace(EncryptionLevel.initial())
     space.on_packet_received(UInt64(0), False)
     space.on_packet_received(UInt64(2), False)
-    _assert_eq(len(space.ack_ranges), 2, "ranges before merge")
+    _assert_eq(space.ack_ranges_len, 2, "ranges before merge")
 
     # Fill the gap.
     space.on_packet_received(UInt64(1), False)
-    _assert_eq(len(space.ack_ranges), 1, "ranges after merge")
+    _assert_eq(space.ack_ranges_len, 1, "ranges after merge")
     _assert_eq_u64(space.ack_ranges[0].start, UInt64(0), "merged start")
     _assert_eq_u64(space.ack_ranges[0].end, UInt64(2), "merged end")
     print("    PASS test_ack_range_merge")

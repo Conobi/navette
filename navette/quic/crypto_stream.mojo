@@ -5,6 +5,12 @@
 
 from navette.quic.frame import CryptoFrame
 
+# Cap on concurrently-buffered out-of-order CRYPTO fragments. TLS handshake
+# flights arrive in a handful of packets; 8 pending fragments is generous
+# headroom while keeping CryptoStream's storage fixed-capacity (no heap
+# allocation for the reassembly bookkeeping itself).
+comptime MAX_PENDING_FRAGMENTS: Int = 8
+
 
 struct CryptoFragment(Copyable, Movable):
     var offset: UInt64
@@ -34,7 +40,10 @@ struct CryptoStream(Copyable, Movable):
     """
     var recv_offset: UInt64
     var recv_buf: List[UInt8]
-    var pending_fragments: List[CryptoFragment]
+    # Out-of-order fragments awaiting a contiguous predecessor, fixed
+    # capacity; `pending_fragments_len` tracks the valid prefix.
+    var pending_fragments: InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS]
+    var pending_fragments_len: Int
     var send_offset: UInt64
     var send_buf: List[UInt8]
     var sent_cursor: Int
@@ -42,7 +51,10 @@ struct CryptoStream(Copyable, Movable):
     def __init__(out self):
         self.recv_offset = UInt64(0)
         self.recv_buf = List[UInt8]()
-        self.pending_fragments = List[CryptoFragment]()
+        self.pending_fragments = InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS](
+            fill=CryptoFragment(UInt64(0), List[UInt8]())
+        )
+        self.pending_fragments_len = 0
         self.send_offset = UInt64(0)
         self.send_buf = List[UInt8]()
         self.sent_cursor = 0
@@ -50,7 +62,10 @@ struct CryptoStream(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.recv_offset = copy.recv_offset
         self.recv_buf = List[UInt8](copy=copy.recv_buf)
-        self.pending_fragments = List[CryptoFragment](copy=copy.pending_fragments)
+        self.pending_fragments = InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS](
+            copy=copy.pending_fragments
+        )
+        self.pending_fragments_len = copy.pending_fragments_len
         self.send_offset = copy.send_offset
         self.send_buf = List[UInt8](copy=copy.send_buf)
         self.sent_cursor = copy.sent_cursor
@@ -59,6 +74,7 @@ struct CryptoStream(Copyable, Movable):
         self.recv_offset = move.recv_offset
         self.recv_buf = move.recv_buf^
         self.pending_fragments = move.pending_fragments^
+        self.pending_fragments_len = move.pending_fragments_len
         self.send_offset = move.send_offset
         self.send_buf = move.send_buf^
         self.sent_cursor = move.sent_cursor
@@ -90,17 +106,20 @@ struct CryptoStream(Copyable, Movable):
             return
 
         # Out-of-order: store as pending fragment.
+        if self.pending_fragments_len >= MAX_PENDING_FRAGMENTS:
+            raise "CRYPTO pending fragment buffer full"
         var frag_data = List[UInt8](capacity=len(data))
         for i in range(len(data)):
             frag_data.append(data[i])
-        self.pending_fragments.append(CryptoFragment(offset, frag_data^))
+        self.pending_fragments[self.pending_fragments_len] = CryptoFragment(offset, frag_data^)
+        self.pending_fragments_len += 1
         self._merge_pending()
 
     def _merge_pending(mut self):
         """Merge pending fragments that are now contiguous with recv_buf."""
-        while len(self.pending_fragments) > 0:
+        while self.pending_fragments_len > 0:
             var merged = False
-            for i in range(len(self.pending_fragments)):
+            for i in range(self.pending_fragments_len):
                 var buf_end = self.recv_offset + UInt64(len(self.recv_buf))
                 if self.pending_fragments[i].offset <= buf_end:
                     var frag_end = self.pending_fragments[i].offset + UInt64(
@@ -110,12 +129,10 @@ struct CryptoStream(Copyable, Movable):
                         var skip = Int(buf_end - self.pending_fragments[i].offset)
                         for j in range(skip, len(self.pending_fragments[i].data)):
                             self.recv_buf.append(self.pending_fragments[i].data[j])
-                    # Remove this fragment: rebuild list without index i.
-                    var new_frags = List[CryptoFragment]()
-                    for k in range(len(self.pending_fragments)):
-                        if k != i:
-                            new_frags.append(CryptoFragment(copy=self.pending_fragments[k]))
-                    self.pending_fragments = new_frags^
+                    # Remove this fragment in place: shift subsequent entries left, shrink length.
+                    for k in range(i, self.pending_fragments_len - 1):
+                        self.pending_fragments[k] = CryptoFragment(copy=self.pending_fragments[k + 1])
+                    self.pending_fragments_len -= 1
                     merged = True
                     break
             if not merged:

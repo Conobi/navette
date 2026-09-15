@@ -146,7 +146,10 @@ struct PacketNumberSpace(Copyable, Movable):
     var next_pn: UInt64                    # Starts at 0
     var largest_recv_pn: Int               # -1 = none received
     var largest_acked_pn: Int              # -1 = no ACK from peer
-    var ack_ranges: List[AckRangeEntry]    # Recv ranges, max 32
+    # Recv ranges, fixed capacity; `ack_ranges_len` tracks the valid prefix
+    # so receiving ACK-eligible packets never heap-allocates.
+    var ack_ranges: InlineArray[AckRangeEntry, MAX_ACK_RANGE_ENTRIES]
+    var ack_ranges_len: Int
     var ack_eliciting_since_last_ack: Int
     var ack_needed: Bool
     var sent_packets: Dict[Int, SentPacket]
@@ -181,7 +184,10 @@ struct PacketNumberSpace(Copyable, Movable):
         self.next_pn = UInt64(0)
         self.largest_recv_pn = -1
         self.largest_acked_pn = -1
-        self.ack_ranges = List[AckRangeEntry]()
+        self.ack_ranges = InlineArray[AckRangeEntry, MAX_ACK_RANGE_ENTRIES](
+            fill=AckRangeEntry(UInt64(0), UInt64(0))
+        )
+        self.ack_ranges_len = 0
         self.ack_eliciting_since_last_ack = 0
         self.ack_needed = False
         # cwnd / min_pkt ≈ 128 packets in flight max — pre-size to avoid
@@ -208,7 +214,10 @@ struct PacketNumberSpace(Copyable, Movable):
         self.next_pn = copy.next_pn
         self.largest_recv_pn = copy.largest_recv_pn
         self.largest_acked_pn = copy.largest_acked_pn
-        self.ack_ranges = List[AckRangeEntry](copy=copy.ack_ranges)
+        self.ack_ranges = InlineArray[AckRangeEntry, MAX_ACK_RANGE_ENTRIES](
+            copy=copy.ack_ranges
+        )
+        self.ack_ranges_len = copy.ack_ranges_len
         self.ack_eliciting_since_last_ack = copy.ack_eliciting_since_last_ack
         self.ack_needed = copy.ack_needed
         self.sent_packets = copy.sent_packets.copy()
@@ -234,6 +243,7 @@ struct PacketNumberSpace(Copyable, Movable):
         self.largest_recv_pn = move.largest_recv_pn
         self.largest_acked_pn = move.largest_acked_pn
         self.ack_ranges = move.ack_ranges^
+        self.ack_ranges_len = move.ack_ranges_len
         self.ack_eliciting_since_last_ack = move.ack_eliciting_since_last_ack
         self.ack_needed = move.ack_needed
         self.sent_packets = move.sent_packets^
@@ -338,7 +348,7 @@ struct PacketNumberSpace(Copyable, Movable):
         Merges adjacent ranges and caps at MAX_ACK_RANGE_ENTRIES."""
         # Check if PN extends an existing range.
         var merged_idx = -1
-        for i in range(len(self.ack_ranges)):
+        for i in range(self.ack_ranges_len):
             # PN extends the high end.
             if pn == self.ack_ranges[i].end + 1:
                 self.ack_ranges[i] = AckRangeEntry(self.ack_ranges[i].start, pn)
@@ -361,48 +371,56 @@ struct PacketNumberSpace(Copyable, Movable):
             return
 
         # No existing range to extend — insert new single-PN range.
-        self.ack_ranges.append(AckRangeEntry(pn, pn))
+        if self.ack_ranges_len >= MAX_ACK_RANGE_ENTRIES:
+            # Already sorted descending by .end, so index len-1 holds the
+            # current oldest (smallest) range. Mirror the old
+            # append-then-trim behavior: a PN older than everything tracked
+            # would itself be the one trimmed right back off, so it's a
+            # no-op; otherwise it displaces the oldest range.
+            if pn < self.ack_ranges[self.ack_ranges_len - 1].end:
+                return
+            self.ack_ranges[self.ack_ranges_len - 1] = AckRangeEntry(pn, pn)
+            self._sort_ack_ranges()
+            return
+        self.ack_ranges[self.ack_ranges_len] = AckRangeEntry(pn, pn)
+        self.ack_ranges_len += 1
         self._sort_ack_ranges()
-
-        # Cap at MAX_ACK_RANGE_ENTRIES.
-        while len(self.ack_ranges) > MAX_ACK_RANGE_ENTRIES:
-            _ = self.ack_ranges.pop()
 
     def _try_merge_adjacent(mut self, idx: Int):
         """After extending range at idx, check if it now touches a neighbor and merge.
         Ranges are sorted by .end descending. Two ranges are adjacent when the
         lower range's end + 1 >= upper range's start."""
         # Check merge with the range below (lower .end, at idx+1).
-        if idx < len(self.ack_ranges) - 1:
+        if idx < self.ack_ranges_len - 1:
             var nxt = idx + 1
             # nxt has lower .end; adjacent if nxt.end + 1 >= idx.start
             if self.ack_ranges[nxt].end + 1 >= self.ack_ranges[idx].start:
                 var new_start = self.ack_ranges[nxt].start if self.ack_ranges[nxt].start < self.ack_ranges[idx].start else self.ack_ranges[idx].start
                 var new_end = self.ack_ranges[idx].end if self.ack_ranges[idx].end > self.ack_ranges[nxt].end else self.ack_ranges[nxt].end
                 self.ack_ranges[idx] = AckRangeEntry(new_start, new_end)
-                # In-place removal of nxt: shift subsequent elements left, pop tail.
-                for j in range(nxt, len(self.ack_ranges) - 1):
+                # In-place removal of nxt: shift subsequent elements left, shrink length.
+                for j in range(nxt, self.ack_ranges_len - 1):
                     self.ack_ranges[j] = AckRangeEntry(copy=self.ack_ranges[j + 1])
-                _ = self.ack_ranges.pop()
+                self.ack_ranges_len -= 1
 
         # Check merge with the range above (higher .end, at idx-1).
         # Note: idx may have shifted after the previous merge, so re-check bounds.
-        if idx > 0 and idx <= len(self.ack_ranges):
+        if idx > 0 and idx <= self.ack_ranges_len:
             var prev = idx - 1
             # idx has lower .end; adjacent if idx.end + 1 >= prev.start
-            if prev < len(self.ack_ranges) and idx < len(self.ack_ranges):
+            if prev < self.ack_ranges_len and idx < self.ack_ranges_len:
                 if self.ack_ranges[idx].end + 1 >= self.ack_ranges[prev].start:
                     var new_start = self.ack_ranges[idx].start if self.ack_ranges[idx].start < self.ack_ranges[prev].start else self.ack_ranges[prev].start
                     var new_end = self.ack_ranges[prev].end if self.ack_ranges[prev].end > self.ack_ranges[idx].end else self.ack_ranges[idx].end
                     self.ack_ranges[prev] = AckRangeEntry(new_start, new_end)
-                    # In-place removal of idx: shift subsequent elements left, pop tail.
-                    for j in range(idx, len(self.ack_ranges) - 1):
+                    # In-place removal of idx: shift subsequent elements left, shrink length.
+                    for j in range(idx, self.ack_ranges_len - 1):
                         self.ack_ranges[j] = AckRangeEntry(copy=self.ack_ranges[j + 1])
-                    _ = self.ack_ranges.pop()
+                    self.ack_ranges_len -= 1
 
     def _sort_ack_ranges(mut self):
         """Sort ack_ranges by .end descending (insertion sort, small list)."""
-        for i in range(1, len(self.ack_ranges)):
+        for i in range(1, self.ack_ranges_len):
             var key = AckRangeEntry(copy=self.ack_ranges[i])
             var j = i - 1
             while j >= 0 and self.ack_ranges[j].end < key.end:
@@ -422,7 +440,7 @@ struct PacketNumberSpace(Copyable, Movable):
         unacknowledged (piggyback on a packet that goes out anyway). The
         caller commits with `mark_ack_sent()` once the frame is in the packet.
         """
-        if len(self.ack_ranges) == 0:
+        if self.ack_ranges_len == 0:
             return None
         if not self.ack_needed and not (bundle and self.has_unacked_ack_eliciting()):
             return None
@@ -432,8 +450,8 @@ struct PacketNumberSpace(Copyable, Movable):
         ack.ack_delay = self.ack_delay_field(now, ack_delay_exponent)
         ack.first_ack_range = self.ack_ranges[0].end - self.ack_ranges[0].start
 
-        var ranges = List[AckRange](capacity=len(self.ack_ranges))
-        for i in range(1, len(self.ack_ranges)):
+        var ranges = List[AckRange](capacity=self.ack_ranges_len)
+        for i in range(1, self.ack_ranges_len):
             var prev_start = self.ack_ranges[i - 1].start
             var curr_end = self.ack_ranges[i].end
             var gap = prev_start - curr_end - 2
