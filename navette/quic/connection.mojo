@@ -1756,291 +1756,217 @@ struct QuicConnection(Movable):
     def _dispatch_frame(
         mut self, var frame: Frame, space_idx: Int, now: UInt64
     ) raises:
-        """Route a parsed frame to its handler."""
+        """Route a parsed frame to its per-type handler."""
         var tid = frame.type_id
-
-        # F13 — RFC 9000 §17.2.4: PATH_CHALLENGE / PATH_RESPONSE are only
-        # permitted in 1-RTT (space 2). In Initial/Handshake epochs the
-        # peer MUST not send them; close with PROTOCOL_VIOLATION. This is
-        # placed before the per-frame dispatch arms because PATH_CHALLENGE
-        # currently falls through to the trailing silent-drop.
-        if is_path_challenge_in_handshake(tid, space_idx):
-            self.close_transport(
-                UInt64(0x0A), String(GUARD_TAG_PATH_CHALLENGE_HS), now
-            )
+        if self._check_epoch_guards(tid, space_idx, now):
             return
-
-        # RFC 9221 §5: DATAGRAM (0x30) / DATAGRAM_LEN (0x31) are 1-RTT only.
-        # Receipt in Initial (0) or Handshake (1) is PROTOCOL_VIOLATION.
-        # Placed alongside the path-challenge gate because the DATAGRAM
-        # parse arms below assume 1-RTT space.
-        if is_datagram_in_handshake(tid, space_idx):
-            self.close_transport(
-                UInt64(0x0A), String(GUARD_TAG_DATAGRAM_HS), now
-            )
+        if tid == FRAME_PADDING or tid == FRAME_PING:
             return
-
-        # F30 — RFC 9001 §8.3: CRYPTO frames MUST NOT be sent in 0-RTT.
-        # The shared Application PN space (RFC 9000 §12.3) means the 0-RTT
-        # epoch is signalled to dispatch via the `ZERO_RTT_SPACE_IDX`
-        # sentinel rather than the regular 0/1/2 space index — see
-        # `guard_predicates.is_crypto_in_zero_rtt`. CRYPTO frames in
-        # 1-RTT (space 2) remain legal (e.g. NewSessionTicket).
-        if is_crypto_in_zero_rtt(tid, space_idx):
-            self.close_transport(
-                UInt64(0x0A), String(GUARD_TAG_CRYPTO_IN_ZERO_RTT), now
-            )
-            return
-
-        # RFC 9000 §12.4 (Table 3): ACK / ACK_ECN are forbidden in 0-RTT
-        # packets. Must fire before the ACK dispatch arm below — without
-        # this guard `_handle_ack` would index `spaces[]` with the
-        # `ZERO_RTT_SPACE_IDX` sentinel, out of bounds.
-        if is_ack_in_zero_rtt(tid, space_idx):
-            self.close_transport(
-                UInt64(0x0A), String(GUARD_TAG_ACK_IN_ZERO_RTT), now
-            )
-            return
-
-        # PADDING: no-op
-        if tid == FRAME_PADDING:
-            return
-
-        # PING: no-op (ack_eliciting tracked by caller)
-        if tid == FRAME_PING:
-            return
-
-        # ACK
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
             self._handle_ack(frame.as_ack(), space_idx, now)
             return
-
-        # CRYPTO
         if tid == FRAME_CRYPTO:
             ref cf = frame.as_crypto()
-            self.crypto_streams[space_idx].receive(
-                cf.offset, Span(cf.data)
-            )
+            self.crypto_streams[space_idx].receive(cf.offset, Span(cf.data))
             return
-
-        # CONNECTION_CLOSE
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            ref cc = frame.as_connection_close()
-            self.state = self.state | CONN_DRAINING
-            # Start drain timer: 3 * PTO (RFC 9000 §10.2).
-            self.close.drain_timer = now + 3 * self._pto_interval()
-            var reason = String("")
-            for i in range(len(cc.reason)):
-                reason += chr(Int(cc.reason[i]))
-            self.events.append(
-                QuicEvent.connection_closed(cc.error_code, reason)
-            )
+            self._on_connection_close(frame, now)
             return
-
-        # HANDSHAKE_DONE (client receives from server)
-        # F24 — RFC 9000 §19.20: HANDSHAKE_DONE is server-to-client only.
-        # A server receiving it MUST close with PROTOCOL_VIOLATION.
         if tid == FRAME_HANDSHAKE_DONE:
-            if self.is_server:
-                self.close_transport(
-                    UInt64(0x0A), String(GUARD_TAG_HANDSHAKE_DONE_SERVER), now
-                )
-                return
-            self.handshake_confirmed = True
-            self.state = self.state | CONN_ESTABLISHED
-            self._discard_handshake_space()
-            # RFC 9001 §4.1.2 / §4.1.3 — HANDSHAKE_DONE confirms the handshake
-            # on the client side WITHOUT going through _on_handshake_complete,
-            # so the client-arm discard hook there is unreachable on this
-            # (primary) client trajectory. Wire the discard here too. No-op
-            # on the client today because slot 3 is unpopulated on clients;
-            # required for symmetry with the decrypt-path discard if a
-            # future client-side install ever lands.
-            self._discard_zero_rtt_keys()
-            self.events.append(QuicEvent.handshake_complete())
-            return
-
-        # NEW_TOKEN: minimal handling on client (ignored).
-        # F17 — RFC 9000 §19.7: NEW_TOKEN is server-to-client only. A server
-        # receiving NEW_TOKEN MUST close with PROTOCOL_VIOLATION.
+            self._on_handshake_done(now); return
         if tid == FRAME_NEW_TOKEN:
-            if self.is_server:
-                self.close_transport(
-                    UInt64(0x0A), String(GUARD_TAG_NEW_TOKEN_SERVER), now
-                )
-                return
-            return
-
-        # NEW_CONNECTION_ID: validate encoding, then hand off to CidManager.
+            self._on_new_token(now); return
         if tid == FRAME_NEW_CONNECTION_ID:
-            ref nc = frame.as_new_connection_id()
-            var _v_cid_rpt = check_new_connection_id_retire_prior(
-                nc.sequence, nc.retire_prior_to
-            )
-            if _v_cid_rpt:
-                var _vv = _v_cid_rpt.take()
-                self.close_transport(_vv.error_code, _vv.tag, now)
-                return
-            var _v_cid_len = check_new_connection_id_length(
-                UInt64(len(nc.cid))
-            )
-            if _v_cid_len:
-                var _vv2 = _v_cid_len.take()
-                self.close_transport(_vv2.error_code, _vv2.tag, now)
-                return
-            self.cid_mgr.on_new_connection_id(
-                nc.sequence,
-                nc.retire_prior_to,
-                List[UInt8](copy=nc.cid),
-                List[UInt8](copy=nc.stateless_reset_token),
-            )
-            return
-
-        # RETIRE_CONNECTION_ID: hand off to CidManager.
+            self._on_new_cid(frame, now); return
         if tid == FRAME_RETIRE_CONNECTION_ID:
-            self.cid_mgr.on_retire_connection_id(frame.as_retire_connection_id())
-            return
-
-        # STREAM frames (0x08-0x0F).
+            self.cid_mgr.on_retire_connection_id(frame.as_retire_connection_id()); return
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
             self._handle_stream_frame(frame.as_stream())
             return
-
         if tid == FRAME_RESET_STREAM:
             self._handle_reset_stream(frame.as_reset_stream())
             return
-
         if tid == FRAME_STOP_SENDING:
             self._handle_stop_sending(frame.as_stop_sending())
             return
-
         if tid == FRAME_MAX_DATA:
             self.stream_map.conn_fc_send.ensure_limit(frame.as_max_data())
             self.stream_map.conn_fc_send.blocked_at = UInt64(0)
             return
-
         if tid == FRAME_MAX_STREAM_DATA:
-            ref msd = frame.as_max_stream_data()
-            var key = Int(msd.stream_id)
-            var _exists = key in self.stream_map.streams
-            var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
-                msd.stream_id, self.is_server
-            )
-            var _ctx_msd = MaxStreamDataCtx(
-                stream_id=msd.stream_id,
-                exists=_exists,
-                has_send_side=_has_send,
-            )
-            var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
-            if _verdict_msd:
-                var _v_msd = _verdict_msd.take()
-                self.close_transport(_v_msd.error_code, _v_msd.tag, now)
-                return
-            var p = self.stream_map.stream_ptr(key)
-            if p[].fc_send:
-                var old_limit = p[].fc_send.value().limit
-                p[].fc_send.value().ensure_limit(msd.maximum)
-                var grew = p[].fc_send.value().limit > old_limit
-                if grew:
-                    p[].fc_send.value().blocked_at = UInt64(0)
-                var _has_pending = False
-                if p[].send_buf:
-                    _has_pending = p[].send_buf.value().has_pending()
-                if grew:
-                    self.events.append(QuicEvent.stream_writable(msd.stream_id))
-                    if _has_pending:
-                        self.stream_map.add_sendable(key)
+            self._on_max_stream_data(frame, now)
+            return
+        if tid == FRAME_MAX_STREAMS_BIDI:
+            self._on_max_streams(frame, True, now)
+            return
+        if tid == FRAME_MAX_STREAMS_UNI:
+            self._on_max_streams(frame, False, now)
+            return
+        if tid == FRAME_STREAMS_BLOCKED_BIDI or tid == FRAME_STREAMS_BLOCKED_UNI:
+            self._on_streams_blocked(frame, now)
+            return
+        if tid == FRAME_DATA_BLOCKED or tid == FRAME_STREAM_DATA_BLOCKED:
+            return
+        if frame.is_path_challenge():
+            self.on_path_challenge_received(Span(frame.as_path_data()), now)
+            return
+        if frame.is_path_response():
+            var from_addr = PathKey(copy=self.path.current_recv_addr)
+            self.on_path_response_received(Span(frame.as_path_data()), from_addr^, now)
+            return
+        if frame.is_datagram():
+            self.events.append(QuicEvent.datagram_received(List[UInt8](copy=frame.as_datagram_payload())))
+            return
+        if is_unknown_frame_type(tid):
+            self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
             return
 
-        if tid == FRAME_MAX_STREAMS_BIDI:
-            ref ms = frame.as_max_streams()
-            var _v_ms_bidi = check_max_streams_value(ms.maximum)
-            if _v_ms_bidi:
-                var _vv = _v_ms_bidi.take()
-                self.close_transport(_vv.error_code, _vv.tag, now)
-                return
+    # ── Per-type frame handlers ─────────────────────────────────────
+
+    def _check_epoch_guards(
+        mut self, tid: UInt64, space_idx: Int, now: UInt64
+    ) raises -> Bool:
+        """PROTOCOL_VIOLATION guards for frames in wrong epoch.
+
+        Returns True if a guard fired (caller must return immediately).
+        """
+        if is_path_challenge_in_handshake(tid, space_idx):
+            self.close_transport(UInt64(0x0A), String(GUARD_TAG_PATH_CHALLENGE_HS), now)
+            return True
+        if is_datagram_in_handshake(tid, space_idx):
+            self.close_transport(UInt64(0x0A), String(GUARD_TAG_DATAGRAM_HS), now)
+            return True
+        if is_crypto_in_zero_rtt(tid, space_idx):
+            self.close_transport(UInt64(0x0A), String(GUARD_TAG_CRYPTO_IN_ZERO_RTT), now)
+            return True
+        if is_ack_in_zero_rtt(tid, space_idx):
+            self.close_transport(UInt64(0x0A), String(GUARD_TAG_ACK_IN_ZERO_RTT), now)
+            return True
+        return False
+
+    def _on_connection_close(
+        mut self, ref frame: Frame, now: UInt64
+    ) raises:
+        """Handle CONNECTION_CLOSE: enter draining state, emit event."""
+        ref cc = frame.as_connection_close()
+        self.state = self.state | CONN_DRAINING
+        self.close.drain_timer = now + 3 * self._pto_interval()
+        var reason = String("")
+        for i in range(len(cc.reason)):
+            reason += chr(Int(cc.reason[i]))
+        self.events.append(QuicEvent.connection_closed(cc.error_code, reason))
+
+    def _on_handshake_done(mut self, now: UInt64) raises:
+        """Handle HANDSHAKE_DONE (client-side only)."""
+        if self.is_server:
+            self.close_transport(
+                UInt64(0x0A), String(GUARD_TAG_HANDSHAKE_DONE_SERVER), now
+            )
+            return
+        self.handshake_confirmed = True
+        self.state = self.state | CONN_ESTABLISHED
+        self._discard_handshake_space()
+        self._discard_zero_rtt_keys()
+        self.events.append(QuicEvent.handshake_complete())
+
+    def _on_new_token(mut self, now: UInt64) raises:
+        """Handle NEW_TOKEN (client no-op; server → PROTOCOL_VIOLATION)."""
+        if self.is_server:
+            self.close_transport(
+                UInt64(0x0A), String(GUARD_TAG_NEW_TOKEN_SERVER), now
+            )
+
+    def _on_new_cid(
+        mut self, ref frame: Frame, now: UInt64
+    ) raises:
+        """Handle NEW_CONNECTION_ID: validate and register with CidManager."""
+        ref nc = frame.as_new_connection_id()
+        var _v_cid_rpt = check_new_connection_id_retire_prior(
+            nc.sequence, nc.retire_prior_to
+        )
+        if _v_cid_rpt:
+            var _vv = _v_cid_rpt.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
+            return
+        var _v_cid_len = check_new_connection_id_length(
+            UInt64(len(nc.cid))
+        )
+        if _v_cid_len:
+            var _vv2 = _v_cid_len.take()
+            self.close_transport(_vv2.error_code, _vv2.tag, now)
+            return
+        self.cid_mgr.on_new_connection_id(
+            nc.sequence,
+            nc.retire_prior_to,
+            List[UInt8](copy=nc.cid),
+            List[UInt8](copy=nc.stateless_reset_token),
+        )
+
+    def _on_max_stream_data(
+        mut self, ref frame: Frame, now: UInt64
+    ) raises:
+        """Handle MAX_STREAM_DATA: validate, update FC, re-queue sendable."""
+        ref msd = frame.as_max_stream_data()
+        var key = Int(msd.stream_id)
+        var _exists = key in self.stream_map.streams
+        var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
+            msd.stream_id, self.is_server
+        )
+        var _ctx_msd = MaxStreamDataCtx(
+            stream_id=msd.stream_id,
+            exists=_exists,
+            has_send_side=_has_send,
+        )
+        var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
+        if _verdict_msd:
+            var _v_msd = _verdict_msd.take()
+            self.close_transport(_v_msd.error_code, _v_msd.tag, now)
+            return
+        var p = self.stream_map.stream_ptr(key)
+        if p[].fc_send:
+            var old_limit = p[].fc_send.value().limit
+            p[].fc_send.value().ensure_limit(msd.maximum)
+            var grew = p[].fc_send.value().limit > old_limit
+            if grew:
+                p[].fc_send.value().blocked_at = UInt64(0)
+            var _has_pending = False
+            if p[].send_buf:
+                _has_pending = p[].send_buf.value().has_pending()
+            if grew:
+                self.events.append(QuicEvent.stream_writable(msd.stream_id))
+                if _has_pending:
+                    self.stream_map.add_sendable(key)
+
+    def _on_max_streams(
+        mut self, ref frame: Frame, is_bidi: Bool, now: UInt64
+    ) raises:
+        """Handle MAX_STREAMS (bidi or uni): validate and update limit."""
+        ref ms = frame.as_max_streams()
+        var _v_ms = check_max_streams_value(ms.maximum)
+        if _v_ms:
+            var _vv = _v_ms.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
+            return
+        if is_bidi:
             if ms.maximum > self.stream_map.peer_max_streams_bidi:
                 self.stream_map.peer_max_streams_bidi = ms.maximum
                 self.stream_map.needs_streams_blocked_bidi = False
                 self.stream_map.streams_blocked_at_bidi = UInt64(0)
-            return
-
-        if tid == FRAME_MAX_STREAMS_UNI:
-            ref ms = frame.as_max_streams()
-            var _v_ms_uni = check_max_streams_value(ms.maximum)
-            if _v_ms_uni:
-                var _vv = _v_ms_uni.take()
-                self.close_transport(_vv.error_code, _vv.tag, now)
-                return
+        else:
             if ms.maximum > self.stream_map.peer_max_streams_uni:
                 self.stream_map.peer_max_streams_uni = ms.maximum
                 self.stream_map.needs_streams_blocked_uni = False
                 self.stream_map.streams_blocked_at_uni = UInt64(0)
-            return
 
-        if (tid == FRAME_STREAMS_BLOCKED_BIDI
-                or tid == FRAME_STREAMS_BLOCKED_UNI):
-            ref sb = frame.as_max_streams()
-            var _v_sb = check_streams_blocked_value(sb.maximum)
-            if _v_sb:
-                var _vv = _v_sb.take()
-                self.close_transport(_vv.error_code, _vv.tag, now)
-                return
-            return
-        if (tid == FRAME_DATA_BLOCKED
-                or tid == FRAME_STREAM_DATA_BLOCKED):
-            return
-
-        # PATH_CHALLENGE (0x1A) — RFC 9000 §8.2. Reaches this point in
-        # 1-RTT (space_idx == 2) or in the 0-RTT sentinel space
-        # (space_idx == ZERO_RTT_SPACE_IDX == 3): F13
-        # (is_path_challenge_in_handshake) only fires for space_idx 0 or
-        # 1, so a PATH_CHALLENGE arriving with the 0-RTT sentinel falls
-        # through here and is processed permissively. This is a §12.4
-        # violation (PATH_CHALLENGE is forbidden in 0-RTT); the full
-        # 0-RTT frame-table audit is deferred to the conformance harness.
-        # Neither path is memory-unsafe: on_path_challenge_received only
-        # appends to path.pending_responses and does not index spaces[].
-        # Stash the 8-byte token so the next 1-RTT flush emits the
-        # matching PATH_RESPONSE.
-        if frame.is_path_challenge():
-            ref data = frame.as_path_data()
-            self.on_path_challenge_received(Span(data), now)
-            return
-
-        # PATH_RESPONSE (0x1B) — RFC 9000 §8.2. The token-vs-addr match
-        # requires the source addr of the carrying datagram, which the
-        # bench receive site stamps into `path.current_recv_addr` before
-        # feeding the buffer; using a per-conn cursor keeps the `recv`
-        # ABI unchanged. Non-matches are silently dropped inside
-        # `on_path_response_received` per the §8.2 edge case.
-        if frame.is_path_response():
-            ref data = frame.as_path_data()
-            var from_addr = PathKey(copy=self.path.current_recv_addr)
-            self.on_path_response_received(Span(data), from_addr^, now)
-            return
-
-        # DATAGRAM / DATAGRAM_LEN (RFC 9221 §5) — 1-RTT only, gated above.
-        # Surface the payload to the application via QuicEvent so H3 (or
-        # raw MASQUE/CONNECT-UDP callers) can demux. Frames carry no
-        # reliability state (RFC 9221 §5.4) so we do not record them in
-        # `app_frames_sent` or otherwise track for retransmission.
-        if frame.is_datagram():
-            ref payload = frame.as_datagram_payload()
-            self.events.append(
-                QuicEvent.datagram_received(List[UInt8](copy=payload))
-            )
-            return
-
-        # F10 — RFC 9000 §12.4: unknown frame type. Close with
-        # FRAME_ENCODING_ERROR (0x07). `parse_frame` returns the
-        # `Frame.unknown(type_id)` sentinel for any out-of-range type id;
-        # the predicate keeps the closed-set definition single-source.
-        if is_unknown_frame_type(tid):
-            self.close_transport(
-                UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now
-            )
-            return
+    def _on_streams_blocked(
+        mut self, ref frame: Frame, now: UInt64
+    ) raises:
+        """Handle STREAMS_BLOCKED: validate limit value."""
+        ref sb = frame.as_max_streams()
+        var _v_sb = check_streams_blocked_value(sb.maximum)
+        if _v_sb:
+            var _vv = _v_sb.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
 
     # ── ACK handling ─────────────────────────────────────────────────
 
