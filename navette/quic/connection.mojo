@@ -713,6 +713,7 @@ struct QuicConnection(Movable):
     var _scratch_payload: List[UInt8]
     var _scratch_datagram: List[UInt8]
     var _scratch_plans: List[_PacketPlan]
+    var _scratch_writer_buf: List[UInt8]
 
     # ── Move constructor ─────────────────────────────────────────────
 
@@ -785,6 +786,7 @@ struct QuicConnection(Movable):
         self._scratch_payload = move._scratch_payload^
         self._scratch_datagram = move._scratch_datagram^
         self._scratch_plans = move._scratch_plans^
+        self._scratch_writer_buf = move._scratch_writer_buf^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -872,6 +874,7 @@ struct QuicConnection(Movable):
         self._scratch_payload = List[UInt8](capacity=6144)
         self._scratch_datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
         self._scratch_plans = List[_PacketPlan](capacity=3)
+        self._scratch_writer_buf = List[UInt8](capacity=256)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -2554,7 +2557,7 @@ struct QuicConnection(Movable):
         )
 
         # Build the LostPacket list for CC — single Dict access per PN.
-        var lost_records = List[LostPacket]()
+        var lost_records = List[LostPacket](capacity=len(lost_pns))
         for i in range(len(lost_pns)):
             var pn_key = lost_pns[i]
             if pn_key in self.spaces[space_idx].sent_packets:
@@ -3541,11 +3544,16 @@ struct QuicConnection(Movable):
                     has_control = True
                     break
             if has_control:
-                var writer = ByteWriter(capacity=256)
+                var wbuf = List[UInt8]()
+                swap(wbuf, self._scratch_writer_buf)
+                wbuf.clear()
+                var writer = ByteWriter()
+                swap(writer.buf, wbuf)
                 for fi in range(len(frames)):
                     if not frames[fi].is_crypto():
                         serialize_frame(frames[fi], writer)
                 stream_payload.extend(Span(writer.buf))
+                swap(self._scratch_writer_buf, writer.buf)
             var payload = stream_payload^
             var plaintext = len(payload)
             if plaintext < _MIN_PLAINTEXT_LEN:

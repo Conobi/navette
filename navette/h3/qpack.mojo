@@ -1077,7 +1077,7 @@ struct QpackDecoder(Copyable, Movable):
         var ric_result = qpack_decode_int(data, 0, 8)
         if ric_result.value != 0:
             raise "QPACK: non-zero Required Insert Count not supported (dynamic table not implemented)"
-        var result = List[QpackHeaderField]()
+        var result = List[QpackHeaderField](capacity=16)
         # RFC 9204 §4.5.1: Parse Delta Base byte — S bit (bit 7) + 7-bit Delta Base value.
         # Static-only decoders only support S=0 and Delta Base=0.
         var base_byte_raw = UInt64(data[ric_result.new_offset])
