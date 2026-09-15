@@ -30,7 +30,7 @@ def test_from_span_round_trips() raises:
 
 
 def test_from_span_max_length() raises:
-    """20 bytes is the RFC 9000 max (section 17.2) and must not abort."""
+    """20 bytes is the RFC 9000 max and must not abort."""
     var src = _bytes(20)
     var buf = CidBuf.from_span(Span(src))
     assert_equal(len(buf), 20)
