@@ -123,7 +123,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_ACK_IN_ZERO_RTT,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
-from navette.quic.path_validator import PathValidator, PathKey
+from navette.quic.path import PathValidator, PathKey, PathState
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
     SendState, RecvState,
@@ -324,19 +324,6 @@ def _tls_guard_tag_for(
 # for Initial/Handshake is still handled via SentPacket.frames.
 
 
-
-
-# ── PathState ────────────────────────────────────────────────────────
-
-
-@fieldwise_init
-struct PathState(Movable):
-    """Per-connection path validation and address tracking state."""
-
-    var validator: PathValidator
-    var pending_responses: List[List[UInt8]]
-    var peer_addr: PathKey
-    var current_recv_addr: PathKey
 
 
 # ── CloseState ──────────────────────────────────────────────────────
@@ -1233,17 +1220,8 @@ struct QuicConnection(Movable):
     def on_path_challenge_received(
         mut self, data: Span[UInt8, _], now: UInt64
     ):
-        """Stash the 8-byte challenge to echo back as PATH_RESPONSE next flush.
-
-        RFC 9000 §8.2: a PATH_RESPONSE MUST be sent on the same path the
-        PATH_CHALLENGE was received, with the same 8-byte data. A later
-        commit drains `path.pending_responses` during 1-RTT emission;
-        this RX-only commit just records the pending response.
-        """
-        var copy = List[UInt8](capacity=len(data))
-        for i in range(len(data)):
-            copy.append(data[i])
-        self.path.pending_responses.append(copy^)
+        """Stash the 8-byte challenge to echo back as PATH_RESPONSE."""
+        self.path.on_challenge_received(data)
 
     def on_path_response_received(
         mut self, data: Span[UInt8, _], var from_addr: PathKey, now: UInt64
@@ -1307,75 +1285,26 @@ struct QuicConnection(Movable):
     # ── Path validation TX (emission) ────────────────────────────────
 
     def emit_path_response_frames(mut self) raises -> List[Frame]:
-        """Drain `path.pending_responses` into PATH_RESPONSE frames.
-
-        RFC 9000 §8.2: a PATH_RESPONSE MUST be sent on the same path the
-        PATH_CHALLENGE was received with the same 8-byte data. Called by
-        the 1-RTT frame builder; one frame per pending response. The
-        queue is fully drained on each call — the caller is responsible
-        for queueing for retransmission if loss is detected (PATH_RESPONSE
-        is not ack-eliciting per §13.2.1 footnote but practical stacks
-        re-emit on no-progress).
-        """
-        var out = List[Frame]()
-        for i in range(len(self.path.pending_responses)):
-            var data = List[UInt8](copy=self.path.pending_responses[i])
-            out.append(Frame.path_response(data^))
-        # Drain the queue: every pending response was just turned into a
-        # frame, so the queue is empty until the next inbound challenge.
-        self.path.pending_responses = List[List[UInt8]]()
-        return out^
+        """Drain pending PATH_RESPONSE frames."""
+        return self.path.emit_response_frames()
 
     def emit_path_challenge_frames(mut self, now: UInt64) raises -> List[Frame]:
-        """Build PATH_CHALLENGE frames for every pending challenge.
-
-        For C3 we emit one frame per pending challenge per flush,
-        regardless of `attempts`; retransmission timing + the §8.2 cap
-        of 3 attempts land in C5 alongside the loss-detector wiring.
-        The caller is expected to have just appended a fresh challenge
-        via `start_path_challenge` (or the future address-change site).
-        """
-        var out = List[Frame]()
-        for i in range(len(self.path.validator.pending)):
-            var token = List[UInt8](copy=self.path.validator.pending[i].token)
-            out.append(Frame.path_challenge(token^))
-        return out^
+        """Build PATH_CHALLENGE frames for every pending challenge."""
+        return self.path.emit_challenge_frames()
 
     def start_path_challenge(
         mut self, var target: PathKey, now: UInt64
     ) raises:
-        """Begin path validation for `target`.
-
-        Generates an 8-byte token via `PathValidator.start_challenge`; the
-        next 1-RTT flush emits a PATH_CHALLENGE frame with that token.
-        The bench receive site calls this on detected address-change for
-        any source addr that does not already have a pending challenge.
-        """
-        _ = self.path.validator.start_challenge(target^, now)
+        """Begin path validation for `target`."""
+        self.path.begin_challenge(target^, now)
 
     def has_pending_path_challenge(self, target: PathKey) -> Bool:
-        """True iff a PathChallenge with `target == target` is in `pending`.
-
-        Used by the bench receive site to suppress duplicate challenges
-        on rapid-fire packets from the same unvalidated address.
-        """
-        for i in range(len(self.path.validator.pending)):
-            var t = PathKey(copy=self.path.validator.pending[i].target)
-            if t == target:
-                return True
-        return False
+        """True iff a challenge for `target` is already pending."""
+        return self.path.has_pending_challenge(target)
 
     def set_current_recv_addr(mut self, var addr: PathKey):
-        """Stamp the per-receive source-address cursor before feeding a datagram.
-
-        The bench server's UDP receive site calls this immediately before
-        `feed_datagram_from_buffer`, so the connection's PATH_RESPONSE
-        handler (invoked from `_dispatch_frame`) can match the response
-        token against the address that carried the response. Decoupled
-        from the recv ABI to avoid threading PathKey through every layer
-        of `recv_from_buffer` -> `_dispatch_frame`.
-        """
-        self.path.current_recv_addr = addr^
+        """Stamp the per-receive source-address cursor."""
+        self.path.stamp_recv_addr(addr^)
 
     def on_ingress_from(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
@@ -1450,40 +1379,16 @@ struct QuicConnection(Movable):
         self.path.validator.record_received_bytes(from_addr, datagram_len)
 
     def bootstrap_peer_addr(mut self, var addr: PathKey):
-        """Seed `peer_addr` to the first observed source address.
-
-        Called by the bench server exactly once per connection — when a
-        new conn slot is allocated for an incoming Initial — so the
-        sentinel `PathKey.zero()` is replaced with a real 4-tuple before
-        any address-change check runs. This is the ONLY caller path that
-        sets `peer_addr` outside of `on_path_response_received`; this is
-        permitted because the "validated path" at handshake start is
-        defined as the address that carried the client's Initial (the
-        connection IS that path until migration begins).
-        """
-        self.path.peer_addr = addr^
+        """Seed peer_addr to the first observed source address."""
+        self.path.seed_peer_addr(addr^)
 
     def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
-        """Anti-amp gate (RFC 9000 §8.1) for outbound traffic to `target`.
-
-        Returns True if the connection may emit `n_bytes` more on the
-        path to `target`. Delegates to `PathValidator.can_send_bytes`:
-
-          * Pending (unvalidated) paths use the per-path 3× budget.
-          * The validated path (and any addr unknown to the validator)
-            returns True — no anti-amp gate.
-
-        Caller (the bench flusher) MUST follow a successful send with
-        `record_send_to` so the per-path counter advances.
-        """
-        return self.path.validator.can_send_bytes(target, n_bytes)
+        """Anti-amp gate for outbound traffic to `target`."""
+        return self.path.can_send(target, n_bytes)
 
     def record_send_to(mut self, target: PathKey, n_bytes: Int):
-        """Credit `n_bytes` to the per-path `bytes_sent` counter for `target`.
-
-        See `can_send_to`. No-op if `target` has no pending challenge.
-        """
-        self.path.validator.record_sent_bytes(target, n_bytes)
+        """Credit `n_bytes` to the per-path bytes_sent counter for `target`."""
+        self.path.record_send(target, n_bytes)
 
     # ── Frame dispatch ───────────────────────────────────────────────
 

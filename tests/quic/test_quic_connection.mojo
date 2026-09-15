@@ -62,7 +62,7 @@ from navette.tls.guard_tags import (
 from navette.quic.connection import _tls_guard_tag_for
 from navette.quic.cid import CID_ACTIVE
 from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
-from navette.quic.path_validator import PathKey
+from navette.quic.path import PathKey
 from navette.quic.pn_space import SentPacket
 from navette.quic.cc.cc_trait import AckedPacket, LostPacket
 from navette.quic.stream import SendState

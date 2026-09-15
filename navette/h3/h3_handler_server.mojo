@@ -11,7 +11,7 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
-from navette.quic.path_validator import PathKey
+from navette.quic.path import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (

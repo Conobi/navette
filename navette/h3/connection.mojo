@@ -18,7 +18,7 @@ from navette.quic.event import (
     QuicEvent, ConnectionClosedPayload, StreamResetPayload,
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
-from navette.quic.path_validator import PathKey
+from navette.quic.path import PathKey
 from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
 from navette.h3.frame import (
     H3RawFrame,

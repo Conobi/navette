@@ -108,7 +108,7 @@ from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.cid import dcid_to_u64
 from navette.quic.connection import QuicConnection
 from navette.quic.packet import is_long_header_initial, extract_dcid, DcidBuf
-from navette.quic.path_validator import PathKey
+from navette.quic.path import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
 from navette.util.null_ptr import null_ptr

@@ -14,6 +14,7 @@
 from std.ffi import external_call
 from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _pv_alloc
+from navette.quic.frame import Frame
 
 
 # ── RFC 9000 limits ───────────────────────────────────────────────────────────
@@ -333,3 +334,68 @@ struct PathValidator(Movable):
             if age < threshold:
                 kept.append(PathChallenge(copy=self.pending[i]))
         self.pending = kept^
+
+
+# ── PathState ──────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct PathState(Movable):
+    """Per-connection path validation and address tracking state."""
+
+    var validator: PathValidator
+    var pending_responses: List[List[UInt8]]
+    var peer_addr: PathKey
+    var current_recv_addr: PathKey
+
+    def on_challenge_received(mut self, data: Span[UInt8, _]):
+        """Stash an 8-byte PATH_CHALLENGE token for echo as PATH_RESPONSE."""
+        var copy = List[UInt8](capacity=len(data))
+        for i in range(len(data)):
+            copy.append(data[i])
+        self.pending_responses.append(copy^)
+
+    def emit_response_frames(mut self) raises -> List[Frame]:
+        """Drain pending PATH_RESPONSE frames."""
+        var out = List[Frame]()
+        for i in range(len(self.pending_responses)):
+            var data = List[UInt8](copy=self.pending_responses[i])
+            out.append(Frame.path_response(data^))
+        self.pending_responses = List[List[UInt8]]()
+        return out^
+
+    def emit_challenge_frames(mut self) raises -> List[Frame]:
+        """Build PATH_CHALLENGE frames for every pending challenge."""
+        var out = List[Frame]()
+        for i in range(len(self.validator.pending)):
+            var token = List[UInt8](copy=self.validator.pending[i].token)
+            out.append(Frame.path_challenge(token^))
+        return out^
+
+    def begin_challenge(mut self, var target: PathKey, now: UInt64) raises:
+        """Begin path validation for `target`."""
+        _ = self.validator.start_challenge(target^, now)
+
+    def has_pending_challenge(self, target: PathKey) -> Bool:
+        """True iff a challenge for `target` is already pending."""
+        for i in range(len(self.validator.pending)):
+            var t = PathKey(copy=self.validator.pending[i].target)
+            if t == target:
+                return True
+        return False
+
+    def stamp_recv_addr(mut self, var addr: PathKey):
+        """Set the per-receive source-address cursor before feeding a datagram."""
+        self.current_recv_addr = addr^
+
+    def seed_peer_addr(mut self, var addr: PathKey):
+        """Seed peer_addr to the first observed source address."""
+        self.peer_addr = addr^
+
+    def can_send(self, target: PathKey, n_bytes: Int) -> Bool:
+        """Anti-amp gate for outbound traffic to `target`."""
+        return self.validator.can_send_bytes(target, n_bytes)
+
+    def record_send(mut self, target: PathKey, n_bytes: Int):
+        """Credit `n_bytes` to the per-path bytes_sent counter for `target`."""
+        self.validator.record_sent_bytes(target, n_bytes)

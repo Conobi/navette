@@ -8,7 +8,7 @@
 from std.collections import Span
 
 from tests._test_util import assert_true, assert_false, assert_equal_int
-from navette.quic.path_validator import (
+from navette.quic.path import (
     PathChallenge,
     PathKey,
     PathValidator,
