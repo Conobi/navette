@@ -124,7 +124,7 @@ def test_packet_header_vectors() raises:
 
         # token_hex
         var exp_token = String(expected["token_hex"])
-        var got_token = hex_encode(result[0].token)
+        var got_token = hex_encode(List[UInt8](result[0].token_span()))
         assert_equal_str(got_token, exp_token, vid + ".token")
 
         # packet_length: for long headers with payload_length it is
@@ -215,7 +215,10 @@ def test_roundtrip_initial() raises:
     hdr.version = UInt32(1)
     hdr.dcid = CidBuf.from_span(Span(hex_decode("0102030405060708")))
     hdr.scid = CidBuf.from_span(Span(hex_decode("aabbccdd")))
-    hdr.token = hex_decode("cafebabe")
+    var initial_token = hex_decode("cafebabe")
+    for i in range(len(initial_token)):
+        hdr.token[i] = initial_token[i]
+    hdr.token_len = UInt8(len(initial_token))
     hdr.payload_length = UInt64(100)
 
     var w = ByteWriter()
@@ -229,7 +232,7 @@ def test_roundtrip_initial() raises:
     assert_equal_int(Int(result[0].version), 1, "roundtrip initial: version")
     assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip initial: dcid")
     assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip initial: scid")
-    assert_equal_str(hex_encode(result[0].token), "cafebabe", "roundtrip initial: token")
+    assert_equal_str(hex_encode(List[UInt8](result[0].token_span())), "cafebabe", "roundtrip initial: token")
     assert_equal_int(Int(result[0].payload_length), 100, "roundtrip initial: payload_length")
     print("  roundtrip_initial: PASS")
 
@@ -293,7 +296,7 @@ def test_roundtrip_version_negotiation() raises:
     assert_equal_int(Int(result[0].version), 0, "roundtrip VN: version")
     assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip VN: dcid")
     assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip VN: scid")
-    assert_equal_int(len(result[0].supported_versions), 2, "roundtrip VN: version count")
+    assert_equal_int(Int(result[0].versions_len), 2, "roundtrip VN: version count")
     assert_equal_int(Int(result[0].supported_versions[0]), 1, "roundtrip VN: version[0]")
     assert_equal_int(
         Int(result[0].supported_versions[1]),
@@ -327,9 +330,9 @@ def test_roundtrip_retry() raises:
     assert_equal_int(Int(result[0].version), 1, "roundtrip retry: version")
     assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip retry: dcid")
     assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip retry: scid")
-    assert_equal_str(hex_encode(result[0].token), "cafebabe", "roundtrip retry: token")
+    assert_equal_str(hex_encode(List[UInt8](result[0].token_span())), "cafebabe", "roundtrip retry: token")
     assert_equal_str(
-        hex_encode(result[0].retry_integrity_tag),
+        hex_encode(List[UInt8](result[0].retry_integrity_tag_span())),
         "00112233445566778899aabbccddeeff",
         "roundtrip retry: integrity_tag",
     )
@@ -423,6 +426,76 @@ def test_error_short_header_fixed_bit() raises:
     print("  error_short_header_fixed_bit: PASS")
 
 
+def test_error_initial_token_too_long() raises:
+    # Initial packet whose wire-declared token length (233) exceeds the
+    # 232-byte InlineArray capacity backing PacketHeader.token -- must raise
+    # rather than overflow the fixed-size buffer.
+    var w = ByteWriter()
+    w.write_u8(UInt8(0xC0))  # long header + fixed bit, ptype bits 00 = Initial
+    w.write_u32_be(UInt32(1))  # version
+    w.write_u8(UInt8(0))  # dcid_len = 0
+    w.write_u8(UInt8(0))  # scid_len = 0
+    varint_encode(w, UInt64(233))  # token_len > MAX_TOKEN_LEN (232)
+    var wire = w.finish()
+
+    var caught = False
+    try:
+        _ = parse_packet_header(Span(wire), 8)
+    except:
+        caught = True
+    assert_true(caught, "expected error for Initial token exceeding capacity")
+    print("  error_initial_token_too_long: PASS")
+
+
+def test_error_retry_token_too_long() raises:
+    # Retry packet where remaining-bytes-minus-tag (233) exceeds the
+    # 232-byte token capacity -- must raise rather than overflow.
+    var wire = List[UInt8]()
+    wire.append(UInt8(0xF0))  # long header + fixed bit + Retry type (0x30)
+    wire.append(UInt8(0x00))
+    wire.append(UInt8(0x00))
+    wire.append(UInt8(0x00))
+    wire.append(UInt8(0x01))  # version = 1
+    wire.append(UInt8(0))  # dcid_len = 0
+    wire.append(UInt8(0))  # scid_len = 0
+    for _ in range(249):  # 249 - 16 (integrity tag) = 233 > MAX_TOKEN_LEN (232)
+        wire.append(UInt8(0x00))
+
+    var caught = False
+    try:
+        _ = parse_packet_header(Span(wire), 8)
+    except:
+        caught = True
+    assert_true(caught, "expected error for Retry token exceeding capacity")
+    print("  error_retry_token_too_long: PASS")
+
+
+def test_error_vn_too_many_versions() raises:
+    # Version Negotiation packet listing 17 versions -- exceeds the 16-slot
+    # InlineArray capacity backing PacketHeader.supported_versions.
+    var wire = List[UInt8]()
+    wire.append(UInt8(0x80))  # long header form bit; VN's fixed bit is undefined
+    wire.append(UInt8(0x00))
+    wire.append(UInt8(0x00))
+    wire.append(UInt8(0x00))
+    wire.append(UInt8(0x00))  # version = 0 (VN)
+    wire.append(UInt8(0))  # dcid_len = 0
+    wire.append(UInt8(0))  # scid_len = 0
+    for _ in range(17):  # MAX_SUPPORTED_VERSIONS (16) + 1
+        wire.append(UInt8(0x00))
+        wire.append(UInt8(0x00))
+        wire.append(UInt8(0x00))
+        wire.append(UInt8(0x01))
+
+    var caught = False
+    try:
+        _ = parse_packet_header(Span(wire), 8)
+    except:
+        caught = True
+    assert_true(caught, "expected error for VN packet exceeding 16 supported versions")
+    print("  error_vn_too_many_versions: PASS")
+
+
 # === Section 6: Padding utility ===
 
 
@@ -483,6 +556,9 @@ def main() raises:
     test_error_dcid_too_long()
     test_error_truncated_long_header()
     test_error_short_header_fixed_bit()
+    test_error_initial_token_too_long()
+    test_error_retry_token_too_long()
+    test_error_vn_too_many_versions()
 
     # 6. Padding utility
     test_initial_packet_needs_padding()

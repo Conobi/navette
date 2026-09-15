@@ -158,7 +158,7 @@ def build_packet(
         header.scid = CidBuf.from_span(local_cid)
         if space_idx == 0:
             header.packet_type = PacketType.initial()
-            header.token = List[UInt8]()
+            # header.token/token_len already zero-initialized by PacketHeader().
         else:
             header.packet_type = PacketType.handshake()
         header.payload_length = UInt64(pn_len + payload_ciphertext_len)

@@ -2,8 +2,18 @@
 # QUIC packet header codec and packet number encode/decode.
 # RFC 9000 Section 17 (headers), Appendix A (PN decode).
 
+from std.sys.info import size_of
+
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_into, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
+
+# Conservative caps for wire-parsed variable-length header fields. Sized
+# generously above navette's own usage (retry tokens are <=89 bytes; QUIC v1
+# defines one version) so that legitimate peers are never rejected, while
+# still bounding the struct to a fixed, stack-allocatable size.
+comptime MAX_TOKEN_LEN: Int = 232
+comptime MAX_SUPPORTED_VERSIONS: Int = 16
+comptime RETRY_INTEGRITY_TAG_LEN: Int = 16
 
 # --- Constants ---
 
@@ -77,28 +87,44 @@ struct PacketType(ImplicitlyCopyable, Equatable):
 
 
 struct PacketHeader(Copyable, Movable):
+    """Decoded QUIC packet header (RFC 9000 Section 17).
+
+    Variable-length wire fields (token, VN supported-versions list) are
+    stored in fixed-capacity `InlineArray`s with a companion `_len` field
+    tracking the number of valid entries, rather than heap-backed `List`s,
+    so parsing a packet header never allocates. `token` is populated only
+    for Initial/Retry packets, `supported_versions`/`versions_len` only for
+    Version Negotiation, and `retry_integrity_tag` only for Retry (always
+    exactly 16 bytes, so it carries no separate length field).
+    """
+
     var is_long_header: Bool
     var packet_type: PacketType
     var version: UInt32
     var dcid: CidBuf
     var scid: CidBuf
-    var token: List[UInt8]
+    var token: InlineArray[UInt8, MAX_TOKEN_LEN]
+    var token_len: UInt8
     var payload_length: UInt64
     var pn_offset: Int
-    var supported_versions: List[UInt32]
-    var retry_integrity_tag: List[UInt8]
+    var supported_versions: InlineArray[UInt32, MAX_SUPPORTED_VERSIONS]
+    var versions_len: UInt8
+    var retry_integrity_tag: InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN]
 
     def __init__(out self):
+        _check_packet_header_size()
         self.is_long_header = False
         self.packet_type = PacketType.one_rtt()
         self.version = UInt32(0)
         self.dcid = CidBuf.empty()
         self.scid = CidBuf.empty()
-        self.token = List[UInt8]()
+        self.token = InlineArray[UInt8, MAX_TOKEN_LEN](fill=UInt8(0))
+        self.token_len = UInt8(0)
         self.payload_length = UInt64(0)
         self.pn_offset = 0
-        self.supported_versions = List[UInt32]()
-        self.retry_integrity_tag = List[UInt8]()
+        self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](fill=UInt32(0))
+        self.versions_len = UInt8(0)
+        self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](fill=UInt8(0))
 
     def __init__(out self, *, copy: Self):
         self.is_long_header = copy.is_long_header
@@ -106,11 +132,13 @@ struct PacketHeader(Copyable, Movable):
         self.version = copy.version
         self.dcid = CidBuf(copy=copy.dcid)
         self.scid = CidBuf(copy=copy.scid)
-        self.token = List[UInt8](copy=copy.token)
+        self.token = InlineArray[UInt8, MAX_TOKEN_LEN](copy=copy.token)
+        self.token_len = copy.token_len
         self.payload_length = copy.payload_length
         self.pn_offset = copy.pn_offset
-        self.supported_versions = List[UInt32](copy=copy.supported_versions)
-        self.retry_integrity_tag = List[UInt8](copy=copy.retry_integrity_tag)
+        self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](copy=copy.supported_versions)
+        self.versions_len = copy.versions_len
+        self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](copy=copy.retry_integrity_tag)
 
     def __init__(out self, *, deinit move: Self):
         self.is_long_header = move.is_long_header
@@ -119,10 +147,27 @@ struct PacketHeader(Copyable, Movable):
         self.dcid = move.dcid^
         self.scid = move.scid^
         self.token = move.token^
+        self.token_len = move.token_len
         self.payload_length = move.payload_length
         self.pn_offset = move.pn_offset
         self.supported_versions = move.supported_versions^
+        self.versions_len = move.versions_len
         self.retry_integrity_tag = move.retry_integrity_tag^
+
+    def token_span(self) -> Span[UInt8, origin_of(self.token)]:
+        """Borrow the active token bytes (length `token_len`, not the full backing capacity)."""
+        return Span(unsafe_ptr=self.token.unsafe_ptr(), length=Int(self.token_len))
+
+    def retry_integrity_tag_span(self) -> Span[UInt8, origin_of(self.retry_integrity_tag)]:
+        """Borrow the 16-byte AEAD integrity tag (always fully populated for Retry packets)."""
+        return Span(unsafe_ptr=self.retry_integrity_tag.unsafe_ptr(), length=RETRY_INTEGRITY_TAG_LEN)
+
+
+def _check_packet_header_size():
+    """Compile-time size gate: catches an accidental capacity bump (e.g.
+    MAX_TOKEN_LEN) turning PacketHeader back into something too large to
+    cheaply copy/move around the hot parse/build path."""
+    comptime assert size_of[PacketHeader]() <= 400, "PacketHeader exceeds 400 bytes"
 
 
 # --- Fast-path DCID inspection (server demux helpers) ---
@@ -234,10 +279,13 @@ def parse_packet_header[
         if version == 0:
             # Version Negotiation: fixed bit is undefined for VN packets.
             header.packet_type = PacketType.version_negotiation()
-            var versions = List[UInt32]()
+            var version_count = 0
             while reader.remaining() >= 4:
-                versions.append(reader.read_u32_be())
-            header.supported_versions = versions^
+                if version_count >= MAX_SUPPORTED_VERSIONS:
+                    raise "VN packet exceeds " + String(MAX_SUPPORTED_VERSIONS) + " supported versions"
+                header.supported_versions[version_count] = reader.read_u32_be()
+                version_count += 1
+            header.versions_len = UInt8(version_count)
             header.pn_offset = 0
             return Tuple[PacketHeader, Int](header^, reader.pos)
 
@@ -259,19 +307,32 @@ def parse_packet_header[
         if header.packet_type == PacketType.retry():
             # Retry: remaining - 16 = token, last 16 = integrity tag.
             var rem = reader.remaining()
-            if rem < 16:
+            if rem < RETRY_INTEGRITY_TAG_LEN:
                 raise "Retry packet too short for integrity tag"
-            var token_len = rem - 16
-            header.token = reader.read_bytes(token_len)
-            header.retry_integrity_tag = reader.read_bytes(16)
+            var token_len = rem - RETRY_INTEGRITY_TAG_LEN
+            if token_len > MAX_TOKEN_LEN:
+                raise "Retry token exceeds " + String(MAX_TOKEN_LEN) + " bytes"
+            var token_bytes = reader.read_span(token_len)
+            for i in range(token_len):
+                header.token[i] = token_bytes[i]
+            header.token_len = UInt8(token_len)
+            var tag_bytes = reader.read_span(RETRY_INTEGRITY_TAG_LEN)
+            for i in range(RETRY_INTEGRITY_TAG_LEN):
+                header.retry_integrity_tag[i] = tag_bytes[i]
             header.pn_offset = 0
             return Tuple[PacketHeader, Int](header^, reader.pos)
 
         if header.packet_type == PacketType.initial():
             # Read token length (varint) and token.
-            var token_len = varint_decode[origin](reader)
+            var token_len_varint = varint_decode[origin](reader)
+            if token_len_varint > UInt64(MAX_TOKEN_LEN):
+                raise "Initial token exceeds " + String(MAX_TOKEN_LEN) + " bytes"
+            var token_len = Int(token_len_varint)
             if token_len > 0:
-                header.token = reader.read_bytes(Int(token_len))
+                var token_bytes = reader.read_span(token_len)
+                for i in range(token_len):
+                    header.token[i] = token_bytes[i]
+            header.token_len = UInt8(token_len)
 
         # Read payload length (varint) for Initial, Handshake, 0-RTT.
         header.payload_length = varint_decode[origin](reader)
@@ -322,9 +383,9 @@ def serialize_long_header(header: PacketHeader, mut writer: ByteWriter) raises:
 
     if header.packet_type == PacketType.initial():
         # Token length + token.
-        varint_encode(writer, UInt64(len(header.token)))
-        if len(header.token) > 0:
-            writer.write_bytes(Span[UInt8, origin_of(header.token)](header.token))
+        varint_encode(writer, UInt64(header.token_len))
+        if Int(header.token_len) > 0:
+            writer.write_bytes(header.token_span())
 
     if header.packet_type != PacketType.retry():
         # Payload length.
@@ -372,9 +433,9 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
 
     if header.packet_type == PacketType.initial():
         # Token length + token.
-        varint_encode_into(buf, UInt64(len(header.token)))
-        if len(header.token) > 0:
-            buf.extend(Span[UInt8, origin_of(header.token)](header.token))
+        varint_encode_into(buf, UInt64(header.token_len))
+        if Int(header.token_len) > 0:
+            buf.extend(header.token_span())
 
     if header.packet_type != PacketType.retry():
         # Payload length.
