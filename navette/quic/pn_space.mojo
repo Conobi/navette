@@ -184,7 +184,9 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ack_ranges = List[AckRangeEntry]()
         self.ack_eliciting_since_last_ack = 0
         self.ack_needed = False
-        self.sent_packets = Dict[Int, SentPacket]()
+        # cwnd / min_pkt ≈ 128 packets in flight max — pre-size to avoid
+        # resize/rehash during steady-state traffic.
+        self.sent_packets = Dict[Int, SentPacket](capacity=128)
         self.keys_handle = Int32(-1)
         self.last_ae_acked_time_sent = UInt64(0)
         self.recv_ecn = EcnCounts()

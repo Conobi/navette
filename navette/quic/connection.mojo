@@ -557,7 +557,7 @@ struct QuicConnection(Movable):
         self.pending_outbound_datagrams = List[List[UInt8]]()
         self._outbound_dg_head = 0
         self.initial_cids_emitted = False
-        self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
+        self.app_frames_sent = Dict[Int, List[SentStreamFrame]](capacity=128)
         self.pkt_buf = List[UInt8](capacity=1350)
 
     # ── Destructor ───────────────────────────────────────────────────
