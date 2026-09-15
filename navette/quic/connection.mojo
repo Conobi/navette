@@ -1126,7 +1126,7 @@ struct QuicConnection(Movable):
 
         return (pn_space_idx, ph_hp_us, ph_aead_us, ph_frame_parse_us)
 
-    def _retransmit_crypto_if_needed(mut self, lowest_recv_space: Int, closing: Bool):
+    def _retransmit_crypto_if_needed(mut self, lowest_recv_space: Int, closing: Bool) raises:
         """Re-queue unacked CRYPTO when receiving at a lower encryption level."""
         if lowest_recv_space >= 3 or closing:
             return
@@ -3079,17 +3079,22 @@ struct QuicConnection(Movable):
         budget: Int,
         mut used: Int,
     ) raises:
-        """Append Application-space stream / FC / CID frames within `budget`.
+        """Append Application-space stream / FC / CID frames within budget."""
+        self._emit_cid_and_fc_frames(frames, sent_records, budget, used)
+        self._drain_max_stream_data_frames(frames, sent_records, budget, used)
+        self._drain_reset_stream_frames(frames, sent_records, budget, used)
+        self._drain_stop_sending_frames(frames, sent_records, budget, used)
+        self._emit_stream_frames(sent_records, stream_payload, budget, used)
+        self._emit_blocked_frames(frames, budget, used)
 
-        Every frame is admitted only if it fits, and the state it consumes
-        (`advertised`, retire queue, `needs_*` flags, FC windows, send buffer)
-        is mutated only for admitted frames. `used` is advanced by the wire
-        length of each admitted frame.  STREAM frame bytes are written
-        directly into `stream_payload` via write_stream_frame_direct,
-        bypassing Frame struct allocation and the serialize_frame dispatch.
-        """
-
-        # 1. NEW_CONNECTION_ID frames for unadvertised local CIDs.
+    def _emit_cid_and_fc_frames(
+        mut self,
+        mut frames: List[Frame],
+        mut sent_records: List[SentStreamFrame],
+        budget: Int,
+        mut used: Int,
+    ) raises:
+        """Emit NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, MAX_DATA, MAX_STREAMS."""
         var pending_new = self.cid_mgr.pending_new_cid_entries()
         for i in range(len(pending_new)):
             var entry = CidEntry(copy=pending_new[i])
@@ -3109,11 +3114,6 @@ struct QuicConnection(Movable):
             rec.cid_seq = entry.sequence
             sent_records.append(rec^)
             self.cid_mgr.mark_advertised(entry.sequence)
-
-        # 2. RETIRE_CONNECTION_ID frames drain cid_mgr's retirement queue.
-        # Entries that do not fit are put back (the cap cannot be exceeded
-        # since they were just taken from the same queue); a lost packet
-        # re-queues its entries via _on_app_pkt_lost.
         var pending_retire = self.cid_mgr.pending_retire_frames()
         for i in range(len(pending_retire)):
             var seq = pending_retire[i]
@@ -3127,8 +3127,6 @@ struct QuicConnection(Movable):
             rec.kind = SSF_RETIRE_CID
             rec.cid_seq = seq
             sent_records.append(rec^)
-
-        # 3. Connection-level MAX_DATA.
         if self.stream_map.conn_fc_recv.should_update() or self.stream_map.needs_max_data:
             var wl = 1 + varint_len(self.stream_map.conn_fc_recv.next_limit())
             if used + wl <= budget:
@@ -3140,8 +3138,6 @@ struct QuicConnection(Movable):
                 var rec = SentStreamFrame()
                 rec.kind = SSF_MAX_DATA
                 sent_records.append(rec^)
-
-        # 4. MAX_STREAMS (bidi / uni).
         if self.stream_map.needs_max_streams_bidi:
             var f = Frame.max_streams(MaxStreamsFrame(self.stream_map.local_max_streams_bidi, True))
             var wl = f.wire_len()
@@ -3163,20 +3159,22 @@ struct QuicConnection(Movable):
                 rec.kind = SSF_MAX_STREAMS_UNI
                 sent_records.append(rec^)
 
-        # 5. Per-stream control frames (MAX_STREAM_DATA, RESET_STREAM, STOP_SENDING).
-        # Drain the control event lists populated by mark_* calls instead of
-        # scanning every stream.  Each drain pops consumed/stale entries and
-        # leaves un-emitted entries (budget exhaustion) for the next packet.
-
-        # 5a. MAX_STREAM_DATA — in-place drain of control_max_stream_data.
-        var msd_write = 0
-        var msd_full = False
+    def _drain_max_stream_data_frames(
+        mut self,
+        mut frames: List[Frame],
+        mut sent_records: List[SentStreamFrame],
+        budget: Int,
+        mut used: Int,
+    ) raises:
+        """Drain MAX_STREAM_DATA control list with write-cursor compaction."""
+        var write = 0
+        var full = False
         for i in range(len(self.stream_map.control_max_stream_data)):
             var sid = self.stream_map.control_max_stream_data[i]
-            if msd_full:
-                if msd_write != i:
-                    self.stream_map.control_max_stream_data[msd_write] = sid
-                msd_write += 1
+            if full:
+                if write != i:
+                    self.stream_map.control_max_stream_data[write] = sid
+                write += 1
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
@@ -3186,10 +3184,10 @@ struct QuicConnection(Movable):
             var next_limit = p[].fc_recv.value().next_limit()
             var wl = 1 + varint_len(p[].id) + varint_len(next_limit)
             if used + wl > budget:
-                if msd_write != i:
-                    self.stream_map.control_max_stream_data[msd_write] = sid
-                msd_write += 1
-                msd_full = True
+                if write != i:
+                    self.stream_map.control_max_stream_data[write] = sid
+                write += 1
+                full = True
                 continue
             var new_limit = p[].fc_recv.value().update_limit()
             p[].needs_max_stream_data = False
@@ -3200,18 +3198,25 @@ struct QuicConnection(Movable):
             rec.kind = SSF_MAX_STREAM_DATA
             rec.stream_id = p[].id
             sent_records.append(rec^)
-        while len(self.stream_map.control_max_stream_data) > msd_write:
+        while len(self.stream_map.control_max_stream_data) > write:
             _ = self.stream_map.control_max_stream_data.pop()
 
-        # 5b. RESET_STREAM — in-place drain of control_reset.
-        var rst_write = 0
-        var rst_full = False
+    def _drain_reset_stream_frames(
+        mut self,
+        mut frames: List[Frame],
+        mut sent_records: List[SentStreamFrame],
+        budget: Int,
+        mut used: Int,
+    ) raises:
+        """Drain RESET_STREAM control list with write-cursor compaction."""
+        var write = 0
+        var full = False
         for i in range(len(self.stream_map.control_reset)):
             var sid = self.stream_map.control_reset[i]
-            if rst_full:
-                if rst_write != i:
-                    self.stream_map.control_reset[rst_write] = sid
-                rst_write += 1
+            if full:
+                if write != i:
+                    self.stream_map.control_reset[write] = sid
+                write += 1
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
@@ -3226,10 +3231,10 @@ struct QuicConnection(Movable):
             var f = Frame.reset_stream(rs_f)
             var wl = f.wire_len()
             if used + wl > budget:
-                if rst_write != i:
-                    self.stream_map.control_reset[rst_write] = sid
-                rst_write += 1
-                rst_full = True
+                if write != i:
+                    self.stream_map.control_reset[write] = sid
+                write += 1
+                full = True
                 continue
             frames.append(f^)
             used += wl
@@ -3238,18 +3243,25 @@ struct QuicConnection(Movable):
             rec.kind = SSF_RESET_STREAM
             rec.stream_id = p[].id
             sent_records.append(rec^)
-        while len(self.stream_map.control_reset) > rst_write:
+        while len(self.stream_map.control_reset) > write:
             _ = self.stream_map.control_reset.pop()
 
-        # 5c. STOP_SENDING — in-place drain of control_stop_sending.
-        var ss_write = 0
-        var ss_full = False
+    def _drain_stop_sending_frames(
+        mut self,
+        mut frames: List[Frame],
+        mut sent_records: List[SentStreamFrame],
+        budget: Int,
+        mut used: Int,
+    ) raises:
+        """Drain STOP_SENDING control list with write-cursor compaction."""
+        var write = 0
+        var full = False
         for i in range(len(self.stream_map.control_stop_sending)):
             var sid = self.stream_map.control_stop_sending[i]
-            if ss_full:
-                if ss_write != i:
-                    self.stream_map.control_stop_sending[ss_write] = sid
-                ss_write += 1
+            if full:
+                if write != i:
+                    self.stream_map.control_stop_sending[write] = sid
+                write += 1
                 continue
             if not self.stream_map.has_stream(sid):
                 continue
@@ -3260,10 +3272,10 @@ struct QuicConnection(Movable):
             var f = Frame.stop_sending(ss_f)
             var wl = f.wire_len()
             if used + wl > budget:
-                if ss_write != i:
-                    self.stream_map.control_stop_sending[ss_write] = sid
-                ss_write += 1
-                ss_full = True
+                if write != i:
+                    self.stream_map.control_stop_sending[write] = sid
+                write += 1
+                full = True
                 continue
             frames.append(f^)
             used += wl
@@ -3272,42 +3284,40 @@ struct QuicConnection(Movable):
             rec.kind = SSF_STOP_SENDING
             rec.stream_id = p[].id
             sent_records.append(rec^)
-        while len(self.stream_map.control_stop_sending) > ss_write:
+        while len(self.stream_map.control_stop_sending) > write:
             _ = self.stream_map.control_stop_sending.pop()
 
-        # 6. STREAM frames from sendable streams (Deque pop loop).
-        # Pop at most `initial_len` entries for round-robin fairness; streams
-        # with remaining data are re-appended to the back, budget-blocked
-        # streams go back to the front, and stale/orphan entries are dropped.
+    def _emit_stream_frames(
+        mut self,
+        mut sent_records: List[SentStreamFrame],
+        mut stream_payload: List[UInt8],
+        budget: Int,
+        mut used: Int,
+    ) raises:
+        """Emit STREAM frames from the sendable queue with round-robin fairness."""
         var max_bytes_per_frame = MAX_DATAGRAM_SIZE
         var initial_len = len(self.stream_map.sendable_queue)
         var popped = 0
         while popped < initial_len:
             var sid = self.stream_map.sendable_queue.popleft()
             popped += 1
-            # Stale entry — lazily removed from sendable_set.
             if sid not in self.stream_map.sendable_set:
                 continue
-            # Stream gone — clean up sendable_set (single Dict check
-            # replaces has_stream + redundant sendable_set re-check).
             if sid not in self.stream_map.streams:
                 self.stream_map.remove_sendable(sid)
                 continue
             var conn_avail = self.stream_map.conn_fc_send.available()
             if conn_avail == 0:
-                # Conn FC exhausted — put back at front and stop.
                 self.stream_map.sendable_queue.appendleft(sid)
                 break
             var conn_delta = UInt64(0)
             var drop_sendable = False
             var p = self.stream_map.stream_ptr(sid)
             if not p[].send_state or not p[].send_buf or not p[].fc_send:
-                # Orphan — remove from sendable.
                 self.stream_map.remove_sendable(sid)
                 continue
             var ss = p[].send_state.value()
             if ss != SendState.READY and ss != SendState.SEND:
-                # Invalid state — clean up.
                 self.stream_map.remove_sendable(sid)
                 continue
             var stream_avail = p[].fc_send.value().available()
@@ -3315,12 +3325,8 @@ struct QuicConnection(Movable):
                 p[].send_buf.value().fin and not p[].send_buf.value().fin_offset
             )
             if stream_avail == 0 and not fin_pending:
-                # FC-blocked — re-enqueue to back for next round.
                 self.stream_map.sendable_queue.append(sid)
                 continue
-            # Worst-case STREAM header for this frame: type + stream id +
-            # offset + a 2-byte length varint (any chunk < 16384). Budget
-            # exhausted: put back at front and stop.
             var hdr_charge = (
                 1 + varint_len(p[].id)
                 + varint_len(p[].send_buf.value().unsent_offset) + 2
@@ -3336,11 +3342,8 @@ struct QuicConnection(Movable):
                 limit = max_bytes_per_frame
             if room < limit:
                 limit = room
-            # If the only work is a standalone FIN, limit can be 0: prepare_frame
-            # handles this via fin-only emission.
             var meta = p[].send_buf.value().prepare_frame(limit)
             if not meta:
-                # Nothing to send — remove from sendable.
                 self.stream_map.remove_sendable(sid)
                 continue
             var frame_meta = meta.value()
@@ -3348,10 +3351,7 @@ struct QuicConnection(Movable):
             var chunk_size = frame_meta[1]
             var frame_fin = frame_meta[2]
             var frame_len = UInt64(chunk_size)
-            # Read data directly from the send buffer — no intermediate copy.
             var data_view = p[].send_buf.value().data_span(frame_offset, chunk_size)
-            # Write the STREAM frame directly into stream_payload, bypassing
-            # Frame struct allocation and the serialize_frame dispatch.
             var wl = write_stream_frame_direct(
                 stream_payload,
                 budget=budget - used,
@@ -3360,17 +3360,12 @@ struct QuicConnection(Movable):
                 data=data_view,
                 fin=frame_fin,
             )
-            # `limit <= room` and `hdr_charge` bounds the real header, so the
-            # frame always fits; the bytes are already consumed from the send
-            # buffer, which is why this must hold rather than be retried.
             debug_assert(wl > 0 and used + wl <= budget, "STREAM frame exceeds its charge")
             used += wl
-            # Flow-control accounting (only "new" bytes past received mark).
             var prev_end = frame_offset + frame_len
             if prev_end > p[].fc_send.value().received:
                 conn_delta = prev_end - p[].fc_send.value().received
                 p[].fc_send.value().add_received(conn_delta)
-            # Send-state transitions.
             if ss == SendState.READY:
                 p[].send_state = Optional[SendState](SendState.SEND)
             if frame_fin and p[].send_buf.value().fin_offset:
@@ -3388,10 +3383,15 @@ struct QuicConnection(Movable):
             if drop_sendable:
                 self.stream_map.remove_sendable(sid)
             else:
-                # Still has data — re-enqueue to back for round-robin.
                 self.stream_map.sendable_queue.append(sid)
 
-        # 7. DATA_BLOCKED (RFC 9000 §4.1) — connection-level FC exhausted.
+    def _emit_blocked_frames(
+        mut self,
+        mut frames: List[Frame],
+        budget: Int,
+        mut used: Int,
+    ) raises:
+        """Emit DATA_BLOCKED, STREAM_DATA_BLOCKED, and STREAMS_BLOCKED frames."""
         var conn_limit = self.stream_map.conn_fc_send.limit
         if (self.stream_map.conn_fc_send.received >= conn_limit
                 and self.stream_map.conn_fc_send.blocked_at != conn_limit):
@@ -3400,10 +3400,6 @@ struct QuicConnection(Movable):
                 frames.append(Frame.data_blocked(conn_limit))
                 used += wl
                 self.stream_map.conn_fc_send.blocked_at = conn_limit
-
-        # 8. STREAM_DATA_BLOCKED (RFC 9000 §4.1) — per-stream FC exhausted.
-        # Only sendable streams can be FC-blocked; iterate the set, not
-        # the full streams Dict.
         var blocked_ids = List[Int]()
         for key in self.stream_map.sendable_set.keys():
             blocked_ids.append(key)
@@ -3424,8 +3420,6 @@ struct QuicConnection(Movable):
                 frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(p[].id, stream_limit)))
                 used += wl
                 p[].fc_send.value().blocked_at = stream_limit
-
-        # 9. STREAMS_BLOCKED (RFC 9000 §4.6) — local stream count at peer concurrency limit.
         if self.stream_map.needs_streams_blocked_bidi:
             var bidi_limit = self.stream_map.peer_max_streams_bidi
             var wl = 1 + varint_len(bidi_limit)
