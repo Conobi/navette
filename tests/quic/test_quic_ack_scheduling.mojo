@@ -15,6 +15,7 @@ from navette.quic.connection import (
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING, CONN_HANDSHAKING,
     MAX_DATAGRAM_SIZE, MAX_CLOSE_REASON_BYTES,
 )
+from navette.quic.cc.cubic import Cubic
 from navette.quic.frame import Frame
 from navette.quic.pn_space import SentPacket, EncryptionLevel, PacketNumberSpace
 from navette.quic.trans_param import TransportParams, default_transport_params
@@ -200,7 +201,7 @@ def _bytes(n: Int, seed: UInt8 = UInt8(0x41)) -> List[UInt8]:
 
 def _open_gate(mut conn: QuicConnection):
     """Force the congestion gate open: huge cwnd, pacer off."""
-    conn.recovery.cc.cubic._cwnd_value = UInt64(1 << 30)
+    conn.recovery.cc.cc.unsafe_get[Cubic]()._cwnd_value = UInt64(1 << 30)
     conn.recovery.pacer.enabled = False
 
 
@@ -363,7 +364,7 @@ def test_ack_only_bypasses_cc() raises:
     _drain_events(p.server)
     var resp = _bytes(300)
     p.server.send_stream_data(UInt64(sid), Span(resp), False)
-    p.server.recovery.cc.cubic._cwnd_value = UInt64(2400)
+    p.server.recovery.cc.cc.unsafe_get[Cubic]()._cwnd_value = UInt64(2400)
     p.server.recovery.bytes_in_flight = UInt64(2400)
     p.server.recovery.pacer.enabled = False
     var bif_before = p.server.recovery.bytes_in_flight
@@ -509,7 +510,7 @@ def test_pto_armed_only_with_ae_in_flight() raises:
 def _ping_record(pn: UInt64, t: UInt64) -> SentPacket:
     var frames = List[Frame]()
     frames.append(Frame.ping())
-    return SentPacket(pn=pn, time_sent=t, ack_eliciting=True, in_flight=True, size=40, frames=frames)
+    return SentPacket(pn=pn, time_sent=t, ack_eliciting=True, in_flight=True, size=40, frames=frames^)
 
 
 def test_pto_fires_once_per_expiry() raises:
@@ -1122,13 +1123,13 @@ def test_event_fifo() raises:
             var ev = p.client.poll()
             if expect < next_id:
                 assert_true(Bool(ev), "event available")
-                assert_true(ev.value().stream_id == expect, "FIFO order")
+                assert_true(ev.value().payload.unsafe_get[UInt64]() == expect, "FIFO order")
                 expect += 1
             else:
                 assert_false(Bool(ev), "empty queue yields None")
     while expect < next_id:
         var ev = p.client.poll()
-        assert_true(Bool(ev) and ev.value().stream_id == expect, "drain in order")
+        assert_true(Bool(ev) and ev.value().payload.unsafe_get[UInt64]() == expect, "drain in order")
         expect += 1
     assert_false(Bool(p.client.poll()), "drained")
     assert_equal_int(len(p.client.events), 0, "list reset once drained")

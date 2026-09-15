@@ -22,6 +22,7 @@ from navette.quic.connection import (
     SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA, SSF_MAX_STREAM_DATA, SSF_NEW_CID,
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING,
 )
+from navette.quic.cc.cubic import Cubic
 from navette.quic.event import (
     QuicEvent, ConnectionClosedPayload, StreamResetPayload, StreamStoppedPayload,
 )
@@ -2399,7 +2400,7 @@ def test_cubic_cwnd_gates_send_path() raises:
     _drain_events(server)
 
     # Force CUBIC cwnd to a small known value and clear in-flight bytes.
-    client.recovery.cc.cubic._cwnd_value = UInt64(2400)  # 2 * MDS
+    client.recovery.cc.cc.unsafe_get[Cubic]()._cwnd_value = UInt64(2400)  # 2 * MDS
     client.recovery.bytes_in_flight = UInt64(0)
     # Disable the pacer so it doesn't interfere with the cwnd gate check.
     client.recovery.pacer.enabled = False

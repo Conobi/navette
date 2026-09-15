@@ -11,6 +11,7 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
+from navette.quic.cc.cubic import Cubic
 from navette.quic.connection import QuicConnection
 from navette.quic.event import QuicEvent
 from navette.quic.ecn import (
@@ -385,10 +386,10 @@ def test_ecn_ce_triggers_congestion() raises:
     # Set client to CAPABLE so ECN feedback is processed.
     client.ecn.state = ECN_STATE_CAPABLE
     # Inflate cwnd above initial window so reduction is observable.
-    client.recovery.cc.cubic._cwnd_value = UInt64(500_000)
-    client.recovery.cc.cubic.ssthresh = UInt64(1_000_000)
+    client.recovery.cc.cc.unsafe_get[Cubic]()._cwnd_value = UInt64(500_000)
+    client.recovery.cc.cc.unsafe_get[Cubic]().ssthresh = UInt64(1_000_000)
     # Reset congestion_event_time so suppression window doesn't block the event.
-    client.recovery.cc.cubic.congestion_event_time = UInt64(0)
+    client.recovery.cc.cc.unsafe_get[Cubic]().congestion_event_time = UInt64(0)
 
     # Step 1: Client sends a packet (marked ECT0 since state is CAPABLE).
     var sid = client.open_stream(True)
@@ -420,7 +421,7 @@ def test_ecn_ce_triggers_congestion() raises:
     # CE delta > last_ack_ecn.ce → on_congestion_event → cwnd drops.
     # Zero last_ack_ecn so delta = ack.ecn_ce - 0 > 0.
     client.spaces[2].last_ack_ecn.ce = UInt64(0)
-    var cwnd_before = client.recovery.cc.cubic._cwnd_value
+    var cwnd_before = client.recovery.cc.cc.unsafe_get[Cubic]()._cwnd_value
     for i in range(len(s_dg)):
         try:
             client.recv(Span(s_dg[i]), now)
