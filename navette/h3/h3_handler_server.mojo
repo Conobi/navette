@@ -341,7 +341,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
         # RFC 8470 0-RTT HTTP filter dispatch, gated on the connection's
-        # cached `zero_rtt_enabled` opt-in (the authoritative O(1) signal
+        # cached `zrtt.enabled` opt-in (the authoritative O(1) signal
         # set from QuicServerConfig.max_early_data() at conn creation).
         #
         # When 0-RTT is DISABLED (rejection-mode listener), no stream can
@@ -360,7 +360,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         # handler. On accept, the helper has already injected
         # `Early-Data: 1` into req_headers.
         var stream_is_zr = False
-        if self._h3._quic.zero_rtt_enabled:
+        if self._h3._quic.zrtt.enabled:
             stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
             var outcome = apply_early_data_filter(
                 method_str,

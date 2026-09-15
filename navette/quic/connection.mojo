@@ -107,8 +107,7 @@ from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIR
 from navette.quic.path_validator import PathValidator, PathKey
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
-    SEND_READY, SEND_SEND, SEND_DATA_SENT, SEND_DATA_RECVD, SEND_RESET_SENT, SEND_RESET_RECVD,
-    RECV_RECV, RECV_SIZE_KNOWN, RECV_DATA_RECVD, RECV_DATA_READ, RECV_STOP_SENDING_SENT, RECV_RESET_RECVD, RECV_RESET_READ,
+    SendState, RecvState,
     send_state_is_terminal, recv_state_is_terminal,
     stream_is_bidi, stream_is_local, stream_is_client_initiated,
 )
@@ -285,21 +284,6 @@ struct SentStreamFrame(Copyable, Movable):
         self.fin = False
         self.cid_seq = UInt64(0)
 
-    def __init__(out self, *, copy: Self):
-        self.kind = copy.kind
-        self.stream_id = copy.stream_id
-        self.offset = copy.offset
-        self.length = copy.length
-        self.fin = copy.fin
-        self.cid_seq = copy.cid_seq
-
-    def __init__(out self, *, deinit move: Self):
-        self.kind = move.kind
-        self.stream_id = move.stream_id
-        self.offset = move.offset
-        self.length = move.length
-        self.fin = move.fin
-        self.cid_seq = move.cid_seq
 
 
 # ── _PacketPlan ──────────────────────────────────────────────────────
@@ -336,21 +320,6 @@ struct _PacketPlan(Copyable, Movable):
         self.ack_committed = ack_committed
         self.has_stream_data = has_stream_data
 
-    def __init__(out self, *, copy: Self):
-        self.space_idx = copy.space_idx
-        self.frames = List[Frame](copy=copy.frames)
-        self.sent_records = List[SentStreamFrame](copy=copy.sent_records)
-        self.payload = List[UInt8](copy=copy.payload)
-        self.ack_committed = copy.ack_committed
-        self.has_stream_data = copy.has_stream_data
-
-    def __init__(out self, *, deinit move: Self):
-        self.space_idx = move.space_idx
-        self.frames = move.frames^
-        self.sent_records = move.sent_records^
-        self.payload = move.payload^
-        self.ack_committed = move.ack_committed
-        self.has_stream_data = move.has_stream_data
 
 
 # ── QuicEvent payload structs ────────────────────────────────────────
@@ -363,18 +332,12 @@ struct ConnectionClosedPayload(Copyable, Movable):
     var reason: String
 
     def __init__(out self, error_code: UInt64, var reason: String):
+        """Construct with error code and reason phrase."""
         self.error_code = error_code
         self.reason = reason^
 
-    def __init__(out self, *, copy: Self):
-        self.error_code = copy.error_code
-        self.reason = copy.reason
 
-    def __init__(out self, *, deinit move: Self):
-        self.error_code = move.error_code
-        self.reason = move.reason^
-
-
+@fieldwise_init
 struct StreamResetPayload(Copyable, Movable):
     """Payload for QuicEvent.STREAM_RESET."""
 
@@ -382,39 +345,13 @@ struct StreamResetPayload(Copyable, Movable):
     var error_code: UInt64
     var final_size: UInt64
 
-    def __init__(out self, stream_id: UInt64, error_code: UInt64, final_size: UInt64):
-        self.stream_id = stream_id
-        self.error_code = error_code
-        self.final_size = final_size
 
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.error_code = copy.error_code
-        self.final_size = copy.final_size
-
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.error_code = move.error_code
-        self.final_size = move.final_size
-
-
+@fieldwise_init
 struct StreamStoppedPayload(Copyable, Movable):
     """Payload for QuicEvent.STREAM_STOPPED."""
 
     var stream_id: UInt64
     var error_code: UInt64
-
-    def __init__(out self, stream_id: UInt64, error_code: UInt64):
-        self.stream_id = stream_id
-        self.error_code = error_code
-
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.error_code = copy.error_code
-
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.error_code = move.error_code
 
 
 comptime QuicEventPayload = Variant[
@@ -452,16 +389,9 @@ struct QuicEvent(Copyable, Movable):
     var payload: QuicEventPayload
 
     def __init__(out self, type_id: UInt8, var payload: QuicEventPayload):
+        """Construct with event type and payload variant."""
         self.type_id = type_id
         self.payload = payload^
-
-    def __init__(out self, *, copy: Self):
-        self.type_id = copy.type_id
-        self.payload = QuicEventPayload(copy=copy.payload)
-
-    def __init__(out self, *, deinit move: Self):
-        self.type_id = move.type_id
-        self.payload = move.payload^
 
     @staticmethod
     def handshake_complete() -> QuicEvent:
@@ -513,7 +443,265 @@ struct QuicEvent(Copyable, Movable):
         return QuicEvent(QuicEvent.DATAGRAM_RECEIVED, QuicEventPayload(payload^))
 
 
-# ── QuicConnection ───────────────────────────────────────────────────
+# ── PathState ────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct PathState(Movable):
+    """Per-connection path validation and address tracking state."""
+
+    var validator: PathValidator
+    var pending_responses: List[List[UInt8]]
+    var peer_addr: PathKey
+    var current_recv_addr: PathKey
+
+
+# ── ProfileState ─────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct ProfileState(Movable):
+    """Per-connection profiling accumulators and handshake timing."""
+
+    var ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
+    var first_initial_us: UInt64
+    var rustls_us_accum: UInt64
+    var first_iter_done: Bool
+    var fresh_conn_ffi_us_total: UInt64
+    var read_hs_call_count: UInt64
+    var read_hs_input_marshalling_us_total: UInt64
+    var read_hs_state_machine_us_total: UInt64
+    var read_hs_output_alloc_us_total: UInt64
+    var read_hs_output_marshalling_us_total: UInt64
+    var accept_us: UInt64
+    var hs_cpu_us_total: UInt64
+    var hs_wait_us_total: UInt64
+
+    # ── Profiling helpers ────────────────────────────────────────────
+
+    def stamp(self) -> UInt64:
+        """Return monotonic_us() if profiling is compiled-in and active."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                return monotonic_us()
+        return UInt64(0)
+
+    def elapsed(self, start: UInt64) -> UInt64:
+        """Return monotonic_us() - start if profiling is active."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                return monotonic_us() - start
+        return UInt64(0)
+
+    def is_active(self) -> Bool:
+        """True when profiling is compiled-in and the pointer is set."""
+        comptime if PROFILE_ACCEPT:
+            return self.ptr is not None
+        return False
+
+    def begin_iter(mut self) -> UInt64:
+        """Start a recv_from_buffer per-packet iteration bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                if self.first_iter_done:
+                    self.rustls_us_accum = UInt64(0)
+                return monotonic_us()
+        return UInt64(0)
+
+    def end_iter(
+        mut self,
+        t_start: UInt64,
+        hp_us: UInt64,
+        aead_us: UInt64,
+        header_parse_us: UInt64,
+        frame_parse_us: UInt64,
+        sm_us: UInt64,
+    ):
+        """Close the per-packet iteration bracket and record metrics."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var total_us = monotonic_us() - t_start
+                self.ptr.value()[].record_pkt(
+                    total_us=total_us,
+                    ffi_us=self.rustls_us_accum,
+                    hp_us=hp_us,
+                    aead_us=aead_us,
+                    header_parse_us=header_parse_us,
+                    frame_parse_us=frame_parse_us,
+                    sm_us=sm_us,
+                )
+                self.first_iter_done = True
+
+    def record_zero_rtt_install(mut self, ok: Bool):
+        """Delegate 0-RTT key install outcome to AcceptProfile."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_install(ok)
+
+    def record_handshake_arrival(mut self):
+        """Delegate handshake arrival to AcceptProfile."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_handshake_arrival()
+
+    def begin_drive(mut self) -> UInt64:
+        """Start the _drive_handshake body bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].active_drive_count = self.ptr.value()[].active_drive_count + UInt32(1)
+                return monotonic_us()
+        return UInt64(0)
+
+    def end_drive(mut self, t_start: UInt64):
+        """Close the _drive_handshake body bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None and t_start > UInt64(0):
+                self.hs_cpu_us_total = self.hs_cpu_us_total + (monotonic_us() - t_start)
+                if self.ptr.value()[].active_drive_count > UInt32(0):
+                    self.ptr.value()[].active_drive_count = self.ptr.value()[].active_drive_count - UInt32(1)
+
+    def stamp_ffi(mut self) -> UInt64:
+        """Stamp and pre-subtract from rustls_us_accum for FFI brackets."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t = monotonic_us()
+                self.rustls_us_accum -= t
+                return t
+        return UInt64(0)
+
+    def record_ffi_read_hs_end(
+        mut self,
+        t_start: UInt64,
+        input_marshalling_us: UInt64,
+        out_sm_us: UInt64,
+        out_lookup_us: UInt64,
+    ):
+        """Close the read_hs FFI bracket with sub-leg accumulation."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t_end = monotonic_us()
+                self.rustls_us_accum += t_end
+                var delta = t_end - t_start
+                self.ptr.value()[].record_ffi_read_hs(delta)
+                self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + delta
+                self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
+                self.ptr.value()[].record_read_hs_us_per_call(delta)
+                self.read_hs_input_marshalling_us_total = self.read_hs_input_marshalling_us_total + input_marshalling_us
+                self.read_hs_state_machine_us_total = self.read_hs_state_machine_us_total + out_sm_us
+                self.read_hs_output_alloc_us_total = self.read_hs_output_alloc_us_total + out_lookup_us
+                self.read_hs_output_marshalling_us_total = self.read_hs_output_marshalling_us_total + UInt64(0)
+                self.ptr.value()[].record_read_hs_input_marshalling_us(input_marshalling_us)
+                self.ptr.value()[].record_read_hs_state_machine_us(out_sm_us)
+                self.ptr.value()[].record_read_hs_output_alloc_us(out_lookup_us)
+                self.ptr.value()[].record_read_hs_output_marshalling_us(UInt64(0))
+
+    def record_ffi_write_hs_end(mut self, t_start: UInt64):
+        """Close the write_hs FFI bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t_end = monotonic_us()
+                self.rustls_us_accum += t_end
+                var delta = t_end - t_start
+                self.ptr.value()[].record_ffi_write_hs(delta)
+                self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + delta
+
+    def record_ffi_take_keys_end(mut self, t_start: UInt64):
+        """Close the take_keys FFI bracket."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                var t_end = monotonic_us()
+                self.rustls_us_accum += t_end
+                var delta = t_end - t_start
+                self.ptr.value()[].record_ffi_take_keys(delta)
+                self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + delta
+
+    def record_hs_complete(mut self, now: UInt64):
+        """Record handshake-completion latency."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None and self.first_initial_us > UInt64(0):
+                self.ptr.value()[].record_handshake_complete(now - self.first_initial_us)
+
+    def record_replay_accept(mut self):
+        """Bump zero_rtt_replay_accept."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_replay_accept()
+
+    def record_replay_reject_duplicate(mut self):
+        """Bump zero_rtt_replay_reject_duplicate."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_replay_reject_duplicate()
+
+    def record_replay_reject_per_key_quota(mut self):
+        """Bump zero_rtt_replay_reject_per_key_quota."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_replay_reject_per_key_quota()
+
+    def record_replay_reject_global_ceiling(mut self):
+        """Bump zero_rtt_replay_reject_global_ceiling."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_replay_reject_global_ceiling()
+
+    def record_replay_reject_no_authenticator(mut self):
+        """Bump zero_rtt_replay_reject_no_authenticator."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_replay_reject_no_authenticator()
+
+    def record_zero_rtt_drain_dropped(mut self):
+        """Bump zero_rtt_drain_dropped."""
+        comptime if PROFILE_ACCEPT:
+            if self.ptr is not None:
+                self.ptr.value()[].record_zero_rtt_drain_dropped()
+
+
+# ── ZeroRttState ────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct ZeroRttState(Movable):
+    """Per-connection 0-RTT buffering and anti-replay state."""
+
+    var enabled: Bool
+    var buffer: List[List[UInt8]]
+    var buffer_bytes: Int
+    var draining: Bool
+    var replay_decision: UInt8
+    var now_ms_override: Optional[UInt64]
+    var early_data_store_ptr: Optional[
+        Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
+    ]
+
+
+# ── CloseState ──────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct CloseState(Movable):
+    """Connection close/drain lifecycle state."""
+
+    var pending: Optional[ConnectionCloseFrame]
+    var owed: Bool
+    var last_sent: UInt64
+    var timer: UInt64
+    var drain_timer: UInt64
+
+
+# ── EcnProbe ────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct EcnProbe(Copyable, Movable):
+    """ECN path validation probing state (RFC 9000, Section 13.4.2)."""
+
+    var state: UInt8
+    var pkts_needed: Int
+    var pkts_sent: Int
+    var first_pn: UInt64
+
 
 # ── QuicConnection ───────────────────────────────────────────────────
 
@@ -544,28 +732,17 @@ struct QuicConnection(Movable):
     var events: List[QuicEvent]
     # `poll()` pops from `events[_events_head]`; both reset once drained.
     var _events_head: Int
-    var pending_close: Optional[ConnectionCloseFrame]
-    # A CONNECTION_CLOSE datagram is owed once per trigger (the transition
-    # into CLOSING, or a peer datagram at most once per PTO while CLOSING);
-    # `close_last_sent` stamps the last emission for that rate limit.
-    var close_owed: Bool
-    var close_last_sent: UInt64
-    var close_timer: UInt64
-    var drain_timer: UInt64
+    var close: CloseState
     var idle_timer: UInt64
     var handshake_confirmed: Bool
     var current_level: Int
     var send_handshake_done: Bool
     var stream_map: StreamMap
     var cid_mgr: CidManager
-    # RFC 9000 §8/§9 path validation state. Holds in-flight PATH_CHALLENGE
-    # tokens + the currently validated path.
-    var path_validator: PathValidator
-    # Pending PATH_CHALLENGE tokens received from the peer that we still
-    # need to echo back as PATH_RESPONSE in the next 1-RTT flush. Each
-    # entry is the 8-byte data field copied verbatim from the incoming
-    # PATH_CHALLENGE; emission + drain happens in `emit_path_response_frames`.
-    var pending_path_responses: List[List[UInt8]]
+    # RFC 9000 Sec. 8/9 path validation + address tracking state, grouped
+    # into PathState: validator, pending_responses, peer_addr,
+    # current_recv_addr.
+    var path: PathState
     # RFC 9221 §5 — outbound DATAGRAM frame queue. Each entry is one
     # complete payload (no header bytes). Drained in the 1-RTT branch of
     # `_build_frames_for_space` into DATAGRAM_LEN (0x31) frames so each
@@ -576,19 +753,6 @@ struct QuicConnection(Movable):
     # list is reset once every entry has been emitted.
     var pending_outbound_datagrams: List[List[UInt8]]
     var _outbound_dg_head: Int
-    # Current validated peer 4-tuple (RFC 9000 §9). Updated ONLY inside
-    # `on_path_response_received` after a verified PATH_RESPONSE token+addr
-    # match. The bench-server receive site MUST NOT mutate it
-    # directly; all outbound traffic targets this address unless an active
-    # validation is rerouting via `path_validator.pending`.
-    var peer_addr: PathKey
-    # Per-receive cursor: the bench server stamps this with the source
-    # address of the datagram currently being fed into `recv_from_buffer`,
-    # so `_dispatch_frame` can pass `from_addr` to `on_path_response_received`
-    # without changing the recv ABI. Reset semantics are intentionally
-    # absent — the value is overwritten on every datagram and read only
-    # during PATH_RESPONSE handling.
-    var _current_recv_addr: PathKey
     # One-shot guard for the initial NEW_CONNECTION_ID burst (RFC 9000
     # §5.1.1): on the first 1-RTT _build_frames_for_space call after the
     # connection becomes CONN_ESTABLISHED, fill `cid_mgr.local_cids` up
@@ -599,99 +763,11 @@ struct QuicConnection(Movable):
     # sent in that packet, for ACK/loss processing.
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
     var pkt_buf: List[UInt8]
-    # ECN path validation state (RFC 9000 §13.4.2, RFC 9002 §7.9).
-    var ecn_state: UInt8           # ECN_STATE_PROBING / ECN_STATE_CAPABLE / ECN_STATE_DISABLED
-    var ecn_probe_pkts_needed: Int # probe this many ECT(0) packets before validation check
-    var ecn_probe_pkts_sent: Int   # ECT(0) packets sent during probing phase
-    var ecn_probe_first_pn: UInt64 # PN of first ECT(0) probe packet
+    var ecn: EcnProbe
 
-    # ── Profile instrumentation (always present; off-build = dead) ──
-    #
-    # A small struct-layout cost is accepted here. The profile_ptr field
-    # is null for non-bench callers (client tests, conformance suite). Server
-    # constructors stamp profile_first_initial_us before any FFI call so
-    # handshake-latency does not under-report by Initial-key-derivation cost.
-    #
-    # First-iteration bleed-in semantic: profile_first_iter_done starts False.
-    # Iter 1 of recv_from_buffer does NOT reset profile_rustls_us_accum at
-    # its top — it inherits the constructor's accumulator (zero for server,
-    # Initial-key-derivation cost for client). Iter 2+ resets at top.
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
-    var profile_first_initial_us: UInt64
-    var profile_rustls_us_accum: UInt64
-    var profile_first_iter_done: Bool
-    # Non-resetting per-conn FFI accumulator. Increments at the same 3 FFI
-    # bracket sites as profile_rustls_us_accum but is NEVER reset at iter
-    # boundaries — captures the SUM of all FFI work across the conn up to
-    # handshake-complete.
-    var fresh_conn_ffi_us_total: UInt64
+    var prof: ProfileState
 
-    # Per-conn read_hs FFI call count. Non-resetting; recorded once at
-    # _on_handshake_complete server-side. Distinct from fresh_conn_ffi_us_total
-    # (which sums all FFI sub-legs); this counts ONLY read_hs invocations.
-    var read_hs_call_count: UInt64
-
-    # Per-conn read_hs sub-leg µs accumulators. Non-resetting; gated by
-    # PROFILE_ACCEPT + profile_ptr != 0 at the bracket site. Sums across
-    # all read_hs calls in the conn lifetime. output_marshalling is
-    # zero-by-design for read_hs (returns status only); slot reserved for
-    # future symmetric write_hs/take_keys reuse.
-    var read_hs_input_marshalling_us_total: UInt64
-    var read_hs_state_machine_us_total: UInt64
-    var read_hs_output_alloc_us_total: UInt64
-    var read_hs_output_marshalling_us_total: UInt64
-
-    # Per-FD cold-handshake CPU vs wait breakdown.
-    var accept_us: UInt64         # server-side conn creation timestamp; 0 for client
-    var hs_cpu_us_total: UInt64   # sum of _drive_handshake body µs across conn lifetime
-    var hs_wait_us_total: UInt64  # computed once at _on_handshake_complete
-
-    # 0-RTT cached opt-in signal — set once in QuicConnection.server(...)
-    # from QuicServerConfig.max_early_data(). False = rejection-mode
-    # (Path C in the coalesce loop). Per-packet check reads this Bool
-    # instead of crossing the FFI.
-    var zero_rtt_enabled: Bool
-
-    # RFC 9001 §5.7 reorder buffer for 0-RTT packets that arrive ahead
-    # of the Initial that derives their keys. Bounded by
-    # ZERO_RTT_BUFFER_MAX_PKTS (16) AND ZERO_RTT_BUFFER_MAX_BYTES
-    # (32 KiB), whichever fills first. Per-connection, not global.
-    var zero_rtt_buffer: List[List[UInt8]]
-    var zero_rtt_buffer_bytes: Int
-
-    # Set True for the duration of _drain_zero_rtt_buffer. While True,
-    # the decrypt-path's Path B fail branch DROPS instead of re-buffering,
-    # to prevent unbounded re-entry through the same fail path when rustls
-    # still has no early-data secret.
-    var _draining_zero_rtt: Bool
-
-    # Tristate that captures the once-per-connection replay decision.
-    #   0 = unchecked (initial state)
-    #   1 = accepted (allow 0-RTT data through dispatch)
-    #   2 = rejected (silent-drop all subsequent 0-RTT; conn stays alive)
-    # Production code transitions 0 -> 1 OR 0 -> 2 exactly once. 1 -> x
-    # and 2 -> x transitions never occur — committed state is sticky.
-    var _zero_rtt_replay_decision: UInt8
-
-    # Optional[UInt64] now-millis override for unit tests. Production
-    # callers leave this None; the integration site reads
-    # `monotonic_us() // 1000` inline when this field is None. Tests
-    # inject deterministic timestamps via direct assignment. A static
-    # check in `scripts/check_integrations.sh` asserts assignment to this
-    # field never appears outside `tests/`.
-    var _zero_rtt_now_ms_override: Optional[UInt64]
-
-    # Optional pointer to the InMemoryEarlyDataStore owned by the
-    # QuicServerConfig that birthed this connection. None for clients
-    # AND for rejection-mode servers. The pointer is valid for the
-    # connection's lifetime because the public surface (H3UdpHandler etc.)
-    # keeps the config alive across all conns that reference it. A
-    # follow-up change abstracts this via a trait object or
-    # tagged-variant wrapper when the public API exposes
-    # `EarlyDataPolicy::Custom(store)`.
-    var _early_data_store_ptr: Optional[
-        Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
-    ]
+    var zrtt: ZeroRttState
 
     # Transient: the dispatch-loop space_idx of the packet currently
     # being processed. Set by the per-packet frame-dispatch loop to one
@@ -714,79 +790,6 @@ struct QuicConnection(Movable):
     var _scratch_datagram: List[UInt8]
     var _scratch_plans: List[_PacketPlan]
     var _scratch_writer_buf: List[UInt8]
-
-    # ── Move constructor ─────────────────────────────────────────────
-
-    def __init__(out self, *, deinit move: Self):
-        self.is_server = move.is_server
-        self.state = move.state
-        self.spaces = move.spaces^
-        self.crypto_streams = move.crypto_streams^
-        self.recovery = move.recovery^
-        self.protect = move.protect^
-        self.conn_handle = move.conn_handle
-        self._lib = move._lib^
-        self.local_params = move.local_params^
-        self.peer_params = move.peer_params^
-        self.local_cid = move.local_cid^
-        self.peer_cid = move.peer_cid^
-        self.initial_dcid = move.initial_dcid^
-        self.bytes_received = move.bytes_received
-        self.bytes_sent = move.bytes_sent
-        self.events = move.events^
-        self._events_head = move._events_head
-        self.pending_close = move.pending_close^
-        self.close_owed = move.close_owed
-        self.close_last_sent = move.close_last_sent
-        self.close_timer = move.close_timer
-        self.drain_timer = move.drain_timer
-        self.idle_timer = move.idle_timer
-        self.handshake_confirmed = move.handshake_confirmed
-        self.current_level = move.current_level
-        self.send_handshake_done = move.send_handshake_done
-        self.stream_map = move.stream_map^
-        self.cid_mgr = move.cid_mgr^
-        self.path_validator = move.path_validator^
-        self.pending_path_responses = move.pending_path_responses^
-        self.pending_outbound_datagrams = move.pending_outbound_datagrams^
-        self._outbound_dg_head = move._outbound_dg_head
-        self.peer_addr = move.peer_addr^
-        self._current_recv_addr = move._current_recv_addr^
-        self.initial_cids_emitted = move.initial_cids_emitted
-        self.app_frames_sent = move.app_frames_sent^
-        self.pkt_buf = move.pkt_buf^
-        self.ecn_state = move.ecn_state
-        self.ecn_probe_pkts_needed = move.ecn_probe_pkts_needed
-        self.ecn_probe_pkts_sent = move.ecn_probe_pkts_sent
-        self.ecn_probe_first_pn = move.ecn_probe_first_pn
-        self.profile_ptr = move.profile_ptr
-        self.profile_first_initial_us = move.profile_first_initial_us
-        self.profile_rustls_us_accum = move.profile_rustls_us_accum
-        self.profile_first_iter_done = move.profile_first_iter_done
-        self.fresh_conn_ffi_us_total = move.fresh_conn_ffi_us_total
-        self.read_hs_call_count = move.read_hs_call_count
-        self.read_hs_input_marshalling_us_total = move.read_hs_input_marshalling_us_total
-        self.read_hs_state_machine_us_total = move.read_hs_state_machine_us_total
-        self.read_hs_output_alloc_us_total = move.read_hs_output_alloc_us_total
-        self.read_hs_output_marshalling_us_total = move.read_hs_output_marshalling_us_total
-        self.accept_us = move.accept_us
-        self.hs_cpu_us_total = move.hs_cpu_us_total
-        self.hs_wait_us_total = move.hs_wait_us_total
-        self.zero_rtt_enabled = move.zero_rtt_enabled
-        self.zero_rtt_buffer = move.zero_rtt_buffer^
-        self.zero_rtt_buffer_bytes = move.zero_rtt_buffer_bytes
-        self._draining_zero_rtt = move._draining_zero_rtt
-        self._zero_rtt_replay_decision = move._zero_rtt_replay_decision
-        self._zero_rtt_now_ms_override = move._zero_rtt_now_ms_override^
-        self._early_data_store_ptr = move._early_data_store_ptr^
-        self._current_space_idx = move._current_space_idx
-        self._scratch_lost_pns = move._scratch_lost_pns^
-        self._scratch_frames = move._scratch_frames^
-        self._scratch_sent_records = move._scratch_sent_records^
-        self._scratch_payload = move._scratch_payload^
-        self._scratch_datagram = move._scratch_datagram^
-        self._scratch_plans = move._scratch_plans^
-        self._scratch_writer_buf = move._scratch_writer_buf^
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -824,45 +827,47 @@ struct QuicConnection(Movable):
         self.bytes_sent = UInt64(0)
         self.events = List[QuicEvent]()
         self._events_head = 0
-        self.pending_close = None
-        self.close_owed = False
-        self.close_last_sent = UInt64(0)
-        self.close_timer = UInt64(0)
-        self.drain_timer = UInt64(0)
+        self.close = CloseState(
+            pending=None,
+            owed=False,
+            last_sent=UInt64(0),
+            timer=UInt64(0),
+            drain_timer=UInt64(0),
+        )
         self.idle_timer = now
         self.handshake_confirmed = False
         self.current_level = 0
         self.send_handshake_done = False
-        self.ecn_state = ECN_STATE_PROBING
-        self.ecn_probe_pkts_needed = 10
-        self.ecn_probe_pkts_sent = 0
-        self.ecn_probe_first_pn = UInt64(0)
-        self.profile_ptr = None
-        self.profile_first_initial_us = UInt64(0)
-        self.profile_rustls_us_accum = UInt64(0)
-        self.profile_first_iter_done = False
-        self.fresh_conn_ffi_us_total = UInt64(0)
-        self.read_hs_call_count = UInt64(0)
-        self.read_hs_input_marshalling_us_total = UInt64(0)
-        self.read_hs_state_machine_us_total = UInt64(0)
-        self.read_hs_output_alloc_us_total = UInt64(0)
-        self.read_hs_output_marshalling_us_total = UInt64(0)
-        self.accept_us = UInt64(0)
-        self.hs_cpu_us_total = UInt64(0)
-        self.hs_wait_us_total = UInt64(0)
-        # 0-RTT defaults: rejection-mode (False) until the server factory
-        # promotes via QuicServerConfig.max_early_data(). Clients never
-        # enable today. Buffer is empty; not draining.
-        self.zero_rtt_enabled = False
-        self.zero_rtt_buffer = List[List[UInt8]]()
-        self.zero_rtt_buffer_bytes = 0
-        self._draining_zero_rtt = False
-        # Anti-replay tristate defaults: 0 = unchecked. Time-override seam
-        # and store pointer default to None — the server factory promotes
-        # the store pointer when 0-RTT is opted-in.
-        self._zero_rtt_replay_decision = UInt8(0)
-        self._zero_rtt_now_ms_override = None
-        self._early_data_store_ptr = None
+        self.ecn = EcnProbe(
+            state=ECN_STATE_PROBING,
+            pkts_needed=10,
+            pkts_sent=0,
+            first_pn=UInt64(0),
+        )
+        self.prof = ProfileState(
+            ptr=None,
+            first_initial_us=UInt64(0),
+            rustls_us_accum=UInt64(0),
+            first_iter_done=False,
+            fresh_conn_ffi_us_total=UInt64(0),
+            read_hs_call_count=UInt64(0),
+            read_hs_input_marshalling_us_total=UInt64(0),
+            read_hs_state_machine_us_total=UInt64(0),
+            read_hs_output_alloc_us_total=UInt64(0),
+            read_hs_output_marshalling_us_total=UInt64(0),
+            accept_us=UInt64(0),
+            hs_cpu_us_total=UInt64(0),
+            hs_wait_us_total=UInt64(0),
+        )
+        self.zrtt = ZeroRttState(
+            enabled=False,
+            buffer=List[List[UInt8]](),
+            buffer_bytes=0,
+            draining=False,
+            replay_decision=UInt8(0),
+            now_ms_override=None,
+            early_data_store_ptr=None,
+        )
         # Transient packet-dispatch space index; -1 outside the
         # frame-dispatch loop. Bookended by set/reset in the loop body
         # so 0-RTT-origin tagging fires only for streams created from
@@ -893,18 +898,14 @@ struct QuicConnection(Movable):
             local_active_limit=UInt64(2),
             peer_active_limit=UInt64(2),
         )
-        self.path_validator = PathValidator()
-        self.pending_path_responses = List[List[UInt8]]()
+        self.path = PathState(
+            validator=PathValidator(),
+            pending_responses=List[List[UInt8]](),
+            peer_addr=PathKey.zero(),
+            current_recv_addr=PathKey.zero(),
+        )
         self.pending_outbound_datagrams = List[List[UInt8]]()
         self._outbound_dg_head = 0
-        # Sentinel zero PathKey — overwritten by the bench server on the
-        # first ingress datagram (and on every PATH_RESPONSE-validated
-        # migration). family=0 never matches AF_INET (2) or AF_INET6 (10),
-        # so the first observed source addr always lights up the
-        # address-change branch in the receive site (which then promotes
-        # `peer_addr` via the validation path, not direct mutation).
-        self.peer_addr = PathKey.zero()
-        self._current_recv_addr = PathKey.zero()
         self.initial_cids_emitted = False
         self.app_frames_sent = Dict[Int, List[SentStreamFrame]]()
         self.pkt_buf = List[UInt8](capacity=1350)
@@ -1124,30 +1125,28 @@ struct QuicConnection(Movable):
         )
 
 
-        # Plan B: thread profile_ptr + stamp arrival timestamp into the
+        # Plan B: thread prof.ptr + stamp arrival timestamp into the
         # newly-constructed connection.
-        conn.profile_ptr = profile_ptr
-        conn.profile_first_initial_us = profile_arrival_us
-        conn.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
+        conn.prof.ptr = profile_ptr
+        conn.prof.first_initial_us = profile_arrival_us
+        conn.prof.accept_us = profile_arrival_us  # reuse already-stamped arrival time; is_server=True
 
         # Cache the server config's 0-RTT opt-in signal once. The per-packet
-        # decrypt path reads `conn.zero_rtt_enabled` instead of re-crossing
+        # decrypt path reads `conn.zrtt.enabled` instead of re-crossing
         # the FFI on every datagram. rustls QUIC constrains the value to
         # {0, 0xFFFFFFFF}; any non-zero value means "0-RTT opt-in".
-        conn.zero_rtt_enabled = (config.max_early_data() != UInt32(0))
+        conn.zrtt.enabled = (config.max_early_data() != UInt32(0))
 
         # Promote the QuicServerConfig._early_data_store handle into a raw
         # pointer the decrypt path can call into without crossing the FFI.
         var store_opt = config.early_data_store()
         if store_opt is not None:
             var store_ptr = store_opt.value().unsafe_origin_cast[MutUntrackedOrigin]()
-            conn._early_data_store_ptr = Optional[
+            conn.zrtt.early_data_store_ptr = Optional[
                 Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
             ](store_ptr)
 
-        comptime if PROFILE_ACCEPT:
-            if profile_ptr is not None:
-                profile_ptr.value()[].record_handshake_arrival()
+        conn.prof.record_handshake_arrival()
 
         # 7. Derive initial keys from client's DCID (server side).
         conn.protect.derive_initial_keys(client_dcid, is_client=False)
@@ -1183,9 +1182,6 @@ struct QuicConnection(Movable):
         header unprotection and payload decryption, eliminating intermediate
         copies where possible.
         """
-        # Plan B: per-iteration phase timestamps. Always-declared in
-        # off-build (compiler folds unused locals); only written by
-        # the @parameter if PROFILE_ACCEPT branches.
         var t_iter_start = UInt64(0)
         var ph_header_parse_us = UInt64(0)
         var ph_hp_us = UInt64(0)
@@ -1203,8 +1199,8 @@ struct QuicConnection(Movable):
             return
         var closing = (self.state & CONN_CLOSING) != 0
         if closing:
-            if now >= self.close_last_sent + self._pto_interval():
-                self.close_owed = True
+            if now >= self.close.last_sent + self._pto_interval():
+                self.close.owed = True
         else:
             self.idle_timer = now
 
@@ -1216,13 +1212,7 @@ struct QuicConnection(Movable):
         while offset < buf_len:
             if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
                 break
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    t_iter_start = monotonic_us()
-                    if self.profile_first_iter_done:
-                        self.profile_rustls_us_accum = UInt64(0)
-                    # Iter 1: do NOT reset; bleed in constructor cost.
-
+            t_iter_start = self.prof.begin_iter()
 
             # Skip datagram-level zero padding (RFC 9000 §12.4).
             # A zero first byte is never a valid QUIC packet (long headers
@@ -1239,18 +1229,14 @@ struct QuicConnection(Movable):
             # construct a Span — once per coalesced QUIC packet. Eliminated
             # via `Span(unsafe_ptr=remaining_ptr, length=remaining_len)`
             # since `parse_packet_header` only reads the buffer.
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    ph_header_parse_us = monotonic_us()
+            ph_header_parse_us = self.prof.stamp()
             var header_result = parse_packet_header(
                 Span(unsafe_ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
             )
             var header = PacketHeader()
             swap(header, header_result[0])
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    ph_header_parse_us = monotonic_us() - ph_header_parse_us
+            ph_header_parse_us = self.prof.elapsed(ph_header_parse_us)
 
             # 2b. Adopt peer's SCID as peer_cid (RFC 9000 §7.2).
             if header.is_long_header and len(header.scid) > 0:
@@ -1303,21 +1289,17 @@ struct QuicConnection(Movable):
                     except:
                         # ok keeps its False initializer — failure path.
                         pass
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            self.profile_ptr.value()[].record_zero_rtt_install(ok)
-                    if ok:
-                        space_idx = ZERO_RTT_SPACE_IDX
-                    else:
-                        if not self._draining_zero_rtt:
+                    self.prof.record_zero_rtt_install(ok)
+                    if not ok:
+                        if not self.zrtt.draining:
                             var pkt_bytes = Span(
                                 unsafe_ptr=remaining_ptr,
                                 length=skip,
                             )
                             _ = self._buffer_zero_rtt_or_drop(pkt_bytes)
-                        # drain-mode: silent drop.
                         offset += skip
                         continue
+                    space_idx = ZERO_RTT_SPACE_IDX
                 else:
                     # Path C — 0-RTT disabled. Preserve rejection-mode skip.
                     offset += skip
@@ -1329,7 +1311,7 @@ struct QuicConnection(Movable):
                 # subsequent 0-RTT packets so each one inherits the
                 # decision without re-crossing the FFI or store.
                 # ──────────────────────────────────────────────────────
-                if self._zero_rtt_replay_decision == UInt8(0):
+                if self.zrtt.replay_decision == UInt8(0):
                     var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
                     var auth_len = UInt(0)
                     var rc = self._invoke_replay_authenticator_ffi(
@@ -1341,49 +1323,49 @@ struct QuicConnection(Movable):
                         # authenticator reachable. Fail closed without
                         # discarding the keys — subsequent 0-RTT packets
                         # short-circuit through Path A.
-                        self._zero_rtt_replay_decision = UInt8(2)
+                        self.zrtt.replay_decision = UInt8(2)
                         self._record_replay_reject_no_authenticator()
-                    elif self._early_data_store_ptr is None:
+                    elif self.zrtt.early_data_store_ptr is None:
                         # 0-RTT enabled at config level but the store
                         # pointer never got promoted (defensive — should
                         # not occur). Fail closed.
-                        self._zero_rtt_replay_decision = UInt8(2)
+                        self.zrtt.replay_decision = UInt8(2)
                         self._record_replay_reject_no_authenticator()
                     else:
                         var auth_span = Span(
                             unsafe_ptr=auth_buf.unsafe_ptr(), length=32,
                         )
                         var now_ms: UInt64
-                        if self._zero_rtt_now_ms_override is not None:
-                            now_ms = self._zero_rtt_now_ms_override.value()
+                        if self.zrtt.now_ms_override is not None:
+                            now_ms = self.zrtt.now_ms_override.value()
                         else:
                             now_ms = monotonic_us() // UInt64(1_000)
                         var raised = False
                         var decision = ReplayDecision.accept()
                         try:
-                            var store_ptr = self._early_data_store_ptr.value()
+                            var store_ptr = self.zrtt.early_data_store_ptr.value()
                             decision = store_ptr[].check_and_record(
                                 auth_span, now_ms
                             )
                         except:
                             raised = True
                         if raised:
-                            self._zero_rtt_replay_decision = UInt8(2)
+                            self.zrtt.replay_decision = UInt8(2)
                             self._record_replay_reject_no_authenticator()
                         elif decision.is_accept():
-                            self._zero_rtt_replay_decision = UInt8(1)
+                            self.zrtt.replay_decision = UInt8(1)
                             self._record_replay_accept()
                         elif decision.is_duplicate():
-                            self._zero_rtt_replay_decision = UInt8(2)
+                            self.zrtt.replay_decision = UInt8(2)
                             self._record_replay_reject_duplicate()
                         elif decision.is_per_key_quota():
-                            self._zero_rtt_replay_decision = UInt8(2)
+                            self.zrtt.replay_decision = UInt8(2)
                             self._record_replay_reject_per_key_quota()
                         else:  # is_global_ceiling
-                            self._zero_rtt_replay_decision = UInt8(2)
+                            self.zrtt.replay_decision = UInt8(2)
                             self._record_replay_reject_global_ceiling()
 
-                if self._zero_rtt_replay_decision == UInt8(2):
+                if self.zrtt.replay_decision == UInt8(2):
                     # Silent-drop: advance past this 0-RTT packet, keep
                     # the connection alive (RFC 9001 §4.1). We do NOT
                     # call _discard_zero_rtt_keys here; the slot stays
@@ -1444,15 +1426,11 @@ struct QuicConnection(Movable):
             var decrypt_ok = True
             try:
                 # 6. Unprotect header in-place (zero-copy).
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_hp_us = monotonic_us()
+                ph_hp_us = self.prof.stamp()
                 var hp_result = self.protect.unprotect_header_ptr(
                     key_slot, pkt_ptr, pkt_len, header.pn_offset
                 )
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_hp_us = monotonic_us() - ph_hp_us
+                ph_hp_us = self.prof.elapsed(ph_hp_us)
                 var first_byte = hp_result[0]
                 var pn_length = hp_result[1]
 
@@ -1495,15 +1473,11 @@ struct QuicConnection(Movable):
 
                 # 8. Decrypt payload in-place (zero-copy).
                 var header_len = header.pn_offset + pn_length
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_aead_us = monotonic_us()
+                ph_aead_us = self.prof.stamp()
                 var plaintext_len = self.protect.decrypt_payload_in_place(
                     key_slot, full_pn, header_len, pkt_ptr, pkt_len
                 )
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_aead_us = monotonic_us() - ph_aead_us
+                ph_aead_us = self.prof.elapsed(ph_aead_us)
 
                 # 9. Server validates address on first Handshake decrypt.
                 if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
@@ -1514,9 +1488,7 @@ struct QuicConnection(Movable):
                 # constructing one Frame at a time without a List[Frame]
                 # allocation.  The Span is backed by the caller's buffer
                 # directly (no copy).
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_frame_parse_us = monotonic_us()
+                ph_frame_parse_us = self.prof.stamp()
                 var cursor = FrameCursor(
                     Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
                 )
@@ -1564,9 +1536,7 @@ struct QuicConnection(Movable):
                     var _v11 = _f11_verdict.take()
                     self.close_transport(_v11.error_code, _v11.tag, now)
                     return
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_frame_parse_us = monotonic_us() - ph_frame_parse_us
+                ph_frame_parse_us = self.prof.elapsed(ph_frame_parse_us)
 
                 if not closing:
                     # 11. Update PN space — `pn_space_idx` collapses the 0-RTT
@@ -1578,7 +1548,7 @@ struct QuicConnection(Movable):
                     )
 
                     # ECN accounting: count marks seen on received packets.
-                    if self.ecn_state != ECN_STATE_DISABLED:
+                    if self.ecn.state != ECN_STATE_DISABLED:
                         if ecn_mark == ECN_CE:
                             self.spaces[pn_space_idx].recv_ecn.ce += UInt64(1)
                         elif ecn_mark == ECN_ECT0:
@@ -1598,12 +1568,13 @@ struct QuicConnection(Movable):
                 _ = e
                 decrypt_ok = False
 
+            if not decrypt_ok:
+                break
+
             # 12. Drive handshake OUTSIDE try/except so TLS errors
             # propagate to the caller (they are fatal, not recoverable).
-            if decrypt_ok and not closing:
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_sm_us = monotonic_us()
+            if not closing:
+                ph_sm_us = self.prof.stamp()
                 self._drive_handshake(now)
                 # RFC 9001 §5.7 — replay any 0-RTT packets that arrived
                 # ahead of the Initial that derives their keys.
@@ -1611,29 +1582,12 @@ struct QuicConnection(Movable):
                 # inside the drain prevents Path B from re-buffering its
                 # own drained packets.
                 self._drain_zero_rtt_buffer(now, ecn_mark)
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        ph_sm_us = monotonic_us() - ph_sm_us
+                ph_sm_us = self.prof.elapsed(ph_sm_us)
 
-            if not decrypt_ok:
-                break  # Stop processing coalesced packets
-
-            # Plan B: emit per-packet record at iteration end. Bleed-in:
-            # iter 1 inherits constructor's profile_rustls_us_accum.
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    var t_iter_end = monotonic_us()
-                    var total_us = t_iter_end - t_iter_start
-                    self.profile_ptr.value()[].record_pkt(
-                        total_us=total_us,
-                        ffi_us=self.profile_rustls_us_accum,
-                        hp_us=ph_hp_us,
-                        aead_us=ph_aead_us,
-                        header_parse_us=ph_header_parse_us,
-                        frame_parse_us=ph_frame_parse_us,
-                        sm_us=ph_sm_us,
-                    )
-                    self.profile_first_iter_done = True
+            self.prof.end_iter(
+                t_iter_start, ph_hp_us, ph_aead_us,
+                ph_header_parse_us, ph_frame_parse_us, ph_sm_us,
+            )
 
             offset += pkt_len
 
@@ -1700,7 +1654,7 @@ struct QuicConnection(Movable):
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: no recv state"
         var rs = p[].recv_state.value()
-        if rs != RECV_RECV and rs != RECV_SIZE_KNOWN:
+        if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN:
             # Terminal or post-reset — silently drop.
             return
 
@@ -1748,12 +1702,12 @@ struct QuicConnection(Movable):
 
         # 11. Recv-state transitions on FIN.
         if fin:
-            if rs == RECV_RECV:
-                p[].recv_state = Optional[UInt8](RECV_SIZE_KNOWN)
-                rs = RECV_SIZE_KNOWN
-            if rs == RECV_SIZE_KNOWN:
+            if rs == RecvState.RECV:
+                p[].recv_state = Optional[RecvState](RecvState.SIZE_KNOWN)
+                rs = RecvState.SIZE_KNOWN
+            if rs == RecvState.SIZE_KNOWN:
                 if p[].recv_buf.value().is_complete(p[].fin_offset):
-                    p[].recv_state = Optional[UInt8](RECV_DATA_RECVD)
+                    p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
         """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
@@ -1798,7 +1752,7 @@ struct QuicConnection(Movable):
                 raise "FLOW_CONTROL_ERROR: RESET final_size exceeds stream limit"
 
         var rs = p[].recv_state.value()
-        var was_complete = (rs == RECV_DATA_RECVD or rs == RECV_DATA_READ)
+        var was_complete = (rs == RecvState.DATA_RECVD or rs == RecvState.DATA_READ)
 
         # Account phantom bytes at connection level (bytes the peer implicitly
         # "sent" by claiming final_size without delivering them).
@@ -1815,7 +1769,7 @@ struct QuicConnection(Movable):
         # Suppress RESET state transition when DATA_RECVD: RFC 9000 §3.2 lets
         # us keep delivering the fully-received stream to the application.
         if not was_complete:
-            p[].recv_state = Optional[UInt8](RECV_RESET_RECVD)
+            p[].recv_state = Optional[RecvState](RecvState.RESET_RECVD)
             p[].reset_error = Optional[UInt64](error_code)
 
         self.events.append(
@@ -1855,11 +1809,11 @@ struct QuicConnection(Movable):
             raise "STREAM_STATE_ERROR: STOP_SENDING targets non-send side"
 
         var ss = p[].send_state.value()
-        if ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD or ss == SEND_DATA_RECVD:
+        if ss == SendState.RESET_SENT or ss == SendState.RESET_RECVD or ss == SendState.DATA_RECVD:
             return
 
         # Transition to RESET_SENT and queue a RESET_STREAM for the send path.
-        p[].send_state = Optional[UInt8](SEND_RESET_SENT)
+        p[].send_state = Optional[SendState](SendState.RESET_SENT)
         p[].stop_error = Optional[UInt64](error_code)
         p[].needs_reset_stream = True
         p[].reset_stream_error = error_code
@@ -1887,13 +1841,13 @@ struct QuicConnection(Movable):
 
         RFC 9000 §8.2: a PATH_RESPONSE MUST be sent on the same path the
         PATH_CHALLENGE was received, with the same 8-byte data. A later
-        commit drains `pending_path_responses` during 1-RTT emission;
+        commit drains `path.pending_responses` during 1-RTT emission;
         this RX-only commit just records the pending response.
         """
         var copy = List[UInt8](capacity=len(data))
         for i in range(len(data)):
             copy.append(data[i])
-        self.pending_path_responses.append(copy^)
+        self.path.pending_responses.append(copy^)
 
     def on_path_response_received(
         mut self, data: Span[UInt8, _], var from_addr: PathKey, now: UInt64
@@ -1904,7 +1858,7 @@ struct QuicConnection(Movable):
         the response MUST arrive from the address the challenge targeted.
         Non-matches are silently dropped (no error, no state change).
 
-        On a successful match `path_validator.on_response` removes the
+        On a successful match `path.validator.on_response` removes the
         challenge from the pending list and records the new `current`
         ValidatedPath. RFC 9000 §9.5 then MANDATES that the server switch
         to a fresh DCID on the new path — reusing the same DCID across
@@ -1915,7 +1869,7 @@ struct QuicConnection(Movable):
         is deferred: `peer_addr` does NOT swap, and the client
         must issue a NEW_CONNECTION_ID before the migration can complete.
         """
-        var maybe = self.path_validator.on_response(
+        var maybe = self.path.validator.on_response(
             data, PathKey(copy=from_addr), now
         )
         if not Bool(maybe):
@@ -1930,7 +1884,7 @@ struct QuicConnection(Movable):
 
         # Promotion: the validated path is now the active peer addr. This
         # is the ONLY site that mutates `peer_addr`.
-        self.peer_addr = from_addr^
+        self.path.peer_addr = from_addr^
 
     def _rotate_to_spare_remote_cid(mut self, now: UInt64) raises -> Bool:
         """Switch to a spare Active remote CID and queue RETIRE_CID for the old one.
@@ -1957,7 +1911,7 @@ struct QuicConnection(Movable):
     # ── Path validation TX (emission) ────────────────────────────────
 
     def emit_path_response_frames(mut self) raises -> List[Frame]:
-        """Drain `pending_path_responses` into PATH_RESPONSE frames.
+        """Drain `path.pending_responses` into PATH_RESPONSE frames.
 
         RFC 9000 §8.2: a PATH_RESPONSE MUST be sent on the same path the
         PATH_CHALLENGE was received with the same 8-byte data. Called by
@@ -1968,12 +1922,12 @@ struct QuicConnection(Movable):
         re-emit on no-progress).
         """
         var out = List[Frame]()
-        for i in range(len(self.pending_path_responses)):
-            var data = List[UInt8](copy=self.pending_path_responses[i])
+        for i in range(len(self.path.pending_responses)):
+            var data = List[UInt8](copy=self.path.pending_responses[i])
             out.append(Frame.path_response(data^))
         # Drain the queue: every pending response was just turned into a
         # frame, so the queue is empty until the next inbound challenge.
-        self.pending_path_responses = List[List[UInt8]]()
+        self.path.pending_responses = List[List[UInt8]]()
         return out^
 
     def emit_path_challenge_frames(mut self, now: UInt64) raises -> List[Frame]:
@@ -1986,8 +1940,8 @@ struct QuicConnection(Movable):
         via `start_path_challenge` (or the future address-change site).
         """
         var out = List[Frame]()
-        for i in range(len(self.path_validator.pending)):
-            var token = List[UInt8](copy=self.path_validator.pending[i].token)
+        for i in range(len(self.path.validator.pending)):
+            var token = List[UInt8](copy=self.path.validator.pending[i].token)
             out.append(Frame.path_challenge(token^))
         return out^
 
@@ -2001,7 +1955,7 @@ struct QuicConnection(Movable):
         The bench receive site calls this on detected address-change for
         any source addr that does not already have a pending challenge.
         """
-        _ = self.path_validator.start_challenge(target^, now)
+        _ = self.path.validator.start_challenge(target^, now)
 
     def has_pending_path_challenge(self, target: PathKey) -> Bool:
         """True iff a PathChallenge with `target == target` is in `pending`.
@@ -2009,8 +1963,8 @@ struct QuicConnection(Movable):
         Used by the bench receive site to suppress duplicate challenges
         on rapid-fire packets from the same unvalidated address.
         """
-        for i in range(len(self.path_validator.pending)):
-            var t = PathKey(copy=self.path_validator.pending[i].target)
+        for i in range(len(self.path.validator.pending)):
+            var t = PathKey(copy=self.path.validator.pending[i].target)
             if t == target:
                 return True
         return False
@@ -2025,7 +1979,7 @@ struct QuicConnection(Movable):
         from the recv ABI to avoid threading PathKey through every layer
         of `recv_from_buffer` -> `_dispatch_frame`.
         """
-        self._current_recv_addr = addr^
+        self.path.current_recv_addr = addr^
 
     def on_ingress_from(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
@@ -2069,7 +2023,7 @@ struct QuicConnection(Movable):
         # (per spec non-goal: mid-handshake migration drops to current
         # behaviour). Before establishment the bench server stamps the
         # peer addr directly via `bootstrap_peer_addr` instead.
-        if not (from_addr == self.peer_addr):
+        if not (from_addr == self.path.peer_addr):
             if (self.state & CONN_ESTABLISHED) == 0:
                 # Pre-handshake: silently track the addr via the cursor
                 # only. `bootstrap_peer_addr` is what promotes it.
@@ -2097,7 +2051,7 @@ struct QuicConnection(Movable):
         # 2. Per-path anti-amp credit. record_received_bytes is a no-op
         # if `from_addr` has no pending challenge (i.e. it IS the
         # validated path); the validated path is not anti-amp constrained.
-        self.path_validator.record_received_bytes(from_addr, datagram_len)
+        self.path.validator.record_received_bytes(from_addr, datagram_len)
 
     def bootstrap_peer_addr(mut self, var addr: PathKey):
         """Seed `peer_addr` to the first observed source address.
@@ -2111,7 +2065,7 @@ struct QuicConnection(Movable):
         defined as the address that carried the client's Initial (the
         connection IS that path until migration begins).
         """
-        self.peer_addr = addr^
+        self.path.peer_addr = addr^
 
     def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
         """Anti-amp gate (RFC 9000 §8.1) for outbound traffic to `target`.
@@ -2126,14 +2080,14 @@ struct QuicConnection(Movable):
         Caller (the bench flusher) MUST follow a successful send with
         `record_send_to` so the per-path counter advances.
         """
-        return self.path_validator.can_send_bytes(target, n_bytes)
+        return self.path.validator.can_send_bytes(target, n_bytes)
 
     def record_send_to(mut self, target: PathKey, n_bytes: Int):
         """Credit `n_bytes` to the per-path `bytes_sent` counter for `target`.
 
         See `can_send_to`. No-op if `target` has no pending challenge.
         """
-        self.path_validator.record_sent_bytes(target, n_bytes)
+        self.path.validator.record_sent_bytes(target, n_bytes)
 
     # ── Frame dispatch ───────────────────────────────────────────────
 
@@ -2212,7 +2166,7 @@ struct QuicConnection(Movable):
             ref cc = frame.as_connection_close()
             self.state = self.state | CONN_DRAINING
             # Start drain timer: 3 * PTO (RFC 9000 §10.2).
-            self.drain_timer = now + 3 * self._pto_interval()
+            self.close.drain_timer = now + 3 * self._pto_interval()
             var reason = String("")
             for i in range(len(cc.reason)):
                 reason += chr(Int(cc.reason[i]))
@@ -2384,7 +2338,7 @@ struct QuicConnection(Movable):
         # violation (PATH_CHALLENGE is forbidden in 0-RTT); the full
         # 0-RTT frame-table audit is deferred to the conformance harness.
         # Neither path is memory-unsafe: on_path_challenge_received only
-        # appends to pending_path_responses and does not index spaces[].
+        # appends to path.pending_responses and does not index spaces[].
         # Stash the 8-byte token so the next 1-RTT flush emits the
         # matching PATH_RESPONSE.
         if frame.is_path_challenge():
@@ -2394,13 +2348,13 @@ struct QuicConnection(Movable):
 
         # PATH_RESPONSE (0x1B) — RFC 9000 §8.2. The token-vs-addr match
         # requires the source addr of the carrying datagram, which the
-        # bench receive site stamps into `_current_recv_addr` before
+        # bench receive site stamps into `path.current_recv_addr` before
         # feeding the buffer; using a per-conn cursor keeps the `recv`
         # ABI unchanged. Non-matches are silently dropped inside
         # `on_path_response_received` per the §8.2 edge case.
         if frame.is_path_response():
             ref data = frame.as_path_data()
-            var from_addr = PathKey(copy=self._current_recv_addr)
+            var from_addr = PathKey(copy=self.path.current_recv_addr)
             self.on_path_response_received(Span(data), from_addr^, now)
             return
 
@@ -2515,7 +2469,7 @@ struct QuicConnection(Movable):
         #   marks → DISABLED).
         # - CAPABLE: always, so we can detect bleaching (ECT0 in-flight but ACK
         #   has no ECN counts) and CE increments for congestion signaling.
-        if self.ecn_state != ECN_STATE_DISABLED:
+        if self.ecn.state != ECN_STATE_DISABLED:
             self._process_ecn_feedback(space_idx, ack_frame, ect0_acked_count, now)
 
     # ── Loss detection ───────────────────────────────────────────────
@@ -2696,24 +2650,24 @@ struct QuicConnection(Movable):
         )
 
         # --- Path validation (PROBING phase) ---
-        if self.ecn_state == ECN_STATE_PROBING:
-            if (self.ecn_probe_pkts_sent >= self.ecn_probe_pkts_needed
-                    and ack.largest_ack >= self.ecn_probe_first_pn):
+        if self.ecn.state == ECN_STATE_PROBING:
+            if (self.ecn.pkts_sent >= self.ecn.pkts_needed
+                    and ack.largest_ack >= self.ecn.first_pn):
                 if ack.ecn_ect0 == UInt64(0) and ack.ecn_ect1 == UInt64(0) and ack.ecn_ce == UInt64(0):
                     # Peer sees no ECN counts → path strips ECN marks.
-                    self.ecn_state = ECN_STATE_DISABLED
+                    self.ecn.state = ECN_STATE_DISABLED
                     return
                 else:
-                    self.ecn_state = ECN_STATE_CAPABLE
+                    self.ecn.state = ECN_STATE_CAPABLE
 
         # --- Bleaching / remarking checks (RFC 9000 §13.4.2, only after CAPABLE) ---
         # These checks only apply once ECN is confirmed (CAPABLE).  During
         # PROBING the path validation logic above is the gating mechanism.
-        if self.ecn_state == ECN_STATE_CAPABLE:
+        if self.ecn.state == ECN_STATE_CAPABLE:
             var in_flight_ect0 = self.spaces[space_idx].ect0_in_flight
             # Remarking: peer reports more ECN-marked packets than we sent.
             if ack.ecn_ect0 + ack.ecn_ect1 + ack.ecn_ce > in_flight_ect0 + UInt64(1):
-                self.ecn_state = ECN_STATE_DISABLED
+                self.ecn.state = ECN_STATE_DISABLED
                 return
             # Bleaching: we sent ECT(0)-marked packets in this batch but peer
             # reports no ECN counts → path strips ECN codepoints.
@@ -2721,7 +2675,7 @@ struct QuicConnection(Movable):
                     and ack.ecn_ect0 == UInt64(0)
                     and ack.ecn_ect1 == UInt64(0)
                     and ack.ecn_ce == UInt64(0)):
-                self.ecn_state = ECN_STATE_DISABLED
+                self.ecn.state = ECN_STATE_DISABLED
                 return
 
         # --- CE delta → congestion event (RFC 9002 §7.9) ---
@@ -2739,13 +2693,7 @@ struct QuicConnection(Movable):
         if self.conn_handle < 0:
             return
 
-        # _drive_handshake body-time bracket: capture start + bump
-        # active_drive_count. Closing bracket fires at fall-through end.
-        var t_drive_start: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                t_drive_start = monotonic_us()
-                self.profile_ptr.value()[].active_drive_count = self.profile_ptr.value()[].active_drive_count + UInt32(1)
+        var t_drive_start = self.prof.begin_drive()
 
         var lib = self._lib.inner_ptr()
 
@@ -2755,26 +2703,14 @@ struct QuicConnection(Movable):
             if self.crypto_streams[level].has_pending():
                 var crypto_data = self.crypto_streams[level].drain()
                 if len(crypto_data) > 0:
-                    # Mojo-side input-marshalling timer wraps the heap alloc
-                    # + per-byte copy loop (the FFI input ABI marshalling).
-                    var t_input_start: UInt64 = 0
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            t_input_start = monotonic_us()
+                    var t_input_start = self.prof.stamp()
                     var data_buf_owned = Owned[UInt8](len(crypto_data))
                     var data_buf = data_buf_owned.ptr()
                     for i in range(len(crypto_data)):
                         data_buf[unsafe_offset=i] = crypto_data[i]
-                    var input_marshalling_us: UInt64 = 0
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            input_marshalling_us = monotonic_us() - t_input_start
+                    var input_marshalling_us = self.prof.elapsed(t_input_start)
 
-                    var t_start: UInt64 = 0
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            t_start = monotonic_us()
-                            self.profile_rustls_us_accum -= t_start
+                    var t_start = self.prof.stamp_ffi()
                     # out-param locals always declared (zero-cost; comptime
                     # branch chooses 5-arg wired call vs legacy 3-arg below).
                     # Slot order matches src/tls/lib.mojo:499 quic_conn_read_hs:
@@ -2784,7 +2720,7 @@ struct QuicConnection(Movable):
                     var out_sm_us: UInt64 = UInt64(0)
                     var out_lookup_us: UInt64 = UInt64(0)
                     comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
+                        if self.prof.is_active():
                             rc = lib[].quic_conn_read_hs(
                                 self.conn_handle,
                                 data_buf,
@@ -2804,27 +2740,9 @@ struct QuicConnection(Movable):
                             data_buf,
                             Int32(len(crypto_data)),
                         )
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            var t_end = monotonic_us()
-                            self.profile_rustls_us_accum += t_end
-                            self.profile_ptr.value()[].record_ffi_read_hs(t_end - t_start)
-                            self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
-                            # Per-conn read_hs call count + per-call duration.
-                            self.read_hs_call_count = self.read_hs_call_count + UInt64(1)
-                            self.profile_ptr.value()[].record_read_hs_us_per_call(t_end - t_start)
-                            # Per-call read_hs sub-leg accumulation + histograms.
-                            # output_marshalling is zero-by-design for read_hs
-                            # (returns status only); slot reserved for future
-                            # symmetric write_hs/take_keys reuse.
-                            self.read_hs_input_marshalling_us_total = self.read_hs_input_marshalling_us_total + input_marshalling_us
-                            self.read_hs_state_machine_us_total = self.read_hs_state_machine_us_total + out_sm_us
-                            self.read_hs_output_alloc_us_total = self.read_hs_output_alloc_us_total + out_lookup_us
-                            self.read_hs_output_marshalling_us_total = self.read_hs_output_marshalling_us_total + UInt64(0)
-                            self.profile_ptr.value()[].record_read_hs_input_marshalling_us(input_marshalling_us)
-                            self.profile_ptr.value()[].record_read_hs_state_machine_us(out_sm_us)
-                            self.profile_ptr.value()[].record_read_hs_output_alloc_us(out_lookup_us)
-                            self.profile_ptr.value()[].record_read_hs_output_marshalling_us(UInt64(0))
+                    self.prof.record_ffi_read_hs_end(
+                        t_start, input_marshalling_us, out_sm_us, out_lookup_us,
+                    )
 
                     if rc < 0:
                         # Close + return on the TLS-error path. The I/O loop's
@@ -2855,11 +2773,7 @@ struct QuicConnection(Movable):
             out_written[unsafe_offset=0] = Int32(0)
             out_kc[unsafe_offset=0] = UInt8(0)
 
-            var t_start: UInt64 = 0
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    t_start = monotonic_us()
-                    self.profile_rustls_us_accum -= t_start
+            var t_start = self.prof.stamp_ffi()
             var rc = lib[].quic_conn_write_hs(
                 self.conn_handle,
                 out_buf,
@@ -2867,12 +2781,7 @@ struct QuicConnection(Movable):
                 out_written,
                 out_kc,
             )
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    var t_end = monotonic_us()
-                    self.profile_rustls_us_accum += t_end
-                    self.profile_ptr.value()[].record_ffi_write_hs(t_end - t_start)
-                    self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
+            self.prof.record_ffi_write_hs_end(t_start)
 
             if rc < 0:
                 var err = lib[].last_error()
@@ -2901,20 +2810,11 @@ struct QuicConnection(Movable):
                 var keys_handle_buf = keys_handle_buf_owned.ptr()
                 keys_handle_buf[unsafe_offset=0] = Int32(-1)
 
-                var t_start: UInt64 = 0
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        t_start = monotonic_us()
-                        self.profile_rustls_us_accum -= t_start
+                var t_start = self.prof.stamp_ffi()
                 var take_rc = lib[].quic_conn_take_keys(
                     self.conn_handle, keys_handle_buf
                 )
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        var t_end = monotonic_us()
-                        self.profile_rustls_us_accum += t_end
-                        self.profile_ptr.value()[].record_ffi_take_keys(t_end - t_start)
-                        self.fresh_conn_ffi_us_total = self.fresh_conn_ffi_us_total + (t_end - t_start)
+                self.prof.record_ffi_take_keys_end(t_start)
 
                 if take_rc < 0:
                     var err = lib[].last_error()
@@ -2942,42 +2842,28 @@ struct QuicConnection(Movable):
             # Handshake complete.
             self._on_handshake_complete(now)
 
-        # Exit bracket: accumulate _drive_handshake body µs into
-        # hs_cpu_us_total and decrement active_drive_count. Mirrors the
-        # entry bracket above. raise paths leave the bracket unbalanced
-        # but those terminate the connection so the imbalance is moot.
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None and t_drive_start > UInt64(0):
-                var delta = monotonic_us() - t_drive_start
-                self.hs_cpu_us_total = self.hs_cpu_us_total + delta
-                if self.profile_ptr.value()[].active_drive_count > UInt32(0):
-                    self.profile_ptr.value()[].active_drive_count = self.profile_ptr.value()[].active_drive_count - UInt32(1)
+        self.prof.end_drive(t_drive_start)
 
     def _on_handshake_complete(mut self, now: UInt64) raises:
         """Called when TLS reports handshake is complete."""
         if (self.state & CONN_ESTABLISHED) != 0:
             return  # Already processed
 
-        # Plan B: record handshake latency on the SERVER side. Clients
-        # have profile_first_initial_us = 0 (default) and are skipped.
-        comptime if PROFILE_ACCEPT:
-            if self.is_server and self.profile_ptr is not None:
-                if self.profile_first_initial_us > UInt64(0):
-                    var latency_us = now - self.profile_first_initial_us
-                    self.profile_ptr.value()[].record_handshake_complete(latency_us)
+        if self.is_server:
+            self.prof.record_hs_complete(now)
 
         # Increment full/resumed counter exactly once per server connection.
         # Runtime gate only (not @parameter if PROFILE_ACCEPT:) so the test
         # build (PROFILE_ACCEPT=False) can verify the increment by attaching a
-        # profile_ptr directly.
-        # profile_ptr is null when PROFILE_ACCEPT=False (no bench attachment),
+        # prof.ptr directly.
+        # prof.ptr is null when PROFILE_ACCEPT=False (no bench attachment),
         # so the runtime branch is paid at most once per server handshake.
-        if self.is_server and self.profile_ptr is not None:
+        if self.is_server and self.prof.ptr is not None:
             var hs_kind = self._lib.inner_ptr()[].quic_conn_handshake_kind(self.conn_handle)
             if hs_kind == Int32(1) or hs_kind == Int32(3):
-                self.profile_ptr.value()[].record_handshake_full()
+                self.prof.ptr.value()[].record_handshake_full()
             elif hs_kind == Int32(2):
-                self.profile_ptr.value()[].record_handshake_resumed()
+                self.prof.ptr.value()[].record_handshake_resumed()
             elif hs_kind == Int32(0):
                 raise (
                     "_on_handshake_complete: handshake_kind=0 with "
@@ -2990,24 +2876,24 @@ struct QuicConnection(Movable):
 
             # Record per-fresh-conn FFI total at handshake-complete.
             # Fires once per server connection regardless of resumption
-            # status, gated by is_server (runtime) + profile_ptr != 0 (runtime).
-            # Under PROFILE_ACCEPT=False, fresh_conn_ffi_us_total stays 0
+            # status, gated by is_server (runtime) + prof.ptr != 0 (runtime).
+            # Under PROFILE_ACCEPT=False, prof.fresh_conn_ffi_us_total stays 0
             # (no increments in the comptime-gated bracket sites) but the
             # record still fires — bucket[0] gets 1 sample (value=0 maps
             # to bucket index 0 in _per_pkt_bucket).
-            self.profile_ptr.value()[].record_fresh_conn_ffi_us(self.fresh_conn_ffi_us_total)
+            self.prof.ptr.value()[].record_fresh_conn_ffi_us(self.prof.fresh_conn_ffi_us_total)
             # Record per-handshake read_hs call count.
-            self.profile_ptr.value()[].record_read_hs_per_handshake_count(Int(self.read_hs_call_count))
+            self.prof.ptr.value()[].record_read_hs_per_handshake_count(Int(self.prof.read_hs_call_count))
             # Per-FD wait vs CPU breakdown.
-            if self.accept_us > UInt64(0):
+            if self.prof.accept_us > UInt64(0):
                 var now_hs = monotonic_us()
-                var wall_us = now_hs - self.accept_us
-                if wall_us >= self.hs_cpu_us_total:
-                    self.hs_wait_us_total = wall_us - self.hs_cpu_us_total
+                var wall_us = now_hs - self.prof.accept_us
+                if wall_us >= self.prof.hs_cpu_us_total:
+                    self.prof.hs_wait_us_total = wall_us - self.prof.hs_cpu_us_total
                 else:
-                    self.hs_wait_us_total = UInt64(0)
-                self.profile_ptr.value()[].record_hs_cpu_us_per_handshake(self.hs_cpu_us_total)
-                self.profile_ptr.value()[].record_hs_wait_us_per_handshake(self.hs_wait_us_total)
+                    self.prof.hs_wait_us_total = UInt64(0)
+                self.prof.ptr.value()[].record_hs_cpu_us_per_handshake(self.prof.hs_cpu_us_total)
+                self.prof.ptr.value()[].record_hs_wait_us_per_handshake(self.prof.hs_wait_us_total)
 
         # Clear HANDSHAKING flag.
         self.state = self.state & ~CONN_HANDSHAKING
@@ -3171,13 +3057,13 @@ struct QuicConnection(Movable):
         # exist; once they're gone the buffered ciphertext is undecryptable
         # forever, so free it eagerly. Helper stays non-raising — replacing
         # a Mojo List does not throw.
-        self.zero_rtt_buffer = List[List[UInt8]]()
-        self.zero_rtt_buffer_bytes = 0
+        self.zrtt.buffer = List[List[UInt8]]()
+        self.zrtt.buffer_bytes = 0
 
     def _zero_rtt_enabled(self) -> Bool:
         """True if the server config opted into 0-RTT (max_early_data != 0).
         Reads the cached field — no FFI crossing per packet."""
-        return self.zero_rtt_enabled
+        return self.zrtt.enabled
 
     def _buffer_zero_rtt_or_drop(mut self, packet: Span[UInt8, _]) -> Bool:
         """Buffer a 0-RTT packet for later retry after rustls derives the
@@ -3187,22 +3073,22 @@ struct QuicConnection(Movable):
         Bounded by ZERO_RTT_BUFFER_MAX_PKTS AND ZERO_RTT_BUFFER_MAX_BYTES;
         whichever cap a new packet would exceed first, drops it.
         """
-        if len(self.zero_rtt_buffer) >= ZERO_RTT_BUFFER_MAX_PKTS:
+        if len(self.zrtt.buffer) >= ZERO_RTT_BUFFER_MAX_PKTS:
             return False
-        if self.zero_rtt_buffer_bytes + len(packet) > ZERO_RTT_BUFFER_MAX_BYTES:
+        if self.zrtt.buffer_bytes + len(packet) > ZERO_RTT_BUFFER_MAX_BYTES:
             return False
         var copy = List[UInt8](capacity=len(packet))
         for b in packet:
             copy.append(b)
-        self.zero_rtt_buffer.append(copy^)
-        self.zero_rtt_buffer_bytes += len(packet)
+        self.zrtt.buffer.append(copy^)
+        self.zrtt.buffer_bytes += len(packet)
         return True
 
     def _drain_zero_rtt_buffer(mut self, now: UInt64, ecn_mark: UInt8) raises:
         """Replay buffered 0-RTT packets through the production coalesce
         path now that rustls has had a chance to derive the early-data
         secret. Idempotent (empty-buffer no-op). Re-entry into
-        recv_from_buffer is guarded by self._draining_zero_rtt = True,
+        recv_from_buffer is guarded by self.zrtt.draining = True,
         which makes the decrypt-path's Path B fail branch drop instead
         of re-buffer (preventing unbounded re-entry).
 
@@ -3211,12 +3097,12 @@ struct QuicConnection(Movable):
         `zero_rtt_drain_dropped`) and the drain continues with the
         remaining packets.
         """
-        if len(self.zero_rtt_buffer) == 0:
+        if len(self.zrtt.buffer) == 0:
             return
-        var pending = self.zero_rtt_buffer^
-        self.zero_rtt_buffer = List[List[UInt8]]()
-        self.zero_rtt_buffer_bytes = 0
-        self._draining_zero_rtt = True
+        var pending = self.zrtt.buffer^
+        self.zrtt.buffer = List[List[UInt8]]()
+        self.zrtt.buffer_bytes = 0
+        self.zrtt.draining = True
         try:
             for pkt in pending:
                 var buf_ptr_owned = Owned[UInt8](len(pkt))
@@ -3260,57 +3146,39 @@ struct QuicConnection(Movable):
                 # body ends in an inner try/except (no inner finally).
                 _ = buf_ptr_owned
         finally:
-            self._draining_zero_rtt = False
+            self.zrtt.draining = False
 
     # ── 0-RTT anti-replay recorder wrappers ──────────────────────────
-    #
-    # Five PROFILE_ACCEPT-gated thin wrappers that route the tristate
-    # decision to the matching `AcceptProfile.record_zero_rtt_replay_*`
-    # counter. Dead-stripped at off-profile builds. Each name mirrors
-    # the decision branch in the decrypt-path integration so a `grep
-    # _record_replay_` shows the full counter wiring at a glance.
 
     def _record_replay_accept(mut self):
         """Bump `zero_rtt_replay_accept` on the accept branch."""
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_zero_rtt_replay_accept()
+        self.prof.record_replay_accept()
 
     def _record_replay_reject_duplicate(mut self):
         """Bump `zero_rtt_replay_reject_duplicate` on the duplicate branch."""
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_zero_rtt_replay_reject_duplicate()
+        self.prof.record_replay_reject_duplicate()
 
     def _record_replay_reject_per_key_quota(mut self):
         """Bump `zero_rtt_replay_reject_per_key_quota` on the
         per-key-quota-exhausted branch."""
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_zero_rtt_replay_reject_per_key_quota()
+        self.prof.record_replay_reject_per_key_quota()
 
     def _record_replay_reject_global_ceiling(mut self):
         """Bump `zero_rtt_replay_reject_global_ceiling` on the
         global-ceiling-exhausted branch."""
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_zero_rtt_replay_reject_global_ceiling()
+        self.prof.record_replay_reject_global_ceiling()
 
     def _record_replay_reject_no_authenticator(mut self):
         """Bump `zero_rtt_replay_reject_no_authenticator` on FFI anomaly
         or store-raise — the two paths that do NOT produce a
         `ReplayDecision`."""
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_zero_rtt_replay_reject_no_authenticator()
+        self.prof.record_replay_reject_no_authenticator()
 
     def _record_zero_rtt_drain_dropped(mut self):
         """Bump `zero_rtt_drain_dropped` on each buffered packet whose
         replay raised mid-drain and was dropped by the per-packet
         containment in `_drain_zero_rtt_buffer`."""
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_zero_rtt_drain_dropped()
+        self.prof.record_zero_rtt_drain_dropped()
 
     def _invoke_replay_authenticator_ffi(
         mut self,
@@ -3346,9 +3214,9 @@ struct QuicConnection(Movable):
     ) raises:
         """Test-only entry point that mirrors the integration block's
         EXTERNALLY-OBSERVABLE transitions (the resulting
-        `_zero_rtt_replay_decision` value + the recorded counter) for
+        `zrtt.replay_decision` value + the recorded counter) for
         every reachable branch. The production block has one additional
-        defensive `_early_data_store_ptr is None` fallback that the
+        defensive `zrtt.early_data_store_ptr is None` fallback that the
         helper does not model independently — it collapses onto the
         same `no_authenticator` outcome as `simulated_rc != 0`, so the
         observable behaviour is identical. Production refactors that
@@ -3373,34 +3241,34 @@ struct QuicConnection(Movable):
         """
         # Mirror the integration's idempotency guard: a committed
         # decision (1 or 2) is sticky.
-        if self._zero_rtt_replay_decision != UInt8(0):
+        if self.zrtt.replay_decision != UInt8(0):
             return
 
         if simulated_rc != Int32(0):
-            self._zero_rtt_replay_decision = UInt8(2)
+            self.zrtt.replay_decision = UInt8(2)
             self._record_replay_reject_no_authenticator()
             return
 
         if simulated_raises:
-            self._zero_rtt_replay_decision = UInt8(2)
+            self.zrtt.replay_decision = UInt8(2)
             self._record_replay_reject_no_authenticator()
             return
 
         if simulated_decision_kind == UInt8(0):
             # accept
-            self._zero_rtt_replay_decision = UInt8(1)
+            self.zrtt.replay_decision = UInt8(1)
             self._record_replay_accept()
         elif simulated_decision_kind == UInt8(1):
             # duplicate
-            self._zero_rtt_replay_decision = UInt8(2)
+            self.zrtt.replay_decision = UInt8(2)
             self._record_replay_reject_duplicate()
         elif simulated_decision_kind == UInt8(2):
             # per_key_quota
-            self._zero_rtt_replay_decision = UInt8(2)
+            self.zrtt.replay_decision = UInt8(2)
             self._record_replay_reject_per_key_quota()
         else:
             # global_ceiling (kind == 3)
-            self._zero_rtt_replay_decision = UInt8(2)
+            self.zrtt.replay_decision = UInt8(2)
             self._record_replay_reject_global_ceiling()
 
     # ── Send path ────────────────────────────────────────────────────
@@ -3431,7 +3299,7 @@ struct QuicConnection(Movable):
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
             return List[List[UInt8]]()
         var closing = (self.state & CONN_CLOSING) != 0
-        if closing and not self.close_owed:
+        if closing and not self.close.owed:
             return List[List[UInt8]]()
 
         # Step 0: datagram budget with the per-datagram amplification clamp.
@@ -3498,13 +3366,9 @@ struct QuicConnection(Movable):
                     ref ack_ref = maybe_ack.value()
                     ack_reserve = write_ack_frame_direct(stream_payload, payload_budget, ack_ref)
                     reserve = ack_reserve
-                    if reserve > 0:
-                        has_ack = True
-                    else:
-                        # Only the tail of a datagram is this small; the ACK
-                        # (and this space) waits for the next datagram so it
-                        # is never the first frame that does not fit.
+                    if reserve <= 0:
                         continue
+                    has_ack = True
                 var base = len(frames)
                 # Step 3: congestion gate (cwnd + pacer), bypassed on PTO.
                 var gate_open = self.spaces[space_idx].probe_pending or self._cc_open(
@@ -3523,15 +3387,14 @@ struct QuicConnection(Movable):
                         frames.append(Frame.ping())
                 # Step 5: decide the packet.
                 has_stream_data = len(stream_payload) > ack_reserve
-                if len(frames) == base and not has_stream_data:
-                    if has_ack and self.spaces[space_idx].ack_needed:
-                        ack_committed = True
-                    else:
-                        if deferred and self.crypto_streams[0].has_unsent():
-                            end_assembly = True
-                        continue
-                else:
+                if len(frames) > base or has_stream_data:
                     ack_committed = has_ack
+                elif has_ack and self.spaces[space_idx].ack_needed:
+                    ack_committed = True
+                else:
+                    if deferred and self.crypto_streams[0].has_unsent():
+                        end_assembly = True
+                    continue
                 if deferred and self.crypto_streams[0].has_unsent():
                     end_assembly = True
 
@@ -3632,9 +3495,9 @@ struct QuicConnection(Movable):
             # Track ECT(0) in-flight count for bleaching check.
             if ect == ECN_ECT0:
                 self.spaces[space_idx].ect0_in_flight += UInt64(1)
-                if self.ecn_probe_pkts_sent == 0:
-                    self.ecn_probe_first_pn = pn
-                self.ecn_probe_pkts_sent += 1
+                if self.ecn.pkts_sent == 0:
+                    self.ecn.first_pn = pn
+                self.ecn.pkts_sent += 1
             self.recovery.on_packet_sent(pkt_size, in_flight, pn, now)
             # Pacer token: Application space, ack-eliciting packets only.
             if space_idx == 2 and is_ack_eliciting:
@@ -3651,8 +3514,8 @@ struct QuicConnection(Movable):
             swap(self._scratch_frames, plans[i].frames)
 
         if closing and all_close_committed:
-            self.close_owed = False
-            self.close_last_sent = now
+            self.close.owed = False
+            self.close.last_sent = now
 
         # Recapture scratch plans for reuse next send().
         self._scratch_plans = plans^
@@ -3705,14 +3568,14 @@ struct QuicConnection(Movable):
         """The pending CLOSE as emitted in `space_idx`: RFC 9000 §10.2.3
         re-packs an application close (0x1d) as a transport close (0x1c,
         APPLICATION_ERROR) in Initial and Handshake packets."""
-        if not self.pending_close.value().is_transport and space_idx != 2:
+        if not self.close.pending.value().is_transport and space_idx != 2:
             var cc = ConnectionCloseFrame()
             cc.is_transport = True
             cc.error_code = APPLICATION_ERROR
             cc.frame_type = UInt64(0)
-            cc.reason = List[UInt8](copy=self.pending_close.value().reason)
+            cc.reason = List[UInt8](copy=self.close.pending.value().reason)
             return Frame.connection_close(cc)
-        return Frame.connection_close(self.pending_close.value())
+        return Frame.connection_close(self.close.pending.value())
 
     def _space_has_other_sendable(self, space_idx: Int) -> Bool:
         """Non-mutating bundle predicate: one clause per builder that could
@@ -3744,7 +3607,7 @@ struct QuicConnection(Movable):
                 or len(self.stream_map.control_reset) > 0
                 or len(self.stream_map.control_stop_sending) > 0):
             return True
-        if len(self.pending_path_responses) > 0 or len(self.path_validator.pending) > 0:
+        if len(self.path.pending_responses) > 0 or len(self.path.validator.pending) > 0:
             return True
         if self._outbound_dg_head < len(self.pending_outbound_datagrams):
             return True
@@ -3826,14 +3689,14 @@ struct QuicConnection(Movable):
             # 1-RTT-only (F13 already closes Initial/Handshake at RX). Each
             # frame is 9 bytes; the emitters drain their queues wholesale, so
             # a batch is taken only when the whole batch fits.
-            var n_resp = len(self.pending_path_responses)
+            var n_resp = len(self.path.pending_responses)
             if n_resp > 0 and used + 9 * n_resp <= budget:
                 var path_responses = self.emit_path_response_frames()
                 for i in range(len(path_responses)):
                     ref pr = path_responses[i]
                     frames.append(pr.copy())
                 used += 9 * n_resp
-            var n_chal = len(self.path_validator.pending)
+            var n_chal = len(self.path.validator.pending)
             if n_chal > 0 and used + 9 * n_chal <= budget:
                 var path_challenges = self.emit_path_challenge_frames(now)
                 for i in range(len(path_challenges)):
@@ -4102,7 +3965,7 @@ struct QuicConnection(Movable):
                 self.stream_map.remove_sendable(sid)
                 continue
             var ss = p[].send_state.value()
-            if ss != SEND_READY and ss != SEND_SEND:
+            if ss != SendState.READY and ss != SendState.SEND:
                 # Invalid state — clean up.
                 self.stream_map.remove_sendable(sid)
                 continue
@@ -4167,10 +4030,10 @@ struct QuicConnection(Movable):
                 conn_delta = prev_end - p[].fc_send.value().received
                 p[].fc_send.value().add_received(conn_delta)
             # Send-state transitions.
-            if ss == SEND_READY:
-                p[].send_state = Optional[UInt8](SEND_SEND)
+            if ss == SendState.READY:
+                p[].send_state = Optional[SendState](SendState.SEND)
             if frame_fin and p[].send_buf.value().fin_offset:
-                p[].send_state = Optional[UInt8](SEND_DATA_SENT)
+                p[].send_state = Optional[SendState](SendState.DATA_SENT)
             var rec = SentStreamFrame()
             rec.kind = SSF_STREAM
             rec.stream_id = p[].id
@@ -4270,97 +4133,57 @@ struct QuicConnection(Movable):
             header.version = UInt32(1)
             header.dcid = List[UInt8](copy=self.peer_cid)
             header.scid = List[UInt8](copy=self.local_cid)
-
             if space_idx == 0:
                 header.packet_type = PacketType.initial()
-                # Token is empty (no retry support yet).
                 header.token = List[UInt8]()
             else:
                 header.packet_type = PacketType.handshake()
-
-            # payload_length = pn_len + ciphertext + tag.
             header.payload_length = UInt64(pn_len + payload_ciphertext_len)
-
-            # Serialize header directly into pkt_buf.
             serialize_long_header_into(header, self.pkt_buf)
-
-            # Set PN length in the first byte (lower 2 bits = pn_len - 1).
-            self.pkt_buf[0] = (self.pkt_buf[0] & 0xFC) | UInt8(pn_len - 1)
-
-            # Record pn_offset (where PN bytes start).
-            var pn_offset = len(self.pkt_buf)
-            debug_assert(
-                pn_offset + pn_len <= self._header_len(space_idx),
-                "long header exceeds its budgeted length",
-            )
-
-            # Append PN bytes.
-            var truncated = pn_truncate(pn, pn_len)
-            for i in range(pn_len):
-                var shift = UInt64((pn_len - 1 - i) * 8)
-                self.pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
-
-            # Append payload, then padding + AEAD tag space.
-            self.pkt_buf.extend(Span(payload))
-            for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
-                self.pkt_buf.append(UInt8(0))
-
-            # pkt_buf is now: [header | PN | payload | tag_space]
-            var total_len = len(self.pkt_buf)
-            var pkt_ptr = self.pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
-
-            # Encrypt payload region in-place.
-            var header_len = pn_offset + pn_len
-            _ = self.protect.encrypt_payload_in_place(
-                space_idx, pn, pkt_ptr, header_len,
-                plaintext_len, total_len,
-            )
-
-            # Protect header in-place.
-            self.protect.protect_header_ptr(
-                space_idx, pkt_ptr, total_len, pn_offset, pn_len,
-            )
-
         else:
             # Short header (1-RTT / Application).
             serialize_short_header_into(Span(self.peer_cid), self.pkt_buf)
 
-            # Set PN length in the first byte (lower 2 bits = pn_len - 1).
-            self.pkt_buf[0] = (self.pkt_buf[0] & 0xFC) | UInt8(pn_len - 1)
+        self._seal_packet(space_idx, pn, pn_len, payload, plaintext_len)
 
-            # Record pn_offset.
-            var pn_offset = len(self.pkt_buf)
-            debug_assert(
-                pn_offset + pn_len <= self._header_len(space_idx),
-                "short header exceeds its budgeted length",
-            )
+    def _seal_packet(
+        mut self,
+        space_idx: Int,
+        pn: UInt64,
+        pn_len: Int,
+        payload: List[UInt8],
+        plaintext_len: Int,
+    ) raises:
+        """Encode PN, append payload, encrypt and protect header in pkt_buf."""
+        self.pkt_buf[0] = (self.pkt_buf[0] & 0xFC) | UInt8(pn_len - 1)
 
-            # Append PN bytes.
-            var truncated = pn_truncate(pn, pn_len)
-            for i in range(pn_len):
-                var shift = UInt64((pn_len - 1 - i) * 8)
-                self.pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
+        var pn_offset = len(self.pkt_buf)
+        debug_assert(
+            pn_offset + pn_len <= self._header_len(space_idx),
+            "header exceeds its budgeted length",
+        )
 
-            # Payload, then padding + AEAD tag space (plaintext_len >= 4
-            # so the header-protection sample at pn_offset + 4 fits).
-            self.pkt_buf.extend(Span(payload))
-            for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
-                self.pkt_buf.append(UInt8(0))
+        var truncated = pn_truncate(pn, pn_len)
+        for i in range(pn_len):
+            var shift = UInt64((pn_len - 1 - i) * 8)
+            self.pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
 
-            var total_len = len(self.pkt_buf)
-            var pkt_ptr = self.pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
+        self.pkt_buf.extend(Span(payload))
+        for _ in range(plaintext_len - len(payload) + _AEAD_TAG_LEN):
+            self.pkt_buf.append(UInt8(0))
 
-            # Encrypt payload region in-place.
-            var header_len = pn_offset + pn_len
-            _ = self.protect.encrypt_payload_in_place(
-                space_idx, pn, pkt_ptr, header_len,
-                plaintext_len, total_len,
-            )
+        var total_len = len(self.pkt_buf)
+        var pkt_ptr = self.pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
 
-            # Protect header in-place.
-            self.protect.protect_header_ptr(
-                space_idx, pkt_ptr, total_len, pn_offset, pn_len,
-            )
+        var header_len = pn_offset + pn_len
+        _ = self.protect.encrypt_payload_in_place(
+            space_idx, pn, pkt_ptr, header_len,
+            plaintext_len, total_len,
+        )
+
+        self.protect.protect_header_ptr(
+            space_idx, pkt_ptr, total_len, pn_offset, pn_len,
+        )
 
     # ── Application-space frame ACK/loss handling ─────────────
 
@@ -4381,8 +4204,8 @@ struct QuicConnection(Movable):
                     var fully = p[].send_buf.value().is_fully_acked()
                     if fully and p[].send_state:
                         var ss = p[].send_state.value()
-                        if ss == SEND_DATA_SENT:
-                            p[].send_state = Optional[UInt8](SEND_DATA_RECVD)
+                        if ss == SendState.DATA_SENT:
+                            p[].send_state = Optional[SendState](SendState.DATA_RECVD)
                     _ = self.stream_map.maybe_cleanup(key)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
@@ -4391,8 +4214,8 @@ struct QuicConnection(Movable):
                 var p = self.stream_map.stream_ptr(key)
                 if p[].send_state:
                     var ss = p[].send_state.value()
-                    if ss == SEND_RESET_SENT:
-                        p[].send_state = Optional[UInt8](SEND_RESET_RECVD)
+                    if ss == SendState.RESET_SENT:
+                        p[].send_state = Optional[SendState](SendState.RESET_RECVD)
                 _ = self.stream_map.maybe_cleanup(key)
 
     def _on_app_pkt_lost(mut self, pn: Int) raises:
@@ -4519,10 +4342,10 @@ struct QuicConnection(Movable):
         if idle_effective > 0:
             _min_deadline(earliest, Optional[UInt64](self.idle_timer + idle_effective * 1000))
 
-        if self.close_timer > 0:
-            _min_deadline(earliest, Optional[UInt64](self.close_timer))
-        if self.drain_timer > 0:
-            _min_deadline(earliest, Optional[UInt64](self.drain_timer))
+        if self.close.timer > 0:
+            _min_deadline(earliest, Optional[UInt64](self.close.timer))
+        if self.close.drain_timer > 0:
+            _min_deadline(earliest, Optional[UInt64](self.close.drain_timer))
 
         # Pacer: a wake-up source only when Application data is waiting on
         # a token. The wait is computed first (pure, O(1)) and the stream
@@ -4555,15 +4378,15 @@ struct QuicConnection(Movable):
     def _check_timers(mut self, now: UInt64) raises:
         """Check and handle expired timers."""
         # Drain timer.
-        if self.drain_timer > 0 and now >= self.drain_timer:
+        if self.close.drain_timer > 0 and now >= self.close.drain_timer:
             self.state = self.state | CONN_CLOSED
-            self.drain_timer = UInt64(0)
+            self.close.drain_timer = UInt64(0)
             return
 
         # Close timer.
-        if self.close_timer > 0 and now >= self.close_timer:
+        if self.close.timer > 0 and now >= self.close.timer:
             self.state = self.state | CONN_CLOSED
-            self.close_timer = UInt64(0)
+            self.close.timer = UInt64(0)
             return
 
         # Idle timeout — use effective min(local, peer).
@@ -4659,7 +4482,7 @@ struct QuicConnection(Movable):
         """Shared implementation for `close_transport` and `close_app`.
 
         Idempotent: subsequent calls after CLOSING/DRAINING/CLOSED is set
-        are no-ops. Queues the `ConnectionCloseFrame` as `pending_close` with
+        are no-ops. Queues the `ConnectionCloseFrame` as `close.pending` with
         the reason truncated to MAX_CLOSE_REASON_BYTES, owes one CLOSE
         datagram, drops any pending delayed ACK, and arms the 3*PTO close
         timer (RFC 9000 §10.2).
@@ -4667,8 +4490,8 @@ struct QuicConnection(Movable):
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         self.state = self.state | CONN_CLOSING
-        self.close_timer = now + 3 * self._pto_interval()
-        self.close_owed = True
+        self.close.timer = now + 3 * self._pto_interval()
+        self.close.owed = True
         for s in range(3):
             self.spaces[s].ack_deadline = None
         var reason_bytes = List[UInt8]()
@@ -4683,7 +4506,7 @@ struct QuicConnection(Movable):
         cc.error_code = error_code
         cc.frame_type = UInt64(0)
         cc.reason = reason_bytes^
-        self.pending_close = cc^
+        self.close.pending = cc^
 
     def is_established(self) -> Bool:
         """True if the handshake is complete and the connection is usable."""
@@ -4764,8 +4587,8 @@ struct QuicConnection(Movable):
         if not p[].send_state or not p[].send_buf:
             raise "STREAM_STATE_ERROR: no send side"
         var ss = p[].send_state.value()
-        if (ss == SEND_DATA_SENT or ss == SEND_DATA_RECVD
-                or ss == SEND_RESET_SENT or ss == SEND_RESET_RECVD):
+        if (ss == SendState.DATA_SENT or ss == SendState.DATA_RECVD
+                or ss == SendState.RESET_SENT or ss == SendState.RESET_RECVD):
             raise "STREAM_STATE_ERROR: send side terminal or FIN already queued"
         p[].send_buf.value().write(data, fin)
         var has_pending = p[].send_buf.value().has_pending()
@@ -4825,8 +4648,8 @@ struct QuicConnection(Movable):
             self.stream_map.needs_max_data = True
         if p[].recv_state:
             var rs = p[].recv_state.value()
-            if rs == RECV_DATA_RECVD and fin_reached:
-                p[].recv_state = Optional[UInt8](RECV_DATA_READ)
+            if rs == RecvState.DATA_RECVD and fin_reached:
+                p[].recv_state = Optional[RecvState](RecvState.DATA_READ)
         if _needs_msd:
             self.stream_map.mark_max_stream_data(key)
         _ = self.stream_map.maybe_cleanup(key)
@@ -4841,8 +4664,8 @@ struct QuicConnection(Movable):
         if not p[].send_state:
             raise "STREAM_STATE_ERROR: no send side"
         var ss = p[].send_state.value()
-        if (ss == SEND_DATA_RECVD or ss == SEND_RESET_SENT
-                or ss == SEND_RESET_RECVD):
+        if (ss == SendState.DATA_RECVD or ss == SendState.RESET_SENT
+                or ss == SendState.RESET_RECVD):
             return
         var final_size: UInt64 = 0
         if p[].send_buf:
@@ -4851,7 +4674,7 @@ struct QuicConnection(Movable):
                 final_size = sb.fin_offset.value()
             else:
                 final_size = sb.unsent_offset
-        p[].send_state = Optional[UInt8](SEND_RESET_SENT)
+        p[].send_state = Optional[SendState](SendState.RESET_SENT)
         p[].needs_reset_stream = True
         p[].reset_stream_error = error_code
         p[].reset_stream_final_size = final_size
@@ -4910,10 +4733,10 @@ struct QuicConnection(Movable):
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: no recv side"
         var rs = p[].recv_state.value()
-        if (rs == RECV_DATA_READ or rs == RECV_RESET_READ
-                or rs == RECV_RESET_RECVD):
+        if (rs == RecvState.DATA_READ or rs == RecvState.RESET_READ
+                or rs == RecvState.RESET_RECVD):
             return
-        p[].recv_state = Optional[UInt8](RECV_STOP_SENDING_SENT)
+        p[].recv_state = Optional[RecvState](RecvState.STOP_SENDING_SENT)
         p[].needs_stop_sending = True
         p[].stop_sending_error = error_code
         self.stream_map.mark_stop_sending(key)
@@ -4958,7 +4781,7 @@ struct QuicConnection(Movable):
 
         Returns ECN_ECT0 while probing or confirmed capable; ECN_NOT_ECT when
         the path is known to strip/corrupt ECN marks."""
-        if self.ecn_state == ECN_STATE_DISABLED:
+        if self.ecn.state == ECN_STATE_DISABLED:
             return ECN_NOT_ECT
         return ECN_ECT0
 

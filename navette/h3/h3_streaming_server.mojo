@@ -694,7 +694,7 @@ struct H3StreamingServer(Movable):
             req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
 
         # RFC 8470 0-RTT HTTP filter dispatch, gated on the connection's
-        # cached `zero_rtt_enabled` opt-in (the authoritative O(1) signal
+        # cached `zrtt.enabled` opt-in (the authoritative O(1) signal
         # set from QuicServerConfig.max_early_data() at conn creation).
         #
         # When 0-RTT is DISABLED (rejection-mode listener), no stream can
@@ -715,7 +715,7 @@ struct H3StreamingServer(Movable):
         # profile_ptr field (counter routing is owned by H3HandlerServer),
         # so the helper is called with `profile_ptr=None`.
         var stream_is_zr = False
-        if self._h3._quic.zero_rtt_enabled:
+        if self._h3._quic.zrtt.enabled:
             stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
             var _no_profile = Optional[
                 Pointer[AcceptProfile, MutUntrackedOrigin]

@@ -347,7 +347,7 @@ struct H3Connection(Movable):
         (handshake seeding) or `on_path_response_received` (post-migration
         promotion); both live on the QUIC layer.
         """
-        return PathKey(copy=self._quic.peer_addr)
+        return PathKey(copy=self._quic.path.peer_addr)
 
     def _is_peer_initiated(self, stream_id: UInt64) -> Bool:
         if self._is_server:

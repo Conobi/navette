@@ -828,7 +828,7 @@ struct AcceptProfile(Copyable, Movable):
         adapter reaches the filter site with is_zero_rtt=False
         (request rode 1-RTT) — filter is NOT consulted and handler
         is dispatched normally. Only fires on connections that opted
-        into 0-RTT (`QuicConnection.zero_rtt_enabled=True`); rejection-
+        into 0-RTT (`QuicConnection.zrtt.enabled=True`); rejection-
         mode listeners gate out the dispatch before it reaches this
         counter, so the count reflects the 0-RTT-vs-1-RTT mix among
         0-RTT-enabled listeners only."""
