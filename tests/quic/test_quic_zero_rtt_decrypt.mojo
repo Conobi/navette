@@ -33,7 +33,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_ACK_IN_ZERO_RTT,
 )
 from navette.quic.packet_protect import PacketProtect
-from navette.quic.profile import AcceptProfile
+from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.trans_param import default_transport_params
 from tests._test_util import (
     assert_true, assert_false, assert_equal_int, load_test_cert,
@@ -340,11 +340,11 @@ def test_lazy_install_success_counter_increments_once_per_install() raises:
     """
     var prof = AcceptProfile()
     assert_equal_int(
-        Int(prof.zero_rtt_install_attempts), 0,
+        Int(prof.get(CounterId.ZERO_RTT_INSTALL_ATTEMPTS)), 0,
         "attempts must start at 0",
     )
     assert_equal_int(
-        Int(prof.zero_rtt_install_successes), 0,
+        Int(prof.get(CounterId.ZERO_RTT_INSTALL_SUCCESSES)), 0,
         "successes must start at 0",
     )
 
@@ -355,11 +355,11 @@ def test_lazy_install_success_counter_increments_once_per_install() raises:
     prof.record_zero_rtt_install(True)
 
     assert_equal_int(
-        Int(prof.zero_rtt_install_attempts), 2,
+        Int(prof.get(CounterId.ZERO_RTT_INSTALL_ATTEMPTS)), 2,
         "exactly two failed attempts recorded",
     )
     assert_equal_int(
-        Int(prof.zero_rtt_install_successes), 1,
+        Int(prof.get(CounterId.ZERO_RTT_INSTALL_SUCCESSES)), 1,
         "exactly one success recorded — install is one-shot per conn",
     )
 
@@ -567,18 +567,18 @@ def test_accept_profile_replay_counters_increment_independently() raises:
     increments only its bucket. Establishes the AcceptProfile contract
     that QuicConnection._record_replay_* wrappers will consume."""
     var prof = AcceptProfile()
-    assert_equal_int(Int(prof.zero_rtt_replay_accept), 0, "accept starts 0")
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 0, "accept starts 0")
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_duplicate), 0, "dup starts 0"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 0, "dup starts 0"
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_per_key_quota), 0, "per_key starts 0"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 0, "per_key starts 0"
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_global_ceiling), 0, "ceiling starts 0"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)), 0, "ceiling starts 0"
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_no_authenticator), 0, "no_auth starts 0"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 0, "no_auth starts 0"
     )
 
     prof.record_zero_rtt_replay_accept()
@@ -589,18 +589,18 @@ def test_accept_profile_replay_counters_increment_independently() raises:
     prof.record_zero_rtt_replay_reject_no_authenticator()
     prof.record_zero_rtt_replay_reject_no_authenticator()
 
-    assert_equal_int(Int(prof.zero_rtt_replay_accept), 2, "accept +2")
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 2, "accept +2")
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_duplicate), 1, "dup +1"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 1, "dup +1"
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_per_key_quota), 1, "per_key +1"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 1, "per_key +1"
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_global_ceiling), 1, "ceiling +1"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)), 1, "ceiling +1"
     )
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_no_authenticator), 2, "no_auth +2"
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 2, "no_auth +2"
     )
     print("  test_accept_profile_replay_counters_increment_independently: PASS")
 

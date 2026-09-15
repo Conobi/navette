@@ -33,7 +33,7 @@ from navette.tls.early_data_store import (
 )
 from navette.quic.connection import QuicConnection
 from navette.quic.packet_protect import ZERO_RTT_KEY_SLOT_IDX
-from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT
+from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, CounterId
 from navette.quic.trans_param import default_transport_params
 from tests._test_util import (
     assert_true, assert_false, assert_equal_int, load_test_cert,
@@ -113,11 +113,11 @@ def test_replay_check_accept_transitions_to_1() raises:
     )
     comptime if PROFILE_ACCEPT:
         assert_equal_int(
-            Int(prof.zero_rtt_replay_accept), 1,
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 1,
             "accept counter must +1 under PROFILE_ACCEPT",
         )
     _ = conn.is_server
-    _ = prof.zero_rtt_replay_accept
+    _ = prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)
     print("  test_replay_check_accept_transitions_to_1: PASS")
 
 
@@ -149,7 +149,7 @@ def test_replay_check_reject_duplicate_transitions_to_2() raises:
     )
     comptime if PROFILE_ACCEPT:
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_duplicate), 1,
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 1,
             "duplicate counter must +1 under PROFILE_ACCEPT",
         )
     # Silent rejection: NO CONNECTION_CLOSE queued by the helper.
@@ -158,7 +158,7 @@ def test_replay_check_reject_duplicate_transitions_to_2() raises:
         "silent rejection must NOT queue CONNECTION_CLOSE",
     )
     _ = conn.is_server
-    _ = prof.zero_rtt_replay_reject_duplicate
+    _ = prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
     print("  test_replay_check_reject_duplicate_transitions_to_2: PASS")
 
 
@@ -208,41 +208,41 @@ def test_record_replay_methods_route_to_correct_buckets() raises:
         ]()
         )
 
-        conn._record_replay_accept()
+        conn.prof.record_replay_accept()
         assert_equal_int(
-            Int(prof.zero_rtt_replay_accept), 1,
-            "_record_replay_accept routes to zero_rtt_replay_accept",
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 1,
+            "record_replay_accept routes to zero_rtt_replay_accept",
         )
-        conn._record_replay_reject_duplicate()
+        conn.prof.record_replay_reject_duplicate()
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_duplicate), 1,
-            "_record_replay_reject_duplicate routes to its bucket",
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 1,
+            "record_replay_reject_duplicate routes to its bucket",
         )
-        conn._record_replay_reject_per_key_quota()
+        conn.prof.record_replay_reject_per_key_quota()
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_per_key_quota), 1,
-            "_record_replay_reject_per_key_quota routes to its bucket",
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 1,
+            "record_replay_reject_per_key_quota routes to its bucket",
         )
-        conn._record_replay_reject_global_ceiling()
+        conn.prof.record_replay_reject_global_ceiling()
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_global_ceiling), 1,
-            "_record_replay_reject_global_ceiling routes to its bucket",
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)), 1,
+            "record_replay_reject_global_ceiling routes to its bucket",
         )
-        conn._record_replay_reject_no_authenticator()
+        conn.prof.record_replay_reject_no_authenticator()
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_no_authenticator), 1,
-            "_record_replay_reject_no_authenticator routes to its bucket",
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 1,
+            "record_replay_reject_no_authenticator routes to its bucket",
         )
 
         # Cross-check no cross-talk: each counter is exactly 1, not
         # accidentally bumped by a sibling call.
-        assert_equal_int(Int(prof.zero_rtt_replay_accept), 1, "accept stays 1")
+        assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 1, "accept stays 1")
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_duplicate), 1, "duplicate stays 1"
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 1, "duplicate stays 1"
         )
 
         _ = conn.is_server
-        _ = prof.zero_rtt_replay_accept
+        _ = prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)
         print("  test_record_replay_methods_route_to_correct_buckets: PASS")
     else:
         print(
@@ -351,11 +351,11 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     )
     comptime if PROFILE_ACCEPT:
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_no_authenticator), 1,
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 1,
             "no_authenticator counter must +1 under PROFILE_ACCEPT",
         )
         assert_equal_int(
-            Int(prof.zero_rtt_replay_reject_duplicate), 0,
+            Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 0,
             "duplicate counter must NOT bump on anomaly path",
         )
 
@@ -378,17 +378,17 @@ def test_replay_check_anomaly_path_uses_no_authenticator_counter() raises:
     )
     comptime if PROFILE_ACCEPT:
         assert_equal_int(
-            Int(prof2.zero_rtt_replay_reject_no_authenticator), 1,
+            Int(prof2.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 1,
             "no_authenticator counter must +1 on raises path",
         )
         assert_equal_int(
-            Int(prof2.zero_rtt_replay_reject_duplicate), 0,
+            Int(prof2.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 0,
             "duplicate counter must NOT bump on raises path",
         )
     _ = conn.is_server
     _ = conn2.is_server
-    _ = prof.zero_rtt_replay_reject_no_authenticator
-    _ = prof2.zero_rtt_replay_reject_no_authenticator
+    _ = prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
+    _ = prof2.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
     print("  test_replay_check_anomaly_path_uses_no_authenticator_counter: PASS")
 
 
@@ -416,7 +416,7 @@ def test_replay_check_per_key_quota_counter_routes_correctly() raises:
     conn.zrtt.replay_decision = UInt8(2)
     prof.record_zero_rtt_replay_reject_per_key_quota()
     assert_equal_int(
-        Int(prof.zero_rtt_replay_reject_per_key_quota), 1,
+        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 1,
         "per_key +1",
     )
     _ = conn.is_server

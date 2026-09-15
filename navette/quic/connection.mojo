@@ -30,6 +30,10 @@ from navette.tls.early_data_store import (
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us, ProfileState
+from navette.quic.zero_rtt import (
+    ZeroRttState, ZERO_RTT_BUFFER_MAX_PKTS, ZERO_RTT_BUFFER_MAX_BYTES,
+    invoke_replay_authenticator_ffi, drive_replay_check_for_test,
+)
 from navette.quic.frame import (
     Frame,
     FrameCursor,
@@ -185,11 +189,6 @@ comptime MAX_CLOSE_REASON_BYTES: Int = 256
 # minimum (header-protection sample) + AEAD tag; see `_min_packet_cost`.
 comptime _MIN_PLAINTEXT_LEN: Int = 4
 
-# RFC 9001 §5.7 buffer caps. Per-connection. If a 0-RTT packet would
-# exceed either cap, the packet is dropped (§5.7 allows the server
-# to discard; no protocol violation).
-comptime ZERO_RTT_BUFFER_MAX_PKTS: Int = 16
-comptime ZERO_RTT_BUFFER_MAX_BYTES: Int = 32 * 1024  # 32 KiB
 
 
 # ── TLS alert -> guard-tag mapping ───────────────────────────────────
@@ -337,24 +336,6 @@ struct PathState(Movable):
     var pending_responses: List[List[UInt8]]
     var peer_addr: PathKey
     var current_recv_addr: PathKey
-
-
-# ── ZeroRttState ────────────────────────────────────────────────────
-
-
-@fieldwise_init
-struct ZeroRttState(Movable):
-    """Per-connection 0-RTT buffering and anti-replay state."""
-
-    var enabled: Bool
-    var buffer: List[List[UInt8]]
-    var buffer_bytes: Int
-    var draining: Bool
-    var replay_decision: UInt8
-    var now_ms_override: Optional[UInt64]
-    var early_data_store_ptr: Optional[
-        Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
-    ]
 
 
 # ── CloseState ──────────────────────────────────────────────────────
@@ -1005,13 +986,13 @@ struct QuicConnection(Movable):
                         # discarding the keys — subsequent 0-RTT packets
                         # short-circuit through Path A.
                         self.zrtt.replay_decision = UInt8(2)
-                        self._record_replay_reject_no_authenticator()
+                        self.prof.record_replay_reject_no_authenticator()
                     elif self.zrtt.early_data_store_ptr is None:
                         # 0-RTT enabled at config level but the store
                         # pointer never got promoted (defensive — should
                         # not occur). Fail closed.
                         self.zrtt.replay_decision = UInt8(2)
-                        self._record_replay_reject_no_authenticator()
+                        self.prof.record_replay_reject_no_authenticator()
                     else:
                         var auth_span = Span(
                             unsafe_ptr=auth_buf.unsafe_ptr(), length=32,
@@ -1032,19 +1013,19 @@ struct QuicConnection(Movable):
                             raised = True
                         if raised:
                             self.zrtt.replay_decision = UInt8(2)
-                            self._record_replay_reject_no_authenticator()
+                            self.prof.record_replay_reject_no_authenticator()
                         elif decision.is_accept():
                             self.zrtt.replay_decision = UInt8(1)
-                            self._record_replay_accept()
+                            self.prof.record_replay_accept()
                         elif decision.is_duplicate():
                             self.zrtt.replay_decision = UInt8(2)
-                            self._record_replay_reject_duplicate()
+                            self.prof.record_replay_reject_duplicate()
                         elif decision.is_per_key_quota():
                             self.zrtt.replay_decision = UInt8(2)
-                            self._record_replay_reject_per_key_quota()
+                            self.prof.record_replay_reject_per_key_quota()
                         else:  # is_global_ceiling
                             self.zrtt.replay_decision = UInt8(2)
-                            self._record_replay_reject_global_ceiling()
+                            self.prof.record_replay_reject_global_ceiling()
 
                 if self.zrtt.replay_decision == UInt8(2):
                     # Silent-drop: advance past this 0-RTT packet, keep
@@ -2742,28 +2723,12 @@ struct QuicConnection(Movable):
         self.zrtt.buffer_bytes = 0
 
     def _zero_rtt_enabled(self) -> Bool:
-        """True if the server config opted into 0-RTT (max_early_data != 0).
-        Reads the cached field — no FFI crossing per packet."""
-        return self.zrtt.enabled
+        """True if 0-RTT is enabled by server config."""
+        return self.zrtt.is_enabled()
 
     def _buffer_zero_rtt_or_drop(mut self, packet: Span[UInt8, _]) -> Bool:
-        """Buffer a 0-RTT packet for later retry after rustls derives the
-        early-data secret. Returns True if buffered, False if dropped
-        (cap exceeded — RFC 9001 §5.7 allows discard).
-
-        Bounded by ZERO_RTT_BUFFER_MAX_PKTS AND ZERO_RTT_BUFFER_MAX_BYTES;
-        whichever cap a new packet would exceed first, drops it.
-        """
-        if len(self.zrtt.buffer) >= ZERO_RTT_BUFFER_MAX_PKTS:
-            return False
-        if self.zrtt.buffer_bytes + len(packet) > ZERO_RTT_BUFFER_MAX_BYTES:
-            return False
-        var copy = List[UInt8](capacity=len(packet))
-        for b in packet:
-            copy.append(b)
-        self.zrtt.buffer.append(copy^)
-        self.zrtt.buffer_bytes += len(packet)
-        return True
+        """Buffer a 0-RTT packet for later replay. Delegates to ZeroRttState."""
+        return self.zrtt.buffer_or_drop(packet)
 
     def _drain_zero_rtt_buffer(mut self, now: UInt64, ecn_mark: UInt8) raises:
         """Replay buffered 0-RTT packets through the production coalesce
@@ -2819,7 +2784,7 @@ struct QuicConnection(Movable):
                     # facing traces are the responsibility of the
                     # I/O-layer caller that drives recv_from_buffer.
                     _ = e
-                    self._record_zero_rtt_drain_dropped()
+                    self.prof.record_zero_rtt_drain_dropped()
                 # Keep `buf_ptr_owned` alive to the end of the iteration (its
                 # `.ptr()` borrow feeds recv_from_buffer above), and ensure the
                 # inner try/except is NOT the for-body's final statement: Mojo
@@ -2829,63 +2794,15 @@ struct QuicConnection(Movable):
         finally:
             self.zrtt.draining = False
 
-    # ── 0-RTT anti-replay recorder wrappers ──────────────────────────
-
-    def _record_replay_accept(mut self):
-        """Bump `zero_rtt_replay_accept` on the accept branch."""
-        self.prof.record_replay_accept()
-
-    def _record_replay_reject_duplicate(mut self):
-        """Bump `zero_rtt_replay_reject_duplicate` on the duplicate branch."""
-        self.prof.record_replay_reject_duplicate()
-
-    def _record_replay_reject_per_key_quota(mut self):
-        """Bump `zero_rtt_replay_reject_per_key_quota` on the
-        per-key-quota-exhausted branch."""
-        self.prof.record_replay_reject_per_key_quota()
-
-    def _record_replay_reject_global_ceiling(mut self):
-        """Bump `zero_rtt_replay_reject_global_ceiling` on the
-        global-ceiling-exhausted branch."""
-        self.prof.record_replay_reject_global_ceiling()
-
-    def _record_replay_reject_no_authenticator(mut self):
-        """Bump `zero_rtt_replay_reject_no_authenticator` on FFI anomaly
-        or store-raise — the two paths that do NOT produce a
-        `ReplayDecision`."""
-        self.prof.record_replay_reject_no_authenticator()
-
-    def _record_zero_rtt_drain_dropped(mut self):
-        """Bump `zero_rtt_drain_dropped` on each buffered packet whose
-        replay raised mid-drain and was dropped by the per-packet
-        containment in `_drain_zero_rtt_buffer`."""
-        self.prof.record_zero_rtt_drain_dropped()
-
     def _invoke_replay_authenticator_ffi(
         mut self,
         mut out_buf: InlineArray[UInt8, 32],
         mut out_len: UInt,
     ) -> Int32:
-        """Call `rlsm_quic_server_conn_replay_authenticator`. Returns the
-        FFI rc (0=success, 1=no random captured, -1=anomaly).
-
-        `out_len` is `*mut usize` on the Rust side; the wrapper passes
-        Mojo's `UInt` (which is `usize`-sized on all supported targets).
-
-        Resolving the symbol can raise; that is reported as -1, the same
-        anomaly code the Rust side uses, so the caller's fail-closed
-        branch treats an unreachable authenticator exactly like an
-        unavailable one instead of unwinding out of the 0-RTT path.
-        """
-        var rlib = self._lib.inner_ptr()
-        try:
-            return rlib[].quic_server_conn_replay_authenticator(
-                self.conn_handle,
-                out_buf.unsafe_ptr(),
-                Pointer(to=out_len),
-            )
-        except:
-            return Int32(-1)
+        """Delegate to zero_rtt.invoke_replay_authenticator_ffi."""
+        return invoke_replay_authenticator_ffi(
+            self._lib, self.conn_handle, out_buf, out_len,
+        )
 
     def _drive_replay_check_for_test(
         mut self,
@@ -2893,64 +2810,11 @@ struct QuicConnection(Movable):
         simulated_decision_kind: UInt8,
         simulated_raises: Bool,
     ) raises:
-        """Test-only entry point that mirrors the integration block's
-        EXTERNALLY-OBSERVABLE transitions (the resulting
-        `zrtt.replay_decision` value + the recorded counter) for
-        every reachable branch. The production block has one additional
-        defensive `zrtt.early_data_store_ptr is None` fallback that the
-        helper does not model independently — it collapses onto the
-        same `no_authenticator` outcome as `simulated_rc != 0`, so the
-        observable behaviour is identical. Production refactors that
-        change observable transitions in the integration block MUST
-        update this helper too; the byte-for-byte branching is a
-        maintenance contract, not a structural invariant.
-
-        A static check in `scripts/check_integrations.sh §3.8` enforces
-        this method is callable only from `tests/` — production callers
-        must take the integration path.
-
-        Args:
-            simulated_rc: FFI return code to simulate (0=success,
-                1=no authenticator captured, -1=anomaly). rc != 0
-                takes the no_authenticator branch.
-            simulated_decision_kind: ReplayDecision.kind to simulate
-                when rc == 0 and not raises (0=accept, 1=duplicate,
-                2=per_key_quota, 3=global_ceiling).
-            simulated_raises: True to simulate `store.check_and_record`
-                raising; overrides simulated_decision_kind and takes
-                the no_authenticator branch.
-        """
-        # Mirror the integration's idempotency guard: a committed
-        # decision (1 or 2) is sticky.
-        if self.zrtt.replay_decision != UInt8(0):
-            return
-
-        if simulated_rc != Int32(0):
-            self.zrtt.replay_decision = UInt8(2)
-            self._record_replay_reject_no_authenticator()
-            return
-
-        if simulated_raises:
-            self.zrtt.replay_decision = UInt8(2)
-            self._record_replay_reject_no_authenticator()
-            return
-
-        if simulated_decision_kind == UInt8(0):
-            # accept
-            self.zrtt.replay_decision = UInt8(1)
-            self._record_replay_accept()
-        elif simulated_decision_kind == UInt8(1):
-            # duplicate
-            self.zrtt.replay_decision = UInt8(2)
-            self._record_replay_reject_duplicate()
-        elif simulated_decision_kind == UInt8(2):
-            # per_key_quota
-            self.zrtt.replay_decision = UInt8(2)
-            self._record_replay_reject_per_key_quota()
-        else:
-            # global_ceiling (kind == 3)
-            self.zrtt.replay_decision = UInt8(2)
-            self._record_replay_reject_global_ceiling()
+        """Test-only delegate to zero_rtt.drive_replay_check_for_test."""
+        drive_replay_check_for_test(
+            self.zrtt, self.prof,
+            simulated_rc, simulated_decision_kind, simulated_raises,
+        )
 
     # ── Send path ────────────────────────────────────────────────────
 

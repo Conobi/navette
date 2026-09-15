@@ -30,7 +30,7 @@ from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
 from navette.quic.frame import StreamFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
-from navette.quic.profile import AcceptProfile
+from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.stream import Stream
 from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig, FilterStrategy
@@ -140,23 +140,23 @@ def test_zero_rtt_http_filter_counters_default_zero() raises:
     AcceptProfile starts all 4 HTTP-filter counters at 0."""
     var prof = AcceptProfile()
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
         String("accept defaults 0"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
         String("reject_425 defaults 0"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
         String("misconfig_fail_closed defaults 0"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
         String("1rtt_bypassed defaults 0"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_user_raised), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 0,
         String("user_raised defaults 0"),
     )
 
@@ -167,23 +167,23 @@ def test_zero_rtt_http_filter_recorders_bump_correct_bucket() raises:
     var prof = AcceptProfile()
 
     prof.record_zero_rtt_http_filter_accept()
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 1, String("accept +=1"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_reject_425), 0, String("reject untouched"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0, String("misconfig untouched"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0, String("1rtt untouched"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept +=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0, String("reject untouched"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0, String("misconfig untouched"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0, String("1rtt untouched"))
 
     prof.record_zero_rtt_http_filter_reject_425()
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 1, String("accept unchanged"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_reject_425), 1, String("reject +=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept unchanged"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1, String("reject +=1"))
 
     prof.record_zero_rtt_http_filter_misconfig_fail_closed()
-    assert_equal_int(Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 1, String("misconfig +=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1, String("misconfig +=1"))
 
     prof.record_zero_rtt_http_filter_1rtt_bypassed()
-    assert_equal_int(Int(prof.zero_rtt_http_filter_1rtt_bypassed), 1, String("1rtt +=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1, String("1rtt +=1"))
 
     prof.record_zero_rtt_http_filter_user_raised()
-    assert_equal_int(Int(prof.zero_rtt_http_filter_user_raised), 1, String("user_raised +=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 1, String("user_raised +=1"))
 
 
 def test_zero_rtt_http_filter_text_reporter_emits_block() raises:
@@ -472,19 +472,19 @@ def test_filter_helper_1rtt_proceeds_no_injection() raises:
         String("no Early-Data injection on 1-RTT"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1,
         String("1rtt_bypassed += 1"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
         String("accept untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
         String("reject untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
         String("misconfig untouched"),
     )
     _ = filter
@@ -515,19 +515,19 @@ def test_filter_helper_0rtt_get_injects_and_proceeds() raises:
         String("Early-Data value is '1'"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1,
         String("accept += 1"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
         String("1rtt untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
         String("reject untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
         String("misconfig untouched"),
     )
     _ = filter
@@ -555,19 +555,19 @@ def test_filter_helper_0rtt_post_emits_425() raises:
         String("no header on reject"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1,
         String("reject_425 += 1"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
         String("accept untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
         String("1rtt untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
         String("misconfig untouched"),
     )
     _ = filter
@@ -599,19 +599,19 @@ def test_filter_helper_0rtt_filter_none_fails_closed() raises:
         String("no header on fail-closed"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1,
         String("misconfig_fail_closed += 1"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
         String("accept untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
         String("reject untouched"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
         String("1rtt untouched"),
     )
     _ = prof
@@ -659,10 +659,10 @@ def test_filter_helper_counter_mutual_exclusion() raises:
             )
 
     var total = (
-        Int(prof.zero_rtt_http_filter_accept)
-        + Int(prof.zero_rtt_http_filter_reject_425)
-        + Int(prof.zero_rtt_http_filter_misconfig_fail_closed)
-        + Int(prof.zero_rtt_http_filter_1rtt_bypassed)
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT))
+        + Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425))
+        + Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED))
+        + Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED))
     )
     assert_equal_int(
         total, calls,

@@ -105,7 +105,7 @@ struct CounterId(ImplicitlyCopyable):
     comptime ZERO_RTT_HTTP_FILTER_USER_RAISED = CounterId(66)
 
 
-def counter_name(id: CounterId) -> StringLiteral:
+def counter_name(id: CounterId) -> String:
     """Map counter ID to its JSON leaf key."""
     var v = id.value
     if v == 0: return "idle_us_total"
