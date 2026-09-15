@@ -1046,7 +1046,6 @@ struct QpackDecoder(Copyable, Movable):
     var _huff_trie: List[_HuffTrieNode]
     var _huff_fast: List[_HuffFast]
     var _static_table: List[QpackStaticEntry]
-    var _scratch_decode_buf: List[UInt8]
 
     def __init__(out self):
         # The trie/fast-table builders only raise on a malformed encode table,
@@ -1063,13 +1062,11 @@ struct QpackDecoder(Copyable, Movable):
             self._huff_trie = List[_HuffTrieNode]()
             self._huff_fast = List[_HuffFast]()
         self._static_table = _qpack_static_table()
-        self._scratch_decode_buf = List[UInt8](capacity=256)
 
     def __init__(out self, *, copy_from: Self):
         self._huff_trie = copy_from._huff_trie.copy()
         self._huff_fast = copy_from._huff_fast.copy()
         self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
-        self._scratch_decode_buf = List[UInt8](capacity=256)
 
     def _decode_string(mut self, ref data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
         """Decode a QPACK string literal, reusing scratch decode buffer."""
@@ -1088,7 +1085,7 @@ struct QpackDecoder(Copyable, Movable):
                 raw.append(data[i])
             pos = end
             return _StrDecodeResult(
-                _huffman_decode_into_buf(raw, self._huff_trie, self._huff_fast, self._scratch_decode_buf),
+                _huffman_decode_with_tables(raw, self._huff_trie, self._huff_fast),
                 pos,
             )
         else:
