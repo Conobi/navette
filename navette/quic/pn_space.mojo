@@ -2,6 +2,7 @@
 # QUIC Packet Number Space — per-space PN counters, ACK tracking, SentPacket records.
 # RFC 9000 Section 17.2.2 (PN spaces), Appendix B (ACK generation).
 
+from std.collections import Span
 from navette.quic.ecn import EcnCounts, ECN_NOT_ECT, ECN_ECT0
 from navette.quic.frame import AckFrame, AckRange, Frame
 from navette.quic.packet import PacketType
@@ -516,33 +517,30 @@ struct PacketNumberSpace(Copyable, Movable):
 
     # ── ACK processing ───────────────────────────────────────────────
 
-    def on_ack_received(mut self, ref ack: AckFrame) raises -> List[SentPacket]:
+    def on_ack_received(
+        mut self, ref ack: AckFrame, ack_ranges: Span[AckRange, _],
+    ) raises -> List[SentPacket]:
         """Process an incoming ACK frame: decode ranges into PN sets, find
         matching sent_packets, remove them, return newly acked list.
         Raises if any ACKed PN >= next_pn (security check)."""
         var acked = List[SentPacket](capacity=16)
         self._scratch_pns.clear()
 
-        # Decode the ACK frame into PN ranges.
-        # First range: [largest_ack - first_ack_range, largest_ack]
         var largest = ack.largest_ack
         var smallest = largest - ack.first_ack_range
 
-        # Security: reject if largest ACKed PN >= next_pn.
         if Int(largest) >= Int(self.next_pn):
             raise "ACK for unsent packet: largest_ack=" + String(Int(largest)) + " >= next_pn=" + String(Int(self.next_pn))
 
-        # Collect PNs from first range.
         var pn = smallest
         while pn <= largest:
             self._scratch_pns.append(Int(pn))
             pn += 1
 
-        # Process additional ranges.
         var prev_smallest = smallest
-        for i in range(len(ack.ranges)):
-            var gap = ack.ranges[i].gap
-            var ack_range = ack.ranges[i].ack_range
+        for i in range(len(ack_ranges)):
+            var gap = ack_ranges[i].gap
+            var ack_range = ack_ranges[i].ack_range
             # gap+2 unacknowledged packets after prev_smallest
             if prev_smallest < gap + 2:
                 raise "ACK range underflow"

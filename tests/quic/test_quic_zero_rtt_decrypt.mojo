@@ -26,7 +26,8 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.event import QuicEvent
-from navette.quic.frame import Frame, StreamFrame, CryptoFrame, AckFrame
+from std.collections import Span
+from navette.quic.frame import Frame, StreamFrame, CryptoFrame, AckFrame, AckRange
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.guard_tags import (
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
@@ -190,7 +191,9 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
     var frame = Frame.stream(sf)
 
     var now = UInt64(2_000_000)
-    conn._dispatch_frame(frame^, ZERO_RTT_SPACE_IDX, now)
+    var _no_ack = List[AckRange]()
+    var _no_reason = List[UInt8]()
+    conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
 
     # The F30 guard must NOT fire for STREAM in 0-RTT — connection still alive.
     assert_false(
@@ -230,7 +233,9 @@ def test_decrypt_zero_rtt_crypto_trips_f30_guard() raises:
     var frame = Frame.crypto(cf)
 
     var now = UInt64(2_000_000)
-    conn._dispatch_frame(frame^, ZERO_RTT_SPACE_IDX, now)
+    var _no_ack = List[AckRange]()
+    var _no_reason = List[UInt8]()
+    conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn.close.pending),
@@ -274,7 +279,9 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     var frame = Frame.ack(af)
 
     var now = UInt64(2_000_000)
-    conn._dispatch_frame(frame^, ZERO_RTT_SPACE_IDX, now)
+    var _no_ack = List[AckRange]()
+    var _no_reason = List[UInt8]()
+    conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn.close.pending),
@@ -303,7 +310,9 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     af_ecn.has_ecn = True
     var frame_ecn = Frame.ack(af_ecn)
 
-    conn2._dispatch_frame(frame_ecn^, ZERO_RTT_SPACE_IDX, now)
+    var _no_ack2 = List[AckRange]()
+    var _no_reason2 = List[UInt8]()
+    conn2._dispatch_frame(frame_ecn^, Span(_no_ack2), Span(_no_reason2), ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn2.close.pending),
@@ -812,7 +821,9 @@ def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
     var now = UInt64(2_000_000)
     # space_idx=2 is the 1-RTT Application space; the 0-RTT guard must not fire.
     try:
-        conn._dispatch_frame(frame^, 2, now)
+        var _no_ack3 = List[AckRange]()
+        var _no_reason3 = List[UInt8]()
+        conn._dispatch_frame(frame^, Span(_no_ack3), Span(_no_reason3), 2, now)
     except:
         # _handle_ack may raise on an empty sent-packet table — that is a
         # downstream handler concern, not the guard. Check guard state below.

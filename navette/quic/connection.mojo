@@ -51,6 +51,7 @@ from navette.quic.frame import (
     Frame,
     FrameCursor,
     AckFrame,
+    AckRange,
     CryptoFrame,
     ConnectionCloseFrame,
     StreamFrame,
@@ -883,7 +884,9 @@ struct QuicConnection(Movable):
                 continue
             if frame.is_ack_eliciting():
                 ack_eliciting = True
-            self._dispatch_frame(frame^, space_idx, now)
+            var ack_span = cursor.ack_ranges_span()
+            var cc_span = cursor.cc_reason_span()
+            self._dispatch_frame(frame^, ack_span, cc_span, space_idx, now)
         self._current_space_idx = -1
         if parse_failed:
             self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
@@ -1398,7 +1401,10 @@ struct QuicConnection(Movable):
     # ── Frame dispatch ───────────────────────────────────────────────
 
     def _dispatch_frame(
-        mut self, var frame: Frame, space_idx: Int, now: UInt64
+        mut self, var frame: Frame,
+        ack_ranges: Span[AckRange, _],
+        cc_reason: Span[UInt8, _],
+        space_idx: Int, now: UInt64,
     ) raises:
         """Route a parsed frame to its per-type handler."""
         var tid = frame.type_id
@@ -1407,14 +1413,14 @@ struct QuicConnection(Movable):
         if tid == FRAME_PADDING or tid == FRAME_PING:
             return
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
-            self._handle_ack(frame.as_ack(), space_idx, now)
+            self._handle_ack(frame.as_ack(), ack_ranges, space_idx, now)
             return
         if tid == FRAME_CRYPTO:
             ref cf = frame.as_crypto()
             self.crypto_streams[space_idx].receive(cf.offset, Span(cf.data))
             return
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            self._on_connection_close(frame, now)
+            self._on_connection_close(frame, cc_reason, now)
             return
         if tid == FRAME_HANDSHAKE_DONE:
             self._on_handshake_done(now); return
@@ -1489,15 +1495,15 @@ struct QuicConnection(Movable):
         return False
 
     def _on_connection_close(
-        mut self, ref frame: Frame, now: UInt64
+        mut self, ref frame: Frame, cc_reason: Span[UInt8, _], now: UInt64,
     ) raises:
         """Handle CONNECTION_CLOSE: enter draining state, emit event."""
         ref cc = frame.as_connection_close()
         self.state = self.state | CONN_DRAINING
         self.close.drain_timer = now + 3 * self._pto_interval()
         var reason = String("")
-        for i in range(len(cc.reason)):
-            reason += chr(Int(cc.reason[i]))
+        for i in range(len(cc_reason)):
+            reason += chr(Int(cc_reason[i]))
         self.events.append(QuicEvent.connection_closed(cc.error_code, reason))
 
     def _on_handshake_done(mut self, now: UInt64) raises:
@@ -1615,11 +1621,12 @@ struct QuicConnection(Movable):
     # ── ACK handling ─────────────────────────────────────────────────
 
     def _handle_ack(
-        mut self, ref ack_frame: AckFrame, space_idx: Int, now: UInt64
+        mut self, ref ack_frame: AckFrame,
+        ack_ranges: Span[AckRange, _],
+        space_idx: Int, now: UInt64,
     ) raises:
         """Process an ACK frame: update recovery, detect losses."""
-        # Get newly acked packets.
-        var acked = self.spaces[space_idx].on_ack_received(ack_frame)
+        var acked = self.spaces[space_idx].on_ack_received(ack_frame, ack_ranges)
 
         if len(acked) == 0:
             return

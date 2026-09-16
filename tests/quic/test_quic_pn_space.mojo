@@ -1,6 +1,7 @@
 # tests/test_quic_pn_space.mojo
 # Tests for PacketNumberSpace: PN allocation, ACK tracking, SentPacket records.
 
+from std.collections import Span
 from navette.quic.frame import AckFrame, AckRange, Frame
 from navette.quic.packet import PacketType
 from navette.quic.pn_space import (
@@ -265,14 +266,15 @@ def test_time_of_last_ae_sent_tracking() raises:
     var ack = AckFrame()
     ack.largest_ack = UInt64(2)
     ack.first_ack_range = UInt64(0)
-    _ = space.on_ack_received(ack)
+    var ranges1 = List[AckRange](copy=ack.ranges)
+    _ = space.on_ack_received(ack, Span(ranges1))
     _assert_eq_u64(space.time_of_last_ae_sent.value(), UInt64(1200), "no rollback")
     _assert_true(space.probe_pending, "probe still pending with AE in flight")
-    # ACK pn 1: nothing ack-eliciting remains (pn 0 is ACK-only).
     var ack2 = AckFrame()
     ack2.largest_ack = UInt64(1)
     ack2.first_ack_range = UInt64(0)
-    _ = space.on_ack_received(ack2)
+    var ranges2 = List[AckRange](copy=ack2.ranges)
+    _ = space.on_ack_received(ack2, Span(ranges2))
     _assert_false(Bool(space.time_of_last_ae_sent), "cleared once nothing AE in flight")
     _assert_false(space.probe_pending, "probe cleared with it")
     print("    PASS test_time_of_last_ae_sent_tracking")
@@ -294,7 +296,8 @@ def test_ack_validation_reject_future() raises:
 
     var raised = False
     try:
-        _ = space.on_ack_received(bad_ack)
+        var bad_ranges = List[AckRange](copy=bad_ack.ranges)
+        _ = space.on_ack_received(bad_ack, Span(bad_ranges))
     except:
         raised = True
 
@@ -331,7 +334,8 @@ def test_on_ack_received() raises:
     ack.largest_ack = UInt64(4)
     ack.first_ack_range = UInt64(2)
 
-    var acked = space.on_ack_received(ack)
+    var ack_ranges_copy = List[AckRange](copy=ack.ranges)
+    var acked = space.on_ack_received(ack, Span(ack_ranges_copy))
     _assert_eq(len(acked), 3, "acked count")
     _assert_eq(len(space.sent_packets), 2, "remaining sent_packets")
     _assert_eq(space.largest_acked_pn, 4, "largest_acked_pn")

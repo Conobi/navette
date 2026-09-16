@@ -716,6 +716,11 @@ struct Frame(Copyable, Movable):
 
 def parse_frame[origin: Origin](mut reader: ByteReader[origin]) raises -> Frame:
     var frame_type = varint_decode(reader)
+    return parse_frame_with_type(reader, frame_type)
+
+
+def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_type: UInt64) raises -> Frame:
+    """Parse a frame whose type varint has already been consumed."""
 
     # PADDING (0x00): consume consecutive padding bytes
     if frame_type == FRAME_PADDING:
@@ -1209,32 +1214,105 @@ def frame_allowed_in_packet_type(frame_type: UInt64, packet_type_value: UInt8) -
 struct FrameCursor[origin: Origin]:
     """Zero-alloc frame iterator over a packet's payload bytes.
 
-    Stores a Span and a position cursor, constructing a lightweight
-    ByteReader on each next() call.  No List[Frame] is ever allocated.
-    The origin parameter ties the cursor's lifetime to the input buffer
-    so the borrow checker guarantees the buffer outlives the cursor.
+    Owns inline scratch buffers for ACK ranges and CC reason so the
+    recv-path hot loop never heap-allocates per frame. After next()
+    returns an ACK or CONNECTION_CLOSE frame, the caller reads the
+    decoded side-channel data via ack_ranges_span() / cc_reason_span().
     """
 
     var _buf: Span[UInt8, Self.origin]
     var _pos: Int
     var _count: Int
+    var _ack_buf: InlineArray[AckRange, MAX_ACK_RANGES]
+    var _ack_buf_len: Int
+    var _cc_reason: Span[UInt8, Self.origin]
 
     def __init__(out self, buf: Span[UInt8, Self.origin]):
         """Create a cursor over the given payload bytes."""
         self._buf = buf
         self._pos = 0
         self._count = 0
+        self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](fill=AckRange(0, 0))
+        self._ack_buf_len = 0
+        self._cc_reason = Span[UInt8, Self.origin]()
 
     def next(mut self) raises -> Optional[Frame]:
-        """Return the next frame, or None when the payload is exhausted."""
+        """Return the next frame, or None when the payload is exhausted.
+
+        For ACK frames, decoded ranges are written into _ack_buf (not the
+        AckFrame.ranges List) — call ack_ranges_span() to read them.
+        For CONNECTION_CLOSE, the reason Span borrows directly from the
+        packet buffer — call cc_reason_span() to read it.
+        """
         if self._pos >= len(self._buf):
             return None
+        self._ack_buf_len = 0
+        self._cc_reason = Span[UInt8, Self.origin]()
         var reader = ByteReader(self._buf)
         reader.pos = self._pos
-        var frame = parse_frame(reader)
+        var frame_type = varint_decode(reader)
+
+        if frame_type == FRAME_ACK or frame_type == FRAME_ACK_ECN:
+            var ack = AckFrame()
+            ack.largest_ack = varint_decode(reader)
+            ack.ack_delay = varint_decode(reader)
+            var ack_range_count = varint_decode(reader)
+            ack.first_ack_range = varint_decode(reader)
+            if ack.first_ack_range > ack.largest_ack:
+                raise "ACK: first_ack_range exceeds largest_ack"
+            var rc = Int(ack_range_count)
+            if rc > MAX_ACK_RANGES:
+                raise "ACK: range count " + String(rc) + " exceeds maximum " + String(MAX_ACK_RANGES)
+            var smallest_ack = ack.largest_ack - ack.first_ack_range
+            for _ in range(rc):
+                var gap = varint_decode(reader)
+                var ack_range_val = varint_decode(reader)
+                var needed = gap + 2 + ack_range_val
+                if needed > smallest_ack:
+                    raise "ACK: range underflow (gap+range exceeds remaining PN space)"
+                smallest_ack = smallest_ack - needed
+                if self._ack_buf_len < MAX_ACK_RANGES:
+                    self._ack_buf[self._ack_buf_len] = AckRange(gap, ack_range_val)
+                    self._ack_buf_len += 1
+            if frame_type == FRAME_ACK_ECN:
+                ack.ecn_ect0 = varint_decode(reader)
+                ack.ecn_ect1 = varint_decode(reader)
+                ack.ecn_ce = varint_decode(reader)
+                ack.has_ecn = True
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[Frame](Frame(
+                FRAME_ACK if not ack.has_ecn else FRAME_ACK_ECN,
+                FramePayload(ack^),
+            ))
+
+        if frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT or frame_type == FRAME_CONNECTION_CLOSE_APP:
+            var cc = ConnectionCloseFrame()
+            cc.is_transport = frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT
+            cc.error_code = varint_decode(reader)
+            if cc.is_transport:
+                cc.frame_type = varint_decode(reader)
+            var reason_length = varint_decode(reader)
+            self._cc_reason = reader.read_span(Int(reason_length))
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[Frame](Frame(
+                FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
+                FramePayload(cc^),
+            ))
+
+        var frame = parse_frame_with_type(reader, frame_type)
         self._pos = reader.pos
         self._count += 1
         return Optional[Frame](frame^)
+
+    def ack_ranges_span(self) -> Span[AckRange, origin_of(self._ack_buf)]:
+        """Span view of ACK ranges decoded by the last next() call."""
+        return Span(unsafe_ptr=self._ack_buf.unsafe_ptr(), length=self._ack_buf_len)
+
+    def cc_reason_span(self) -> Span[UInt8, Self.origin]:
+        """Span view of CONNECTION_CLOSE reason from the last next() call."""
+        return self._cc_reason
 
     def count(self) -> Int:
         """Number of frames yielded so far."""
