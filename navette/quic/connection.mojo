@@ -2110,9 +2110,22 @@ struct QuicConnection(Movable):
     # ── Handshake driver ─────────────────────────────────────────────
 
     def _drive_handshake(mut self, now: UInt64) raises:
-        """Drain crypto data and feed/read from TLS state machine."""
+        """Drain crypto data and feed/read from TLS state machine.
+
+        On established connections with no pending crypto data, the TLS
+        engine has nothing to process — skip the FFI round-trip and the
+        three Owned buffer allocations inside _drain_tls_output.
+        """
         if self.conn_handle < 0:
             return
+        if self.handshake_confirmed:
+            var has_crypto = False
+            for level in range(3):
+                if self.crypto_streams[level].has_pending():
+                    has_crypto = True
+                    break
+            if not has_crypto:
+                return
         var t_drive_start = self.prof.begin_drive()
         var lib = self._lib.inner_ptr()
         self._feed_crypto_to_tls(lib, now)
@@ -2822,7 +2835,6 @@ struct QuicConnection(Movable):
 
     # ── Frame building ───────────────────────────────────────────────
 
-    @always_inline
     def _build_frames_for_space(
         mut self, space_idx: Int, now: UInt64,
         mut frames: List[Frame],
@@ -2929,7 +2941,6 @@ struct QuicConnection(Movable):
             self.pending_outbound_datagrams = List[List[UInt8]]()
             self._outbound_dg_head = 0
 
-    @always_inline
     def _build_app_frames(
         mut self,
         mut frames: List[Frame],
