@@ -1422,6 +1422,7 @@ struct QuicConnection(Movable):
 
     # ── Frame dispatch ───────────────────────────────────────────────
 
+    @always_inline
     def _dispatch_frame(
         mut self, ref cursor: FrameCursor[_],
         space_idx: Int, now: UInt64,
@@ -1709,6 +1710,7 @@ struct QuicConnection(Movable):
                 if p[].recv_buf.value().is_complete(p[].fin_offset):
                     p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
 
+    @always_inline
     def _on_new_cid_from_cursor(
         mut self,
         sequence: UInt64, retire_prior_to: UInt64,
@@ -1740,6 +1742,7 @@ struct QuicConnection(Movable):
             List[UInt8](token_span),
         )
 
+    @always_inline
     def _on_max_stream_data_from_cursor(
         mut self, stream_id: UInt64, maximum: UInt64, now: UInt64,
     ) raises:
@@ -1774,6 +1777,7 @@ struct QuicConnection(Movable):
                 if _has_pending:
                     self.stream_map.add_sendable(key)
 
+    @always_inline
     def _on_max_streams_from_cursor(
         mut self, maximum: UInt64, is_bidi: Bool, now: UInt64,
     ) raises:
@@ -1794,6 +1798,7 @@ struct QuicConnection(Movable):
                 self.stream_map.needs_streams_blocked_uni = False
                 self.stream_map.streams_blocked_at_uni = UInt64(0)
 
+    @always_inline
     def _on_streams_blocked_from_cursor(
         mut self, maximum: UInt64, now: UInt64,
     ) raises:

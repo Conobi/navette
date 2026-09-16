@@ -10,9 +10,11 @@ struct ByteReader[origin: Origin]:
         self._buf = buf
         self.pos = 0
 
+    @always_inline
     def remaining(self) -> Int:
         return len(self._buf) - self.pos
 
+    @always_inline
     def read_u8(mut self) raises -> UInt8:
         if self.pos >= len(self._buf):
             raise "ByteReader: underflow reading u8"
@@ -58,6 +60,7 @@ struct ByteReader[origin: Origin]:
         self.pos += n
         return result^
 
+    @always_inline
     def read_span(mut self, n: Int) raises -> Span[UInt8, Self.origin]:
         """Read n bytes as a zero-copy Span view into the underlying buffer."""
         if self.pos + n > len(self._buf):
@@ -71,6 +74,7 @@ struct ByteReader[origin: Origin]:
             raise "ByteReader: underflow skipping " + String(n) + " bytes"
         self.pos += n
 
+    @always_inline
     def peek_u8(self) raises -> UInt8:
         if self.pos >= len(self._buf):
             raise "ByteReader: underflow peeking u8"
@@ -175,6 +179,7 @@ def varint_encode_raw(mut buf: List[UInt8], value: UInt64):
             buf.append(UInt8((v >> UInt64((7 - i) * 8)) & 0xFF))
 
 
+@always_inline
 def varint_decode[origin: Origin](mut reader: ByteReader[origin]) raises -> UInt64:
     var first = reader.read_u8()
     var prefix = Int(first >> 6)
