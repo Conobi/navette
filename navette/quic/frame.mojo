@@ -1232,7 +1232,7 @@ struct FrameCursor[origin: Origin]:
         self._buf = buf
         self._pos = 0
         self._count = 0
-        self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](fill=AckRange(0, 0))
+        self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](uninitialized=True)
         self._ack_buf_len = 0
         self._byte_data = Span[UInt8, Self.origin]()
 
