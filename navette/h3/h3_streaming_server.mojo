@@ -685,13 +685,13 @@ struct H3StreamingServer(Movable):
             elif name == ":scheme":
                 pass
             else:
-                user_headers.add(name, value)
+                user_headers.add_lowercase(name, value)
 
         var req_headers = Headers()
         if authority_str != "":
-            req_headers.add("host", authority_str)
+            req_headers.add_lowercase("host", authority_str)
         for i in range(len(user_headers)):
-            req_headers.add(user_headers.name_at(i), user_headers.value_at(i))
+            req_headers.add_lowercase(user_headers.name_at(i), user_headers.value_at(i))
 
         # RFC 8470 0-RTT HTTP filter dispatch, gated on the connection's
         # cached `zrtt.enabled` opt-in (the authoritative O(1) signal

@@ -336,7 +336,7 @@ struct H3Session(Session):
                 except:
                     ctx.status_code = 200
             elif not name.startswith(":"):
-                ctx.headers.add(name, value)
+                ctx.headers.add_lowercase(name, value)
         if ev.fin:
             ctx.complete = True
         ctx_ptr.unsafe_write(ctx^)
