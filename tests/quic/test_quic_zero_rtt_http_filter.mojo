@@ -699,7 +699,7 @@ def test_send_425_emits_status_only_fin() raises:
     var probe = List[UInt8]()
     probe.append(UInt8(0x00))  # arbitrary
     var sf = StreamFrame(UInt64(0), UInt64(0), probe, False)
-    h3._quic._handle_stream_frame(sf, Span(payload))
+    h3._quic._handle_stream_frame(sf, Span(probe))
 
     send_425_response(UInt64(0), h3)
 

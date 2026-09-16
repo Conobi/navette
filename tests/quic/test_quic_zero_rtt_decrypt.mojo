@@ -192,8 +192,7 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
 
     var now = UInt64(2_000_000)
     var _no_ack = List[AckRange]()
-    var _no_reason = List[UInt8]()
-    conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
+    conn._dispatch_frame(frame^, Span(_no_ack), Span(payload), ZERO_RTT_SPACE_IDX, now)
 
     # The F30 guard must NOT fire for STREAM in 0-RTT — connection still alive.
     assert_false(
@@ -234,8 +233,7 @@ def test_decrypt_zero_rtt_crypto_trips_f30_guard() raises:
 
     var now = UInt64(2_000_000)
     var _no_ack = List[AckRange]()
-    var _no_reason = List[UInt8]()
-    conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
+    conn._dispatch_frame(frame^, Span(_no_ack), Span(data), ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn.close.pending),
