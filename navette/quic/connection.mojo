@@ -372,8 +372,8 @@ struct QuicConnection(Movable):
 
     var is_server: Bool
     var state: UInt8
-    var spaces: InlineArray[PacketNumberSpace, 3]
-    var crypto_streams: InlineArray[CryptoStream, 3]
+    var spaces: List[PacketNumberSpace]
+    var crypto_streams: List[CryptoStream]
     var recovery: Recovery
     var protect: PacketProtect
     var conn_handle: Int32
@@ -462,12 +462,14 @@ struct QuicConnection(Movable):
     ) raises:
         self.is_server = is_server
         self.state = CONN_HANDSHAKING
-        self.spaces = [
-            PacketNumberSpace(EncryptionLevel.initial()),
-            PacketNumberSpace(EncryptionLevel.handshake()),
-            PacketNumberSpace(EncryptionLevel.application()),
-        ]
-        self.crypto_streams = [CryptoStream(), CryptoStream(), CryptoStream()]
+        self.spaces = List[PacketNumberSpace](capacity=3)
+        self.spaces.append(PacketNumberSpace(EncryptionLevel.initial()))
+        self.spaces.append(PacketNumberSpace(EncryptionLevel.handshake()))
+        self.spaces.append(PacketNumberSpace(EncryptionLevel.application()))
+        self.crypto_streams = List[CryptoStream](capacity=3)
+        self.crypto_streams.append(CryptoStream())
+        self.crypto_streams.append(CryptoStream())
+        self.crypto_streams.append(CryptoStream())
         self.recovery = Recovery()
         self.protect = PacketProtect(lib)
         self.conn_handle = conn_handle
