@@ -2606,6 +2606,7 @@ struct QuicConnection(Movable):
             return Frame.connection_close(cc)
         return Frame.connection_close(self.close.pending.value())
 
+    @always_inline
     def _space_has_other_sendable(self, space_idx: Int) -> Bool:
         """Non-mutating bundle predicate: one clause per builder that could
         emit a non-ACK frame in this space. May be conservatively true, never
@@ -2960,6 +2961,7 @@ struct QuicConnection(Movable):
                 return s
         return -1
 
+    @always_inline
     def _pto_deadline(self, space_idx: Int) -> Optional[UInt64]:
         """Single source of truth for one space's PTO deadline.
 
