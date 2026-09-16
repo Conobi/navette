@@ -859,6 +859,7 @@ struct QuicConnection(Movable):
             self.zrtt.replay_decision = UInt8(2)
             self.prof.record_replay_reject_global_ceiling()
 
+    @always_inline
     def _parse_and_dispatch_frames(
         mut self,
         pkt_ptr: Pointer[mut=True, T=UInt8, origin=_],
@@ -949,6 +950,7 @@ struct QuicConnection(Movable):
             return (-1, skip)
         return (ZERO_RTT_SPACE_IDX, 0)
 
+    @always_inline
     def _decrypt_and_dispatch_packet(
         mut self,
         ref header: PacketHeader,
@@ -1049,6 +1051,7 @@ struct QuicConnection(Movable):
 
     # ── Stream frame handlers ────────────────────────────────────────
 
+    @always_inline
     def _handle_stream_frame(mut self, ref stream_frame: StreamFrame, stream_data: Span[UInt8, _]) raises:
         """Process an incoming STREAM frame."""
         var stream_id = stream_frame.stream_id
@@ -1405,6 +1408,7 @@ struct QuicConnection(Movable):
 
     # ── Frame dispatch ───────────────────────────────────────────────
 
+    @always_inline
     def _dispatch_frame(
         mut self, var frame: Frame,
         ack_ranges: Span[AckRange, _],
@@ -1478,6 +1482,7 @@ struct QuicConnection(Movable):
 
     # ── Per-type frame handlers ─────────────────────────────────────
 
+    @always_inline
     def _check_epoch_guards(
         mut self, tid: UInt64, space_idx: Int, now: UInt64
     ) raises -> Bool:
@@ -1625,6 +1630,7 @@ struct QuicConnection(Movable):
 
     # ── ACK handling ─────────────────────────────────────────────────
 
+    @always_inline
     def _handle_ack(
         mut self, ref ack_frame: AckFrame,
         ack_ranges: Span[AckRange, _],
@@ -2486,6 +2492,7 @@ struct QuicConnection(Movable):
             ack_committed, has_stream_data,
         )
 
+    @always_inline
     def _commit_plans_to_datagram(
         mut self,
         mut plans: List[PacketPlan],
@@ -2637,6 +2644,7 @@ struct QuicConnection(Movable):
 
     # ── Frame building ───────────────────────────────────────────────
 
+    @always_inline
     def _build_frames_for_space(
         mut self, space_idx: Int, now: UInt64,
         mut frames: List[Frame],
@@ -2745,6 +2753,7 @@ struct QuicConnection(Movable):
             self.pending_outbound_datagrams = List[List[UInt8]]()
             self._outbound_dg_head = 0
 
+    @always_inline
     def _build_app_frames(
         mut self,
         mut frames: List[Frame],

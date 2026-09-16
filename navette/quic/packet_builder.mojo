@@ -401,6 +401,7 @@ def drain_stop_sending_frames(
         _ = stream_map.control_stop_sending.pop()
 
 
+@always_inline
 def emit_stream_frames(
     mut stream_map: StreamMap,
     mut sent_records: List[SentStreamFrame],
@@ -470,6 +471,7 @@ def emit_stream_frames(
             stream_map.sendable_queue.append(sid)
 
 
+@always_inline
 def emit_blocked_frames(
     mut stream_map: StreamMap,
     mut frames: List[Frame],
