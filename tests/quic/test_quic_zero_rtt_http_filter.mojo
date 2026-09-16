@@ -365,7 +365,7 @@ def test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet() raises:
     var payload = List[UInt8]()
     payload.append(UInt8(0x41))
     var sf = StreamFrame(UInt64(0), UInt64(0), payload, False)
-    conn._handle_stream_frame(sf)
+    conn._handle_stream_frame(sf, Span(payload))
 
     var key = Int(0)
     assert_true(key in conn.stream_map.streams, String("stream must be created"))
@@ -398,7 +398,7 @@ def test_stream_is_zero_rtt_false_from_1rtt_packet() raises:
     var payload = List[UInt8]()
     payload.append(UInt8(0x41))
     var sf = StreamFrame(UInt64(4), UInt64(0), payload, False)
-    conn._handle_stream_frame(sf)
+    conn._handle_stream_frame(sf, Span(payload))
 
     var key = Int(4)
     assert_true(key in conn.stream_map.streams, String("stream must be created"))
@@ -433,7 +433,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     var p1 = List[UInt8]()
     p1.append(UInt8(0x41))
     var sf1 = StreamFrame(UInt64(8), UInt64(0), p1, False)
-    conn._handle_stream_frame(sf1)
+    conn._handle_stream_frame(sf1, Span(p1))
     var key = Int(8)
     var s1 = Stream(copy=conn.stream_map.streams[key][])
     assert_true(s1.is_zero_rtt, String("creation-time tag True"))
@@ -443,7 +443,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
     var p2 = List[UInt8]()
     p2.append(UInt8(0x42))
     var sf2 = StreamFrame(UInt64(8), UInt64(1), p2, False)
-    conn._handle_stream_frame(sf2)
+    conn._handle_stream_frame(sf2, Span(p2))
     var s2 = Stream(copy=conn.stream_map.streams[key][])
     assert_true(
         s2.is_zero_rtt,
@@ -699,7 +699,7 @@ def test_send_425_emits_status_only_fin() raises:
     var probe = List[UInt8]()
     probe.append(UInt8(0x00))  # arbitrary
     var sf = StreamFrame(UInt64(0), UInt64(0), probe, False)
-    h3._quic._handle_stream_frame(sf)
+    h3._quic._handle_stream_frame(sf, Span(payload))
 
     send_425_response(UInt64(0), h3)
 

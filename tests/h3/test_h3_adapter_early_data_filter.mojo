@@ -207,9 +207,9 @@ def _force_stream_in_space(
     server._h3._quic._current_space_idx = space_idx
     var payload = List[UInt8]()
     payload.append(UInt8(0x00))
-    var sf = StreamFrame(stream_id, UInt64(0), payload^, False)
+    var sf = StreamFrame(stream_id, UInt64(0), payload, False)
     try:
-        server._h3._quic._handle_stream_frame(sf)
+        server._h3._quic._handle_stream_frame(sf, Span(payload))
     except:
         pass
     server._h3._quic._current_space_idx = -1

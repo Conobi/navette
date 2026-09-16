@@ -885,8 +885,8 @@ struct QuicConnection(Movable):
             if frame.is_ack_eliciting():
                 ack_eliciting = True
             var ack_span = cursor.ack_ranges_span()
-            var cc_span = cursor.cc_reason_span()
-            self._dispatch_frame(frame^, ack_span, cc_span, space_idx, now)
+            var data_span = cursor.byte_data_span()
+            self._dispatch_frame(frame^, ack_span, data_span, space_idx, now)
         self._current_space_idx = -1
         if parse_failed:
             self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
@@ -1044,11 +1044,11 @@ struct QuicConnection(Movable):
 
     # ── Stream frame handlers ────────────────────────────────────────
 
-    def _handle_stream_frame(mut self, ref stream_frame: StreamFrame) raises:
-        """Process an incoming STREAM frame (RFC 9000 §19.8)."""
+    def _handle_stream_frame(mut self, ref stream_frame: StreamFrame, stream_data: Span[UInt8, _]) raises:
+        """Process an incoming STREAM frame."""
         var stream_id = stream_frame.stream_id
         var offset = stream_frame.offset
-        var data_len = UInt64(len(stream_frame.data))
+        var data_len = UInt64(len(stream_data))
         var fin = stream_frame.fin
         var key = Int(stream_id)
         self._ensure_peer_stream_exists(key, stream_id)
@@ -1068,7 +1068,7 @@ struct QuicConnection(Movable):
         if not p[].recv_buf:
             raise "internal: missing recv_buf"
         var new_bytes = p[].recv_buf.value().write(
-            offset, Span(stream_frame.data), fin, p[].fin_offset
+            offset, stream_data, fin, p[].fin_offset
         )
         if offset + data_len > p[].recv_highest_offset:
             p[].recv_highest_offset = offset + data_len
@@ -1403,7 +1403,7 @@ struct QuicConnection(Movable):
     def _dispatch_frame(
         mut self, var frame: Frame,
         ack_ranges: Span[AckRange, _],
-        cc_reason: Span[UInt8, _],
+        data: Span[UInt8, _],
         space_idx: Int, now: UInt64,
     ) raises:
         """Route a parsed frame to its per-type handler."""
@@ -1417,10 +1417,10 @@ struct QuicConnection(Movable):
             return
         if tid == FRAME_CRYPTO:
             ref cf = frame.as_crypto()
-            self.crypto_streams[space_idx].receive(cf.offset, Span(cf.data))
+            self.crypto_streams[space_idx].receive(cf.offset, data)
             return
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            self._on_connection_close(frame, cc_reason, now)
+            self._on_connection_close(frame, data, now)
             return
         if tid == FRAME_HANDSHAKE_DONE:
             self._on_handshake_done(now); return
@@ -1431,7 +1431,7 @@ struct QuicConnection(Movable):
         if tid == FRAME_RETIRE_CONNECTION_ID:
             self.cid_mgr.on_retire_connection_id(frame.as_retire_connection_id()); return
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
-            self._handle_stream_frame(frame.as_stream())
+            self._handle_stream_frame(frame.as_stream(), data)
             return
         if tid == FRAME_RESET_STREAM:
             self._handle_reset_stream(frame.as_reset_stream())
@@ -1495,15 +1495,15 @@ struct QuicConnection(Movable):
         return False
 
     def _on_connection_close(
-        mut self, ref frame: Frame, cc_reason: Span[UInt8, _], now: UInt64,
+        mut self, ref frame: Frame, reason_bytes: Span[UInt8, _], now: UInt64,
     ) raises:
         """Handle CONNECTION_CLOSE: enter draining state, emit event."""
         ref cc = frame.as_connection_close()
         self.state = self.state | CONN_DRAINING
         self.close.drain_timer = now + 3 * self._pto_interval()
         var reason = String("")
-        for i in range(len(cc_reason)):
-            reason += chr(Int(cc_reason[i]))
+        for i in range(len(reason_bytes)):
+            reason += chr(Int(reason_bytes[i]))
         self.events.append(QuicEvent.connection_closed(cc.error_code, reason))
 
     def _on_handshake_done(mut self, now: UInt64) raises:

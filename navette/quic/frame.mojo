@@ -1214,10 +1214,10 @@ def frame_allowed_in_packet_type(frame_type: UInt64, packet_type_value: UInt8) -
 struct FrameCursor[origin: Origin]:
     """Zero-alloc frame iterator over a packet's payload bytes.
 
-    Owns inline scratch buffers for ACK ranges and CC reason so the
-    recv-path hot loop never heap-allocates per frame. After next()
-    returns an ACK or CONNECTION_CLOSE frame, the caller reads the
-    decoded side-channel data via ack_ranges_span() / cc_reason_span().
+    Owns an inline scratch buffer for ACK ranges (decoded values) and
+    a single byte-data Span that borrows directly from the packet
+    buffer for CC reason, STREAM data, and CRYPTO data (zero-copy).
+    After next(), read side-channel data via the accessor methods.
     """
 
     var _buf: Span[UInt8, Self.origin]
@@ -1225,7 +1225,7 @@ struct FrameCursor[origin: Origin]:
     var _count: Int
     var _ack_buf: InlineArray[AckRange, MAX_ACK_RANGES]
     var _ack_buf_len: Int
-    var _cc_reason: Span[UInt8, Self.origin]
+    var _byte_data: Span[UInt8, Self.origin]
 
     def __init__(out self, buf: Span[UInt8, Self.origin]):
         """Create a cursor over the given payload bytes."""
@@ -1234,20 +1234,19 @@ struct FrameCursor[origin: Origin]:
         self._count = 0
         self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](fill=AckRange(0, 0))
         self._ack_buf_len = 0
-        self._cc_reason = Span[UInt8, Self.origin]()
+        self._byte_data = Span[UInt8, Self.origin]()
 
     def next(mut self) raises -> Optional[Frame]:
         """Return the next frame, or None when the payload is exhausted.
 
-        For ACK frames, decoded ranges are written into _ack_buf (not the
-        AckFrame.ranges List) — call ack_ranges_span() to read them.
-        For CONNECTION_CLOSE, the reason Span borrows directly from the
-        packet buffer — call cc_reason_span() to read it.
+        ACK ranges go into _ack_buf — read via ack_ranges_span().
+        CC reason, STREAM data, and CRYPTO data go into _byte_data as
+        a zero-copy Span from the packet buffer — read via byte_data_span().
         """
         if self._pos >= len(self._buf):
             return None
         self._ack_buf_len = 0
-        self._cc_reason = Span[UInt8, Self.origin]()
+        self._byte_data = Span[UInt8, Self.origin]()
         var reader = ByteReader(self._buf)
         reader.pos = self._pos
         var frame_type = varint_decode(reader)
@@ -1293,13 +1292,44 @@ struct FrameCursor[origin: Origin]:
             if cc.is_transport:
                 cc.frame_type = varint_decode(reader)
             var reason_length = varint_decode(reader)
-            self._cc_reason = reader.read_span(Int(reason_length))
+            self._byte_data = reader.read_span(Int(reason_length))
             self._pos = reader.pos
             self._count += 1
             return Optional[Frame](Frame(
                 FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
                 FramePayload(cc^),
             ))
+
+        if frame_type == FRAME_CRYPTO:
+            var offset = varint_decode(reader)
+            var length = varint_decode(reader)
+            self._byte_data = reader.read_span(Int(length))
+            var cf = CryptoFrame()
+            cf.offset = offset
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[Frame](Frame(FRAME_CRYPTO, FramePayload(cf^)))
+
+        if (frame_type & UInt64(0xF8)) == FRAME_STREAM_BASE:
+            var has_off = Bool(frame_type & UInt64(0x04))
+            var has_len = Bool(frame_type & UInt64(0x02))
+            var has_fin = Bool(frame_type & UInt64(0x01))
+            var stream_id = varint_decode(reader)
+            var offset = UInt64(0)
+            if has_off:
+                offset = varint_decode(reader)
+            if has_len:
+                var length = varint_decode(reader)
+                self._byte_data = reader.read_span(Int(length))
+            else:
+                self._byte_data = reader.read_span(reader.remaining())
+            var sf = StreamFrame()
+            sf.stream_id = stream_id
+            sf.offset = offset
+            sf.fin = has_fin
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[Frame](Frame(frame_type, FramePayload(sf^)))
 
         var frame = parse_frame_with_type(reader, frame_type)
         self._pos = reader.pos
@@ -1310,9 +1340,10 @@ struct FrameCursor[origin: Origin]:
         """Span view of ACK ranges decoded by the last next() call."""
         return Span(unsafe_ptr=self._ack_buf.unsafe_ptr(), length=self._ack_buf_len)
 
-    def cc_reason_span(self) -> Span[UInt8, Self.origin]:
-        """Span view of CONNECTION_CLOSE reason from the last next() call."""
-        return self._cc_reason
+    def byte_data_span(self) -> Span[UInt8, Self.origin]:
+        """Span view of CC reason / STREAM data / CRYPTO data from the
+        last next() call. Empty for non-data-carrying frame types."""
+        return self._byte_data
 
     def count(self) -> Int:
         """Number of frames yielded so far."""

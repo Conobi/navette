@@ -371,9 +371,9 @@ def test_h3_sync_zero_rtt_disabled_gate_skips_dispatch() raises:
     server._h3._quic._current_space_idx = ZERO_RTT_SPACE_IDX
     var payload = List[UInt8]()
     payload.append(UInt8(0x00))
-    var sf = StreamFrame(UInt64(0), UInt64(0), payload^, False)
+    var sf = StreamFrame(UInt64(0), UInt64(0), payload, False)
     try:
-        server._h3._quic._handle_stream_frame(sf)
+        server._h3._quic._handle_stream_frame(sf, Span(payload))
     except:
         pass
     server._h3._quic._current_space_idx = -1

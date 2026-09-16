@@ -216,9 +216,9 @@ def test_http_filter_counters_live_through_udp_construction() raises:
     h3_ptr[]._h3._quic._current_space_idx = APPLICATION_SPACE_IDX
     var payload = List[UInt8]()
     payload.append(UInt8(0x00))
-    var sf = StreamFrame(stream_id, UInt64(0), payload^, False)
+    var sf = StreamFrame(stream_id, UInt64(0), payload, False)
     try:
-        h3_ptr[]._h3._quic._handle_stream_frame(sf)
+        h3_ptr[]._h3._quic._handle_stream_frame(sf, Span(payload))
     except:
         pass
     h3_ptr[]._h3._quic._current_space_idx = -1

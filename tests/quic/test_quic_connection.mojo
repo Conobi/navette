@@ -1458,8 +1458,8 @@ def test_flow_control_error_on_overflow() raises:
     for _ in range(70_000):
         data.append(UInt8(0x41))
 
-    var sf = StreamFrame(sid, UInt64(0), data, False)
-    server._handle_stream_frame(sf)
+    var sf = StreamFrame(sid, UInt64(0), List[UInt8](), False)
+    server._handle_stream_frame(sf, Span(data))
     assert_true(
         Bool(server.close.pending),
         "server.close.pending not set after stream FC overflow",
@@ -1523,10 +1523,10 @@ def test_conn_flow_control_error_on_overflow() raises:
     for _ in range(60_000):
         data.append(UInt8(0x41))
 
-    var sf = StreamFrame(sid, UInt64(0), data, False)
+    var sf = StreamFrame(sid, UInt64(0), List[UInt8](), False)
     var raised_fc = False
     try:
-        server._handle_stream_frame(sf)
+        server._handle_stream_frame(sf, Span(data))
     except e:
         var emsg = String(e)
         if emsg.find("FLOW_CONTROL") >= 0:
