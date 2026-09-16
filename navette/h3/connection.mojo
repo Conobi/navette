@@ -417,7 +417,6 @@ struct H3Connection(Movable):
 
     def _poll_quic_events(mut self, now: UInt64) raises:
         """Process pending QUIC timeout and drain application events."""
-        _ = self._quic.timeout(now)
         while True:
             var ev_opt = self._quic.poll()
             if not ev_opt:

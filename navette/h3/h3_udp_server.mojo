@@ -939,12 +939,13 @@ struct H3UdpServer[H: StreamHandler](Movable):
         mutates a connection reaches it before the next reader runs.
         """
         self._deadline_refresh_count += 1
-        self.conn_slots[idx].deadline_refreshed_at_us = now
-        if self.conn_slots[idx].h3[].has_pending_egress():
-            self.conn_slots[idx].next_deadline_us = now
+        ref slot = self.conn_slots[idx]
+        slot.deadline_refreshed_at_us = now
+        if slot.h3[].has_pending_egress():
+            slot.next_deadline_us = now
             return
-        var t = self.conn_slots[idx].h3[].timeout(now)
-        self.conn_slots[idx].next_deadline_us = t.value() if t else NO_DEADLINE_US
+        var t = slot.h3[].timeout(now)
+        slot.next_deadline_us = t.value() if t else NO_DEADLINE_US
 
     def _timer_pass_due(self, now: UInt64) -> Bool:
         """Pass gate: no live timer, or the minimum cached deadline has passed."""
