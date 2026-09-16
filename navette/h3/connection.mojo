@@ -566,10 +566,10 @@ struct H3Connection(Movable):
         # Coalesce the quarter-id prefix and the application payload into
         # a single buffer so the QUIC layer sees one DATAGRAM frame.
         var buf = List[UInt8]()
-        for i in range(len(prefix)):
-            buf.append(prefix[i])
-        for i in range(len(payload)):
-            buf.append(payload[i])
+        for ref byte in prefix:
+            buf.append(byte)
+        for ref byte in payload:
+            buf.append(byte)
         return self._quic.send_datagram(Span(buf))
 
     # --- Internal: bootstrap -------------------------------------------------

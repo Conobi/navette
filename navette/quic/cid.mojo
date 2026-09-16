@@ -295,16 +295,16 @@ struct CidManager(Movable):
     def active_local_count(self) -> Int:
         """Count Active local CIDs."""
         var count = 0
-        for i in range(len(self.local_cids)):
-            if self.local_cids[i].state == CID_ACTIVE:
+        for ref entry in self.local_cids:
+            if entry.state == CID_ACTIVE:
                 count += 1
         return count
 
     def active_remote_count(self) -> Int:
         """Count Active remote CIDs."""
         var count = 0
-        for i in range(len(self.remote_cids)):
-            if self.remote_cids[i].state == CID_ACTIVE:
+        for ref entry in self.remote_cids:
+            if entry.state == CID_ACTIVE:
                 count += 1
         return count
 
@@ -314,8 +314,8 @@ struct CidManager(Movable):
 
     def has_unadvertised(self) -> Bool:
         """Non-allocating: an Active local CID still owes a NEW_CONNECTION_ID."""
-        for i in range(len(self.local_cids)):
-            if self.local_cids[i].state == CID_ACTIVE and not self.local_cids[i].advertised:
+        for ref entry in self.local_cids:
+            if entry.state == CID_ACTIVE and not entry.advertised:
                 return True
         return False
 
@@ -330,9 +330,9 @@ struct CidManager(Movable):
         NEW_CONNECTION_ID frame, then calls mark_advertised() after sending.
         """
         var result = List[CidEntry]()
-        for i in range(len(self.local_cids)):
-            if self.local_cids[i].state == CID_ACTIVE and not self.local_cids[i].advertised:
-                result.append(CidEntry(copy=self.local_cids[i]))
+        for ref entry in self.local_cids:
+            if entry.state == CID_ACTIVE and not entry.advertised:
+                result.append(CidEntry(copy=entry))
         return result^
 
     def mark_advertised(mut self, sequence: UInt64):

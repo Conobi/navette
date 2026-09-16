@@ -538,9 +538,9 @@ struct PacketNumberSpace(Copyable, Movable):
             pn += 1
 
         var prev_smallest = smallest
-        for i in range(len(ack_ranges)):
-            var gap = ack_ranges[i].gap
-            var ack_range = ack_ranges[i].ack_range
+        for ref ar in ack_ranges:
+            var gap = ar.gap
+            var ack_range = ar.ack_range
             # gap+2 unacknowledged packets after prev_smallest
             if prev_smallest < gap + 2:
                 raise "ACK range underflow"
@@ -561,8 +561,7 @@ struct PacketNumberSpace(Copyable, Movable):
 
         # Remove acked packets from sent_packets and collect them.
         # Single pop per PN: avoids the old in + [] + copy + pop (4 lookups).
-        for i in range(len(self._scratch_pns)):
-            var key = self._scratch_pns[i]
+        for ref key in self._scratch_pns:
             try:
                 var pkt = self.sent_packets.pop(key)
                 if pkt.ack_eliciting:
@@ -588,8 +587,8 @@ struct PacketNumberSpace(Copyable, Movable):
         var keys = List[Int]()
         for key in self.sent_packets.keys():
             keys.append(key)
-        for i in range(len(keys)):
-            result.append(self.sent_packets.pop(keys[i]))
+        for ref key in keys:
+            result.append(self.sent_packets.pop(key))
         self.keys_handle = Int32(-1)
         self.ack_needed = False
         self.ack_deadline = None

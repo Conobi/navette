@@ -188,9 +188,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var p = self._streams[keys[i]].ptr()
+                var p = self._streams[key].ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             except:
@@ -320,9 +320,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for ref field in ev.fields:
+            var name = field.name
+            var value = field.value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -473,8 +473,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var sids = List[Int]()
         for key in self._streams.keys():
             sids.append(key)
-        for i in range(len(sids)):
-            var sid = sids[i]
+        for ref sid in sids:
             if sid not in self._streams:
                 continue
             var ctx_ptr = self._streams[sid].ptr()

@@ -95,8 +95,8 @@ struct HttpCoroClient(Movable):
         for kv in self._client._handle_slot.items():
             if kv.value == stale_addr:
                 hids.append(kv.key)
-        for i in range(len(hids)):
-            _ = self._client._handle_slot.pop(hids[i])
+        for ref hid in hids:
+            _ = self._client._handle_slot.pop(hid)
         return moved^
 
     # --- Transport API (caller drives I/O) ---

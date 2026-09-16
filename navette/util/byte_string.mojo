@@ -39,14 +39,14 @@ def bytes_to_string(var data: List[UInt8]) -> String:
         adopted directly; otherwise each byte >= 0x80 becomes the two-byte
         UTF-8 encoding of the code point with that value.
     """
-    for i in range(len(data)):
-        if data[i] >= UInt8(0x80):
+    for ref byte in data:
+        if byte >= UInt8(0x80):
             # Non-ASCII present: transcode. Building per byte is slower than a
             # bulk adopt, which is why the all-ASCII path above is checked
             # first -- it is the overwhelmingly common case.
             var out = String()
-            for j in range(len(data)):
-                out += chr(Int(data[j]))
+            for ref b in data:
+                out += chr(Int(b))
             return out^
     return String(unsafe_from_utf8=data^)
 
@@ -71,6 +71,6 @@ def string_to_bytes(s: String) -> List[UInt8]:
             # Not producible by bytes_to_string, but keep the function total
             # rather than silently truncating.
             var enc = String(cp).as_bytes()
-            for i in range(len(enc)):
-                out.append(enc[i])
+            for ref byte in enc:
+                out.append(byte)
     return out^

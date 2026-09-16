@@ -119,13 +119,12 @@ struct TlsClientConfig(Movable):
         """
         # Encode to length-prefixed wire format
         var buf = List[UInt8]()
-        for i in range(len(protocols)):
-            var proto = protocols[i]
+        for ref proto in protocols:
             var proto_bytes = proto.as_bytes()
             var proto_len = len(proto_bytes)
             buf.append(UInt8(proto_len))
-            for j in range(proto_len):
-                buf.append(proto_bytes[j])
+            for ref byte in proto_bytes:
+                buf.append(byte)
         var buf_ptr_buf = Owned[UInt8](len(buf))
         var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):
@@ -227,13 +226,12 @@ struct TlsServerConfig(Movable):
         """
         # Encode to length-prefixed wire format
         var buf = List[UInt8]()
-        for i in range(len(protocols)):
-            var proto = protocols[i]
+        for ref proto in protocols:
             var proto_bytes = proto.as_bytes()
             var proto_len = len(proto_bytes)
             buf.append(UInt8(proto_len))
-            for j in range(proto_len):
-                buf.append(proto_bytes[j])
+            for ref byte in proto_bytes:
+                buf.append(byte)
         var buf_ptr_buf = Owned[UInt8](len(buf))
         var buf_ptr = buf_ptr_buf.ptr()
         for i in range(len(buf)):

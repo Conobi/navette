@@ -600,8 +600,8 @@ def huffman_encode(s: String) raises -> List[UInt8]:
     var bits: Int = 0     # bits in accumulator
     var sbytes = s.as_bytes()
 
-    for i in range(len(sbytes)):
-        var sym = Int(sbytes[i])
+    for ref byte in sbytes:
+        var sym = Int(byte)
         if sym >= len(table):
             raise "Huffman: symbol out of range: " + String(sym)
         var entry = table[sym].copy()
@@ -635,8 +635,8 @@ def _huffman_encode_into_with_table(mut buf: List[UInt8], s: String, ref table: 
     var bits: Int = 0
     var sbytes = s.as_bytes()
 
-    for i in range(len(sbytes)):
-        var sym = Int(sbytes[i])
+    for ref byte in sbytes:
+        var sym = Int(byte)
         if sym >= len(table):
             raise "Huffman: symbol out of range: " + String(sym)
         acc = (acc << UInt64(table[sym].nbits)) | UInt64(table[sym].code)
@@ -662,8 +662,8 @@ def _huffman_encoded_len_with_table(s: String, ref table: List[HuffmanEntry]) ra
     """Compute Huffman byte length using a pre-built table."""
     var total_bits: Int = 0
     var sbytes = s.as_bytes()
-    for i in range(len(sbytes)):
-        var sym = Int(sbytes[i])
+    for ref byte in sbytes:
+        var sym = Int(byte)
         if sym >= len(table):
             raise "Huffman: symbol out of range: " + String(sym)
         total_bits += Int(table[sym].nbits)
@@ -974,8 +974,8 @@ struct QpackEncoder(Copyable, Movable):
         result.append(0x00)  # Required Insert Count = 0
         result.append(0x00)  # S bit = 0, Delta Base = 0
 
-        for i in range(len(headers)):
-            self._encode_field_into(result, headers[i].name, headers[i].value)
+        for ref hdr in headers:
+            self._encode_field_into(result, hdr.name, hdr.value)
 
         return result^
 

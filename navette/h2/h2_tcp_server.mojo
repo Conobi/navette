@@ -289,8 +289,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
         if len(data) == 0:
             return
         if Bool(self._send_future):
-            for i in range(len(data)):
-                self.send_pending.append(data[i])
+            for ref byte in data:
+                self.send_pending.append(byte)
             return
         self.send_buf = data^
         self._submit_send()
@@ -583,8 +583,8 @@ struct H2TcpServer[H: StreamHandler](Movable):
 
     def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
-        for i in range(len(self.connections)):
-            var ptr = self.connections[i]
+        for ref conn_ptr in self.connections:
+            var ptr = conn_ptr
             ptr.unsafe_deinit_pointee()
             ptr.unsafe_free()
 
@@ -612,9 +612,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
         connections). Each connection's _poll_recv and _poll_send handle
         errors internally and set _closing on failure.
         """
-        for i in range(len(self.connections)):
-            self.connections[i][]._poll_recv()
-            self.connections[i][]._poll_send()
+        for ref conn_ptr in self.connections:
+            conn_ptr[]._poll_recv()
+            conn_ptr[]._poll_send()
 
     def reap_closed(mut self):
         """Sweep the connection list and free any fully-drained connections.

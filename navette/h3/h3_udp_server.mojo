@@ -166,8 +166,8 @@ def _earliest_cached_deadline[H: StreamHandler](
 ) -> Optional[UInt64]:
     """Min of every slot's cached deadline; None when no slot has one. Never dereferences `h3`."""
     var best = NO_DEADLINE_US
-    for i in range(len(slots)):
-        var d = slots[i].next_deadline_us
+    for ref slot in slots:
+        var d = slot.next_deadline_us
         if d < best:
             best = d
     if best == NO_DEADLINE_US:
@@ -734,8 +734,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
         field destructors. On clean teardown conn_slots is typically
         empty; the walk defends against drop-mid-flight.
         """
-        for i in range(len(self.conn_slots)):
-            var ptr = self.conn_slots[i].h3
+        for ref slot in self.conn_slots:
+            var ptr = slot.h3
             ptr.unsafe_deinit_pointee()
             ptr.unsafe_free()
 
@@ -920,15 +920,15 @@ struct H3UdpServer[H: StreamHandler](Movable):
         Costs the N recomputes the cache removes, so it is never wired under
         `ASSERT=all`; the test harness calls it after each `flush()`.
         """
-        for i in range(len(self.conn_slots)):
-            var t = self.conn_slots[i].deadline_refreshed_at_us
+        for ref slot in self.conn_slots:
+            var t = slot.deadline_refreshed_at_us
             var expect: UInt64
-            if self.conn_slots[i].h3[].has_pending_egress():
+            if slot.h3[].has_pending_egress():
                 expect = t
             else:
-                var d = self.conn_slots[i].h3[].timeout(t)
+                var d = slot.h3[].timeout(t)
                 expect = d.value() if d else NO_DEADLINE_US
-            if self.conn_slots[i].next_deadline_us != expect:
+            if slot.next_deadline_us != expect:
                 return False
         return True
 
@@ -1384,8 +1384,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
             aborting the whole flush.
         """
         var dcid_copy = List[UInt8](capacity=len(dcid))
-        for i in range(len(dcid)):
-            dcid_copy.append(dcid[i])
+        for ref byte in dcid:
+            dcid_copy.append(byte)
 
         var quic = QuicConnection.server(
             self._tls.shared(),

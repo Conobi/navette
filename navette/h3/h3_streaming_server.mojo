@@ -397,8 +397,8 @@ struct H3StreamingCtxPool(Movable):
         self._capacity = move._capacity
 
     def __deinit__(deinit self):
-        for i in range(len(self._free)):
-            self._free[i].unsafe_free()
+        for ref ptr in self._free:
+            ptr.unsafe_free()
 
     def acquire(mut self) raises -> Pointer[H3StreamingCtx, MutUntrackedOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
@@ -506,9 +506,9 @@ struct H3StreamingServer(Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                _free_streaming_stream(self._streams[keys[i]].ptr())
+                _free_streaming_stream(self._streams[key].ptr())
             except:
                 pass
 
@@ -577,8 +577,8 @@ struct H3StreamingServer(Movable):
     def _flush_outbound(mut self, now: UInt64) raises:
         """Move pending outbound QUIC datagrams from H3Connection into buffer."""
         var pending = self._h3.drain_datagrams(now)
-        for i in range(len(pending)):
-            self._outbuf.append(pending[i].copy())
+        for ref pkt in pending:
+            self._outbuf.append(pkt.copy())
 
     def _cleanup_stream(mut self, stream_id: Int) raises:
         """Unconditionally free stream context and remove from dict."""
@@ -673,9 +673,9 @@ struct H3StreamingServer(Movable):
         var authority_str = String("")
         var user_headers = Headers()
 
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for ref field in ev.fields:
+            var name = field.name
+            var value = field.value
             if name == ":method":
                 method_str = value
             elif name == ":path":
@@ -794,10 +794,10 @@ struct H3StreamingServer(Movable):
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
         var trailer_headers = Headers()
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
+        for ref field in ev.fields:
+            var name = field.name
             if not name.startswith(":"):
-                trailer_headers.add(name, ev.fields[i].value)
+                trailer_headers.add(name, field.value)
         ctx.body_frame_ring.append(BodyFrame.trailers(trailer_headers^))
         if not ctx.request_ended:
             ctx.request_ended = True
@@ -865,8 +865,7 @@ struct H3StreamingServer(Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
-            var sid = keys[i]
+        for ref sid in keys:
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
@@ -888,8 +887,7 @@ struct H3StreamingServer(Movable):
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)
-        for i in range(len(stream_ids)):
-            var sid = stream_ids[i]
+        for ref sid in stream_ids:
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()

@@ -310,12 +310,12 @@ struct PathValidator(Movable):
         already validated (no gate) or unknown to the validator (caller
         is responsible for starting a challenge first); returns True.
         """
-        for i in range(len(self.pending)):
-            var t = PathKey(copy=self.pending[i].target)
+        for ref entry in self.pending:
+            var t = PathKey(copy=entry.target)
             if t == target:
                 var budget = (
-                    ANTI_AMP_FACTOR * self.pending[i].bytes_received
-                    - self.pending[i].bytes_sent
+                    ANTI_AMP_FACTOR * entry.bytes_received
+                    - entry.bytes_sent
                 )
                 return Int64(n) <= budget
         return True
@@ -329,10 +329,10 @@ struct PathValidator(Movable):
         """
         var threshold = pto_ns * UInt64(3)
         var kept = List[PathChallenge]()
-        for i in range(len(self.pending)):
-            var age = now_ns - self.pending[i].sent_at_ns
+        for ref entry in self.pending:
+            var age = now_ns - entry.sent_at_ns
             if age < threshold:
-                kept.append(PathChallenge(copy=self.pending[i]))
+                kept.append(PathChallenge(copy=entry))
         self.pending = kept^
 
 
@@ -351,15 +351,15 @@ struct PathState(Movable):
     def on_challenge_received(mut self, data: Span[UInt8, _]):
         """Stash an 8-byte PATH_CHALLENGE token for echo as PATH_RESPONSE."""
         var copy = List[UInt8](capacity=len(data))
-        for i in range(len(data)):
-            copy.append(data[i])
+        for ref byte in data:
+            copy.append(byte)
         self.pending_responses.append(copy^)
 
     def emit_response_frames(mut self) raises -> List[Frame]:
         """Drain pending PATH_RESPONSE frames."""
         var out = List[Frame]()
-        for i in range(len(self.pending_responses)):
-            var data = List[UInt8](copy=self.pending_responses[i])
+        for ref resp in self.pending_responses:
+            var data = List[UInt8](copy=resp)
             out.append(Frame.path_response(data^))
         self.pending_responses = List[List[UInt8]]()
         return out^
@@ -367,8 +367,8 @@ struct PathState(Movable):
     def emit_challenge_frames(mut self) raises -> List[Frame]:
         """Build PATH_CHALLENGE frames for every pending challenge."""
         var out = List[Frame]()
-        for i in range(len(self.validator.pending)):
-            var token = List[UInt8](copy=self.validator.pending[i].token)
+        for ref chal in self.validator.pending:
+            var token = List[UInt8](copy=chal.token)
             out.append(Frame.path_challenge(token^))
         return out^
 
@@ -378,8 +378,8 @@ struct PathState(Movable):
 
     def has_pending_challenge(self, target: PathKey) -> Bool:
         """True iff a challenge for `target` is already pending."""
-        for i in range(len(self.validator.pending)):
-            var t = PathKey(copy=self.validator.pending[i].target)
+        for ref chal in self.validator.pending:
+            var t = PathKey(copy=chal.target)
             if t == target:
                 return True
         return False

@@ -124,8 +124,8 @@ struct Headers(Copyable, Movable, Sized):
     def has(self, name: String) -> Bool:
         """Return whether a header with the given name exists."""
         var lower_name = _to_lower(name)
-        for i in range(len(self._names)):
-            if self._names[i] == lower_name:
+        for ref hdr_name in self._names:
+            if hdr_name == lower_name:
                 return True
         return False
 

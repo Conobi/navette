@@ -50,9 +50,9 @@ def request_from_h2_headers(
     var past_pseudo = False
     var headers = Headers()
 
-    for i in range(len(h2_headers)):
-        var name = h2_headers[i].name
-        var value = h2_headers[i].value
+    for ref hdr in h2_headers:
+        var name = hdr.name
+        var value = hdr.value
 
         if _is_pseudo(name):
             if past_pseudo:
@@ -166,9 +166,9 @@ def response_from_h2_headers(
     var past_pseudo = False
     var headers = Headers()
 
-    for i in range(len(h2_headers)):
-        var name = h2_headers[i].name
-        var value = h2_headers[i].value
+    for ref hdr in h2_headers:
+        var name = hdr.name
+        var value = hdr.value
 
         if _is_pseudo(name):
             if past_pseudo:
@@ -221,10 +221,10 @@ def response_to_h2_headers(
 def headers_from_h2(h2_headers: List[Header]) -> Headers:
     """Convert List[Header] to Headers, skipping pseudo-headers."""
     var result = Headers()
-    for i in range(len(h2_headers)):
-        if not _is_pseudo(h2_headers[i].name):
+    for ref hdr in h2_headers:
+        if not _is_pseudo(hdr.name):
             # HPACK wire names are lowercase (RFC 7540 §8.1.2).
-            result.add_lowercase(h2_headers[i].name, h2_headers[i].value)
+            result.add_lowercase(hdr.name, hdr.value)
     return result^
 
 

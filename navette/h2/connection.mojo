@@ -553,8 +553,8 @@ struct H2Connection(Movable):
             raise Error("Connection already initiated")
         if self._client_side:
             var magic = _client_magic()
-            for i in range(len(magic)):
-                self._outbuf.append(magic[i])
+            for ref byte in magic:
+                self._outbuf.append(byte)
         self._queue_settings_frame()
         self._state = CONN_OPEN
 
@@ -731,8 +731,8 @@ struct H2Connection(Movable):
                 events.append(H2Event.settings_acknowledged())
             return
         # Apply remote settings
-        for i in range(len(sp.settings)):
-            var s = sp.settings[i].copy()
+        for ref setting in sp.settings:
+            var s = setting.copy()
             if s.id == SETTINGS_HEADER_TABLE_SIZE:
                 self._remote_settings.header_table_size = UInt32(s.value)
                 self._hpack_encoder.set_max_table_size(s.value)
@@ -771,12 +771,12 @@ struct H2Connection(Movable):
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)
-        for i in range(len(stream_ids)):
+        for ref sid in stream_ids:
             try:
-                var s = self._streams[stream_ids[i]].copy()
+                var s = self._streams[sid].copy()
                 if s.lifecycle == STREAM_OPEN or s.lifecycle == STREAM_HALF_CLOSED_LOCAL or s.lifecycle == STREAM_HALF_CLOSED_REMOTE:
                     s.send_window += delta
-                    self._streams[stream_ids[i]] = s^
+                    self._streams[sid] = s^
             except:
                 pass
 
@@ -1006,8 +1006,8 @@ struct H2Connection(Movable):
             var sids = List[Int]()
             for key in self._pending_data.keys():
                 sids.append(key)
-            for i in range(len(sids)):
-                self._drain_stream_pending(sids[i])
+            for ref sid in sids:
+                self._drain_stream_pending(sid)
         else:
             if hint_stream_id in self._pending_data:
                 self._drain_stream_pending(hint_stream_id)

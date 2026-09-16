@@ -368,8 +368,8 @@ struct HuffmanCodec(Movable):
         var current = UInt64(0)
         var bits = 0
 
-        for i in range(len(data)):
-            var sym = Int(data[i])
+        for ref byte in data:
+            var sym = Int(byte)
             var code = UInt64(self.codes[sym])
             var length = Int(self.code_lengths[sym])
 
@@ -398,8 +398,7 @@ struct HuffmanCodec(Movable):
         var bits_since_last_symbol = 0
         var all_ones_since_last_symbol = True
 
-        for byte_idx in range(len(data)):
-            var b = data[byte_idx]
+        for ref b in data:
             for bit_pos in range(7, -1, -1):
                 var bit = Int((b >> UInt8(bit_pos)) & 1)
                 bits_since_last_symbol += 1

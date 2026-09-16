@@ -490,8 +490,7 @@ def emit_blocked_frames(
     var blocked_ids = List[Int]()
     for key in stream_map.sendable_set.keys():
         blocked_ids.append(key)
-    for i in range(len(blocked_ids)):
-        var sid = blocked_ids[i]
+    for ref sid in blocked_ids:
         if not stream_map.has_stream(sid):
             continue
         var p = stream_map.stream_ptr(sid)

@@ -87,10 +87,10 @@ struct PacketProtect(Movable):
         consumes the object and each slot is visited once, so no handle
         can be freed twice.
         """
-        for i in range(len(self.keys)):
-            if self.keys[i] != Int32(-1):
+        for ref key in self.keys:
+            if key != Int32(-1):
                 try:
-                    _ = self._lib.inner_ptr()[].keys_free(self.keys[i])
+                    _ = self._lib.inner_ptr()[].keys_free(key)
                 except:
                     pass
         # Anchor: `inner_ptr()` returns an untracked pointer, so the checker

@@ -575,8 +575,8 @@ struct Frame(Copyable, Movable):
             ref ack = self.payload.unsafe_get[AckFrame]()
             var n = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
             n += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
-            for i in range(len(ack.ranges)):
-                n += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
+            for ref r in ack.ranges:
+                n += varint_len(r.gap) + varint_len(r.ack_range)
             if ack.has_ecn:
                 n += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
             return n
@@ -962,9 +962,9 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         varint_encode(writer, ack.ack_delay)
         varint_encode(writer, UInt64(len(ack.ranges)))
         varint_encode(writer, ack.first_ack_range)
-        for i in range(len(ack.ranges)):
-            varint_encode(writer, ack.ranges[i].gap)
-            varint_encode(writer, ack.ranges[i].ack_range)
+        for ref r in ack.ranges:
+            varint_encode(writer, r.gap)
+            varint_encode(writer, r.ack_range)
         if ack.has_ecn:
             varint_encode(writer, ack.ecn_ect0)
             varint_encode(writer, ack.ecn_ect1)
@@ -1130,8 +1130,8 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
 
 
 def serialize_frames(frames: List[Frame], mut writer: ByteWriter) raises:
-    for i in range(len(frames)):
-        serialize_frame(frames[i], writer)
+    for ref frame in frames:
+        serialize_frame(frame, writer)
 
 
 # ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────
@@ -1212,12 +1212,14 @@ def frame_allowed_in_packet_type(frame_type: UInt64, packet_type_value: UInt8) -
 
     return False
 struct FrameCursor[origin: Origin]:
-    """Zero-alloc frame iterator over a packet's payload bytes.
+    """Zero-alloc frame iterator returning type_id scalars.
 
-    Owns an inline scratch buffer for ACK ranges (decoded values) and
-    a single byte-data Span that borrows directly from the packet
-    buffer for CC reason, STREAM data, and CRYPTO data (zero-copy).
-    After next(), read side-channel data via the accessor methods.
+    Populates flat scalar fields instead of constructing Frame values.
+    No Variant construction, Optional[Frame] wrapping, or destroy overhead.
+
+    ACK ranges go into _ack_buf (read via ack_ranges_span());
+    CC reason / STREAM / CRYPTO / token / path data go into _byte_data
+    (read via byte_data_span()), borrowing directly from the packet buffer.
     """
 
     var _buf: Span[UInt8, Self.origin]
@@ -1226,6 +1228,25 @@ struct FrameCursor[origin: Origin]:
     var _ack_buf: InlineArray[AckRange, MAX_ACK_RANGES]
     var _ack_buf_len: Int
     var _byte_data: Span[UInt8, Self.origin]
+    var type_id: UInt64
+    var stream_id: UInt64
+    var offset: UInt64
+    var fin: Bool
+    var error_code: UInt64
+    var final_size: UInt64
+    var is_transport: Bool
+    var frame_type_field: UInt64
+    var maximum: UInt64
+    var bidi: Bool
+    var sequence: UInt64
+    var retire_prior_to: UInt64
+    var largest_ack: UInt64
+    var ack_delay: UInt64
+    var first_ack_range: UInt64
+    var has_ecn: Bool
+    var ecn_ect0: UInt64
+    var ecn_ect1: UInt64
+    var ecn_ce: UInt64
 
     def __init__(out self, buf: Span[UInt8, Self.origin]):
         """Create a cursor over the given payload bytes."""
@@ -1235,13 +1256,31 @@ struct FrameCursor[origin: Origin]:
         self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](uninitialized=True)
         self._ack_buf_len = 0
         self._byte_data = Span[UInt8, Self.origin]()
+        self.type_id = UInt64(0)
+        self.stream_id = UInt64(0)
+        self.offset = UInt64(0)
+        self.fin = False
+        self.error_code = UInt64(0)
+        self.final_size = UInt64(0)
+        self.is_transport = False
+        self.frame_type_field = UInt64(0)
+        self.maximum = UInt64(0)
+        self.bidi = False
+        self.sequence = UInt64(0)
+        self.retire_prior_to = UInt64(0)
+        self.largest_ack = UInt64(0)
+        self.ack_delay = UInt64(0)
+        self.first_ack_range = UInt64(0)
+        self.has_ecn = False
+        self.ecn_ect0 = UInt64(0)
+        self.ecn_ect1 = UInt64(0)
+        self.ecn_ce = UInt64(0)
 
-    def next(mut self) raises -> Optional[Frame]:
-        """Return the next frame, or None when the payload is exhausted.
+    def next(mut self) raises -> Optional[UInt64]:
+        """Return the next frame's type_id, or None when exhausted.
 
-        ACK ranges go into _ack_buf — read via ack_ranges_span().
-        CC reason, STREAM data, and CRYPTO data go into _byte_data as
-        a zero-copy Span from the packet buffer — read via byte_data_span().
+        Populates flat scalar fields on the cursor for the dispatch site
+        to read directly.  No Frame/Variant/Optional[Frame] overhead.
         """
         if self._pos >= len(self._buf):
             return None
@@ -1251,18 +1290,38 @@ struct FrameCursor[origin: Origin]:
         reader.pos = self._pos
         var frame_type = varint_decode(reader)
 
+        # PADDING (0x00): consume consecutive padding bytes.
+        if frame_type == FRAME_PADDING:
+            while reader.remaining() > 0:
+                var next_byte = reader.peek_u8()
+                if next_byte != UInt8(0):
+                    break
+                _ = reader.read_u8()
+            self.type_id = FRAME_PADDING
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # PING (0x01)
+        if frame_type == FRAME_PING:
+            self.type_id = FRAME_PING
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # ACK (0x02) / ACK_ECN (0x03)
         if frame_type == FRAME_ACK or frame_type == FRAME_ACK_ECN:
-            var ack = AckFrame()
-            ack.largest_ack = varint_decode(reader)
-            ack.ack_delay = varint_decode(reader)
+            self.type_id = frame_type
+            self.largest_ack = varint_decode(reader)
+            self.ack_delay = varint_decode(reader)
             var ack_range_count = varint_decode(reader)
-            ack.first_ack_range = varint_decode(reader)
-            if ack.first_ack_range > ack.largest_ack:
+            self.first_ack_range = varint_decode(reader)
+            if self.first_ack_range > self.largest_ack:
                 raise "ACK: first_ack_range exceeds largest_ack"
             var rc = Int(ack_range_count)
             if rc > MAX_ACK_RANGES:
                 raise "ACK: range count " + String(rc) + " exceeds maximum " + String(MAX_ACK_RANGES)
-            var smallest_ack = ack.largest_ack - ack.first_ack_range
+            var smallest_ack = self.largest_ack - self.first_ack_range
             for _ in range(rc):
                 var gap = varint_decode(reader)
                 var ack_range_val = varint_decode(reader)
@@ -1273,68 +1332,216 @@ struct FrameCursor[origin: Origin]:
                 if self._ack_buf_len < MAX_ACK_RANGES:
                     self._ack_buf[self._ack_buf_len] = AckRange(gap, ack_range_val)
                     self._ack_buf_len += 1
+            self.has_ecn = False
+            self.ecn_ect0 = UInt64(0)
+            self.ecn_ect1 = UInt64(0)
+            self.ecn_ce = UInt64(0)
             if frame_type == FRAME_ACK_ECN:
-                ack.ecn_ect0 = varint_decode(reader)
-                ack.ecn_ect1 = varint_decode(reader)
-                ack.ecn_ce = varint_decode(reader)
-                ack.has_ecn = True
+                self.ecn_ect0 = varint_decode(reader)
+                self.ecn_ect1 = varint_decode(reader)
+                self.ecn_ce = varint_decode(reader)
+                self.has_ecn = True
             self._pos = reader.pos
             self._count += 1
-            return Optional[Frame](Frame(
-                FRAME_ACK if not ack.has_ecn else FRAME_ACK_ECN,
-                FramePayload(ack^),
-            ))
+            return Optional[UInt64](self.type_id)
 
-        if frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT or frame_type == FRAME_CONNECTION_CLOSE_APP:
-            var cc = ConnectionCloseFrame()
-            cc.is_transport = frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT
-            cc.error_code = varint_decode(reader)
-            if cc.is_transport:
-                cc.frame_type = varint_decode(reader)
-            var reason_length = varint_decode(reader)
-            self._byte_data = reader.read_span(Int(reason_length))
+        # RESET_STREAM (0x04)
+        if frame_type == FRAME_RESET_STREAM:
+            self.type_id = FRAME_RESET_STREAM
+            self.stream_id = varint_decode(reader)
+            self.error_code = varint_decode(reader)
+            self.final_size = varint_decode(reader)
             self._pos = reader.pos
             self._count += 1
-            return Optional[Frame](Frame(
-                FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
-                FramePayload(cc^),
-            ))
+            return Optional[UInt64](self.type_id)
 
+        # STOP_SENDING (0x05)
+        if frame_type == FRAME_STOP_SENDING:
+            self.type_id = FRAME_STOP_SENDING
+            self.stream_id = varint_decode(reader)
+            self.error_code = varint_decode(reader)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # CRYPTO (0x06)
         if frame_type == FRAME_CRYPTO:
-            var offset = varint_decode(reader)
+            self.type_id = FRAME_CRYPTO
+            self.offset = varint_decode(reader)
             var length = varint_decode(reader)
             self._byte_data = reader.read_span(Int(length))
-            var cf = CryptoFrame()
-            cf.offset = offset
             self._pos = reader.pos
             self._count += 1
-            return Optional[Frame](Frame(FRAME_CRYPTO, FramePayload(cf^)))
+            return Optional[UInt64](self.type_id)
 
+        # NEW_TOKEN (0x07)
+        if frame_type == FRAME_NEW_TOKEN:
+            self.type_id = FRAME_NEW_TOKEN
+            var token_length = varint_decode(reader)
+            self._byte_data = reader.read_span(Int(token_length))
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # STREAM (0x08-0x0F)
         if (frame_type & UInt64(0xF8)) == FRAME_STREAM_BASE:
+            self.type_id = frame_type
             var has_off = Bool(frame_type & UInt64(0x04))
             var has_len = Bool(frame_type & UInt64(0x02))
             var has_fin = Bool(frame_type & UInt64(0x01))
-            var stream_id = varint_decode(reader)
-            var offset = UInt64(0)
+            self.stream_id = varint_decode(reader)
+            self.offset = UInt64(0)
             if has_off:
-                offset = varint_decode(reader)
+                self.offset = varint_decode(reader)
             if has_len:
                 var length = varint_decode(reader)
                 self._byte_data = reader.read_span(Int(length))
             else:
                 self._byte_data = reader.read_span(reader.remaining())
-            var sf = StreamFrame()
-            sf.stream_id = stream_id
-            sf.offset = offset
-            sf.fin = has_fin
+            self.fin = has_fin
             self._pos = reader.pos
             self._count += 1
-            return Optional[Frame](Frame(frame_type, FramePayload(sf^)))
+            return Optional[UInt64](self.type_id)
 
-        var frame = parse_frame_with_type(reader, frame_type)
+        # MAX_DATA (0x10)
+        if frame_type == FRAME_MAX_DATA:
+            self.type_id = FRAME_MAX_DATA
+            self.maximum = varint_decode(reader)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # MAX_STREAM_DATA (0x11)
+        if frame_type == FRAME_MAX_STREAM_DATA:
+            self.type_id = FRAME_MAX_STREAM_DATA
+            self.stream_id = varint_decode(reader)
+            self.maximum = varint_decode(reader)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # MAX_STREAMS_BIDI (0x12) / MAX_STREAMS_UNI (0x13)
+        if frame_type == FRAME_MAX_STREAMS_BIDI or frame_type == FRAME_MAX_STREAMS_UNI:
+            self.type_id = frame_type
+            self.maximum = varint_decode(reader)
+            self.bidi = frame_type == FRAME_MAX_STREAMS_BIDI
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # DATA_BLOCKED (0x14)
+        if frame_type == FRAME_DATA_BLOCKED:
+            self.type_id = FRAME_DATA_BLOCKED
+            self.maximum = varint_decode(reader)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # STREAM_DATA_BLOCKED (0x15)
+        if frame_type == FRAME_STREAM_DATA_BLOCKED:
+            self.type_id = FRAME_STREAM_DATA_BLOCKED
+            self.stream_id = varint_decode(reader)
+            self.maximum = varint_decode(reader)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # STREAMS_BLOCKED_BIDI (0x16) / STREAMS_BLOCKED_UNI (0x17)
+        if frame_type == FRAME_STREAMS_BLOCKED_BIDI or frame_type == FRAME_STREAMS_BLOCKED_UNI:
+            self.type_id = frame_type
+            self.maximum = varint_decode(reader)
+            self.bidi = frame_type == FRAME_STREAMS_BLOCKED_BIDI
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # NEW_CONNECTION_ID (0x18)
+        if frame_type == FRAME_NEW_CONNECTION_ID:
+            self.type_id = FRAME_NEW_CONNECTION_ID
+            self.sequence = varint_decode(reader)
+            self.retire_prior_to = varint_decode(reader)
+            var cid_length = Int(reader.read_u8())
+            if cid_length > 20:
+                raise "NEW_CONNECTION_ID: cid_length must be <= 20"
+            var total = cid_length + 16
+            var cid_start = reader.pos
+            _ = reader.read_span(total)
+            self._byte_data = Span[UInt8, Self.origin](
+                unsafe_ptr=self._buf.unsafe_ptr().offset(cid_start),
+                length=total,
+            )
+            self.offset = UInt64(cid_length)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # RETIRE_CONNECTION_ID (0x19)
+        if frame_type == FRAME_RETIRE_CONNECTION_ID:
+            self.type_id = FRAME_RETIRE_CONNECTION_ID
+            self.sequence = varint_decode(reader)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # PATH_CHALLENGE (0x1A)
+        if frame_type == FRAME_PATH_CHALLENGE:
+            self.type_id = FRAME_PATH_CHALLENGE
+            self._byte_data = reader.read_span(8)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # PATH_RESPONSE (0x1B)
+        if frame_type == FRAME_PATH_RESPONSE:
+            self.type_id = FRAME_PATH_RESPONSE
+            self._byte_data = reader.read_span(8)
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # CONNECTION_CLOSE (0x1C / 0x1D)
+        if frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT or frame_type == FRAME_CONNECTION_CLOSE_APP:
+            self.type_id = frame_type
+            self.is_transport = frame_type == FRAME_CONNECTION_CLOSE_TRANSPORT
+            self.error_code = varint_decode(reader)
+            self.frame_type_field = UInt64(0)
+            if self.is_transport:
+                self.frame_type_field = varint_decode(reader)
+            var reason_length = varint_decode(reader)
+            self._byte_data = reader.read_span(Int(reason_length))
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # HANDSHAKE_DONE (0x1E)
+        if frame_type == FRAME_HANDSHAKE_DONE:
+            self.type_id = FRAME_HANDSHAKE_DONE
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # DATAGRAM (0x30)
+        if frame_type == FRAME_DATAGRAM:
+            self.type_id = FRAME_DATAGRAM
+            self._byte_data = reader.read_span(reader.remaining())
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # DATAGRAM_LEN (0x31)
+        if frame_type == FRAME_DATAGRAM_LEN:
+            self.type_id = FRAME_DATAGRAM_LEN
+            var length = varint_decode(reader)
+            self._byte_data = reader.read_span(Int(length))
+            self._pos = reader.pos
+            self._count += 1
+            return Optional[UInt64](self.type_id)
+
+        # Unknown frame type
+        self.type_id = frame_type
         self._pos = reader.pos
         self._count += 1
-        return Optional[Frame](frame^)
+        return Optional[UInt64](self.type_id)
 
     def ack_ranges_span(self) -> Span[AckRange, origin_of(self._ack_buf)]:
         """Span view of ACK ranges decoded by the last next() call."""
@@ -1464,8 +1671,8 @@ def write_ack_frame_direct(
     var tid = FRAME_ACK_ECN if ack.has_ecn else FRAME_ACK
     var size = varint_len(tid) + varint_len(ack.largest_ack) + varint_len(ack.ack_delay)
     size += varint_len(UInt64(len(ack.ranges))) + varint_len(ack.first_ack_range)
-    for i in range(len(ack.ranges)):
-        size += varint_len(ack.ranges[i].gap) + varint_len(ack.ranges[i].ack_range)
+    for ref r in ack.ranges:
+        size += varint_len(r.gap) + varint_len(r.ack_range)
     if ack.has_ecn:
         size += varint_len(ack.ecn_ect0) + varint_len(ack.ecn_ect1) + varint_len(ack.ecn_ce)
 
@@ -1477,9 +1684,9 @@ def write_ack_frame_direct(
     varint_encode_raw(payload, ack.ack_delay)
     varint_encode_raw(payload, UInt64(len(ack.ranges)))
     varint_encode_raw(payload, ack.first_ack_range)
-    for i in range(len(ack.ranges)):
-        varint_encode_raw(payload, ack.ranges[i].gap)
-        varint_encode_raw(payload, ack.ranges[i].ack_range)
+    for ref r in ack.ranges:
+        varint_encode_raw(payload, r.gap)
+        varint_encode_raw(payload, r.ack_range)
     if ack.has_ecn:
         varint_encode_raw(payload, ack.ecn_ect0)
         varint_encode_raw(payload, ack.ecn_ect1)

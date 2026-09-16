@@ -114,9 +114,9 @@ struct SettingsFrame(Copyable, Movable):
 
     def encode(self) raises -> List[UInt8]:
         var payload = List[UInt8](capacity=len(self.pairs) * 4)
-        for i in range(len(self.pairs)):
-            varint_encode_raw(payload, self.pairs[i].id)
-            varint_encode_raw(payload, self.pairs[i].value)
+        for ref pair in self.pairs:
+            varint_encode_raw(payload, pair.id)
+            varint_encode_raw(payload, pair.value)
         var result = List[UInt8](capacity=2 + len(payload))
         varint_encode_raw(result, H3_FRAME_SETTINGS)
         varint_encode_raw(result, UInt64(len(payload)))
@@ -124,9 +124,9 @@ struct SettingsFrame(Copyable, Movable):
         return result^
 
     def get(self, id: UInt64) -> Optional[UInt64]:
-        for i in range(len(self.pairs)):
-            if self.pairs[i].id == id:
-                return Optional[UInt64](self.pairs[i].value)
+        for ref pair in self.pairs:
+            if pair.id == id:
+                return Optional[UInt64](pair.value)
         return Optional[UInt64](None)
 
 

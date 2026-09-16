@@ -204,8 +204,8 @@ struct ContentDecoder(Movable):
         """
         if self._encoding._tag == _ENC_IDENTITY:
             var out = List[UInt8]()
-            for i in range(len(data)):
-                out.append(data[i])
+            for ref byte in data:
+                out.append(byte)
             return out^
 
         # Keeps `data`'s origin: the wrapper's `origin=_` parameter borrows

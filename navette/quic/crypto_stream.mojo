@@ -109,8 +109,8 @@ struct CryptoStream(Copyable, Movable):
         if self.pending_fragments_len >= MAX_PENDING_FRAGMENTS:
             raise "CRYPTO pending fragment buffer full"
         var frag_data = List[UInt8](capacity=len(data))
-        for i in range(len(data)):
-            frag_data.append(data[i])
+        for ref byte in data:
+            frag_data.append(byte)
         self.pending_fragments[self.pending_fragments_len] = CryptoFragment(offset, frag_data^)
         self.pending_fragments_len += 1
         self._merge_pending()
@@ -151,8 +151,8 @@ struct CryptoStream(Copyable, Movable):
 
     def write(mut self, data: Span[UInt8, _]):
         """Append data to the outgoing send buffer for CRYPTO frames."""
-        for i in range(len(data)):
-            self.send_buf.append(data[i])
+        for ref byte in data:
+            self.send_buf.append(byte)
 
     def _compact_sent(mut self):
         """Drop the already-emitted prefix so `send_buf[0]` is the first unsent byte."""
@@ -204,8 +204,8 @@ struct CryptoStream(Copyable, Movable):
         if len(self.send_buf) == 0:
             self.send_offset = offset
             self.send_buf = List[UInt8](capacity=len(data))
-            for i in range(len(data)):
-                self.send_buf.append(data[i])
+            for ref byte in data:
+                self.send_buf.append(byte)
             return
 
         # Already have data queued.  If new offset is before current
@@ -215,8 +215,8 @@ struct CryptoStream(Copyable, Movable):
             # New data starts earlier -- replace entirely.
             self.send_offset = offset
             self.send_buf = List[UInt8](capacity=len(data))
-            for i in range(len(data)):
-                self.send_buf.append(data[i])
+            for ref byte in data:
+                self.send_buf.append(byte)
         elif offset <= current_end:
             # Contiguous or overlapping: append only the new portion.
             var skip = Int(current_end - offset)

@@ -208,8 +208,8 @@ struct CoroStreamCtxPool(Movable):
         self._capacity = move._capacity
 
     def __deinit__(deinit self):
-        for i in range(len(self._free)):
-            self._free[i].unsafe_free()
+        for ref ptr in self._free:
+            ptr.unsafe_free()
 
     def acquire(mut self) raises -> Pointer[CoroStreamCtx, MutUntrackedOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
@@ -307,9 +307,9 @@ struct H2CoroServer(Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var ctx_ptr = self._streams[keys[i]].ptr()
+                var ctx_ptr = self._streams[key].ptr()
                 _free_stream(ctx_ptr)
             except:
                 pass
@@ -319,8 +319,8 @@ struct H2CoroServer(Movable):
     def feed(mut self, data: Span[UInt8, _]) raises:
         """Feed inbound transport bytes, dispatch events, drain responses."""
         var data_list = List[UInt8]()
-        for i in range(len(data)):
-            data_list.append(data[i])
+        for ref byte in data:
+            data_list.append(byte)
         var events = self._conn.receive_data(data_list)
         self._dispatch_events(events)
         self._drain_responses()
@@ -395,8 +395,8 @@ struct H2CoroServer(Movable):
 
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events to per-stream state."""
-        for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+        for ref evt_ref in events:
+            var evt = H2Event(copy=evt_ref)
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
                 self._on_request_received(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
@@ -514,8 +514,8 @@ struct H2CoroServer(Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
-            var sid = keys[i]
+        for ref key in keys:
+            var sid = key
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
@@ -531,8 +531,8 @@ struct H2CoroServer(Movable):
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)
-        for i in range(len(stream_ids)):
-            var sid = stream_ids[i]
+        for ref sid_ref in stream_ids:
+            var sid = sid_ref
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
@@ -588,9 +588,9 @@ struct H2CoroServer(Movable):
                     made_progress = True
                     break
                 elif f.is_trailers():
-                    for k in range(len(pending_data)):
+                    for ref pd in pending_data:
                         self._conn.send_data(
-                            UInt32(sid), pending_data[k].copy(), end_stream=False
+                            UInt32(sid), pd.copy(), end_stream=False
                         )
                     pending_data = List[List[UInt8]]()
                     var trailer_h2 = headers_to_h2(f.trailers())
@@ -600,9 +600,9 @@ struct H2CoroServer(Movable):
                     ctx.response_ended = True
                     made_progress = True
                     break
-            for k in range(len(pending_data)):
+            for ref pd in pending_data:
                 self._conn.send_data(
-                    UInt32(sid), pending_data[k].copy(), end_stream=False
+                    UInt32(sid), pd.copy(), end_stream=False
                 )
             ctx_ptr.unsafe_write(ctx^)
             if made_progress:

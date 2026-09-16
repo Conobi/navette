@@ -492,8 +492,8 @@ def serialize_version_negotiation(
     writer.write_bytes(dcid)
     writer.write_u8(UInt8(len(scid)))
     writer.write_bytes(scid)
-    for i in range(len(versions)):
-        writer.write_u32_be(versions[i])
+    for ref ver in versions:
+        writer.write_u32_be(ver)
 
 
 # --- Packet Number encode/decode (RFC 9000 Appendix A) ---

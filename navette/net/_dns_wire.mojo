@@ -298,8 +298,8 @@ def _build_query(host: String, txn_id: UInt16, qtype: Int = 65) -> List[UInt8]:
     m.append(UInt8(0x00)); m.append(UInt8(0x00))   # NSCOUNT=0
     m.append(UInt8(0x00)); m.append(UInt8(0x01))   # ARCOUNT=1
     var qn = _encode_qname(host)
-    for i in range(len(qn)):
-        m.append(qn[i])
+    for ref byte in qn:
+        m.append(byte)
     m.append(UInt8((qtype >> 8) & 0xFF)); m.append(UInt8(qtype & 0xFF))
     m.append(UInt8(0x00)); m.append(UInt8(_QCLASS_IN))
     # EDNS0 OPT RR (additional section)

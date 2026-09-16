@@ -78,9 +78,9 @@ struct HpackEncoder(Movable):
             self.dynamic_table.set_max_size(self._pending_table_size)
             self._pending_table_size = -1
 
-        for i in range(len(headers)):
-            var name = headers[i].name
-            var value = headers[i].value
+        for ref hdr in headers:
+            var name = hdr.name
+            var value = hdr.value
 
             var static_result = self.static_table.find(name, value)
             var static_idx = static_result[0]

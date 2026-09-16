@@ -281,13 +281,13 @@ struct Resolver(Movable):
             ref entry = self.cache[key]
             if entry.expires_secs > now:
                 var out = List[ResolvedAddr](capacity=len(entry.addrs))
-                for i in range(len(entry.addrs)):
-                    out.append(entry.addrs[i].copy())
+                for ref addr in entry.addrs:
+                    out.append(addr.copy())
                 return out^
         var fresh = resolve_host(host, port)
         var cached = List[ResolvedAddr](capacity=len(fresh))
-        for i in range(len(fresh)):
-            cached.append(fresh[i].copy())
+        for ref addr in fresh:
+            cached.append(addr.copy())
         self.cache[key] = _CacheEntry(cached^, now + self.ttl_secs)
         return fresh^
 

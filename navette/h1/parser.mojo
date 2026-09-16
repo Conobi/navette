@@ -206,10 +206,10 @@ def _parse_int(s: String) -> Int:
     if len(b) == 0:
         return -1
     var result = 0
-    for i in range(len(b)):
-        if b[i] < UInt8(48) or b[i] > UInt8(57):
+    for ref byte in b:
+        if byte < UInt8(48) or byte > UInt8(57):
             return -1
-        var digit = Int(b[i]) - 48
+        var digit = Int(byte) - 48
         if result > (_MAX_SAFE_INT - digit) // 10:
             return -2
         result = result * 10 + digit

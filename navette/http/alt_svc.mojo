@@ -314,9 +314,9 @@ struct AltSvcCache(Movable):
             return out^
         var received_at = self._received_at[origin]
         ref entries = self._entries[origin]
-        for i in range(len(entries)):
-            if received_at + entries[i].max_age_secs > now:
-                out.append(AltSvcEntry(copy=entries[i]))
+        for ref entry in entries:
+            if received_at + entry.max_age_secs > now:
+                out.append(AltSvcEntry(copy=entry))
         return out^
 
     def clear(mut self, origin: Origin) raises:
@@ -333,15 +333,15 @@ struct AltSvcCache(Movable):
             var received_at = self._received_at[kv.key]
             var any_live = False
             ref entries = kv.value
-            for i in range(len(entries)):
-                if received_at + entries[i].max_age_secs > now:
+            for ref entry in entries:
+                if received_at + entry.max_age_secs > now:
                     any_live = True
                     break
             if not any_live:
                 to_drop.append(origin_copy^)
-        for j in range(len(to_drop)):
-            _ = self._entries.pop(Origin(copy=to_drop[j]))
-            _ = self._received_at.pop(Origin(copy=to_drop[j]))
+        for ref origin in to_drop:
+            _ = self._entries.pop(Origin(copy=origin))
+            _ = self._received_at.pop(Origin(copy=origin))
 
     def dump(self) raises -> String:
         """Serialize the cache to a tab-delimited text representation.
@@ -431,9 +431,9 @@ struct AltSvcCache(Movable):
             if len(entries) == 0:
                 return
             var live = List[AltSvcEntry]()
-            for j in range(len(entries)):
-                if received_at + entries[j].max_age_secs > now:
-                    live.append(AltSvcEntry(copy=entries[j]))
+            for ref entry in entries:
+                if received_at + entry.max_age_secs > now:
+                    live.append(AltSvcEntry(copy=entry))
             if len(live) == 0:
                 return
             var origin = Origin(

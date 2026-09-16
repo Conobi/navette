@@ -262,8 +262,8 @@ struct H1TcpConn[H: StreamHandler](Movable):
         if len(data) == 0:
             return
         if self._send_future is not None:
-            for i in range(len(data)):
-                self.send_pending.append(data[i])
+            for ref byte in data:
+                self.send_pending.append(byte)
             return
         self.send_buf = data^
         self._submit_send()
@@ -482,8 +482,8 @@ struct H1TcpServer[H: StreamHandler](Movable):
 
     def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
-        for i in range(len(self.connections)):
-            var ptr = self.connections[i]
+        for ref conn_ptr in self.connections:
+            var ptr = conn_ptr
             ptr.unsafe_deinit_pointee()
             ptr.unsafe_free()
 
@@ -510,9 +510,9 @@ struct H1TcpServer[H: StreamHandler](Movable):
         and delegates to H1TcpConn.poll_io() which checks both
         recv and send futures.
         """
-        for i in range(len(self.connections)):
+        for ref conn_ptr in self.connections:
             try:
-                self.connections[i][].poll_io()
+                conn_ptr[].poll_io()
             except e:
                 print("H1TcpServer: poll_io error:", e)
 

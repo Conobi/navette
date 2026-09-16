@@ -248,8 +248,8 @@ def _query_tcp(
     var framed = List[UInt8]()
     framed.append(UInt8((len(q) >> 8) & 0xFF))
     framed.append(UInt8(len(q) & 0xFF))
-    for i in range(len(q)):
-        framed.append(q[i])
+    for ref byte in q:
+        framed.append(byte)
     var result = Optional[HttpsRecord](None)
     if _send_all_tcp(fd, framed) == len(framed):
         var hdr = _recv_n(fd, 2, deadline)

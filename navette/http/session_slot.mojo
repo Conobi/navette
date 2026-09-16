@@ -129,8 +129,8 @@ struct SessionSlot(Movable):
         # UDP framing; this flat drain is a fallback for uniform API.
         var out = List[UInt8]()
         var datagrams = self.h3.value().drain_datagrams(UInt64(0))
-        for i in range(len(datagrams)):
-            out.extend(datagrams[i].copy())
+        for ref dg in datagrams:
+            out.extend(dg.copy())
         return out^
 
     def feed_datagram(

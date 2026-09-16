@@ -92,6 +92,10 @@ from navette.quic.frame import (
     FRAME_STREAM_DATA_BLOCKED,
     FRAME_STREAMS_BLOCKED_BIDI,
     FRAME_STREAMS_BLOCKED_UNI,
+    FRAME_PATH_CHALLENGE,
+    FRAME_PATH_RESPONSE,
+    FRAME_DATAGRAM,
+    FRAME_DATAGRAM_LEN,
 )
 from navette.quic.stream_map import StreamMap
 from navette.quic.guard_predicates import (
@@ -321,6 +325,18 @@ def _tls_guard_tag_for(
     if handshake_confirmed:
         return String(GUARD_TAG_TLS_END_OF_EARLY_DATA)
     return fallback
+
+
+@always_inline
+def _is_ack_eliciting_tid(tid: UInt64) -> Bool:
+    """ACK-eliciting: everything except PADDING, ACK/ACK_ECN, CONNECTION_CLOSE."""
+    if tid == FRAME_PADDING:
+        return False
+    if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
+        return False
+    if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
+        return False
+    return True
 
 
 # ── SentStreamFrame ──────────────────────────────────────────────────
@@ -656,8 +672,8 @@ struct QuicConnection(Movable):
         params_copy.initial_scid = List[UInt8](copy=local_cid)
         _apply_m3c_defaults(params_copy)
         var orig_dcid_list = List[UInt8](capacity=len(orig_dcid))
-        for i in range(len(orig_dcid)):
-            orig_dcid_list.append(orig_dcid[i])
+        for ref byte in orig_dcid:
+            orig_dcid_list.append(byte)
         params_copy.original_dcid = orig_dcid_list^
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
@@ -877,22 +893,20 @@ struct QuicConnection(Movable):
         var ack_eliciting = False
         self._current_space_idx = space_idx
         while True:
-            var maybe_frame = Optional[Frame]()
+            var maybe_tid = Optional[UInt64]()
             try:
-                maybe_frame = cursor.next()
+                maybe_tid = cursor.next()
             except:
                 parse_failed = True
                 break
-            if not maybe_frame:
+            if not maybe_tid:
                 break
-            var frame = maybe_frame.take()
-            if closing and not frame.is_connection_close():
+            var tid = maybe_tid.value()
+            if closing and tid != FRAME_CONNECTION_CLOSE_TRANSPORT and tid != FRAME_CONNECTION_CLOSE_APP:
                 continue
-            if frame.is_ack_eliciting():
+            if _is_ack_eliciting_tid(tid):
                 ack_eliciting = True
-            var ack_span = cursor.ack_ranges_span()
-            var data_span = cursor.byte_data_span()
-            self._dispatch_frame(frame^, ack_span, data_span, space_idx, now)
+            self._dispatch_frame(cursor, space_idx, now)
         self._current_space_idx = -1
         if parse_failed:
             self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
@@ -1042,9 +1056,9 @@ struct QuicConnection(Movable):
             if len(self.spaces[s].sent_packets) == 0:
                 continue
             for entry in self.spaces[s].sent_packets.items():
-                for fi in range(len(entry.value.frames)):
-                    if entry.value.frames[fi].is_crypto():
-                        ref cf = entry.value.frames[fi].as_crypto()
+                for ref frame in entry.value.frames:
+                    if frame.is_crypto():
+                        ref cf = frame.as_crypto()
                         self.crypto_streams[s].requeue(
                             cf.offset, Span(cf.data)
                         )
@@ -1102,9 +1116,9 @@ struct QuicConnection(Movable):
             raise "PROTOCOL_VIOLATION: frame for unknown locally-initiated stream"
         var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
         var is_zr = (self._current_space_idx == ZERO_RTT_SPACE_IDX)
-        for i in range(len(new_ids)):
-            self.events.append(QuicEvent.stream_opened(new_ids[i]))
-            var nkey = Int(new_ids[i])
+        for ref new_id in new_ids:
+            self.events.append(QuicEvent.stream_opened(new_id))
+            var nkey = Int(new_id)
             if nkey in self.stream_map.streams:
                 self.stream_map.streams[nkey][].is_zero_rtt = is_zr
 
@@ -1132,8 +1146,8 @@ struct QuicConnection(Movable):
             if stream_is_local(stream_id, self.is_server):
                 raise "PROTOCOL_VIOLATION: RESET for unknown local stream"
             var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
-            for i in range(len(new_ids)):
-                self.events.append(QuicEvent.stream_opened(new_ids[i]))
+            for ref new_id in new_ids:
+                self.events.append(QuicEvent.stream_opened(new_id))
 
         var p = self.stream_map.stream_ptr(key)
         if not p[].recv_state:
@@ -1200,8 +1214,8 @@ struct QuicConnection(Movable):
             if stream_is_local(stream_id, self.is_server):
                 raise "PROTOCOL_VIOLATION: STOP_SENDING for unknown local stream"
             var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
-            for i in range(len(new_ids)):
-                self.events.append(QuicEvent.stream_opened(new_ids[i]))
+            for ref new_id in new_ids:
+                self.events.append(QuicEvent.stream_opened(new_id))
 
         var p = self.stream_map.stream_ptr(key)
         if not p[].send_state:
@@ -1408,73 +1422,98 @@ struct QuicConnection(Movable):
 
     # ── Frame dispatch ───────────────────────────────────────────────
 
-    @always_inline
     def _dispatch_frame(
-        mut self, var frame: Frame,
-        ack_ranges: Span[AckRange, _],
-        data: Span[UInt8, _],
+        mut self, ref cursor: FrameCursor[_],
         space_idx: Int, now: UInt64,
     ) raises:
-        """Route a parsed frame to its per-type handler."""
-        var tid = frame.type_id
+        """Route a parsed frame to its handler using cursor scalar fields."""
+        var tid = cursor.type_id
         if self._check_epoch_guards(tid, space_idx, now):
             return
         if tid == FRAME_PADDING or tid == FRAME_PING:
             return
         if tid == FRAME_ACK or tid == FRAME_ACK_ECN:
-            self._handle_ack(frame.as_ack(), ack_ranges, space_idx, now)
+            var ack = AckFrame()
+            ack.largest_ack = cursor.largest_ack
+            ack.ack_delay = cursor.ack_delay
+            ack.first_ack_range = cursor.first_ack_range
+            ack.has_ecn = cursor.has_ecn
+            ack.ecn_ect0 = cursor.ecn_ect0
+            ack.ecn_ect1 = cursor.ecn_ect1
+            ack.ecn_ce = cursor.ecn_ce
+            var ack_span = cursor.ack_ranges_span()
+            self._handle_ack(ack, ack_span, space_idx, now)
             return
         if tid == FRAME_CRYPTO:
-            ref cf = frame.as_crypto()
-            self.crypto_streams[space_idx].receive(cf.offset, data)
+            var data_span = cursor.byte_data_span()
+            self.crypto_streams[space_idx].receive(cursor.offset, data_span)
             return
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            self._on_connection_close(frame, data, now)
+            var reason_bytes = cursor.byte_data_span()
+            self._on_connection_close(cursor.error_code, reason_bytes, now)
             return
         if tid == FRAME_HANDSHAKE_DONE:
             self._on_handshake_done(now); return
         if tid == FRAME_NEW_TOKEN:
             self._on_new_token(now); return
         if tid == FRAME_NEW_CONNECTION_ID:
-            self._on_new_cid(frame, now); return
+            var cid_len = Int(cursor.offset)
+            var data_span = cursor.byte_data_span()
+            self._on_new_cid_from_cursor(
+                cursor.sequence, cursor.retire_prior_to,
+                data_span, cid_len, now,
+            )
+            return
         if tid == FRAME_RETIRE_CONNECTION_ID:
-            self.cid_mgr.on_retire_connection_id(frame.as_retire_connection_id()); return
+            self.cid_mgr.on_retire_connection_id(cursor.sequence); return
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
-            self._handle_stream_frame(frame.as_stream(), data)
+            var data_span = cursor.byte_data_span()
+            self._handle_stream_frame_from_cursor(
+                cursor.stream_id, cursor.offset, cursor.fin, data_span,
+            )
             return
         if tid == FRAME_RESET_STREAM:
-            self._handle_reset_stream(frame.as_reset_stream())
+            self._handle_reset_stream(ResetStreamFrame(
+                cursor.stream_id, cursor.error_code, cursor.final_size,
+            ))
             return
         if tid == FRAME_STOP_SENDING:
-            self._handle_stop_sending(frame.as_stop_sending())
+            self._handle_stop_sending(StopSendingFrame(
+                cursor.stream_id, cursor.error_code,
+            ))
             return
         if tid == FRAME_MAX_DATA:
-            self.stream_map.conn_fc_send.ensure_limit(frame.as_max_data())
+            self.stream_map.conn_fc_send.ensure_limit(cursor.maximum)
             self.stream_map.conn_fc_send.blocked_at = UInt64(0)
             return
         if tid == FRAME_MAX_STREAM_DATA:
-            self._on_max_stream_data(frame, now)
+            self._on_max_stream_data_from_cursor(
+                cursor.stream_id, cursor.maximum, now,
+            )
             return
         if tid == FRAME_MAX_STREAMS_BIDI:
-            self._on_max_streams(frame, True, now)
+            self._on_max_streams_from_cursor(cursor.maximum, True, now)
             return
         if tid == FRAME_MAX_STREAMS_UNI:
-            self._on_max_streams(frame, False, now)
+            self._on_max_streams_from_cursor(cursor.maximum, False, now)
             return
         if tid == FRAME_STREAMS_BLOCKED_BIDI or tid == FRAME_STREAMS_BLOCKED_UNI:
-            self._on_streams_blocked(frame, now)
+            self._on_streams_blocked_from_cursor(cursor.maximum, now)
             return
         if tid == FRAME_DATA_BLOCKED or tid == FRAME_STREAM_DATA_BLOCKED:
             return
-        if frame.is_path_challenge():
-            self.on_path_challenge_received(Span(frame.as_path_data()), now)
+        if tid == FRAME_PATH_CHALLENGE:
+            var data_span = cursor.byte_data_span()
+            self.on_path_challenge_received(data_span, now)
             return
-        if frame.is_path_response():
+        if tid == FRAME_PATH_RESPONSE:
+            var data_span = cursor.byte_data_span()
             var from_addr = PathKey(copy=self.path.current_recv_addr)
-            self.on_path_response_received(Span(frame.as_path_data()), from_addr^, now)
+            self.on_path_response_received(data_span, from_addr^, now)
             return
-        if frame.is_datagram():
-            self.events.append(QuicEvent.datagram_received(List[UInt8](copy=frame.as_datagram_payload())))
+        if tid == FRAME_DATAGRAM or tid == FRAME_DATAGRAM_LEN:
+            var data_span = cursor.byte_data_span()
+            self.events.append(QuicEvent.datagram_received(List[UInt8](data_span)))
             return
         if is_unknown_frame_type(tid):
             self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
@@ -1505,16 +1544,15 @@ struct QuicConnection(Movable):
         return False
 
     def _on_connection_close(
-        mut self, ref frame: Frame, reason_bytes: Span[UInt8, _], now: UInt64,
+        mut self, error_code: UInt64, reason_bytes: Span[UInt8, _], now: UInt64,
     ) raises:
         """Handle CONNECTION_CLOSE: enter draining state, emit event."""
-        ref cc = frame.as_connection_close()
         self.state = self.state | CONN_DRAINING
         self.close.drain_timer = now + 3 * self._pto_interval()
         var reason = String("")
-        for i in range(len(reason_bytes)):
-            reason += chr(Int(reason_bytes[i]))
-        self.events.append(QuicEvent.connection_closed(cc.error_code, reason))
+        for ref byte in reason_bytes:
+            reason += chr(Int(byte))
+        self.events.append(QuicEvent.connection_closed(error_code, reason))
 
     def _on_handshake_done(mut self, now: UInt64) raises:
         """Handle HANDSHAKE_DONE (client-side only)."""
@@ -1628,6 +1666,143 @@ struct QuicConnection(Movable):
             var _vv = _v_sb.take()
             self.close_transport(_vv.error_code, _vv.tag, now)
 
+    @always_inline
+    def _handle_stream_frame_from_cursor(
+        mut self, stream_id: UInt64, offset: UInt64, fin: Bool,
+        stream_data: Span[UInt8, _],
+    ) raises:
+        """Process STREAM frame from cursor scalars (no StreamFrame alloc)."""
+        var data_len = UInt64(len(stream_data))
+        var key = Int(stream_id)
+        self._ensure_peer_stream_exists(key, stream_id)
+        var p = self.stream_map.stream_ptr(key)
+        if not p[].is_bidi and p[].is_local:
+            raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
+        if not p[].recv_state:
+            raise "STREAM_STATE_ERROR: no recv state"
+        var rs = p[].recv_state.value()
+        if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN:
+            return
+        if not p[].fc_recv:
+            raise "internal: missing fc_recv"
+        if stream_offset_exceeds_fc(offset, data_len, p[].fc_recv.value().limit):
+            self.close_transport(UInt64(0x03), String(GUARD_TAG_STREAM_LARGE_OFFSET), monotonic_us())
+            return
+        if not p[].recv_buf:
+            raise "internal: missing recv_buf"
+        var new_bytes = p[].recv_buf.value().write(
+            offset, stream_data, fin, p[].fin_offset
+        )
+        if offset + data_len > p[].recv_highest_offset:
+            p[].recv_highest_offset = offset + data_len
+        if not self.stream_map.conn_fc_recv.check_limit(new_bytes):
+            raise "FLOW_CONTROL_ERROR: connection FC exceeded"
+        p[].fc_recv.value().add_received(new_bytes)
+        self.stream_map.conn_fc_recv.add_received(new_bytes)
+        if p[].recv_buf.value().has_readable():
+            self.events.append(QuicEvent.stream_readable(stream_id))
+        if fin:
+            if rs == RecvState.RECV:
+                p[].recv_state = Optional[RecvState](RecvState.SIZE_KNOWN)
+                rs = RecvState.SIZE_KNOWN
+            if rs == RecvState.SIZE_KNOWN:
+                if p[].recv_buf.value().is_complete(p[].fin_offset):
+                    p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
+
+    def _on_new_cid_from_cursor(
+        mut self,
+        sequence: UInt64, retire_prior_to: UInt64,
+        data: Span[UInt8, _], cid_len: Int,
+        now: UInt64,
+    ) raises:
+        """Handle NEW_CONNECTION_ID from cursor scalar fields.
+
+        `data` holds [cid_bytes (cid_len) | stateless_reset_token (16)].
+        """
+        var _v_cid_rpt = check_new_connection_id_retire_prior(
+            sequence, retire_prior_to
+        )
+        if _v_cid_rpt:
+            var _vv = _v_cid_rpt.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
+            return
+        var _v_cid_len = check_new_connection_id_length(UInt64(cid_len))
+        if _v_cid_len:
+            var _vv2 = _v_cid_len.take()
+            self.close_transport(_vv2.error_code, _vv2.tag, now)
+            return
+        var cid_span = data[:cid_len]
+        var token_span = data[cid_len:]
+        self.cid_mgr.on_new_connection_id(
+            sequence,
+            retire_prior_to,
+            List[UInt8](cid_span),
+            List[UInt8](token_span),
+        )
+
+    def _on_max_stream_data_from_cursor(
+        mut self, stream_id: UInt64, maximum: UInt64, now: UInt64,
+    ) raises:
+        """Handle MAX_STREAM_DATA from cursor scalars."""
+        var key = Int(stream_id)
+        var _exists = key in self.stream_map.streams
+        var _has_send = stream_is_bidi(stream_id) or stream_is_local(
+            stream_id, self.is_server
+        )
+        var _ctx_msd = MaxStreamDataCtx(
+            stream_id=stream_id,
+            exists=_exists,
+            has_send_side=_has_send,
+        )
+        var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
+        if _verdict_msd:
+            var _v_msd = _verdict_msd.take()
+            self.close_transport(_v_msd.error_code, _v_msd.tag, now)
+            return
+        var p = self.stream_map.stream_ptr(key)
+        if p[].fc_send:
+            var old_limit = p[].fc_send.value().limit
+            p[].fc_send.value().ensure_limit(maximum)
+            var grew = p[].fc_send.value().limit > old_limit
+            if grew:
+                p[].fc_send.value().blocked_at = UInt64(0)
+            var _has_pending = False
+            if p[].send_buf:
+                _has_pending = p[].send_buf.value().has_pending()
+            if grew:
+                self.events.append(QuicEvent.stream_writable(stream_id))
+                if _has_pending:
+                    self.stream_map.add_sendable(key)
+
+    def _on_max_streams_from_cursor(
+        mut self, maximum: UInt64, is_bidi: Bool, now: UInt64,
+    ) raises:
+        """Handle MAX_STREAMS from cursor scalars."""
+        var _v_ms = check_max_streams_value(maximum)
+        if _v_ms:
+            var _vv = _v_ms.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
+            return
+        if is_bidi:
+            if maximum > self.stream_map.peer_max_streams_bidi:
+                self.stream_map.peer_max_streams_bidi = maximum
+                self.stream_map.needs_streams_blocked_bidi = False
+                self.stream_map.streams_blocked_at_bidi = UInt64(0)
+        else:
+            if maximum > self.stream_map.peer_max_streams_uni:
+                self.stream_map.peer_max_streams_uni = maximum
+                self.stream_map.needs_streams_blocked_uni = False
+                self.stream_map.streams_blocked_at_uni = UInt64(0)
+
+    def _on_streams_blocked_from_cursor(
+        mut self, maximum: UInt64, now: UInt64,
+    ) raises:
+        """Handle STREAMS_BLOCKED from cursor scalars."""
+        var _v_sb = check_streams_blocked_value(maximum)
+        if _v_sb:
+            var _vv = _v_sb.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
+
     # ── ACK handling ─────────────────────────────────────────────────
 
     @always_inline
@@ -1644,8 +1819,8 @@ struct QuicConnection(Movable):
 
         # Process stream-layer frames for acked Application-space packets.
         if space_idx == 2:
-            for i in range(len(acked)):
-                self._on_app_pkt_acked(Int(acked[i].pn))
+            for ref pkt in acked:
+                self._on_app_pkt_acked(Int(pkt.pn))
 
         self._update_rtt_from_ack(acked, ack_frame, now)
 
@@ -1653,25 +1828,25 @@ struct QuicConnection(Movable):
         # Also advance the per-space last_ae_acked_time_sent tracker used by
         # persistent-congestion detection (RFC 9002 §7.6).
         var ect0_acked_count = UInt64(0)
-        for i in range(len(acked)):
+        for ref pkt_info in acked:
             # Decrement ECT(0) in-flight counter on ACK (O(1)).
-            if acked[i].ecn_mark == ECN_ECT0:
+            if pkt_info.ecn_mark == ECN_ECT0:
                 ect0_acked_count += UInt64(1)
                 if self.spaces[space_idx].ect0_in_flight > UInt64(0):
                     self.spaces[space_idx].ect0_in_flight -= UInt64(1)
-            self.recovery.on_packet_acked(acked[i].size, acked[i].in_flight)
-            if acked[i].ack_eliciting:
+            self.recovery.on_packet_acked(pkt_info.size, pkt_info.in_flight)
+            if pkt_info.ack_eliciting:
                 if (
-                    acked[i].time_sent
+                    pkt_info.time_sent
                     > self.spaces[space_idx].last_ae_acked_time_sent
                 ):
                     self.spaces[space_idx].last_ae_acked_time_sent = (
-                        acked[i].time_sent
+                        pkt_info.time_sent
                     )
             var ap = AckedPacket(
-                pkt_num=acked[i].pn,
-                size=UInt64(acked[i].size),
-                time_sent=acked[i].time_sent,
+                pkt_num=pkt_info.pn,
+                size=UInt64(pkt_info.size),
+                time_sent=pkt_info.time_sent,
                 time_acked=now,
                 rtt_sample=self.recovery.latest_rtt,
             )
@@ -1704,10 +1879,10 @@ struct QuicConnection(Movable):
     ):
         """Update RTT estimate from the largest newly acked packet."""
         var largest_acked_pn = ack_frame.largest_ack
-        for i in range(len(acked)):
-            if acked[i].pn == largest_acked_pn:
-                if now >= acked[i].time_sent:
-                    var rtt_sample = now - acked[i].time_sent
+        for ref pkt_info in acked:
+            if pkt_info.pn == largest_acked_pn:
+                if now >= pkt_info.time_sent:
+                    var rtt_sample = now - pkt_info.time_sent
                     var ade = self.local_params.ack_delay_exponent
                     var mad = self.local_params.max_ack_delay
                     if self.peer_params:
@@ -1759,8 +1934,7 @@ struct QuicConnection(Movable):
 
         # Build the LostPacket list for CC — single Dict access per PN.
         var lost_records = List[LostPacket](capacity=len(lost_pns))
-        for i in range(len(lost_pns)):
-            var pn_key = lost_pns[i]
+        for ref pn_key in lost_pns:
             if pn_key in self.spaces[space_idx].sent_packets:
                 ref sp = self.spaces[space_idx].sent_packets[pn_key]
                 lost_records.append(
@@ -1793,8 +1967,7 @@ struct QuicConnection(Movable):
 
     def _process_lost_packets(mut self, space_idx: Int, lost_pns: List[Int]) raises:
         """Teardown lost packets: release bytes, requeue CRYPTO, notify streams."""
-        for i in range(len(lost_pns)):
-            var pn_key = lost_pns[i]
+        for ref pn_key in lost_pns:
             var maybe_lost = self.spaces[space_idx].forget_sent(pn_key)
             if maybe_lost:
                 var lost_pkt = maybe_lost.take()
@@ -1802,9 +1975,9 @@ struct QuicConnection(Movable):
                     if self.spaces[space_idx].ect0_in_flight > UInt64(0):
                         self.spaces[space_idx].ect0_in_flight -= UInt64(1)
                 self.recovery.on_packet_lost(lost_pkt.size, lost_pkt.in_flight)
-                for f in range(len(lost_pkt.frames)):
-                    if lost_pkt.frames[f].is_crypto():
-                        ref cf = lost_pkt.frames[f].as_crypto()
+                for ref frame in lost_pkt.frames:
+                    if frame.is_crypto():
+                        ref cf = frame.as_crypto()
                         self.crypto_streams[space_idx].requeue(
                             cf.offset, Span(cf.data)
                         )
@@ -1841,8 +2014,7 @@ struct QuicConnection(Movable):
         var earliest: UInt64 = UInt64.MAX
         var latest: UInt64 = UInt64(0)
         var ae_count: Int = 0
-        for i in range(len(newly_lost_pns)):
-            var pn = newly_lost_pns[i]
+        for ref pn in newly_lost_pns:
             if pn not in self.spaces[space_id].sent_packets:
                 continue   # already removed; defensive
             var sp_ts = self.spaces[space_id].sent_packets[pn].time_sent
@@ -2173,8 +2345,8 @@ struct QuicConnection(Movable):
         self.state = self.state | CONN_INITIAL_DISCARDED
 
         var discarded = self.spaces[0].discard()
-        for i in range(len(discarded)):
-            self.recovery.on_packet_lost(discarded[i].size, discarded[i].in_flight)
+        for ref pkt in discarded:
+            self.recovery.on_packet_lost(pkt.size, pkt.in_flight)
 
         self.protect.discard_keys(0)
 
@@ -2185,9 +2357,9 @@ struct QuicConnection(Movable):
         self.state = self.state | CONN_HS_DISCARDED
 
         var discarded = self.spaces[1].discard()
-        for i in range(len(discarded)):
+        for ref pkt in discarded:
             self.recovery.on_packet_lost(
-                discarded[i].size, discarded[i].in_flight
+                pkt.size, pkt.in_flight
             )
 
         self.protect.discard_keys(1)
@@ -2472,8 +2644,8 @@ struct QuicConnection(Movable):
     ) raises -> PacketPlan:
         """Serialize control frames and assemble a PacketPlan."""
         var has_control = False
-        for fi in range(len(frames)):
-            if not frames[fi].is_crypto():
+        for ref frame in frames:
+            if not frame.is_crypto():
                 has_control = True
                 break
         if has_control:
@@ -2482,9 +2654,9 @@ struct QuicConnection(Movable):
             wbuf.clear()
             var writer = ByteWriter()
             swap(writer.buf, wbuf)
-            for fi in range(len(frames)):
-                if not frames[fi].is_crypto():
-                    serialize_frame(frames[fi], writer)
+            for ref frame in frames:
+                if not frame.is_crypto():
+                    serialize_frame(frame, writer)
             stream_payload.extend(Span(writer.buf))
             swap(self._scratch_writer_buf, writer.buf)
         return PacketPlan(
@@ -2503,10 +2675,10 @@ struct QuicConnection(Movable):
     ) raises -> List[List[UInt8]]:
         """Allocate PNs, build+encrypt packets, coalesce into a datagram."""
         var pad_to = 0
-        for i in range(len(plans)):
-            var s = plans[i].space_idx
+        for ref plan in plans:
+            var s = plan.space_idx
             if self.is_server:
-                if s == 0 and _has_ack_eliciting(plans[i].frames):
+                if s == 0 and _has_ack_eliciting(plan.frames):
                     pad_to = MAX_DATAGRAM_SIZE
             elif (s == 0 or s == 1) and (self.state & CONN_ESTABLISHED) == 0:
                 pad_to = MAX_DATAGRAM_SIZE
@@ -2537,9 +2709,9 @@ struct QuicConnection(Movable):
             var in_flight = is_ack_eliciting or padding > 0
             var ect = self.ecn_mark()
             var crypto_frames = List[Frame]()
-            for fi in range(len(plans[i].frames)):
-                if plans[i].frames[fi].is_crypto():
-                    crypto_frames.append(Frame(copy=plans[i].frames[fi]))
+            for ref frame in plans[i].frames:
+                if frame.is_crypto():
+                    crypto_frames.append(Frame(copy=frame))
             var sent = SentPacket(
                 pn=pn, time_sent=now, ack_eliciting=is_ack_eliciting,
                 in_flight=in_flight, size=pkt_size,
@@ -2728,15 +2900,13 @@ struct QuicConnection(Movable):
         var n_resp = len(self.path.pending_responses)
         if n_resp > 0 and used + 9 * n_resp <= budget:
             var path_responses = self.emit_path_response_frames()
-            for i in range(len(path_responses)):
-                ref pr = path_responses[i]
+            for ref pr in path_responses:
                 frames.append(pr.copy())
             used += 9 * n_resp
         var n_chal = len(self.path.validator.pending)
         if n_chal > 0 and used + 9 * n_chal <= budget:
             var path_challenges = self.emit_path_challenge_frames(now)
-            for i in range(len(path_challenges)):
-                ref pc = path_challenges[i]
+            for ref pc in path_challenges:
                 frames.append(pc.copy())
             used += 9 * n_chal
         while self._outbound_dg_head < len(self.pending_outbound_datagrams):
@@ -2780,8 +2950,8 @@ struct QuicConnection(Movable):
     ) raises:
         """Emit NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, MAX_DATA, MAX_STREAMS."""
         var pending_new = self.cid_mgr.pending_new_cid_entries()
-        for i in range(len(pending_new)):
-            var entry = CidEntry(copy=pending_new[i])
+        for ref pending_entry in pending_new:
+            var entry = CidEntry(copy=pending_entry)
             var ncid = NewConnectionIdFrame()
             ncid.sequence = entry.sequence
             ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
@@ -2799,8 +2969,7 @@ struct QuicConnection(Movable):
             sent_records.append(rec^)
             self.cid_mgr.mark_advertised(entry.sequence)
         var pending_retire = self.cid_mgr.pending_retire_frames()
-        for i in range(len(pending_retire)):
-            var seq = pending_retire[i]
+        for ref seq in pending_retire:
             var wl = 1 + varint_len(seq)
             if used + wl > budget:
                 self.cid_mgr.requeue_retire(seq)
@@ -2868,8 +3037,7 @@ struct QuicConnection(Movable):
         if pn not in self.app_frames_sent:
             return
         var records = self.app_frames_sent.pop(pn)
-        for i in range(len(records)):
-            ref rec = records[i]
+        for ref rec in records:
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
@@ -2899,8 +3067,7 @@ struct QuicConnection(Movable):
         if pn not in self.app_frames_sent:
             return
         var records = self.app_frames_sent.pop(pn)
-        for i in range(len(records)):
-            ref rec = records[i]
+        for ref rec in records:
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 if key not in self.stream_map.streams:
@@ -3109,9 +3276,9 @@ struct QuicConnection(Movable):
             # staged; the probe is then that retransmission, else a PING.
             if not self.crypto_streams[s].has_unsent():
                 for entry in self.spaces[s].sent_packets.items():
-                    for fi in range(len(entry.value.frames)):
-                        if entry.value.frames[fi].is_crypto():
-                            ref cf = entry.value.frames[fi].as_crypto()
+                    for ref frame in entry.value.frames:
+                        if frame.is_crypto():
+                            ref cf = frame.as_crypto()
                             self.crypto_streams[s].requeue(
                                 cf.offset, Span(cf.data)
                             )
@@ -3398,8 +3565,8 @@ struct QuicConnection(Movable):
         # Copy the payload so the caller's Span lifetime does not constrain
         # ours — outbound queues survive across `send()` boundaries.
         var copy = List[UInt8]()
-        for i in range(len(payload)):
-            copy.append(payload[i])
+        for ref byte in payload:
+            copy.append(byte)
         self.pending_outbound_datagrams.append(copy^)
         return True
 
@@ -3490,8 +3657,8 @@ def _generate_random_cid() raises -> List[UInt8]:
 
 def _has_ack_eliciting(ref frames: List[Frame]) -> Bool:
     """Check if any frame in the list is ack-eliciting."""
-    for i in range(len(frames)):
-        if frames[i].is_ack_eliciting():
+    for ref frame in frames:
+        if frame.is_ack_eliciting():
             return True
     return False
 

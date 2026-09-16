@@ -229,8 +229,7 @@ struct StreamMap(Movable):
         var stream_ids = List[Int]()
         for key in self.streams.keys():
             stream_ids.append(key)
-        for i in range(len(stream_ids)):
-            var sid = stream_ids[i]
+        for ref sid in stream_ids:
             if sid not in self.streams:
                 continue
             var p = self.streams[sid]

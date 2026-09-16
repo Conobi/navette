@@ -86,8 +86,8 @@ struct HttpClient(Movable):
         """Free all heap-allocated session slots."""
         for kv in self._pool.items():
             ref slots = kv.value
-            for i in range(len(slots)):
-                var p = slots[i].ptr()
+            for ref slot in slots:
+                var p = slot.ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
 
@@ -139,18 +139,18 @@ struct HttpClient(Movable):
         var origins = List[Origin]()
         for kv in self._pool.items():
             origins.append(Origin(copy=kv.key))
-        for oi in range(len(origins)):
+        for ref origin in origins:
             try:
-                ref slots = self._pool[origins[oi]]
+                ref slots = self._pool[origin]
                 var keep = List[SessionSlotPtr]()
-                for i in range(len(slots)):
-                    var p = slots[i].ptr()
+                for ref slot in slots:
+                    var p = slot.ptr()
                     if p[].is_idle() and (now - p[].idle_since) > self._idle_timeout_ms:
                         p.unsafe_deinit_pointee()
                         p.unsafe_free()
                     else:
-                        keep.append(SessionSlotPtr(copy=slots[i]))
-                self._pool[Origin(copy=origins[oi])] = keep^
+                        keep.append(SessionSlotPtr(copy=slot))
+                self._pool[Origin(copy=origin)] = keep^
             except:
                 pass
 

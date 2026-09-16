@@ -179,25 +179,25 @@ def _append_framing_header_int(mut buf: List[UInt8], name: String, value: Int):
 def _total_data_len(body: List[BodyFrame]) -> Int:
     """Sum the byte length of every Data frame in the body."""
     var total = 0
-    for i in range(len(body)):
-        if body[i].is_data():
-            total += len(body[i].data())
+    for ref frame in body:
+        if frame.is_data():
+            total += len(frame.data())
     return total
 
 
 def _has_trailers(body: List[BodyFrame]) -> Bool:
     """Return True if any frame in the body is a Trailers variant."""
-    for i in range(len(body)):
-        if body[i].is_trailers():
+    for ref frame in body:
+        if frame.is_trailers():
             return True
     return False
 
 
 def _append_data_frames(mut buf: List[UInt8], body: List[BodyFrame]):
     """Append the bytes of every Data frame in order (no framing)."""
-    for i in range(len(body)):
-        if body[i].is_data():
-            ref chunk = body[i].data()
+    for ref frame in body:
+        if frame.is_data():
+            ref chunk = frame.data()
             buf.extend(Span(chunk))
 
 
@@ -208,9 +208,9 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
     marker, every Trailers frame's headers are emitted, followed by the
     terminating CRLF.
     """
-    for i in range(len(body)):
-        if body[i].is_data():
-            ref chunk = body[i].data()
+    for ref frame in body:
+        if frame.is_data():
+            ref chunk = frame.data()
             var chunk_len = len(chunk)
             if chunk_len > 0:
                 _append_hex_lower(buf, chunk_len)
@@ -223,9 +223,9 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
     _append_crlf(buf)
 
     # Trailers (concatenated if multiple Trailers frames are present).
-    for i in range(len(body)):
-        if body[i].is_trailers():
-            _serialize_headers(buf, body[i].trailers())
+    for ref frame in body:
+        if frame.is_trailers():
+            _serialize_headers(buf, frame.trailers())
 
     # Terminating CRLF that closes the trailer section.
     _append_crlf(buf)

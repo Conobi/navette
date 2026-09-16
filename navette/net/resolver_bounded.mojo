@@ -83,8 +83,8 @@ def _strip_brackets(host: String) -> String:
 def _has_colon(s: String) -> Bool:
     """True if ``s`` contains at least one colon (IPv6 indicator)."""
     var b = s.as_bytes()
-    for i in range(len(b)):
-        if b[i] == UInt8(0x3A):
+    for ref byte in b:
+        if byte == UInt8(0x3A):
             return True
     return False
 
@@ -190,13 +190,13 @@ def _parse_ipv6_segments(s: String) -> Optional[List[UInt16]]:
         return Optional[List[UInt16]](None)
 
     var result = List[UInt16](capacity=8)
-    for i in range(len(left)):
-        result.append(left[i])
+    for ref seg in left:
+        result.append(seg)
     var zeros = 8 - total
     for _ in range(zeros):
         result.append(UInt16(0))
-    for i in range(len(right)):
-        result.append(right[i])
+    for ref seg in right:
+        result.append(seg)
 
     return Optional(result^)
 
@@ -377,8 +377,8 @@ def _query_a_aaaa_tcp(
     var framed = List[UInt8]()
     framed.append(UInt8((len(q) >> 8) & 0xFF))
     framed.append(UInt8(len(q) & 0xFF))
-    for i in range(len(q)):
-        framed.append(q[i])
+    for ref byte in q:
+        framed.append(byte)
     var result = List[ResolvedAddr]()
     if _send_all_tcp(fd, framed) == len(framed):
         var hdr = _recv_n(fd, 2, deadline.absolute_ms())
@@ -561,15 +561,15 @@ def resolve_host_bounded(
 
     # ── merge: AAAA first (prefer IPv6), then A ──────────────────
     var out = List[ResolvedAddr]()
-    for i in range(len(results_aaaa)):
-        var segs = results_aaaa[i].v6.ip.segments
+    for ref record in results_aaaa:
+        var segs = record.v6.ip.segments
         out.append(ResolvedAddr.from_v6(SocketAddrV6(
             segs[0], segs[1], segs[2], segs[3],
             segs[4], segs[5], segs[6], segs[7],
             port=UInt16(port),
         )))
-    for i in range(len(results_a)):
-        var oct = results_a[i].v4.ip.octets
+    for ref record in results_a:
+        var oct = record.v4.ip.octets
         out.append(ResolvedAddr.from_v4(SocketAddrV4(
             oct[0], oct[1], oct[2], oct[3],
             port=UInt16(port),

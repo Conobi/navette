@@ -197,9 +197,9 @@ struct DynamicTable(Movable):
         # Insert at front by rebuilding
         var new_entries = List[Header]()
         new_entries.append(Header(name, value))
-        for i in range(len(self.entries)):
+        for ref entry in self.entries:
             new_entries.append(
-                Header(self.entries[i].name, self.entries[i].value)
+                Header(entry.name, entry.value)
             )
         self.entries = new_entries^
         self.current_size += entry_size
@@ -246,8 +246,8 @@ struct DynamicTable(Movable):
     def entries_list(self) -> List[Header]:
         """Return copy of entries for test assertion."""
         var result = List[Header]()
-        for i in range(len(self.entries)):
+        for ref entry in self.entries:
             result.append(
-                Header(self.entries[i].name, self.entries[i].value)
+                Header(entry.name, entry.value)
             )
         return result^

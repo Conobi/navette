@@ -126,9 +126,9 @@ struct H2Session(Session):
         var keys = List[Int]()
         for key in self._stream_ctxs.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var p = self._stream_ctxs[keys[i]].ptr()
+                var p = self._stream_ctxs[key].ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             except:
@@ -262,9 +262,9 @@ struct H2Session(Session):
         var keys = List[Int]()
         for key in self._stream_ctxs.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var p = self._stream_ctxs[keys[i]].ptr()
+                var p = self._stream_ctxs[key].ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             except:
@@ -288,8 +288,8 @@ struct H2Session(Session):
     def feed(mut self, data: Span[UInt8, _]) raises:
         """Feed inbound transport bytes, dispatch events."""
         var data_list = List[UInt8]()
-        for i in range(len(data)):
-            data_list.append(data[i])
+        for ref byte in data:
+            data_list.append(byte)
         var events = self._conn.receive_data(data_list)
         self._dispatch_client_events(events)
         self._flush_outbound()
@@ -305,13 +305,13 @@ struct H2Session(Session):
     def _flush_outbound(mut self):
         """Move pending outbound bytes from H2Connection into our buffer."""
         var pending = self._conn.data_to_send()
-        for i in range(len(pending)):
-            self._outbuf.append(pending[i])
+        for ref byte in pending:
+            self._outbuf.append(byte)
 
     def _dispatch_client_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events for client-side processing."""
-        for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+        for ref evt_ref in events:
+            var evt = H2Event(copy=evt_ref)
             if evt.kind == H2_EVT_RESPONSE_RECEIVED:
                 self._on_response_received(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
@@ -349,8 +349,8 @@ struct H2Session(Session):
         except:
             return
         var ctx = ctx_ptr.unsafe_take_pointee()
-        for j in range(len(evt.data)):
-            ctx.body_data.append(evt.data[j])
+        for ref byte in evt.data:
+            ctx.body_data.append(byte)
         ctx_ptr.unsafe_write(ctx^)
         # Acknowledge received data for flow control
         if evt.flow_controlled_length > 0:

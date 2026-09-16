@@ -130,9 +130,9 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var p = self._streams[keys[i]].ptr()
+                var p = self._streams[key].ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             except:
@@ -143,8 +143,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     def feed(mut self, data: Span[UInt8, _]) raises:
         """Feed inbound transport bytes, dispatch events, drain responses."""
         var data_list = List[UInt8]()
-        for i in range(len(data)):
-            data_list.append(data[i])
+        for ref byte in data:
+            data_list.append(byte)
         var events = self._conn.receive_data(data_list)
         self._dispatch_events(events)
         self._drain_responses()
@@ -169,13 +169,13 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     def _flush_outbound(mut self):
         """Move pending outbound bytes from the H2Connection into our buffer."""
         var pending = self._conn.data_to_send()
-        for i in range(len(pending)):
-            self._outbuf.append(pending[i])
+        for ref byte in pending:
+            self._outbuf.append(byte)
 
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events to handler callbacks."""
-        for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+        for ref evt_ref in events:
+            var evt = H2Event(copy=evt_ref)
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
                 self._on_request_received(evt)
             elif evt.kind == H2_EVT_DATA_RECEIVED:
@@ -353,8 +353,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)
-        for i in range(len(stream_ids)):
-            var sid = stream_ids[i]
+        for ref sid_ref in stream_ids:
+            var sid = sid_ref
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()

@@ -403,8 +403,8 @@ struct H2StreamingCtxPool(Movable):
         self._capacity = move._capacity
 
     def __deinit__(deinit self):
-        for i in range(len(self._free)):
-            self._free[i].unsafe_free()
+        for ref ptr in self._free:
+            ptr.unsafe_free()
 
     def acquire(mut self) raises -> Pointer[H2StreamingCtx, MutUntrackedOrigin]:
         """Take a free slot if one is available, else allocate fresh."""
@@ -510,9 +510,9 @@ struct H2StreamingServer(Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                _free_streaming_stream(self._streams[keys[i]].ptr())
+                _free_streaming_stream(self._streams[key].ptr())
             except:
                 pass
 
@@ -521,8 +521,8 @@ struct H2StreamingServer(Movable):
     def feed(mut self, data: Span[UInt8, _]) raises:
         """Feed inbound TCP bytes. Dispatches H2 events, drains responses."""
         var data_list = List[UInt8]()
-        for i in range(len(data)):
-            data_list.append(data[i])
+        for ref byte in data:
+            data_list.append(byte)
         var events = self._conn.receive_data(data_list)
         self._dispatch_events(events)
         self._drain_responses()
@@ -651,8 +651,8 @@ struct H2StreamingServer(Movable):
 
     def _dispatch_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch all H2 events."""
-        for i in range(len(events)):
-            var evt = H2Event(copy=events[i])
+        for ref evt_ref in events:
+            var evt = H2Event(copy=evt_ref)
             if evt.kind == H2_EVT_REQUEST_RECEIVED:
                 if Int(evt.stream_id) not in self._streams:
                     self._on_request(evt)
@@ -811,8 +811,8 @@ struct H2StreamingServer(Movable):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
-            var sid = keys[i]
+        for ref key in keys:
+            var sid = key
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
@@ -839,8 +839,8 @@ struct H2StreamingServer(Movable):
         var stream_ids = List[Int]()
         for key in self._streams.keys():
             stream_ids.append(key)
-        for i in range(len(stream_ids)):
-            var sid = stream_ids[i]
+        for ref sid_ref in stream_ids:
+            var sid = sid_ref
             if not self._has_stream(sid):
                 continue
             var ctx_ptr = self._streams[sid].ptr()
@@ -908,10 +908,10 @@ struct H2StreamingServer(Movable):
                     made_progress = True
                     break
                 elif f.is_trailers():
-                    for k in range(len(pending_data)):
+                    for ref pd in pending_data:
                         try:
                             self._conn.send_data(
-                                UInt32(sid), pending_data[k].copy(), end_stream=False
+                                UInt32(sid), pd.copy(), end_stream=False
                             )
                         except:
                             pass
@@ -927,10 +927,10 @@ struct H2StreamingServer(Movable):
                     made_progress = True
                     break
             # Flush any leftover pending data (no END_STREAM yet)
-            for k in range(len(pending_data)):
+            for ref pd in pending_data:
                 try:
                     self._conn.send_data(
-                        UInt32(sid), pending_data[k].copy(), end_stream=False
+                        UInt32(sid), pd.copy(), end_stream=False
                     )
                 except:
                     pass

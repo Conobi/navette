@@ -99,9 +99,9 @@ struct H3Session(Session):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var p = self._streams[keys[i]].ptr()
+                var p = self._streams[key].ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             except:
@@ -279,9 +279,9 @@ struct H3Session(Session):
         var keys = List[Int]()
         for key in self._streams.keys():
             keys.append(key)
-        for i in range(len(keys)):
+        for ref key in keys:
             try:
-                var p = self._streams[keys[i]].ptr()
+                var p = self._streams[key].ptr()
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             except:
@@ -327,9 +327,9 @@ struct H3Session(Session):
         except:
             return
         var ctx = ctx_ptr.unsafe_take_pointee()
-        for i in range(len(ev.fields)):
-            var name = ev.fields[i].name
-            var value = ev.fields[i].value
+        for ref field in ev.fields:
+            var name = field.name
+            var value = field.value
             if name == ":status":
                 try:
                     ctx.status_code = atol(value)
@@ -350,8 +350,8 @@ struct H3Session(Session):
         except:
             return
         var ctx = ctx_ptr.unsafe_take_pointee()
-        for i in range(len(ev.data)):
-            ctx.body_data.append(ev.data[i])
+        for ref byte in ev.data:
+            ctx.body_data.append(byte)
         if ev.fin:
             ctx.complete = True
         ctx_ptr.unsafe_write(ctx^)
