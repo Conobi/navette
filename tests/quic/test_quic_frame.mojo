@@ -1645,14 +1645,14 @@ def test_frame_cursor_yields_all_frames() raises:
 
     # First frame: PING
     var f1 = cursor.next()
-    _assert_true(Bool(f1), "first next() should yield a frame")
-    _assert_true(f1.value().is_ping(), "first frame should be PING")
+    _assert_true(Bool(f1), "first next() should yield a type_id")
+    _assert_eq(f1.value(), FRAME_PING, "first frame should be PING")
 
     # Second frame: ACK
     var f2 = cursor.next()
-    _assert_true(Bool(f2), "second next() should yield a frame")
-    _assert_true(f2.value().is_ack(), "second frame should be ACK")
-    _assert_eq(f2.value().as_ack().largest_ack, UInt64(10), "ACK largest_ack")
+    _assert_true(Bool(f2), "second next() should yield a type_id")
+    _assert_eq(f2.value(), FRAME_ACK, "second frame should be ACK")
+    _assert_eq(cursor.largest_ack, UInt64(10), "ACK largest_ack")
 
     # Exhausted
     var f3 = cursor.next()
@@ -1696,7 +1696,7 @@ def test_frame_cursor_matches_parse_frames() raises:
         var maybe = cursor.next()
         if not maybe:
             break
-        cursor_types.append(maybe.value().type_id)
+        cursor_types.append(maybe.value())
 
     _assert_eq_int(len(cursor_types), len(list_frames), "frame count must match")
     for i in range(len(list_frames)):

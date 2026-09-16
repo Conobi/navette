@@ -1464,12 +1464,7 @@ struct FrameCursor[origin: Origin]:
             if cid_length > 20:
                 raise "NEW_CONNECTION_ID: cid_length must be <= 20"
             var total = cid_length + 16
-            var cid_start = reader.pos
-            _ = reader.read_span(total)
-            self._byte_data = Span[UInt8, Self.origin](
-                unsafe_ptr=self._buf.unsafe_ptr().offset(cid_start),
-                length=total,
-            )
+            self._byte_data = reader.read_span(total)
             self.offset = UInt64(cid_length)
             self._pos = reader.pos
             self._count += 1
