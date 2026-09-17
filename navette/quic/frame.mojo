@@ -2,7 +2,7 @@
 # QUIC frame codec — RFC 9000 Section 19.
 # Parse/serialize for all 20 QUIC frame types.
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_encode_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from std.utils import Variant
 
@@ -1674,18 +1674,21 @@ def write_ack_frame_direct(
     if size > budget:
         return 0
 
-    varint_encode_raw(payload, tid)
-    varint_encode_raw(payload, ack.largest_ack)
-    varint_encode_raw(payload, ack.ack_delay)
-    varint_encode_raw(payload, UInt64(len(ack.ranges)))
-    varint_encode_raw(payload, ack.first_ack_range)
+    var base = len(payload)
+    payload.resize(base + size, UInt8(0))
+    var pos = base
+    pos += varint_encode_at(payload, pos, tid)
+    pos += varint_encode_at(payload, pos, ack.largest_ack)
+    pos += varint_encode_at(payload, pos, ack.ack_delay)
+    pos += varint_encode_at(payload, pos, UInt64(len(ack.ranges)))
+    pos += varint_encode_at(payload, pos, ack.first_ack_range)
     for ref r in ack.ranges:
-        varint_encode_raw(payload, r.gap)
-        varint_encode_raw(payload, r.ack_range)
+        pos += varint_encode_at(payload, pos, r.gap)
+        pos += varint_encode_at(payload, pos, r.ack_range)
     if ack.has_ecn:
-        varint_encode_raw(payload, ack.ecn_ect0)
-        varint_encode_raw(payload, ack.ecn_ect1)
-        varint_encode_raw(payload, ack.ecn_ce)
+        pos += varint_encode_at(payload, pos, ack.ecn_ect0)
+        pos += varint_encode_at(payload, pos, ack.ecn_ect1)
+        pos += varint_encode_at(payload, pos, ack.ecn_ce)
 
     return size
 

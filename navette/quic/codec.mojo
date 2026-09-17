@@ -91,21 +91,28 @@ struct ByteWriter:
         self.buf = List[UInt8](capacity=capacity)
 
     def write_u8(mut self, value: UInt8):
-        self.buf.append(value)
+        """Append one byte."""
+        var base = len(self.buf)
+        self.buf.resize(base + 1, UInt8(0))
+        _ = write_u8_at(self.buf, base, value)
 
     def write_u16_be(mut self, value: UInt16):
-        self.buf.append(UInt8((value >> 8) & 0xFF))
-        self.buf.append(UInt8(value & 0xFF))
+        """Append a 16-bit big-endian integer."""
+        var base = len(self.buf)
+        self.buf.resize(base + 2, UInt8(0))
+        _ = write_u16_be_at(self.buf, base, value)
 
     def write_u32_be(mut self, value: UInt32):
-        self.buf.append(UInt8((value >> 24) & 0xFF))
-        self.buf.append(UInt8((value >> 16) & 0xFF))
-        self.buf.append(UInt8((value >> 8) & 0xFF))
-        self.buf.append(UInt8(value & 0xFF))
+        """Append a 32-bit big-endian integer."""
+        var base = len(self.buf)
+        self.buf.resize(base + 4, UInt8(0))
+        _ = write_u32_be_at(self.buf, base, value)
 
     def write_u64_be(mut self, value: UInt64):
-        for i in range(8):
-            self.buf.append(UInt8((value >> UInt64((7 - i) * 8)) & 0xFF))
+        """Append a 64-bit big-endian integer."""
+        var base = len(self.buf)
+        self.buf.resize(base + 8, UInt8(0))
+        _ = write_u64_be_at(self.buf, base, value)
 
     def write_bytes(mut self, data: Span[UInt8, _]):
         """Append a byte span to the write buffer."""
