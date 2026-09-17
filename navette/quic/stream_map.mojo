@@ -434,6 +434,12 @@ struct StreamMap(Movable):
             raise "stream not found: id=" + String(stream_id)
         return self.streams[stream_id]
 
+    def try_stream_ptr(
+        self, stream_id: Int,
+    ) -> Optional[UnsafePointer[Stream, MutUntrackedOrigin]]:
+        """Look up a stream pointer without raising. Returns None if absent (1 probe)."""
+        return self.streams.find(stream_id)
+
     def stream_ref(ref self, stream_id: Int) raises -> ref [MutAnyOrigin] Stream:
         """Borrow the stream in place; raises like `get_stream` when absent.
 

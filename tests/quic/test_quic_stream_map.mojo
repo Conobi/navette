@@ -486,11 +486,32 @@ def main() raises:
     test_sendable_remove()
     test_stream_ref_mutation_visible()
     test_stream_ref_missing_raises()
+    test_try_stream_ptr_found()
+    test_try_stream_ptr_not_found()
     test_sendable_deque_add_dedup()
     test_sendable_deque_remove_lazy()
     test_mark_control_lists()
 
     print("All test_quic_stream_map tests passed.")
+
+
+def test_try_stream_ptr_found() raises:
+    """Verify try_stream_ptr returns the pointer for an existing stream."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+    _ = sm.open_stream(bidi=True)  # creates stream 0
+    var result = sm.try_stream_ptr(0)
+    assert_true(Bool(result), "expected Some for stream 0")
+    print("  test_try_stream_ptr_found: PASS")
+
+
+def test_try_stream_ptr_not_found() raises:
+    """Verify try_stream_ptr returns None for a missing stream."""
+    var sm = make_stream_map(False)
+    setup_peer_limits(sm)
+    var result = sm.try_stream_ptr(999)
+    assert_false(Bool(result), "expected None for stream 999")
+    print("  test_try_stream_ptr_not_found: PASS")
 
 
 def test_sendable_deque_add_dedup() raises:
