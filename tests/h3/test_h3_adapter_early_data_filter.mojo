@@ -45,7 +45,7 @@ from navette.http.request import Request
 from navette.quic.connection import QuicConnection
 from navette.quic.frame import StreamFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
-from navette.quic.profile import AcceptProfile
+from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig
 from navette.tls.early_data_filter import IdempotentOnlyFilter
@@ -144,7 +144,10 @@ def _build_h3_event(
     fields.append(QpackHeaderField(String(":scheme"), String("https")))
     fields.append(QpackHeaderField(String(":path"), String("/")))
     fields.append(QpackHeaderField(String(":authority"), String("localhost")))
-    return H3Event.headers_received(stream_id, fields^)^
+    var ev = H3Event(H3Event.HEADERS_RECEIVED)
+    ev.stream_id = stream_id
+    ev.fields = fields^
+    return ev^
 
 
 def _make_server(
@@ -250,7 +253,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
         String("handler must not be invoked when 425 is emitted"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1,
         String("reject_425 counter += 1"),
     )
     # FIN queued on the response stream confirms the 425 synthesis.
@@ -285,7 +288,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     # accept path. Guards against a regression where the 425 short-circuit
     # is bolted on AFTER the per-stream-ctx allocation.
     assert_false(
-        Int(ev.as_headers().stream_id) in server._streams,
+        Int(ev.stream_id) in server._streams,
         String("rejected stream must not allocate _H3StreamCtx (handler skip)"),
     )
     _ = server._h3._quic.conn_handle
@@ -378,7 +381,7 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
         String("caps.is_early_data must be True on 0-RTT accept"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1,
         String("accept counter += 1"),
     )
     _ = server._h3._quic.conn_handle
@@ -420,7 +423,7 @@ def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
         String("caps.is_early_data must be True on 0-RTT QUERY accept"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1,
         String("accept counter += 1 (QUERY)"),
     )
     _ = server._h3._quic.conn_handle
@@ -470,7 +473,7 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
         String("caps.is_early_data must be False on 1-RTT"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1,
         String("1rtt_bypassed counter += 1"),
     )
     _ = server._h3._quic.conn_handle
@@ -526,24 +529,24 @@ def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
         String("caps.is_early_data must be False when the gate skips dispatch"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_1rtt_bypassed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
         String("dispatch must be skipped when 0-RTT is disabled"
                " (no 1rtt_bypassed bump)"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_accept), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
         String("accept counter must stay zero"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_reject_425), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
         String("reject_425 counter must stay zero"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
         String("misconfig_fail_closed counter must stay zero"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_user_raised), 0,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 0,
         String("user_raised counter must stay zero"),
     )
     _ = server._h3._quic.conn_handle
@@ -595,7 +598,7 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
         String("misconfigured 0-RTT-enabled conn must fail closed (no handler)"),
     )
     assert_equal_int(
-        Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 1,
+        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1,
         String("misconfig_fail_closed counter += 1"),
     )
     _ = server._h3._quic.conn_handle

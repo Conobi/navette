@@ -146,7 +146,7 @@ def test_single_complete_request() raises:
     for i in range(len(events)):
         if events[i].kind == H2_EVT_RESPONSE_RECEIVED:
             got_response = True
-            ref hdrs = events[i].as_headers().headers
+            ref hdrs = events[i].headers
             for j in range(len(hdrs)):
                 if hdrs[j].name == ":status":
                     response_status = hdrs[j].value
@@ -156,7 +156,7 @@ def test_single_complete_request() raises:
         elif events[i].kind == H2_EVT_STREAM_ENDED:
             got_stream_ended = True
         elif events[i].kind == H2_EVT_DATA_RECEIVED:
-            if events[i].as_data().stream_ended:
+            if events[i].stream_ended:
                 got_stream_ended = True
 
     if not got_response:
@@ -206,23 +206,22 @@ def test_multiple_streams() raises:
     var got_end_s3 = False
     for i in range(len(events)):
         if events[i].kind == H2_EVT_RESPONSE_RECEIVED:
-            var sid = events[i].as_headers().stream_id
+            var sid = events[i].stream_id
             if sid == 1:
                 got_response_s1 = True
             elif sid == 3:
                 got_response_s3 = True
         elif events[i].kind == H2_EVT_STREAM_ENDED:
-            var sid = events[i].as_stream_id()
+            var sid = events[i].stream_id
             if sid == 1:
                 got_end_s1 = True
             elif sid == 3:
                 got_end_s3 = True
         elif events[i].kind == H2_EVT_DATA_RECEIVED:
-            ref dp = events[i].as_data()
-            if dp.stream_ended:
-                if dp.stream_id == 1:
+            if events[i].stream_ended:
+                if events[i].stream_id == 1:
                     got_end_s1 = True
-                elif dp.stream_id == 3:
+                elif events[i].stream_id == 3:
                     got_end_s3 = True
 
     if not got_response_s1:
@@ -261,7 +260,7 @@ def test_error_propagation() raises:
     for i in range(len(events)):
         if events[i].kind == H2_EVT_STREAM_RESET:
             got_reset = True
-            reset_error_code = events[i].as_stream_reset().error_code
+            reset_error_code = events[i].error_code
 
     if not got_reset:
         raise Error("expected H2_EVT_STREAM_RESET event")

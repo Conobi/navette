@@ -17,7 +17,7 @@ from navette.h3.early_data_filter_dispatch import (
     FilterDispatchOutcome,
 )
 from navette.http.headers import Headers
-from navette.quic.profile import AcceptProfile
+from navette.quic.profile import AcceptProfile, CounterId
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     FilterDecision,
@@ -59,9 +59,9 @@ def test_dispatch_predicate_path_accept() raises:
     )
     assert_true(outcome.should_proceed(), String("predicate accept must proceed"))
     assert_true(headers.get(String("early-data")) == "1", String("Early-Data:1 injected"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 1, String("accept+=1"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_user_raised), 0, String("user_raised unchanged"))
-    _ = prof.zero_rtt_http_filter_reject_425
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept+=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 0, String("user_raised unchanged"))
+    _ = prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)
     print("  test_dispatch_predicate_path_accept: PASS")
 
 
@@ -85,9 +85,9 @@ def test_dispatch_predicate_path_reject() raises:
         prof_ptr,
     )
     assert_true(outcome.should_send_425(), String("predicate reject must send_425"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_reject_425), 1, String("reject+=1"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_user_raised), 0, String("user_raised unchanged"))
-    _ = prof.zero_rtt_http_filter_accept
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1, String("reject+=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 0, String("user_raised unchanged"))
+    _ = prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)
     print("  test_dispatch_predicate_path_reject: PASS")
 
 
@@ -112,9 +112,9 @@ def test_dispatch_predicate_raises_fail_closed() raises:
         prof_ptr,
     )
     assert_true(outcome.should_send_425(), String("raising predicate must send_425"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_user_raised), 1, String("user_raised+=1"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 0, String("accept unchanged"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_reject_425), 0, String("reject unchanged"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 1, String("user_raised+=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0, String("accept unchanged"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0, String("reject unchanged"))
     assert_true(not headers.has(String("early-data")), String("Early-Data NOT injected on raise"))
     print("  test_dispatch_predicate_raises_fail_closed: PASS")
 
@@ -144,7 +144,7 @@ def test_dispatch_filter_path_unchanged() raises:
         prof_ptr,
     )
     assert_true(outcome.should_proceed(), String("filter GET must accept"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 1, String("accept+=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept+=1"))
     _ = f
     print("  test_dispatch_filter_path_unchanged: PASS")
 
@@ -169,7 +169,7 @@ def test_dispatch_both_none_fail_closed() raises:
         prof_ptr,
     )
     assert_true(outcome.should_send_425(), String("both-None must send_425"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_misconfig_fail_closed), 1, String("misconfig+=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1, String("misconfig+=1"))
     print("  test_dispatch_both_none_fail_closed: PASS")
 
 
@@ -193,8 +193,8 @@ def test_dispatch_1rtt_bypass() raises:
         prof_ptr,
     )
     assert_true(outcome.should_proceed(), String("1-RTT must proceed"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_1rtt_bypassed), 1, String("1rtt+=1"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 0, String("accept untouched on 1-RTT"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1, String("1rtt+=1"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0, String("accept untouched on 1-RTT"))
     print("  test_dispatch_1rtt_bypass: PASS")
 
 
@@ -227,8 +227,8 @@ def test_dispatch_predicate_takes_precedence_when_both_some() raises:
         prof_ptr,
     )
     assert_true(outcome.should_proceed(), String("predicate wins on POST"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_accept), 1, String("accept+=1 from predicate"))
-    assert_equal_int(Int(prof.zero_rtt_http_filter_reject_425), 0, String("reject untouched"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept+=1 from predicate"))
+    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0, String("reject untouched"))
     _ = f
     print("  test_dispatch_predicate_takes_precedence_when_both_some: PASS")
 

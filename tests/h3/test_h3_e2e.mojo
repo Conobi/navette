@@ -178,14 +178,12 @@ def test_h3_simple_get() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            ref hp = e.as_headers()
-            for i in range(len(hp.fields)):
-                if hp.fields[i].name == ":status" and hp.fields[i].value == "200":
+            for i in range(len(e.fields)):
+                if e.fields[i].name == ":status" and e.fields[i].value == "200":
                     got_200 = True
         elif e.kind == H3Event.DATA_RECEIVED:
-            ref dp = e.as_stream_data()
-            for i in range(len(dp.data)):
-                body_bytes.append(dp.data[i])
+            for i in range(len(e.data)):
+                body_bytes.append(e.data[i])
 
     assert_true(got_200, "client did not receive 200 OK")
     var body_str = String(unsafe_from_utf8=body_bytes)
@@ -236,9 +234,8 @@ def test_h3_post_with_body() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            ref hp = e.as_headers()
-            for i in range(len(hp.fields)):
-                if hp.fields[i].name == ":status" and hp.fields[i].value == "200":
+            for i in range(len(e.fields)):
+                if e.fields[i].name == ":status" and e.fields[i].value == "200":
                     got_200 = True
 
     assert_true(got_200, "POST: client did not receive 200 OK")

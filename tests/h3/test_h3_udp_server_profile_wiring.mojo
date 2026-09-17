@@ -158,7 +158,10 @@ def _build_get_event(stream_id: UInt64) raises -> H3Event:
     fields.append(
         QpackHeaderField(String(":authority"), String("localhost"))
     )
-    return H3Event.headers_received(stream_id, fields^)^
+    var ev = H3Event(H3Event.HEADERS_RECEIVED)
+    ev.stream_id = stream_id
+    ev.fields = fields^
+    return ev^
 
 
 # ---------------------------------------------------------------------------

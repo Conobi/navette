@@ -173,7 +173,7 @@ def test_submit_get() raises:
     for i in range(len(events)):
         if events[i].kind == H2_EVT_REQUEST_RECEIVED:
             found = True
-            ref hdrs = events[i].as_headers().headers
+            ref hdrs = events[i].headers
             # Check that :method is GET
             var got_method = String("")
             for j in range(len(hdrs)):

@@ -19,9 +19,8 @@ from tests._test_util import assert_true, assert_false, assert_equal_int, load_t
 
 def test_h3event_factory_roundtrip() raises:
     """H3Event factory methods produce correct kind and payload type."""
-    var ev = H3Event.handshake_complete()
+    var ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
     assert_equal_int(Int(ev.kind), Int(H3Event.HANDSHAKE_COMPLETE), "kind")
-    assert_true(ev.payload.isa[NoneType](), "handshake_complete has NoneType payload")
     print("  test_h3event_factory_roundtrip: PASS")
 
 
@@ -292,12 +291,11 @@ def test_h3_datagram_round_trip() raises:
         var ev = evo.value().copy()
         if ev.kind == H3Event.DATAGRAM_RECEIVED:
             got_dg = True
-            ref dp = ev.as_stream_data()
-            if dp.stream_id == sid:
+            if ev.stream_id == sid:
                 matched_id = True
-            if len(dp.data) == 4:
-                if (dp.data[0] == UInt8(ord("p")) and dp.data[1] == UInt8(ord("o"))
-                        and dp.data[2] == UInt8(ord("n")) and dp.data[3] == UInt8(ord("g"))):
+            if len(ev.data) == 4:
+                if (ev.data[0] == UInt8(ord("p")) and ev.data[1] == UInt8(ord("o"))
+                        and ev.data[2] == UInt8(ord("n")) and ev.data[3] == UInt8(ord("g"))):
                     matched_data = True
     assert_true(got_dg, "server missed DATAGRAM_RECEIVED")
     assert_true(matched_id, "server reported wrong stream_id")

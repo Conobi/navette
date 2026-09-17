@@ -259,7 +259,7 @@ def test_h2_streaming_post_with_body() raises:
     var got_body_length = String("")
     for i in range(len(client_events)):
         if client_events[i].kind == H2_EVT_RESPONSE_RECEIVED:
-            ref hdrs = client_events[i].as_headers().headers
+            ref hdrs = client_events[i].headers
             for j in range(len(hdrs)):
                 if hdrs[j].name == ":status" and hdrs[j].value == "200":
                     got_200 = True

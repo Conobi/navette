@@ -171,14 +171,12 @@ def test_h3_sync_simple_get() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            ref hp = e.as_headers()
-            for i in range(len(hp.fields)):
-                if hp.fields[i].name == ":status" and hp.fields[i].value == "200":
+            for i in range(len(e.fields)):
+                if e.fields[i].name == ":status" and e.fields[i].value == "200":
                     got_200 = True
         elif e.kind == H3Event.DATA_RECEIVED:
-            ref dp = e.as_stream_data()
-            for i in range(len(dp.data)):
-                body_bytes.append(dp.data[i])
+            for i in range(len(e.data)):
+                body_bytes.append(e.data[i])
 
     assert_true(got_200, "client did not receive 200 OK")
     var body_str = String(unsafe_from_utf8=body_bytes)
@@ -271,18 +269,17 @@ def test_h3_sync_multiple_streams() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            ref hp = e.as_headers()
             var got_200 = False
             var path_value = String("")
-            for i in range(len(hp.fields)):
-                if hp.fields[i].name == ":status" and hp.fields[i].value == "200":
+            for i in range(len(e.fields)):
+                if e.fields[i].name == ":status" and e.fields[i].value == "200":
                     got_200 = True
-                elif hp.fields[i].name == "x-path":
-                    path_value = hp.fields[i].value
+                elif e.fields[i].name == "x-path":
+                    path_value = e.fields[i].value
             if got_200:
                 # Find the index of this stream id in stream_ids
                 for i in range(len(stream_ids)):
-                    if stream_ids[i] == hp.stream_id:
+                    if stream_ids[i] == e.stream_id:
                         observed[i] = path_value
 
     for i in range(len(paths)):
@@ -329,7 +326,7 @@ def test_h3_sync_error_propagation() raises:
         if not ev:
             break
         var e = ev.unsafe_take()
-        if e.kind == H3Event.STREAM_RESET and e.as_stream_reset().stream_id == stream_id:
+        if e.kind == H3Event.STREAM_RESET and e.stream_id == stream_id:
             got_reset = True
 
     assert_true(got_reset, "client did not observe STREAM_RESET on the failed stream")
@@ -387,7 +384,9 @@ def test_h3_sync_zero_rtt_disabled_gate_skips_dispatch() raises:
     fields.append(QpackHeaderField(String(":scheme"), String("https")))
     fields.append(QpackHeaderField(String(":path"), String("/")))
     fields.append(QpackHeaderField(String(":authority"), String("localhost")))
-    var ev = H3Event.headers_received(UInt64(0), fields^)
+    var ev = H3Event(H3Event.HEADERS_RECEIVED)
+    ev.stream_id = UInt64(0)
+    ev.fields = fields^
     server._on_request(ev)
 
     var sid = Int(0)
