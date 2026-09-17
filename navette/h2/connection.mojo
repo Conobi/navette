@@ -909,16 +909,9 @@ struct H2Connection(Movable):
                 self._streams[sid] = stream^
                 return
             if sid in self._pending_data:
-                var qsz: Int
-                try:
-                    qsz = len(self._pending_data[sid])
-                except:
-                    qsz = 0
+                var qsz = len(self._pending_data[sid])
                 if qsz > 0:
-                    try:
-                        self._pending_data[sid][qsz - 1].end_stream = True
-                    except:
-                        pass
+                    self._pending_data[sid][qsz - 1].end_stream = True
                     self._streams[sid] = stream^
                     return
             var frame0 = Frame(0, FRAME_DATA, FLAG_END_STREAM, sid, List[UInt8]())
@@ -934,20 +927,13 @@ struct H2Connection(Movable):
         # If this stream already has queued bytes ahead of `data`,
         # appending to the queue is the only way to preserve send order.
         if sid in self._pending_data:
-            var qsize: Int
-            try:
-                qsize = len(self._pending_data[sid])
-            except:
-                qsize = 0
+            var qsize = len(self._pending_data[sid])
             if qsize > 0:
                 var copy_buf = List[UInt8]()
                 for i in range(total):
                     copy_buf.append(data[i])
                 var pc = PendingDataChunk(copy_buf^, end_stream)
-                try:
-                    self._pending_data[sid].append(pc^)
-                except:
-                    pass
+                self._pending_data[sid].append(pc^)
                 self._streams[sid] = stream^
                 return
 
@@ -984,10 +970,7 @@ struct H2Connection(Movable):
             var pchunk = PendingDataChunk(remainder^, end_stream)
             if sid not in self._pending_data:
                 self._pending_data[sid] = List[PendingDataChunk]()
-            try:
-                self._pending_data[sid].append(pchunk^)
-            except:
-                pass
+            self._pending_data[sid].append(pchunk^)
 
         if end_stream and sendable >= total:
             if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
