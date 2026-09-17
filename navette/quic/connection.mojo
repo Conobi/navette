@@ -1149,7 +1149,10 @@ struct QuicConnection(Movable):
             for ref new_id in new_ids:
                 self.events.append(QuicEvent.stream_opened(new_id))
 
-        var p = self.stream_map.stream_ptr(key)
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
+            raise "PROTOCOL_VIOLATION: RESET for unknown stream after create"
+        var p = p_opt.value()
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: RESET on non-recv stream"
 
@@ -1217,7 +1220,10 @@ struct QuicConnection(Movable):
             for ref new_id in new_ids:
                 self.events.append(QuicEvent.stream_opened(new_id))
 
-        var p = self.stream_map.stream_ptr(key)
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
+            raise "PROTOCOL_VIOLATION: STOP_SENDING for unknown stream after create"
+        var p = p_opt.value()
         if not p[].send_state:
             raise "STREAM_STATE_ERROR: STOP_SENDING targets non-send side"
 
@@ -1607,7 +1613,8 @@ struct QuicConnection(Movable):
         """Handle MAX_STREAM_DATA: validate, update FC, re-queue sendable."""
         ref msd = frame.as_max_stream_data()
         var key = Int(msd.stream_id)
-        var _exists = key in self.stream_map.streams
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        var _exists = Bool(p_opt)
         var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
             msd.stream_id, self.is_server
         )
@@ -1621,7 +1628,7 @@ struct QuicConnection(Movable):
             var _v_msd = _verdict_msd.take()
             self.close_transport(_v_msd.error_code, _v_msd.tag, now)
             return
-        var p = self.stream_map.stream_ptr(key)
+        var p = p_opt.value()
         if p[].fc_send:
             var old_limit = p[].fc_send.value().limit
             p[].fc_send.value().ensure_limit(msd.maximum)
@@ -1748,7 +1755,8 @@ struct QuicConnection(Movable):
     ) raises:
         """Handle MAX_STREAM_DATA from cursor scalars."""
         var key = Int(stream_id)
-        var _exists = key in self.stream_map.streams
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        var _exists = Bool(p_opt)
         var _has_send = stream_is_bidi(stream_id) or stream_is_local(
             stream_id, self.is_server
         )
@@ -1762,7 +1770,7 @@ struct QuicConnection(Movable):
             var _v_msd = _verdict_msd.take()
             self.close_transport(_v_msd.error_code, _v_msd.tag, now)
             return
-        var p = self.stream_map.stream_ptr(key)
+        var p = p_opt.value()
         if p[].fc_send:
             var old_limit = p[].fc_send.value().limit
             p[].fc_send.value().ensure_limit(maximum)
