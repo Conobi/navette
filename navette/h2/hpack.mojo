@@ -4,7 +4,8 @@
 # Decodes compressed header blocks, updating the dynamic table as needed.
 
 from .header import Header
-from .hpack_integer import encode_integer, decode_integer
+from .hpack_integer import decode_integer
+from navette.quic.codec import hpack_encode_int_at
 from .hpack_huffman import HuffmanCodec
 from .hpack_table import StaticTable, DynamicTable
 from navette.util.byte_string import bytes_to_string
@@ -72,9 +73,11 @@ struct HpackEncoder(Movable):
 
         # Emit pending table size update
         if self._pending_table_size >= 0:
-            var size_bytes = encode_integer(self._pending_table_size, 5)
-            size_bytes[0] = size_bytes[0] | UInt8(0x20)
-            wire.extend(Span(size_bytes))
+            var idx = len(wire)
+            wire.resize(idx + 6, UInt8(0))
+            wire[idx] = UInt8(0x20)
+            var n = hpack_encode_int_at(wire, idx, self._pending_table_size, 5)
+            wire.resize(idx + n, UInt8(0))
             self.dynamic_table.set_max_size(self._pending_table_size)
             self._pending_table_size = -1
 
@@ -115,9 +118,11 @@ struct HpackEncoder(Movable):
 
     def _emit_indexed(self, mut wire: List[UInt8], index: Int):
         """Emit indexed header field: 1XXXXXXX."""
-        var bytes = encode_integer(index, 7)
-        bytes[0] = bytes[0] | UInt8(0x80)
-        wire.extend(Span(bytes))
+        var idx = len(wire)
+        wire.resize(idx + 6, UInt8(0))
+        wire[idx] = UInt8(0x80)
+        var n = hpack_encode_int_at(wire, idx, index, 7)
+        wire.resize(idx + n, UInt8(0))
 
     def _emit_literal_indexed(
         self,
@@ -127,9 +132,11 @@ struct HpackEncoder(Movable):
         value: String,
     ):
         """Emit literal with incremental indexing: 01XXXXXX."""
-        var idx_bytes = encode_integer(name_idx, 6)
-        idx_bytes[0] = idx_bytes[0] | UInt8(0x40)
-        wire.extend(Span(idx_bytes))
+        var idx = len(wire)
+        wire.resize(idx + 6, UInt8(0))
+        wire[idx] = UInt8(0x40)
+        var n = hpack_encode_int_at(wire, idx, name_idx, 6)
+        wire.resize(idx + n, UInt8(0))
 
         if name_idx == 0:
             self._emit_string(wire, name)
@@ -144,13 +151,17 @@ struct HpackEncoder(Movable):
 
         if self.config.use_huffman:
             var encoded = self.huffman.encode(raw)
-            var len_bytes = encode_integer(len(encoded), 7)
-            len_bytes[0] = len_bytes[0] | UInt8(0x80)
-            wire.extend(Span(len_bytes))
+            var idx = len(wire)
+            wire.resize(idx + 6, UInt8(0))
+            wire[idx] = UInt8(0x80)
+            var n = hpack_encode_int_at(wire, idx, len(encoded), 7)
+            wire.resize(idx + n, UInt8(0))
             wire.extend(Span(encoded))
         else:
-            var len_bytes = encode_integer(len(raw), 7)
-            wire.extend(Span(len_bytes))
+            var idx = len(wire)
+            wire.resize(idx + 6, UInt8(0))
+            var n = hpack_encode_int_at(wire, idx, len(raw), 7)
+            wire.resize(idx + n, UInt8(0))
             wire.extend(Span(raw))
 
 

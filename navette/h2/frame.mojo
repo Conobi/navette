@@ -3,6 +3,8 @@
 # HTTP/2 frame codec — RFC 9113 compliant.
 # Provides Frame struct, H2FrameConfig, decode_frame, encode_frame.
 
+from navette.quic.codec import write_u8_at, write_u24_be_at
+
 # ---------------------------------------------------------------------------
 # Error codes (RFC 9113 Section 7)
 # ---------------------------------------------------------------------------
@@ -605,26 +607,21 @@ def decode_frame(
 def encode_frame(frame: Frame) -> List[UInt8]:
     """Encode a Frame into wire bytes (9-byte header + payload)."""
     var payload_len = len(frame.payload)
-    var result = List[UInt8]()
+    var result = List[UInt8](capacity=9 + payload_len)
+    result.resize(9, UInt8(0))
 
-    # 3-byte length (big-endian)
-    result.append(UInt8((payload_len >> 16) & 0xFF))
-    result.append(UInt8((payload_len >> 8) & 0xFF))
-    result.append(UInt8(payload_len & 0xFF))
-
-    # 1-byte type
-    result.append(UInt8(frame.frame_type & 0xFF))
-
-    # 1-byte flags
-    result.append(UInt8(frame.flags & 0xFF))
+    # 3-byte length + 1-byte type + 1-byte flags via _at writes
+    var pos = 0
+    pos += write_u24_be_at(result, pos, UInt32(payload_len))
+    pos += write_u8_at(result, pos, UInt8(frame.frame_type & 0xFF))
+    pos += write_u8_at(result, pos, UInt8(frame.flags & 0xFF))
 
     # 4-byte stream ID (big-endian, reserved bit = 0)
-    result.append(UInt8((frame.stream_id >> 24) & 0x7F))
-    result.append(UInt8((frame.stream_id >> 16) & 0xFF))
-    result.append(UInt8((frame.stream_id >> 8) & 0xFF))
-    result.append(UInt8(frame.stream_id & 0xFF))
+    result[pos] = UInt8((frame.stream_id >> 24) & 0x7F)
+    result[pos + 1] = UInt8((frame.stream_id >> 16) & 0xFF)
+    result[pos + 2] = UInt8((frame.stream_id >> 8) & 0xFF)
+    result[pos + 3] = UInt8(frame.stream_id & 0xFF)
 
-    # Payload
     result.extend(Span(frame.payload))
 
     return result^

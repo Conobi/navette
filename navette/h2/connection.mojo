@@ -6,6 +6,8 @@
 from std.collections import Dict
 from std.memory import unsafe_memmove
 
+from navette.quic.codec import write_u16_be_at, write_u32_be_at
+
 from .frame import (
     Frame,
     decode_frame,
@@ -460,13 +462,25 @@ struct PendingDataChunk(Copyable, Movable):
 # ---------------------------------------------------------------------------
 # Helper: append a 6-byte SETTINGS entry to a payload
 # ---------------------------------------------------------------------------
+def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[UInt8]:
+    """Build an 8-byte GOAWAY payload (4-byte last-stream-id + 4-byte error code)."""
+    var payload = List[UInt8](capacity=8)
+    payload.resize(8, UInt8(0))
+    # last_stream_id: clear reserved bit in high byte
+    payload[0] = UInt8((last_stream_id >> 24) & 0x7F)
+    payload[1] = UInt8((last_stream_id >> 16) & 0xFF)
+    payload[2] = UInt8((last_stream_id >> 8) & 0xFF)
+    payload[3] = UInt8(last_stream_id & 0xFF)
+    _ = write_u32_be_at(payload, 4, UInt32(error_code))
+    return payload^
+
+
 def _append_setting(mut payload: List[UInt8], id: Int, value: Int):
-    payload.append(UInt8((id >> 8) & 0xFF))
-    payload.append(UInt8(id & 0xFF))
-    payload.append(UInt8((value >> 24) & 0xFF))
-    payload.append(UInt8((value >> 16) & 0xFF))
-    payload.append(UInt8((value >> 8) & 0xFF))
-    payload.append(UInt8(value & 0xFF))
+    """Append a 6-byte SETTINGS entry (2-byte id + 4-byte value)."""
+    var base = len(payload)
+    payload.resize(base + 6, UInt8(0))
+    _ = write_u16_be_at(payload, base, UInt16(id))
+    _ = write_u32_be_at(payload, base + 2, UInt32(value))
 
 
 # ---------------------------------------------------------------------------
@@ -642,16 +656,8 @@ struct H2Connection(Movable):
 
     def _connection_error(mut self, mut events: List[H2Event], error_code: Int, message: String):
         """Send GOAWAY and emit ConnectionTerminated event."""
-        var payload = List[UInt8]()
         var lsid = Int(self._last_recv_stream_id)
-        payload.append(UInt8((lsid >> 24) & 0x7F))
-        payload.append(UInt8((lsid >> 16) & 0xFF))
-        payload.append(UInt8((lsid >> 8) & 0xFF))
-        payload.append(UInt8(lsid & 0xFF))
-        payload.append(UInt8((error_code >> 24) & 0xFF))
-        payload.append(UInt8((error_code >> 16) & 0xFF))
-        payload.append(UInt8((error_code >> 8) & 0xFF))
-        payload.append(UInt8(error_code & 0xFF))
+        var payload = _encode_goaway_payload(lsid, error_code)
         var frame = Frame(len(payload), FRAME_GOAWAY, 0, 0, payload)
         self._queue_frame(frame)
         events.append(H2Event.connection_terminated(
@@ -1107,17 +1113,7 @@ struct H2Connection(Movable):
         """Send GOAWAY frame. Connection enters draining state."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
-        var payload = List[UInt8]()
-        var lsid = Int(last_stream_id)
-        payload.append(UInt8((lsid >> 24) & 0x7F))
-        payload.append(UInt8((lsid >> 16) & 0xFF))
-        payload.append(UInt8((lsid >> 8) & 0xFF))
-        payload.append(UInt8(lsid & 0xFF))
-        var ec = Int(error_code)
-        payload.append(UInt8((ec >> 24) & 0xFF))
-        payload.append(UInt8((ec >> 16) & 0xFF))
-        payload.append(UInt8((ec >> 8) & 0xFF))
-        payload.append(UInt8(ec & 0xFF))
+        var payload = _encode_goaway_payload(Int(last_stream_id), Int(error_code))
         var frame = Frame(len(payload), FRAME_GOAWAY, 0, 0, payload)
         self._queue_frame(frame)
         self._state = CONN_GOAWAY
@@ -1126,12 +1122,9 @@ struct H2Connection(Movable):
         """Send RST_STREAM frame for the given stream."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
-        var payload = List[UInt8]()
-        var ec = Int(error_code)
-        payload.append(UInt8((ec >> 24) & 0xFF))
-        payload.append(UInt8((ec >> 16) & 0xFF))
-        payload.append(UInt8((ec >> 8) & 0xFF))
-        payload.append(UInt8(ec & 0xFF))
+        var payload = List[UInt8](capacity=4)
+        payload.resize(4, UInt8(0))
+        _ = write_u32_be_at(payload, 0, UInt32(error_code))
         var sid = Int(stream_id)
         var frame = Frame(4, FRAME_RST_STREAM, 0, sid, payload)
         self._queue_frame(frame)
@@ -1180,11 +1173,12 @@ struct H2Connection(Movable):
     def _send_window_update_frame(mut self, stream_id: UInt32, increment: UInt32):
         """Queue a WINDOW_UPDATE frame."""
         var inc = Int(increment)
-        var payload = List[UInt8]()
-        payload.append(UInt8((inc >> 24) & 0x7F))
-        payload.append(UInt8((inc >> 16) & 0xFF))
-        payload.append(UInt8((inc >> 8) & 0xFF))
-        payload.append(UInt8(inc & 0xFF))
+        var payload = List[UInt8](capacity=4)
+        payload.resize(4, UInt8(0))
+        payload[0] = UInt8((inc >> 24) & 0x7F)
+        payload[1] = UInt8((inc >> 16) & 0xFF)
+        payload[2] = UInt8((inc >> 8) & 0xFF)
+        payload[3] = UInt8(inc & 0xFF)
         var wu_frame = Frame(4, FRAME_WINDOW_UPDATE, 0, Int(stream_id), payload)
         self._queue_frame(wu_frame)
 
@@ -1415,12 +1409,9 @@ struct H2Connection(Movable):
 
     def _stream_error(mut self, mut events: List[H2Event], stream_id: Int, error_code: Int):
         """Send RST_STREAM and emit StreamReset event for a single stream."""
-        var ec = error_code
-        var payload = List[UInt8]()
-        payload.append(UInt8((ec >> 24) & 0xFF))
-        payload.append(UInt8((ec >> 16) & 0xFF))
-        payload.append(UInt8((ec >> 8) & 0xFF))
-        payload.append(UInt8(ec & 0xFF))
+        var payload = List[UInt8](capacity=4)
+        payload.resize(4, UInt8(0))
+        _ = write_u32_be_at(payload, 0, UInt32(error_code))
         var frame = Frame(4, FRAME_RST_STREAM, 0, stream_id, payload)
         self._queue_frame(frame)
         events.append(H2Event.stream_reset(UInt32(stream_id), UInt32(error_code)))

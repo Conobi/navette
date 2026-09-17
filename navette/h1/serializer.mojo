@@ -44,14 +44,12 @@ def _append_str(mut buf: List[UInt8], s: String):
 
 def _append_crlf(mut buf: List[UInt8]):
     """Append CRLF to the buffer."""
-    buf.append(UInt8(0x0D))
-    buf.append(UInt8(0x0A))
+    buf.extend(String("\r\n").as_bytes())
 
 
 def _append_colon_sp(mut buf: List[UInt8]):
     """Append `: ` (colon, space) to the buffer."""
-    buf.append(UInt8(0x3A))
-    buf.append(UInt8(0x20))
+    buf.extend(String(": ").as_bytes())
 
 
 def _version_string(version: Version) -> String:

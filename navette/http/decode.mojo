@@ -4,6 +4,7 @@
 # libcompress_mojo.so FFI (lcm_gzip_* / lcm_br_*). Previously lived in
 # librustls_mojo.so; split into its own shim
 # so a future zlib/brotli CVE is a `apt upgrade` away, not a Navette release.
+from std.collections import Span
 from std.ffi import OwnedDLHandle
 from std.memory import Pointer
 from navette.util.owned_alloc import Owned
@@ -198,9 +199,8 @@ struct ContentDecoder(Movable):
         For identity encoding, returns a copy of the input.
         """
         if self._encoding._tag == _ENC_IDENTITY:
-            var out = List[UInt8]()
-            for ref byte in data:
-                out.append(byte)
+            var out = List[UInt8](capacity=len(data))
+            out.extend(Span(data))
             return out^
 
         # Keeps `data`'s origin: the wrapper's `origin=_` parameter borrows
@@ -231,9 +231,10 @@ struct ContentDecoder(Movable):
         if n < 0:
             raise "ContentDecoder.feed: decompression error (" + String(n) + ")"
 
-        var result = List[UInt8]()
+        var result = List[UInt8](capacity=Int(n))
+        result.resize(Int(n), UInt8(0))
         for i in range(Int(n)):
-            result.append(out_buf[unsafe_offset=i])
+            result[i] = out_buf[unsafe_offset=i]
         return result^
 
     def finish(self) raises -> List[UInt8]:
@@ -264,7 +265,8 @@ struct ContentDecoder(Movable):
         if n < 0:
             raise "ContentDecoder.finish: decompression error (" + String(n) + ")"
 
-        var result = List[UInt8]()
+        var result = List[UInt8](capacity=Int(n))
+        result.resize(Int(n), UInt8(0))
         for i in range(Int(n)):
-            result.append(out_buf[unsafe_offset=i])
+            result[i] = out_buf[unsafe_offset=i]
         return result^

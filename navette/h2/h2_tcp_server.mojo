@@ -48,6 +48,7 @@ After construction, the caller must:
      `server.poll_connections()`, then `server.reap_closed()`.
 """
 
+from std.collections import Span
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.ffi import external_call
@@ -338,8 +339,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
         var n = Int(result)
         var chunk = List[UInt8](capacity=n)
-        for i in range(n):
-            chunk.append(self.recv_buf[i])
+        chunk.extend(Span(self.recv_buf)[:n])
 
         # 1. Feed ciphertext into TLS state machine.
         self.tls.receive_data(Span(chunk))

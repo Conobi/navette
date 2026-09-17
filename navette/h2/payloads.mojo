@@ -3,6 +3,8 @@
 # Per-type payload structs and decoders for HTTP/2 frames (RFC 9113).
 # Each decoder takes a Frame and returns a typed payload struct.
 
+from std.collections import Span
+
 from .frame import (
     Frame,
     FRAME_DATA,
@@ -51,9 +53,8 @@ def _read_u16(payload: List[UInt8], offset: Int) -> Int:
 
 def _slice_payload(payload: List[UInt8], start: Int, end: Int) -> List[UInt8]:
     """Copy a slice of payload bytes [start, end)."""
-    var result = List[UInt8]()
-    for i in range(start, end):
-        result.append(payload[i])
+    var result = List[UInt8](capacity=end - start)
+    result.extend(Span(payload)[start:end])
     return result^
 
 

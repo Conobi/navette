@@ -43,7 +43,7 @@ from navette.h2.frame import (
 )
 from navette.h2.hpack import HpackEncoder, HpackDecoder, HpackConfig
 from navette.h2.hpack_huffman import HuffmanCodec
-from navette.h2.hpack_integer import encode_integer, decode_integer
+from navette.h2.hpack_integer import decode_integer
 from navette.h2.hpack_table import StaticTable, DynamicTable
 from .oracles import h2_roundtrip
 # Note: the bulk of the live h2 / hpack / hyperframe oracle wrappers were

@@ -3,35 +3,6 @@
 # HPACK variable-length prefix integer codec per RFC 7541 Section 5.1.
 
 
-def encode_integer(value: Int, prefix_bits: Int) -> List[UInt8]:
-    """Encode an integer using HPACK prefix encoding.
-
-    Returns a list of bytes. The first byte contains only the low
-    `prefix_bits` bits (caller must OR-in any higher bits for the
-    opcode byte).
-
-    Algorithm (RFC 7541 Section 5.1):
-      1. max_prefix = (1 << prefix_bits) - 1
-      2. If value < max_prefix: return [value]
-      3. Else: first byte = max_prefix, then encode (value - max_prefix)
-         as continuation bytes with 7 data bits + high continuation bit.
-    """
-    var max_prefix = (1 << prefix_bits) - 1
-    var result = List[UInt8]()
-
-    if value < max_prefix:
-        result.append(UInt8(value))
-        return result^
-
-    result.append(UInt8(max_prefix))
-    var remaining = value - max_prefix
-    while remaining >= 128:
-        result.append(UInt8((remaining & 0x7F) | 0x80))
-        remaining >>= 7
-    result.append(UInt8(remaining))
-    return result^
-
-
 def decode_integer(
     wire: List[UInt8], pos: Int, prefix_bits: Int
 ) -> Tuple[Int, Int, String]:
