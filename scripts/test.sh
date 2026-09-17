@@ -1,16 +1,12 @@
 #!/bin/bash
-# Fast test runner — uses per-subpackage .mojoc files instead of the
-# monolithic `mojo precompile navette` (which takes ~20 min due to a
-# compiler scalability issue with whole-package compilation).
-#
-# Split precompile: ~2 min (10 subpackages compiled independently).
-# Per-test compilation: ~3-25s each (no source-shadows-precompiled).
-# Skips precompile entirely when .mojoc files are newer than source.
+# Fast test runner — compiles each test file directly from source via
+# `mojo run`. The editable-install source symlink is removed to prevent
+# the compiler from resolving navette through the site-packages path
+# (which would recompile navette from source per target, 6-9× slower).
 #
 # Usage:
 #   scripts/test.sh tests/quic/test_quic_connection.mojo     # specific files
 #   scripts/test.sh tests/quic/ tests/h3/test_h3_e2e.mojo    # mixed
-#   scripts/test.sh --recompile tests/quic/                   # force precompile
 #   scripts/test.sh --mojox [mojox-args...]                   # full mojox test
 
 set -euo pipefail
@@ -20,9 +16,6 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 VENV="$PROJECT_DIR/.venv"
 MOJO="$VENV/bin/mojo"
 SITE_MOJO="$VENV/lib/python3.14/site-packages/mojo_packages"
-SPLIT_PKG="$PROJECT_DIR/.mojox/build/split-pkg"
-
-SUBMODULES=(util compress net runtime tls h1 quic h2 h3 http)
 
 # ── Fix the source-shadows-precompiled symlink ──────────────────────────
 
@@ -32,48 +25,7 @@ _fix_symlink() {
     fi
 }
 
-# ── Check if split .mojoc files are up to date ──────────────────────────
-
-_split_fresh() {
-    [ -d "$SPLIT_PKG/navette" ] || return 1
-    for mod in "${SUBMODULES[@]}"; do
-        [ -s "$SPLIT_PKG/navette/${mod}.mojoc" ] || return 1
-    done
-    local stale
-    stale=$(find "$PROJECT_DIR/navette/" -name "*.mojo" -newer "$SPLIT_PKG/navette/util.mojoc" -print -quit 2>/dev/null)
-    [ -z "$stale" ]
-}
-
-# ── Split precompile ────────────────────────────────────────────────────
-
-_precompile_split() {
-    echo "Precompiling navette subpackages..."
-    mkdir -p "$SPLIT_PKG/navette"
-    _fix_symlink
-    local total_t0 mod t0 t1
-    total_t0=$(date +%s%N)
-    for mod in "${SUBMODULES[@]}"; do
-        t0=$(date +%s%N)
-        "$MOJO" precompile "navette/$mod" \
-            -o "$SPLIT_PKG/navette/${mod}.mojoc" \
-            -I "$SITE_MOJO" \
-            2>&1 | grep -E "^[^/]" || true
-        t1=$(date +%s%N)
-        printf "  %-12s %ss\n" "$mod" "$(echo "scale=1; ($t1-$t0)/1000000000" | bc)"
-    done
-    local total_t1
-    total_t1=$(date +%s%N)
-    echo "Precompile done in $(echo "scale=1; ($total_t1-$total_t0)/1000000000" | bc)s"
-}
-
 # ── Parse arguments ─────────────────────────────────────────────────────
-
-FORCE_RECOMPILE=false
-
-if [ "${1:-}" = "--recompile" ]; then
-    FORCE_RECOMPILE=true
-    shift
-fi
 
 if [ "${1:-}" = "--mojox" ]; then
     shift
@@ -112,13 +64,7 @@ if [ ${#FILES[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Ensure split .mojoc files are up to date
-if $FORCE_RECOMPILE || ! _split_fresh; then
-    _precompile_split
-else
-    _fix_symlink
-    echo "navette.mojoc up to date — skipping precompile"
-fi
+_fix_symlink
 
 # Run each test file
 PASS=0
@@ -130,7 +76,6 @@ for f in "${FILES[@]}"; do
     if HOME="" PATH="$(dirname "$MOJO"):/usr/local/bin:/usr/bin:/bin" \
         MODULAR_DEBUG=stack-trace-on-error \
         "$MOJO" run -O0 --debug-level line-tables \
-        -I "$SPLIT_PKG" \
         -I "$SITE_MOJO" \
         -D ASSERT=all --num-threads 8 \
         -I "$PROJECT_DIR/conformance" \

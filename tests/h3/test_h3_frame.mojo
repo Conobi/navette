@@ -13,7 +13,7 @@ def test_data_frame_round_trip() raises:
     var payload = List[UInt8]()
     payload.append(0x68)  # 'h'
     payload.append(0x69)  # 'i'
-    var df = DataFrame(payload)
+    var df = DataFrame(payload^)
     var encoded = df.encode()
     # wire: type=0x00 (1 byte), length=2 (1 byte), payload=hi
     assert_equal_int(len(encoded), 4, "encoded length")
@@ -25,7 +25,7 @@ def test_data_frame_round_trip() raises:
     var raw = parse_h3_frame(r)
     assert_equal_int(Int(raw.frame_type), 0x00, "raw frame_type")
     assert_equal_int(len(raw.payload), 2, "raw payload len")
-    var decoded = DataFrame.decode(raw.payload)
+    var decoded = DataFrame.decode(raw.payload.copy())
     assert_equal_int(len(decoded.data), 2, "decoded data len")
     assert_equal_int(Int(decoded.data[0]), 0x68, "decoded data[0]")
     print("  test_data_frame_round_trip: PASS")
@@ -36,14 +36,14 @@ def test_headers_frame_round_trip() raises:
     fields.append(0x00)
     fields.append(0x00)
     fields.append(0xC2)  # fake QPACK indexed field for :method GET
-    var hf = HeadersFrame(fields)
+    var hf = HeadersFrame(fields^)
     var encoded = hf.encode()
     assert_equal_int(Int(encoded[0]), 0x01, "HEADERS frame type")
     assert_equal_int(Int(encoded[1]), 0x03, "length=3")
     var r = ByteReader(Span(encoded))
     var raw = parse_h3_frame(r)
     assert_equal_int(Int(raw.frame_type), 0x01, "raw frame_type")
-    var decoded = HeadersFrame.decode(raw.payload)
+    var decoded = HeadersFrame.decode(raw.payload.copy())
     assert_equal_int(len(decoded.encoded_fields), 3, "decoded fields len")
     assert_equal_int(Int(decoded.encoded_fields[2]), 0xC2, "decoded fields[2]")
     print("  test_headers_frame_round_trip: PASS")
@@ -58,7 +58,7 @@ def test_settings_encode_decode() raises:
     var r = ByteReader(Span(encoded))
     var raw = parse_h3_frame(r)
     assert_equal_int(Int(raw.frame_type), 0x04, "raw frame_type")
-    var decoded = SettingsFrame.decode(raw.payload)
+    var decoded = SettingsFrame.decode(raw.payload.copy())
     assert_equal_int(len(decoded.pairs), 2, "decoded pairs len")
     assert_equal_int(Int(decoded.pairs[0].id), Int(SETTINGS_QPACK_MAX_TABLE_CAPACITY), "pair[0].id")
     assert_equal_int(Int(decoded.pairs[0].value), 4096, "pair[0].value")
@@ -74,7 +74,7 @@ def test_settings_unknown_id_preserved() raises:
     var encoded = sf.encode()
     var r = ByteReader(Span(encoded))
     var raw = parse_h3_frame(r)
-    var decoded = SettingsFrame.decode(raw.payload)
+    var decoded = SettingsFrame.decode(raw.payload.copy())
     assert_equal_int(len(decoded.pairs), 2, "decoded pairs len")
     assert_equal_int(Int(decoded.pairs[0].id), 0xFFFF, "unknown id preserved")
     assert_equal_int(Int(decoded.pairs[0].value), 42, "unknown value preserved")
@@ -159,7 +159,7 @@ def test_frame_large_payload() raises:
     var payload = List[UInt8]()
     for i in range(300):
         payload.append(UInt8(i & 0xFF))
-    var df = DataFrame(payload)
+    var df = DataFrame(payload^)
     var encoded = df.encode()
     # type=0x00 (1 byte), length=300 needs 2-byte varint (>=64 triggers 2-byte)
     # varint 300 = 0x4000 | 300 = 0x412C => 2 bytes
