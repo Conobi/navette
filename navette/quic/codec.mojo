@@ -54,9 +54,9 @@ struct ByteReader[origin: Origin]:
         """Read n bytes, returning an owned copy."""
         if self.pos + n > len(self._buf):
             raise "ByteReader: underflow reading " + String(n) + " bytes"
+        var src = self._buf[self.pos : self.pos + n]
         var result = List[UInt8](capacity=n)
-        for i in range(n):
-            result.append(self._buf[self.pos + i])
+        result.extend(src)
         self.pos += n
         return result^
 
@@ -138,52 +138,14 @@ def varint_len(value: UInt64) -> Int:
 
 
 def varint_encode(mut writer: ByteWriter, value: UInt64) raises:
+    """Encode a QUIC varint into a ByteWriter via resize + write-at."""
     if value > UInt64(4611686018427387903):
         raise "varint value exceeds max (2^62 - 1)"
     var size = varint_len(value)
-    if size == 1:
-        writer.write_u8(UInt8(value))
-    elif size == 2:
-        writer.write_u16_be(UInt16(value) | UInt16(0x4000))
-    elif size == 4:
-        writer.write_u32_be(UInt32(value) | UInt32(0x80000000))
-    else:
-        writer.write_u64_be(value | UInt64(0xC000000000000000))
+    var base = len(writer.buf)
+    writer.buf.resize(base + size, UInt8(0))
+    _ = varint_encode_at(writer.buf, base, value)
 
-
-def varint_encode_into(mut buf: List[UInt8], value: UInt64) raises:
-    """Encode a QUIC varint directly into a byte list with overflow check.
-
-    Same encoding as varint_encode but bypasses ByteWriter indirection.
-    """
-    if value > UInt64(4611686018427387903):
-        raise "varint value exceeds max (2^62 - 1)"
-    varint_encode_raw(buf, value)
-
-
-def varint_encode_raw(mut buf: List[UInt8], value: UInt64):
-    """Encode a QUIC varint and append it directly to a byte list.
-
-    Bypasses ByteWriter to avoid intermediate allocation when writing
-    frames directly into a pre-existing packet buffer.
-    """
-    var size = varint_len(value)
-    if size == 1:
-        buf.append(UInt8(value))
-    elif size == 2:
-        var v = UInt16(value) | UInt16(0x4000)
-        buf.append(UInt8((v >> 8) & 0xFF))
-        buf.append(UInt8(v & 0xFF))
-    elif size == 4:
-        var v = UInt32(value) | UInt32(0x80000000)
-        buf.append(UInt8((v >> 24) & 0xFF))
-        buf.append(UInt8((v >> 16) & 0xFF))
-        buf.append(UInt8((v >> 8) & 0xFF))
-        buf.append(UInt8(v & 0xFF))
-    else:
-        var v = value | UInt64(0xC000000000000000)
-        for i in range(8):
-            buf.append(UInt8((v >> UInt64((7 - i) * 8)) & 0xFF))
 
 
 @always_inline

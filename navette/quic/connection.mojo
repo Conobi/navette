@@ -28,7 +28,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.early_data_store import (
     InMemoryEarlyDataStore, ReplayDecision,
 )
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us, ProfileState
@@ -3457,9 +3457,10 @@ struct QuicConnection(Movable):
     ) raises:
         """Queue data for sending on a stream (and optionally mark FIN)."""
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
             raise "unknown stream"
-        var p = self.stream_map.stream_ptr(key)
+        var p = p_opt.value()
         if not p[].send_state or not p[].send_buf:
             raise "STREAM_STATE_ERROR: no send side"
         var ss = p[].send_state.value()
@@ -3490,7 +3491,10 @@ struct QuicConnection(Movable):
         # H3 DATA frame type = 0x00.
         combined.append(0x00)
         # Varint-encode the payload length directly into the buffer.
-        varint_encode_raw(combined, UInt64(payload_len))
+        var vl_size = varint_len(UInt64(payload_len))
+        var vl_base = len(combined)
+        combined.resize(vl_base + vl_size, UInt8(0))
+        _ = varint_encode_at(combined, vl_base, UInt64(payload_len))
         # Bulk-copy the application payload.
         combined.extend(Span(app_payload))
         self.send_stream_data(stream_id, Span(combined), fin)
@@ -3504,9 +3508,10 @@ struct QuicConnection(Movable):
         and flags MAX_DATA / MAX_STREAM_DATA updates as needed.
         """
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
             raise "unknown stream"
-        var p = self.stream_map.stream_ptr(key)
+        var p = p_opt.value()
         if not p[].recv_buf or not p[].fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
         var result = p[].recv_buf.value().read(p[].fin_offset)
@@ -3534,9 +3539,10 @@ struct QuicConnection(Movable):
     def reset_stream(mut self, stream_id: UInt64, error_code: UInt64) raises:
         """Abort the send side of a stream with the given error code."""
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
             raise "unknown stream"
-        var p = self.stream_map.stream_ptr(key)
+        var p = p_opt.value()
         if not p[].send_state:
             raise "STREAM_STATE_ERROR: no send side"
         var ss = p[].send_state.value()
@@ -3603,9 +3609,10 @@ struct QuicConnection(Movable):
     def stop_sending(mut self, stream_id: UInt64, error_code: UInt64) raises:
         """Request the peer to stop sending on a stream."""
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
             raise "unknown stream"
-        var p = self.stream_map.stream_ptr(key)
+        var p = p_opt.value()
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: no recv side"
         var rs = p[].recv_state.value()

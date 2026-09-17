@@ -3,12 +3,14 @@
 # HPACK static and dynamic tables per RFC 7541 Section 2.3 and Appendix A.
 
 from .header import Header
+from navette.http.header_table_index import StaticTableIndex
 
 
 struct StaticTable(Copyable, Movable):
     """HPACK static table -- 61 entries from RFC 7541 Appendix A."""
 
     var _entries: List[Tuple[String, String]]
+    var _index: StaticTableIndex
 
     def __init__(out self):
         self._entries = List[Tuple[String, String]]()
@@ -136,6 +138,7 @@ struct StaticTable(Copyable, Movable):
         self._entries.append((String("via"), String("")))
         # 61
         self._entries.append((String("www-authenticate"), String("")))
+        self._index = StaticTableIndex(self._entries, start_index=1)
 
     def lookup(self, index: Int) -> Tuple[String, String]:
         """Get (name, value) at 1-based index (1-61).
@@ -147,39 +150,77 @@ struct StaticTable(Copyable, Movable):
         return (self._entries[index][0], self._entries[index][1])
 
     def find(self, name: String, value: String) -> Tuple[Int, Bool]:
-        """Search for header. Returns (index, exact_match).
+        """O(1) header lookup via index. Returns (index, exact_match).
 
-        index=0 if name not found. exact_match=True if name+value both match.
+        index=0 if not found (HPACK convention).
         """
-        var name_match_idx = 0
-        for i in range(1, 62):
-            if self._entries[i][0] == name:
-                if self._entries[i][1] == value:
-                    return (i, True)
-                if name_match_idx == 0:
-                    name_match_idx = i
-        return (name_match_idx, False)
+        try:
+            var result = self._index.find(name, value)
+            if result[0] < 0:
+                return (0, False)
+            return result
+        except:
+            return (0, False)
 
 
 struct DynamicTable(Movable):
-    """HPACK dynamic table -- FIFO with size tracking.
+    """HPACK dynamic table -- FIFO with size tracking and Dict index.
 
     Index 0 = newest entry. Eviction from the end (oldest).
+    Maintains Dict indices for O(1) header lookup by name and name+value.
     """
 
     var entries: List[Header]
     var max_size: Int
     var current_size: Int
+    var _next_seq: Int
+    var _exact_index: Dict[String, Int]
+    var _name_index: Dict[String, Int]
 
     def __init__(out self, max_size: Int = 4096):
         self.entries = List[Header]()
         self.max_size = max_size
         self.current_size = 0
+        self._next_seq = 0
+        self._exact_index = Dict[String, Int]()
+        self._name_index = Dict[String, Int]()
 
     def __init__(out self, *, deinit move: Self):
         self.entries = move.entries^
         self.max_size = move.max_size
         self.current_size = move.current_size
+        self._next_seq = move._next_seq
+        self._exact_index = move._exact_index^
+        self._name_index = move._name_index^
+
+    def _exact_key(self, name: String, value: String) -> String:
+        """Build composite key for exact-match index."""
+        return name + "\x00" + value
+
+    def _evict_oldest(mut self):
+        """Remove the oldest (back) entry and clean up Dict indices."""
+        var idx = len(self.entries) - 1
+        var evicted_name = self.entries[idx].name
+        var evicted_value = self.entries[idx].value
+        self.current_size -= evicted_name.byte_length() + evicted_value.byte_length() + 32
+
+        # Sequence number of the evicted entry (oldest = lowest seq still in table)
+        var evicted_seq = self._next_seq - len(self.entries)
+
+        # Only remove Dict entries if they still point to the evicted seq
+        var exact_key = self._exact_key(evicted_name, evicted_value)
+        try:
+            if self._exact_index[exact_key] == evicted_seq:
+                _ = self._exact_index.pop(exact_key)
+        except:
+            pass
+        try:
+            if self._name_index[evicted_name] == evicted_seq:
+                _ = self._name_index.pop(evicted_name)
+        except:
+            pass
+
+        _ = self.entries.pop()
 
     def insert(mut self, name: String, value: String):
         """Insert at front. Evict from back until current_size <= max_size."""
@@ -188,12 +229,15 @@ struct DynamicTable(Movable):
         while self.current_size + entry_size > self.max_size and len(
             self.entries
         ) > 0:
-            var idx = len(self.entries) - 1
-            self.current_size -= self.entries[idx].name.byte_length() + self.entries[idx].value.byte_length() + 32
-            _ = self.entries.pop()
+            self._evict_oldest()
         # If entry itself is too large, table is cleared (entry is not added)
         if entry_size > self.max_size:
             return
+        # Update Dict indices (unconditionally overwrite -- newest wins)
+        var seq = self._next_seq
+        self._exact_index[self._exact_key(name, value)] = seq
+        self._name_index[name] = seq
+        self._next_seq += 1
         # Insert at front by rebuilding
         var new_entries = List[Header]()
         new_entries.append(Header(name, value))
@@ -214,26 +258,37 @@ struct DynamicTable(Movable):
         return (self.entries[index].name, self.entries[index].value)
 
     def find(self, name: String, value: String) -> Tuple[Int, Bool]:
-        """Search for header. Returns (0-based index, exact_match).
+        """O(1) header lookup via Dict indices. Returns (0-based index, exact_match).
 
         Returns (-1, False) if not found.
         """
-        var name_match_idx = -1
-        for i in range(len(self.entries)):
-            if self.entries[i].name == name:
-                if self.entries[i].value == value:
-                    return (i, True)
-                if name_match_idx < 0:
-                    name_match_idx = i
-        return (name_match_idx, False)
+        # Try exact match first
+        try:
+            var seq = self._exact_index[self._exact_key(name, value)]
+            var wire_idx = (self._next_seq - 1) - seq
+            return (wire_idx, True)
+        except:
+            pass
+        # Try name-only match
+        try:
+            var seq = self._name_index[name]
+            var wire_idx = (self._next_seq - 1) - seq
+            return (wire_idx, False)
+        except:
+            pass
+        return (-1, False)
 
     def set_max_size(mut self, new_max: Int):
         """Set new max. Evict if needed. new_max=0 clears all entries."""
         self.max_size = new_max
+        if new_max == 0:
+            self.entries.clear()
+            self.current_size = 0
+            self._exact_index = Dict[String, Int]()
+            self._name_index = Dict[String, Int]()
+            return
         while self.current_size > self.max_size and len(self.entries) > 0:
-            var idx = len(self.entries) - 1
-            self.current_size -= self.entries[idx].name.byte_length() + self.entries[idx].value.byte_length() + 32
-            _ = self.entries.pop()
+            self._evict_oldest()
 
     def size(self) -> Int:
         """Number of entries."""

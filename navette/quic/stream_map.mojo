@@ -457,10 +457,11 @@ struct StreamMap(Movable):
 
     def maybe_cleanup(mut self, stream_id: Int) raises -> Bool:
         """Remove a fully-closed stream. Returns True if removed."""
-        if stream_id not in self.streams:
+        var result = self.streams.find(stream_id)
+        if not result:
             return False
 
-        if not self.streams[stream_id][].is_fully_closed():
+        if not result.value()[].is_fully_closed():
             return False
 
         # Track peer-initiated completions for MAX_STREAMS update
@@ -500,13 +501,10 @@ struct StreamMap(Movable):
             self.sendable_set[stream_id] = True
             self.sendable_queue.append(stream_id)
 
-    def remove_sendable(mut self, stream_id: Int):
+    def remove_sendable(mut self, stream_id: Int) raises:
         """Mark a stream as no longer sendable (lazy Deque eviction)."""
         if stream_id in self.sendable_set:
-            try:
-                _ = self.sendable_set.pop(stream_id)
-            except:
-                pass
+            _ = self.sendable_set.pop(stream_id)
 
     # ── Control frame queuing ────────────────────────────────────────────────
 

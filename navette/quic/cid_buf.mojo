@@ -24,8 +24,10 @@ struct CidBuf(Copyable, Movable, Sized, Equatable):
         if len(src) > 20:
             abort("CID exceeds 20 bytes")
         var buf = Self.empty()
-        for i in range(len(src)):
-            buf.data[i] = src[i]
+        var i = 0
+        for ref byte in src:
+            buf.data[i] = byte
+            i += 1
         buf.len = UInt8(len(src))
         return buf^
 

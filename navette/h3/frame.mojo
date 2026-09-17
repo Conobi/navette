@@ -1,5 +1,5 @@
 from std.collections import Span
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, varint_decode, varint_len
 
 # Frame type constants (RFC 9114 §7.2)
 comptime H3_FRAME_DATA:     UInt64 = 0x00
@@ -32,8 +32,12 @@ struct H3RawFrame(Copyable, Movable):
 
     def encode(self) raises -> List[UInt8]:
         var result = List[UInt8](capacity=2 + len(self.payload))
-        varint_encode_raw(result, self.frame_type)
-        varint_encode_raw(result, UInt64(len(self.payload)))
+        var pos = len(result)
+        result.resize(pos + varint_len(self.frame_type), UInt8(0))
+        _ = varint_encode_at(result, pos, self.frame_type)
+        pos = len(result)
+        result.resize(pos + varint_len(UInt64(len(self.payload))), UInt8(0))
+        _ = varint_encode_at(result, pos, UInt64(len(self.payload)))
         result.extend(Span(self.payload))
         return result^
 
@@ -53,8 +57,12 @@ struct DataFrame(Copyable, Movable):
 
     def encode(self) raises -> List[UInt8]:
         var result = List[UInt8](capacity=2 + len(self.data))
-        varint_encode_raw(result, H3_FRAME_DATA)
-        varint_encode_raw(result, UInt64(len(self.data)))
+        var pos = len(result)
+        result.resize(pos + varint_len(H3_FRAME_DATA), UInt8(0))
+        _ = varint_encode_at(result, pos, H3_FRAME_DATA)
+        pos = len(result)
+        result.resize(pos + varint_len(UInt64(len(self.data))), UInt8(0))
+        _ = varint_encode_at(result, pos, UInt64(len(self.data)))
         result.extend(Span(self.data))
         return result^
 
@@ -74,8 +82,12 @@ struct HeadersFrame(Copyable, Movable):
 
     def encode(self) raises -> List[UInt8]:
         var result = List[UInt8](capacity=2 + len(self.encoded_fields))
-        varint_encode_raw(result, H3_FRAME_HEADERS)
-        varint_encode_raw(result, UInt64(len(self.encoded_fields)))
+        var pos = len(result)
+        result.resize(pos + varint_len(H3_FRAME_HEADERS), UInt8(0))
+        _ = varint_encode_at(result, pos, H3_FRAME_HEADERS)
+        pos = len(result)
+        result.resize(pos + varint_len(UInt64(len(self.encoded_fields))), UInt8(0))
+        _ = varint_encode_at(result, pos, UInt64(len(self.encoded_fields)))
         result.extend(Span(self.encoded_fields))
         return result^
 
@@ -115,11 +127,19 @@ struct SettingsFrame(Copyable, Movable):
     def encode(self) raises -> List[UInt8]:
         var payload = List[UInt8](capacity=len(self.pairs) * 4)
         for ref pair in self.pairs:
-            varint_encode_raw(payload, pair.id)
-            varint_encode_raw(payload, pair.value)
+            var pos = len(payload)
+            payload.resize(pos + varint_len(pair.id), UInt8(0))
+            _ = varint_encode_at(payload, pos, pair.id)
+            pos = len(payload)
+            payload.resize(pos + varint_len(pair.value), UInt8(0))
+            _ = varint_encode_at(payload, pos, pair.value)
         var result = List[UInt8](capacity=2 + len(payload))
-        varint_encode_raw(result, H3_FRAME_SETTINGS)
-        varint_encode_raw(result, UInt64(len(payload)))
+        var pos = len(result)
+        result.resize(pos + varint_len(H3_FRAME_SETTINGS), UInt8(0))
+        _ = varint_encode_at(result, pos, H3_FRAME_SETTINGS)
+        pos = len(result)
+        result.resize(pos + varint_len(UInt64(len(payload))), UInt8(0))
+        _ = varint_encode_at(result, pos, UInt64(len(payload)))
         result.extend(Span(payload))
         return result^
 

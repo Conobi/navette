@@ -4,7 +4,7 @@
 
 from std.sys.info import size_of
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_into, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, write_u8_at, write_u32_be_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 
 # Conservative caps for wire-parsed variable-length header fields. Sized
@@ -415,13 +415,12 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
     elif header.packet_type == PacketType.retry():
         first_byte = first_byte | UInt8(0x30)
 
-    buf.append(first_byte)
-
-    # Version (4 bytes BE).
-    buf.append(UInt8((header.version >> 24) & 0xFF))
-    buf.append(UInt8((header.version >> 16) & 0xFF))
-    buf.append(UInt8((header.version >> 8) & 0xFF))
-    buf.append(UInt8(header.version & 0xFF))
+    # First byte + version (5 fixed bytes).
+    var base = len(buf)
+    buf.resize(base + 5, UInt8(0))
+    var pos = base
+    pos += write_u8_at(buf, pos, first_byte)
+    pos += write_u32_be_at(buf, pos, header.version)
 
     # DCID.
     buf.append(UInt8(len(header.dcid)))
@@ -433,13 +432,19 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
 
     if header.packet_type == PacketType.initial():
         # Token length + token.
-        varint_encode_into(buf, UInt64(header.token_len))
+        var tl_len = varint_len(UInt64(header.token_len))
+        var tl_base = len(buf)
+        buf.resize(tl_base + tl_len, UInt8(0))
+        _ = varint_encode_at(buf, tl_base, UInt64(header.token_len))
         if Int(header.token_len) > 0:
             buf.extend(header.token_span())
 
     if header.packet_type != PacketType.retry():
         # Payload length.
-        varint_encode_into(buf, header.payload_length)
+        var pl_len = varint_len(header.payload_length)
+        var pl_base = len(buf)
+        buf.resize(pl_base + pl_len, UInt8(0))
+        _ = varint_encode_at(buf, pl_base, header.payload_length)
 
 
 def serialize_short_header_into(dcid: Span[UInt8, _], mut buf: List[UInt8]):

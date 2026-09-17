@@ -2,7 +2,7 @@
 # QUIC frame codec — RFC 9000 Section 19.
 # Parse/serialize for all 20 QUIC frame types.
 
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_raw, varint_encode_at, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, write_u8_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from std.utils import Variant
 
@@ -1596,11 +1596,14 @@ def write_stream_frame_direct(
         var stype = UInt8(FRAME_STREAM_BASE | UInt64(0x02) | UInt64(0x01))
         if has_off:
             stype = stype | UInt8(0x04)
-        pkt_buf.append(stype)
-        varint_encode_raw(pkt_buf, stream_id)
+        var base = len(pkt_buf)
+        pkt_buf.resize(base + total, UInt8(0))
+        var pos = base
+        pos += write_u8_at(pkt_buf, pos, stype)
+        pos += varint_encode_at(pkt_buf, pos, stream_id)
         if has_off:
-            varint_encode_raw(pkt_buf, offset)
-        varint_encode_raw(pkt_buf, UInt64(0))
+            pos += varint_encode_at(pkt_buf, pos, offset)
+        pos += varint_encode_at(pkt_buf, pos, UInt64(0))
         return total
 
     # Compute how much data fits.  Start by assuming a 2-byte length varint
@@ -1641,14 +1644,18 @@ def write_stream_frame_direct(
     if fin:
         stype = stype | UInt8(0x01)
 
-    pkt_buf.append(stype)
-    varint_encode_raw(pkt_buf, stream_id)
+    var hdr_size = fixed_hdr + len_vl
+    var base = len(pkt_buf)
+    pkt_buf.resize(base + hdr_size, UInt8(0))
+    var pos = base
+    pos += write_u8_at(pkt_buf, pos, stype)
+    pos += varint_encode_at(pkt_buf, pos, stream_id)
     if has_off:
-        varint_encode_raw(pkt_buf, offset)
-    varint_encode_raw(pkt_buf, UInt64(data_len))
+        pos += varint_encode_at(pkt_buf, pos, offset)
+    pos += varint_encode_at(pkt_buf, pos, UInt64(data_len))
     pkt_buf.extend(data[:data_len])
 
-    return fixed_hdr + len_vl + data_len
+    return hdr_size + data_len
 
 
 # ── Direct ACK frame writer ───────────────────────────────────────────
@@ -1738,12 +1745,16 @@ def write_crypto_frame_direct(
         if data_len > room:
             data_len = room
 
-    varint_encode_raw(payload, FRAME_CRYPTO)
-    varint_encode_raw(payload, offset)
-    varint_encode_raw(payload, UInt64(data_len))
+    var hdr_size = fixed_hdr + len_vl
+    var base = len(payload)
+    payload.resize(base + hdr_size, UInt8(0))
+    var pos = base
+    pos += varint_encode_at(payload, pos, FRAME_CRYPTO)
+    pos += varint_encode_at(payload, pos, offset)
+    pos += varint_encode_at(payload, pos, UInt64(data_len))
     payload.extend(data[:data_len])
 
-    return fixed_hdr + len_vl + data_len
+    return hdr_size + data_len
 
 
 # ── Packet-type permission check (RFC 9000 §12.4, erratum #7365) ─────

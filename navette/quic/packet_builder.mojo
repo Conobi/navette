@@ -5,7 +5,7 @@
 
 from std.collections import Optional, Span
 
-from navette.quic.codec import varint_len
+from navette.quic.codec import varint_len, write_u8_at
 from navette.quic.cid_buf import CidBuf
 from navette.quic.frame import (
     Frame,
@@ -201,13 +201,15 @@ def seal_packet(
     )
 
     var truncated = pn_truncate(pn, pn_len)
+    var pn_base = len(pkt_buf)
+    pkt_buf.resize(pn_base + pn_len, UInt8(0))
     for i in range(pn_len):
         var shift = UInt64((pn_len - 1 - i) * 8)
-        pkt_buf.append(UInt8((truncated >> shift) & 0xFF))
+        pkt_buf[pn_base + i] = UInt8((truncated >> shift) & 0xFF)
 
     pkt_buf.extend(Span(payload))
-    for _ in range(plaintext_len - len(payload) + AEAD_TAG_LEN):
-        pkt_buf.append(UInt8(0))
+    var pad_len = plaintext_len - len(payload) + AEAD_TAG_LEN
+    pkt_buf.resize(len(pkt_buf) + pad_len, UInt8(0))
 
     var total_len = len(pkt_buf)
     var pkt_ptr = pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
