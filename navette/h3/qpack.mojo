@@ -6,6 +6,7 @@
 from std.collections import Span
 from navette.util.byte_string import bytes_to_string
 from navette.http.header_table_index import StaticTableIndex
+from navette.quic.codec import hpack_encode_int_at
 
 struct QpackStaticEntry(Copyable, Movable):
     var name: String
@@ -781,39 +782,6 @@ def huffman_decode(data: List[UInt8]) raises -> String:
 # Prefix integer helpers (RFC 7541 §5.1)
 # ---------------------------------------------------------------------------
 
-def qpack_encode_int(value: UInt64, prefix_bits: UInt8) -> List[UInt8]:
-    """Encode an integer with N-bit prefix per RFC 7541 §5.1.
-    Returns only the integer bytes; caller OR-s the high flag bits into first byte.
-    """
-    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
-    var result = List[UInt8]()
-    if value < max_first:
-        result.append(UInt8(value))
-        return result^
-    result.append(UInt8(max_first))
-    var v = value - max_first
-    while v >= 128:
-        result.append(UInt8((v & 0x7F) | 0x80))
-        v >>= 7
-    result.append(UInt8(v))
-    return result^
-
-
-def qpack_encode_int_into(mut buf: List[UInt8], value: UInt64, prefix_bits: UInt8) -> Int:
-    """Append a prefix-encoded integer to buf; return the index of the first byte."""
-    var max_first = UInt64((1 << Int(prefix_bits)) - 1)
-    var start = len(buf)
-    if value < max_first:
-        buf.append(UInt8(value))
-        return start
-    buf.append(UInt8(max_first))
-    var v = value - max_first
-    while v >= 128:
-        buf.append(UInt8((v & 0x7F) | 0x80))
-        v >>= 7
-    buf.append(UInt8(v))
-    return start
-
 
 struct _IntDecodeResult(Copyable, Movable):
     var value: UInt64
@@ -871,12 +839,18 @@ def _qpack_encode_string_into(mut buf: List[UInt8], s: String, use_huffman: Bool
     """Append a QPACK string literal encoding directly to buf."""
     if use_huffman:
         var huff_len = huffman_encoded_len(s)
-        var idx = qpack_encode_int_into(buf, UInt64(huff_len), 7)
-        buf[idx] |= 0x80
+        var idx = len(buf)
+        buf.resize(idx + 6, UInt8(0))
+        buf[idx] = UInt8(0x80)
+        var n = hpack_encode_int_at(buf, idx, huff_len, 7)
+        buf.resize(idx + n, UInt8(0))
         huffman_encode_into(buf, s)
     else:
         var raw = s.as_bytes()
-        _ = qpack_encode_int_into(buf, UInt64(len(raw)), 7)
+        var idx = len(buf)
+        buf.resize(idx + 6, UInt8(0))
+        var n = hpack_encode_int_at(buf, idx, len(raw), 7)
+        buf.resize(idx + n, UInt8(0))
         buf.extend(Span(raw))
 
 
@@ -994,27 +968,39 @@ struct QpackEncoder(Copyable, Movable):
 
         # 1. Exact static match -> Indexed Static Field Line
         if match_idx >= 0 and is_exact:
-            var idx = qpack_encode_int_into(buf, UInt64(match_idx), 6)
-            buf[idx] |= 0xC0
+            var idx = len(buf)
+            buf.resize(idx + 6, UInt8(0))
+            buf[idx] = UInt8(0xC0)
+            var n = hpack_encode_int_at(buf, idx, match_idx, 6)
+            buf.resize(idx + n, UInt8(0))
             return
 
         # 2. Name-only match -> Literal With Static Name Reference
         if match_idx >= 0:
-            var idx = qpack_encode_int_into(buf, UInt64(match_idx), 4)
-            buf[idx] |= 0x50
+            var idx = len(buf)
+            buf.resize(idx + 6, UInt8(0))
+            buf[idx] = UInt8(0x50)
+            var n = hpack_encode_int_at(buf, idx, match_idx, 4)
+            buf.resize(idx + n, UInt8(0))
             self._qpack_encode_string_into_cached(buf, value)
             return
 
         # 3. Literal Without Name Reference (§4.5.6)
         if self.use_huffman:
             var name_huff_len = _huffman_encoded_len_with_table(name, self._huff_encode)
-            var idx = qpack_encode_int_into(buf, UInt64(name_huff_len), 3)
-            buf[idx] |= 0x20 | 0x08
+            var idx = len(buf)
+            buf.resize(idx + 6, UInt8(0))
+            buf[idx] = UInt8(0x20 | 0x08)
+            var n = hpack_encode_int_at(buf, idx, name_huff_len, 3)
+            buf.resize(idx + n, UInt8(0))
             _huffman_encode_into_with_table(buf, name, self._huff_encode)
         else:
             var name_span = name.as_bytes()
-            var idx = qpack_encode_int_into(buf, UInt64(len(name_span)), 3)
-            buf[idx] |= 0x20
+            var idx = len(buf)
+            buf.resize(idx + 6, UInt8(0))
+            buf[idx] = UInt8(0x20)
+            var n = hpack_encode_int_at(buf, idx, len(name_span), 3)
+            buf.resize(idx + n, UInt8(0))
             buf.extend(Span(name_span))
         self._qpack_encode_string_into_cached(buf, value)
 
@@ -1022,12 +1008,18 @@ struct QpackEncoder(Copyable, Movable):
         """Encode string using cached Huffman table."""
         if self.use_huffman:
             var huff_len = _huffman_encoded_len_with_table(s, self._huff_encode)
-            var idx = qpack_encode_int_into(buf, UInt64(huff_len), 7)
-            buf[idx] |= 0x80
+            var idx = len(buf)
+            buf.resize(idx + 6, UInt8(0))
+            buf[idx] = UInt8(0x80)
+            var n = hpack_encode_int_at(buf, idx, huff_len, 7)
+            buf.resize(idx + n, UInt8(0))
             _huffman_encode_into_with_table(buf, s, self._huff_encode)
         else:
             var raw = s.as_bytes()
-            _ = qpack_encode_int_into(buf, UInt64(len(raw)), 7)
+            var idx = len(buf)
+            buf.resize(idx + 6, UInt8(0))
+            var n = hpack_encode_int_at(buf, idx, len(raw), 7)
+            buf.resize(idx + n, UInt8(0))
             buf.extend(Span(raw))
 
 
