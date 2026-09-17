@@ -245,6 +245,28 @@ def varint_encode_at(mut buf: List[UInt8], pos: Int, value: UInt64) -> Int:
 
 
 @always_inline
+def hpack_encode_int_at(mut buf: List[Byte], pos: Int, value: Int, prefix_bits: Int) -> Int:
+    """Write an HPACK/QPACK prefix integer (RFC 7541 S5.1) at `pos`.
+
+    The high bits of buf[pos] are preserved; the low `prefix_bits` are OR'd in.
+    Returns total bytes written. Caller must ensure buf is pre-sized.
+    """
+    var max_prefix = (1 << prefix_bits) - 1
+    if value < max_prefix:
+        buf[pos] = buf[pos] | Byte(value)
+        return 1
+    buf[pos] = buf[pos] | Byte(max_prefix)
+    var remaining = value - max_prefix
+    var written = 1
+    while remaining >= 128:
+        buf[pos + written] = Byte((remaining & 0x7F) | 0x80)
+        remaining >>= 7
+        written += 1
+    buf[pos + written] = Byte(remaining)
+    return written + 1
+
+
+@always_inline
 def varint_decode[origin: Origin](mut reader: ByteReader[origin]) raises -> UInt64:
     var first = reader.read_u8()
     var prefix = Int(first >> 6)

@@ -3056,26 +3056,28 @@ struct QuicConnection(Movable):
         for ref rec in records:
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
-                if key not in self.stream_map.streams:
+                var p = self.stream_map.try_stream_ptr(key)
+                if not p:
                     continue
-                var p = self.stream_map.stream_ptr(key)
-                if p[].send_buf:
-                    p[].send_buf.value().on_ack(rec.offset, rec.length)
-                    var fully = p[].send_buf.value().is_fully_acked()
-                    if fully and p[].send_state:
-                        var ss = p[].send_state.value()
+                var ptr = p.value()
+                if ptr[].send_buf:
+                    ptr[].send_buf.value().on_ack(rec.offset, rec.length)
+                    var fully = ptr[].send_buf.value().is_fully_acked()
+                    if fully and ptr[].send_state:
+                        var ss = ptr[].send_state.value()
                         if ss == SendState.DATA_SENT:
-                            p[].send_state = Optional[SendState](SendState.DATA_RECVD)
+                            ptr[].send_state = Optional[SendState](SendState.DATA_RECVD)
                     _ = self.stream_map.maybe_cleanup(key)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
-                if key not in self.stream_map.streams:
+                var p = self.stream_map.try_stream_ptr(key)
+                if not p:
                     continue
-                var p = self.stream_map.stream_ptr(key)
-                if p[].send_state:
-                    var ss = p[].send_state.value()
+                var ptr = p.value()
+                if ptr[].send_state:
+                    var ss = ptr[].send_state.value()
                     if ss == SendState.RESET_SENT:
-                        p[].send_state = Optional[SendState](SendState.RESET_RECVD)
+                        ptr[].send_state = Optional[SendState](SendState.RESET_RECVD)
                 _ = self.stream_map.maybe_cleanup(key)
 
     def _on_app_pkt_lost(mut self, pn: Int) raises:
@@ -3086,33 +3088,37 @@ struct QuicConnection(Movable):
         for ref rec in records:
             if rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
-                if key not in self.stream_map.streams:
+                var p = self.stream_map.try_stream_ptr(key)
+                if not p:
                     continue
-                var p = self.stream_map.stream_ptr(key)
-                if p[].send_buf:
-                    p[].send_buf.value().on_loss(rec.offset, rec.length)
-                    var has_pending = p[].send_buf.value().has_pending()
+                var ptr = p.value()
+                if ptr[].send_buf:
+                    ptr[].send_buf.value().on_loss(rec.offset, rec.length)
+                    var has_pending = ptr[].send_buf.value().has_pending()
                     if has_pending:
                         self.stream_map.add_sendable(key)
             elif rec.kind == SSF_RESET_STREAM:
                 var key = Int(rec.stream_id)
-                if key in self.stream_map.streams:
-                    var p = self.stream_map.stream_ptr(key)
-                    p[].needs_reset_stream = True
+                var p = self.stream_map.try_stream_ptr(key)
+                if p:
+                    var ptr = p.value()
+                    ptr[].needs_reset_stream = True
                     self.stream_map.mark_reset(key)
             elif rec.kind == SSF_STOP_SENDING:
                 var key = Int(rec.stream_id)
-                if key in self.stream_map.streams:
-                    var p = self.stream_map.stream_ptr(key)
-                    p[].needs_stop_sending = True
+                var p = self.stream_map.try_stream_ptr(key)
+                if p:
+                    var ptr = p.value()
+                    ptr[].needs_stop_sending = True
                     self.stream_map.mark_stop_sending(key)
             elif rec.kind == SSF_MAX_DATA:
                 self.stream_map.needs_max_data = True
             elif rec.kind == SSF_MAX_STREAM_DATA:
                 var key = Int(rec.stream_id)
-                if key in self.stream_map.streams:
-                    var p = self.stream_map.stream_ptr(key)
-                    p[].needs_max_stream_data = True
+                var p = self.stream_map.try_stream_ptr(key)
+                if p:
+                    var ptr = p.value()
+                    ptr[].needs_max_stream_data = True
                     self.stream_map.mark_max_stream_data(key)
             elif rec.kind == SSF_MAX_STREAMS_BIDI:
                 self.stream_map.needs_max_streams_bidi = True

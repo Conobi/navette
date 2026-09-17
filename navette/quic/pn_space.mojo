@@ -480,8 +480,9 @@ struct PacketNumberSpace(Copyable, Movable):
     def on_packet_sent(mut self, var pkt: SentPacket) raises:
         """Record a sent packet; an ack-eliciting one re-arms the PTO base."""
         var key = Int(pkt.pn)
-        if key in self.sent_packets:
-            if self.sent_packets[key].ack_eliciting:
+        var existing = self.sent_packets.find(key)
+        if existing:
+            if existing.value().ack_eliciting:
                 self.ae_in_flight -= 1
         var ae = pkt.ack_eliciting
         var ts = pkt.time_sent
@@ -492,16 +493,14 @@ struct PacketNumberSpace(Copyable, Movable):
             self.probe_pending = False
 
     def forget_sent(mut self, pn: Int) raises -> Optional[SentPacket]:
-        """Remove and return a sent record (loss or discard path), keeping the
-        ack-eliciting count and the PTO base in step."""
-        try:
-            var pkt = self.sent_packets.pop(pn)
-            if pkt.ack_eliciting:
-                self.ae_in_flight -= 1
-            self.sync_ae_tracking()
-            return pkt^
-        except:
+        """Remove and return a sent record, keeping the ack-eliciting count in step."""
+        if pn not in self.sent_packets:
             return None
+        var pkt = self.sent_packets.pop(pn)
+        if pkt.ack_eliciting:
+            self.ae_in_flight -= 1
+        self.sync_ae_tracking()
+        return pkt^
 
     def has_ack_eliciting_in_flight(self) -> Bool:
         """True while any ack-eliciting packet remains unacknowledged."""
@@ -562,13 +561,12 @@ struct PacketNumberSpace(Copyable, Movable):
         # Remove acked packets from sent_packets and collect them.
         # Single pop per PN: avoids the old in + [] + copy + pop (4 lookups).
         for ref key in self._scratch_pns:
-            try:
-                var pkt = self.sent_packets.pop(key)
-                if pkt.ack_eliciting:
-                    self.ae_in_flight -= 1
-                acked.append(pkt^)
-            except:
-                pass  # PN not in sent_packets — already removed or never tracked
+            if key not in self.sent_packets:
+                continue
+            var pkt = self.sent_packets.pop(key)
+            if pkt.ack_eliciting:
+                self.ae_in_flight -= 1
+            acked.append(pkt^)
 
         if len(acked) > 0:
             self.sync_ae_tracking()

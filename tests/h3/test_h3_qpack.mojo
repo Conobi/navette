@@ -412,6 +412,32 @@ def test_decode_static_index_out_of_range_raises() raises:
     print("  test_decode_static_index_out_of_range_raises: PASS")
 
 
+def test_encode_field_all_three_paths() raises:
+    """Exercises exact-match, name-only, and literal paths through the index."""
+    var enc = QpackEncoder(use_huffman=False)
+
+    # Exact static match: (:method, GET) = index 17
+    var exact_hdrs = List[QpackHeaderField]()
+    exact_hdrs.append(QpackHeaderField(":method", "GET"))
+    var exact_bytes = enc.encode(exact_hdrs)
+    assert_true(len(exact_bytes) == 3, "exact: 2-byte prefix + 1 indexed")
+    assert_true(Int(exact_bytes[2]) == 0xD1, "exact: 0xC0 | 17")
+
+    # Name-only: (:authority, example.com) — name at index 0, value literal
+    var name_hdrs = List[QpackHeaderField]()
+    name_hdrs.append(QpackHeaderField(":authority", "example.com"))
+    var name_bytes = enc.encode(name_hdrs)
+    assert_true(Int(name_bytes[2]) == 0x50, "name-ref: 0x50 | 0")
+
+    # Literal: (x-custom, val) — no match
+    var lit_hdrs = List[QpackHeaderField]()
+    lit_hdrs.append(QpackHeaderField("x-custom", "val"))
+    var lit_bytes = enc.encode(lit_hdrs)
+    assert_true(Int(lit_bytes[2]) & 0xE0 == 0x20, "literal: starts with 001xxxxx")
+
+    print("  test_encode_field_all_three_paths: PASS")
+
+
 def test_decode_s_bit_raises() raises:
     # S=1 in the Delta Base byte means negative delta — not supported
     var data = List[UInt8]()
@@ -459,4 +485,5 @@ def main() raises:
     test_decode_multi_fields()
     test_decode_static_index_out_of_range_raises()
     test_decode_s_bit_raises()
+    test_encode_field_all_three_paths()
     print("All tests passed.")

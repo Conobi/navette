@@ -1,6 +1,7 @@
 from navette.quic.codec import (
     write_u8_at, write_u16_be_at, write_u24_be_at,
     write_u32_be_at, write_u64_be_at, varint_encode_at, varint_len,
+    hpack_encode_int_at,
 )
 
 
@@ -132,6 +133,37 @@ def test_varint_roundtrip_via_at() raises:
     print("  varint_roundtrip_via_at: PASS (8 values)")
 
 
+def test_hpack_encode_int_at_small() raises:
+    """Value fits in prefix -- single byte, OR'd into existing high bits."""
+    var buf = _zeroed(2)
+    buf[0] = UInt8(0x80)
+    var n = hpack_encode_int_at(buf, 0, 10, 7)
+    if n != 1: raise "small value should be 1 byte"
+    if buf[0] != UInt8(0x8A): raise "should OR 10 into low 7 bits of 0x80 = 0x8A, got " + String(Int(buf[0]))
+    print("  hpack_encode_int_at_small: PASS")
+
+
+def test_hpack_encode_int_at_multibyte() raises:
+    """Value exceeds prefix -- continuation bytes (RFC 7541 S5.1: 1337 with 5-bit prefix)."""
+    var buf = _zeroed(4)
+    var n = hpack_encode_int_at(buf, 0, 1337, 5)
+    if n != 3: raise "1337 with 5-bit prefix should be 3 bytes, got " + String(n)
+    if buf[0] != UInt8(0x1F): raise "first byte mismatch"
+    if buf[1] != UInt8(0x9A): raise "second byte mismatch"
+    if buf[2] != UInt8(0x0A): raise "third byte mismatch"
+    print("  hpack_encode_int_at_multibyte: PASS")
+
+
+def test_hpack_encode_int_at_preserves_opcode() raises:
+    """High bits of buf[pos] are preserved -- only low prefix_bits are written."""
+    var buf = _zeroed(4)
+    buf[0] = UInt8(0x40)
+    _ = hpack_encode_int_at(buf, 0, 1337, 6)
+    if (buf[0] & UInt8(0xC0)) != UInt8(0x40):
+        raise "high bits should be preserved"
+    print("  hpack_encode_int_at_preserves_opcode: PASS")
+
+
 def main() raises:
     print("test_encoding_primitives:")
     test_write_u8_at()
@@ -145,4 +177,7 @@ def main() raises:
     test_varint_encode_at_8byte()
     test_varint_encode_at_with_offset()
     test_varint_roundtrip_via_at()
+    test_hpack_encode_int_at_small()
+    test_hpack_encode_int_at_multibyte()
+    test_hpack_encode_int_at_preserves_opcode()
     print("All test_encoding_primitives tests passed.")

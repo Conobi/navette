@@ -5,6 +5,7 @@
 
 from std.collections import Span
 from navette.util.byte_string import bytes_to_string
+from navette.http.header_table_index import StaticTableIndex
 
 struct QpackStaticEntry(Copyable, Movable):
     var name: String
@@ -950,16 +951,22 @@ struct QpackEncoder(Copyable, Movable):
     var use_huffman: Bool
     var _static_table: List[QpackStaticEntry]
     var _huff_encode: List[HuffmanEntry]
+    var _static_index: StaticTableIndex
 
     def __init__(out self, use_huffman: Bool = True):
         self.use_huffman = use_huffman
         self._static_table = _qpack_static_table()
         self._huff_encode = _huffman_encode_table()
+        var pairs = List[Tuple[String, String]]()
+        for i in range(len(self._static_table)):
+            pairs.append(Tuple(self._static_table[i].name, self._static_table[i].value))
+        self._static_index = StaticTableIndex(pairs, start_index=0)
 
     def __init__(out self, *, copy_from: Self):
         self.use_huffman = copy_from.use_huffman
         self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
         self._huff_encode = List[HuffmanEntry](copy=copy_from._huff_encode)
+        self._static_index = copy_from._static_index.copy()
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
         """Encode a header list as a QPACK field section block.
@@ -981,25 +988,19 @@ struct QpackEncoder(Copyable, Movable):
 
     def _encode_field_into(self, mut buf: List[UInt8], name: String, value: String) raises:
         """Append one encoded header field directly to buf."""
-        # 1. Try exact static match → Indexed Static Field Line (§4.5.2)
-        var exact = -1
-        for i in range(len(self._static_table)):
-            if self._static_table[i].name == name and self._static_table[i].value == value:
-                exact = i
-                break
-        if exact >= 0:
-            var idx = qpack_encode_int_into(buf, UInt64(exact), 6)
+        var result = self._static_index.find(name, value)
+        var match_idx = result[0]
+        var is_exact = result[1]
+
+        # 1. Exact static match -> Indexed Static Field Line
+        if match_idx >= 0 and is_exact:
+            var idx = qpack_encode_int_into(buf, UInt64(match_idx), 6)
             buf[idx] |= 0xC0
             return
 
-        # 2. Try name-only match → Literal With Static Name Reference (§4.5.4)
-        var name_match = -1
-        for i in range(len(self._static_table)):
-            if self._static_table[i].name == name:
-                name_match = i
-                break
-        if name_match >= 0:
-            var idx = qpack_encode_int_into(buf, UInt64(name_match), 4)
+        # 2. Name-only match -> Literal With Static Name Reference
+        if match_idx >= 0:
+            var idx = qpack_encode_int_into(buf, UInt64(match_idx), 4)
             buf[idx] |= 0x50
             self._qpack_encode_string_into_cached(buf, value)
             return
