@@ -12,14 +12,18 @@ from navette.util.owned_alloc import Owned
 # by scripts/gen_ffi_bindings.py — signature drift between C and Mojo
 # produces a compile error.
 from navette.compress._lcm_bindings import (
-    call_lcm_br_feed,
-    call_lcm_br_finish,
     call_lcm_br_free,
     call_lcm_br_init,
-    call_lcm_gzip_feed,
-    call_lcm_gzip_finish,
     call_lcm_gzip_free,
     call_lcm_gzip_init,
+    load_lcm_br_feed,
+    load_lcm_br_finish,
+    load_lcm_gzip_feed,
+    load_lcm_gzip_finish,
+    lcm_gzip_feed_fn,
+    lcm_gzip_finish_fn,
+    lcm_br_feed_fn,
+    lcm_br_finish_fn,
 )
 from navette.compress.lib import DecoderLimits, _open_libcompress
 from navette.util.null_ptr import null_ptr
@@ -65,6 +69,23 @@ struct ContentEncoding(Copyable, Movable):
         return ContentEncoding(_ENC_IDENTITY)
 
 
+def _init_decoder_state(
+    ref lib: OwnedDLHandle, encoding: ContentEncoding, limits: DecoderLimits,
+) raises -> Pointer[NoneType, MutUntrackedOrigin]:
+    """Initialize C-side decoder state for the given encoding."""
+    if encoding._tag == _ENC_GZIP:
+        return call_lcm_gzip_init(
+            lib,
+            limits.input_cap, limits.output_cap, limits.ratio_x100,
+        )
+    elif encoding._tag == _ENC_BROTLI:
+        return call_lcm_br_init(
+            lib,
+            limits.input_cap, limits.output_cap, limits.ratio_x100,
+        )
+    return null_ptr[NoneType, MutUntrackedOrigin]()
+
+
 struct ContentDecoder(Movable):
     """Streaming content decoder (gzip, brotli, or identity passthrough).
 
@@ -82,88 +103,62 @@ struct ContentDecoder(Movable):
     var _encoding: ContentEncoding
     var _lib: OwnedDLHandle
     var _state: Pointer[NoneType, MutUntrackedOrigin]
+    # Cached FFI pointers for hot-path feed/finish, resolved once at init.
+    var _gzip_feed: lcm_gzip_feed_fn
+    var _gzip_finish: lcm_gzip_finish_fn
+    var _br_feed: lcm_br_feed_fn
+    var _br_finish: lcm_br_finish_fn
 
     # -- lifecycle -------------------------------------------------------------
 
     def __init__(out self, encoding: ContentEncoding) raises:
         """Create a decoder for the given encoding, with default caps."""
-        var limits = DecoderLimits.default()
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = _open_libcompress()
-        if encoding._tag == _ENC_GZIP:
-            self._state = call_lcm_gzip_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        elif encoding._tag == _ENC_BROTLI:
-            self._state = call_lcm_br_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        else:
-            self._state = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._gzip_feed = load_lcm_gzip_feed(self._lib)
+        self._gzip_finish = load_lcm_gzip_finish(self._lib)
+        self._br_feed = load_lcm_br_feed(self._lib)
+        self._br_finish = load_lcm_br_finish(self._lib)
+        self._state = _init_decoder_state(self._lib, encoding, DecoderLimits.default())
 
     def __init__(out self, encoding: ContentEncoding, limits: DecoderLimits) raises:
-        """Create a decoder with explicit decompression caps.
-
-        Resolves libcompress_mojo.so via the shared loader
-        (`navette.compress.lib._open_libcompress`); same RPATH /
-        env-var / CWD-relative fallback as `RustlsLibrary`.
-        """
+        """Create a decoder with explicit decompression caps."""
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = _open_libcompress()
-        if encoding._tag == _ENC_GZIP:
-            self._state = call_lcm_gzip_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        elif encoding._tag == _ENC_BROTLI:
-            self._state = call_lcm_br_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        else:
-            self._state = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._gzip_feed = load_lcm_gzip_feed(self._lib)
+        self._gzip_finish = load_lcm_gzip_finish(self._lib)
+        self._br_feed = load_lcm_br_feed(self._lib)
+        self._br_finish = load_lcm_br_finish(self._lib)
+        self._state = _init_decoder_state(self._lib, encoding, limits)
 
     def __init__(out self, encoding: ContentEncoding, lib_path: String) raises:
         """Create a decoder with an explicit libcompress_mojo.so path."""
-        var limits = DecoderLimits.default()
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = OwnedDLHandle(lib_path)
-        if encoding._tag == _ENC_GZIP:
-            self._state = call_lcm_gzip_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        elif encoding._tag == _ENC_BROTLI:
-            self._state = call_lcm_br_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        else:
-            self._state = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._gzip_feed = load_lcm_gzip_feed(self._lib)
+        self._gzip_finish = load_lcm_gzip_finish(self._lib)
+        self._br_feed = load_lcm_br_feed(self._lib)
+        self._br_finish = load_lcm_br_finish(self._lib)
+        self._state = _init_decoder_state(self._lib, encoding, DecoderLimits.default())
 
     def __init__(out self, encoding: ContentEncoding, lib_path: String, limits: DecoderLimits) raises:
         """Create a decoder with explicit lib path and caps."""
         self._encoding = ContentEncoding(copy_from=encoding)
         self._lib = OwnedDLHandle(lib_path)
-        if encoding._tag == _ENC_GZIP:
-            self._state = call_lcm_gzip_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        elif encoding._tag == _ENC_BROTLI:
-            self._state = call_lcm_br_init(
-                self._lib,
-                limits.input_cap, limits.output_cap, limits.ratio_x100,
-            )
-        else:
-            self._state = null_ptr[NoneType, MutUntrackedOrigin]()
+        self._gzip_feed = load_lcm_gzip_feed(self._lib)
+        self._gzip_finish = load_lcm_gzip_finish(self._lib)
+        self._br_feed = load_lcm_br_feed(self._lib)
+        self._br_finish = load_lcm_br_finish(self._lib)
+        self._state = _init_decoder_state(self._lib, encoding, limits)
 
     def __init__(out self, *, deinit move: Self):
         self._encoding = ContentEncoding(copy_from=move._encoding)
         self._lib = move._lib^
         self._state = move._state
+        self._gzip_feed = move._gzip_feed
+        self._gzip_finish = move._gzip_finish
+        self._br_feed = move._br_feed
+        self._br_finish = move._br_finish
 
     def __deinit__(deinit self):
         """Release the C-side decoder state.
@@ -217,15 +212,21 @@ struct ContentDecoder(Movable):
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
-            n = call_lcm_gzip_feed(
-                self._lib,
-                self._state, in_ptr, len(data), out_buf, _OUT_CAP,
+            n = self._gzip_feed(
+                self._state,
+                in_ptr.unsafe_origin_cast[MutUntrackedOrigin](), len(data),
+                out_buf.unsafe_origin_cast[MutUntrackedOrigin](), _OUT_CAP,
             )
         else:
-            n = call_lcm_br_feed(
-                self._lib,
-                self._state, in_ptr, len(data), out_buf, _OUT_CAP,
+            n = self._br_feed(
+                self._state,
+                in_ptr.unsafe_origin_cast[MutUntrackedOrigin](), len(data),
+                out_buf.unsafe_origin_cast[MutUntrackedOrigin](), _OUT_CAP,
             )
+        # Keep backing buffers alive past the FFI call — origin_cast erases
+        # the borrow so the compiler may otherwise ASAP-destroy them.
+        _ = data
+        _ = out_buf_owner
 
         if n < 0:
             raise "ContentDecoder.feed: decompression error (" + String(n) + ")"
@@ -249,15 +250,16 @@ struct ContentDecoder(Movable):
         var n: Int64
 
         if self._encoding._tag == _ENC_GZIP:
-            n = call_lcm_gzip_finish(
-                self._lib,
-                self._state, out_buf, _OUT_CAP,
+            n = self._gzip_finish(
+                self._state,
+                out_buf.unsafe_origin_cast[MutUntrackedOrigin](), _OUT_CAP,
             )
         else:
-            n = call_lcm_br_finish(
-                self._lib,
-                self._state, out_buf, _OUT_CAP,
+            n = self._br_finish(
+                self._state,
+                out_buf.unsafe_origin_cast[MutUntrackedOrigin](), _OUT_CAP,
             )
+        _ = out_buf_owner
 
         if n < 0:
             raise "ContentDecoder.finish: decompression error (" + String(n) + ")"

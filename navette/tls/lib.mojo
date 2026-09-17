@@ -32,32 +32,16 @@ from navette.tls._rlsm_bindings import (
     call_rlsm_config_set_alpn_protocols,
     call_rlsm_hmac_sha256,
     call_rlsm_initial_keys,
-    call_rlsm_keys_batch_decrypt,
-    call_rlsm_keys_batch_encrypt,
-    call_rlsm_keys_batch_header_protect,
-    call_rlsm_keys_batch_header_unprotect,
-    call_rlsm_keys_free,
     call_rlsm_test_keys_free_count,
     call_rlsm_test_keys_free_reset,
-    load_rlsm_keys_local_encrypt,
-    load_rlsm_keys_local_header_protect,
-    load_rlsm_keys_remote_decrypt,
-    load_rlsm_keys_remote_header_unprotect,
-    call_rlsm_keys_tag_len,
     call_rlsm_last_error,
     call_rlsm_noop,
     call_rlsm_quic_client_config_new,
     call_rlsm_quic_client_config_new_insecure,
     call_rlsm_quic_client_config_with_ca,
     call_rlsm_quic_client_conn_new,
-    call_rlsm_quic_conn_alert,
     call_rlsm_quic_conn_free,
-    call_rlsm_quic_conn_handshake_kind,
-    call_rlsm_quic_conn_is_handshaking,
-    call_rlsm_quic_conn_read_hs,
     call_rlsm_quic_conn_take_keys,
-    call_rlsm_quic_conn_transport_params,
-    call_rlsm_quic_conn_write_hs,
     call_rlsm_quic_server_config_new,
     call_rlsm_quic_server_conn_new,
     call_rlsm_quic_server_conn_zero_rtt_keys,
@@ -66,19 +50,55 @@ from navette.tls._rlsm_bindings import (
     call_rlsm_tls_client_new,
     call_rlsm_tls_conn_alpn,
     call_rlsm_tls_conn_free,
-    call_rlsm_tls_conn_is_handshaking,
-    call_rlsm_tls_conn_read_plaintext,
-    call_rlsm_tls_conn_read_tls,
-    call_rlsm_tls_conn_write_plaintext,
-    call_rlsm_tls_conn_write_tls,
     call_rlsm_tls_server_new,
-    # Raw-pointer loaders and their C ABI types, for the per-packet hot
-    # path — resolved once into `_HotFns` (below) to avoid a `dlsym` on
-    # every FFI crossing. Every other symbol uses `call_rlsm_*`.
+    # Loaders + C ABI types for cached hot-path function pointers.
+    # Resolved once into `_HotFns` at library load to avoid a `dlsym`
+    # on every FFI crossing.
+    load_rlsm_keys_local_encrypt,
+    load_rlsm_keys_local_header_protect,
+    load_rlsm_keys_remote_decrypt,
+    load_rlsm_keys_remote_header_unprotect,
     rlsm_keys_remote_header_unprotect_fn,
     rlsm_keys_remote_decrypt_fn,
     rlsm_keys_local_encrypt_fn,
     rlsm_keys_local_header_protect_fn,
+    # Batch crypto + keys lifecycle
+    load_rlsm_keys_batch_header_unprotect,
+    load_rlsm_keys_batch_decrypt,
+    load_rlsm_keys_batch_header_protect,
+    load_rlsm_keys_batch_encrypt,
+    load_rlsm_keys_tag_len,
+    load_rlsm_keys_free,
+    rlsm_keys_batch_header_unprotect_fn,
+    rlsm_keys_batch_decrypt_fn,
+    rlsm_keys_batch_header_protect_fn,
+    rlsm_keys_batch_encrypt_fn,
+    rlsm_keys_tag_len_fn,
+    rlsm_keys_free_fn,
+    # QUIC per-connection-per-tick
+    load_rlsm_quic_conn_write_hs,
+    load_rlsm_quic_conn_read_hs,
+    load_rlsm_quic_conn_is_handshaking,
+    load_rlsm_quic_conn_handshake_kind,
+    load_rlsm_quic_conn_alert,
+    load_rlsm_quic_conn_transport_params,
+    rlsm_quic_conn_write_hs_fn,
+    rlsm_quic_conn_read_hs_fn,
+    rlsm_quic_conn_is_handshaking_fn,
+    rlsm_quic_conn_handshake_kind_fn,
+    rlsm_quic_conn_alert_fn,
+    rlsm_quic_conn_transport_params_fn,
+    # TLS per-connection-per-read/write cycle (H2 path)
+    load_rlsm_tls_conn_read_tls,
+    load_rlsm_tls_conn_write_tls,
+    load_rlsm_tls_conn_read_plaintext,
+    load_rlsm_tls_conn_write_plaintext,
+    load_rlsm_tls_conn_is_handshaking,
+    rlsm_tls_conn_read_tls_fn,
+    rlsm_tls_conn_write_tls_fn,
+    rlsm_tls_conn_read_plaintext_fn,
+    rlsm_tls_conn_write_plaintext_fn,
+    rlsm_tls_conn_is_handshaking_fn,
 )
 from navette.util.null_ptr import null_ptr
 
@@ -125,64 +145,81 @@ def _open_librustls() raises -> OwnedDLHandle:
 
 
 struct _HotFns(Movable):
-    """Per-packet FFI function pointers, resolved once at library load.
+    """Hot-path FFI function pointers, resolved once at library load.
 
-    The QUIC data path crosses into librustls_mojo four times per packet —
-    header-unprotect + AEAD-decrypt on ingress, AEAD-encrypt + header-protect
-    on egress. The generated `call_rlsm_*` wrappers run a `dlsym` on every
-    call; resolving these four symbols once here and caching the
-    `thin abi("C")` pointers turns each crossing into a direct indirect
-    call, with no per-packet dynamic-loader lookup.
+    The generated `call_rlsm_*` wrappers resolve via `dlsym` on every call.
+    For per-packet and per-connection-per-tick symbols this is measurable
+    overhead (~3.9 µs/req across 764 dlsym calls). Resolving them once
+    here and caching the `thin abi("C")` pointers turns each crossing
+    into a direct indirect call with no dynamic-loader lookup.
 
-    Mojo 1.0.0 keeps this possible. `OwnedDLHandle.get_function` no longer
-    hands back a raw pointer — it returns a `_DLCallable` that borrows the
-    handle, which cannot be a struct field here because no field can name
-    a sibling field's origin. The generated `load_rlsm_*` helpers go the
-    other way, resolving the address with the public
-    `OwnedDLHandle.get_symbol` and reinterpreting it as `<name>_fn`, which
-    is a plain register-passable function pointer and stores fine in a
-    field. Argument types survive the move because they are part of
-    `<name>_fn`.
+    Covers three tiers:
+    - Per-packet (4): single-packet encrypt/decrypt + header protect.
+    - Batch crypto (6): batch encrypt/decrypt + header protect + tag_len + free.
+    - Per-connection-per-tick (11): QUIC handshake + TLS I/O.
 
     Lifetime: a cached pointer is valid only while the owning
     `RustlsLibrary._handle` keeps the .so loaded. Both live in the same
     struct and are destroyed together, so a cached pointer is never called
-    after the handle closes. This is the guarantee `_DLCallable`'s origin
-    would have made statically; here it is an invariant of `RustlsLibrary`
-    instead. Only the four per-packet symbols are cached; every other
-    (per-connection / setup) symbol keeps the resolve-on-call path, which
-    is not hot.
+    after the handle closes.
     """
 
+    # Per-packet single encrypt/decrypt
     var keys_remote_header_unprotect: rlsm_keys_remote_header_unprotect_fn
     var keys_remote_decrypt: rlsm_keys_remote_decrypt_fn
     var keys_local_encrypt: rlsm_keys_local_encrypt_fn
     var keys_local_header_protect: rlsm_keys_local_header_protect_fn
+    # Batch crypto
+    var keys_batch_header_unprotect: rlsm_keys_batch_header_unprotect_fn
+    var keys_batch_decrypt: rlsm_keys_batch_decrypt_fn
+    var keys_batch_header_protect: rlsm_keys_batch_header_protect_fn
+    var keys_batch_encrypt: rlsm_keys_batch_encrypt_fn
+    var keys_tag_len: rlsm_keys_tag_len_fn
+    var keys_free: rlsm_keys_free_fn
+    # QUIC per-connection-per-tick
+    var quic_conn_write_hs: rlsm_quic_conn_write_hs_fn
+    var quic_conn_read_hs: rlsm_quic_conn_read_hs_fn
+    var quic_conn_is_handshaking: rlsm_quic_conn_is_handshaking_fn
+    var quic_conn_handshake_kind: rlsm_quic_conn_handshake_kind_fn
+    var quic_conn_alert: rlsm_quic_conn_alert_fn
+    var quic_conn_transport_params: rlsm_quic_conn_transport_params_fn
+    # TLS per-connection-per-read/write (H2 path)
+    var tls_conn_read_tls: rlsm_tls_conn_read_tls_fn
+    var tls_conn_write_tls: rlsm_tls_conn_write_tls_fn
+    var tls_conn_read_plaintext: rlsm_tls_conn_read_plaintext_fn
+    var tls_conn_write_plaintext: rlsm_tls_conn_write_plaintext_fn
+    var tls_conn_is_handshaking: rlsm_tls_conn_is_handshaking_fn
 
     def __init__(out self, ref handle: OwnedDLHandle) raises:
-        """Resolve the four per-packet symbols from an open library handle.
+        """Resolve all hot-path symbols from an open library handle.
 
         Args:
             handle: The `OwnedDLHandle` that must outlive this `_HotFns`.
 
         Raises:
-            If any of the four symbols is missing from the loaded library.
+            If any symbol is missing from the loaded library.
         """
         self.keys_remote_header_unprotect = load_rlsm_keys_remote_header_unprotect(handle)
         self.keys_remote_decrypt = load_rlsm_keys_remote_decrypt(handle)
         self.keys_local_encrypt = load_rlsm_keys_local_encrypt(handle)
         self.keys_local_header_protect = load_rlsm_keys_local_header_protect(handle)
-
-    def __init__(out self, *, deinit move: Self):
-        """Move the cached pointers out of `move`.
-
-        Args:
-            move: The `_HotFns` being consumed.
-        """
-        self.keys_remote_header_unprotect = move.keys_remote_header_unprotect
-        self.keys_remote_decrypt = move.keys_remote_decrypt
-        self.keys_local_encrypt = move.keys_local_encrypt
-        self.keys_local_header_protect = move.keys_local_header_protect
+        self.keys_batch_header_unprotect = load_rlsm_keys_batch_header_unprotect(handle)
+        self.keys_batch_decrypt = load_rlsm_keys_batch_decrypt(handle)
+        self.keys_batch_header_protect = load_rlsm_keys_batch_header_protect(handle)
+        self.keys_batch_encrypt = load_rlsm_keys_batch_encrypt(handle)
+        self.keys_tag_len = load_rlsm_keys_tag_len(handle)
+        self.keys_free = load_rlsm_keys_free(handle)
+        self.quic_conn_write_hs = load_rlsm_quic_conn_write_hs(handle)
+        self.quic_conn_read_hs = load_rlsm_quic_conn_read_hs(handle)
+        self.quic_conn_is_handshaking = load_rlsm_quic_conn_is_handshaking(handle)
+        self.quic_conn_handshake_kind = load_rlsm_quic_conn_handshake_kind(handle)
+        self.quic_conn_alert = load_rlsm_quic_conn_alert(handle)
+        self.quic_conn_transport_params = load_rlsm_quic_conn_transport_params(handle)
+        self.tls_conn_read_tls = load_rlsm_tls_conn_read_tls(handle)
+        self.tls_conn_write_tls = load_rlsm_tls_conn_write_tls(handle)
+        self.tls_conn_read_plaintext = load_rlsm_tls_conn_read_plaintext(handle)
+        self.tls_conn_write_plaintext = load_rlsm_tls_conn_write_plaintext(handle)
+        self.tls_conn_is_handshaking = load_rlsm_tls_conn_is_handshaking(handle)
 
 
 struct RustlsLibrary(Movable):
@@ -314,9 +351,9 @@ struct RustlsLibrary(Movable):
         Advances the state machine via process_new_packets() on the Rust side.
         Returns the number of bytes consumed, or -1 on error.
         """
-        return call_rlsm_tls_conn_read_tls(
-            self._handle,
-            handle, ciphertext, ct_len,
+        return self._hot.tls_conn_read_tls(
+            handle,
+            ciphertext.unsafe_origin_cast[MutUntrackedOrigin](), ct_len,
         )
 
     @always_inline
@@ -331,9 +368,9 @@ struct RustlsLibrary(Movable):
         Returns the number of bytes written, 0 if nothing pending, or -1 on
         error.
         """
-        return call_rlsm_tls_conn_write_tls(
-            self._handle,
-            handle, out_buf, buf_len,
+        return self._hot.tls_conn_write_tls(
+            handle,
+            out_buf.unsafe_origin_cast[MutUntrackedOrigin](), buf_len,
         )
 
     # -- Connection: plaintext I/O --------------------------------------------
@@ -350,9 +387,9 @@ struct RustlsLibrary(Movable):
         Returns the number of bytes written, 0 if no data is currently
         available, or -1 on error.
         """
-        return call_rlsm_tls_conn_read_plaintext(
-            self._handle,
-            handle, out_buf, buf_len,
+        return self._hot.tls_conn_read_plaintext(
+            handle,
+            out_buf.unsafe_origin_cast[MutUntrackedOrigin](), buf_len,
         )
 
     @always_inline
@@ -366,9 +403,9 @@ struct RustlsLibrary(Movable):
 
         Returns the number of bytes consumed, or -1 on error.
         """
-        return call_rlsm_tls_conn_write_plaintext(
-            self._handle,
-            handle, data, data_len,
+        return self._hot.tls_conn_write_plaintext(
+            handle,
+            data.unsafe_origin_cast[MutUntrackedOrigin](), data_len,
         )
 
     # -- Connection: state -----------------------------------------------------
@@ -376,7 +413,7 @@ struct RustlsLibrary(Movable):
     @always_inline
     def tls_conn_is_handshaking(self, handle: Int32) raises -> Int32:
         """1 if the TLS handshake is in progress, 0 if complete, -1 on error."""
-        return call_rlsm_tls_conn_is_handshaking(self._handle, handle)
+        return self._hot.tls_conn_is_handshaking(handle)
 
     @always_inline
     def tls_conn_alpn(
@@ -436,7 +473,7 @@ struct RustlsLibrary(Movable):
     @always_inline
     def keys_tag_len(self, keys_handle: Int32) raises -> Int32:
         """Return AEAD tag length (16 for AES-128-GCM). -1 on error."""
-        return call_rlsm_keys_tag_len(self._handle, keys_handle)
+        return self._hot.keys_tag_len(keys_handle)
 
     @always_inline
     def keys_local_encrypt(
@@ -542,11 +579,13 @@ struct RustlsLibrary(Movable):
         out_pn_lengths: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int32:
         """Batch header unprotection. Returns success count or -1."""
-        return call_rlsm_keys_batch_header_unprotect(
-            self._handle,
+        return self._hot.keys_batch_header_unprotect(
             keys_handle, count,
-            packet_ptrs, packet_lens, pn_offsets,
-            out_first_bytes, out_pn_lengths,
+            packet_ptrs.unsafe_origin_cast[MutUntrackedOrigin](),
+            packet_lens.unsafe_origin_cast[MutUntrackedOrigin](),
+            pn_offsets.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_first_bytes.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_pn_lengths.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
@@ -561,11 +600,13 @@ struct RustlsLibrary(Movable):
         out_plaintext_lens: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int32:
         """Batch AEAD decryption. Returns success count or -1."""
-        return call_rlsm_keys_batch_decrypt(
-            self._handle,
+        return self._hot.keys_batch_decrypt(
             keys_handle, count,
-            packet_numbers, packet_ptrs, packet_lens, header_lens,
-            out_plaintext_lens,
+            packet_numbers.unsafe_origin_cast[MutUntrackedOrigin](),
+            packet_ptrs.unsafe_origin_cast[MutUntrackedOrigin](),
+            packet_lens.unsafe_origin_cast[MutUntrackedOrigin](),
+            header_lens.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_plaintext_lens.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
@@ -580,11 +621,13 @@ struct RustlsLibrary(Movable):
         out_results: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int32:
         """Batch header protection. Returns success count or -1."""
-        return call_rlsm_keys_batch_header_protect(
-            self._handle,
+        return self._hot.keys_batch_header_protect(
             keys_handle, count,
-            packet_ptrs, packet_lens, pn_offsets, pn_lengths,
-            out_results,
+            packet_ptrs.unsafe_origin_cast[MutUntrackedOrigin](),
+            packet_lens.unsafe_origin_cast[MutUntrackedOrigin](),
+            pn_offsets.unsafe_origin_cast[MutUntrackedOrigin](),
+            pn_lengths.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_results.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
@@ -600,18 +643,20 @@ struct RustlsLibrary(Movable):
         out_ciphertext_lens: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int32:
         """Batch AEAD encryption. Returns success count or -1."""
-        return call_rlsm_keys_batch_encrypt(
-            self._handle,
+        return self._hot.keys_batch_encrypt(
             keys_handle, count,
-            packet_numbers, packet_ptrs,
-            header_lens, payload_lens, buf_capacities,
-            out_ciphertext_lens,
+            packet_numbers.unsafe_origin_cast[MutUntrackedOrigin](),
+            packet_ptrs.unsafe_origin_cast[MutUntrackedOrigin](),
+            header_lens.unsafe_origin_cast[MutUntrackedOrigin](),
+            payload_lens.unsafe_origin_cast[MutUntrackedOrigin](),
+            buf_capacities.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_ciphertext_lens.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
     def keys_free(self, keys_handle: Int32) raises -> Int32:
         """Free keys. Returns 0 on success, -1 if handle not found."""
-        return call_rlsm_keys_free(self._handle, keys_handle)
+        return self._hot.keys_free(keys_handle)
 
     @always_inline
     def test_keys_free_count(self) raises -> UInt64:
@@ -743,9 +788,11 @@ struct RustlsLibrary(Movable):
         out_kc: Pointer[mut=True, T=UInt8, origin=_],
     ) raises -> Int32:
         """Drain outgoing TLS bytes. out_kc: 0=none, 1=Handshake, 2=OneRtt. Returns 0."""
-        return call_rlsm_quic_conn_write_hs(
-            self._handle,
-            conn_handle, out_buf, out_capacity, out_written, out_kc,
+        return self._hot.quic_conn_write_hs(
+            conn_handle,
+            out_buf.unsafe_origin_cast[MutUntrackedOrigin](), out_capacity,
+            out_written.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_kc.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
@@ -763,10 +810,11 @@ struct RustlsLibrary(Movable):
           out_state_machine_us: rustls read_hs body µs (slot 1).
           out_handle_lookup_us: with_mut handle-table lookup µs (slot 2).
         """
-        return call_rlsm_quic_conn_read_hs(
-            self._handle,
-            conn_handle, data, data_len,
-            out_state_machine_us, out_handle_lookup_us,
+        return self._hot.quic_conn_read_hs(
+            conn_handle,
+            data.unsafe_origin_cast[MutUntrackedOrigin](), data_len,
+            out_state_machine_us.unsafe_origin_cast[MutUntrackedOrigin](),
+            out_handle_lookup_us.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
@@ -784,12 +832,12 @@ struct RustlsLibrary(Movable):
     @always_inline
     def quic_conn_is_handshaking(self, conn_handle: Int32) raises -> Int32:
         """Returns 1 if handshaking, 0 if complete, -1 on invalid handle."""
-        return call_rlsm_quic_conn_is_handshaking(self._handle, conn_handle)
+        return self._hot.quic_conn_is_handshaking(conn_handle)
 
     @always_inline
     def quic_conn_handshake_kind(self, conn_handle: Int32) raises -> Int32:
         """Returns -2 client, -1 invalid, 0 unknown, 1 Full, 2 Resumed, 3 FullWithHRR."""
-        return call_rlsm_quic_conn_handshake_kind(self._handle, conn_handle)
+        return self._hot.quic_conn_handshake_kind(conn_handle)
 
     @always_inline
     def quic_conn_transport_params(
@@ -800,15 +848,16 @@ struct RustlsLibrary(Movable):
         out_written: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int32:
         """Read peer transport params. Returns 0 (available), 1 (not yet), -1 (error)."""
-        return call_rlsm_quic_conn_transport_params(
-            self._handle,
-            conn_handle, out_buf, out_capacity, out_written,
+        return self._hot.quic_conn_transport_params(
+            conn_handle,
+            out_buf.unsafe_origin_cast[MutUntrackedOrigin](), out_capacity,
+            out_written.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline
     def quic_conn_alert(self, conn_handle: Int32) raises -> Int32:
         """Read cached TLS alert code. Returns alert number, or -1 if no alert."""
-        return call_rlsm_quic_conn_alert(self._handle, conn_handle)
+        return self._hot.quic_conn_alert(conn_handle)
 
     @always_inline
     def quic_server_conn_zero_rtt_keys(
