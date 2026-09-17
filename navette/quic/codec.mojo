@@ -180,6 +180,71 @@ def varint_encode_raw(mut buf: List[UInt8], value: UInt64):
 
 
 @always_inline
+def write_u8_at(mut buf: List[UInt8], pos: Int, value: UInt8) -> Int:
+    """Write one byte at `pos`. Returns 1."""
+    buf[pos] = value
+    return 1
+
+
+@always_inline
+def write_u16_be_at(mut buf: List[UInt8], pos: Int, value: UInt16) -> Int:
+    """Write a 16-bit big-endian integer at `pos`. Returns 2."""
+    buf[pos] = UInt8((value >> 8) & 0xFF)
+    buf[pos + 1] = UInt8(value & 0xFF)
+    return 2
+
+
+@always_inline
+def write_u24_be_at(mut buf: List[UInt8], pos: Int, value: UInt32) -> Int:
+    """Write a 24-bit big-endian integer at `pos`. Returns 3."""
+    buf[pos] = UInt8((value >> 16) & 0xFF)
+    buf[pos + 1] = UInt8((value >> 8) & 0xFF)
+    buf[pos + 2] = UInt8(value & 0xFF)
+    return 3
+
+
+@always_inline
+def write_u32_be_at(mut buf: List[UInt8], pos: Int, value: UInt32) -> Int:
+    """Write a 32-bit big-endian integer at `pos`. Returns 4."""
+    buf[pos] = UInt8((value >> 24) & 0xFF)
+    buf[pos + 1] = UInt8((value >> 16) & 0xFF)
+    buf[pos + 2] = UInt8((value >> 8) & 0xFF)
+    buf[pos + 3] = UInt8(value & 0xFF)
+    return 4
+
+
+@always_inline
+def write_u64_be_at(mut buf: List[UInt8], pos: Int, value: UInt64) -> Int:
+    """Write a 64-bit big-endian integer at `pos`. Returns 8."""
+    for i in range(8):
+        buf[pos + i] = UInt8((value >> UInt64((7 - i) * 8)) & 0xFF)
+    return 8
+
+
+@always_inline
+def varint_encode_at(mut buf: List[UInt8], pos: Int, value: UInt64) -> Int:
+    """Write a QUIC varint (RFC 9000 section 16) at `pos`. Returns 1, 2, 4, or 8."""
+    var size = varint_len(value)
+    if size == 1:
+        buf[pos] = UInt8(value)
+    elif size == 2:
+        var v = UInt16(value) | UInt16(0x4000)
+        buf[pos] = UInt8((v >> 8) & 0xFF)
+        buf[pos + 1] = UInt8(v & 0xFF)
+    elif size == 4:
+        var v = UInt32(value) | UInt32(0x80000000)
+        buf[pos] = UInt8((v >> 24) & 0xFF)
+        buf[pos + 1] = UInt8((v >> 16) & 0xFF)
+        buf[pos + 2] = UInt8((v >> 8) & 0xFF)
+        buf[pos + 3] = UInt8(v & 0xFF)
+    else:
+        var v = value | UInt64(0xC000000000000000)
+        for i in range(8):
+            buf[pos + i] = UInt8((v >> UInt64((7 - i) * 8)) & 0xFF)
+    return size
+
+
+@always_inline
 def varint_decode[origin: Origin](mut reader: ByteReader[origin]) raises -> UInt64:
     var first = reader.read_u8()
     var prefix = Int(first >> 6)
