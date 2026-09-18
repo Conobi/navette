@@ -604,24 +604,28 @@ def decode_frame(
 # ---------------------------------------------------------------------------
 # encode_frame
 # ---------------------------------------------------------------------------
-def encode_frame(frame: Frame) -> List[Byte]:
-    """Encode a Frame into wire bytes (9-byte header + payload)."""
-    var payload_len = len(frame.payload)
-    var result = List[Byte](capacity=9 + payload_len)
-    result.resize(9, Byte(0))
+def encode_frame_into(frame: Frame, mut buf: List[Byte]):
+    """Append a Frame's wire bytes (9-byte header + payload) to buf."""
+    var base = len(buf)
+    buf.resize(base + 9, Byte(0))
 
     # 3-byte length + 1-byte type + 1-byte flags via _at writes
-    var pos = 0
-    pos += write_u24_be_at(result, pos, UInt32(payload_len))
-    pos += write_u8_at(result, pos, UInt8(frame.frame_type & 0xFF))
-    pos += write_u8_at(result, pos, UInt8(frame.flags & 0xFF))
+    var pos = base
+    pos += write_u24_be_at(buf, pos, UInt32(len(frame.payload)))
+    pos += write_u8_at(buf, pos, UInt8(frame.frame_type & 0xFF))
+    pos += write_u8_at(buf, pos, UInt8(frame.flags & 0xFF))
 
     # 4-byte stream ID (big-endian, reserved bit = 0)
-    result[pos] = UInt8((frame.stream_id >> 24) & 0x7F)
-    result[pos + 1] = UInt8((frame.stream_id >> 16) & 0xFF)
-    result[pos + 2] = UInt8((frame.stream_id >> 8) & 0xFF)
-    result[pos + 3] = UInt8(frame.stream_id & 0xFF)
+    buf[pos] = UInt8((frame.stream_id >> 24) & 0x7F)
+    buf[pos + 1] = UInt8((frame.stream_id >> 16) & 0xFF)
+    buf[pos + 2] = UInt8((frame.stream_id >> 8) & 0xFF)
+    buf[pos + 3] = UInt8(frame.stream_id & 0xFF)
 
-    result.extend(Span(frame.payload))
+    buf.extend(Span(frame.payload))
 
+
+def encode_frame(frame: Frame) -> List[Byte]:
+    """Encode a Frame into wire bytes (9-byte header + payload). Delegates to encode_frame_into."""
+    var result = List[Byte](capacity=9 + len(frame.payload))
+    encode_frame_into(frame, result)
     return result^

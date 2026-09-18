@@ -295,18 +295,22 @@ struct H2Session(Session):
         self._flush_outbound()
 
     def drain(mut self) -> List[Byte]:
-        """Drain queued outbound bytes for the transport to write."""
-        var out = self._outbuf^
-        self._outbuf = List[Byte]()
+        """Drain queued outbound bytes for the transport to write. Delegates to drain_into."""
+        var out = List[Byte]()
+        self.drain_into(out)
         return out^
+
+    def drain_into(mut self, mut sink: List[Byte]):
+        """Append queued outbound bytes into sink and clear the buffer in place,
+        preserving its backing allocation across drains."""
+        sink.extend(Span(self._outbuf))
+        self._outbuf.clear()
 
     # --- Internal -----------------------------------------------------------
 
     def _flush_outbound(mut self):
         """Move pending outbound bytes from H2Connection into our buffer."""
-        var pending = self._conn.data_to_send()
-        for ref byte in pending:
-            self._outbuf.append(byte)
+        self._conn.data_to_send_into(self._outbuf)
 
     def _dispatch_client_events(mut self, mut events: List[H2Event]) raises:
         """Dispatch H2 events for client-side processing."""

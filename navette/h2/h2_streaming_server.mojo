@@ -529,10 +529,16 @@ struct H2StreamingServer(Movable):
         self._flush_outbound()
 
     def drain(mut self) -> List[Byte]:
-        """Drain queued outbound TCP bytes for the transport to write."""
-        var out = self._outbuf^
-        self._outbuf = List[Byte]()
+        """Drain queued outbound TCP bytes for the transport to write. Delegates to drain_into."""
+        var out = List[Byte]()
+        self.drain_into(out)
         return out^
+
+    def drain_into(mut self, mut sink: List[Byte]):
+        """Append queued outbound bytes into sink and clear the buffer in place,
+        preserving its backing allocation across drains."""
+        sink.extend(Span(self._outbuf))
+        self._outbuf.clear()
 
     def should_close(self) -> Bool:
         """True when the H2 connection has reached terminal state."""
@@ -592,9 +598,7 @@ struct H2StreamingServer(Movable):
 
     def _flush_outbound(mut self):
         """Move pending outbound bytes from H2Connection into our buffer."""
-        var pending = self._conn.data_to_send()
-        if len(pending) > 0:
-            self._outbuf.extend(pending^)
+        self._conn.data_to_send_into(self._outbuf)
 
     def _cleanup_stream(mut self, stream_id: Int) raises:
         """Unconditionally free stream context and remove from dict."""

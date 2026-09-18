@@ -363,8 +363,13 @@ struct HuffmanCodec(Movable):
             self._trie[node_idx].symbol = sym
 
     def encode(self, data: List[Byte]) -> List[Byte]:
-        """Encode a byte sequence using HPACK Huffman coding."""
+        """Encode a byte sequence using HPACK Huffman coding. Delegates to encode_into."""
         var result = List[Byte]()
+        self.encode_into(result, data)
+        return result^
+
+    def encode_into(self, mut buf: List[Byte], data: List[Byte]):
+        """Append HPACK Huffman-encoded bytes directly to buf."""
         var current = UInt64(0)
         var bits = 0
 
@@ -378,14 +383,12 @@ struct HuffmanCodec(Movable):
 
             while bits >= 8:
                 bits -= 8
-                result.append(UInt8((current >> UInt64(bits)) & 0xFF))
+                buf.append(UInt8((current >> UInt64(bits)) & 0xFF))
 
         if bits > 0:
             var pad = 8 - bits
             current = (current << UInt64(pad)) | UInt64((1 << pad) - 1)
-            result.append(UInt8(current & 0xFF))
-
-        return result^
+            buf.append(UInt8(current & 0xFF))
 
     def decode(self, data: List[Byte]) -> Tuple[List[Byte], String]:
         """Decode Huffman-compressed bytes back to raw bytes."""

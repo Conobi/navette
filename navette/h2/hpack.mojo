@@ -68,16 +68,23 @@ struct HpackEncoder(Movable):
         self._pending_table_size = move._pending_table_size
 
     def encode(mut self, headers: List[Header]) -> List[Byte]:
-        """Encode headers into HPACK wire bytes. Updates dynamic table."""
-        var wire = List[Byte]()
+        """Encode headers into HPACK wire bytes. Updates dynamic table.
 
+        Delegates to encode_into.
+        """
+        var wire = List[Byte]()
+        self.encode_into(wire, headers)
+        return wire^
+
+    def encode_into(mut self, mut buf: List[Byte], headers: List[Header]):
+        """Append HPACK-encoded headers directly to buf. Updates dynamic table."""
         # Emit pending table size update
         if self._pending_table_size >= 0:
-            var idx = len(wire)
-            wire.resize(idx + 6, Byte(0))
-            wire[idx] = UInt8(0x20)
-            var n = hpack_encode_int_at(wire, idx, self._pending_table_size, 5)
-            wire.resize(idx + n, Byte(0))
+            var idx = len(buf)
+            buf.resize(idx + 6, Byte(0))
+            buf[idx] = UInt8(0x20)
+            var n = hpack_encode_int_at(buf, idx, self._pending_table_size, 5)
+            buf.resize(idx + n, Byte(0))
             self.dynamic_table.set_max_size(self._pending_table_size)
             self._pending_table_size = -1
 
@@ -90,7 +97,7 @@ struct HpackEncoder(Movable):
             var static_exact = static_result[1]
 
             if static_exact:
-                self._emit_indexed(wire, static_idx)
+                self._emit_indexed(buf, static_idx)
                 continue
 
             var dyn_result = self.dynamic_table.find(name, value)
@@ -98,7 +105,7 @@ struct HpackEncoder(Movable):
             var dyn_exact = dyn_result[1]
 
             if dyn_exact:
-                self._emit_indexed(wire, dyn_idx + 62)
+                self._emit_indexed(buf, dyn_idx + 62)
                 continue
 
             var name_idx = 0
@@ -107,10 +114,8 @@ struct HpackEncoder(Movable):
             elif dyn_idx >= 0:
                 name_idx = dyn_idx + 62
 
-            self._emit_literal_indexed(wire, name_idx, name, value)
+            self._emit_literal_indexed(buf, name_idx, name, value)
             self.dynamic_table.insert(name, value)
-
-        return wire^
 
     def set_max_table_size(mut self, new_max: Int):
         """Queue table size update for next encode call."""

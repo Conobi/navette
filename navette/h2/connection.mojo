@@ -11,7 +11,7 @@ from navette.quic.codec import write_u16_be_at, write_u32_be_at
 from .frame import (
     Frame,
     decode_frame,
-    encode_frame,
+    encode_frame_into,
     H2FrameConfig,
     FRAME_DATA,
     FRAME_HEADERS,
@@ -462,16 +462,22 @@ struct PendingDataChunk(Copyable, Movable):
 # ---------------------------------------------------------------------------
 # Helper: append a 6-byte SETTINGS entry to a payload
 # ---------------------------------------------------------------------------
-def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[Byte]:
-    """Build an 8-byte GOAWAY payload (4-byte last-stream-id + 4-byte error code)."""
-    var payload = List[Byte](capacity=8)
-    payload.resize(8, Byte(0))
+def _encode_goaway_payload_into(mut buf: List[Byte], last_stream_id: Int, error_code: Int):
+    """Append an 8-byte GOAWAY payload (4-byte last-stream-id + 4-byte error code) to buf."""
+    var base = len(buf)
+    buf.resize(base + 8, Byte(0))
     # last_stream_id: clear reserved bit in high byte
-    payload[0] = UInt8((last_stream_id >> 24) & 0x7F)
-    payload[1] = UInt8((last_stream_id >> 16) & 0xFF)
-    payload[2] = UInt8((last_stream_id >> 8) & 0xFF)
-    payload[3] = UInt8(last_stream_id & 0xFF)
-    _ = write_u32_be_at(payload, 4, UInt32(error_code))
+    buf[base] = UInt8((last_stream_id >> 24) & 0x7F)
+    buf[base + 1] = UInt8((last_stream_id >> 16) & 0xFF)
+    buf[base + 2] = UInt8((last_stream_id >> 8) & 0xFF)
+    buf[base + 3] = UInt8(last_stream_id & 0xFF)
+    _ = write_u32_be_at(buf, base + 4, UInt32(error_code))
+
+
+def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[Byte]:
+    """Build an 8-byte GOAWAY payload. Delegates to _encode_goaway_payload_into."""
+    var payload = List[Byte](capacity=8)
+    _encode_goaway_payload_into(payload, last_stream_id, error_code)
     return payload^
 
 
@@ -573,10 +579,20 @@ struct H2Connection(Movable):
         self._state = CONN_OPEN
 
     def data_to_send(mut self) -> List[Byte]:
-        """Drain outbound buffer."""
-        var data = self._outbuf^
-        self._outbuf = List[Byte]()
+        """Drain outbound buffer. Delegates to data_to_send_into."""
+        var data = List[Byte]()
+        self.data_to_send_into(data)
         return data^
+
+    def data_to_send_into(mut self, mut sink: List[Byte]):
+        """Append the outbound buffer into sink and clear it in place.
+
+        Unlike data_to_send() (which moves the buffer out and reallocates a
+        fresh one), this preserves the outbound buffer's backing allocation
+        across drains.
+        """
+        sink.extend(Span(self._outbuf))
+        self._outbuf.clear()
 
     def is_closed(self) -> Bool:
         return self._state == CONN_CLOSED
@@ -624,9 +640,8 @@ struct H2Connection(Movable):
         self._queue_frame(frame)
 
     def _queue_frame(mut self, frame: Frame):
-        """Encode frame and append to outbound buffer."""
-        var encoded = encode_frame(frame)
-        self._outbuf.extend(encoded^)
+        """Encode frame and append directly to outbound buffer."""
+        encode_frame_into(frame, self._outbuf)
 
     def _trim_inbuf(mut self, count: Int):
         """Remove first `count` bytes from the inbound buffer.

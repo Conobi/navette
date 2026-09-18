@@ -327,10 +327,16 @@ struct H2CoroServer(Movable):
         self._flush_outbound()
 
     def drain(mut self) -> List[Byte]:
-        """Drain queued outbound bytes for the transport to write."""
-        var out = self._outbuf^
-        self._outbuf = List[Byte]()
+        """Drain queued outbound bytes for the transport to write. Delegates to drain_into."""
+        var out = List[Byte]()
+        self.drain_into(out)
         return out^
+
+    def drain_into(mut self, mut sink: List[Byte]):
+        """Append queued outbound bytes into sink and clear the buffer in place,
+        preserving its backing allocation across drains."""
+        sink.extend(Span(self._outbuf))
+        self._outbuf.clear()
 
     def should_close(self) -> Bool:
         """True when the H2 connection has reached terminal state."""
@@ -353,11 +359,8 @@ struct H2CoroServer(Movable):
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self):
-        """Move pending outbound bytes from the H2Connection into our
-        buffer.  Bulk-extend (was per-byte append: ~12% self post-Task-1)."""
-        var pending = self._conn.data_to_send()
-        if len(pending) > 0:
-            self._outbuf.extend(pending^)
+        """Move pending outbound bytes from the H2Connection into our buffer."""
+        self._conn.data_to_send_into(self._outbuf)
 
     def _run_handler(mut self, stream_id: Int) raises:
         """Invoke the user handler synchronously. On error, send
