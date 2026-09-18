@@ -231,15 +231,13 @@ def _append_chunked_body(mut buf: List[Byte], body: List[BodyFrame]):
 
 # --- Public entry points ---
 
-def serialize_request(request: Request) raises -> List[Byte]:
-    """Serialize a Request into HTTP/1.1 wire bytes.
+def serialize_request_into(mut buf: List[Byte], request: Request) raises:
+    """Serialize a Request into HTTP/1.1 wire bytes, appended to ``buf``.
 
     Request.body is a RequestBody. Buffered bodies are emitted with a
     content-length header. Streaming bodies are not yet supported by the
     sans-I/O serializer (the H1Session adapter handles streaming separately).
     """
-    var buf = List[Byte]()
-
     # Request-line: method SP target SP version CRLF.
     _append_str(buf, _method_string(request.method))
     buf.append(UInt8(0x20))
@@ -269,11 +267,20 @@ def serialize_request(request: Request) raises -> List[Byte]:
         ref chunk = request.body.bytes()
         buf.extend(Span(chunk))
 
+
+def serialize_request(request: Request) raises -> List[Byte]:
+    """Serialize a Request into freshly allocated HTTP/1.1 wire bytes.
+
+    See ``serialize_request_into`` for the framing rules; this is a thin
+    allocate-and-delegate wrapper for callers without a reusable buffer.
+    """
+    var buf = List[Byte]()
+    serialize_request_into(buf, request)
     return buf^
 
 
-def serialize_response(response: Response) -> List[Byte]:
-    """Serialize a Response into HTTP/1.1 wire bytes.
+def serialize_response_into(mut buf: List[Byte], response: Response):
+    """Serialize a Response into HTTP/1.1 wire bytes, appended to ``buf``.
 
     The SP after the status code is always emitted, even when the reason
     phrase is empty (RFC 9112 Section 4). 1xx and 204 responses MUST NOT
@@ -284,7 +291,6 @@ def serialize_response(response: Response) -> List[Byte]:
     the caller (H1Connection) MUST suppress the body bytes after this
     function returns. The serializer does not see the request method.
     """
-    var buf = List[Byte]()
     var status_int = Int(response.status.code())
 
     # Status-line: version SP status-code SP reason-phrase CRLF.
@@ -314,7 +320,7 @@ def serialize_response(response: Response) -> List[Byte]:
         # no body emitted regardless of what BodyFrames are attached.
         _serialize_headers(buf, response.headers)
         _append_crlf(buf)
-        return buf^
+        return
 
     var use_chunked = _has_trailers(response.body)
     var body_len = _total_data_len(response.body)
@@ -332,16 +338,24 @@ def serialize_response(response: Response) -> List[Byte]:
     elif body_len > 0:
         _append_data_frames(buf, response.body)
 
+
+def serialize_response(response: Response) -> List[Byte]:
+    """Serialize a Response into freshly allocated HTTP/1.1 wire bytes.
+
+    See ``serialize_response_into`` for the framing rules; this is a thin
+    allocate-and-delegate wrapper for callers without a reusable buffer.
+    """
+    var buf = List[Byte]()
+    serialize_response_into(buf, response)
     return buf^
 
 
-def serialize_informational(status: StatusCode, headers: Headers) -> List[Byte]:
-    """Serialize a 1xx interim response.
+def serialize_informational_into(mut buf: List[Byte], status: StatusCode, headers: Headers):
+    """Serialize a 1xx interim response, appended to ``buf``.
 
     Always uses HTTP/1.1, an empty reason phrase (with the mandatory SP
     after the status code), no body, and no framing headers.
     """
-    var buf = List[Byte]()
     _append_str(buf, String("HTTP/1.1"))
     buf.append(UInt8(0x20))
     _append_decimal(buf, Int(status.code()))
@@ -349,4 +363,14 @@ def serialize_informational(status: StatusCode, headers: Headers) -> List[Byte]:
     _append_crlf(buf)
     _serialize_headers(buf, headers)
     _append_crlf(buf)
+
+
+def serialize_informational(status: StatusCode, headers: Headers) -> List[Byte]:
+    """Serialize a 1xx interim response into freshly allocated wire bytes.
+
+    See ``serialize_informational_into`` for the framing rules; this is a
+    thin allocate-and-delegate wrapper for callers without a reusable buffer.
+    """
+    var buf = List[Byte]()
+    serialize_informational_into(buf, status, headers)
     return buf^

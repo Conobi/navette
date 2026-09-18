@@ -50,7 +50,9 @@ struct ServerConnection(Movable):
 
     @always_inline
     def drain(mut self) -> List[Byte]:
-        return self._inner.drain()
+        var out = List[Byte]()
+        self.drain_into(out)
+        return out^
 
     @always_inline
     def drain_into(mut self, mut sink: List[Byte]):

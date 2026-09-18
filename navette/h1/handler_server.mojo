@@ -57,8 +57,13 @@ struct H1HandlerServer[H: StreamHandler](Movable):
     def drain(mut self) raises -> List[Byte]:
         """Drain queued outbound bytes for the transport to write."""
         var out = List[Byte]()
-        self._conn.drain_into(out)
+        self.drain_into(out)
         return out^
+
+    @always_inline
+    def drain_into(mut self, mut sink: List[Byte]):
+        """Append queued outbound bytes into ``sink``; see ``H1Connection.drain_into``."""
+        self._conn.drain_into(sink)
 
     @always_inline
     def should_close(self) -> Bool:

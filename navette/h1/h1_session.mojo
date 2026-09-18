@@ -81,11 +81,11 @@ struct H1Session(Session):
                 body=RequestBody.empty(),
             )
             self._conn.send_request(stream_req^)
-            self._outbuf.extend(self._conn.drain())
+            self._conn.drain_into(self._outbuf)
             self._streaming = True
         else:
             self._conn.send_request(req^)
-            self._outbuf.extend(self._conn.drain())
+            self._conn.drain_into(self._outbuf)
             self._streaming = False
         self._pending_handle_id = self._next_id
         self._has_inflight = True
@@ -149,6 +149,12 @@ struct H1Session(Session):
         self._conn.receive_data(data)
 
     def drain(mut self) -> List[Byte]:
-        var out = self._outbuf^
-        self._outbuf = List[Byte]()
+        var out = List[Byte]()
+        self.drain_into(out)
         return out^
+
+    def drain_into(mut self, mut sink: List[Byte]):
+        """Append queued outbound bytes into ``sink`` and clear ``_outbuf`` in
+        place, preserving its backing allocation across requests."""
+        sink.extend(Span(self._outbuf))
+        self._outbuf.clear()

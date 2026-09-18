@@ -32,7 +32,12 @@ struct ClientConnection(Movable):
         self._inner.send_request(request^)
 
     def drain(mut self) -> List[Byte]:
-        return self._inner.drain()
+        var out = List[Byte]()
+        self.drain_into(out)
+        return out^
+
+    def drain_into(mut self, mut sink: List[Byte]):
+        self._inner.drain_into(sink)
 
     # --- Inbound API (client reads responses) ---
 

@@ -33,9 +33,9 @@ from navette.h1.parser import (
     _icontains,
 )
 from navette.h1.serializer import (
-    serialize_request,
-    serialize_response,
-    serialize_informational,
+    serialize_request_into,
+    serialize_response_into,
+    serialize_informational_into,
 )
 
 
@@ -291,8 +291,7 @@ struct H1Connection(Movable):
         var status_int = Int(response.status.code())
 
         var pre_len = len(self._outbound_buf)
-        var wire = serialize_response(response^)
-        self._outbound_buf.extend(Span(wire))
+        serialize_response_into(self._outbound_buf, response^)
 
         if head_in_flight:
             self._truncate_outbound_to_headers(pre_len)
@@ -314,18 +313,16 @@ struct H1Connection(Movable):
 
     def send_informational(mut self, var status: StatusCode, var headers: Headers):
         """Serialize a 1xx interim response and append it to the outbound buffer."""
-        var wire = serialize_informational(status^, headers^)
-        self._outbound_buf.extend(Span(wire))
+        serialize_informational_into(self._outbound_buf, status^, headers^)
 
     def send_request(mut self, var request: Request) raises:
         """Serialize a request and append wire bytes to the outbound buffer."""
-        var wire = serialize_request(request^)
-        self._outbound_buf.extend(Span(wire))
+        serialize_request_into(self._outbound_buf, request^)
 
     def drain(mut self) -> List[Byte]:
         """Remove and return all bytes currently in the outbound buffer."""
-        var out = self._outbound_buf^
-        self._outbound_buf = List[Byte]()
+        var out = List[Byte]()
+        self.drain_into(out)
         return out^
 
     def drain_into(mut self, mut sink: List[Byte]):
