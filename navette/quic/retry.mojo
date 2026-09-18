@@ -64,7 +64,23 @@ def generate_retry_token(
     client_addr_hash: Span[Byte, _],
     now: UInt64,
 ) raises -> List[Byte]:
-    """Generate an encrypted Retry token.
+    """Generate an encrypted Retry token. Delegates to generate_retry_token_into."""
+    var result = List[Byte]()
+    generate_retry_token_into(
+        result, lib, server_secret, orig_dcid, client_addr_hash, now
+    )
+    return result^
+
+
+def generate_retry_token_into(
+    mut buf: List[Byte],
+    lib: SharedLibrary,
+    server_secret: Span[Byte, _],
+    orig_dcid: Span[Byte, _],
+    client_addr_hash: Span[Byte, _],
+    now: UInt64,
+) raises:
+    """Generate an encrypted Retry token, appending it directly to buf.
 
     Token format: nonce (12) || ciphertext+tag
     Plaintext: dcid_len (1) || orig_dcid || addr_hash (32) || timestamp (8 BE)
@@ -134,19 +150,16 @@ def generate_retry_token(
 
     var ct_len = Int(out_len_ptr[unsafe_offset=0])
 
-    # Build token: nonce (12) || ciphertext+tag
-    var token = List[Byte](capacity=12 + ct_len)
+    # Append token: nonce (12) || ciphertext+tag
     for i in range(12):
-        token.append(nonce_ptr[unsafe_offset=i])
+        buf.append(nonce_ptr[unsafe_offset=i])
     for i in range(ct_len):
-        token.append(out_ptr[unsafe_offset=i])
+        buf.append(out_ptr[unsafe_offset=i])
 
     # Keep the post-FFI-read buffers alive through their last reads above.
     _ = nonce_buf
     _ = out_buf
     _ = out_len_buf
-
-    return token^
 
 
 def validate_retry_token(
@@ -159,7 +172,29 @@ def validate_retry_token(
 ) raises -> List[Byte]:
     """Validate a Retry token and return the original DCID.
 
+    Delegates to validate_retry_token_into.
+    """
+    var result = List[Byte]()
+    validate_retry_token_into(
+        result, lib, server_secret, token, client_addr_hash, now, max_age
+    )
+    return result^
+
+
+def validate_retry_token_into(
+    mut buf: List[Byte],
+    lib: SharedLibrary,
+    server_secret: Span[Byte, _],
+    token: Span[Byte, _],
+    client_addr_hash: Span[Byte, _],
+    now: UInt64,
+    max_age: UInt64 = 5,
+) raises:
+    """Validate a Retry token, appending the original DCID directly to buf.
+
     Raises on authentication failure, address mismatch, or expiration.
+    buf is only appended to once every check has passed, so a rejected
+    token never leaves partial output in the caller's buffer.
     """
     if len(server_secret) != 16:
         raise "server_secret must be 16 bytes"
@@ -236,11 +271,6 @@ def validate_retry_token(
     if 1 + dcid_len + 32 + 8 != pt_len:
         raise "token plaintext length mismatch"
 
-    # Extract orig_dcid
-    var orig_dcid = List[Byte](capacity=dcid_len)
-    for i in range(dcid_len):
-        orig_dcid.append(out_ptr[unsafe_offset=1 + i])
-
     # Verify addr_hash
     var hash_offset = 1 + dcid_len
     for i in range(32):
@@ -253,11 +283,13 @@ def validate_retry_token(
     if now < timestamp or (now - timestamp) > max_age:
         raise "token expired"
 
+    # Append orig_dcid only after every check above has passed.
+    for i in range(dcid_len):
+        buf.append(out_ptr[unsafe_offset=1 + i])
+
     # Keep the post-FFI-read output buffers alive through their last reads above.
     _ = out_buf
     _ = out_len_buf
-
-    return orig_dcid^
 
 
 def compute_retry_integrity_tag(
@@ -265,7 +297,21 @@ def compute_retry_integrity_tag(
     orig_dcid: Span[Byte, _],
     retry_packet_without_tag: Span[Byte, _],
 ) raises -> List[Byte]:
-    """Compute the 16-byte Retry Integrity Tag per RFC 9001 Section 5.8.
+    """Compute the 16-byte Retry Integrity Tag. Delegates to compute_retry_integrity_tag_into."""
+    var result = List[Byte]()
+    compute_retry_integrity_tag_into(
+        result, lib, orig_dcid, retry_packet_without_tag
+    )
+    return result^
+
+
+def compute_retry_integrity_tag_into(
+    mut buf: List[Byte],
+    lib: SharedLibrary,
+    orig_dcid: Span[Byte, _],
+    retry_packet_without_tag: Span[Byte, _],
+) raises:
+    """Compute the 16-byte Retry Integrity Tag per RFC 9001 Section 5.8, appending to buf.
 
     Uses fixed key/nonce from the spec, with the pseudo-Retry packet as AAD
     and empty plaintext.
@@ -347,12 +393,9 @@ def compute_retry_integrity_tag(
     if tag_len != 16:
         raise "expected 16-byte tag, got " + String(tag_len)
 
-    var tag = List[Byte](capacity=16)
     for i in range(16):
-        tag.append(out_ptr[unsafe_offset=i])
+        buf.append(out_ptr[unsafe_offset=i])
 
     # Keep the post-FFI-read output buffers alive through their last reads above.
     _ = out_buf
     _ = out_len_buf
-
-    return tag^
