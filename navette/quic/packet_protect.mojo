@@ -326,16 +326,26 @@ struct PacketProtect(Movable):
         mut packet_buf: List[Byte],
     ) raises -> List[Byte]:
         """Decrypt payload (List convenience wrapper — copies result out)."""
+        var result = List[Byte]()
+        self.decrypt_payload_into(result, level, pn, header_len, packet_buf)
+        return result^
+
+    def decrypt_payload_into(
+        self,
+        mut buf: List[Byte],
+        level: Int,
+        pn: UInt64,
+        header_len: Int,
+        mut packet_buf: List[Byte],
+    ) raises:
+        """Decrypt payload, appending the plaintext directly to buf."""
         var plaintext_len = self.decrypt_payload_in_place(
             level, pn, header_len,
             packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             len(packet_buf),
         )
-        # Copy plaintext out of the buffer for backward compatibility.
-        var result = List[Byte](capacity=plaintext_len)
         for i in range(plaintext_len):
-            result.append(packet_buf[header_len + i])
-        return result^
+            buf.append(packet_buf[header_len + i])
 
     # -- AEAD encrypt ----------------------------------------------------------
 
@@ -396,32 +406,43 @@ struct PacketProtect(Movable):
         plaintext: Span[Byte, _],
     ) raises -> List[Byte]:
         """Encrypt payload (Span convenience wrapper — returns new List)."""
+        var result = List[Byte]()
+        self.encrypt_payload_into(result, level, pn, header, plaintext)
+        return result^
+
+    def encrypt_payload_into(
+        self,
+        mut buf: List[Byte],
+        level: Int,
+        pn: UInt64,
+        header: Span[Byte, _],
+        plaintext: Span[Byte, _],
+    ) raises:
+        """Encrypt payload, appending the ciphertext (without header) to buf."""
         var header_len = len(header)
         var pt_len = len(plaintext)
         var capacity = header_len + pt_len + _AEAD_TAG_LEN
 
         # Build contiguous buffer: header + plaintext + tag space
-        var buf_owned = Owned[UInt8](capacity)
-        var buf = buf_owned.ptr()
+        var scratch_owned = Owned[UInt8](capacity)
+        var scratch = scratch_owned.ptr()
         for i in range(header_len):
-            buf[unsafe_offset=i] = header[i]
+            scratch[unsafe_offset=i] = header[i]
         for i in range(pt_len):
-            buf[unsafe_offset=header_len + i] = plaintext[i]
+            scratch[unsafe_offset=header_len + i] = plaintext[i]
         for i in range(_AEAD_TAG_LEN):
-            buf[unsafe_offset=header_len + pt_len + i] = 0
+            scratch[unsafe_offset=header_len + pt_len + i] = 0
 
         var ct_len = self.encrypt_payload_in_place(
-            level, pn, buf, header_len, pt_len, capacity,
+            level, pn, scratch, header_len, pt_len, capacity,
         )
 
-        # Copy ciphertext (without header) to result.
-        var result = List[Byte](capacity=ct_len)
+        # Append ciphertext (without header) to buf.
         for i in range(ct_len):
-            result.append(buf[unsafe_offset=header_len + i])
+            buf.append(scratch[unsafe_offset=header_len + i])
 
-        # Keep buf_owned alive through the post-FFI read above.
-        _ = buf_owned
-        return result^
+        # Keep scratch_owned alive through the post-FFI read above.
+        _ = scratch_owned
 
     # -- Header protection (encrypt direction) ---------------------------------
 
