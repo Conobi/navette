@@ -4,6 +4,7 @@
 
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, write_u8_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
+from navette.util.byte_vec import ByteVec
 from std.utils import Variant
 
 # ── Frame type constants (RFC 9000 §19) ──────────────────────────────
@@ -292,19 +293,19 @@ struct ConnectionCloseFrame(Copyable, Movable):
     var is_transport: Bool
     var error_code: UInt64
     var frame_type: UInt64
-    var reason: List[Byte]
+    var reason: ByteVec[256]
 
     def __init__(out self):
         self.is_transport = True
         self.error_code = UInt64(0)
         self.frame_type = UInt64(0)
-        self.reason = List[Byte]()
+        self.reason = ByteVec[256]()
 
     def __init__(out self, *, other: Self):
         self.is_transport = other.is_transport
         self.error_code = other.error_code
         self.frame_type = other.frame_type
-        self.reason = List[Byte](copy=other.reason)
+        self.reason = other.reason.copy()
 
     def __init__(out self, *, deinit move: Self):
         self.is_transport = move.is_transport
@@ -896,7 +897,8 @@ def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_
         if cc.is_transport:
             cc.frame_type = varint_decode(reader)
         var reason_length = varint_decode(reader)
-        cc.reason = reader.read_bytes(Int(reason_length))
+        var reason_span = reader.read_span(Int(reason_length))
+        cc.reason.extend(reason_span)
         return Frame(
             FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
             FramePayload(cc^),
@@ -1103,7 +1105,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         if cc.is_transport:
             varint_encode(writer, cc.frame_type)
         varint_encode(writer, UInt64(len(cc.reason)))
-        writer.write_bytes(Span[Byte, origin_of(cc.reason)](cc.reason))
+        writer.write_bytes(cc.reason.as_span())
         return
 
     # HANDSHAKE_DONE

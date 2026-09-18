@@ -426,7 +426,7 @@ def test_roundtrip_connection_close_transport() raises:
     _assert_true(rc.is_transport, "should be transport")
     _assert_eq(rc.error_code, UInt64(0x0A), "error_code")
     _assert_eq(rc.frame_type, UInt64(0x06), "frame_type")
-    _assert_bytes_eq(rc.reason, cc.reason, "reason")
+    _assert_bytes_eq(List[Byte](rc.reason.as_span()), List[Byte](cc.reason.as_span()), "reason")
     print("  roundtrip_connection_close_transport: PASS")
 
 
@@ -445,7 +445,7 @@ def test_roundtrip_connection_close_app() raises:
     ref rc = rt.as_connection_close()
     _assert_false(rc.is_transport, "should be app")
     _assert_eq(rc.error_code, UInt64(0x42), "error_code")
-    _assert_bytes_eq(rc.reason, cc.reason, "reason")
+    _assert_bytes_eq(List[Byte](rc.reason.as_span()), List[Byte](cc.reason.as_span()), "reason")
     print("  roundtrip_connection_close_app: PASS")
 
 
@@ -1249,7 +1249,10 @@ def test_wire_len_exact() raises:
             cc.is_transport = (si % 2) == 0
             cc.error_code = m
             cc.frame_type = m
-            cc.reason = _fill(n, m)
+            # ConnectionCloseFrame.reason is bounded to 256 bytes; clip the shared
+            # `sizes` fixture rather than skip the larger magnitudes so the
+            # wire_len invariant is still exercised at every `si`.
+            cc.reason.extend(Span(_fill(min(n, 256), m)))
             _check_wire_len(Frame.connection_close(cc), "CONNECTION_CLOSE")
             checked += 7
     _check_wire_len(Frame.path_challenge(_fill(8, UInt64(1))), "PATH_CHALLENGE")

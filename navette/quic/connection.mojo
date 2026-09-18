@@ -2828,7 +2828,7 @@ struct QuicConnection(Movable):
             cc.is_transport = True
             cc.error_code = APPLICATION_ERROR
             cc.frame_type = UInt64(0)
-            cc.reason = List[Byte](copy=self.close.pending.value().reason)
+            cc.reason = self.close.pending.value().reason.copy()
             return Frame.connection_close(cc)
         return Frame.connection_close(self.close.pending.value())
 
@@ -3396,18 +3396,19 @@ struct QuicConnection(Movable):
         self.close.owed = True
         for s in range(3):
             self.spaces[s].ack_deadline = None
-        var reason_bytes = List[Byte]()
         var reason_str_bytes = reason.as_bytes()
         var n = len(reason_str_bytes)
         if n > MAX_CLOSE_REASON_BYTES:
             n = MAX_CLOSE_REASON_BYTES
-        for i in range(n):
-            reason_bytes.append(reason_str_bytes[i])
         var cc = ConnectionCloseFrame()
         cc.is_transport = not is_app
         cc.error_code = error_code
         cc.frame_type = UInt64(0)
-        cc.reason = reason_bytes^
+        try:
+            for i in range(n):
+                cc.reason.append(reason_str_bytes[i])
+        except:
+            pass
         self.close.pending = cc^
 
     def is_established(self) -> Bool:
