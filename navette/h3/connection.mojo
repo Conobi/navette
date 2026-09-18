@@ -501,7 +501,8 @@ struct H3Connection(Movable):
         """QPACK-encode fields → HeadersFrame → send_stream_data."""
         var encoded = self._enc.encode(fields)
         var hf = HeadersFrame(encoded^)
-        var wire = hf.encode()
+        var wire = List[Byte]()
+        hf.encode_into(wire)
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
     def send_data(
@@ -526,7 +527,8 @@ struct H3Connection(Movable):
         varint_encode(w, last_stream_id)
         var payload = w.finish()
         var raw = H3RawFrame(H3_FRAME_GOAWAY, payload^)
-        var wire = raw.encode()
+        var wire = List[Byte]()
+        raw.encode_into(wire)
         self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(wire), False)
         self._goaway_sent = Optional[UInt64](last_stream_id)
 
@@ -649,7 +651,8 @@ struct H3Connection(Movable):
         if self._local_h3_datagram_enabled:
             pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
         var sf = SettingsFrame(pairs^)
-        var settings_wire = sf.encode()
+        var settings_wire = List[Byte]()
+        sf.encode_into(settings_wire)
         self._quic.send_stream_data(ctrl_sid, Span(settings_wire), False)
 
     # --- Internal: stream drain + frame parse --------------------------------
