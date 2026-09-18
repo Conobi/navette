@@ -238,16 +238,15 @@ struct TlsConnection(Movable):
             if hs == Int32(0):
                 self._handshake_complete = True
 
-    def drain_plaintext(mut self) raises -> List[Byte]:
-        """Return any decrypted plaintext available after `receive_data`.
+    def drain_plaintext_into(mut self, mut sink: List[Byte]) raises:
+        """Append any decrypted plaintext available after `receive_data` into `sink`.
 
         Loops `rlsm_tls_conn_read_plaintext` until it returns 0 (no more
-        decrypted data right now). Returns an empty list during the
+        decrypted data right now). Leaves `sink` untouched during the
         handshake or whenever the peer has not yet sent any application
         data. Raises on FFI errors so close_notify / fatal alerts surface
         rather than being indistinguishable from "no data yet".
         """
-        var result = List[Byte]()
         while True:
             var n = self._lib.inner_ptr()[].tls_conn_read_plaintext(
                 self._handle, self._pt_drain_buf, Int32(_IO_BUF_SIZE)
@@ -260,7 +259,16 @@ struct TlsConnection(Movable):
             if n == 0:
                 break
             for i in range(Int(n)):
-                result.append(self._pt_drain_buf[unsafe_offset=i])
+                sink.append(self._pt_drain_buf[unsafe_offset=i])
+
+    def drain_plaintext(mut self) raises -> List[Byte]:
+        """Return any decrypted plaintext available after `receive_data`.
+
+        Convenience wrapper around `drain_plaintext_into` for callers that
+        don't retain a reusable buffer across calls.
+        """
+        var result = List[Byte]()
+        self.drain_plaintext_into(result)
         return result^
 
     # -- Outbound: plaintext -> ciphertext -------------------------------------
@@ -286,13 +294,27 @@ struct TlsConnection(Movable):
 
         self._drain_write_tls()
 
+    def drain_ciphertext_into(mut self, mut sink: List[Byte]):
+        """Append all buffered ciphertext into `sink` and clear it in place.
+
+        Unlike `drain_ciphertext` (which moves the buffer out and
+        reallocates a fresh one), `drain_ciphertext_into` preserves the
+        internal buffer's backing allocation across `send_data` /
+        `receive_data` cycles (`clear()` keeps capacity) -- this is the
+        steady-state zero-churn drain for long-lived connections.
+        """
+        sink.extend(Span(self._ciphertext_out))
+        self._ciphertext_out.clear()
+
     def drain_ciphertext(mut self) -> List[Byte]:
         """Return all buffered ciphertext, clearing the internal buffer.
 
         This is the data that must be sent to the peer over the network.
+        Convenience wrapper around `drain_ciphertext_into` for callers that
+        don't retain a reusable buffer across calls.
         """
-        var out = self._ciphertext_out^
-        self._ciphertext_out = List[Byte]()
+        var out = List[Byte]()
+        self.drain_ciphertext_into(out)
         return out^
 
     # -- State -----------------------------------------------------------------
