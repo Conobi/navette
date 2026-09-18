@@ -1,6 +1,6 @@
 from std.collections import Span
 from tests._test_util import assert_true, assert_equal_int
-from navette.util.byte_vec import ByteVec
+from navette.util.byte_vec import ByteVec, OwnedBuf
 
 
 def test_empty() raises:
@@ -96,6 +96,78 @@ def test_setitem() raises:
     assert_equal_int(Int(v[1]), 42, "setitem modifies byte")
 
 
+def test_owned_buf_empty() raises:
+    var b = OwnedBuf[1200]()
+    assert_equal_int(len(b), 0, "empty OwnedBuf length")
+    assert_equal_int(b.remaining_capacity(), 1200, "empty OwnedBuf capacity")
+
+
+def test_owned_buf_append_and_read() raises:
+    var b = OwnedBuf[64]()
+    for i in range(64):
+        b.append(Byte(i % 256))
+    assert_equal_int(len(b), 64, "OwnedBuf append all 64 bytes")
+    assert_equal_int(Int(b[0]), 0, "OwnedBuf first byte")
+    assert_equal_int(Int(b[63]), 63, "OwnedBuf last byte")
+
+
+def test_owned_buf_extend() raises:
+    var src = List[Byte](capacity=3)
+    src.append(Byte(10))
+    src.append(Byte(20))
+    src.append(Byte(30))
+    var b = OwnedBuf[128]()
+    b.extend(Span(src))
+    assert_equal_int(len(b), 3, "OwnedBuf extend adds bytes")
+    assert_equal_int(Int(b[2]), 30, "OwnedBuf extended byte value")
+
+
+def test_owned_buf_as_span() raises:
+    var b = OwnedBuf[32]()
+    b.append(Byte(0xAA))
+    b.append(Byte(0xBB))
+    var sp = b.as_span()
+    assert_equal_int(len(sp), 2, "OwnedBuf span length")
+    assert_equal_int(Int(sp[0]), 0xAA, "OwnedBuf span first byte")
+
+
+def test_owned_buf_clear_and_reuse() raises:
+    var b = OwnedBuf[100]()
+    for i in range(50):
+        b.append(Byte(i % 256))
+    assert_equal_int(len(b), 50, "OwnedBuf after append loop")
+    b.clear()
+    assert_equal_int(len(b), 0, "OwnedBuf after clear")
+    assert_equal_int(b.remaining_capacity(), 100, "OwnedBuf capacity after clear")
+    b.append(Byte(0xFF))
+    assert_equal_int(Int(b[0]), 0xFF, "OwnedBuf reused after clear")
+
+
+def test_owned_buf_overflow_raises() raises:
+    var b = OwnedBuf[3]()
+    b.append(Byte(1))
+    b.append(Byte(2))
+    b.append(Byte(3))
+    var raised = False
+    try:
+        b.append(Byte(4))
+    except:
+        raised = True
+    assert_true(raised, "OwnedBuf should raise on overflow")
+
+
+def test_owned_buf_mtu_size() raises:
+    """Verify OwnedBuf works at MTU-sized capacity (1200 bytes)."""
+    var b = OwnedBuf[1200]()
+    for i in range(1200):
+        b.append(Byte(i % 256))
+    assert_equal_int(len(b), 1200, "OwnedBuf MTU-size length")
+    var sp = b.as_span()
+    assert_equal_int(len(sp), 1200, "OwnedBuf MTU-size span length")
+    assert_equal_int(Int(sp[0]), 0, "OwnedBuf MTU-size first byte")
+    assert_equal_int(Int(sp[1199]), 1199 % 256, "OwnedBuf MTU-size last byte")
+
+
 def main() raises:
     test_empty()
     test_append_and_len()
@@ -106,4 +178,11 @@ def main() raises:
     test_extend_overflow_raises()
     test_copy()
     test_setitem()
-    print("test_byte_vec: all 9 tests passed")
+    test_owned_buf_empty()
+    test_owned_buf_append_and_read()
+    test_owned_buf_extend()
+    test_owned_buf_as_span()
+    test_owned_buf_clear_and_reuse()
+    test_owned_buf_overflow_raises()
+    test_owned_buf_mtu_size()
+    print("test_byte_vec: all 16 tests passed")
