@@ -397,7 +397,7 @@ def test_roundtrip_new_connection_id() raises:
     _assert_eq_int(len(rn.cid), 8, "cid length")
     _assert_bytes_eq(List[Byte](rn.cid.as_span()), List[Byte](ncid.cid.as_span()), "cid")
     _assert_eq_int(len(rn.stateless_reset_token), 16, "token length")
-    _assert_bytes_eq(rn.stateless_reset_token, ncid.stateless_reset_token, "reset token")
+    _assert_bytes_eq(List[Byte](rn.stateless_reset_token.as_span()), List[Byte](ncid.stateless_reset_token.as_span()), "reset token")
     print("  roundtrip_new_connection_id: PASS")
 
 
@@ -872,7 +872,7 @@ def test_vectors() raises:
                     raise e^
             try:
                 var token_hex = String(expected["stateless_reset_token_hex"])
-                var actual_token_hex = _bytes_to_hex(ncid.stateless_reset_token)
+                var actual_token_hex = _bytes_to_hex(List[Byte](ncid.stateless_reset_token.as_span()))
                 if actual_token_hex != token_hex:
                     raise "vector " + vec_id + " stateless_reset_token_hex: got " + actual_token_hex + " expected " + token_hex
             except e:
@@ -1235,7 +1235,7 @@ def test_wire_len_exact() raises:
         ncid.sequence = m
         ncid.retire_prior_to = UInt64(0)
         ncid.cid = CidBuf.from_span(Span(_fill(8, m)))
-        ncid.stateless_reset_token = _fill(16, m)
+        ncid.stateless_reset_token.extend(Span(_fill(16, m)))
         _check_wire_len(Frame.new_connection_id(ncid), "NEW_CONNECTION_ID")
         for si in range(len(sizes)):
             var n = sizes[si]

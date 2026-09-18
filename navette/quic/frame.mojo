@@ -268,19 +268,19 @@ struct NewConnectionIdFrame(Copyable, Movable):
     var sequence: UInt64
     var retire_prior_to: UInt64
     var cid: CidBuf
-    var stateless_reset_token: List[Byte]
+    var stateless_reset_token: ByteVec[16]
 
     def __init__(out self):
         self.sequence = UInt64(0)
         self.retire_prior_to = UInt64(0)
         self.cid = CidBuf.empty()
-        self.stateless_reset_token = List[Byte]()
+        self.stateless_reset_token = ByteVec[16]()
 
     def __init__(out self, *, other: Self):
         self.sequence = other.sequence
         self.retire_prior_to = other.retire_prior_to
         self.cid = CidBuf(copy=other.cid)
-        self.stateless_reset_token = List[Byte](copy=other.stateless_reset_token)
+        self.stateless_reset_token = other.stateless_reset_token.copy()
 
     def __init__(out self, *, deinit move: Self):
         self.sequence = move.sequence
@@ -871,7 +871,8 @@ def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_
         if cid_length > 20:
             raise "NEW_CONNECTION_ID: cid_length must be <= 20"
         ncid.cid = CidBuf.from_span(reader.read_span(cid_length))
-        ncid.stateless_reset_token = reader.read_bytes(16)
+        var srt_span = reader.read_span(16)
+        ncid.stateless_reset_token.extend(srt_span)
         return Frame(FRAME_NEW_CONNECTION_ID, FramePayload(ncid^))
 
     # RETIRE_CONNECTION_ID (0x19)
@@ -1074,7 +1075,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         varint_encode(writer, ncid.retire_prior_to)
         writer.write_u8(UInt8(len(ncid.cid)))
         writer.write_bytes(ncid.cid.as_span())
-        writer.write_bytes(Span[Byte, origin_of(ncid.stateless_reset_token)](ncid.stateless_reset_token))
+        writer.write_bytes(ncid.stateless_reset_token.as_span())
         return
 
     # RETIRE_CONNECTION_ID

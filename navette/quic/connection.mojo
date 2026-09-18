@@ -1617,7 +1617,7 @@ struct QuicConnection(Movable):
             nc.sequence,
             nc.retire_prior_to,
             List[Byte](nc.cid.as_span()),
-            List[Byte](copy=nc.stateless_reset_token),
+            List[Byte](nc.stateless_reset_token.as_span()),
         )
 
     def _on_max_stream_data(
@@ -3008,7 +3008,7 @@ struct QuicConnection(Movable):
             ncid.sequence = entry.sequence
             ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
             ncid.cid = CidBuf.from_span(Span(entry.cid))
-            ncid.stateless_reset_token = List[Byte](copy=entry.reset_token)
+            ncid.stateless_reset_token.extend(Span(entry.reset_token))
             var f = Frame.new_connection_id(ncid)
             var wl = f.wire_len()
             if used + wl > budget:
