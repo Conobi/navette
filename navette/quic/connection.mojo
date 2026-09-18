@@ -2162,10 +2162,12 @@ struct QuicConnection(Movable):
         now: UInt64,
     ) raises:
         """Feed pending CRYPTO bytes from each space to the TLS engine."""
+        var crypto_data = List[Byte]()
         for level in range(3):
             if not self.crypto_streams[level].has_pending():
                 continue
-            var crypto_data = self.crypto_streams[level].drain()
+            crypto_data.clear()
+            self.crypto_streams[level].drain_into(crypto_data)
             if len(crypto_data) == 0:
                 continue
             var t_input_start = self.prof.stamp()

@@ -140,10 +140,19 @@ struct CryptoStream(Copyable, Movable):
 
     def drain(mut self) -> List[Byte]:
         """Return and consume contiguous bytes from recv_buf."""
-        var result = self.recv_buf^
-        self.recv_buf = List[Byte]()
-        self.recv_offset += UInt64(len(result))
+        var result = List[Byte]()
+        self.drain_into(result)
         return result^
+
+    def drain_into(mut self, mut sink: List[Byte]):
+        """Append and consume contiguous bytes from recv_buf into sink.
+
+        Lets a caller reuse one scratch buffer across multiple drains
+        instead of allocating a fresh List per call.
+        """
+        sink.extend(Span(self.recv_buf))
+        self.recv_offset += UInt64(len(self.recv_buf))
+        self.recv_buf = List[Byte]()
 
     def has_pending(self) -> Bool:
         """True if there are contiguous bytes ready to drain."""
