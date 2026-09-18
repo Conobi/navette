@@ -196,12 +196,21 @@ struct ContentDecoder(Movable):
     def feed(self, data: List[Byte]) raises -> List[Byte]:
         """Feed compressed bytes and return whatever can be decompressed now.
 
-        For identity encoding, returns a copy of the input.
+        For identity encoding, returns a copy of the input. Delegates to
+        feed_into.
+        """
+        var result = List[Byte]()
+        self.feed_into(result, data)
+        return result^
+
+    def feed_into(self, mut buf: List[Byte], data: List[Byte]) raises:
+        """Feed compressed bytes, appending whatever can be decompressed now onto `buf`.
+
+        For identity encoding, appends a copy of the input.
         """
         if self._encoding._tag == _ENC_IDENTITY:
-            var out = List[Byte](capacity=len(data))
-            out.extend(Span(data))
-            return out^
+            buf.extend(Span(data))
+            return
 
         # Keeps `data`'s origin: the wrapper's `origin=_` parameter borrows
         # it for the duration of the FFI call, so the list cannot be freed
@@ -231,20 +240,29 @@ struct ContentDecoder(Movable):
         if n < 0:
             raise "ContentDecoder.feed: decompression error (" + String(n) + ")"
 
-        var result = List[Byte](capacity=Int(n))
-        result.resize(Int(n), Byte(0))
+        var base = len(buf)
+        buf.resize(base + Int(n), Byte(0))
         for i in range(Int(n)):
-            result[i] = out_buf[unsafe_offset=i]
-        return result^
+            buf[base + i] = out_buf[unsafe_offset=i]
 
     def finish(self) raises -> List[Byte]:
         """Flush any remaining decompressed bytes.
 
         Must be called once after all data has been fed. For identity
-        encoding, returns an empty list.
+        encoding, returns an empty list. Delegates to finish_into.
+        """
+        var result = List[Byte]()
+        self.finish_into(result)
+        return result^
+
+    def finish_into(self, mut buf: List[Byte]) raises:
+        """Flush any remaining decompressed bytes, appending onto `buf`.
+
+        Must be called once after all data has been fed. For identity
+        encoding, this is a no-op.
         """
         if self._encoding._tag == _ENC_IDENTITY:
-            return List[Byte]()
+            return
 
         var out_buf_owner = Owned[UInt8](_OUT_CAP)
         var out_buf = out_buf_owner.ptr()
@@ -265,8 +283,7 @@ struct ContentDecoder(Movable):
         if n < 0:
             raise "ContentDecoder.finish: decompression error (" + String(n) + ")"
 
-        var result = List[Byte](capacity=Int(n))
-        result.resize(Int(n), Byte(0))
+        var base = len(buf)
+        buf.resize(base + Int(n), Byte(0))
         for i in range(Int(n)):
-            result[i] = out_buf[unsafe_offset=i]
-        return result^
+            buf[base + i] = out_buf[unsafe_offset=i]

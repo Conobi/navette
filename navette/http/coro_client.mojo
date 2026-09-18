@@ -109,12 +109,17 @@ struct HttpCoroClient(Movable):
                 slots[0].ptr()[].feed(data)
 
     def drain(mut self, origin: Origin) raises -> List[Byte]:
-        """Drain outbound bytes to send to network."""
+        """Drain outbound bytes to send to network. Delegates to drain_into."""
+        var out = List[Byte]()
+        self.drain_into(out, origin)
+        return out^
+
+    def drain_into(mut self, mut buf: List[Byte], origin: Origin) raises:
+        """Append outbound bytes to send to network onto `buf`."""
         if origin in self._client._pool:
             ref slots = self._client._pool[origin]
             if len(slots) > 0:
-                return slots[0].ptr()[].drain()
-        return List[Byte]()
+                slots[0].ptr()[].drain_into(buf)
 
     def feed_datagram(
         mut self, data: Span[Byte, _], origin: Origin, now: UInt64,

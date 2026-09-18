@@ -120,18 +120,26 @@ struct SessionSlot(Movable):
             self.h3.value().feed_datagram(data, UInt64(0))
 
     def drain(mut self) raises -> List[Byte]:
-        if self.kind == SLOT_H1:
-            return self.h1.value().drain()
-        elif self.kind == SLOT_H2:
-            return self.h2.value().drain()
-        # H3 uses datagrams (List[List[Byte]]) — concatenate into flat buffer.
-        # M6c's HttpCoroClient will use drain_datagrams() directly for proper
-        # UDP framing; this flat drain is a fallback for uniform API.
+        """Drain outbound bytes for the active session. Delegates to drain_into."""
         var out = List[Byte]()
-        var datagrams = self.h3.value().drain_datagrams(UInt64(0))
-        for ref dg in datagrams:
-            out.extend(dg.copy())
+        self.drain_into(out)
         return out^
+
+    def drain_into(mut self, mut buf: List[Byte]) raises:
+        """Append outbound bytes for the active session onto `buf`.
+
+        H3 uses datagrams (List[List[Byte]]) — concatenated into `buf` here.
+        M6c's HttpCoroClient will use drain_datagrams() directly for proper
+        UDP framing; this flat drain is a fallback for uniform API.
+        """
+        if self.kind == SLOT_H1:
+            buf.extend(self.h1.value().drain())
+        elif self.kind == SLOT_H2:
+            buf.extend(self.h2.value().drain())
+        else:
+            var datagrams = self.h3.value().drain_datagrams(UInt64(0))
+            for ref dg in datagrams:
+                buf.extend(dg.copy())
 
     def feed_datagram(
         mut self, data: Span[Byte, _], now: UInt64

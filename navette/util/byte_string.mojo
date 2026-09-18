@@ -60,17 +60,26 @@ def string_to_bytes(s: String) -> List[Byte]:
     Returns:
         The octet sequence that was passed in. Code points U+0080-U+00FF are
         folded back to their single-byte value; everything else is copied as
-        its UTF-8 bytes.
+        its UTF-8 bytes. Delegates to string_to_bytes_into.
     """
     var out = List[Byte]()
+    string_to_bytes_into(out, s)
+    return out^
+
+
+def string_to_bytes_into(mut buf: List[Byte], s: String):
+    """Append the original octets of a String built by `bytes_to_string` onto `buf`.
+
+    Code points U+0080-U+00FF are folded back to their single-byte value;
+    everything else is copied as its UTF-8 bytes.
+    """
     for cp in s.codepoints():
         var v = Int(cp)
         if v <= 0xFF:
-            out.append(UInt8(v))
+            buf.append(UInt8(v))
         else:
             # Not producible by bytes_to_string, but keep the function total
             # rather than silently truncating.
             var enc = String(cp).as_bytes()
             for ref byte in enc:
-                out.append(byte)
-    return out^
+                buf.append(byte)
