@@ -30,16 +30,21 @@ struct H3RawFrame(Copyable, Movable):
         self.frame_type = copy.frame_type
         self.payload = List[Byte](copy=copy.payload)
 
+    def encode_into(self, mut buf: List[Byte]) raises:
+        """Append wire-format bytes (type + length + payload) to buf."""
+        var pos = len(buf)
+        buf.resize(pos + varint_len(self.frame_type), Byte(0))
+        _ = varint_encode_at(buf, pos, self.frame_type)
+        pos = len(buf)
+        buf.resize(pos + varint_len(UInt64(len(self.payload))), Byte(0))
+        _ = varint_encode_at(buf, pos, UInt64(len(self.payload)))
+        buf.extend(Span(self.payload))
+
     def encode(self) raises -> List[Byte]:
-        var result = List[Byte](capacity=2 + len(self.payload))
-        var pos = len(result)
-        result.resize(pos + varint_len(self.frame_type), Byte(0))
-        _ = varint_encode_at(result, pos, self.frame_type)
-        pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(self.payload))), Byte(0))
-        _ = varint_encode_at(result, pos, UInt64(len(self.payload)))
-        result.extend(Span(self.payload))
-        return result^
+        """Encode to a new List. Delegates to encode_into."""
+        var buf = List[Byte](capacity=2 + len(self.payload))
+        self.encode_into(buf)
+        return buf^
 
 
 struct DataFrame(Copyable, Movable):
@@ -55,16 +60,21 @@ struct DataFrame(Copyable, Movable):
     def decode(var payload: List[Byte]) -> DataFrame:
         return DataFrame(payload^)
 
+    def encode_into(self, mut buf: List[Byte]) raises:
+        """Append wire-format DATA frame to buf."""
+        var pos = len(buf)
+        buf.resize(pos + varint_len(H3_FRAME_DATA), Byte(0))
+        _ = varint_encode_at(buf, pos, H3_FRAME_DATA)
+        pos = len(buf)
+        buf.resize(pos + varint_len(UInt64(len(self.data))), Byte(0))
+        _ = varint_encode_at(buf, pos, UInt64(len(self.data)))
+        buf.extend(Span(self.data))
+
     def encode(self) raises -> List[Byte]:
-        var result = List[Byte](capacity=2 + len(self.data))
-        var pos = len(result)
-        result.resize(pos + varint_len(H3_FRAME_DATA), Byte(0))
-        _ = varint_encode_at(result, pos, H3_FRAME_DATA)
-        pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(self.data))), Byte(0))
-        _ = varint_encode_at(result, pos, UInt64(len(self.data)))
-        result.extend(Span(self.data))
-        return result^
+        """Encode to a new List. Delegates to encode_into."""
+        var buf = List[Byte](capacity=2 + len(self.data))
+        self.encode_into(buf)
+        return buf^
 
 
 struct HeadersFrame(Copyable, Movable):
@@ -80,16 +90,21 @@ struct HeadersFrame(Copyable, Movable):
     def decode(var payload: List[Byte]) -> HeadersFrame:
         return HeadersFrame(payload^)
 
+    def encode_into(self, mut buf: List[Byte]) raises:
+        """Append wire-format HEADERS frame to buf."""
+        var pos = len(buf)
+        buf.resize(pos + varint_len(H3_FRAME_HEADERS), Byte(0))
+        _ = varint_encode_at(buf, pos, H3_FRAME_HEADERS)
+        pos = len(buf)
+        buf.resize(pos + varint_len(UInt64(len(self.encoded_fields))), Byte(0))
+        _ = varint_encode_at(buf, pos, UInt64(len(self.encoded_fields)))
+        buf.extend(Span(self.encoded_fields))
+
     def encode(self) raises -> List[Byte]:
-        var result = List[Byte](capacity=2 + len(self.encoded_fields))
-        var pos = len(result)
-        result.resize(pos + varint_len(H3_FRAME_HEADERS), Byte(0))
-        _ = varint_encode_at(result, pos, H3_FRAME_HEADERS)
-        pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(self.encoded_fields))), Byte(0))
-        _ = varint_encode_at(result, pos, UInt64(len(self.encoded_fields)))
-        result.extend(Span(self.encoded_fields))
-        return result^
+        """Encode to a new List. Delegates to encode_into."""
+        var buf = List[Byte](capacity=2 + len(self.encoded_fields))
+        self.encode_into(buf)
+        return buf^
 
 
 struct SettingsPair(Copyable, Movable):
@@ -124,7 +139,8 @@ struct SettingsFrame(Copyable, Movable):
             pairs.append(SettingsPair(id, value))
         return SettingsFrame(pairs^)
 
-    def encode(self) raises -> List[Byte]:
+    def encode_into(self, mut buf: List[Byte]) raises:
+        """Append wire-format SETTINGS frame to buf."""
         var payload = List[Byte](capacity=len(self.pairs) * 4)
         for ref pair in self.pairs:
             var pos = len(payload)
@@ -133,15 +149,19 @@ struct SettingsFrame(Copyable, Movable):
             pos = len(payload)
             payload.resize(pos + varint_len(pair.value), Byte(0))
             _ = varint_encode_at(payload, pos, pair.value)
-        var result = List[Byte](capacity=2 + len(payload))
-        var pos = len(result)
-        result.resize(pos + varint_len(H3_FRAME_SETTINGS), Byte(0))
-        _ = varint_encode_at(result, pos, H3_FRAME_SETTINGS)
-        pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(payload))), Byte(0))
-        _ = varint_encode_at(result, pos, UInt64(len(payload)))
-        result.extend(Span(payload))
-        return result^
+        var pos = len(buf)
+        buf.resize(pos + varint_len(H3_FRAME_SETTINGS), Byte(0))
+        _ = varint_encode_at(buf, pos, H3_FRAME_SETTINGS)
+        pos = len(buf)
+        buf.resize(pos + varint_len(UInt64(len(payload))), Byte(0))
+        _ = varint_encode_at(buf, pos, UInt64(len(payload)))
+        buf.extend(Span(payload))
+
+    def encode(self) raises -> List[Byte]:
+        """Encode to a new List. Delegates to encode_into."""
+        var buf = List[Byte]()
+        self.encode_into(buf)
+        return buf^
 
     def get(self, id: UInt64) -> Optional[UInt64]:
         for ref pair in self.pairs:

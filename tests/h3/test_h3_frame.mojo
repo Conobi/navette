@@ -175,6 +175,69 @@ def test_frame_large_payload() raises:
     print("  test_frame_large_payload: PASS")
 
 
+def test_raw_frame_encode_into() raises:
+    """Appends to existing buffer via encode_into; result matches encode()."""
+    var payload = List[Byte]()
+    payload.append(0x68)
+    payload.append(0x69)
+    var raw = H3RawFrame(UInt64(0xFF), payload^)
+    var standalone = raw.encode()
+    var buf = List[Byte]()
+    buf.append(0xAA)  # pre-existing byte
+    raw.encode_into(buf)
+    # buf should be: [0xAA] + standalone bytes
+    assert_equal_int(len(buf), 1 + len(standalone), "encode_into appends, doesn't replace")
+    for i in range(len(standalone)):
+        assert_equal_int(Int(buf[1 + i]), Int(standalone[i]), "byte mismatch at " + String(i))
+    print("  test_raw_frame_encode_into: PASS")
+
+
+def test_data_frame_encode_into() raises:
+    """DataFrame.encode_into matches encode() output."""
+    var data = List[Byte]()
+    data.append(0x01)
+    data.append(0x02)
+    data.append(0x03)
+    var df = DataFrame(data^)
+    var standalone = df.encode()
+    var buf = List[Byte]()
+    df.encode_into(buf)
+    assert_equal_int(len(buf), len(standalone), "length match")
+    for i in range(len(standalone)):
+        assert_equal_int(Int(buf[i]), Int(standalone[i]), "byte mismatch at " + String(i))
+    print("  test_data_frame_encode_into: PASS")
+
+
+def test_headers_frame_encode_into() raises:
+    """HeadersFrame.encode_into matches encode() output."""
+    var fields = List[Byte]()
+    fields.append(0x00)
+    fields.append(0x00)
+    fields.append(0xC2)
+    var hf = HeadersFrame(fields^)
+    var standalone = hf.encode()
+    var buf = List[Byte]()
+    hf.encode_into(buf)
+    assert_equal_int(len(buf), len(standalone), "length match")
+    for i in range(len(standalone)):
+        assert_equal_int(Int(buf[i]), Int(standalone[i]), "byte mismatch at " + String(i))
+    print("  test_headers_frame_encode_into: PASS")
+
+
+def test_settings_frame_encode_into() raises:
+    """SettingsFrame.encode_into matches encode() output."""
+    var sf = SettingsFrame(List[SettingsPair]())
+    sf.pairs.append(SettingsPair(SETTINGS_QPACK_MAX_TABLE_CAPACITY, 4096))
+    sf.pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, 65536))
+    var standalone = sf.encode()
+    var buf = List[Byte]()
+    sf.encode_into(buf)
+    assert_equal_int(len(buf), len(standalone), "length match")
+    for i in range(len(standalone)):
+        assert_equal_int(Int(buf[i]), Int(standalone[i]), "byte mismatch at " + String(i))
+    print("  test_settings_frame_encode_into: PASS")
+
+
 def main() raises:
     print("=== test_h3_frame ===")
     test_data_frame_round_trip()
@@ -187,4 +250,8 @@ def main() raises:
     test_parse_truncated_raises()
     test_parse_unknown_frame_type_preserved()
     test_frame_large_payload()
+    test_raw_frame_encode_into()
+    test_data_frame_encode_into()
+    test_headers_frame_encode_into()
+    test_settings_frame_encode_into()
     print("All tests passed.")
