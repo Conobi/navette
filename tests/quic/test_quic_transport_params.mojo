@@ -213,7 +213,7 @@ def test_vectors() raises:
                 Bool(params.stateless_reset_token),
                 vec_id + ": stateless_reset_token should be Some",
             )
-            var actual_hex = hex_encode(params.stateless_reset_token.value().copy())
+            var actual_hex = hex_encode(List[Byte](params.stateless_reset_token.value().as_span()))
             assert_true(
                 actual_hex == expected_hex,
                 vec_id + ".stateless_reset_token: got " + actual_hex + " expected " + expected_hex,
@@ -264,7 +264,7 @@ def test_vectors() raises:
                 vec_id + ".preferred_address.cid: got " + cid_hex + " expected " + expected_cid_hex,
             )
 
-            var srt_hex = hex_encode(pa.stateless_reset_token.copy())
+            var srt_hex = hex_encode(List[Byte](pa.stateless_reset_token.as_span()))
             var expected_srt_hex = String(pa_expected["stateless_reset_token_hex"])
             assert_true(
                 srt_hex == expected_srt_hex,

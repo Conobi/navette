@@ -20,6 +20,7 @@ from navette.quic.trans_param import (
     MAX_DATAGRAM_FRAME_SIZE_CAP,
 )
 from navette.quic.codec import ByteWriter
+from navette.util.byte_vec import ByteVec
 from navette.quic.guard_tags import (
     GUARD_TAG_TP_INITIAL_SCID_MISSING,
     GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
@@ -178,7 +179,7 @@ def test_f06_stateless_reset_forbidden() raises:
     transport parameters.
     """
     var p = _well_formed_client_tp()
-    var tok = List[Byte]()
+    var tok = ByteVec[16]()
     for _i in range(16):
         tok.append(UInt8(0xEE))
     p.stateless_reset_token = tok^

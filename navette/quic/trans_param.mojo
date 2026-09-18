@@ -3,6 +3,7 @@
 
 from std.collections import Dict, Optional
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
+from navette.util.byte_vec import ByteVec
 from navette.quic.guard_tags import (
     GUARD_TAG_TP_INITIAL_SCID_MISSING,
     GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
@@ -56,7 +57,7 @@ struct PreferredAddress(Copyable, Movable):
     var ipv6_address: List[Byte]
     var ipv6_port: UInt16
     var cid: List[Byte]
-    var stateless_reset_token: List[Byte]
+    var stateless_reset_token: ByteVec[16]
 
     def __init__(
         out self,
@@ -66,13 +67,14 @@ struct PreferredAddress(Copyable, Movable):
         ipv6_port: UInt16,
         cid: List[Byte],
         stateless_reset_token: List[Byte],
-    ):
+    ) raises:
         self.ipv4_address = ipv4_address.copy()
         self.ipv4_port = ipv4_port
         self.ipv6_address = ipv6_address.copy()
         self.ipv6_port = ipv6_port
         self.cid = cid.copy()
-        self.stateless_reset_token = stateless_reset_token.copy()
+        self.stateless_reset_token = ByteVec[16]()
+        self.stateless_reset_token.extend(Span(stateless_reset_token))
 
     def __init__(out self, *, copy: Self):
         self.ipv4_address = copy.ipv4_address.copy()
@@ -96,7 +98,7 @@ struct PreferredAddress(Copyable, Movable):
 struct TransportParams(Copyable, Movable):
     var original_dcid: Optional[List[Byte]]
     var max_idle_timeout: UInt64
-    var stateless_reset_token: Optional[List[Byte]]
+    var stateless_reset_token: Optional[ByteVec[16]]
     var max_udp_payload_size: UInt64
     var initial_max_data: UInt64
     var initial_max_stream_data_bidi_local: UInt64
@@ -244,7 +246,7 @@ def _serialize_preferred_address(pa: PreferredAddress, mut writer: ByteWriter) r
     writer.write_u16_be(pa.ipv6_port)
     writer.write_u8(UInt8(len(pa.cid)))
     writer.write_bytes(Span(pa.cid))
-    writer.write_bytes(Span(pa.stateless_reset_token))
+    writer.write_bytes(pa.stateless_reset_token.as_span())
 
 
 # ── Parse ────────────────────────────────────────────────────────────
@@ -283,7 +285,9 @@ def parse_transport_params[origin: Origin](
         elif param_id == TP_STATELESS_RESET_TOKEN:
             if len(value_bytes) != 16:
                 raise "stateless_reset_token must be 16 bytes"
-            params.stateless_reset_token = value_bytes^
+            var srt = ByteVec[16]()
+            srt.extend(Span(value_bytes))
+            params.stateless_reset_token = srt^
 
         elif param_id == TP_MAX_UDP_PAYLOAD_SIZE:
             params.max_udp_payload_size = _decode_varint_from_bytes(value_bytes)
@@ -383,7 +387,7 @@ def serialize_transport_params(
     # Stateless reset token (16 bytes).
     if params.stateless_reset_token:
         var tok = params.stateless_reset_token.value().copy()
-        _encode_bytes_param(writer, TP_STATELESS_RESET_TOKEN, Span(tok))
+        _encode_bytes_param(writer, TP_STATELESS_RESET_TOKEN, tok.as_span())
 
     # Integer params — only emit when non-default.
     if params.max_idle_timeout != 0:
