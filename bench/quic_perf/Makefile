@@ -16,24 +16,25 @@ SCENARIOS := long-conn short-conn
 CLIENTS   := tquic_client h2load
 
 .PHONY: setup bench-mvp bench-full summary clean help \
-        build-navette build-tquic build-lsquic build-h2load gen-certs gen-payloads
+        build-runtime build-local build-tquic build-lsquic build-h2load gen-certs gen-payloads
 
 help:
-	@echo "Targets: setup bench-mvp bench-full summary clean"
+	@echo "Targets: setup build-local build-runtime bench-mvp bench-full summary clean"
 
-setup: build-navette build-tquic build-lsquic build-h2load gen-certs gen-payloads
-	@echo "[setup] all images built, certs and payloads ready"
+setup: build-runtime build-local build-tquic build-lsquic build-h2load gen-certs gen-payloads
+	@echo "[setup] all images built, local binaries compiled, certs and payloads ready"
 
-build-navette:
-	@if ! docker image inspect navette-bench:latest >/dev/null 2>&1; then \
-	    echo "[setup] building navette-bench:latest"; \
-	    docker build -t navette-bench:latest \
-	        --build-context boucle=$(REPO_ROOT)/../boucle \
-	        --build-context jsonette=$(REPO_ROOT)/../jsonette \
-	        -f $(REPO_ROOT)/bench/Dockerfile $(REPO_ROOT); \
+build-runtime:
+	@if ! docker image inspect navette-runtime:latest >/dev/null 2>&1; then \
+	    echo "[setup] building navette-runtime:latest"; \
+	    docker build -t navette-runtime:latest \
+	        -f $(REPO_ROOT)/bench/Dockerfile.runtime $(REPO_ROOT); \
 	else \
-	    echo "[setup] navette-bench:latest exists (skip)"; \
+	    echo "[setup] navette-runtime:latest exists (skip)"; \
 	fi
+
+build-local:
+	@$(HERE)/scripts/build-local.sh all
 
 build-tquic:
 	@if ! docker image inspect tquic-bench:latest >/dev/null 2>&1; then \

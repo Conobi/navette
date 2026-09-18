@@ -21,6 +21,7 @@ bench/ab/run.sh
 bench/ab/build.sh
 .research
 bench/alloc_count
+bench/build
 bench/flare_compare
 bench/compare
 __pycache__

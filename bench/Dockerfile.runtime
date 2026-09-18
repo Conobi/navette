@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# Lightweight runtime image for navette bench servers.
+#
+# Contains only the OS base — server binaries, shared libraries,
+# certs, payloads, and data are all volume-mounted from the host
+# at `docker run` time. Rebuild only on OS-level dependency bumps.
+#
+# Build:
+#   docker build -t navette-runtime:latest -f bench/Dockerfile.runtime .
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV CERTS_DIR=/certs
+ENV DATA_DIR=/data
+
+ENTRYPOINT ["/usr/local/bin/h3_server"]
