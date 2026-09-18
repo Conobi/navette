@@ -6,6 +6,7 @@
 from std.collections import Optional
 from std.ffi import external_call
 from std.memory import Pointer
+from std.sys.intrinsics import llvm_intrinsic
 
 comptime PROFILE_ACCEPT: Bool = False
 comptime _CLOCK_MONOTONIC: Int32 = 1
@@ -18,6 +19,38 @@ def monotonic_us() -> UInt64:
     var ts_ptr = Pointer(to=ts).unsafe_bitcast[UInt8]()
     _ = external_call["clock_gettime", Int32](_CLOCK_MONOTONIC, ts_ptr)
     return UInt64(ts[0]) * 1_000_000 + UInt64(ts[1]) / 1_000
+
+
+@always_inline
+def rdtsc() -> UInt64:
+    """CPU timestamp counter via LLVM readcyclecounter intrinsic."""
+    return llvm_intrinsic["llvm.readcyclecounter", UInt64, has_side_effect=True]()
+
+
+comptime N_CALL_IDS: Int = 6
+
+
+@fieldwise_init
+struct CallId(ImplicitlyCopyable):
+    """Identifies a tracked function in the CallTracker."""
+    var value: UInt8
+    comptime RECV_FROM_BUFFER = CallId(0)
+    comptime SEND = CallId(1)
+    comptime POLL_QUIC_EVENTS = CallId(2)
+    comptime PARSE_FRAMES = CallId(3)
+    comptime ON_REQUEST = CallId(4)
+    comptime DRAIN_RESPONSES = CallId(5)
+
+
+def _call_id_name(v: UInt8) -> String:
+    """Human-readable name for a CallId value."""
+    if v == 0: return "recv_from_buffer"
+    if v == 1: return "send"
+    if v == 2: return "poll_quic_events"
+    if v == 3: return "parse_frames_from_buf"
+    if v == 4: return "on_request"
+    if v == 5: return "drain_responses"
+    return "unknown"
 
 
 @fieldwise_init
@@ -178,6 +211,132 @@ def counter_name(id: CounterId) -> String:
     return "unknown"
 
 
+comptime _CT_HIST_BUCKETS: Int = 16
+comptime _CT_STATS_PER_ID: Int = 4  # count, total, min, max
+comptime _CT_STATS_SIZE: Int = N_CALL_IDS * _CT_STATS_PER_ID
+comptime _CT_HIST_SIZE: Int = N_CALL_IDS * _CT_HIST_BUCKETS
+
+
+struct CallTracker(Copyable, Movable):
+    """Per-call cycle-cost tracker with log2 histograms, zero heap allocation."""
+
+    var stats: InlineArray[UInt64, _CT_STATS_SIZE]
+    var hist: InlineArray[UInt64, _CT_HIST_SIZE]
+
+    def __init__(out self):
+        self.stats = InlineArray[UInt64, _CT_STATS_SIZE](fill=UInt64(0))
+        self.hist = InlineArray[UInt64, _CT_HIST_SIZE](fill=UInt64(0))
+        for i in range(N_CALL_IDS):
+            self.stats[i * _CT_STATS_PER_ID + 2] = ~UInt64(0)
+
+    @always_inline
+    def record(mut self, id: CallId, cycles: UInt64):
+        """Record one call's cycle cost into stats and histogram."""
+        var base = Int(id.value) * _CT_STATS_PER_ID
+        self.stats[base] += UInt64(1)
+        self.stats[base + 1] += cycles
+        if cycles < self.stats[base + 2]:
+            self.stats[base + 2] = cycles
+        if cycles > self.stats[base + 3]:
+            self.stats[base + 3] = cycles
+        var bucket = 0
+        if cycles > 0:
+            var v = cycles
+            while v > 1 and bucket < _CT_HIST_BUCKETS - 1:
+                v >>= 1
+                bucket += 1
+        var hbase = Int(id.value) * _CT_HIST_BUCKETS
+        self.hist[hbase + bucket] += UInt64(1)
+
+    def count(self, id: CallId) -> UInt64:
+        """Total number of recorded calls for this function."""
+        return self.stats[Int(id.value) * _CT_STATS_PER_ID]
+
+    def total(self, id: CallId) -> UInt64:
+        """Cumulative cycle count across all calls."""
+        return self.stats[Int(id.value) * _CT_STATS_PER_ID + 1]
+
+    def min_cycles(self, id: CallId) -> UInt64:
+        """Minimum observed cycles for a single call."""
+        return self.stats[Int(id.value) * _CT_STATS_PER_ID + 2]
+
+    def max_cycles(self, id: CallId) -> UInt64:
+        """Maximum observed cycles for a single call."""
+        return self.stats[Int(id.value) * _CT_STATS_PER_ID + 3]
+
+    def mean_cycles(self, id: CallId) -> UInt64:
+        """Average cycles per call (integer division)."""
+        var c = self.count(id)
+        if c == 0:
+            return UInt64(0)
+        return self.total(id) // c
+
+    def report_text(self) -> String:
+        """Human-readable per-function summary table."""
+        var s = String("=== CallTracker (rdtsc cycles/call) ===\n")
+        s += "  function                    calls      mean       min       p50       p99       max\n"
+        for i in range(N_CALL_IDS):
+            var id = CallId(UInt8(i))
+            var c = self.count(id)
+            if c == 0:
+                continue
+            var hbase = i * _CT_HIST_BUCKETS
+            var p50 = _ct_percentile(self.hist, hbase, c, 50)
+            var p99 = _ct_percentile(self.hist, hbase, c, 99)
+            s += "  " + _call_id_name(UInt8(i))
+            # Pad name to 24 chars.
+            var name_len = _call_id_name(UInt8(i)).byte_length()
+            for _ in range(max(0, 24 - name_len)):
+                s += " "
+            s += String(c) + "  " + String(self.mean_cycles(id))
+            s += "  " + String(self.min_cycles(id))
+            s += "  " + p50 + "  " + p99
+            s += "  " + String(self.max_cycles(id)) + "\n"
+        return s^
+
+    def report_json_fragment(self) -> String:
+        """JSON object fragment for embedding in the profile sidecar."""
+        var s = String('"call_tracker": {\n')
+        var first = True
+        for i in range(N_CALL_IDS):
+            var id = CallId(UInt8(i))
+            var c = self.count(id)
+            if c == 0:
+                continue
+            if not first:
+                s += ",\n"
+            first = False
+            var hbase = i * _CT_HIST_BUCKETS
+            var p50 = _ct_percentile(self.hist, hbase, c, 50)
+            var p99 = _ct_percentile(self.hist, hbase, c, 99)
+            s += '  "' + _call_id_name(UInt8(i)) + '": {'
+            s += '"count": ' + String(c)
+            s += ', "mean": ' + String(self.mean_cycles(id))
+            s += ', "min": ' + String(self.min_cycles(id))
+            s += ', "p50": "' + p50 + '"'
+            s += ', "p99": "' + p99 + '"'
+            s += ', "max": ' + String(self.max_cycles(id))
+            s += "}"
+        s += "\n}"
+        return s^
+
+
+def _ct_percentile(
+    hist: InlineArray[UInt64, _CT_HIST_SIZE],
+    base: Int,
+    total: UInt64,
+    pct: Int,
+) -> String:
+    """Estimate a percentile from a log2 histogram as '2^bucket' string."""
+    var target = (total * UInt64(pct)) // UInt64(100)
+    var cumulative = UInt64(0)
+    for b in range(_CT_HIST_BUCKETS):
+        cumulative += hist[base + b]
+        if cumulative >= target:
+            return "2^" + String(b)
+    return "2^" + String(_CT_HIST_BUCKETS - 1)
+
+
 struct AcceptProfile(Copyable, Movable):
     """QUIC accept-loop profile counters with data-driven counter table.
 
@@ -213,6 +372,7 @@ struct AcceptProfile(Copyable, Movable):
     var cqes_per_wake_buckets: List[UInt64]
     var flush_impl_us_buckets: List[UInt64]
     var flush_feed_datagram_us_buckets: List[UInt64]
+    var call_tracker: CallTracker
 
     def __init__(out self):
         self.run_start_us = monotonic_us()
@@ -242,6 +402,7 @@ struct AcceptProfile(Copyable, Movable):
         self.cqes_per_wake_buckets = _init_hist(8)
         self.flush_impl_us_buckets = _init_hist(24)
         self.flush_feed_datagram_us_buckets = _init_hist(24)
+        self.call_tracker = CallTracker()
 
     def get(self, id: CounterId) -> UInt64:
         """Read counter value by ID."""
@@ -618,6 +779,7 @@ struct AcceptProfile(Copyable, Movable):
         if busy > UInt64(0):
             unacct_pct = (unacct * UInt64(100)) / busy
         s += "  unaccounted_us_total:             " + _fmt_count(unacct) + "  (" + String(unacct_pct) + "% of busy)\n\n"
+        s += self.call_tracker.report_text()
         s += "=== end ===\n"
         return s^
 
@@ -783,7 +945,8 @@ struct AcceptProfile(Copyable, Movable):
         s += '"timed_out": ' + String(self.get(CounterId.HS_TIMED_OUT)) + ',\n'
         s += '    "latency_us": {"p50": ' + String(lp50) + ', "p90": ' + String(lp90)
         s += ', "p99": ' + String(lp99) + ', "max": ' + String(lmax)
-        s += ', "count": ' + String(len(self.hs_latency_us)) + "}\n  }\n}\n"
+        s += ', "count": ' + String(len(self.hs_latency_us)) + "}\n  },\n"
+        s += "  " + self.call_tracker.report_json_fragment() + "\n}\n"
         return s^
 
 

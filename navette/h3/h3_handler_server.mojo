@@ -12,7 +12,7 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
 from navette.quic.path import PathKey
-from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
+from navette.quic.profile import AcceptProfile, monotonic_us, rdtsc, CallId, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
@@ -315,6 +315,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def _on_request(mut self, ev: H3Event, now: UInt64) raises:
         """Parse pseudo-headers from QPACK fields, build Request, invoke handler."""
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
@@ -373,6 +376,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             )
             if outcome.should_send_425():
                 send_425_response(ev.stream_id, self._h3)
+                comptime if PROFILE_ACCEPT:
+                    if self.profile_ptr is not None:
+                        self.profile_ptr.value()[].call_tracker.record(CallId.ON_REQUEST, rdtsc() - _ct_start)
                 return
 
         var req = Request(
@@ -419,6 +425,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx.detached = detached
         ctx_ptr.unsafe_write(ctx^)
         self._streams[Int(ev.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].call_tracker.record(CallId.ON_REQUEST, rdtsc() - _ct_start)
 
     def _on_data(mut self, ev: H3Event) raises:
         var sid = Int(ev.stream_id)
@@ -470,6 +479,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def _drain_responses(mut self, now: UInt64) raises:
         """For each open stream: send response headers then body frames."""
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         var sids = List[Int]()
         for key in self._streams.keys():
             sids.append(key)
@@ -537,6 +549,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     break
             ctx_ptr.unsafe_write(ctx^)
             self._maybe_cleanup(sid)
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].call_tracker.record(CallId.DRAIN_RESPONSES, rdtsc() - _ct_start)
 
     def _maybe_cleanup(mut self, sid: Int) raises:
         """Free stream context if both sides are done."""

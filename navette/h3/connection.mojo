@@ -19,7 +19,7 @@ from navette.quic.event import (
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
 from navette.quic.path import PathKey
-from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT
+from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT, rdtsc, CallId
 from navette.h3.frame import (
     H3RawFrame,
     DataFrame,
@@ -417,6 +417,9 @@ struct H3Connection(Movable):
 
     def _poll_quic_events(mut self, now: UInt64) raises:
         """Process pending QUIC timeout and drain application events."""
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         while True:
             var ev_opt = self._quic.poll()
             if not ev_opt:
@@ -455,6 +458,9 @@ struct H3Connection(Movable):
                 self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
                 self._dispatch_quic_datagram(ev.payload.unsafe_get[List[UInt8]]())
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].call_tracker.record(CallId.POLL_QUIC_EVENTS, rdtsc() - _ct_start)
 
     def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
         """Collect UDP payloads until `send()` runs dry or the drain cap hits.
@@ -804,6 +810,9 @@ struct H3Connection(Movable):
 
     def _parse_frames_from_buf(mut self, stream_id: UInt64, is_ctrl: Bool, now: UInt64) raises:
         """Parse H3 frames from accumulated bytes. Consumes one frame per iteration."""
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         var key = Int(stream_id)
         # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
         var t_start_parse: UInt64 = 0
@@ -850,6 +859,9 @@ struct H3Connection(Movable):
                 self._handle_control_frame(stream_id, frame^, now)
             else:
                 self._handle_request_frame(stream_id, frame^, now)
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].call_tracker.record(CallId.PARSE_FRAMES, rdtsc() - _ct_start)
 
     def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on the peer control stream."""

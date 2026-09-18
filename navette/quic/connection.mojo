@@ -31,7 +31,7 @@ from navette.tls.early_data_store import (
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
-from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us, ProfileState
+from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us, ProfileState, rdtsc, CallId
 from navette.quic.zero_rtt import (
     ZeroRttState, ZERO_RTT_BUFFER_MAX_PKTS, ZERO_RTT_BUFFER_MAX_BYTES,
     invoke_replay_authenticator_ffi, drive_replay_check_for_test,
@@ -722,6 +722,9 @@ struct QuicConnection(Movable):
         ecn_mark: UInt8 = UInt8(0),
     ) raises:
         """Process an incoming UDP datagram from a mutable buffer."""
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         var t_iter = UInt64(0)
         var ph_hdr = UInt64(0)
         var ph_hp = UInt64(0)
@@ -730,6 +733,9 @@ struct QuicConnection(Movable):
         var ph_sm = UInt64(0)
         self.bytes_received += UInt64(buf_len)
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
+            comptime if PROFILE_ACCEPT:
+                if self.prof.ptr is not None:
+                    self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
             return
         var closing = (self.state & CONN_CLOSING) != 0
         if closing:
@@ -782,6 +788,9 @@ struct QuicConnection(Movable):
                     lowest_recv_space = result[0]
             except:
                 if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+                    comptime if PROFILE_ACCEPT:
+                        if self.prof.ptr is not None:
+                            self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
                     return
                 decrypt_ok = False
             if not decrypt_ok:
@@ -794,6 +803,9 @@ struct QuicConnection(Movable):
             self.prof.end_iter(t_iter, ph_hp, ph_ae, ph_hdr, ph_fp, ph_sm)
             offset += pkt_len
         self._retransmit_crypto_if_needed(lowest_recv_space, closing)
+        comptime if PROFILE_ACCEPT:
+            if self.prof.ptr is not None:
+                self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
 
     def _classify_recv_packet(
         mut self,
@@ -2519,12 +2531,21 @@ struct QuicConnection(Movable):
         calls so the caller amortizes the outer List allocation instead of
         getting a fresh one back on every call.
         """
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         out.clear()
         self._check_timers(now)
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
+            comptime if PROFILE_ACCEPT:
+                if self.prof.ptr is not None:
+                    self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
         var closing = (self.state & CONN_CLOSING) != 0
         if closing and not self.close.owed:
+            comptime if PROFILE_ACCEPT:
+                if self.prof.ptr is not None:
+                    self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
         var budget = self._datagram_budget()
         if self.is_server and not self._addr_validated():
@@ -2570,6 +2591,9 @@ struct QuicConnection(Movable):
             if r[1]:
                 end_assembly = True
         if len(plans) == 0:
+            comptime if PROFILE_ACCEPT:
+                if self.prof.ptr is not None:
+                    self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
         var result = self._commit_plans_to_datagram(
             plans, budget, closing, all_close_committed, now,
@@ -2579,6 +2603,9 @@ struct QuicConnection(Movable):
             var dg = List[UInt8]()
             swap(dg, result[i])
             out.append(dg^)
+        comptime if PROFILE_ACCEPT:
+            if self.prof.ptr is not None:
+                self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
         return len(out)
 
     def _plan_space_packet(
