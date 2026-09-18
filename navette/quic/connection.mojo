@@ -43,6 +43,7 @@ from navette.quic.packet_builder import (
     SSF_MAX_STREAM_DATA, SSF_MAX_STREAMS_BIDI, SSF_MAX_STREAMS_UNI,
     SSF_NEW_CID, SSF_RETIRE_CID,
     AEAD_TAG_LEN, MAX_PN_LEN, MIN_PLAINTEXT_LEN, MAX_DATAGRAM_SIZE,
+    SCRATCH_PAYLOAD_CAP, SCRATCH_WRITER_CAP,
     MAX_CLOSE_REASON_BYTES, ANTI_AMP_HEADER_FUDGE,
     datagram_budget, amp_allowance, header_len,
     build_packet, seal_packet,
@@ -548,10 +549,10 @@ struct QuicConnection(Movable):
         self._scratch_lost_pns = List[Int](capacity=64)
         self._scratch_frames = List[Frame](capacity=8)
         self._scratch_sent_records = List[SentStreamFrame](capacity=8)
-        self._scratch_payload = List[Byte](capacity=6144)
+        self._scratch_payload = List[Byte](capacity=SCRATCH_PAYLOAD_CAP)
         self._scratch_datagram = List[Byte](capacity=MAX_DATAGRAM_SIZE)
         self._scratch_plans = List[PacketPlan](capacity=3)
-        self._scratch_writer_buf = List[Byte](capacity=256)
+        self._scratch_writer_buf = List[Byte](capacity=SCRATCH_WRITER_CAP)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
