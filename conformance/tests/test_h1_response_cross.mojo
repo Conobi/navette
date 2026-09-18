@@ -31,7 +31,7 @@ def _iequals(a: String, b: String) -> Bool:
     return True
 
 
-def _hex_to_bytes(s: String) raises -> List[UInt8]:
+def _hex_to_bytes(s: String) raises -> List[Byte]:
     return hex_decode(s)
 
 
@@ -42,9 +42,9 @@ def _oracle_header_count(oracle: PythonObject) raises -> Int:
     return Int(py=builtins.len(oracle["headers"]))
 
 
-def _oracle_body_from_hex(oracle: PythonObject) -> List[UInt8]:
+def _oracle_body_from_hex(oracle: PythonObject) -> List[Byte]:
     """Extract body bytes from oracle result (body_hex field)."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     try:
         if not py_has_key(oracle, "body_hex"):
             return result^
@@ -150,7 +150,7 @@ def _check_response_oracle_agrees(
 
 
 def run_accept_response_cross(
-    wire: List[UInt8],
+    wire: List[Byte],
     vec_id: String,
     request_method: String,
     states: PythonObject,
@@ -188,7 +188,7 @@ def run_accept_response_cross(
 
 
 def run_reject_response_cross(
-    wire: List[UInt8],
+    wire: List[Byte],
     vec_id: String,
     request_method: String,
     states: PythonObject,

@@ -34,7 +34,7 @@ from navette.quic.codec import (
 # ============================================================================
 
 
-def _check_byte_property(b: List[UInt8]) -> ObserveResult:
+def _check_byte_property(b: List[Byte]) -> ObserveResult:
     """P1 — feed bytes to both decoders, observe agreement."""
     # Oracle
     var oracle_err = String("")

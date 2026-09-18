@@ -30,7 +30,7 @@ from tests._test_util import assert_true, assert_equal_int, load_test_cert, load
 # ── Shared loopback helpers ──────────────────────────────────────────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -103,7 +103,7 @@ def _simple_get_body(
 ) raises:
     """Respond immediately with 200 OK + 'hello' body."""
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), Headers())
-    var body = List[UInt8]()
+    var body = List[Byte]()
     var src = String("hello").as_bytes()
     for i in range(len(src)):
         body.append(src[i])
@@ -140,8 +140,8 @@ def test_h3_sync_simple_get() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -164,7 +164,7 @@ def test_h3_sync_simple_get() raises:
 
     # Collect response events
     var got_200 = False
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     while True:
         var ev = client.poll_event()
         if not ev:
@@ -191,8 +191,8 @@ def test_h3_sync_goaway() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -230,8 +230,8 @@ def test_h3_sync_multiple_streams() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -300,8 +300,8 @@ def test_h3_sync_error_propagation() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -355,8 +355,8 @@ def test_h3_sync_zero_rtt_disabled_gate_skips_dispatch() raises:
     var tc = _TestConfigs()
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))
@@ -366,7 +366,7 @@ def test_h3_sync_zero_rtt_disabled_gate_skips_dispatch() raises:
     var server = H3CoroServer(quic=server_quic^, body_fn=_gate_probe_body)
 
     server._h3._quic._current_space_idx = ZERO_RTT_SPACE_IDX
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x00))
     var sf = StreamFrame(UInt64(0), UInt64(0), payload, False)
     try:

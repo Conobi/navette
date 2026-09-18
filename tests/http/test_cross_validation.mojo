@@ -128,7 +128,7 @@ def _to_lower(s: String) -> String:
     return out^
 
 
-def _bytes_equal(a: List[UInt8], b: List[UInt8]) -> Bool:
+def _bytes_equal(a: List[Byte], b: List[Byte]) -> Bool:
     if len(a) != len(b):
         return False
     for i in range(len(a)):
@@ -137,9 +137,9 @@ def _bytes_equal(a: List[UInt8], b: List[UInt8]) -> Bool:
     return True
 
 
-def _flatten_data_frames(ref frames: List[BodyFrame]) -> List[UInt8]:
+def _flatten_data_frames(ref frames: List[BodyFrame]) -> List[Byte]:
     """Concatenate all Data frames; ignore Trailers frames."""
-    var out = List[UInt8]()
+    var out = List[Byte]()
     for i in range(len(frames)):
         if frames[i].is_data():
             ref d = frames[i].data()
@@ -290,7 +290,7 @@ def _compare_request(
             return False
 
     # Body bytes. Request bodies are RequestBody (M2.5a §5.12).
-    var prod_body = List[UInt8]()
+    var prod_body = List[Byte]()
     if prod.body.is_buffered():
         prod_body = prod.body.bytes().copy()
     if not _bytes_equal(prod_body, batch.body):

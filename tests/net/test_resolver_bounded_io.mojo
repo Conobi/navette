@@ -109,15 +109,15 @@ def _close_stdio():
 
 
 def _build_a_answer(
-    qid_hi: UInt8, qid_lo: UInt8, host: String, ip_bytes: List[UInt8],
-) -> List[UInt8]:
+    qid_hi: UInt8, qid_lo: UInt8, host: String, ip_bytes: List[Byte],
+) -> List[Byte]:
     """Build a minimal DNS A answer: header + question + 1 A RR.
 
     The response echoes the given transaction id (qid_hi:qid_lo), includes
     the question section for `host` with QTYPE=A/QCLASS=IN, and a single
     answer RR with the 4-byte IPv4 address from `ip_bytes`.
     """
-    var a = List[UInt8]()
+    var a = List[Byte]()
     # Header (12 bytes)
     a.append(qid_hi); a.append(qid_lo)
     a.append(UInt8(0x80)); a.append(UInt8(0x80))  # QR=1, RA=1, rcode=0
@@ -144,14 +144,14 @@ def _build_a_answer(
 
 
 def _build_aaaa_answer(
-    qid_hi: UInt8, qid_lo: UInt8, host: String, ip_bytes: List[UInt8],
-) -> List[UInt8]:
+    qid_hi: UInt8, qid_lo: UInt8, host: String, ip_bytes: List[Byte],
+) -> List[Byte]:
     """Build a minimal DNS AAAA answer: header + question + 1 AAAA RR.
 
     Same structure as `_build_a_answer` but QTYPE=28 (AAAA) and 16-byte
     RDATA for the IPv6 address.
     """
-    var a = List[UInt8]()
+    var a = List[Byte]()
     # Header (12 bytes)
     a.append(qid_hi); a.append(qid_lo)
     a.append(UInt8(0x80)); a.append(UInt8(0x80))  # QR=1, RA=1, rcode=0
@@ -179,14 +179,14 @@ def _build_aaaa_answer(
 
 def _build_nxdomain_answer(
     qid_hi: UInt8, qid_lo: UInt8, host: String, qtype: Int,
-) -> List[UInt8]:
+) -> List[Byte]:
     """Build an NXDOMAIN DNS response (rcode=3, ANCOUNT=0).
 
     Contains a valid header and echoed question section with the given
     QTYPE, but no answer RRs.  Used to verify that `_parse_a_aaaa_answer`
     correctly rejects non-zero rcodes.
     """
-    var a = List[UInt8]()
+    var a = List[Byte]()
     # Header (12 bytes) — rcode=3 (NXDOMAIN)
     a.append(qid_hi); a.append(qid_lo)
     a.append(UInt8(0x80)); a.append(UInt8(0x83))  # QR=1, RA=1, rcode=3
@@ -215,11 +215,11 @@ def _serve_a_aaaa_queries(udp_fd: Int32, host: String) raises:
       A:    93.184.216.34
       AAAA: 2606:2800:0220:0001::248e
     """
-    var ip4 = List[UInt8]()
+    var ip4 = List[Byte]()
     ip4.append(UInt8(93)); ip4.append(UInt8(184))
     ip4.append(UInt8(216)); ip4.append(UInt8(34))
 
-    var ip6 = List[UInt8]()
+    var ip6 = List[Byte]()
     ip6.append(UInt8(0x26)); ip6.append(UInt8(0x06))
     ip6.append(UInt8(0x28)); ip6.append(UInt8(0x00))
     ip6.append(UInt8(0x02)); ip6.append(UInt8(0x20))
@@ -258,7 +258,7 @@ def _serve_a_aaaa_queries(udp_fd: Int32, host: String) raises:
             qtype = Int(rbuf.ptr()[pos]) * 256 + Int(rbuf.ptr()[pos + 1])
 
         # Build the appropriate response.
-        var answer: List[UInt8]
+        var answer: List[Byte]
         if qtype == 28:
             answer = _build_aaaa_answer(qid_hi, qid_lo, host, ip6)
         else:
@@ -391,7 +391,7 @@ def test_nxdomain_answer() raises:
 def test_cname_with_a_record() raises:
     """A response with CNAME + terminal A record must extract only the A."""
     # Build a response: ANCOUNT=2, first RR is CNAME (type 5), second is A (type 1).
-    var a = List[UInt8]()
+    var a = List[Byte]()
     # Header (12 bytes)
     a.append(UInt8(0x55)); a.append(UInt8(0x55))  # txn id 0x5555
     a.append(UInt8(0x80)); a.append(UInt8(0x80))  # QR=1, RA=1, rcode=0

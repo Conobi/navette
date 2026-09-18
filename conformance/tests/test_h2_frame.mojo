@@ -243,50 +243,50 @@ def main() raises:
         # Set valid payload per type constraints
         if ftype == 2:
             # PRIORITY: exactly 5 bytes
-            frame.payload = List[UInt8]()
+            frame.payload = List[Byte]()
             for _ in range(5):
-                frame.payload.append(UInt8(0))
+                frame.payload.append(Byte(0))
             frame.payload[4] = UInt8(15)  # weight
         elif ftype == 3:
             # RST_STREAM: exactly 4 bytes
-            frame.payload = List[UInt8]()
+            frame.payload = List[Byte]()
             for _ in range(4):
-                frame.payload.append(UInt8(0))
+                frame.payload.append(Byte(0))
         elif ftype == 6:
             # PING: exactly 8 bytes
-            frame.payload = List[UInt8]()
+            frame.payload = List[Byte]()
             for j in range(8):
                 frame.payload.append(
                     UInt8(j + Int(t >> 8) % 200)
                 )
         elif ftype == 8:
             # WINDOW_UPDATE: exactly 4 bytes, increment > 0
-            frame.payload = List[UInt8]()
-            frame.payload.append(UInt8(0))
-            frame.payload.append(UInt8(0))
-            frame.payload.append(UInt8(0))
+            frame.payload = List[Byte]()
+            frame.payload.append(Byte(0))
+            frame.payload.append(Byte(0))
+            frame.payload.append(Byte(0))
             frame.payload.append(UInt8(1 + Int(t >> 16) % 254))
         elif ftype == 7:
             # GOAWAY: >= 8 bytes
-            frame.payload = List[UInt8]()
+            frame.payload = List[Byte]()
             for _ in range(8):
-                frame.payload.append(UInt8(0))
+                frame.payload.append(Byte(0))
         elif ftype == 4:
             # SETTINGS: multiple of 6
             # One entry: id=1 (HEADER_TABLE_SIZE), value=4096
-            frame.payload = List[UInt8]()
-            frame.payload.append(UInt8(0))
+            frame.payload = List[Byte]()
+            frame.payload.append(Byte(0))
             frame.payload.append(UInt8(1))
-            frame.payload.append(UInt8(0))
-            frame.payload.append(UInt8(0))
+            frame.payload.append(Byte(0))
+            frame.payload.append(Byte(0))
             frame.payload.append(UInt8(16))
-            frame.payload.append(UInt8(0))
+            frame.payload.append(Byte(0))
         elif ftype == 5:
             # PUSH_PROMISE: needs 4-byte promised_stream_id at start
-            frame.payload = List[UInt8]()
-            frame.payload.append(UInt8(0))
-            frame.payload.append(UInt8(0))
-            frame.payload.append(UInt8(0))
+            frame.payload = List[Byte]()
+            frame.payload.append(Byte(0))
+            frame.payload.append(Byte(0))
+            frame.payload.append(Byte(0))
             frame.payload.append(UInt8(2))  # promised_stream_id=2 (even)
             # Add some header block bytes
             var extra = 3 + Int(t >> Int(ftype * 4)) % 10
@@ -294,7 +294,7 @@ def main() raises:
                 frame.payload.append(UInt8(j % 256))
         else:
             # DATA (0), HEADERS (1), CONTINUATION (9): variable payload
-            frame.payload = List[UInt8]()
+            frame.payload = List[Byte]()
             var rand_len = 5 + Int(t >> Int(ftype * 4)) % 20
             for j in range(rand_len):
                 frame.payload.append(UInt8(j % 256))

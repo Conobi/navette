@@ -27,7 +27,7 @@ def _check_connection_header(headers: List[Header], default_keep_alive: Bool) ->
     return default_keep_alive
 
 
-def _skip_prefix_crlf(wire: List[UInt8], pos: Int, allow_bare_lf: Bool) -> Int:
+def _skip_prefix_crlf(wire: List[Byte], pos: Int, allow_bare_lf: Bool) -> Int:
     """Skip leading CRLF or bare LF bytes. Returns new position."""
     var p = pos
     var wire_len = len(wire)
@@ -42,7 +42,7 @@ def _skip_prefix_crlf(wire: List[UInt8], pos: Int, allow_bare_lf: Bool) -> Int:
 
 
 def step_request(
-    wire: List[UInt8],
+    wire: List[Byte],
     pos: Int,
     state: ConnectionState,
     config: ParseConfig,
@@ -64,7 +64,7 @@ def step_request(
         return (new_state^, ParsedRequest(), pos, String("no data after prefix CRLF skip"))
 
     # Build slice from start
-    var remaining = List[UInt8]()
+    var remaining = List[Byte]()
     for i in range(start, len(wire)):
         remaining.append(wire[i])
 
@@ -97,7 +97,7 @@ def step_request(
 
 
 def step_response(
-    wire: List[UInt8],
+    wire: List[Byte],
     pos: Int,
     state: ConnectionState,
     request_method: String,
@@ -116,7 +116,7 @@ def step_response(
     if start >= len(wire):
         return (new_state^, ParsedResponse(), pos, String("no data after prefix CRLF skip"))
 
-    var remaining = List[UInt8]()
+    var remaining = List[Byte]()
     for i in range(start, len(wire)):
         remaining.append(wire[i])
 
@@ -166,7 +166,7 @@ def step_response(
 
 
 def parse_messages(
-    wire: List[UInt8],
+    wire: List[Byte],
     direction: String,
     request_methods: List[String],
     config: ParseConfig,

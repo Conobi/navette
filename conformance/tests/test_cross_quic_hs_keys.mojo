@@ -25,10 +25,10 @@ struct HandshakeKeys:
         self.server_1rtt = Int32(-1)
 
 
-def py_bytes_to_mojo(raw: PythonObject) raises -> List[UInt8]:
-    """Convert Python bytes to Mojo List[UInt8]."""
+def py_bytes_to_mojo(raw: PythonObject) raises -> List[Byte]:
+    """Convert Python bytes to Mojo List[Byte]."""
     var builtins = Python.import_module("builtins")
-    var result = List[UInt8]()
+    var result = List[Byte]()
     for i in range(Int(py=builtins.len(raw))):
         result.append(UInt8(Int(py=raw[i])))
     return result^

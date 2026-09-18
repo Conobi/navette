@@ -32,7 +32,7 @@ def test_phase_a_cross_imports() raises:
     assert_true(len(hdrs) == 2, "Headers has 2 entries")
 
     # BodyFrame
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(0x68)  # 'h'
     payload.append(0x69)  # 'i'
 

@@ -3,10 +3,10 @@
 
 
 struct ByteReader[origin: Origin]:
-    var _buf: Span[UInt8, Self.origin]
+    var _buf: Span[Byte, Self.origin]
     var pos: Int
 
-    def __init__(out self, buf: Span[UInt8, Self.origin]):
+    def __init__(out self, buf: Span[Byte, Self.origin]):
         self._buf = buf
         self.pos = 0
 
@@ -50,18 +50,18 @@ struct ByteReader[origin: Origin]:
         self.pos += 8
         return v
 
-    def read_bytes(mut self, n: Int) raises -> List[UInt8]:
+    def read_bytes(mut self, n: Int) raises -> List[Byte]:
         """Read n bytes, returning an owned copy."""
         if self.pos + n > len(self._buf):
             raise "ByteReader: underflow reading " + String(n) + " bytes"
         var src = self._buf[self.pos : self.pos + n]
-        var result = List[UInt8](capacity=n)
+        var result = List[Byte](capacity=n)
         result.extend(src)
         self.pos += n
         return result^
 
     @always_inline
-    def read_span(mut self, n: Int) raises -> Span[UInt8, Self.origin]:
+    def read_span(mut self, n: Int) raises -> Span[Byte, Self.origin]:
         """Read n bytes as a zero-copy Span view into the underlying buffer."""
         if self.pos + n > len(self._buf):
             raise "ByteReader: underflow reading " + String(n) + " bytes"
@@ -82,48 +82,48 @@ struct ByteReader[origin: Origin]:
 
 
 struct ByteWriter:
-    var buf: List[UInt8]
+    var buf: List[Byte]
 
     def __init__(out self):
-        self.buf = List[UInt8]()
+        self.buf = List[Byte]()
 
     def __init__(out self, capacity: Int):
-        self.buf = List[UInt8](capacity=capacity)
+        self.buf = List[Byte](capacity=capacity)
 
     def write_u8(mut self, value: UInt8):
         """Append one byte."""
         var base = len(self.buf)
-        self.buf.resize(base + 1, UInt8(0))
+        self.buf.resize(base + 1, Byte(0))
         _ = write_u8_at(self.buf, base, value)
 
     def write_u16_be(mut self, value: UInt16):
         """Append a 16-bit big-endian integer."""
         var base = len(self.buf)
-        self.buf.resize(base + 2, UInt8(0))
+        self.buf.resize(base + 2, Byte(0))
         _ = write_u16_be_at(self.buf, base, value)
 
     def write_u32_be(mut self, value: UInt32):
         """Append a 32-bit big-endian integer."""
         var base = len(self.buf)
-        self.buf.resize(base + 4, UInt8(0))
+        self.buf.resize(base + 4, Byte(0))
         _ = write_u32_be_at(self.buf, base, value)
 
     def write_u64_be(mut self, value: UInt64):
         """Append a 64-bit big-endian integer."""
         var base = len(self.buf)
-        self.buf.resize(base + 8, UInt8(0))
+        self.buf.resize(base + 8, Byte(0))
         _ = write_u64_be_at(self.buf, base, value)
 
-    def write_bytes(mut self, data: Span[UInt8, _]):
+    def write_bytes(mut self, data: Span[Byte, _]):
         """Append a byte span to the write buffer."""
         self.buf.extend(data)
 
     def len(self) -> Int:
         return len(self.buf)
 
-    def finish(mut self) -> List[UInt8]:
+    def finish(mut self) -> List[Byte]:
         var result = self.buf^
-        self.buf = List[UInt8]()
+        self.buf = List[Byte]()
         return result^
 
 
@@ -143,20 +143,20 @@ def varint_encode(mut writer: ByteWriter, value: UInt64) raises:
         raise "varint value exceeds max (2^62 - 1)"
     var size = varint_len(value)
     var base = len(writer.buf)
-    writer.buf.resize(base + size, UInt8(0))
+    writer.buf.resize(base + size, Byte(0))
     _ = varint_encode_at(writer.buf, base, value)
 
 
 
 @always_inline
-def write_u8_at(mut buf: List[UInt8], pos: Int, value: UInt8) -> Int:
+def write_u8_at(mut buf: List[Byte], pos: Int, value: UInt8) -> Int:
     """Write one byte at `pos`. Returns 1."""
     buf[pos] = value
     return 1
 
 
 @always_inline
-def write_u16_be_at(mut buf: List[UInt8], pos: Int, value: UInt16) -> Int:
+def write_u16_be_at(mut buf: List[Byte], pos: Int, value: UInt16) -> Int:
     """Write a 16-bit big-endian integer at `pos`. Returns 2."""
     buf[pos] = UInt8((value >> 8) & 0xFF)
     buf[pos + 1] = UInt8(value & 0xFF)
@@ -164,7 +164,7 @@ def write_u16_be_at(mut buf: List[UInt8], pos: Int, value: UInt16) -> Int:
 
 
 @always_inline
-def write_u24_be_at(mut buf: List[UInt8], pos: Int, value: UInt32) -> Int:
+def write_u24_be_at(mut buf: List[Byte], pos: Int, value: UInt32) -> Int:
     """Write a 24-bit big-endian integer at `pos`. Returns 3."""
     buf[pos] = UInt8((value >> 16) & 0xFF)
     buf[pos + 1] = UInt8((value >> 8) & 0xFF)
@@ -173,7 +173,7 @@ def write_u24_be_at(mut buf: List[UInt8], pos: Int, value: UInt32) -> Int:
 
 
 @always_inline
-def write_u32_be_at(mut buf: List[UInt8], pos: Int, value: UInt32) -> Int:
+def write_u32_be_at(mut buf: List[Byte], pos: Int, value: UInt32) -> Int:
     """Write a 32-bit big-endian integer at `pos`. Returns 4."""
     buf[pos] = UInt8((value >> 24) & 0xFF)
     buf[pos + 1] = UInt8((value >> 16) & 0xFF)
@@ -183,7 +183,7 @@ def write_u32_be_at(mut buf: List[UInt8], pos: Int, value: UInt32) -> Int:
 
 
 @always_inline
-def write_u64_be_at(mut buf: List[UInt8], pos: Int, value: UInt64) -> Int:
+def write_u64_be_at(mut buf: List[Byte], pos: Int, value: UInt64) -> Int:
     """Write a 64-bit big-endian integer at `pos`. Returns 8."""
     for i in range(8):
         buf[pos + i] = UInt8((value >> UInt64((7 - i) * 8)) & 0xFF)
@@ -191,7 +191,7 @@ def write_u64_be_at(mut buf: List[UInt8], pos: Int, value: UInt64) -> Int:
 
 
 @always_inline
-def varint_encode_at(mut buf: List[UInt8], pos: Int, value: UInt64) -> Int:
+def varint_encode_at(mut buf: List[Byte], pos: Int, value: UInt64) -> Int:
     """Write a QUIC varint (RFC 9000 section 16) at `pos`. Returns 1, 2, 4, or 8."""
     var size = varint_len(value)
     if size == 1:

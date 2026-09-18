@@ -50,7 +50,7 @@ def _phase_name(phase: Int) -> String:
 
 
 def cross_validate_entry(
-    wire: List[UInt8],
+    wire: List[Byte],
     direction: String,
     request_methods: List[String],
     vid: String,

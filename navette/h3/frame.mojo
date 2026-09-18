@@ -20,73 +20,73 @@ comptime SETTINGS_H3_DATAGRAM: UInt64 = 0x33
 
 struct H3RawFrame(Copyable, Movable):
     var frame_type: UInt64
-    var payload: List[UInt8]
+    var payload: List[Byte]
 
-    def __init__(out self, frame_type: UInt64, var payload: List[UInt8]):
+    def __init__(out self, frame_type: UInt64, var payload: List[Byte]):
         self.frame_type = frame_type
         self.payload = payload^
 
     def __init__(out self, *, copy: Self):
         self.frame_type = copy.frame_type
-        self.payload = List[UInt8](copy=copy.payload)
+        self.payload = List[Byte](copy=copy.payload)
 
-    def encode(self) raises -> List[UInt8]:
-        var result = List[UInt8](capacity=2 + len(self.payload))
+    def encode(self) raises -> List[Byte]:
+        var result = List[Byte](capacity=2 + len(self.payload))
         var pos = len(result)
-        result.resize(pos + varint_len(self.frame_type), UInt8(0))
+        result.resize(pos + varint_len(self.frame_type), Byte(0))
         _ = varint_encode_at(result, pos, self.frame_type)
         pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(self.payload))), UInt8(0))
+        result.resize(pos + varint_len(UInt64(len(self.payload))), Byte(0))
         _ = varint_encode_at(result, pos, UInt64(len(self.payload)))
         result.extend(Span(self.payload))
         return result^
 
 
 struct DataFrame(Copyable, Movable):
-    var data: List[UInt8]
+    var data: List[Byte]
 
-    def __init__(out self, var data: List[UInt8]):
+    def __init__(out self, var data: List[Byte]):
         self.data = data^
 
     def __init__(out self, *, copy: Self):
-        self.data = List[UInt8](copy=copy.data)
+        self.data = List[Byte](copy=copy.data)
 
     @staticmethod
-    def decode(var payload: List[UInt8]) -> DataFrame:
+    def decode(var payload: List[Byte]) -> DataFrame:
         return DataFrame(payload^)
 
-    def encode(self) raises -> List[UInt8]:
-        var result = List[UInt8](capacity=2 + len(self.data))
+    def encode(self) raises -> List[Byte]:
+        var result = List[Byte](capacity=2 + len(self.data))
         var pos = len(result)
-        result.resize(pos + varint_len(H3_FRAME_DATA), UInt8(0))
+        result.resize(pos + varint_len(H3_FRAME_DATA), Byte(0))
         _ = varint_encode_at(result, pos, H3_FRAME_DATA)
         pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(self.data))), UInt8(0))
+        result.resize(pos + varint_len(UInt64(len(self.data))), Byte(0))
         _ = varint_encode_at(result, pos, UInt64(len(self.data)))
         result.extend(Span(self.data))
         return result^
 
 
 struct HeadersFrame(Copyable, Movable):
-    var encoded_fields: List[UInt8]
+    var encoded_fields: List[Byte]
 
-    def __init__(out self, var encoded_fields: List[UInt8]):
+    def __init__(out self, var encoded_fields: List[Byte]):
         self.encoded_fields = encoded_fields^
 
     def __init__(out self, *, copy: Self):
-        self.encoded_fields = List[UInt8](copy=copy.encoded_fields)
+        self.encoded_fields = List[Byte](copy=copy.encoded_fields)
 
     @staticmethod
-    def decode(var payload: List[UInt8]) -> HeadersFrame:
+    def decode(var payload: List[Byte]) -> HeadersFrame:
         return HeadersFrame(payload^)
 
-    def encode(self) raises -> List[UInt8]:
-        var result = List[UInt8](capacity=2 + len(self.encoded_fields))
+    def encode(self) raises -> List[Byte]:
+        var result = List[Byte](capacity=2 + len(self.encoded_fields))
         var pos = len(result)
-        result.resize(pos + varint_len(H3_FRAME_HEADERS), UInt8(0))
+        result.resize(pos + varint_len(H3_FRAME_HEADERS), Byte(0))
         _ = varint_encode_at(result, pos, H3_FRAME_HEADERS)
         pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(self.encoded_fields))), UInt8(0))
+        result.resize(pos + varint_len(UInt64(len(self.encoded_fields))), Byte(0))
         _ = varint_encode_at(result, pos, UInt64(len(self.encoded_fields)))
         result.extend(Span(self.encoded_fields))
         return result^
@@ -115,7 +115,7 @@ struct SettingsFrame(Copyable, Movable):
         self.pairs = List[SettingsPair](copy=copy.pairs)
 
     @staticmethod
-    def decode(payload: List[UInt8]) raises -> SettingsFrame:
+    def decode(payload: List[Byte]) raises -> SettingsFrame:
         var pairs = List[SettingsPair]()
         var r = ByteReader(Span(payload))
         while r.remaining() > 0:
@@ -124,21 +124,21 @@ struct SettingsFrame(Copyable, Movable):
             pairs.append(SettingsPair(id, value))
         return SettingsFrame(pairs^)
 
-    def encode(self) raises -> List[UInt8]:
-        var payload = List[UInt8](capacity=len(self.pairs) * 4)
+    def encode(self) raises -> List[Byte]:
+        var payload = List[Byte](capacity=len(self.pairs) * 4)
         for ref pair in self.pairs:
             var pos = len(payload)
-            payload.resize(pos + varint_len(pair.id), UInt8(0))
+            payload.resize(pos + varint_len(pair.id), Byte(0))
             _ = varint_encode_at(payload, pos, pair.id)
             pos = len(payload)
-            payload.resize(pos + varint_len(pair.value), UInt8(0))
+            payload.resize(pos + varint_len(pair.value), Byte(0))
             _ = varint_encode_at(payload, pos, pair.value)
-        var result = List[UInt8](capacity=2 + len(payload))
+        var result = List[Byte](capacity=2 + len(payload))
         var pos = len(result)
-        result.resize(pos + varint_len(H3_FRAME_SETTINGS), UInt8(0))
+        result.resize(pos + varint_len(H3_FRAME_SETTINGS), Byte(0))
         _ = varint_encode_at(result, pos, H3_FRAME_SETTINGS)
         pos = len(result)
-        result.resize(pos + varint_len(UInt64(len(payload))), UInt8(0))
+        result.resize(pos + varint_len(UInt64(len(payload))), Byte(0))
         _ = varint_encode_at(result, pos, UInt64(len(payload)))
         result.extend(Span(payload))
         return result^
@@ -162,7 +162,7 @@ def parse_h3_frame[origin: Origin](mut r: ByteReader[origin]) raises -> H3RawFra
     if UInt64(r.remaining()) < length:
         raise "H3: truncated frame payload (declared " + String(length) + " bytes, got " + String(r.remaining()) + ")"
     var n = Int(length)
-    var payload = List[UInt8](capacity=n)
+    var payload = List[Byte](capacity=n)
     for _ in range(n):
         payload.append(r.read_u8())
     return H3RawFrame(frame_type, payload^)

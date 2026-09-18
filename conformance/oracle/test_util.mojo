@@ -1,9 +1,9 @@
 from std.python import Python, PythonObject
 
 
-def hex_decode(s: String) raises -> List[UInt8]:
+def hex_decode(s: String) raises -> List[Byte]:
     """Decode a hex string like '7fff' into bytes."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var hex_str = s
     var bytes = hex_str.as_bytes()
     # The decode loop reads `bytes[i]` and `bytes[i + 1]`, so it is the BYTE
@@ -36,7 +36,7 @@ def _hex_byte_value(b: UInt8) raises -> Int:
     raise "invalid hex byte"
 
 
-def hex_encode(buf: List[UInt8]) -> String:
+def hex_encode(buf: List[Byte]) -> String:
     """Encode bytes to a lowercase hex string, zero-padded."""
     var chars = "0123456789abcdef"
     var result = String()
@@ -96,7 +96,7 @@ def assert_equal(got: Int, expected: Int, msg: String) raises:
 
 
 def assert_bytes_equal(
-    got: List[UInt8], expected: List[UInt8], name: String
+    got: List[Byte], expected: List[Byte], name: String
 ) raises:
     """Assert two byte lists are equal. On failure, print hex diff."""
     if len(got) != len(expected):

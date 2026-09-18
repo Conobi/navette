@@ -87,7 +87,7 @@ struct BruteForceReplayStore(Movable):
 
     def check_and_record(
         mut self,
-        authenticator: Span[UInt8, _],
+        authenticator: Span[Byte, _],
         now_unix_ms: UInt64,
     ) raises -> ReplayDecision:
         """Linear-scan mirror of InMemoryEarlyDataStore.check_and_record."""
@@ -174,7 +174,7 @@ struct BruteForceReplayStore(Movable):
 # Property test driver.
 # ---------------------------------------------------------------------
 
-def _gen_auth(rng_lo: UInt64, rng_hi: UInt64) -> List[UInt8]:
+def _gen_auth(rng_lo: UInt64, rng_hi: UInt64) -> List[Byte]:
     """Project two 64-bit RNG outputs into a 32-byte authenticator.
 
     NOTE: despite the bucketed byte-0 (rng_lo % 8), the 64 fresh random
@@ -185,7 +185,7 @@ def _gen_auth(rng_lo: UInt64, rng_hi: UInt64) -> List[UInt8]:
     genuinely finite key universe.
     """
     var bucket = rng_lo % UInt64(8)
-    var out = List[UInt8]()
+    var out = List[Byte]()
     for _ in range(32):
         out.append(UInt8(bucket))
     var hi = rng_hi
@@ -196,7 +196,7 @@ def _gen_auth(rng_lo: UInt64, rng_hi: UInt64) -> List[UInt8]:
     return out^
 
 
-def _gen_auth_finite(rng_lo: UInt64) -> List[UInt8]:
+def _gen_auth_finite(rng_lo: UInt64) -> List[Byte]:
     """Project one RNG output into a GENUINELY finite 8-key universe.
 
     Every variable byte derives from the bucket index alone (all 32
@@ -205,7 +205,7 @@ def _gen_auth_finite(rng_lo: UInt64) -> List[UInt8]:
     re-appends — occur with certainty over a 200-op stream.
     """
     var bucket = rng_lo % UInt64(8)
-    var out = List[UInt8]()
+    var out = List[Byte]()
     for _ in range(32):
         out.append(UInt8(bucket))
     return out^

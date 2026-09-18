@@ -41,13 +41,13 @@ from tests._test_util import (
 )
 
 
-def _synth_dcid() -> List[UInt8]:
+def _synth_dcid() -> List[Byte]:
     """Return the canonical RFC 9001 §A test DCID for synthetic key derivation.
 
     Returns:
         An 8-byte List with the canonical sample DCID.
     """
-    var dcid: List[UInt8] = [
+    var dcid: List[Byte] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
@@ -80,7 +80,7 @@ def _make_server_conn(
 
 def _build_ping_initial(
     client_protect: PacketProtect, pn: UInt64
-) raises -> List[UInt8]:
+) raises -> List[Byte]:
     """Build an AEAD-encrypted, header-protected, PING-only Initial packet.
 
     Layout mirrors test_quic_connection.mojo::test_batch_crypto_roundtrip:
@@ -128,14 +128,14 @@ def _build_ping_initial(
     assert_equal_int(ct_len, 48, "ciphertext = payload 32 + tag 16")
     client_protect.protect_header_ptr(0, buf, 70, 18, 4)
 
-    var out = List[UInt8](capacity=70)
+    var out = List[Byte](capacity=70)
     for i in range(70):
         out.append(buf[i])
     _ = buf_owned
     return out^
 
 
-def _build_zero_rtt_stub() raises -> List[UInt8]:
+def _build_zero_rtt_stub() raises -> List[Byte]:
     """Build a parseable — never decrypted — 0-RTT long-header packet.
 
     Path B (lazy key install) fires on the 0-RTT packet *type* before any
@@ -148,7 +148,7 @@ def _build_zero_rtt_stub() raises -> List[UInt8]:
     Returns:
         The 69-byte parseable 0-RTT packet.
     """
-    var out = List[UInt8](capacity=69)
+    var out = List[Byte](capacity=69)
     out.append(UInt8(0xD3))  # long header | fixed bit | 0-RTT | pn_len=4
     out.append(UInt8(0x00))  # version 0x00000001
     out.append(UInt8(0x00))
@@ -158,7 +158,7 @@ def _build_zero_rtt_stub() raises -> List[UInt8]:
     var dcid = _synth_dcid()
     for i in range(8):
         out.append(dcid[i])
-    out.append(UInt8(0))     # SCID len = 0
+    out.append(Byte(0))     # SCID len = 0
     out.append(UInt8(0x40))  # payload length varint (2-byte form), hi
     out.append(UInt8(52))
     for _ in range(52):
@@ -184,7 +184,7 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
 
     # Client-initiated bidi stream id 0 — legal peer stream on a server.
     var sid = UInt64(0)
-    var payload: List[UInt8] = [
+    var payload: List[Byte] = [
         UInt8(0x68), UInt8(0x65), UInt8(0x6c), UInt8(0x6c), UInt8(0x6f),
     ]  # b"hello"
     var sf = StreamFrame(sid, UInt64(0), payload, True)
@@ -227,7 +227,7 @@ def test_decrypt_zero_rtt_crypto_trips_f30_guard() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
 
-    var data: List[UInt8] = [UInt8(0x16), UInt8(0x03), UInt8(0x03)]
+    var data: List[Byte] = [UInt8(0x16), UInt8(0x03), UInt8(0x03)]
     var cf = CryptoFrame(UInt64(0), data)
     var frame = Frame.crypto(cf)
 
@@ -278,7 +278,7 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
 
     var now = UInt64(2_000_000)
     var _no_ack = List[AckRange]()
-    var _no_reason = List[UInt8]()
+    var _no_reason = List[Byte]()
     conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
@@ -309,7 +309,7 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     var frame_ecn = Frame.ack(af_ecn)
 
     var _no_ack2 = List[AckRange]()
-    var _no_reason2 = List[UInt8]()
+    var _no_reason2 = List[Byte]()
     conn2._dispatch_frame(frame_ecn^, Span(_no_ack2), Span(_no_reason2), ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
@@ -384,7 +384,7 @@ def test_zero_rtt_buffer_respects_packet_cap() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
 
-    var small: List[UInt8] = [UInt8(0xAA), UInt8(0xBB), UInt8(0xCC), UInt8(0xDD)]
+    var small: List[Byte] = [UInt8(0xAA), UInt8(0xBB), UInt8(0xCC), UInt8(0xDD)]
 
     for i in range(16):
         var ok = conn._buffer_zero_rtt_or_drop(Span(small))
@@ -415,7 +415,7 @@ def test_zero_rtt_buffer_respects_byte_cap_boundary() raises:
 
     # Sub-case A — exact-fit at 32768 bytes.
     var conn_a = _make_server_conn(tls, UInt32(0xFFFFFFFF))
-    var pkt2048 = List[UInt8](capacity=2048)
+    var pkt2048 = List[Byte](capacity=2048)
     for _ in range(2048):
         pkt2048.append(UInt8(0x5A))
     for i in range(16):
@@ -436,7 +436,7 @@ def test_zero_rtt_buffer_respects_byte_cap_boundary() raises:
 
     # Sub-case B — 2049 B packets trip the byte cap before the packet cap.
     var conn_b = _make_server_conn(tls, UInt32(0xFFFFFFFF))
-    var pkt2049 = List[UInt8](capacity=2049)
+    var pkt2049 = List[Byte](capacity=2049)
     for _ in range(2049):
         pkt2049.append(UInt8(0x5B))
     for i in range(15):
@@ -476,7 +476,7 @@ def test_zero_rtt_buffer_drains_idempotently() raises:
     # First byte 0x00 hits `recv_from_buffer`'s datagram-level zero-padding
     # silent-break (RFC 9000 §12.4) — keeps the test focused on buffer
     # state and avoids the wire-format parse path that needs AEAD.
-    var small: List[UInt8] = [UInt8(0x00), UInt8(0x22), UInt8(0x33)]
+    var small: List[Byte] = [UInt8(0x00), UInt8(0x22), UInt8(0x33)]
     for _ in range(3):
         _ = conn._buffer_zero_rtt_or_drop(Span(small))
     assert_equal_int(
@@ -519,7 +519,7 @@ def test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
 
-    var pkt: List[UInt8] = [UInt8(0xDE), UInt8(0xAD), UInt8(0xBE), UInt8(0xEF)]
+    var pkt: List[Byte] = [UInt8(0xDE), UInt8(0xAD), UInt8(0xBE), UInt8(0xEF)]
     var ok = conn._buffer_zero_rtt_or_drop(Span(pkt))
     assert_true(ok, "pre-discard packet must be buffered")
     assert_equal_int(
@@ -544,7 +544,7 @@ def test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys() raises:
 def test_zero_rtt_buffer_cleared_at_connection_destroy() raises:
     """When a QuicConnection holding a populated reorder buffer goes out
     of scope, `__del__` must run without crash. Mojo's destructor chain
-    frees the `List[List[UInt8]]` allocations transitively — this test
+    frees the `List[List[Byte]]` allocations transitively — this test
     asserts only that the destructor runs (no probe counter for List
     free).
     """
@@ -553,7 +553,7 @@ def test_zero_rtt_buffer_cleared_at_connection_destroy() raises:
     # Scope-bounded conn: __del__ fires at block exit.
     if True:
         var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
-        var pkt: List[UInt8] = [UInt8(0xAB), UInt8(0xCD)]
+        var pkt: List[Byte] = [UInt8(0xAB), UInt8(0xCD)]
         for _ in range(4):
             _ = conn._buffer_zero_rtt_or_drop(Span(pkt))
         assert_equal_int(
@@ -820,7 +820,7 @@ def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
     # space_idx=2 is the 1-RTT Application space; the 0-RTT guard must not fire.
     try:
         var _no_ack3 = List[AckRange]()
-        var _no_reason3 = List[UInt8]()
+        var _no_reason3 = List[Byte]()
         conn._dispatch_frame(frame^, Span(_no_ack3), Span(_no_reason3), 2, now)
     except:
         # _handle_ack may raise on an empty sent-packet table — that is a

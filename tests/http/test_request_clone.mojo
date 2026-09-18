@@ -8,7 +8,7 @@ from tests._test_util import assert_true, assert_false, assert_equal_int
 
 
 def test_clone_buffered_succeeds() raises:
-    var bytes: List[UInt8] = [UInt8(1), UInt8(2)]
+    var bytes: List[Byte] = [UInt8(1), UInt8(2)]
     var req = Request(
         method=Method.get(),
         target=String("/"),
@@ -36,7 +36,7 @@ def test_clone_stream_raises() raises:
 
 
 def test_try_clone_buffered_returns_some() raises:
-    var bytes: List[UInt8] = [UInt8(1)]
+    var bytes: List[Byte] = [UInt8(1)]
     var req = Request(
         method=Method.get(),
         target=String("/"),

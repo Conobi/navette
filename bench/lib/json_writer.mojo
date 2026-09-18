@@ -2,11 +2,11 @@
 #
 # Hand-rolled JSON byte writer for the HttpArena bench /json endpoint.
 # jsonette ships only a parser; serialisation is on us. The writer
-# appends raw bytes into a caller-owned List[UInt8] so the same scratch
+# appends raw bytes into a caller-owned List[Byte] so the same scratch
 # buffer can be reused across requests without per-call allocation.
 
 
-def write_bytes(mut buf: List[UInt8], b: Span[UInt8, _]):
+def write_bytes(mut buf: List[Byte], b: Span[Byte, _]):
     """Append raw bytes (used for pre-escaped fragments)."""
     var i = 0
     while i < len(b):
@@ -14,12 +14,12 @@ def write_bytes(mut buf: List[UInt8], b: Span[UInt8, _]):
         i += 1
 
 
-def write_uint(mut buf: List[UInt8], v: UInt64):
+def write_uint(mut buf: List[Byte], v: UInt64):
     """ASCII decimal of *v* into *buf*, no allocations beyond a 20-byte scratch."""
     if v == 0:
         buf.append(UInt8(ord("0")))
         return
-    var tmp = List[UInt8]()
+    var tmp = List[Byte]()
     var n = v
     while n > 0:
         tmp.append(UInt8(ord("0")) + UInt8(n % 10))
@@ -30,7 +30,7 @@ def write_uint(mut buf: List[UInt8], v: UInt64):
         i -= 1
 
 
-def write_int(mut buf: List[UInt8], v: Int64):
+def write_int(mut buf: List[Byte], v: Int64):
     """Signed ASCII decimal of *v* into *buf*."""
     if v < 0:
         buf.append(UInt8(ord("-")))
@@ -39,7 +39,7 @@ def write_int(mut buf: List[UInt8], v: Int64):
         write_uint(buf, UInt64(v))
 
 
-def write_str_escaped(mut buf: List[UInt8], s: Span[UInt8, _]):
+def write_str_escaped(mut buf: List[Byte], s: Span[Byte, _]):
     """Write a JSON string literal: opening ", RFC8259-escaped contents, closing ".
 
     Used at boot time to build per-item pre-escaped fragments. Hot-path code

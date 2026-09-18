@@ -214,7 +214,7 @@ struct H3CoroServer(Movable):
     var _h3: H3Connection
     var _body_fn: H3BodyFn
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
-    var _outbuf: List[List[UInt8]]
+    var _outbuf: List[List[Byte]]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
@@ -258,7 +258,7 @@ struct H3CoroServer(Movable):
         self._h3 = H3Connection.server(quic^)
         self._body_fn = body_fn
         self._extra_data = extra_data
-        self._outbuf = List[List[UInt8]]()
+        self._outbuf = List[List[Byte]]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._early_data_filter_ptr = early_data_filter_ptr
@@ -304,7 +304,7 @@ struct H3CoroServer(Movable):
             self._drain_responses(now)
         self._flush_outbound(now)
 
-    def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
+    def feed_datagram(mut self, data: Span[Byte, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram. Dispatches H3 events and drains
         pending response data."""
         self._h3.feed_datagram(data, now)
@@ -313,7 +313,7 @@ struct H3CoroServer(Movable):
             self._drain_responses(now)
         self._flush_outbound(now)
 
-    def drain(mut self, now: UInt64 = 0) -> List[List[UInt8]]:
+    def drain(mut self, now: UInt64 = 0) -> List[List[Byte]]:
         """Drain queued outbound QUIC datagrams for the transport to write.
 
         Also pulls whatever the connection can send right now, so egress
@@ -326,7 +326,7 @@ struct H3CoroServer(Movable):
         except:
             pass
         var out = self._outbuf^
-        self._outbuf = List[List[UInt8]]()
+        self._outbuf = List[List[Byte]]()
         return out^
 
     def should_close(self) -> Bool:
@@ -544,7 +544,7 @@ struct H3CoroServer(Movable):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var data_copy = List[Byte](copy=ev.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
         ctx_ptr.unsafe_write(ctx^)
 
@@ -640,7 +640,7 @@ struct H3CoroServer(Movable):
                         pass
                 elif f.is_end():
                     try:
-                        self._h3.send_data(UInt64(sid), List[UInt8](), True)
+                        self._h3.send_data(UInt64(sid), List[Byte](), True)
                     except:
                         pass
                     ctx.response_ended = True

@@ -57,12 +57,12 @@ struct EventStreamReader(Movable):
     without raising — handlers read `is_end()` and stop polling."""
 
     var _body: DetachedBody
-    var _buffer: List[UInt8]   # undispatched bytes
+    var _buffer: List[Byte]   # undispatched bytes
     var _body_ended: Bool
 
     def __init__(out self, var body: DetachedBody):
         self._body = body^
-        self._buffer = List[UInt8]()
+        self._buffer = List[Byte]()
         self._body_ended = False
 
     def __init__(out self, *, deinit move: Self):
@@ -101,7 +101,7 @@ struct EventStreamReader(Movable):
             # is_end() return True so callers exit their poll loop instead
             # of spinning forever.
             if self._body_ended:
-                self._buffer = List[UInt8]()
+                self._buffer = List[Byte]()
             return Optional[ServerSentEvent]()
 
         # 3. Parse the prefix (up to but not including the blank line).
@@ -117,7 +117,7 @@ struct EventStreamReader(Movable):
 # --- Parsing helpers ---
 
 
-def _find_event_boundary(buf: List[UInt8]) -> Int:
+def _find_event_boundary(buf: List[Byte]) -> Int:
     """Return the index in `buf` of the first byte of a blank-line terminator
     (`\\n\\n` or `\\r\\n\\r\\n` or `\\n\\r\\n` etc), or -1 if none yet. The
     returned index is the position of the *terminator*, so the event bytes
@@ -139,7 +139,7 @@ def _find_event_boundary(buf: List[UInt8]) -> Int:
     return -1
 
 
-def _line_end_len(buf: List[UInt8], at: Int) -> Int:
+def _line_end_len(buf: List[Byte], at: Int) -> Int:
     """Return 2 for `\\r\\n` at `at`, 1 for `\\n` or `\\r` alone, 0 otherwise."""
     if at >= len(buf):
         return 0
@@ -153,7 +153,7 @@ def _line_end_len(buf: List[UInt8], at: Int) -> Int:
     return 0
 
 
-def _blank_line_len(buf: List[UInt8], at: Int) -> Int:
+def _blank_line_len(buf: List[Byte], at: Int) -> Int:
     """Length of the two consecutive line endings that form an event
     boundary starting at `at`. Assumes `_find_event_boundary` placed `at`
     at a valid boundary."""
@@ -162,8 +162,8 @@ def _blank_line_len(buf: List[UInt8], at: Int) -> Int:
     return first + second
 
 
-def _slice_bytes(buf: List[UInt8], start: Int, end: Int) -> List[UInt8]:
-    var out = List[UInt8]()
+def _slice_bytes(buf: List[Byte], start: Int, end: Int) -> List[Byte]:
+    var out = List[Byte]()
     var i = start
     while i < end:
         out.append(buf[i])
@@ -171,7 +171,7 @@ def _slice_bytes(buf: List[UInt8], start: Int, end: Int) -> List[UInt8]:
     return out^
 
 
-def _parse_event_bytes(bytes: List[UInt8]) raises -> ServerSentEvent:
+def _parse_event_bytes(bytes: List[Byte]) raises -> ServerSentEvent:
     """Parse one event's worth of bytes (the prefix before the blank line)
     into a ServerSentEvent per WHATWG §9.2."""
     var event = ServerSentEvent()
@@ -231,7 +231,7 @@ def _parse_event_bytes(bytes: List[UInt8]) raises -> ServerSentEvent:
     return event^
 
 
-def _bytes_to_string(buf: List[UInt8], start: Int, end: Int) -> String:
+def _bytes_to_string(buf: List[Byte], start: Int, end: Int) -> String:
     var out = String("")
     var i = start
     while i < end:
@@ -318,7 +318,7 @@ def try_write_event(
     buf += String("\n")
 
     # Convert to bytes and hand off to SendBody.
-    var bytes = List[UInt8]()
+    var bytes = List[Byte]()
     var as_bytes = buf.as_bytes()
     var k = 0
     while k < len(as_bytes):

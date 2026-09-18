@@ -7,7 +7,7 @@
 # on the second call. A first call with a fresh authenticator, all
 # quotas unsaturated, MUST return ReplayDecision.accept().
 #
-# Authenticator opacity: the trait treats `authenticator: Span[UInt8]`
+# Authenticator opacity: the trait treats `authenticator: Span[Byte]`
 # as 32 opaque bytes. The capture from the encrypted CRYPTO bytes
 # happens upstream, in the FFI shim. This module's only job is the
 # dedup + rate-limit machinery.
@@ -82,20 +82,20 @@ struct KeyTag(Copyable, Movable, KeyElement):
     var bytes: InlineArray[UInt8, 32]
 
     def __init__(out self):
-        self.bytes = InlineArray[UInt8, 32](fill=UInt8(0))
+        self.bytes = InlineArray[UInt8, 32](fill=Byte(0))
 
     def __init__(out self, *, copy: Self):
-        self.bytes = InlineArray[UInt8, 32](fill=UInt8(0))
+        self.bytes = InlineArray[UInt8, 32](fill=Byte(0))
         for i in range(32):
             self.bytes[i] = copy.bytes[i]
 
     def __init__(out self, *, deinit move: Self):
-        self.bytes = InlineArray[UInt8, 32](fill=UInt8(0))
+        self.bytes = InlineArray[UInt8, 32](fill=Byte(0))
         for i in range(32):
             self.bytes[i] = move.bytes[i]
 
     @staticmethod
-    def from_span(src: Span[UInt8, _]) raises -> Self:
+    def from_span(src: Span[Byte, _]) raises -> Self:
         if len(src) != 32:
             raise Error(
                 "KeyTag.from_span: expected exactly 32 bytes, got "
@@ -237,7 +237,7 @@ trait EarlyDataStore(Movable):
     """
     def check_and_record(
         mut self,
-        authenticator: Span[UInt8, _],
+        authenticator: Span[Byte, _],
         now_unix_ms: UInt64,
     ) raises -> ReplayDecision: ...
 
@@ -296,7 +296,7 @@ struct InMemoryEarlyDataStore(EarlyDataStore):
 
     def check_and_record(
         mut self,
-        authenticator: Span[UInt8, _],
+        authenticator: Span[Byte, _],
         now_unix_ms: UInt64,
     ) raises -> ReplayDecision:
         # 1. Slide the global window. Anything older than now - window_ms

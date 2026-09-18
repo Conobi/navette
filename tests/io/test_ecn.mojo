@@ -25,7 +25,7 @@ from tests._test_util import assert_true, assert_false, assert_equal_int, load_t
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -50,8 +50,8 @@ def _establish(
     mut now: UInt64,
 ) raises -> UInt64:
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -79,8 +79,8 @@ def _pump(
     mut now: UInt64,
     rounds: Int = 3,
 ) raises -> UInt64:
-    var a_dg = List[List[UInt8]](capacity=1)
-    var b_dg = List[List[UInt8]](capacity=1)
+    var a_dg = List[List[Byte]](capacity=1)
+    var b_dg = List[List[Byte]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
         var a_n = a.send(now, a_dg)
@@ -105,9 +105,9 @@ def _drain_events(mut conn: QuicConnection):
             break
 
 
-def _to_bytes(s: String) -> List[UInt8]:
+def _to_bytes(s: String) -> List[Byte]:
     """Convert ASCII string to byte list."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var b = s.as_bytes()
     for i in range(len(b)):
         result.append(b[i])
@@ -130,8 +130,8 @@ def test_ecn_recv_counts_ce_mark() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -145,7 +145,7 @@ def test_ecn_recv_counts_ce_mark() raises:
 
     # Client sends a datagram; server receives it with ECN_CE mark.
     now += UInt64(10_000)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     _ = client.send(now, c_dg)
     var ce_before = server.spaces[2].recv_ecn.ce
     for i in range(len(c_dg)):
@@ -176,8 +176,8 @@ def test_ecn_ack_includes_ecn_counts() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -189,7 +189,7 @@ def test_ecn_ack_includes_ecn_counts() raises:
     client.send_stream_data(sid, Span(data), False)
 
     now += UInt64(10_000)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     _ = client.send(now, c_dg)
     for i in range(len(c_dg)):
         try:
@@ -219,8 +219,8 @@ def test_ecn_probing_to_capable() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -240,7 +240,7 @@ def test_ecn_probing_to_capable() raises:
 
     # Client sends (ECT0 probes); server receives them with ECT0 mark.
     now += UInt64(10_000)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     _ = client.send(now, c_dg)
     for i in range(len(c_dg)):
         try:
@@ -250,7 +250,7 @@ def test_ecn_probing_to_capable() raises:
 
     # Server ACK will carry ECN counts (ect0 > 0). Client processes ACK.
     now += UInt64(10_000)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     _ = server.send(now, s_dg)
     for i in range(len(s_dg)):
         try:
@@ -280,8 +280,8 @@ def test_ecn_probing_to_disabled_no_counts() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -305,7 +305,7 @@ def test_ecn_probing_to_disabled_no_counts() raises:
 
     # Client sends (ECT0 probes); server receives WITHOUT ecn_mark (NOT_ECT).
     now += UInt64(10_000)
-    var c_dg2 = List[List[UInt8]](capacity=1)
+    var c_dg2 = List[List[Byte]](capacity=1)
     _ = client.send(now, c_dg2)
     for i in range(len(c_dg2)):
         try:
@@ -316,8 +316,8 @@ def test_ecn_probing_to_disabled_no_counts() raises:
 
     # Server ACK has no ECN counts; client processes it.
     # Pump several rounds to ensure ACK is generated and processed.
-    var s_dg2 = List[List[UInt8]](capacity=1)
-    var c_ack = List[List[UInt8]](capacity=1)
+    var s_dg2 = List[List[Byte]](capacity=1)
+    var c_ack = List[List[Byte]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
         _ = server.send(now, s_dg2)
@@ -355,8 +355,8 @@ def test_ecn_disabled_no_ecn_mark() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -386,8 +386,8 @@ def test_ecn_ce_triggers_congestion() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -407,7 +407,7 @@ def test_ecn_ce_triggers_congestion() raises:
     var data = _to_bytes("ping")
     client.send_stream_data(sid, Span(data), False)
     now += UInt64(10_000)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     _ = client.send(now, c_dg)
     assert_true(len(c_dg) > 0, "client must produce datagrams")
 
@@ -426,7 +426,7 @@ def test_ecn_ce_triggers_congestion() raises:
     )
 
     # Step 3: Server sends ACK with ECN counts (has_ecn=True, ecn_ce=1).
-    var s_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     _ = server.send(now, s_dg)
     assert_true(len(s_dg) > 0, "server must produce ACK")
 
@@ -463,8 +463,8 @@ def test_ecn_bleaching_disables() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
 
     now = _establish(client, server, now)
@@ -490,7 +490,7 @@ def test_ecn_bleaching_disables() raises:
 
     # Client sends; server receives WITHOUT ecn_mark (simulating bleaching: path stripped ECT0).
     now += UInt64(10_000)
-    var c_dg3 = List[List[UInt8]](capacity=1)
+    var c_dg3 = List[List[Byte]](capacity=1)
     _ = client.send(now, c_dg3)
     for i in range(len(c_dg3)):
         try:
@@ -501,7 +501,7 @@ def test_ecn_bleaching_disables() raises:
     # Server ACK has no ECN counts; when client processes it with ect0_in_flight>0
     # but ack has_ecn=False, the bleaching check fires.
     now += UInt64(10_000)
-    var s_dg3 = List[List[UInt8]](capacity=1)
+    var s_dg3 = List[List[Byte]](capacity=1)
     _ = server.send(now, s_dg3)
     for i in range(len(s_dg3)):
         try:

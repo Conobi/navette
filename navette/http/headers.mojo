@@ -9,12 +9,12 @@ def _to_lower(s: String) -> String:
     """Convert ASCII uppercase to lowercase in a string.
 
     ASCII-only contract preserved (matches the previous chr-based
-    implementation). Bulk-build into a sized List[UInt8] then convert
+    implementation). Bulk-build into a sized List[Byte] then convert
     once to String, avoiding per-byte += chr(Int(b)) allocator churn.
     """
     var bytes = s.as_bytes()
     var n = len(bytes)
-    var out = List[UInt8](capacity=n)
+    var out = List[Byte](capacity=n)
     for i in range(n):
         var b = bytes[i]
         if b >= UInt8(65) and b <= UInt8(90):

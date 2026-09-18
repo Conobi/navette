@@ -140,9 +140,9 @@ def _make_policy_on_server() raises -> H3UdpServer[StubHandler]:
     )
 
 
-def _synth_dcid() -> List[UInt8]:
+def _synth_dcid() -> List[Byte]:
     """An 8-byte synthetic client Initial DCID (all 0xAB)."""
-    var dcid = List[UInt8]()
+    var dcid = List[Byte]()
     for _ in range(8):
         dcid.append(UInt8(0xAB))
     return dcid^
@@ -217,7 +217,7 @@ def test_http_filter_counters_live_through_udp_construction() raises:
     var APPLICATION_SPACE_IDX: Int = 2
     var stream_id: UInt64 = 0
     h3_ptr[]._h3._quic._current_space_idx = APPLICATION_SPACE_IDX
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x00))
     var sf = StreamFrame(stream_id, UInt64(0), payload, False)
     try:

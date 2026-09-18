@@ -198,7 +198,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     # --- Transport API -------------------------------------------------------
 
-    def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
+    def feed_datagram(mut self, data: Span[Byte, _], now: UInt64) raises:
         self._h3.feed_datagram(data, now)
         self._dispatch_h3_events(now)
         if self._h3.is_established():
@@ -237,7 +237,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             else:
                 self._drain_responses(now)
 
-    def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
+    def drain_datagrams(mut self, now: UInt64) raises -> List[List[Byte]]:
         """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`.
 
         Test-only: with `_raise_on_next_drain` set, clears it and raises
@@ -435,7 +435,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var data_copy = List[Byte](copy=ev.data)
         ctx.recv_body._push(BodyFrame.data(data_copy^))
         if not ctx.detached:
             try:
@@ -531,7 +531,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                         pass
                 elif f.is_end():
                     try:
-                        self._h3.send_data(UInt64(sid), List[UInt8](), True)
+                        self._h3.send_data(UInt64(sid), List[Byte](), True)
                     except:
                         pass
                     ctx.response_ended = True
@@ -578,7 +578,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         sid: Int,
         var status: StatusCode,
         var headers: Headers,
-        var body: List[UInt8],
+        var body: List[Byte],
         end: Bool,
     ) raises:
         """Write a response into an open stream's `ResponseWriter` from

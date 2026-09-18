@@ -55,7 +55,7 @@ def test_h3event_kind_constants() raises:
     print("  test_h3event_kind_constants: PASS")
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -155,8 +155,8 @@ def test_h3_send_datagram_refused_when_peer_disabled() raises:
     var params = _h3_datagram_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -184,7 +184,7 @@ def test_h3_send_datagram_refused_when_peer_disabled() raises:
         server_h3.peer_h3_datagrams_enabled(),
         "server must NOT see peer H3_DATAGRAM (client did not enable)",
     )
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x42))
     var ok = server_h3.send_datagram(UInt64(0), Span(payload))
     assert_false(ok, "server send_datagram must refuse when peer disabled")
@@ -209,8 +209,8 @@ def test_h3_send_datagram_rejects_non_bidi_stream_id() raises:
     var params = _h3_datagram_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -221,7 +221,7 @@ def test_h3_send_datagram_rejects_non_bidi_stream_id() raises:
     now = _h3_dgram_pump_until_negotiated(client_h3, server_h3, now)
     assert_true(client_h3.peer_h3_datagrams_enabled(), "negotiation precondition failed")
 
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x01))
     var caught = False
     try:
@@ -255,8 +255,8 @@ def test_h3_datagram_round_trip() raises:
     var params = _h3_datagram_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -271,7 +271,7 @@ def test_h3_datagram_round_trip() raises:
 
     var sid = client_h3.open_bidi_stream()
     assert_equal_int(Int(sid), 0, "expected stream id 0 (quarter id = 0)")
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(ord("p")))
     payload.append(UInt8(ord("o")))
     payload.append(UInt8(ord("n")))
@@ -316,8 +316,8 @@ def test_h3_control_stream_setup() raises:
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
     var client_quic = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tls.shared(), srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )

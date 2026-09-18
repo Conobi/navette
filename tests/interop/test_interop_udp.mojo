@@ -58,7 +58,7 @@ def test_bind_and_sendto_recvfrom() raises:
     var cli_fd = udp_connect("127.0.0.1", 19878)
 
     # Send "hello" from client via send (connected socket)
-    var msg = List[UInt8]()
+    var msg = List[Byte]()
     # h=104, e=101, l=108, l=108, o=111
     msg.append(104)
     msg.append(101)

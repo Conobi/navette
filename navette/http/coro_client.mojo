@@ -101,23 +101,23 @@ struct HttpCoroClient(Movable):
 
     # --- Transport API (caller drives I/O) ---
 
-    def feed(mut self, data: Span[UInt8, _], origin: Origin) raises:
+    def feed(mut self, data: Span[Byte, _], origin: Origin) raises:
         """Feed inbound bytes from network for the given origin."""
         if origin in self._client._pool:
             ref slots = self._client._pool[origin]
             if len(slots) > 0:
                 slots[0].ptr()[].feed(data)
 
-    def drain(mut self, origin: Origin) raises -> List[UInt8]:
+    def drain(mut self, origin: Origin) raises -> List[Byte]:
         """Drain outbound bytes to send to network."""
         if origin in self._client._pool:
             ref slots = self._client._pool[origin]
             if len(slots) > 0:
                 return slots[0].ptr()[].drain()
-        return List[UInt8]()
+        return List[Byte]()
 
     def feed_datagram(
-        mut self, data: Span[UInt8, _], origin: Origin, now: UInt64,
+        mut self, data: Span[Byte, _], origin: Origin, now: UInt64,
     ) raises:
         """Feed an inbound network buffer with QUIC framing intact.
 
@@ -132,7 +132,7 @@ struct HttpCoroClient(Movable):
 
     def drain_datagrams(
         mut self, origin: Origin, now: UInt64,
-    ) raises -> List[List[UInt8]]:
+    ) raises -> List[List[Byte]]:
         """Drain outbound bytes preserving QUIC datagram boundaries.
 
         For H1/H2 returns a single-element list wrapping the byte stream
@@ -144,7 +144,7 @@ struct HttpCoroClient(Movable):
             ref slots = self._client._pool[origin]
             if len(slots) > 0:
                 return slots[0].ptr()[].drain_datagrams(now)
-        return List[List[UInt8]]()
+        return List[List[Byte]]()
 
     # --- Request API ---
 
@@ -164,11 +164,11 @@ struct HttpCoroClient(Movable):
         """Submit a GET request."""
         return self._client.get(url)
 
-    def post(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+    def post(mut self, url: String, var body: List[Byte]) raises -> RequestHandle:
         """Submit a POST request."""
         return self._client.post(url, body^)
 
-    def put(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+    def put(mut self, url: String, var body: List[Byte]) raises -> RequestHandle:
         """Submit a PUT request."""
         return self._client.put(url, body^)
 
@@ -180,7 +180,7 @@ struct HttpCoroClient(Movable):
         """Submit a HEAD request."""
         return self._client.head(url)
 
-    def query(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+    def query(mut self, url: String, var body: List[Byte]) raises -> RequestHandle:
         """Submit a QUERY request (RFC 10008)."""
         return self._client.query(url, body^)
 

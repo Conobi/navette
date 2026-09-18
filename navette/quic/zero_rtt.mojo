@@ -20,7 +20,7 @@ struct ZeroRttState(Movable):
     """Per-connection 0-RTT buffering and anti-replay state."""
 
     var enabled: Bool
-    var buffer: List[List[UInt8]]
+    var buffer: List[List[Byte]]
     var buffer_bytes: Int
     var draining: Bool
     var replay_decision: UInt8
@@ -33,7 +33,7 @@ struct ZeroRttState(Movable):
         """True if the server config opted into 0-RTT."""
         return self.enabled
 
-    def buffer_or_drop(mut self, packet: Span[UInt8, _]) -> Bool:
+    def buffer_or_drop(mut self, packet: Span[Byte, _]) -> Bool:
         """Buffer a 0-RTT packet for later replay.
 
         Returns True if buffered, False if dropped (cap exceeded).
@@ -43,7 +43,7 @@ struct ZeroRttState(Movable):
             return False
         if self.buffer_bytes + len(packet) > ZERO_RTT_BUFFER_MAX_BYTES:
             return False
-        var copy = List[UInt8](capacity=len(packet))
+        var copy = List[Byte](capacity=len(packet))
         for b in packet:
             copy.append(b)
         self.buffer.append(copy^)

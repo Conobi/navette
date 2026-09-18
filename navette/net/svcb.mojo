@@ -85,7 +85,7 @@ struct _Answer(Copyable, Movable):
         self.record = move.record^
 
 
-def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:
+def _parse_alpn(m: List[Byte], start: Int, end: Int) raises -> List[String]:
     """Parse the `alpn` (key 1) SvcParam value: a run of length-prefixed tokens.
 
     Each token is `len(u8) value[len]`. Per RFC 9460 §7.1.1, every alpn-id
@@ -112,7 +112,7 @@ def _parse_alpn(m: List[UInt8], start: Int, end: Int) raises -> List[String]:
     return out^
 
 
-def _parse_https_answer(m: List[UInt8], qid: UInt16, host: String) -> _Answer:
+def _parse_https_answer(m: List[Byte], qid: UInt16, host: String) -> _Answer:
     """Classify + parse a datagram; never raises (any failure -> _ANS_INVALID)."""
     try:
         return _parse_https_answer_inner(m, qid, host)
@@ -121,7 +121,7 @@ def _parse_https_answer(m: List[UInt8], qid: UInt16, host: String) -> _Answer:
 
 
 def _parse_https_answer_inner(
-    m: List[UInt8], qid: UInt16, host: String,
+    m: List[Byte], qid: UInt16, host: String,
 ) raises -> _Answer:
     """Validate the header/question, then select the preferred ServiceMode RR.
 
@@ -245,7 +245,7 @@ def _query_tcp(
     # expired deadline does not inadvertently disable the receive timeout.
     var rem_rcv = Int(deadline - now) if deadline > now else 1
     _set_rcvtimeo(fd, rem_rcv)
-    var framed = List[UInt8]()
+    var framed = List[Byte]()
     framed.append(UInt8((len(q) >> 8) & 0xFF))
     framed.append(UInt8(len(q) & 0xFF))
     for ref byte in q:

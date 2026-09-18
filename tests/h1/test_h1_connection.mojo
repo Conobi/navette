@@ -23,16 +23,16 @@ from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 # --- Helpers ---
 
 
-def _str_to_bytes(s: String) -> List[UInt8]:
-    """Copy a string into a fresh List[UInt8]."""
+def _str_to_bytes(s: String) -> List[Byte]:
+    """Copy a string into a fresh List[Byte]."""
     var b = s.as_bytes()
-    var result = List[UInt8]()
+    var result = List[Byte]()
     for i in range(len(b)):
         result.append(b[i])
     return result^
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
+def _bytes_to_string(data: List[Byte]) -> String:
     """Convert a byte list back into a string for assertion messages."""
     var result = String()
     for i in range(len(data)):
@@ -436,7 +436,7 @@ def test_receive_data_bound() raises:
     var conn = H1Connection(ParseConfig())
 
     # Build a chunk just under max_headers_total so the first feed succeeds.
-    var first = List[UInt8]()
+    var first = List[Byte]()
     var first_len = 60000
     for _ in range(first_len):
         first.append(UInt8(ord("A")))
@@ -447,7 +447,7 @@ def test_receive_data_bound() raises:
     # Now flood with bytes well past max_body_size + max_headers_total.
     # Default config: max_body_size=10MiB + max_headers_total=64KiB.
     # Feeding ~12 MiB in one shot must raise.
-    var huge = List[UInt8]()
+    var huge = List[Byte]()
     var huge_len = 12 * 1024 * 1024
     for _ in range(huge_len):
         huge.append(UInt8(ord("B")))

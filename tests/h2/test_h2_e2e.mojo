@@ -31,10 +31,10 @@ from navette.h2.h2_session import H2Session
 
 
 struct _EchoHandler(StreamHandler):
-    var _body_buf: List[UInt8]
+    var _body_buf: List[Byte]
 
     def __init__(out self):
-        self._body_buf = List[UInt8]()
+        self._body_buf = List[Byte]()
 
     def __init__(out self, *, deinit move: Self):
         self._body_buf = move._body_buf^
@@ -74,10 +74,10 @@ struct _EchoHandler(StreamHandler):
         resp.send_status(StatusCode.ok(), headers^)
         if len(self._body_buf) > 0:
             var echo = self._body_buf^
-            self._body_buf = List[UInt8]()
+            self._body_buf = List[Byte]()
             _ = resp.try_send_body(BodyFrame.data(echo^))
         else:
-            var default_body = List[UInt8]()
+            var default_body = List[Byte]()
             var s = String("ok")
             var b = s.as_bytes()
             for i in range(len(b)):
@@ -212,7 +212,7 @@ def test_e2e_post_with_body() raises:
     _bootstrap(server, client)
 
     # Build body bytes
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var msg = String("hello world")
     var msg_b = msg.as_bytes()
     for i in range(len(msg_b)):

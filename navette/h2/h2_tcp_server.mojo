@@ -125,7 +125,7 @@ def _peer_addr_from_fd(fd: Int32) -> String:
             if seg == 0:
                 result += "0"
             else:
-                var hex_buf = List[UInt8]()
+                var hex_buf = List[Byte]()
                 var v = seg
                 while v > 0:
                     var nyb = v & 0xF
@@ -180,9 +180,9 @@ struct H2TcpConn[H: StreamHandler](Movable):
     var tls: TlsConnection
     var http: H2HandlerServer[Self.H]
     var phase: UInt8
-    var recv_buf: List[UInt8]
-    var send_buf: List[UInt8]
-    var send_pending: List[UInt8]
+    var recv_buf: List[Byte]
+    var send_buf: List[Byte]
+    var send_pending: List[Byte]
     var _closing: Bool
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
@@ -207,9 +207,9 @@ struct H2TcpConn[H: StreamHandler](Movable):
         self.tls = tls^
         self.http = http^
         self.phase = _PHASE_TLS_HANDSHAKE
-        self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
-        self.send_buf = List[UInt8]()
-        self.send_pending = List[UInt8]()
+        self.recv_buf = List[Byte](length=_RECV_BUF_SIZE, fill=0)
+        self.send_buf = List[Byte]()
+        self.send_pending = List[Byte]()
         self._closing = False
         self._recv_future = Optional[RecvFuture]()
         self._send_future = Optional[SendFuture]()
@@ -239,7 +239,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
             unsafe_from_address=Int(self._loop_ptr)
         )
         var buf = self.recv_buf^
-        self.recv_buf = List[UInt8]()
+        self.recv_buf = List[Byte]()
         try:
             self._recv_future = loop[].recv(self.socket, buf^)
         except e:
@@ -248,7 +248,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
             if Bool(opt_buf):
                 self.recv_buf = opt_buf.unsafe_take()
             else:
-                self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
+                self.recv_buf = List[Byte](length=_RECV_BUF_SIZE, fill=0)
             raise Error("recv submit failed")
 
     def _submit_send(mut self) raises:
@@ -266,7 +266,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
             unsafe_from_address=Int(self._loop_ptr)
         )
         var buf = self.send_buf^
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
         try:
             self._send_future = loop[].send(self.socket, buf^)
         except e:
@@ -274,10 +274,10 @@ struct H2TcpConn[H: StreamHandler](Movable):
             if Bool(opt_buf):
                 self.send_buf = opt_buf.unsafe_take()
             else:
-                self.send_buf = List[UInt8]()
+                self.send_buf = List[Byte]()
             raise Error("send submit failed")
 
-    def _stage_send(mut self, var data: List[UInt8]) raises:
+    def _stage_send(mut self, var data: List[Byte]) raises:
         """Stage data for sending -- submit directly or queue as pending.
 
         If no send future is in flight, moves the data into send_buf
@@ -338,7 +338,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
             return
 
         var n = Int(result)
-        var chunk = List[UInt8](capacity=n)
+        var chunk = List[Byte](capacity=n)
         chunk.extend(Span(self.recv_buf)[:n])
 
         # 1. Feed ciphertext into TLS state machine.
@@ -422,7 +422,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
 
         # Partial send — keep the unsent tail and re-queue.
         if sent < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - sent)
+            var remaining = List[Byte](capacity=buf_len - sent)
             var i = sent
             while i < buf_len:
                 remaining.append(self.send_buf[i])
@@ -431,15 +431,15 @@ struct H2TcpConn[H: StreamHandler](Movable):
             self._submit_send()
             return
 
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
 
         # Promote any pending data.
         if len(self.send_pending) > 0:
             var n_pending = len(self.send_pending)
-            var pending = List[UInt8](capacity=n_pending)
+            var pending = List[Byte](capacity=n_pending)
             for i in range(n_pending):
                 pending.append(self.send_pending[i])
-            self.send_pending = List[UInt8]()
+            self.send_pending = List[Byte]()
             self.send_buf = pending^
             self._submit_send()
             return

@@ -34,7 +34,7 @@ struct HelloHandler(StreamHandler):
         var headers = Headers()
         headers.set(String("content-length"), String("5"))
         resp.send_status(StatusCode(200), headers^)
-        var bytes: List[UInt8] = [
+        var bytes: List[Byte] = [
             UInt8(0x68), UInt8(0x65), UInt8(0x6c), UInt8(0x6c), UInt8(0x6f),
         ]
         _ = resp.try_send_body(BodyFrame.data(bytes^))
@@ -53,15 +53,15 @@ struct HelloHandler(StreamHandler):
         pass
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
+def _bytes_to_string(data: List[Byte]) -> String:
     var s = String()
     for i in range(len(data)):
         s += chr(Int(data[i]))
     return s^
 
 
-def _str_to_bytes(s: String) -> List[UInt8]:
-    var result = List[UInt8]()
+def _str_to_bytes(s: String) -> List[Byte]:
+    var result = List[Byte]()
     var bytes = s.as_bytes()
     for i in range(len(bytes)):
         result.append(bytes[i])

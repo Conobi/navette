@@ -16,10 +16,10 @@ struct CidBuf(Copyable, Movable, Sized, Equatable):
     def empty() -> Self:
         """Zero-length CID."""
         _check_cid_buf_size()
-        return Self(data=InlineArray[UInt8, 20](fill=UInt8(0)), len=UInt8(0))
+        return Self(data=InlineArray[UInt8, 20](fill=Byte(0)), len=UInt8(0))
 
     @staticmethod
-    def from_span(src: Span[UInt8, _]) -> Self:
+    def from_span(src: Span[Byte, _]) -> Self:
         """Copy up to 20 bytes from a byte span. Aborts if len > 20."""
         if len(src) > 20:
             abort("CID exceeds 20 bytes")
@@ -31,7 +31,7 @@ struct CidBuf(Copyable, Movable, Sized, Equatable):
         buf.len = UInt8(len(src))
         return buf^
 
-    def as_span(self) -> Span[UInt8, origin_of(self.data)]:
+    def as_span(self) -> Span[Byte, origin_of(self.data)]:
         """Borrow as a byte span of the active bytes."""
         return Span(unsafe_ptr=self.data.unsafe_ptr(), length=Int(self.len))
 

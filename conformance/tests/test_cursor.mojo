@@ -38,7 +38,7 @@ def test_write_read_u64_be() raises:
 
 def test_write_bytes() raises:
     var w = ByteWriter(capacity=16)
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0xAA)
     data.append(0xBB)
     data.append(0xCC)
@@ -53,7 +53,7 @@ def test_write_bytes() raises:
 
 
 def test_reader_underflow_u8() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x01)
     var r = ByteReader(data)
     _ = r.read_u8()
@@ -66,7 +66,7 @@ def test_reader_underflow_u8() raises:
 
 
 def test_reader_underflow_u16() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x01)
     var r = ByteReader(data)
     var raised = False
@@ -78,7 +78,7 @@ def test_reader_underflow_u16() raises:
 
 
 def test_reader_underflow_u32() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x01)
     data.append(0x02)
     var r = ByteReader(data)
@@ -91,7 +91,7 @@ def test_reader_underflow_u32() raises:
 
 
 def test_reader_underflow_u64() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(7):
         data.append(UInt8(i))
     var r = ByteReader(data)
@@ -104,7 +104,7 @@ def test_reader_underflow_u64() raises:
 
 
 def test_reader_underflow_bytes() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x01)
     var r = ByteReader(data)
     var raised = False
@@ -193,7 +193,7 @@ def test_interleaved_types() raises:
 def test_empty_write_bytes() raises:
     var w = ByteWriter(capacity=4)
     w.write_u8(0xFF)
-    w.write_bytes(List[UInt8]())
+    w.write_bytes(List[Byte]())
     assert_equal(w.position, 1, "position unchanged after empty write_bytes")
     var r = ByteReader(w.finish())
     assert_equal(Int(r.read_u8()), 0xFF, "byte survives empty write_bytes")

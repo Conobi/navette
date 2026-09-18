@@ -16,11 +16,11 @@ from tests._test_util import assert_true, assert_equal_int
 
 def _check_compaction(len_in: Int, cursor: Int) raises:
     # Build a recognizable buffer, capture the expected tail, compact, compare.
-    var buf = List[UInt8](capacity=len_in if len_in > 0 else 1)
+    var buf = List[Byte](capacity=len_in if len_in > 0 else 1)
     for i in range(len_in):
         buf.append(UInt8((i * 31 + 7) & 0xFF))
     var keep = len_in - cursor
-    var expected = List[UInt8]()
+    var expected = List[Byte]()
     for i in range(keep):
         expected.append(buf[cursor + i])
     _compact_forward(buf, cursor)
@@ -54,7 +54,7 @@ def test_drain_into() raises:
     var r1 = Response(status=StatusCode(200), reason="",
                       version=Version.http_1_1(), headers=Headers())
     conn.send_response(r1^)
-    var sink = List[UInt8]()
+    var sink = List[Byte]()
     conn.drain_into(sink)
     assert_true(len(sink) > 0, "drain_into filled the sink")
     assert_true(not conn.wants_write(), "outbound empty after drain_into")

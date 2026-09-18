@@ -22,7 +22,7 @@ from navette.h3.frame import H3RawFrame, parse_h3_frame
 from navette.quic.codec import ByteReader, varint_encode, varint_decode
 
 
-def _check_byte_property(b: List[UInt8]) -> ObserveResult:
+def _check_byte_property(b: List[Byte]) -> ObserveResult:
     try:
         var span = Span(b)
         var r = ByteReader(span)
@@ -35,7 +35,7 @@ def _check_byte_property(b: List[UInt8]) -> ObserveResult:
 def _gen_frame(mut rng: SplitMix64) -> H3RawFrame:
     var ft = rng.next_u64() % UInt64(64)
     var pl_len = Int(rng.next_below(UInt64(128)))
-    var payload = List[UInt8](capacity=pl_len)
+    var payload = List[Byte](capacity=pl_len)
     for _ in range(pl_len):
         payload.append(rng.next_u8())
     return H3RawFrame(ft, payload^)
@@ -43,7 +43,7 @@ def _gen_frame(mut rng: SplitMix64) -> H3RawFrame:
 
 def _check_roundtrip_property(mut rng: SplitMix64) -> ObserveResult:
     var f = _gen_frame(rng)
-    var wire: List[UInt8]
+    var wire: List[Byte]
     try:
         wire = f.encode()
     except e:

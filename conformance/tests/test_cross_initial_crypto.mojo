@@ -68,13 +68,13 @@ def rustls_derive_keys(
         "rustls rlsm_initial_keys_raw failed: " + lib.last_error(),
     )
 
-    var key_list = List[UInt8]()
+    var key_list = List[Byte]()
     for i in range(Int(out_key_len[])):
         key_list.append(out_key[i])
-    var iv_list = List[UInt8]()
+    var iv_list = List[Byte]()
     for i in range(Int(out_iv_len[])):
         iv_list.append(out_iv[i])
-    var hp_list = List[UInt8]()
+    var hp_list = List[Byte]()
     for i in range(Int(out_hp_len[])):
         hp_list.append(out_hp[i])
 

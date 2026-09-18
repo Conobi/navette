@@ -24,8 +24,8 @@ from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.quic.retry import generate_retry_token, validate_retry_token
 
 
-def _random_bytes(mut rng: SplitMix64, n: Int) -> List[UInt8]:
-    var out = List[UInt8](capacity=n)
+def _random_bytes(mut rng: SplitMix64, n: Int) -> List[Byte]:
+    var out = List[Byte](capacity=n)
     for _ in range(n):
         out.append(rng.next_u8())
     return out^
@@ -40,12 +40,12 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     var now_g = rng.next_u64() % UInt64(1000000)
 
     # P1: inverse identity
-    var token: List[UInt8]
+    var token: List[Byte]
     try:
         token = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
     except e:
         return ObserveResult(False, String("P1: generate_retry_token raised: ") + String(e))
-    var recovered: List[UInt8]
+    var recovered: List[Byte]
     try:
         recovered = validate_retry_token(lib, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except e:
@@ -123,13 +123,13 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
 
 def _check_p6(lib: SharedLibrary) raises -> ObserveResult:
     """Nonce-uniqueness probe: two calls with identical inputs → distinct nonces."""
-    var secret = List[UInt8]()
+    var secret = List[Byte]()
     for i in range(16):
         secret.append(UInt8(i))
-    var orig_dcid = List[UInt8]()
+    var orig_dcid = List[Byte]()
     for i in range(8):
         orig_dcid.append(UInt8(0xA0 + i))
-    var addr_hash = List[UInt8]()
+    var addr_hash = List[Byte]()
     for i in range(32):
         addr_hash.append(UInt8(i))
     var t1 = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))

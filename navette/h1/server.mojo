@@ -31,7 +31,7 @@ struct ServerConnection(Movable):
     # --- Inbound API (server reads requests) ---
 
     @always_inline
-    def receive_data(mut self, data: Span[UInt8, _]) raises:
+    def receive_data(mut self, data: Span[Byte, _]) raises:
         self._inner.receive_data(data)
 
     @always_inline
@@ -49,11 +49,11 @@ struct ServerConnection(Movable):
         self._inner.send_informational(status^, headers^)
 
     @always_inline
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         return self._inner.drain()
 
     @always_inline
-    def drain_into(mut self, mut sink: List[UInt8]):
+    def drain_into(mut self, mut sink: List[Byte]):
         self._inner.drain_into(sink)
 
     # --- State queries ---

@@ -8,7 +8,7 @@ from tests._test_util import assert_true, assert_equal_int
 
 def test_detach_moves_state_into_detached_body() raises:
     var b = RecvBody()
-    var bytes: List[UInt8] = [UInt8(1), UInt8(2)]
+    var bytes: List[Byte] = [UInt8(1), UInt8(2)]
     b._push(BodyFrame.data(bytes^))
     var d = b^.detach()
     var f_opt = d.try_read()

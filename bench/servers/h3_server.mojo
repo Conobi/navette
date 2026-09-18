@@ -96,7 +96,7 @@ def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
 
 
 def _sockaddr_matches(
-    addr: List[UInt8],
+    addr: List[Byte],
     name_ptr: Pointer[UInt8, MutUntrackedOrigin],
     name_len: Int,
 ) -> Bool:
@@ -206,7 +206,7 @@ comptime _HEX_DIGITS = "0123456789abcdef"
 # for ad-hoc debug rendering and for `tests/test_quic_connection.mojo`'s
 # `test_dcid_demux_disambiguates_two_conns`. Do not delete without
 # re-grepping across the repo.
-def _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
+def _bytes_to_hex(bytes: Span[Byte, _]) -> String:
     """Hex-encode bytes for use as a Dict[String, Int] key.
 
     Pinned to 8-byte DCIDs (server SCID length is pinned at 8 bytes;
@@ -223,7 +223,7 @@ def _bytes_to_hex(bytes: Span[UInt8, _]) -> String:
     return key^
 
 
-def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
+def _set_msg_peer_raw(mut msg: Message, addr: List[Byte]):
     """Set a Message's peer from raw sockaddr bytes (Linux layout).
 
     Parses sa_family (LE on x86_64) to choose between AF_INET and
@@ -341,10 +341,10 @@ struct EgressPacket(Movable):
     Submitted via WatchLoop.send_msg in flush()'s _submit_egress phase.
     """
 
-    var data: List[UInt8]
-    var addr: List[UInt8]
+    var data: List[Byte]
+    var addr: List[Byte]
 
-    def __init__(out self, var data: List[UInt8], var addr: List[UInt8]):
+    def __init__(out self, var data: List[Byte], var addr: List[Byte]):
         self.data = data^
         self.addr = addr^
 
@@ -373,7 +373,7 @@ struct H3UdpHandler(Movable):
     var udp_socket: Socket
     var conn_dcid_map: Dict[UInt64, Int]
     var conn_h3s: List[Pointer[H3HandlerServer[BenchHandler], MutUntrackedOrigin]]
-    var conn_addrs: List[List[UInt8]]
+    var conn_addrs: List[List[Byte]]
     # Per-conn list of DCID-u64 keys we inserted into conn_dcid_map.
     # Used by _free_conn to remove ALL of a conn's entries on swap-and-pop
     # (B-permissive dual-DCID strategy: each conn has 2 entries — initial_dcid
@@ -439,7 +439,7 @@ struct H3UdpHandler(Movable):
         self.udp_socket = udp_socket^
         self.conn_dcid_map = Dict[UInt64, Int]()
         self.conn_h3s = List[Pointer[H3HandlerServer[BenchHandler], MutUntrackedOrigin]]()
-        self.conn_addrs = List[List[UInt8]]()
+        self.conn_addrs = List[List[Byte]]()
         self.conn_dcids = List[List[UInt64]]()
         self.pending_rx = List[PendingDatagram]()
         self.state_ptr = state_ptr
@@ -816,7 +816,7 @@ struct H3UdpHandler(Movable):
             # packets create new conns. All other DCID-misses are dropped
             # silently (matches TQUIC, quiche, quic-go, aioquic).
             if conn_idx < 0:
-                var first_byte_span = Span[UInt8, MutUntrackedOrigin](
+                var first_byte_span = Span[Byte, MutUntrackedOrigin](
                     unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
@@ -841,7 +841,7 @@ struct H3UdpHandler(Movable):
                 var tp = default_transport_params()
                 if tp.max_idle_timeout == UInt64(0):
                     tp.max_idle_timeout = SERVER_DEFAULT_IDLE_TIMEOUT_MS
-                var dcid_copy = List[UInt8](capacity=Int(pd.dcid.len))
+                var dcid_copy = List[Byte](capacity=Int(pd.dcid.len))
                 var _dcid_span = pd.dcid.as_span()
                 for _i in range(len(_dcid_span)):
                     dcid_copy.append(_dcid_span[_i])
@@ -913,7 +913,7 @@ struct H3UdpHandler(Movable):
                 h3_ptr.unsafe_write(h3^)
 
                 # Build address from the delivery header name region.
-                var addr = List[UInt8](capacity=pd.name_len)
+                var addr = List[Byte](capacity=pd.name_len)
                 for j in range(pd.name_len):
                     addr.append(pd.name_ptr[unsafe_offset=j])
 
@@ -955,7 +955,7 @@ struct H3UdpHandler(Movable):
                 if not _sockaddr_matches(
                     self.conn_addrs[conn_idx], pd.name_ptr, pd.name_len
                 ):
-                    var addr_update = List[UInt8](capacity=pd.name_len)
+                    var addr_update = List[Byte](capacity=pd.name_len)
                     for j in range(pd.name_len):
                         addr_update.append(pd.name_ptr[unsafe_offset=j])
                     self.conn_addrs[conn_idx] = addr_update^
@@ -1026,7 +1026,7 @@ struct H3UdpHandler(Movable):
         for i in range(len(datagrams)):
             # Move the payload out of the drained list (swap with an
             # empty husk) rather than copying 1200 bytes per datagram.
-            var pkt = List[UInt8]()
+            var pkt = List[Byte]()
             swap(pkt, datagrams[i])
             if len(pkt) == 0:
                 continue
@@ -1035,7 +1035,7 @@ struct H3UdpHandler(Movable):
             comptime if PROFILE_ACCEPT:
                 self.profile.record_sendmsg_batch_size(1)
 
-            var addr_copy = List[UInt8](copy=self.conn_addrs[conn_idx])
+            var addr_copy = List[Byte](copy=self.conn_addrs[conn_idx])
             self._egress_backlog.append(EgressPacket(pkt^, addr_copy^))
 
     def _submit_egress(mut self) raises:
@@ -1050,7 +1050,7 @@ struct H3UdpHandler(Movable):
             return
 
         for i in range(n):
-            var data = List[UInt8]()
+            var data = List[Byte]()
             swap(data, self._egress_backlog[i].data)
             var msg = Message(data^)
             _set_msg_peer_raw(msg, self._egress_backlog[i].addr)
@@ -1094,7 +1094,7 @@ struct H3UdpHandler(Movable):
             # Swap the last element into position i in all parallel
             # lists (conn_h3s, conn_addrs, conn_dcids).
             self.conn_h3s[i] = self.conn_h3s[last]
-            self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
+            self.conn_addrs[i] = List[Byte](copy=self.conn_addrs[last])
             self.conn_dcids[i] = List[UInt64](copy=self.conn_dcids[last])
 
             # Remap ALL of the swapped-in conn's DCID entries from

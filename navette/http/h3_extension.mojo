@@ -22,11 +22,11 @@ struct H3Context(Movable):
     in v1; methods return WriteResult.closed() until M5 wires them up."""
 
     var _stream_id: UInt64
-    var _datagram_recv_queue: Deque[List[UInt8]]
+    var _datagram_recv_queue: Deque[List[Byte]]
 
     def __init__(out self, *, stream_id: UInt64):
         self._stream_id = stream_id
-        self._datagram_recv_queue = Deque[List[UInt8]]()
+        self._datagram_recv_queue = Deque[List[Byte]]()
 
     def __init__(out self, *, deinit move: Self):
         self._stream_id = move._stream_id
@@ -35,13 +35,13 @@ struct H3Context(Movable):
     def stream_id(self) -> UInt64:
         return self._stream_id
 
-    def try_send_datagram(mut self, payload: Span[UInt8, _]) -> WriteResult:
+    def try_send_datagram(mut self, payload: Span[Byte, _]) -> WriteResult:
         return WriteResult.closed()
 
-    def try_recv_datagram(mut self) raises -> Optional[List[UInt8]]:
+    def try_recv_datagram(mut self) raises -> Optional[List[Byte]]:
         if len(self._datagram_recv_queue) == 0:
-            return Optional[List[UInt8]]()
-        return Optional[List[UInt8]](self._datagram_recv_queue.popleft())
+            return Optional[List[Byte]]()
+        return Optional[List[Byte]](self._datagram_recv_queue.popleft())
 
 
 trait H3StreamExtension(Movable):

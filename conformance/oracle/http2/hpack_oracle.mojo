@@ -45,7 +45,7 @@
 from oracle.http1.types import Header
 
 
-def _adopt_octets(var data: List[UInt8]) -> String:
+def _adopt_octets(var data: List[Byte]) -> String:
     """Adopt decoded field octets as a String without forging invalid UTF-8.
 
     `String(unsafe_from_utf8=...)` validates under `-D ASSERT=all` (the test
@@ -109,8 +109,8 @@ def _max_prefix(prefix_bits: Int) -> UInt64:
     return UInt64(0)
 
 
-def encode_oracle_integer(value: UInt64, prefix_bits: Int) -> List[UInt8]:
-    var out = List[UInt8]()
+def encode_oracle_integer(value: UInt64, prefix_bits: Int) -> List[Byte]:
+    var out = List[Byte]()
     var maxp = _max_prefix(prefix_bits)
     if maxp == 0:
         return out^
@@ -127,7 +127,7 @@ def encode_oracle_integer(value: UInt64, prefix_bits: Int) -> List[UInt8]:
 
 
 def decode_oracle_integer(
-    data: List[UInt8], offset: Int, prefix_bits: Int
+    data: List[Byte], offset: Int, prefix_bits: Int
 ) -> _IntDecodeResult:
     if offset >= len(data):
         return _IntDecodeResult(UInt64(0), 0, String("truncated integer"))
@@ -651,7 +651,7 @@ struct HpackOracleDecoder(Movable):
         self.trie = move.trie^
         self.config = move.config^
 
-    def decode(mut self, wire: List[UInt8]) -> Tuple[List[Header], String]:
+    def decode(mut self, wire: List[Byte]) -> Tuple[List[Header], String]:
         """Decode an HPACK header block. Returns (headers, error).
         Error is empty on success."""
         var headers = List[Header]()
@@ -732,7 +732,7 @@ struct HpackOracleDecoder(Movable):
         return self.dyn.lookup(dyn_idx)
 
     def _decode_literal(
-        mut self, wire: List[UInt8], pos: Int, prefix_bits: Int
+        mut self, wire: List[Byte], pos: Int, prefix_bits: Int
     ) -> Tuple[String, String, Int, String]:
         var consumed = 0
         var ir = decode_oracle_integer(wire, pos, prefix_bits)
@@ -762,7 +762,7 @@ struct HpackOracleDecoder(Movable):
         return (name^, value^, consumed, String(""))
 
     def _decode_string(
-        self, wire: List[UInt8], pos: Int
+        self, wire: List[Byte], pos: Int
     ) -> Tuple[String, Int, String]:
         if pos >= len(wire):
             return (String(""), 0, String("truncated string header"))
@@ -779,7 +779,7 @@ struct HpackOracleDecoder(Movable):
         consumed += str_len
 
         if huff_flag:
-            var raw = List[UInt8](capacity=str_len)
+            var raw = List[Byte](capacity=str_len)
             for i in range(data_start, data_end):
                 raw.append(wire[i])
             var decoded = self._huffman_decode(raw)
@@ -788,15 +788,15 @@ struct HpackOracleDecoder(Movable):
             var s = _adopt_octets(decoded[0].copy())
             return (s^, consumed, String(""))
         else:
-            var raw = List[UInt8](capacity=str_len)
+            var raw = List[Byte](capacity=str_len)
             for i in range(data_start, data_end):
                 raw.append(wire[i])
             var s = _adopt_octets(raw^)
             return (s^, consumed, String(""))
 
-    def _huffman_decode(self, encoded: List[UInt8]) -> Tuple[List[UInt8], String]:
+    def _huffman_decode(self, encoded: List[Byte]) -> Tuple[List[Byte], String]:
         # Divergence (b): 1-bit-at-a-time trie walk.
-        var out = List[UInt8]()
+        var out = List[Byte]()
         var node_idx = 0
         var total_bits = len(encoded) * 8
         var bit_pos = 0
@@ -817,14 +817,14 @@ struct HpackOracleDecoder(Movable):
             else:
                 child = self.trie[node_idx].right
             if child < 0:
-                return (List[UInt8](), String("huffman: invalid prefix"))
+                return (List[Byte](), String("huffman: invalid prefix"))
             node_idx = child
             bit_pos += 1
             if self.trie[node_idx].symbol >= 0:
                 if self.trie[node_idx].symbol == 256:  # EOS in non-padding context
                     # If EOS appears as a complete code (not trailing padding), per RFC §5.2
                     # this is a decoding error.
-                    return (List[UInt8](), String("huffman: EOS symbol decoded"))
+                    return (List[Byte](), String("huffman: EOS symbol decoded"))
                 out.append(UInt8(self.trie[node_idx].symbol))
                 node_idx = 0
                 last_emit_bit_pos = bit_pos
@@ -834,11 +834,11 @@ struct HpackOracleDecoder(Movable):
         #     (which are all 1s; EOS = 30 bits of 1s, so any prefix is all 1s).
         var pad_bits = total_bits - last_emit_bit_pos
         if pad_bits > 7:
-            return (List[UInt8](), String("huffman: padding > 7 bits"))
+            return (List[Byte](), String("huffman: padding > 7 bits"))
         for i in range(last_emit_bit_pos, total_bits):
             var byte_idx = i // 8
             var bit_in_byte = 7 - (i % 8)
             var bit = Int((encoded[byte_idx] >> UInt8(bit_in_byte)) & UInt8(1))
             if bit != 1:
-                return (List[UInt8](), String("huffman: invalid padding (must be all 1s)"))
+                return (List[Byte](), String("huffman: invalid padding (must be all 1s)"))
         return (out^, String(""))

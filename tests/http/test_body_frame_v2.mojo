@@ -23,7 +23,7 @@ def test_error_factory_and_accessor() raises:
 
 
 def test_existing_data_still_works() raises:
-    var bytes: List[UInt8] = [UInt8(1), UInt8(2), UInt8(3)]
+    var bytes: List[Byte] = [UInt8(1), UInt8(2), UInt8(3)]
     var f = BodyFrame.data(bytes^)
     assert_true(f.is_data(), "data.is_data")
     assert_equal_int(len(f.data()), 3, "data.len")

@@ -4,9 +4,9 @@ from std.testing import assert_equal, assert_true, assert_false
 from navette.quic.cid_buf import CidBuf
 
 
-def _bytes(n: Int, start: UInt8 = UInt8(0)) -> List[UInt8]:
-    """Build an n-byte List[UInt8] counting up from `start`."""
-    var out = List[UInt8](capacity=n)
+def _bytes(n: Int, start: UInt8 = UInt8(0)) -> List[Byte]:
+    """Build an n-byte List[Byte] counting up from `start`."""
+    var out = List[Byte](capacity=n)
     for i in range(n):
         out.append(start + UInt8(i))
     return out^
@@ -41,7 +41,7 @@ def test_from_span_max_length() raises:
 
 
 def test_from_span_empty() raises:
-    var src = List[UInt8]()
+    var src = List[Byte]()
     var buf = CidBuf.from_span(Span(src))
     assert_equal(len(buf), 0)
     print("PASS: test_from_span_empty")

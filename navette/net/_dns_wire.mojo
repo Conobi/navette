@@ -107,7 +107,7 @@ struct _Deadline(Copyable, Movable):
 # ── file / resolv.conf helpers ─────────────────────────────────────────────
 
 
-def _read_file(path: String) raises -> List[UInt8]:
+def _read_file(path: String) raises -> List[Byte]:
     """Read up to 8 KiB from a file into a byte list. Raises if unreadable.
 
     The cap defends against symlinked or pathological files being slurped whole;
@@ -122,7 +122,7 @@ def _is_ipv4_literal(s: String) -> Bool:
     return Bool(IpAddrV4.parse(s))
 
 
-def _parse_resolv_conf(data: List[UInt8]) -> String:
+def _parse_resolv_conf(data: List[Byte]) -> String:
     """Return the first `nameserver <ipv4>` value, else "".
 
     Skips blank lines and `#`/`;` comments; matches the case-sensitive token
@@ -192,14 +192,14 @@ def _first_nameserver(path: String = "/etc/resolv.conf") -> String:
 # ── wire-format primitives ─────────────────────────────────────────────────
 
 
-def _encode_qname(host: String) -> List[UInt8]:
+def _encode_qname(host: String) -> List[Byte]:
     """Encode `host` as a DNS label sequence terminated by a zero octet.
 
     Empty labels (leading/trailing/`..`) are dropped, so `"example.com"` and
     `"example.com."` encode identically.  Each non-empty label is prefixed with
     its byte length per RFC 1035 Section 3.1.
     """
-    var out = List[UInt8]()
+    var out = List[Byte]()
     var b = host.as_bytes()
     var n = len(b)
     var i = 0
@@ -213,18 +213,18 @@ def _encode_qname(host: String) -> List[UInt8]:
             for k in range(i, j):
                 out.append(b[k])
         i = j + 1
-    out.append(UInt8(0))
+    out.append(Byte(0))
     return out^
 
 
-def _read_u16(m: List[UInt8], off: Int) raises -> UInt16:
+def _read_u16(m: List[Byte], off: Int) raises -> UInt16:
     """Read a big-endian u16 at `off`. Raises if it would over-read."""
     if off < 0 or off + 1 >= len(m):
         raise "_dns_wire: u16 out of bounds"
     return (UInt16(m[off]) << 8) | UInt16(m[off + 1])
 
 
-def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
+def _decode_name(m: List[Byte], start: Int) raises -> _Name:
     """Decompress an RFC 1035 Section 4.1.4 domain name starting at `start`.
 
     Returns the dotted name plus `next_off` -- the offset just past the name in
@@ -279,7 +279,7 @@ def _decode_name(m: List[UInt8], start: Int) raises -> _Name:
     return _Name(name^, next_after)
 
 
-def _build_query(host: String, txn_id: UInt16, qtype: Int = 65) -> List[UInt8]:
+def _build_query(host: String, txn_id: UInt16, qtype: Int = 65) -> List[Byte]:
     """Build a DNS query with a single EDNS0 OPT RR.
 
     `qtype` selects the record type: 65 (HTTPS-RR), 1 (A), or 28 (AAAA).
@@ -289,7 +289,7 @@ def _build_query(host: String, txn_id: UInt16, qtype: Int = 65) -> List[UInt8]:
     (0x00), TYPE=41, CLASS=1232 (UDP payload size per DNS Flag Day 2020),
     TTL=0 (extended-RCODE 0 / EDNS version 0 / DO=0), RDLEN=0.
     """
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8((Int(txn_id) >> 8) & 0xFF))
     m.append(UInt8(Int(txn_id) & 0xFF))
     m.append(UInt8(0x01)); m.append(UInt8(0x00))   # flags: RD=1
@@ -356,7 +356,7 @@ def _set_rcvtimeo(fd: Int32, ms: Int) raises:
         raise "_dns_wire: setsockopt(SO_RCVTIMEO) failed"
 
 
-def _send_dgram(fd: Int32, data: List[UInt8]) raises -> Int:
+def _send_dgram(fd: Int32, data: List[Byte]) raises -> Int:
     """Send one datagram (MSG_NOSIGNAL). Returns the send rc."""
     var n = len(data)
     var buf_owned = Owned[UInt8](n)
@@ -366,19 +366,19 @@ def _send_dgram(fd: Int32, data: List[UInt8]) raises -> Int:
     return external_call["send", Int](fd, buf, n, _MSG_NOSIGNAL)
 
 
-def _recv_dgram(fd: Int32, max_n: Int) raises -> List[UInt8]:
+def _recv_dgram(fd: Int32, max_n: Int) raises -> List[Byte]:
     """Receive one datagram. Empty list on timeout/EAGAIN (rc <= 0)."""
     var buf_owned = Owned[UInt8](max_n)
     var buf = buf_owned.ptr()
     var rc = external_call["recv", Int](fd, buf, max_n, Int32(0))
-    var out = List[UInt8]()
+    var out = List[Byte]()
     if rc > 0:
         for i in range(rc):
             out.append(buf[unsafe_offset=i])
     return out^
 
 
-def _send_all_tcp(fd: Int32, data: List[UInt8]) raises -> Int:
+def _send_all_tcp(fd: Int32, data: List[Byte]) raises -> Int:
     """Send every byte of `data` over TCP. Returns the total bytes sent.
 
     Returns fewer than `len(data)` bytes only when `send(2)` returns <= 0
@@ -400,7 +400,7 @@ def _send_all_tcp(fd: Int32, data: List[UInt8]) raises -> Int:
     return sent
 
 
-def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[UInt8]:
+def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[Byte]:
     """Read exactly `want` bytes, bounded by an absolute monotonic deadline.
 
     `want` is pre-capped by the caller (<= _MAX_TCP_FRAME); the deadline
@@ -410,7 +410,7 @@ def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[UInt8]:
     total-operation deadline is honoured here rather than a fresh per-call
     timeout.  Returns fewer than `want` bytes on EOF, error, or expiry.
     """
-    var out = List[UInt8]()
+    var out = List[Byte]()
     while len(out) < want and _monotonic_ms() < deadline:
         var rem = want - len(out)
         var buf_owned = Owned[UInt8](rem)

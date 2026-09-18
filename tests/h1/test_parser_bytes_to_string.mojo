@@ -14,7 +14,7 @@ from navette.h1 import ParseConfig
 from tests._test_util import assert_true, assert_equal_int
 
 
-def _ref_chr(data: List[UInt8], start: Int, end: Int) -> String:
+def _ref_chr(data: List[Byte], start: Int, end: Int) -> String:
     var result = String()
     var i = start
     while i < end:
@@ -23,9 +23,9 @@ def _ref_chr(data: List[UInt8], start: Int, end: Int) -> String:
     return result^
 
 
-def _str_to_bytes(s: String) -> List[UInt8]:
+def _str_to_bytes(s: String) -> List[Byte]:
     var b = s.as_bytes()
-    var r = List[UInt8]()
+    var r = List[Byte]()
     for i in range(len(b)):
         r.append(b[i])
     return r^
@@ -43,7 +43,7 @@ def _assert_str_bytes_eq(got: String, exp: String, msg: String) raises:
             raise "bytes_to_string divergence: " + msg
 
 
-def _check_range(data: List[UInt8], start: Int, end: Int, msg: String) raises:
+def _check_range(data: List[Byte], start: Int, end: Int, msg: String) raises:
     var got = _bytes_to_string(data, start, end)
     var exp = _ref_chr(data, start, end)
     _assert_str_bytes_eq(got, exp, msg)
@@ -55,7 +55,7 @@ def test_bytes_to_string_full_byte_corpus() raises:
     # fallback). A high byte expands to 2 UTF-8 bytes via chr(); fast-path bulk
     # copy would emit 1 raw byte, so equality to the chr() reference proves the
     # fallback was taken (unsafe_from_utf8 never sees >= 0x80).
-    var d = List[UInt8]()
+    var d = List[Byte]()
     for b in range(256):
         d.append(UInt8(b))
     for b in range(256):
@@ -75,7 +75,7 @@ def test_bytes_to_string_random_high_byte_injection() raises:
     seed(0xA5A5)
     for _ in range(500):
         var n = Int(random_ui64(8, 64))
-        var d = List[UInt8]()
+        var d = List[Byte]()
         for _2 in range(n):
             d.append(UInt8(random_ui64(0x20, 0x7E)))  # printable ASCII base
         var inj_count = Int(random_ui64(1, 8))

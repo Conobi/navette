@@ -51,21 +51,21 @@ comptime MAX_DATAGRAM_FRAME_SIZE_CAP: UInt64 = 65535
 # ── PreferredAddress ─────────────────────────────────────────────────
 
 struct PreferredAddress(Copyable, Movable):
-    var ipv4_address: List[UInt8]
+    var ipv4_address: List[Byte]
     var ipv4_port: UInt16
-    var ipv6_address: List[UInt8]
+    var ipv6_address: List[Byte]
     var ipv6_port: UInt16
-    var cid: List[UInt8]
-    var stateless_reset_token: List[UInt8]
+    var cid: List[Byte]
+    var stateless_reset_token: List[Byte]
 
     def __init__(
         out self,
-        ipv4_address: List[UInt8],
+        ipv4_address: List[Byte],
         ipv4_port: UInt16,
-        ipv6_address: List[UInt8],
+        ipv6_address: List[Byte],
         ipv6_port: UInt16,
-        cid: List[UInt8],
-        stateless_reset_token: List[UInt8],
+        cid: List[Byte],
+        stateless_reset_token: List[Byte],
     ):
         self.ipv4_address = ipv4_address.copy()
         self.ipv4_port = ipv4_port
@@ -94,9 +94,9 @@ struct PreferredAddress(Copyable, Movable):
 # ── TransportParams ──────────────────────────────────────────────────
 
 struct TransportParams(Copyable, Movable):
-    var original_dcid: Optional[List[UInt8]]
+    var original_dcid: Optional[List[Byte]]
     var max_idle_timeout: UInt64
-    var stateless_reset_token: Optional[List[UInt8]]
+    var stateless_reset_token: Optional[List[Byte]]
     var max_udp_payload_size: UInt64
     var initial_max_data: UInt64
     var initial_max_stream_data_bidi_local: UInt64
@@ -109,14 +109,14 @@ struct TransportParams(Copyable, Movable):
     var disable_active_migration: Bool
     var preferred_address: Optional[PreferredAddress]
     var active_connection_id_limit: UInt64
-    var initial_scid: Optional[List[UInt8]]
-    var retry_scid: Optional[List[UInt8]]
+    var initial_scid: Optional[List[Byte]]
+    var retry_scid: Optional[List[Byte]]
     # RFC 9221 §3 — peer's maximum acceptable DATAGRAM frame size. 0 means
     # the peer did not advertise the parameter (disabled). The local side
     # MUST NOT send DATAGRAM frames when the peer's value is 0; the gate
     # lives in QuicConnection.send_datagram, not here.
     var max_datagram_frame_size: UInt64
-    var unknown: Dict[Int, List[UInt8]]
+    var unknown: Dict[Int, List[Byte]]
 
     def __init__(out self):
         self.original_dcid = None
@@ -139,7 +139,7 @@ struct TransportParams(Copyable, Movable):
         # Default off (RFC 9221 §3): "if this parameter is absent or 0,
         # the endpoint that omits it cannot receive DATAGRAM frames."
         self.max_datagram_frame_size = MAX_DATAGRAM_FRAME_SIZE_DISABLED
-        self.unknown = Dict[Int, List[UInt8]]()
+        self.unknown = Dict[Int, List[Byte]]()
 
     def __init__(out self, *, copy: Self):
         self.original_dcid = copy.original_dcid.copy()
@@ -192,7 +192,7 @@ def default_transport_params() -> TransportParams:
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-def _decode_varint_from_bytes(value_bytes: List[UInt8]) raises -> UInt64:
+def _decode_varint_from_bytes(value_bytes: List[Byte]) raises -> UInt64:
     """Decode a varint from a raw byte list."""
     var reader = ByteReader(Span(value_bytes))
     return varint_decode(reader)
@@ -206,7 +206,7 @@ def _encode_varint_param(mut writer: ByteWriter, param_id: UInt64, value: UInt64
     varint_encode(writer, value)
 
 
-def _encode_bytes_param(mut writer: ByteWriter, param_id: UInt64, data: Span[UInt8, _]) raises:
+def _encode_bytes_param(mut writer: ByteWriter, param_id: UInt64, data: Span[Byte, _]) raises:
     """Write a bytes-valued transport parameter."""
     varint_encode(writer, param_id)
     varint_encode(writer, UInt64(len(data)))
@@ -250,7 +250,7 @@ def _serialize_preferred_address(pa: PreferredAddress, mut writer: ByteWriter) r
 # ── Parse ────────────────────────────────────────────────────────────
 
 def parse_transport_params[origin: Origin](
-    buf: Span[UInt8, origin],
+    buf: Span[Byte, origin],
 ) raises -> TransportParams:
     """Parse a sequence of transport parameters from the wire format.
 

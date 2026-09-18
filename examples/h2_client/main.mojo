@@ -92,13 +92,13 @@ def _tcp_connect(host_ip: String, port: Int) raises -> Int32:
     return fd
 
 
-def _send_all(fd: Int32, data: List[UInt8]) raises:
+def _send_all(fd: Int32, data: List[Byte]) raises:
     var n = len(data)
     if n == 0:
         return
     # Copy the remaining slice into a fresh buffer each retry to avoid
     # pointer arithmetic (UnsafePointer has no .offset() in 0.26.2).
-    var remaining = List[UInt8]()
+    var remaining = List[Byte]()
     for i in range(n):
         remaining.append(data[i])
     while len(remaining) > 0:
@@ -110,16 +110,16 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
         buf.free()
         if rc <= 0:
             raise "send() returned " + String(rc)
-        var next = List[UInt8]()
+        var next = List[Byte]()
         for i in range(rc, m):
             next.append(remaining[i])
         remaining = next^
 
 
-def _recv_some(fd: Int32) raises -> List[UInt8]:
+def _recv_some(fd: Int32) raises -> List[Byte]:
     var buf = _heap_alloc[UInt8](_RECV_BUF)
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
-    var result = List[UInt8]()
+    var result = List[Byte]()
     if rc > 0:
         for i in range(rc):
             result.append(buf[i])
@@ -141,11 +141,11 @@ def _tls_send(fd: Int32, mut tls: TlsConnection) raises:
         _send_all(fd, ct)
 
 
-def _tls_recv(fd: Int32, mut tls: TlsConnection) raises -> List[UInt8]:
+def _tls_recv(fd: Int32, mut tls: TlsConnection) raises -> List[Byte]:
     """Read a chunk from the socket, feed it to tls, return decrypted plaintext."""
     var raw = _recv_some(fd)
     if len(raw) == 0:
-        return List[UInt8]()
+        return List[Byte]()
     tls.receive_data(Span(raw))
     _tls_send(fd, tls)   # flush any handshake/alert ciphertext
     return tls.drain_plaintext()

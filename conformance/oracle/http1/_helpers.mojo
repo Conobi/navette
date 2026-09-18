@@ -62,7 +62,7 @@ def _to_lower(b: UInt8) -> UInt8:
     return b
 
 
-def _bytes_to_string(data: List[UInt8], start: Int, end: Int) -> String:
+def _bytes_to_string(data: List[Byte], start: Int, end: Int) -> String:
     """Extract bytes from data[start:end] into a String."""
     var result = String()
     var i = start
@@ -127,7 +127,7 @@ def _parse_int(s: String) -> Int:
     return result
 
 
-def _find_crlf(data: List[UInt8], start: Int) -> Int:
+def _find_crlf(data: List[Byte], start: Int) -> Int:
     """Find the position of the next CRLF starting from `start`.
     Returns the index of CR, or -1 if not found.
     """
@@ -142,7 +142,7 @@ def _find_crlf(data: List[UInt8], start: Int) -> Int:
     return -1
 
 
-def _find_line_end(data: List[UInt8], start: Int, allow_lf: Bool) -> Tuple[Int, Int]:
+def _find_line_end(data: List[Byte], start: Int, allow_lf: Bool) -> Tuple[Int, Int]:
     """Find next line ending. Returns (position, skip_bytes).
     CRLF: returns (pos_of_CR, 2). Bare LF (if allowed): returns (pos_of_LF, 1).
     Not found: returns (-1, 0).
@@ -158,7 +158,7 @@ def _find_line_end(data: List[UInt8], start: Int, allow_lf: Bool) -> Tuple[Int, 
     return (-1, 0)
 
 
-def _strip_ows_bounds(data: List[UInt8], start: Int, end: Int) -> Tuple[Int, Int]:
+def _strip_ows_bounds(data: List[Byte], start: Int, end: Int) -> Tuple[Int, Int]:
     """Return (new_start, new_end) with leading/trailing OWS (SP/HTAB) removed."""
     var s = start
     var e = end
@@ -169,7 +169,7 @@ def _strip_ows_bounds(data: List[UInt8], start: Int, end: Int) -> Tuple[Int, Int
     return (s, e)
 
 
-def _contains_nul(data: List[UInt8], start: Int, end: Int) -> Bool:
+def _contains_nul(data: List[Byte], start: Int, end: Int) -> Bool:
     """Check if data[start:end] contains a NUL byte."""
     var i = start
     while i < end:
@@ -179,7 +179,7 @@ def _contains_nul(data: List[UInt8], start: Int, end: Int) -> Bool:
     return False
 
 
-def _contains_ctl_in_value(data: List[UInt8], start: Int, end: Int, skip_cr: Bool = False) -> Bool:
+def _contains_ctl_in_value(data: List[Byte], start: Int, end: Int, skip_cr: Bool = False) -> Bool:
     """Check if data[start:end] contains control characters invalid in header values.
     Valid bytes: HTAB (0x09), SP (0x20), VCHAR (0x21-0x7E), obs-text (0x80-0xFF).
     Invalid: 0x00-0x08, 0x0A-0x0C, 0x0E-0x1F, 0x7F.
@@ -201,7 +201,7 @@ def _contains_ctl_in_value(data: List[UInt8], start: Int, end: Int, skip_cr: Boo
     return False
 
 
-def _has_whitespace_before_colon(data: List[UInt8], name_start: Int, colon_pos: Int) -> Bool:
+def _has_whitespace_before_colon(data: List[Byte], name_start: Int, colon_pos: Int) -> Bool:
     """Check if there's whitespace between the field-name and the colon.
     The name runs from name_start to where we need to check for trailing ws
     before colon_pos.
@@ -213,7 +213,7 @@ def _has_whitespace_before_colon(data: List[UInt8], name_start: Int, colon_pos: 
 
 
 def _parse_headers(
-    wire: List[UInt8],
+    wire: List[Byte],
     start_pos: Int,
     config: ParseConfig,
 ) -> Tuple[List[Header], Int, String]:

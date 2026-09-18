@@ -70,7 +70,7 @@ def test_on_response_with_wrong_token_returns_none() raises:
     var pv = PathValidator()
     var addr = _make_addr_a()
     _ = pv.start_challenge(PathKey(copy=addr), UInt64(1000))
-    var bogus = List[UInt8](capacity=PATH_TOKEN_LEN)
+    var bogus = List[Byte](capacity=PATH_TOKEN_LEN)
     for _ in range(PATH_TOKEN_LEN):
         bogus.append(UInt8(0xFF))
     var result = pv.on_response(Span(bogus), PathKey(copy=addr), UInt64(2000))

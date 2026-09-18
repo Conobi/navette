@@ -246,7 +246,7 @@ struct H2CoroServer(Movable):
     var _conn: H2Connection
     var _body_fn: H2BodyFn
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
-    var _outbuf: List[UInt8]
+    var _outbuf: List[Byte]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
     var _ctx_pool: CoroStreamCtxPool
 
@@ -269,7 +269,7 @@ struct H2CoroServer(Movable):
         self._conn.initiate_connection()
         self._body_fn = body_fn
         self._extra_data = extra_data
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._flush_outbound()
@@ -289,7 +289,7 @@ struct H2CoroServer(Movable):
         self._conn.initiate_connection()
         self._body_fn = body_fn
         self._extra_data = extra_data
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
         self._ctx_pool = CoroStreamCtxPool(capacity=16)
         self._flush_outbound()
@@ -316,9 +316,9 @@ struct H2CoroServer(Movable):
 
     # --- Transport bridging API ---------------------------------------------
 
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         """Feed inbound transport bytes, dispatch events, drain responses."""
-        var data_list = List[UInt8]()
+        var data_list = List[Byte]()
         for ref byte in data:
             data_list.append(byte)
         var events = self._conn.receive_data(data_list)
@@ -326,10 +326,10 @@ struct H2CoroServer(Movable):
         self._drain_responses()
         self._flush_outbound()
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         """Drain queued outbound bytes for the transport to write."""
         var out = self._outbuf^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         return out^
 
     def should_close(self) -> Bool:
@@ -560,7 +560,7 @@ struct H2CoroServer(Movable):
             # onto the last DATA payload instead of emitting a 0-byte trailer
             # — some H2 clients (h2load) misbehave on a separate empty
             # DATA(END_STREAM) when many streams share a TLS record.
-            var pending_data = List[List[UInt8]]()
+            var pending_data = List[List[Byte]]()
             while True:
                 var f_opt = ctx.resp_writer._pop_body_frame()
                 if not Bool(f_opt):
@@ -572,7 +572,7 @@ struct H2CoroServer(Movable):
                 elif f.is_end():
                     if len(pending_data) == 0:
                         self._conn.send_data(
-                            UInt32(sid), List[UInt8](), end_stream=True
+                            UInt32(sid), List[Byte](), end_stream=True
                         )
                     else:
                         var n = len(pending_data)
@@ -583,7 +583,7 @@ struct H2CoroServer(Movable):
                         self._conn.send_data(
                             UInt32(sid), pending_data[n - 1].copy(), end_stream=True
                         )
-                        pending_data = List[List[UInt8]]()
+                        pending_data = List[List[Byte]]()
                     ctx.response_ended = True
                     made_progress = True
                     break
@@ -592,7 +592,7 @@ struct H2CoroServer(Movable):
                         self._conn.send_data(
                             UInt32(sid), pd.copy(), end_stream=False
                         )
-                    pending_data = List[List[UInt8]]()
+                    pending_data = List[List[Byte]]()
                     var trailer_h2 = headers_to_h2(f.trailers())
                     self._conn.send_headers(
                         UInt32(sid), trailer_h2^, end_stream=True

@@ -12,7 +12,7 @@ from oracle.http1.types import Header
 from oracle.test_util import hex_decode, assert_true, assert_equal
 
 
-def _wire(s: String) raises -> List[UInt8]:
+def _wire(s: String) raises -> List[Byte]:
     # Helper: strip spaces from hex, decode to bytes.
     var stripped = String("")
     var bs = s.as_bytes()

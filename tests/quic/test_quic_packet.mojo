@@ -114,17 +114,17 @@ def test_packet_header_vectors() raises:
 
         # destination_cid_hex
         var exp_dcid = String(expected["destination_cid_hex"])
-        var got_dcid = hex_encode(List[UInt8](result[0].dcid.as_span()))
+        var got_dcid = hex_encode(List[Byte](result[0].dcid.as_span()))
         assert_equal_str(got_dcid, exp_dcid, vid + ".dcid")
 
         # source_cid_hex
         var exp_scid = String(expected["source_cid_hex"])
-        var got_scid = hex_encode(List[UInt8](result[0].scid.as_span()))
+        var got_scid = hex_encode(List[Byte](result[0].scid.as_span()))
         assert_equal_str(got_scid, exp_scid, vid + ".scid")
 
         # token_hex
         var exp_token = String(expected["token_hex"])
-        var got_token = hex_encode(List[UInt8](result[0].token_span()))
+        var got_token = hex_encode(List[Byte](result[0].token_span()))
         assert_equal_str(got_token, exp_token, vid + ".token")
 
         # packet_length: for long headers with payload_length it is
@@ -230,9 +230,9 @@ def test_roundtrip_initial() raises:
     assert_true(result[0].is_long_header, "roundtrip initial: expected long header")
     assert_true(result[0].packet_type == PacketType.initial(), "roundtrip initial: wrong packet type")
     assert_equal_int(Int(result[0].version), 1, "roundtrip initial: version")
-    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip initial: dcid")
-    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip initial: scid")
-    assert_equal_str(hex_encode(List[UInt8](result[0].token_span())), "cafebabe", "roundtrip initial: token")
+    assert_equal_str(hex_encode(List[Byte](result[0].dcid.as_span())), "0102030405060708", "roundtrip initial: dcid")
+    assert_equal_str(hex_encode(List[Byte](result[0].scid.as_span())), "aabbccdd", "roundtrip initial: scid")
+    assert_equal_str(hex_encode(List[Byte](result[0].token_span())), "cafebabe", "roundtrip initial: token")
     assert_equal_int(Int(result[0].payload_length), 100, "roundtrip initial: payload_length")
     print("  roundtrip_initial: PASS")
 
@@ -255,8 +255,8 @@ def test_roundtrip_handshake() raises:
     assert_true(result[0].is_long_header, "roundtrip handshake: expected long header")
     assert_true(result[0].packet_type == PacketType.handshake(), "roundtrip handshake: wrong packet type")
     assert_equal_int(Int(result[0].version), 1, "roundtrip handshake: version")
-    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "aabbccdd", "roundtrip handshake: dcid")
-    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "11223344", "roundtrip handshake: scid")
+    assert_equal_str(hex_encode(List[Byte](result[0].dcid.as_span())), "aabbccdd", "roundtrip handshake: dcid")
+    assert_equal_str(hex_encode(List[Byte](result[0].scid.as_span())), "11223344", "roundtrip handshake: scid")
     assert_equal_int(Int(result[0].payload_length), 50, "roundtrip handshake: payload_length")
     print("  roundtrip_handshake: PASS")
 
@@ -271,7 +271,7 @@ def test_roundtrip_short_header() raises:
 
     assert_true(not result[0].is_long_header, "roundtrip short: expected short header")
     assert_true(result[0].packet_type == PacketType.one_rtt(), "roundtrip short: wrong packet type")
-    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip short: dcid")
+    assert_equal_str(hex_encode(List[Byte](result[0].dcid.as_span())), "0102030405060708", "roundtrip short: dcid")
     print("  roundtrip_short_header: PASS")
 
 
@@ -294,8 +294,8 @@ def test_roundtrip_version_negotiation() raises:
         "roundtrip VN: wrong packet type",
     )
     assert_equal_int(Int(result[0].version), 0, "roundtrip VN: version")
-    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip VN: dcid")
-    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip VN: scid")
+    assert_equal_str(hex_encode(List[Byte](result[0].dcid.as_span())), "0102030405060708", "roundtrip VN: dcid")
+    assert_equal_str(hex_encode(List[Byte](result[0].scid.as_span())), "aabbccdd", "roundtrip VN: scid")
     assert_equal_int(Int(result[0].versions_len), 2, "roundtrip VN: version count")
     assert_equal_int(Int(result[0].supported_versions[0]), 1, "roundtrip VN: version[0]")
     assert_equal_int(
@@ -328,11 +328,11 @@ def test_roundtrip_retry() raises:
     assert_true(result[0].is_long_header, "roundtrip retry: expected long header")
     assert_true(result[0].packet_type == PacketType.retry(), "roundtrip retry: wrong packet type")
     assert_equal_int(Int(result[0].version), 1, "roundtrip retry: version")
-    assert_equal_str(hex_encode(List[UInt8](result[0].dcid.as_span())), "0102030405060708", "roundtrip retry: dcid")
-    assert_equal_str(hex_encode(List[UInt8](result[0].scid.as_span())), "aabbccdd", "roundtrip retry: scid")
-    assert_equal_str(hex_encode(List[UInt8](result[0].token_span())), "cafebabe", "roundtrip retry: token")
+    assert_equal_str(hex_encode(List[Byte](result[0].dcid.as_span())), "0102030405060708", "roundtrip retry: dcid")
+    assert_equal_str(hex_encode(List[Byte](result[0].scid.as_span())), "aabbccdd", "roundtrip retry: scid")
+    assert_equal_str(hex_encode(List[Byte](result[0].token_span())), "cafebabe", "roundtrip retry: token")
     assert_equal_str(
-        hex_encode(List[UInt8](result[0].retry_integrity_tag_span())),
+        hex_encode(List[Byte](result[0].retry_integrity_tag_span())),
         "00112233445566778899aabbccddeeff",
         "roundtrip retry: integrity_tag",
     )
@@ -377,7 +377,7 @@ def test_pn_edge_cases() raises:
 
 def test_error_dcid_too_long() raises:
     # Build a long header with DCID length > 20 -- should raise.
-    var wire = List[UInt8]()
+    var wire = List[Byte]()
     wire.append(UInt8(0xC0))  # long header + fixed bit
     # Version.
     wire.append(UInt8(0x00))
@@ -413,7 +413,7 @@ def test_error_truncated_long_header() raises:
 
 def test_error_short_header_fixed_bit() raises:
     # Short header (bit 7 = 0) but fixed bit (bit 6) = 0 -> should raise.
-    var wire = List[UInt8]()
+    var wire = List[Byte]()
     wire.append(UInt8(0x00))  # form=0, fixed=0
     for _ in range(8):
         wire.append(UInt8(0x00))
@@ -450,14 +450,14 @@ def test_error_initial_token_too_long() raises:
 def test_error_retry_token_too_long() raises:
     # Retry packet where remaining-bytes-minus-tag (233) exceeds the
     # 232-byte token capacity -- must raise rather than overflow.
-    var wire = List[UInt8]()
+    var wire = List[Byte]()
     wire.append(UInt8(0xF0))  # long header + fixed bit + Retry type (0x30)
     wire.append(UInt8(0x00))
     wire.append(UInt8(0x00))
     wire.append(UInt8(0x00))
     wire.append(UInt8(0x01))  # version = 1
-    wire.append(UInt8(0))  # dcid_len = 0
-    wire.append(UInt8(0))  # scid_len = 0
+    wire.append(Byte(0))  # dcid_len = 0
+    wire.append(Byte(0))  # scid_len = 0
     for _ in range(249):  # 249 - 16 (integrity tag) = 233 > MAX_TOKEN_LEN (232)
         wire.append(UInt8(0x00))
 
@@ -473,14 +473,14 @@ def test_error_retry_token_too_long() raises:
 def test_error_vn_too_many_versions() raises:
     # Version Negotiation packet listing 17 versions -- exceeds the 16-slot
     # InlineArray capacity backing PacketHeader.supported_versions.
-    var wire = List[UInt8]()
+    var wire = List[Byte]()
     wire.append(UInt8(0x80))  # long header form bit; VN's fixed bit is undefined
     wire.append(UInt8(0x00))
     wire.append(UInt8(0x00))
     wire.append(UInt8(0x00))
     wire.append(UInt8(0x00))  # version = 0 (VN)
-    wire.append(UInt8(0))  # dcid_len = 0
-    wire.append(UInt8(0))  # scid_len = 0
+    wire.append(Byte(0))  # dcid_len = 0
+    wire.append(Byte(0))  # scid_len = 0
     for _ in range(17):  # MAX_SUPPORTED_VERSIONS (16) + 1
         wire.append(UInt8(0x00))
         wire.append(UInt8(0x00))

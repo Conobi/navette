@@ -89,12 +89,12 @@ def test_recv_buf_in_order() raises:
     var fin_offset = Optional[UInt64](None)
     var buf = RecvBuf(UInt64(65536))
 
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(5):
         data0.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data0), False, fin_offset)
 
-    var data1 = List[UInt8]()
+    var data1 = List[Byte]()
     for i in range(5, 10):
         data1.append(UInt8(i))
     _ = buf.write(UInt64(5), Span(data1), False, fin_offset)
@@ -114,12 +114,12 @@ def test_recv_buf_out_of_order() raises:
     var fin_offset = Optional[UInt64](None)
     var buf = RecvBuf(UInt64(65536))
 
-    var data1 = List[UInt8]()
+    var data1 = List[Byte]()
     for i in range(5, 10):
         data1.append(UInt8(i))
     _ = buf.write(UInt64(5), Span(data1), False, fin_offset)
 
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(5):
         data0.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data0), False, fin_offset)
@@ -139,13 +139,13 @@ def test_recv_buf_overlapping() raises:
     var fin_offset = Optional[UInt64](None)
     var buf = RecvBuf(UInt64(65536))
 
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(10):
         data0.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data0), False, fin_offset)
 
     # Overlapping write: bytes [5,15), first 5 overlap, last 5 are new
-    var data1 = List[UInt8]()
+    var data1 = List[Byte]()
     for i in range(5, 15):
         data1.append(UInt8(100 + i))  # different values to test accept-first-copy
     _ = buf.write(UInt64(5), Span(data1), False, fin_offset)
@@ -179,7 +179,7 @@ def test_recv_buf_gap_limit() raises:
         # Create 65 non-contiguous writes starting at even offsets (each 1 byte apart with gaps)
         # Each write at offset 2*i creates a gap before it (except the first)
         for i in range(65):
-            var d = List[UInt8]()
+            var d = List[Byte]()
             d.append(UInt8(i))
             _ = buf.write(UInt64(i * 2 + 2), Span(d), False, fin_offset)
     except e:
@@ -194,7 +194,7 @@ def test_recv_buf_fin() raises:
     var fin_offset = Optional[UInt64](None)
     var buf = RecvBuf(UInt64(65536))
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data), True, fin_offset)
@@ -213,7 +213,7 @@ def test_recv_buf_fin_mismatch() raises:
     var buf = RecvBuf(UInt64(65536))
 
     # First FIN at offset 10
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(10):
         data0.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data0), True, fin_offset)
@@ -221,7 +221,7 @@ def test_recv_buf_fin_mismatch() raises:
     # Second FIN with different final size → FINAL_SIZE_ERROR
     var caught = False
     try:
-        var data1 = List[UInt8]()
+        var data1 = List[Byte]()
         for i in range(5):
             data1.append(UInt8(i))
         _ = buf.write(UInt64(0), Span(data1), True, fin_offset)
@@ -238,7 +238,7 @@ def test_recv_buf_data_beyond_fin() raises:
     var buf = RecvBuf(UInt64(65536))
 
     # Establish FIN at offset 5
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(5):
         data0.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data0), True, fin_offset)
@@ -246,7 +246,7 @@ def test_recv_buf_data_beyond_fin() raises:
     # Data that extends past final size → FINAL_SIZE_ERROR
     var caught = False
     try:
-        var data1 = List[UInt8]()
+        var data1 = List[Byte]()
         for i in range(3):
             data1.append(UInt8(i))
         _ = buf.write(UInt64(4), Span(data1), False, fin_offset)  # ends at 7 > 5
@@ -263,7 +263,7 @@ def test_recv_buf_empty_fin() raises:
     var buf = RecvBuf(UInt64(65536))
 
     # Zero-length data with fin=True
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     _ = buf.write(UInt64(0), Span(empty), True, fin_offset)
 
     var result = buf.read(fin_offset)
@@ -280,28 +280,28 @@ def test_recv_buf_new_bytes_count() raises:
     var buf = RecvBuf(UInt64(65536))
 
     # Write [0,10) → 10 new bytes
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(10):
         data0.append(UInt8(i))
     var count0 = buf.write(UInt64(0), Span(data0), False, fin_offset)
     assert_equal_int(Int(count0), 10, "new bytes: first write = 10")
 
     # Duplicate write [0,10) → 0 new bytes
-    var data1 = List[UInt8]()
+    var data1 = List[Byte]()
     for i in range(10):
         data1.append(UInt8(i))
     var count1 = buf.write(UInt64(0), Span(data1), False, fin_offset)
     assert_equal_int(Int(count1), 0, "new bytes: duplicate = 0")
 
     # Overlapping write [5,15) → 5 new bytes
-    var data2 = List[UInt8]()
+    var data2 = List[Byte]()
     for i in range(10):
         data2.append(UInt8(i))
     var count2 = buf.write(UInt64(5), Span(data2), False, fin_offset)
     assert_equal_int(Int(count2), 5, "new bytes: overlap = 5")
 
     # Gap write [20,25) → 5 new bytes
-    var data3 = List[UInt8]()
+    var data3 = List[Byte]()
     for i in range(5):
         data3.append(UInt8(i))
     var count3 = buf.write(UInt64(20), Span(data3), False, fin_offset)
@@ -316,7 +316,7 @@ def test_recv_buf_new_bytes_count() raises:
 def test_send_buf_write_and_frame() raises:
     var buf = SendBuf()
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(10):
         data.append(UInt8(i))
     buf.write(Span(data), False)
@@ -340,7 +340,7 @@ def test_send_buf_write_and_frame() raises:
 def test_send_buf_on_ack_trims() raises:
     var buf = SendBuf()
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(20):
         data.append(UInt8(i))
     buf.write(Span(data), False)
@@ -364,7 +364,7 @@ def test_send_buf_on_ack_trims() raises:
 def test_send_buf_on_loss() raises:
     var buf = SendBuf()
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(20):
         data.append(UInt8(i))
     buf.write(Span(data), False)
@@ -399,7 +399,7 @@ def test_send_buf_ack_after_loss_rewind() raises:
     cursor must stay at or above the trimmed front.
     """
     var buf = SendBuf()
-    var data = List[UInt8](capacity=5000)
+    var data = List[Byte](capacity=5000)
     for i in range(5000):
         data.append(UInt8(i % 251))
     buf.write(Span(data), True)
@@ -445,7 +445,7 @@ def test_send_buf_ack_after_loss_rewind() raises:
 def test_send_buf_fin() raises:
     var buf = SendBuf()
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(i))
     buf.write(Span(data), True)
@@ -470,7 +470,7 @@ def test_send_buf_fin() raises:
 def test_send_buf_is_fully_acked() raises:
     var buf = SendBuf()
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(i))
     buf.write(Span(data), True)
@@ -589,7 +589,7 @@ def test_send_buf_fin_loss_retransmit() raises:
     # Regression: FIN must be re-included in the retransmitted frame after loss.
     var buf = SendBuf()
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(i))
     buf.write(Span(data), True)
@@ -624,13 +624,13 @@ def test_recv_buf_is_complete_after_read() raises:
     var buf = RecvBuf(UInt64(65536))
 
     # Write [0,5) — no fin
-    var data0 = List[UInt8]()
+    var data0 = List[Byte]()
     for i in range(5):
         data0.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data0), False, fin_offset)
 
     # Write [5,10) with fin=True
-    var data1 = List[UInt8]()
+    var data1 = List[Byte]()
     for i in range(5, 10):
         data1.append(UInt8(i))
     _ = buf.write(UInt64(5), Span(data1), True, fin_offset)
@@ -669,7 +669,7 @@ def test_recv_buf_duplicate_after_read() raises:
     """After reading bytes, a retransmit of the same bytes must not inflate total_received."""
     var fin_offset = Optional[UInt64](None)
     var buf = RecvBuf(UInt64(65536))
-    var data1 = List[UInt8](capacity=5)
+    var data1 = List[Byte](capacity=5)
     for i in range(5):
         data1.append(UInt8(i))
     var n1 = buf.write(UInt64(0), Span(data1), False, fin_offset)
@@ -680,7 +680,7 @@ def test_recv_buf_duplicate_after_read() raises:
     assert_true(buf.read_offset == UInt64(5), "read_offset advanced to 5")
 
     # Retransmit [0,5) — should count as 0 new bytes
-    var data2 = List[UInt8](capacity=5)
+    var data2 = List[Byte](capacity=5)
     for i in range(5):
         data2.append(UInt8(i))
     var n2 = buf.write(UInt64(0), Span(data2), False, fin_offset)
@@ -695,7 +695,7 @@ def test_recv_buf_is_complete_not_premature() raises:
     var buf = RecvBuf(UInt64(65536))
 
     # Write [0,5)
-    var data1 = List[UInt8](capacity=5)
+    var data1 = List[Byte](capacity=5)
     for i in range(5):
         data1.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data1), False, fin_offset)
@@ -705,7 +705,7 @@ def test_recv_buf_is_complete_not_premature() raises:
     assert_true(buf.read_offset == UInt64(5), "read_offset = 5 after read")
 
     # Retransmit [0,5) — should NOT advance total_received
-    var data2 = List[UInt8](capacity=5)
+    var data2 = List[Byte](capacity=5)
     for i in range(5):
         data2.append(UInt8(i))
     _ = buf.write(UInt64(0), Span(data2), False, fin_offset)
@@ -716,7 +716,7 @@ def test_recv_buf_is_complete_not_premature() raises:
     assert_false(buf.is_complete(fo10), "is_complete False — [5,10) not yet received")
 
     # Now write [5,10) with fin=True
-    var data3 = List[UInt8](capacity=5)
+    var data3 = List[Byte](capacity=5)
     for i in range(5):
         data3.append(UInt8(i + 5))
     _ = buf.write(UInt64(5), Span(data3), True, fin_offset)
@@ -733,8 +733,8 @@ def test_send_buf_bare_fin_acked() raises:
     var buf = SendBuf()
 
     # Write 0 bytes with FIN — creates a bare-FIN stream frame
-    var empty_data = List[UInt8]()
-    buf.write(Span[UInt8](empty_data), True)
+    var empty_data = List[Byte]()
+    buf.write(Span[Byte](empty_data), True)
     assert_true(buf.fin, "bare fin: fin flag set")
 
     # Frame the bare FIN (offset=0, data=[], fin=True)
@@ -762,18 +762,18 @@ def test_send_buf_bare_fin_acked() raises:
 def test_send_buf_write_after_fin() raises:
     """After FIN is queued, additional writes must raise."""
     var sb = SendBuf()
-    var data = List[UInt8](capacity=3)
+    var data = List[Byte](capacity=3)
     data.append(UInt8(1))
     data.append(UInt8(2))
     data.append(UInt8(3))
     sb.write(Span(data), True)  # FIN queued
 
     # Zero-length write after FIN: OK (no data to append)
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     sb.write(Span(empty), False)
 
     # Non-empty write after FIN: must raise
-    var more = List[UInt8](capacity=1)
+    var more = List[Byte](capacity=1)
     more.append(UInt8(9))
     var raised = False
     try:

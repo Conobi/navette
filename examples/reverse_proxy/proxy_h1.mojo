@@ -207,7 +207,7 @@ def h1_handle_client_recv(
 
     # Feed received ciphertext into the TLS state machine.
     var n = Int(result)
-    var chunk = List[UInt8](capacity=n)
+    var chunk = List[Byte](capacity=n)
     for i in range(n):
         chunk.append(send_state.client_recv_buf[i])
     client_tls.receive_data(Span(chunk))
@@ -344,7 +344,7 @@ def h1_handle_backend_recv(
         return out^
 
     var n = Int(result)
-    var chunk = List[UInt8](capacity=n)
+    var chunk = List[Byte](capacity=n)
     for i in range(n):
         chunk.append(send_state.backend_recv_buf[i])
     backend_tls.receive_data(Span(chunk))
@@ -453,14 +453,14 @@ def h1_handle_backend_send(
         )
         return out^
 
-    send_state.backend_send_buf = List[UInt8]()
+    send_state.backend_send_buf = List[Byte]()
 
     if len(send_state.backend_send_pending) > 0:
         var n_pending = len(send_state.backend_send_pending)
-        var pending = List[UInt8](capacity=n_pending)
+        var pending = List[Byte](capacity=n_pending)
         for i in range(n_pending):
             pending.append(send_state.backend_send_pending[i])
-        send_state.backend_send_pending = List[UInt8]()
+        send_state.backend_send_pending = List[Byte]()
         send_state.backend_send_buf = pending^
         queue_backend_send(send_state, out, backend_fd, conn_id)
         return out^
@@ -505,16 +505,16 @@ def h1_handle_client_send(
 
     # Short-write case is intentionally unhandled in M2 (the plan scope is
     # a minimum-viable proxy). The send_buf is discarded.
-    send_state.client_send_buf = List[UInt8]()
+    send_state.client_send_buf = List[Byte]()
 
     # If more ciphertext was queued while we were in flight, promote it
     # and immediately re-queue another send.
     if len(send_state.client_send_pending) > 0:
         var n_pending = len(send_state.client_send_pending)
-        var pending = List[UInt8](capacity=n_pending)
+        var pending = List[Byte](capacity=n_pending)
         for i in range(n_pending):
             pending.append(send_state.client_send_pending[i])
-        send_state.client_send_pending = List[UInt8]()
+        send_state.client_send_pending = List[Byte]()
         send_state.client_send_buf = pending^
         queue_client_send(send_state, out, client_fd, conn_id)
         # Don't transition phase yet — wait for this chained send to

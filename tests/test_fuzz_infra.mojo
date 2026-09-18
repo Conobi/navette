@@ -67,7 +67,7 @@ def test_random_bytes_geom_bounded() raises:
 
 def test_mutate_changes_input_usually() raises:
     var rng = SplitMix64(UInt64(0xABCD))
-    var seed = List[UInt8]()
+    var seed = List[Byte]()
     for i in range(20):
         seed.append(UInt8(i))
     var same = 0
@@ -149,7 +149,7 @@ def test_save_disagreement_roundtrip() raises:
     if Bool(os.path.isdir(tmp)):
         shutil.rmtree(tmp)
 
-    var input = List[UInt8]()
+    var input = List[Byte]()
     input.append(UInt8(0xDE))
     input.append(UInt8(0xAD))
     input.append(UInt8(0xBE))
@@ -183,7 +183,7 @@ def test_save_disagreement_roundtrip() raises:
 # ============================================================================
 
 
-def _byte_137_is_A(b: List[UInt8]) raises -> Bool:
+def _byte_137_is_A(b: List[Byte]) raises -> Bool:
     # Property: fails iff there's a byte 0x41 ('A') somewhere in the input
     # after position 0. Simplified from the spec's "byte 137 == 0x41" so the
     # post-shrink reproducer is well-defined regardless of starting offset.
@@ -195,7 +195,7 @@ def _byte_137_is_A(b: List[UInt8]) raises -> Bool:
 
 def test_shrink_halves_random_input() raises:
     # Build a 4 KiB input with a single 0x41 byte buried at position 1337.
-    var input = List[UInt8](capacity=4096)
+    var input = List[Byte](capacity=4096)
     for i in range(4096):
         if i == 1337:
             input.append(UInt8(0x41))

@@ -68,7 +68,7 @@ def llm_stream_h3_handler(mut yld: H3StreamingYielder) raises:
     var token_bytes = LLM_TOKEN_BYTES.as_bytes()
     var token_len = len(token_bytes)
     for _ in range(LLM_TOKEN_COUNT):
-        var chunk = List[UInt8]()
+        var chunk = List[Byte]()
         for i in range(token_len):
             chunk.append(token_bytes[i])
         h3_write_chunk(ctx_ptr, yld, chunk^)
@@ -94,7 +94,7 @@ def llm_stream_h2_handler(mut yld: H2StreamingYielder) raises:
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
 
     for _ in range(LLM_TOKEN_COUNT):
-        var bytes = List[UInt8]()
+        var bytes = List[Byte]()
         for b in LLM_TOKEN_BYTES.as_bytes():
             bytes.append(b)
         h2_write_chunk(ctx_ptr, yld, bytes^)

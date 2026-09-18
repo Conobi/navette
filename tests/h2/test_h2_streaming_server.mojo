@@ -61,7 +61,7 @@ def _do_preface(
     var server_resp = server.drain()  # server SETTINGS + SETTINGS ACK
 
     # Feed server output to client
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(server_initial)):
         combined.append(server_initial[i])
     for i in range(len(server_resp)):
@@ -121,7 +121,7 @@ def _echo_body_streaming(mut yld: H2StreamingYielder) raises:
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
 
     # Empty body
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_chunk(ctx_ptr, yld, empty^)
     finish(ctx_ptr, yld)
 
@@ -146,7 +146,7 @@ def _trailer_check_streaming(mut yld: H2StreamingYielder) raises:
     # Send minimal 200 response
     var hdrs = Headers()
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_chunk(ctx_ptr, yld, empty^)
     finish(ctx_ptr, yld)
 
@@ -201,7 +201,7 @@ def _multi_chunk_concat_body(mut yld: H2StreamingYielder) raises:
     var hdrs = Headers()
     hdrs.add("x-chunks-len", String(written))
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_chunk(ctx_ptr, yld, empty^)
     finish(ctx_ptr, yld)
 
@@ -244,7 +244,7 @@ def test_h2_streaming_post_with_body() raises:
     headers.append(Header("content-length", "11"))
     client.send_headers(UInt32(1), headers^, end_stream=False)
 
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var src = String("hello world").as_bytes()
     for i in range(len(src)):
         body_bytes.append(src[i])
@@ -296,7 +296,7 @@ def test_h2_streaming_trailers() raises:
     headers.append(Header("te", "trailers"))
     client.send_headers(UInt32(1), headers^, end_stream=False)
 
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     body_data.append(UInt8(65))  # 'A'
     client.send_data(UInt32(1), body_data^, end_stream=False)
 
@@ -445,13 +445,13 @@ def test_h2_streaming_multi_chunk_body_fifo_order() raises:
     # condition under which a LIFO pop() reverses the order; if we
     # interleaved feed/resume per chunk the handler would consume each
     # chunk before the next arrived and the LIFO bug would be hidden.
-    var c1 = List[UInt8]()
+    var c1 = List[Byte]()
     c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A")))
     client.send_data(UInt32(1), c1^, end_stream=False)
-    var c2 = List[UInt8]()
+    var c2 = List[Byte]()
     c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B")))
     client.send_data(UInt32(1), c2^, end_stream=False)
-    var c3 = List[UInt8]()
+    var c3 = List[Byte]()
     c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C")))
     client.send_data(UInt32(1), c3^, end_stream=True)
 
@@ -460,7 +460,7 @@ def test_h2_streaming_multi_chunk_body_fifo_order() raises:
     _pump(server, client, client_events, 5)
 
     # Read sink and free
-    var observed = List[UInt8]()
+    var observed = List[Byte]()
     for i in range(9):
         observed.append(sink_ptr[i])
     sink_ptr.free()

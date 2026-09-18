@@ -36,7 +36,7 @@ struct H1Session(Session):
     """H1 client session — single in-flight request per connection."""
 
     var _conn: ClientConnection
-    var _outbuf: List[UInt8]
+    var _outbuf: List[Byte]
     var _next_id: UInt64
     var _pending_handle_id: UInt64
     var _has_inflight: Bool
@@ -45,7 +45,7 @@ struct H1Session(Session):
 
     def __init__(out self):
         self._conn = ClientConnection(ParseConfig())
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._next_id = UInt64(0)
         self._pending_handle_id = UInt64(0)
         self._has_inflight = False
@@ -145,10 +145,10 @@ struct H1Session(Session):
 
     # --- Transport bridging API ---
 
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         self._conn.receive_data(data)
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         var out = self._outbuf^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         return out^

@@ -416,7 +416,7 @@ def test_stream_ref_mutation_visible() raises:
     assert_true(sm.has_stream(sid), "has_stream: opened stream present")
     assert_false(sm.has_stream(sid + 4), "has_stream: unopened id absent")
 
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     for i in range(300):
         payload.append(UInt8(i % 256))
     ref s = sm.stream_ref(sid)

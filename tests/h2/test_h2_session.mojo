@@ -239,7 +239,7 @@ def test_receive_response() raises:
     resp_headers.append(Header("content-type", "text/plain"))
     server.send_headers(UInt32(1), resp_headers^, end_stream=False)
 
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var hello = String("hello")
     for i in range(len(hello.as_bytes())):
         body_bytes.append(hello.as_bytes()[i])
@@ -325,7 +325,7 @@ def test_multiple_inflight() raises:
     var rh1 = List[Header]()
     rh1.append(Header(":status", "200"))
     server.send_headers(UInt32(1), rh1^, end_stream=False)
-    var b1 = List[UInt8]()
+    var b1 = List[Byte]()
     var s1 = String("body-a")
     for i in range(len(s1.as_bytes())):
         b1.append(s1.as_bytes()[i])
@@ -335,7 +335,7 @@ def test_multiple_inflight() raises:
     var rh2 = List[Header]()
     rh2.append(Header(":status", "201"))
     server.send_headers(UInt32(3), rh2^, end_stream=False)
-    var b2 = List[UInt8]()
+    var b2 = List[Byte]()
     var s2 = String("body-b")
     for i in range(len(s2.as_bytes())):
         b2.append(s2.as_bytes()[i])

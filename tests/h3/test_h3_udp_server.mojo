@@ -110,7 +110,7 @@ struct BigHandler(StreamHandler):
         mut resp: ResponseWriter, caps: Capabilities,
     ) raises:
         resp.send_status(StatusCode.ok(), Headers())
-        var body_bytes = List[UInt8](capacity=BIG_BODY_BYTES)
+        var body_bytes = List[Byte](capacity=BIG_BODY_BYTES)
         for _ in range(BIG_BODY_BYTES):
             body_bytes.append(UInt8(120))
         _ = resp.try_send_body(BodyFrame.data(body_bytes^))
@@ -152,7 +152,7 @@ struct OkHandler(StreamHandler):
         mut resp: ResponseWriter, caps: Capabilities,
     ) raises:
         resp.send_status(StatusCode.ok(), Headers())
-        var body_bytes = List[UInt8]()
+        var body_bytes = List[Byte]()
         body_bytes.append(UInt8(111))
         body_bytes.append(UInt8(107))
         _ = resp.try_send_body(BodyFrame.data(body_bytes^))
@@ -202,7 +202,7 @@ def _send_partial_request(mut client: HarnessClient) raises -> UInt64:
     them and waits, so the only thing it owes back is an ACK.
     """
     var sid = client.h3.open_bidi_stream()
-    var partial = List[UInt8]()
+    var partial = List[Byte]()
     partial.append(UInt8(0x01))  # HEADERS frame type
     partial.append(UInt8(0x20))  # declared length 32; payload withheld
     client.h3._quic.send_stream_data(sid, Span(partial), False)
@@ -275,7 +275,7 @@ def _server_pto_us[H: StreamHandler](harness: UdpServerHarness[H], slot: Int) ->
     return conn[]._h3._quic.recovery.pto_timeout(mad)
 
 
-def _addrs_eq(a: List[UInt8], b: List[UInt8]) -> Bool:
+def _addrs_eq(a: List[Byte], b: List[Byte]) -> Bool:
     if len(a) != len(b):
         return False
     for i in range(len(a)):
@@ -536,11 +536,11 @@ def test_timer_reserved_before_egress() raises:
     h.srv[]._timer = Optional[TimerFuture](None)
     var timeouts = h.srv[]._timeout_count
     for i in range(600):
-        var payload = List[UInt8](capacity=64)
+        var payload = List[Byte](capacity=64)
         for j in range(64):
             payload.append(UInt8((i + j) & 0xFF))
         h.srv[]._egress_backlog.append(
-            EgressPacket(payload^, List[UInt8](copy=addr), 0, UInt8(0))
+            EgressPacket(payload^, List[Byte](copy=addr), 0, UInt8(0))
         )
     h.flush()
     assert_equal_int(h.srv[]._timeout_count, timeouts + 1, "timeout() issued before egress submission")
@@ -619,7 +619,7 @@ def test_timer_pass_runs_when_deadline_passed() raises:
     # (0x21): the server ignores it, so every datagram is ack-eliciting
     # ingress for slot B and nothing else happens.
     var b_sid = b.h3._quic.open_stream(False)
-    var chunk = List[UInt8]()
+    var chunk = List[Byte]()
     chunk.append(UInt8(0x21))
 
     _ = _send_partial_request(a)
@@ -738,7 +738,7 @@ def test_closing_conn_addr_frozen() raises:
     # Provoke a server-side close through ingress (SETTINGS on a request
     # stream is H3_FRAME_UNEXPECTED); the CLOSE goes to the old address.
     var bad_sid = c.h3.open_bidi_stream()
-    var settings_on_request = List[UInt8]()
+    var settings_on_request = List[Byte]()
     settings_on_request.append(UInt8(0x04))
     settings_on_request.append(UInt8(0x00))
     c.h3._quic.send_stream_data(bad_sid, Span(settings_on_request), False)
@@ -1237,7 +1237,7 @@ def test_inject_response_refreshes_deadline() raises:
     _settle(h)
 
     var refreshes = h.srv[]._deadline_refresh_count
-    var body = List[UInt8]()
+    var body = List[Byte]()
     body.append(UInt8(111))
     body.append(UInt8(107))
     h.srv[].inject_response(conn_id, Int(sid), StatusCode.ok(), Headers(), body^, True)
@@ -1322,7 +1322,7 @@ def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
     """A `ConnSlot` around a null `h3` pointer carrying one cached deadline."""
     var s = ConnSlot[StubHandler](
         null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
-        List[UInt8](),
+        List[Byte](),
         List[UInt64](),
         UInt64(0),
     )

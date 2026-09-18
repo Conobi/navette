@@ -40,9 +40,9 @@ from tests._test_util import (
 )
 
 
-def _synth_dcid() -> List[UInt8]:
+def _synth_dcid() -> List[Byte]:
     """Return an 8-byte synthetic DCID for the test server connection."""
-    var dcid: List[UInt8] = [
+    var dcid: List[Byte] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
@@ -402,7 +402,7 @@ def test_replay_check_per_key_quota_counter_routes_correctly() raises:
     var store_cfg = default_early_data_store_config()
     store_cfg.per_key_max_attempts = UInt32(2)
     var store = InMemoryEarlyDataStore(config=store_cfg)
-    var auth = List[UInt8]()
+    var auth = List[Byte]()
     for _ in range(32):
         auth.append(UInt8(0xBB))
     # First call accepts (count=1); second duplicates (count=2); third

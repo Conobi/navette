@@ -15,7 +15,7 @@ def test_default_watermarks_match_config() raises:
 
 def test_push_then_try_read_returns_data() raises:
     var b = RecvBody()
-    var bytes: List[UInt8] = [UInt8(1), UInt8(2)]
+    var bytes: List[Byte] = [UInt8(1), UInt8(2)]
     b._push(BodyFrame.data(bytes^))
     var f_opt = b.try_read()
     assert_true(Bool(f_opt), "push.has_frame")
@@ -65,7 +65,7 @@ def test_set_end_after_set_error_is_noop() raises:
 
 def test_watermark_accounting_excludes_trailers_end_error() raises:
     var b = RecvBody()
-    var bytes: List[UInt8] = [UInt8(0), UInt8(0), UInt8(0), UInt8(0)]
+    var bytes: List[Byte] = [UInt8(0), UInt8(0), UInt8(0), UInt8(0)]
     b._push(BodyFrame.data(bytes^))
     assert_equal_int(Int(b.bytes_buffered()), 4, "after_data")
     b._push(BodyFrame.end())

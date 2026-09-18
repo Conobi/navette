@@ -118,7 +118,7 @@ def _check_oracle_agrees_accept(
 
 
 def run_accept_cross(
-    wire: List[UInt8],
+    wire: List[Byte],
     vec_id: String,
     states: PythonObject,
 ) raises -> Int:
@@ -152,7 +152,7 @@ def run_accept_cross(
 
 
 def run_reject_cross(
-    wire: List[UInt8],
+    wire: List[Byte],
     vec_id: String,
     states: PythonObject,
 ) raises -> Int:

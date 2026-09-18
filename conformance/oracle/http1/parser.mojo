@@ -22,7 +22,7 @@ from ._helpers import (
 
 
 def parse_request(
-    wire: List[UInt8], config: ParseConfig = ParseConfig()
+    wire: List[Byte], config: ParseConfig = ParseConfig()
 ) -> ParsedRequest:
     """Parse a complete HTTP/1.1 request message from raw bytes.
 
@@ -255,7 +255,7 @@ def parse_request(
                 result.error = "unsupported Transfer-Encoding"
                 return result^
 
-        var remaining = List[UInt8]()
+        var remaining = List[Byte]()
         var ri = pos
         while ri < data_len:
             remaining.append(wire[ri])

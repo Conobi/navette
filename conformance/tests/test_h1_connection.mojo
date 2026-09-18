@@ -615,7 +615,7 @@ def main() raises:
         # Build: "GET /a HTTP/1.1\r\nHost: <host1>\r\n\r\nGET /b HTTP/1.1\r\nHost: <host2>\r\n\r\n"
         var rt_str = "GET /a HTTP/1.1\r\nHost: " + host1 + "\r\n\r\nGET /b HTTP/1.1\r\nHost: " + host2 + "\r\n\r\n"
         var rt_bytes = rt_str.as_bytes()
-        var rt_wire = List[UInt8]()
+        var rt_wire = List[Byte]()
         for bi in range(len(rt_bytes)):
             rt_wire.append(rt_bytes[bi])
 

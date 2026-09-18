@@ -167,8 +167,8 @@ def _make_server(
     lifetime — they are stack-rooted Pointer references.
     """
     var tp = default_transport_params()
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))
@@ -208,7 +208,7 @@ def _force_stream_in_space(
     `_handle_stream_frame` insertion path runs through its real code.
     """
     server._h3._quic._current_space_idx = space_idx
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x00))
     var sf = StreamFrame(stream_id, UInt64(0), payload, False)
     try:
@@ -495,8 +495,8 @@ def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
     var cfg = QuicServerConfig(lib.shared(), Span(cert_pem), Span(key_pem))
     var prof = AcceptProfile()
     var tp = default_transport_params()
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))
@@ -569,8 +569,8 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     )
     var prof = AcceptProfile()
     var tp = default_transport_params()
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))

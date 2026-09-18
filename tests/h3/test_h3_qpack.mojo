@@ -101,7 +101,7 @@ def test_huffman_decode_padding_ones() raises:
     # Encoding "a" (RFC 7541: code=0x00000003, nbits=5 -> 0b00011 + 0b111 padding = 0x1F)
     # RFC 7541 Appendix B: 'a' = 5 bits, code 0x00000003 (binary: 00011)
     # padded to byte: 00011111 = 0x1F
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x1F)
     var decoded = huffman_decode(data)
     assert_true(decoded == "a", "0x1F should decode to 'a'")
@@ -111,7 +111,7 @@ def test_huffman_decode_padding_ones() raises:
 def test_huffman_decode_bad_padding_raises() raises:
     # Last byte padded with 0-bits instead of 1-bits is invalid
     # 'a' = 00011, bad padding 000 => 00011000 = 0x18
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x18)
     var raised = False
     try:
@@ -125,7 +125,7 @@ def test_huffman_decode_bad_padding_raises() raises:
 def test_huffman_decode_excess_padding_raises() raises:
     # More than 7 padding bits is invalid (RFC 7541 §5.2)
     # "a" (1 byte 0x1F) followed by 0xFF => excess padding
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x1F)
     data.append(0xFF)
     var raised = False
@@ -143,7 +143,7 @@ def test_huffman_decode_eos_in_stream_raises() raises:
     # bytes of 0xFF — this is the "all-ones across 4 bytes" case the TQUIC
     # `huffman_decode_invalid_without_eos` test (huffman.rs:5330) flags as an
     # invalid input the decoder must reject.
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x3F)
     data.append(0xFF)
     data.append(0xFF)
@@ -280,7 +280,7 @@ def test_encode_huffman_disabled() raises:
 
 def test_decode_indexed_static() raises:
     # [0x00, 0x00, 0xD1] = prefix + indexed :method GET (index 17, wire=0xC0|17=0xD1)
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x00)
     data.append(0x00)
     data.append(0xD1)  # 0xC0 | 17
@@ -296,7 +296,7 @@ def test_decode_literal_name_ref() raises:
     # Decode known-correct §4.5.4 wire bytes for :method PATCH (use_huffman=False).
     # Same bytes as oracle (pylsqpack) for :method PATCH field alone.
     # [0x00, 0x00, 0x5F, 0x00, 0x05, 'P','A','T','C','H']
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x00)  # RIC=0
     data.append(0x00)  # S=0, delta=0
     data.append(0x5F)  # §4.5.4: N=0, T=1 (static), index=15 multi-byte first byte
@@ -343,7 +343,7 @@ def test_decode_huffman_value() raises:
 
 def test_decode_nonzero_insert_count_raises() raises:
     # Required Insert Count must be 0 for static-only
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x02)  # non-zero RIC
     data.append(0x00)
     var dec = QpackDecoder()
@@ -363,7 +363,7 @@ def test_decode_truncated_raises() raises:
     f2.append(QpackHeaderField("x-header", "longvalue"))
     var e2 = enc2.encode(f2)
     # Take only first half (truncated)
-    var half = List[UInt8]()
+    var half = List[Byte]()
     for i in range(len(e2) // 2):
         half.append(e2[i])
     var dec = QpackDecoder()
@@ -394,7 +394,7 @@ def test_decode_multi_fields() raises:
 
 def test_decode_static_index_out_of_range_raises() raises:
     # Indexed-static flag with an out-of-range index
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x00)
     data.append(0x00)
     # Build a multi-byte indexed static with large index (>>99)
@@ -440,7 +440,7 @@ def test_encode_field_all_three_paths() raises:
 
 def test_decode_s_bit_raises() raises:
     # S=1 in the Delta Base byte means negative delta — not supported
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x00)  # RIC=0
     data.append(0x80)  # S=1 (bit 7 set), Delta Base=0
     var dec = QpackDecoder()

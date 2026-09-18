@@ -2,7 +2,7 @@
 #
 # HTTP/1.1 wire format serialization per RFC 9112.
 # Pure functions — no state, no I/O. Each entry point takes a production
-# Request/Response and returns a freshly allocated `List[UInt8]` containing
+# Request/Response and returns a freshly allocated `List[Byte]` containing
 # the message ready to be written to a transport.
 #
 # Framing rules implemented here:
@@ -37,17 +37,17 @@ comptime _STATUS_LINE_200 = "HTTP/1.1 200 \r\n"
 
 # --- Low-level buffer helpers ---
 
-def _append_str(mut buf: List[UInt8], s: String):
+def _append_str(mut buf: List[Byte], s: String):
     """Append all bytes of a string to the buffer."""
     buf.extend(s.as_bytes())
 
 
-def _append_crlf(mut buf: List[UInt8]):
+def _append_crlf(mut buf: List[Byte]):
     """Append CRLF to the buffer."""
     buf.extend(String("\r\n").as_bytes())
 
 
-def _append_colon_sp(mut buf: List[UInt8]):
+def _append_colon_sp(mut buf: List[Byte]):
     """Append `: ` (colon, space) to the buffer."""
     buf.extend(String(": ").as_bytes())
 
@@ -80,7 +80,7 @@ def _method_string(method: Method) -> String:
 #
 # inplace-int-negative (verified 1.0.0b2): the debug_assert below aborts under
 # ASSERT=all and is compiled out at default/release (probes/inplace_int_negative.mojo).
-def _append_decimal(mut buf: List[UInt8], value: Int):
+def _append_decimal(mut buf: List[Byte], value: Int):
     """Append the ASCII decimal representation of a non-negative integer.
 
     Writes digits directly into ``buf`` (LSD first) then reverses the
@@ -112,7 +112,7 @@ def _append_decimal(mut buf: List[UInt8], value: Int):
         hi -= 1
 
 
-def _append_hex_lower(mut buf: List[UInt8], value: Int):
+def _append_hex_lower(mut buf: List[Byte], value: Int):
     """Append the lowercase hexadecimal representation of a non-negative integer.
 
     Same in-place write-then-reverse technique as ``_append_decimal``; used for
@@ -144,7 +144,7 @@ def _append_hex_lower(mut buf: List[UInt8], value: Int):
 
 # --- Header / body helpers ---
 
-def _serialize_headers(mut buf: List[UInt8], headers: Headers):
+def _serialize_headers(mut buf: List[Byte], headers: Headers):
     """Emit each header as `name: value\\r\\n` in insertion order."""
     for i in range(len(headers)):
         _append_str(buf, headers.name_at(i))
@@ -153,7 +153,7 @@ def _serialize_headers(mut buf: List[UInt8], headers: Headers):
         _append_crlf(buf)
 
 
-def _append_framing_header(mut buf: List[UInt8], name: String, value: String):
+def _append_framing_header(mut buf: List[Byte], name: String, value: String):
     """Append a single `name: value\\r\\n` line."""
     _append_str(buf, name)
     _append_colon_sp(buf)
@@ -161,7 +161,7 @@ def _append_framing_header(mut buf: List[UInt8], name: String, value: String):
     _append_crlf(buf)
 
 
-def _append_framing_header_int(mut buf: List[UInt8], name: String, value: Int):
+def _append_framing_header_int(mut buf: List[Byte], name: String, value: Int):
     """Append ``name: <decimal value>\\r\\n`` using in-place decimal emission.
 
     Used for the synthesized Content-Length header, whose value is a
@@ -191,7 +191,7 @@ def _has_trailers(body: List[BodyFrame]) -> Bool:
     return False
 
 
-def _append_data_frames(mut buf: List[UInt8], body: List[BodyFrame]):
+def _append_data_frames(mut buf: List[Byte], body: List[BodyFrame]):
     """Append the bytes of every Data frame in order (no framing)."""
     for ref frame in body:
         if frame.is_data():
@@ -199,7 +199,7 @@ def _append_data_frames(mut buf: List[UInt8], body: List[BodyFrame]):
             buf.extend(Span(chunk))
 
 
-def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
+def _append_chunked_body(mut buf: List[Byte], body: List[BodyFrame]):
     """Encode body frames using chunked transfer-encoding.
 
     Each non-empty Data frame becomes one chunk. After the final chunk
@@ -231,14 +231,14 @@ def _append_chunked_body(mut buf: List[UInt8], body: List[BodyFrame]):
 
 # --- Public entry points ---
 
-def serialize_request(request: Request) raises -> List[UInt8]:
+def serialize_request(request: Request) raises -> List[Byte]:
     """Serialize a Request into HTTP/1.1 wire bytes.
 
     Request.body is a RequestBody. Buffered bodies are emitted with a
     content-length header. Streaming bodies are not yet supported by the
     sans-I/O serializer (the H1Session adapter handles streaming separately).
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
 
     # Request-line: method SP target SP version CRLF.
     _append_str(buf, _method_string(request.method))
@@ -272,7 +272,7 @@ def serialize_request(request: Request) raises -> List[UInt8]:
     return buf^
 
 
-def serialize_response(response: Response) -> List[UInt8]:
+def serialize_response(response: Response) -> List[Byte]:
     """Serialize a Response into HTTP/1.1 wire bytes.
 
     The SP after the status code is always emitted, even when the reason
@@ -284,7 +284,7 @@ def serialize_response(response: Response) -> List[UInt8]:
     the caller (H1Connection) MUST suppress the body bytes after this
     function returns. The serializer does not see the request method.
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var status_int = Int(response.status.code())
 
     # Status-line: version SP status-code SP reason-phrase CRLF.
@@ -335,13 +335,13 @@ def serialize_response(response: Response) -> List[UInt8]:
     return buf^
 
 
-def serialize_informational(status: StatusCode, headers: Headers) -> List[UInt8]:
+def serialize_informational(status: StatusCode, headers: Headers) -> List[Byte]:
     """Serialize a 1xx interim response.
 
     Always uses HTTP/1.1, an empty reason phrase (with the mandatory SP
     after the status code), no body, and no framing headers.
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     _append_str(buf, String("HTTP/1.1"))
     buf.append(UInt8(0x20))
     _append_decimal(buf, Int(status.code()))

@@ -46,7 +46,7 @@ def _well_formed_client_tp() -> TransportParams:
     """
     var p = TransportParams()
     # Set initial_scid to an 8-byte CID (presence required for clients).
-    var scid = List[UInt8]()
+    var scid = List[Byte]()
     for _ in range(8):
         scid.append(UInt8(0xAA))
     p.initial_scid = scid^
@@ -85,7 +85,7 @@ def test_f03_original_dcid_forbidden() raises:
     in a client's transport parameters.
     """
     var p = _well_formed_client_tp()
-    var dcid = List[UInt8]()
+    var dcid = List[Byte]()
     for _ in range(8):
         dcid.append(UInt8(0xBB))
     p.original_dcid = dcid^
@@ -111,15 +111,15 @@ def test_f04_preferred_addr_forbidden() raises:
     transport parameters.
     """
     var p = _well_formed_client_tp()
-    var ipv4 = List[UInt8]()
+    var ipv4 = List[Byte]()
     for _i in range(4):
         ipv4.append(UInt8(127))
-    var ipv6 = List[UInt8]()
+    var ipv6 = List[Byte]()
     for _i in range(16):
-        ipv6.append(UInt8(0))
-    var cid = List[UInt8]()
+        ipv6.append(Byte(0))
+    var cid = List[Byte]()
     cid.append(UInt8(0xCC))
-    var srt = List[UInt8]()
+    var srt = List[Byte]()
     for _i in range(16):
         srt.append(UInt8(0xFF))
     p.preferred_address = PreferredAddress(
@@ -152,7 +152,7 @@ def test_f05_retry_scid_forbidden() raises:
     client's transport parameters.
     """
     var p = _well_formed_client_tp()
-    var rscid = List[UInt8]()
+    var rscid = List[Byte]()
     for _ in range(8):
         rscid.append(UInt8(0xDD))
     p.retry_scid = rscid^
@@ -178,7 +178,7 @@ def test_f06_stateless_reset_forbidden() raises:
     transport parameters.
     """
     var p = _well_formed_client_tp()
-    var tok = List[UInt8]()
+    var tok = List[Byte]()
     for _i in range(16):
         tok.append(UInt8(0xEE))
     p.stateless_reset_token = tok^
@@ -212,7 +212,7 @@ def test_f07_max_udp_payload_below_1200_raises() raises:
     top byte = 0x40 | (1100 >> 8) = 0x44, low byte = 1100 & 0xff = 0x4c.
     Wire: [id=0x03, len=0x02, 0x44, 0x4c].
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     buf.append(0x03)  # ID: max_udp_payload_size
     buf.append(0x02)  # length: 2 bytes
     buf.append(0x44)  # value high byte (14-bit varint form, 0x40 prefix)
@@ -237,7 +237,7 @@ def test_f08_ack_delay_exponent_above_20_raises() raises:
     single-byte QUIC varint (0x15).
     Wire: [id=0x0a, len=0x01, 0x15].
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     buf.append(0x0a)  # ID: ack_delay_exponent
     buf.append(0x01)  # length: 1 byte
     buf.append(0x15)  # value: 21
@@ -262,7 +262,7 @@ def test_f09_max_ack_delay_above_threshold_raises() raises:
     then 0x00, then (16384 >> 8) & 0xff = 0x40, then 0x00.
     Wire: [id=0x0b, len=0x04, 0x80, 0x00, 0x40, 0x00].
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     buf.append(0x0b)  # ID: max_ack_delay
     buf.append(0x04)  # length: 4 bytes
     buf.append(0x80)  # varint 4-byte prefix + high bits
@@ -307,7 +307,7 @@ def test_max_datagram_frame_size_roundtrip() raises:
     handshake-event path can route it to the peer-params snapshot.
     """
     var p = TransportParams()
-    var scid = List[UInt8]()
+    var scid = List[Byte]()
     for _ in range(8):
         scid.append(UInt8(0xAA))
     p.initial_scid = scid^
@@ -333,7 +333,7 @@ def test_max_datagram_frame_size_zero_omitted_on_serialize() raises:
     and the parsed value matches the default.
     """
     var p = TransportParams()
-    var scid = List[UInt8]()
+    var scid = List[Byte]()
     for _ in range(8):
         scid.append(UInt8(0xBB))
     p.initial_scid = scid^
@@ -364,7 +364,7 @@ def test_max_datagram_frame_size_overflow_rejected() raises:
     Wire form for value 65536 (= 2^16, requires 4-byte varint):
       ID 0x20, length 0x04, value 0x80 0x01 0x00 0x00.
     """
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     buf.append(0x20)  # ID: max_datagram_frame_size
     buf.append(0x04)  # length: 4 bytes
     buf.append(0x80)  # varint 4-byte prefix

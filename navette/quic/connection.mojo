@@ -7,7 +7,7 @@
 #
 # Usage:
 #   var conn = QuicConnection.client(lib, cfg, "example.com", tp, now)
-#   var datagrams = List[List[UInt8]](capacity=1)
+#   var datagrams = List[List[Byte]](capacity=1)
 #   _ = conn.send(now, datagrams)        # Initial with ClientHello
 #   conn.recv(response_bytes, now)       # Feed server reply
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
@@ -205,7 +205,7 @@ comptime _TP_BUF_SIZE: Int = 1024
 def _create_server_tls_conn(
     lib: SharedLibrary,
     config_handle: Int32,
-    tp_bytes: List[UInt8],
+    tp_bytes: List[Byte],
     profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]],
 ) raises -> Int32:
     """Create a QUIC server TLS connection via FFI, return conn handle."""
@@ -241,7 +241,7 @@ def _create_client_tls_conn(
     lib: SharedLibrary,
     config_handle: Int32,
     server_name: String,
-    tp_bytes: List[UInt8],
+    tp_bytes: List[Byte],
 ) raises -> Int32:
     """Create a QUIC client TLS connection via FFI, return conn handle."""
     var sni_bytes = server_name.as_bytes()
@@ -423,7 +423,7 @@ struct QuicConnection(Movable):
     # declared lost, the payload is gone (callers MUST handle reliability
     # themselves if they need it). Drained from `_outbound_dg_head`; the
     # list is reset once every entry has been emitted.
-    var pending_outbound_datagrams: List[List[UInt8]]
+    var pending_outbound_datagrams: List[List[Byte]]
     var _outbound_dg_head: Int
     # One-shot guard for the initial NEW_CONNECTION_ID burst (RFC 9000
     # §5.1.1): on the first 1-RTT _build_frames_for_space call after the
@@ -434,7 +434,7 @@ struct QuicConnection(Movable):
     # Maps Application-space packet number -> list of stream-layer frames
     # sent in that packet, for ACK/loss processing.
     var app_frames_sent: Dict[Int, List[SentStreamFrame]]
-    var pkt_buf: List[UInt8]
+    var pkt_buf: List[Byte]
     var ecn: EcnProbe
 
     var prof: ProfileState
@@ -458,10 +458,10 @@ struct QuicConnection(Movable):
     var _scratch_lost_pns: List[Int]
     var _scratch_frames: List[Frame]
     var _scratch_sent_records: List[SentStreamFrame]
-    var _scratch_payload: List[UInt8]
-    var _scratch_datagram: List[UInt8]
+    var _scratch_payload: List[Byte]
+    var _scratch_datagram: List[Byte]
     var _scratch_plans: List[PacketPlan]
-    var _scratch_writer_buf: List[UInt8]
+    var _scratch_writer_buf: List[Byte]
 
     # ── Private constructor (used by factory methods) ────────────────
 
@@ -533,7 +533,7 @@ struct QuicConnection(Movable):
         )
         self.zrtt = ZeroRttState(
             enabled=False,
-            buffer=List[List[UInt8]](),
+            buffer=List[List[Byte]](),
             buffer_bytes=0,
             draining=False,
             replay_decision=UInt8(0),
@@ -548,10 +548,10 @@ struct QuicConnection(Movable):
         self._scratch_lost_pns = List[Int](capacity=64)
         self._scratch_frames = List[Frame](capacity=8)
         self._scratch_sent_records = List[SentStreamFrame](capacity=8)
-        self._scratch_payload = List[UInt8](capacity=6144)
-        self._scratch_datagram = List[UInt8](capacity=MAX_DATAGRAM_SIZE)
+        self._scratch_payload = List[Byte](capacity=6144)
+        self._scratch_datagram = List[Byte](capacity=MAX_DATAGRAM_SIZE)
         self._scratch_plans = List[PacketPlan](capacity=3)
-        self._scratch_writer_buf = List[UInt8](capacity=256)
+        self._scratch_writer_buf = List[Byte](capacity=256)
         self.stream_map = StreamMap(
             is_server=is_server,
             conn_recv_limit=local_params.initial_max_data,
@@ -565,22 +565,22 @@ struct QuicConnection(Movable):
         )
         self.cid_mgr = CidManager(
             lib=self._lib,
-            initial_local_cid=List[UInt8](local_cid.as_span()),
-            initial_remote_cid=List[UInt8](peer_cid.as_span()),
+            initial_local_cid=List[Byte](local_cid.as_span()),
+            initial_remote_cid=List[Byte](peer_cid.as_span()),
             local_active_limit=UInt64(2),
             peer_active_limit=UInt64(2),
         )
         self.path = PathState(
             validator=PathValidator(),
-            pending_responses=List[List[UInt8]](),
+            pending_responses=List[List[Byte]](),
             peer_addr=PathKey.zero(),
             current_recv_addr=PathKey.zero(),
         )
-        self.pending_outbound_datagrams = List[List[UInt8]]()
+        self.pending_outbound_datagrams = List[List[Byte]]()
         self._outbound_dg_head = 0
         self.initial_cids_emitted = False
         self.app_frames_sent = Dict[Int, List[SentStreamFrame]](capacity=128)
-        self.pkt_buf = List[UInt8](capacity=1350)
+        self.pkt_buf = List[Byte](capacity=1350)
 
     # ── Destructor ───────────────────────────────────────────────────
 
@@ -627,7 +627,7 @@ struct QuicConnection(Movable):
         var local_cid = _generate_random_cid()
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
-        params_copy.initial_scid = List[UInt8](copy=local_cid)
+        params_copy.initial_scid = List[Byte](copy=local_cid)
         _apply_m3c_defaults(params_copy)
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
@@ -649,8 +649,8 @@ struct QuicConnection(Movable):
         lib: SharedLibrary,
         ref config: QuicServerConfig,
         local_params: TransportParams,
-        orig_dcid: Span[UInt8, _],
-        client_dcid: Span[UInt8, _],
+        orig_dcid: Span[Byte, _],
+        client_dcid: Span[Byte, _],
         now: UInt64,
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
     ) raises -> QuicConnection:
@@ -669,9 +669,9 @@ struct QuicConnection(Movable):
         var local_cid = _generate_random_cid()
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
-        params_copy.initial_scid = List[UInt8](copy=local_cid)
+        params_copy.initial_scid = List[Byte](copy=local_cid)
         _apply_m3c_defaults(params_copy)
-        var orig_dcid_list = List[UInt8](capacity=len(orig_dcid))
+        var orig_dcid_list = List[Byte](capacity=len(orig_dcid))
         for ref byte in orig_dcid:
             orig_dcid_list.append(byte)
         params_copy.original_dcid = orig_dcid_list^
@@ -702,7 +702,7 @@ struct QuicConnection(Movable):
 
     # ── Receive path ─────────────────────────────────────────────────
 
-    def recv(mut self, datagram: Span[UInt8, _], now: UInt64,
+    def recv(mut self, datagram: Span[Byte, _], now: UInt64,
              ecn_mark: UInt8 = UInt8(0)) raises:
         """Process an incoming UDP datagram (Span convenience wrapper)."""
         var n = len(datagram)
@@ -847,7 +847,7 @@ struct QuicConnection(Movable):
 
     def _run_anti_replay_check(mut self) raises:
         """Execute the one-shot anti-replay check against the early data store."""
-        var auth_buf = InlineArray[UInt8, 32](fill=UInt8(0))
+        var auth_buf = InlineArray[UInt8, 32](fill=Byte(0))
         var auth_len = UInt(0)
         var rc = self._invoke_replay_authenticator_ffi(auth_buf, auth_len)
         if rc != Int32(0):
@@ -1078,7 +1078,7 @@ struct QuicConnection(Movable):
     # ── Stream frame handlers ────────────────────────────────────────
 
     @always_inline
-    def _handle_stream_frame(mut self, ref stream_frame: StreamFrame, stream_data: Span[UInt8, _]) raises:
+    def _handle_stream_frame(mut self, ref stream_frame: StreamFrame, stream_data: Span[Byte, _]) raises:
         """Process an incoming STREAM frame."""
         var stream_id = stream_frame.stream_id
         var offset = stream_frame.offset
@@ -1266,13 +1266,13 @@ struct QuicConnection(Movable):
     # ── Path validation RX handlers ──────────────────────────────────
 
     def on_path_challenge_received(
-        mut self, data: Span[UInt8, _], now: UInt64
+        mut self, data: Span[Byte, _], now: UInt64
     ):
         """Stash the 8-byte challenge to echo back as PATH_RESPONSE."""
         self.path.on_challenge_received(data)
 
     def on_path_response_received(
-        mut self, data: Span[UInt8, _], var from_addr: PathKey, now: UInt64
+        mut self, data: Span[Byte, _], var from_addr: PathKey, now: UInt64
     ) raises:
         """Validate a PATH_RESPONSE and, on match, swap the validated path.
 
@@ -1532,7 +1532,7 @@ struct QuicConnection(Movable):
             return
         if tid == FRAME_DATAGRAM or tid == FRAME_DATAGRAM_LEN:
             var data_span = cursor.byte_data_span()
-            self.events.append(QuicEvent.datagram_received(List[UInt8](data_span)))
+            self.events.append(QuicEvent.datagram_received(List[Byte](data_span)))
             return
         if is_unknown_frame_type(tid):
             self.close_transport(UInt64(0x07), String(GUARD_TAG_UNKNOWN_FRAME), now)
@@ -1563,7 +1563,7 @@ struct QuicConnection(Movable):
         return False
 
     def _on_connection_close(
-        mut self, error_code: UInt64, reason_bytes: Span[UInt8, _], now: UInt64,
+        mut self, error_code: UInt64, reason_bytes: Span[Byte, _], now: UInt64,
     ) raises:
         """Handle CONNECTION_CLOSE: enter draining state, emit event."""
         self.state = self.state | CONN_DRAINING
@@ -1615,8 +1615,8 @@ struct QuicConnection(Movable):
         self.cid_mgr.on_new_connection_id(
             nc.sequence,
             nc.retire_prior_to,
-            List[UInt8](nc.cid.as_span()),
-            List[UInt8](copy=nc.stateless_reset_token),
+            List[Byte](nc.cid.as_span()),
+            List[Byte](copy=nc.stateless_reset_token),
         )
 
     def _on_max_stream_data(
@@ -1689,7 +1689,7 @@ struct QuicConnection(Movable):
     @always_inline
     def _handle_stream_frame_from_cursor(
         mut self, stream_id: UInt64, offset: UInt64, fin: Bool,
-        stream_data: Span[UInt8, _],
+        stream_data: Span[Byte, _],
     ) raises:
         """Process STREAM frame from cursor scalars (no StreamFrame alloc)."""
         var data_len = UInt64(len(stream_data))
@@ -1733,7 +1733,7 @@ struct QuicConnection(Movable):
     def _on_new_cid_from_cursor(
         mut self,
         sequence: UInt64, retire_prior_to: UInt64,
-        data: Span[UInt8, _], cid_len: Int,
+        data: Span[Byte, _], cid_len: Int,
         now: UInt64,
     ) raises:
         """Handle NEW_CONNECTION_ID from cursor scalar fields.
@@ -1757,8 +1757,8 @@ struct QuicConnection(Movable):
         self.cid_mgr.on_new_connection_id(
             sequence,
             retire_prior_to,
-            List[UInt8](cid_span),
-            List[UInt8](token_span),
+            List[Byte](cid_span),
+            List[Byte](token_span),
         )
 
     @always_inline
@@ -2228,7 +2228,7 @@ struct QuicConnection(Movable):
             var written = Int(out_written[unsafe_offset=0])
             if written > 0:
                 var target_level = self.current_level
-                var tls_data = List[UInt8](capacity=written)
+                var tls_data = List[Byte](capacity=written)
                 for i in range(written):
                     tls_data.append(out_buf[unsafe_offset=i])
                 self.crypto_streams[target_level].write(Span(tls_data))
@@ -2324,7 +2324,7 @@ struct QuicConnection(Movable):
         if rc != Int32(0) or Int(tp_written[unsafe_offset=0]) <= 0:
             return
         var tp_len = Int(tp_written[unsafe_offset=0])
-        var tp_bytes = List[UInt8](capacity=tp_len)
+        var tp_bytes = List[Byte](capacity=tp_len)
         for i in range(tp_len):
             tp_bytes.append(tp_buf[unsafe_offset=i])
         _ = tp_written_owned
@@ -2425,14 +2425,14 @@ struct QuicConnection(Movable):
         # exist; once they're gone the buffered ciphertext is undecryptable
         # forever, so free it eagerly. Helper stays non-raising — replacing
         # a Mojo List does not throw.
-        self.zrtt.buffer = List[List[UInt8]]()
+        self.zrtt.buffer = List[List[Byte]]()
         self.zrtt.buffer_bytes = 0
 
     def _zero_rtt_enabled(self) -> Bool:
         """True if 0-RTT is enabled by server config."""
         return self.zrtt.is_enabled()
 
-    def _buffer_zero_rtt_or_drop(mut self, packet: Span[UInt8, _]) -> Bool:
+    def _buffer_zero_rtt_or_drop(mut self, packet: Span[Byte, _]) -> Bool:
         """Buffer a 0-RTT packet for later replay. Delegates to ZeroRttState."""
         return self.zrtt.buffer_or_drop(packet)
 
@@ -2452,7 +2452,7 @@ struct QuicConnection(Movable):
         if len(self.zrtt.buffer) == 0:
             return
         var pending = self.zrtt.buffer^
-        self.zrtt.buffer = List[List[UInt8]]()
+        self.zrtt.buffer = List[List[Byte]]()
         self.zrtt.buffer_bytes = 0
         self.zrtt.draining = True
         try:
@@ -2524,7 +2524,7 @@ struct QuicConnection(Movable):
 
     # ── Send path ────────────────────────────────────────────────────
 
-    def send(mut self, now: UInt64, mut out: List[List[UInt8]]) raises -> Int:
+    def send(mut self, now: UInt64, mut out: List[List[Byte]]) raises -> Int:
         """Build at most one datagram into `out`; returns 0 or 1.
 
         `out` is cleared (length reset, capacity kept) and reused across
@@ -2600,7 +2600,7 @@ struct QuicConnection(Movable):
         )
         self._scratch_plans = plans^
         for i in range(len(result)):
-            var dg = List[UInt8]()
+            var dg = List[Byte]()
             swap(dg, result[i])
             out.append(dg^)
         comptime if PROFILE_ACCEPT:
@@ -2628,7 +2628,7 @@ struct QuicConnection(Movable):
         var sent_records = List[SentStreamFrame]()
         swap(sent_records, self._scratch_sent_records)
         sent_records.clear()
-        var stream_payload = List[UInt8]()
+        var stream_payload = List[Byte]()
         swap(stream_payload, self._scratch_payload)
         stream_payload.clear()
         var ack_reserve = 0
@@ -2691,7 +2691,7 @@ struct QuicConnection(Movable):
         space_idx: Int,
         var frames: List[Frame],
         var sent_records: List[SentStreamFrame],
-        var stream_payload: List[UInt8],
+        var stream_payload: List[Byte],
         ack_committed: Bool,
         has_stream_data: Bool,
     ) raises -> PacketPlan:
@@ -2702,7 +2702,7 @@ struct QuicConnection(Movable):
                 has_control = True
                 break
         if has_control:
-            var wbuf = List[UInt8]()
+            var wbuf = List[Byte]()
             swap(wbuf, self._scratch_writer_buf)
             wbuf.clear()
             var writer = ByteWriter()
@@ -2725,7 +2725,7 @@ struct QuicConnection(Movable):
         closing: Bool,
         all_close_committed: Bool,
         now: UInt64,
-    ) raises -> List[List[UInt8]]:
+    ) raises -> List[List[Byte]]:
         """Allocate PNs, build+encrypt packets, coalesce into a datagram."""
         var pad_to = 0
         for ref plan in plans:
@@ -2736,7 +2736,7 @@ struct QuicConnection(Movable):
             elif (s == 0 or s == 1) and (self.state & CONN_ESTABLISHED) == 0:
                 pad_to = MAX_DATAGRAM_SIZE
         debug_assert(pad_to <= budget, "padding target exceeds the datagram budget")
-        var datagram = List[UInt8]()
+        var datagram = List[Byte]()
         swap(datagram, self._scratch_datagram)
         datagram.clear()
         for i in range(len(plans)):
@@ -2791,7 +2791,7 @@ struct QuicConnection(Movable):
             self.close.last_sent = now
         debug_assert(len(datagram) <= budget, "datagram exceeds its budget")
         self.bytes_sent += UInt64(len(datagram))
-        var datagrams = List[List[UInt8]](capacity=1)
+        var datagrams = List[List[Byte]](capacity=1)
         datagrams.append(datagram^)
         return datagrams^
 
@@ -2827,7 +2827,7 @@ struct QuicConnection(Movable):
             cc.is_transport = True
             cc.error_code = APPLICATION_ERROR
             cc.frame_type = UInt64(0)
-            cc.reason = List[UInt8](copy=self.close.pending.value().reason)
+            cc.reason = List[Byte](copy=self.close.pending.value().reason)
             return Frame.connection_close(cc)
         return Frame.connection_close(self.close.pending.value())
 
@@ -2874,7 +2874,7 @@ struct QuicConnection(Movable):
         mut self, space_idx: Int, now: UInt64,
         mut frames: List[Frame],
         mut sent_records: List[SentStreamFrame],
-        mut stream_payload: List[UInt8],
+        mut stream_payload: List[Byte],
         budget: Int,
     ) raises:
         """Append the non-ACK frames for one PN space within `budget` bytes.
@@ -2968,19 +2968,19 @@ struct QuicConnection(Movable):
                 if wl > self._max_app_payload():
                     raise "DATAGRAM frame of " + String(wl) + " bytes can never fit a packet"
                 break
-            var head = List[UInt8](copy=self.pending_outbound_datagrams[self._outbound_dg_head])
+            var head = List[Byte](copy=self.pending_outbound_datagrams[self._outbound_dg_head])
             self._outbound_dg_head += 1
             frames.append(Frame.datagram_with_len(head^))
             used += wl
         if self._outbound_dg_head >= len(self.pending_outbound_datagrams):
-            self.pending_outbound_datagrams = List[List[UInt8]]()
+            self.pending_outbound_datagrams = List[List[Byte]]()
             self._outbound_dg_head = 0
 
     def _build_app_frames(
         mut self,
         mut frames: List[Frame],
         mut sent_records: List[SentStreamFrame],
-        mut stream_payload: List[UInt8],
+        mut stream_payload: List[Byte],
         budget: Int,
         mut used: Int,
     ) raises:
@@ -3007,7 +3007,7 @@ struct QuicConnection(Movable):
             ncid.sequence = entry.sequence
             ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
             ncid.cid = CidBuf.from_span(Span(entry.cid))
-            ncid.stateless_reset_token = List[UInt8](copy=entry.reset_token)
+            ncid.stateless_reset_token = List[Byte](copy=entry.reset_token)
             var f = Frame.new_connection_id(ncid)
             var wl = f.wire_len()
             if used + wl > budget:
@@ -3070,7 +3070,7 @@ struct QuicConnection(Movable):
         space_idx: Int,
         pn: UInt64,
         pn_len: Int,
-        payload: List[UInt8],
+        payload: List[Byte],
         padding: Int = 0,
     ) raises:
         """Delegate to packet_builder.build_packet."""
@@ -3395,7 +3395,7 @@ struct QuicConnection(Movable):
         self.close.owed = True
         for s in range(3):
             self.spaces[s].ack_deadline = None
-        var reason_bytes = List[UInt8]()
+        var reason_bytes = List[Byte]()
         var reason_str_bytes = reason.as_bytes()
         var n = len(reason_str_bytes)
         if n > MAX_CLOSE_REASON_BYTES:
@@ -3413,7 +3413,7 @@ struct QuicConnection(Movable):
         """True if the handshake is complete and the connection is usable."""
         return (self.state & CONN_ESTABLISHED) != 0
 
-    def is_expected_dcid(self, dcid: Span[UInt8, _]) -> Bool:
+    def is_expected_dcid(self, dcid: Span[Byte, _]) -> Bool:
         """True if `dcid` matches either initial_dcid or local_cid.
 
         - `initial_dcid` is the client's random Initial DCID, used for
@@ -3480,7 +3480,7 @@ struct QuicConnection(Movable):
         return self.stream_map.open_stream(bidi)
 
     def send_stream_data(
-        mut self, stream_id: UInt64, data: Span[UInt8, _], fin: Bool
+        mut self, stream_id: UInt64, data: Span[Byte, _], fin: Bool
     ) raises:
         """Queue data for sending on a stream (and optionally mark FIN)."""
         var key = Int(stream_id)
@@ -3502,7 +3502,7 @@ struct QuicConnection(Movable):
     def send_h3_data(
         mut self,
         stream_id: UInt64,
-        app_payload: List[UInt8],
+        app_payload: List[Byte],
         fin: Bool,
     ) raises:
         """Write H3 DATA header + application payload as a single stream write.
@@ -3514,13 +3514,13 @@ struct QuicConnection(Movable):
         """
         var payload_len = len(app_payload)
         var hdr_len = 1 + varint_len(UInt64(payload_len))
-        var combined = List[UInt8](capacity=hdr_len + payload_len)
+        var combined = List[Byte](capacity=hdr_len + payload_len)
         # H3 DATA frame type = 0x00.
         combined.append(0x00)
         # Varint-encode the payload length directly into the buffer.
         var vl_size = varint_len(UInt64(payload_len))
         var vl_base = len(combined)
-        combined.resize(vl_base + vl_size, UInt8(0))
+        combined.resize(vl_base + vl_size, Byte(0))
         _ = varint_encode_at(combined, vl_base, UInt64(payload_len))
         # Bulk-copy the application payload.
         combined.extend(Span(app_payload))
@@ -3528,7 +3528,7 @@ struct QuicConnection(Movable):
 
     def recv_stream_data(
         mut self, stream_id: UInt64
-    ) raises -> Tuple[List[UInt8], Bool]:
+    ) raises -> Tuple[List[Byte], Bool]:
         """Read available contiguous bytes from a stream's recv buffer.
 
         Returns (bytes, fin_reached). Consumes FC credit for the drained bytes
@@ -3542,7 +3542,7 @@ struct QuicConnection(Movable):
         if not p[].recv_buf or not p[].fc_recv:
             raise "STREAM_STATE_ERROR: no recv side"
         var result = p[].recv_buf.value().read(p[].fin_offset)
-        var data = List[UInt8]()
+        var data = List[Byte]()
         swap(data, result[0])
         var fin_reached = result[1]
         var drained = UInt64(len(data))
@@ -3590,7 +3590,7 @@ struct QuicConnection(Movable):
         self.stream_map.remove_sendable(key)
         self.stream_map.mark_reset(key)
 
-    def send_datagram(mut self, payload: Span[UInt8, _]) raises -> Bool:
+    def send_datagram(mut self, payload: Span[Byte, _]) raises -> Bool:
         """RFC 9221 §5 — enqueue a QUIC DATAGRAM frame for the next 1-RTT flush.
 
         Returns True on enqueue success; False if any of the following hold:
@@ -3627,7 +3627,7 @@ struct QuicConnection(Movable):
             return False
         # Copy the payload so the caller's Span lifetime does not constrain
         # ours — outbound queues survive across `send()` boundaries.
-        var copy = List[UInt8]()
+        var copy = List[Byte]()
         for ref byte in payload:
             copy.append(byte)
         self.pending_outbound_datagrams.append(copy^)
@@ -3704,14 +3704,14 @@ struct QuicConnection(Movable):
 # ── Module-level helpers ─────────────────────────────────────────────
 
 
-def _generate_random_cid() raises -> List[UInt8]:
+def _generate_random_cid() raises -> List[Byte]:
     """Generate a random 8-byte connection ID via getrandom(2)."""
     var buf_owned = Owned[UInt8](8)
     var buf = buf_owned.ptr()
     var rc = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
     if rc != 8:
         raise "getrandom failed"
-    var cid = List[UInt8](capacity=8)
+    var cid = List[Byte](capacity=8)
     for i in range(8):
         cid.append(buf[unsafe_offset=i])
     # Keep buf_owned alive across the post-FFI `buf[i]` copy loop above.

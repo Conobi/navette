@@ -111,7 +111,7 @@ struct SessionSlot(Movable):
         else:
             self.h3.value().run_one(handle)
 
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         if self.kind == SLOT_H1:
             self.h1.value().feed(data)
         elif self.kind == SLOT_H2:
@@ -119,22 +119,22 @@ struct SessionSlot(Movable):
         else:
             self.h3.value().feed_datagram(data, UInt64(0))
 
-    def drain(mut self) raises -> List[UInt8]:
+    def drain(mut self) raises -> List[Byte]:
         if self.kind == SLOT_H1:
             return self.h1.value().drain()
         elif self.kind == SLOT_H2:
             return self.h2.value().drain()
-        # H3 uses datagrams (List[List[UInt8]]) — concatenate into flat buffer.
+        # H3 uses datagrams (List[List[Byte]]) — concatenate into flat buffer.
         # M6c's HttpCoroClient will use drain_datagrams() directly for proper
         # UDP framing; this flat drain is a fallback for uniform API.
-        var out = List[UInt8]()
+        var out = List[Byte]()
         var datagrams = self.h3.value().drain_datagrams(UInt64(0))
         for ref dg in datagrams:
             out.extend(dg.copy())
         return out^
 
     def feed_datagram(
-        mut self, data: Span[UInt8, _], now: UInt64
+        mut self, data: Span[Byte, _], now: UInt64
     ) raises:
         """Feed inbound bytes preserving QUIC datagram boundaries.
 
@@ -152,7 +152,7 @@ struct SessionSlot(Movable):
 
     def drain_datagrams(
         mut self, now: UInt64
-    ) raises -> List[List[UInt8]]:
+    ) raises -> List[List[Byte]]:
         """Drain outbound bytes preserving QUIC datagram boundaries.
 
         For H1/H2 returns a single-element list wrapping the whole flat
@@ -161,10 +161,10 @@ struct SessionSlot(Movable):
         each with the right boundary. `now` is the QUIC clock — pass
         microsecond monotonic time at the call site for correct PTO.
         """
-        var out = List[List[UInt8]]()
+        var out = List[List[Byte]]()
         if self.kind == SLOT_H3:
             return self.h3.value().drain_datagrams(now)
-        var stream: List[UInt8]
+        var stream: List[Byte]
         if self.kind == SLOT_H1:
             stream = self.h1.value().drain()
         else:

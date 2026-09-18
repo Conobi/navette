@@ -7,11 +7,11 @@ from navette.quic.codec import ByteReader
 from oracle.test_util import assert_true, assert_equal
 
 
-def hex_to_bytes(h: String) raises -> List[UInt8]:
+def hex_to_bytes(h: String) raises -> List[Byte]:
     """Convert a hex string to bytes. Must be even-length."""
     if h.byte_length() % 2 != 0:
         raise "hex_to_bytes: odd-length hex string"
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var bytes_view = h.as_bytes()
     for i in range(0, h.byte_length(), 2):
         var hi = bytes_view[i]

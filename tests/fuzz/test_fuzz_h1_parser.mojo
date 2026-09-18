@@ -24,7 +24,7 @@ from navette.h1.parser import try_parse_request as prod_try_parse_request
 from navette.h1.config import ParseConfig as ProdParseConfig
 
 
-def _check_byte_property(b: List[UInt8]) -> ObserveResult:
+def _check_byte_property(b: List[Byte]) -> ObserveResult:
     """Property: oracle and production agree on the parse VERDICT (accept vs reject)
     when both have committed. Production is a streaming/incremental parser: when
     it returns no request AND no error, the verdict is 'need more data' — that's
@@ -59,7 +59,7 @@ def _check_byte_property(b: List[UInt8]) -> ObserveResult:
     return ObserveResult(True, String(""))
 
 
-def _gen_request_grammar(mut rng: SplitMix64) -> List[UInt8]:
+def _gen_request_grammar(mut rng: SplitMix64) -> List[Byte]:
     """Construct a plausible HTTP/1.1 request: METHOD SP TARGET SP HTTP/1.1 CRLF + headers + CRLFCRLF."""
     var methods = List[String]()
     methods.append(String("GET"))
@@ -99,7 +99,7 @@ def _gen_request_grammar(mut rng: SplitMix64) -> List[UInt8]:
         hdrs += name + String(": ") + val + String("\r\n")
     var full = line + hdrs + String("\r\n")
     var bs = full.as_bytes()
-    var out = List[UInt8](capacity=len(bs))
+    var out = List[Byte](capacity=len(bs))
     for i in range(len(bs)):
         out.append(bs[i])
     return out^
@@ -151,7 +151,7 @@ def main() raises:
         if (not soak) and report.disagreements >= max_reports:
             break
         var strategy = Int(rng.next_below(UInt64(100)))
-        var b: List[UInt8]
+        var b: List[Byte]
         if strategy < 30:
             # random bytes
             b = random_bytes_geom(rng, mean_len=64, cap_len=4096)

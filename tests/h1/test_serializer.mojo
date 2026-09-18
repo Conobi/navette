@@ -12,7 +12,7 @@ from navette.h1.serializer import (
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
+def _bytes_to_string(data: List[Byte]) -> String:
     """Convert a byte list to a string for assertion messages."""
     var result = String()
     for i in range(len(data)):
@@ -20,7 +20,7 @@ def _bytes_to_string(data: List[UInt8]) -> String:
     return result^
 
 
-def _assert_bytes_eq(data: List[UInt8], expected: String, msg: String) raises:
+def _assert_bytes_eq(data: List[Byte], expected: String, msg: String) raises:
     """Assert that a byte buffer equals an expected string byte-for-byte."""
     var expected_bytes = expected.as_bytes()
     if len(data) != len(expected_bytes):
@@ -76,7 +76,7 @@ def test_serialize_get_request() raises:
 
 def test_serialize_post_request_with_body() raises:
     """POST with Content-Length body. Serializer inserts content-length."""
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     var msg = String("Hello, World!")
     var msg_bytes = msg.as_bytes()
     for i in range(len(msg_bytes)):
@@ -100,7 +100,7 @@ def test_serialize_200_response() raises:
     """200 OK with body and a user header."""
     var headers = Headers()
     headers.add("Content-Type", "text/plain")
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     var msg = String("OK")
     var msg_bytes = msg.as_bytes()
     for i in range(len(msg_bytes)):
@@ -140,7 +140,7 @@ def test_serialize_empty_reason() raises:
 
 def test_serialize_chunked_body_with_trailers() raises:
     """Body with trailers uses chunked transfer encoding."""
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     var msg = String("Hello")
     var msg_bytes = msg.as_bytes()
     for i in range(len(msg_bytes)):

@@ -188,7 +188,7 @@ struct ForwardingHandler(StreamHandler):
     var _method: String
     var _target: String
     var _headers: Headers
-    var _body: List[UInt8]
+    var _body: List[Byte]
     var _captured: Bool
     var _pending: List[_PendingForward]
 
@@ -198,7 +198,7 @@ struct ForwardingHandler(StreamHandler):
         self._method = String("GET")
         self._target = String("/")
         self._headers = Headers()
-        self._body = List[UInt8]()
+        self._body = List[Byte]()
         self._captured = False
         self._pending = List[_PendingForward]()
 
@@ -230,7 +230,7 @@ struct ForwardingHandler(StreamHandler):
         for i in range(len(req.headers)):
             hdrs.add(req.headers.name_at(i), req.headers.value_at(i))
         self._headers = hdrs^
-        self._body = List[UInt8]()
+        self._body = List[Byte]()
         self._captured = True
 
     def on_body_available(
@@ -601,7 +601,7 @@ def h3_inject_502(
     var headers = Headers()
     var body_text = String("502 Bad Gateway: upstream connect failed\n")
     var body_bytes = body_text.as_bytes()
-    var body = List[UInt8]()
+    var body = List[Byte]()
     for i in range(len(body_bytes)):
         body.append(body_bytes[i])
     headers.add("content-type", "text/plain; charset=utf-8")
@@ -681,7 +681,7 @@ def h3_handle_backend_recv(
         return out^
 
     var n = Int(result)
-    var chunk = List[UInt8](capacity=n)
+    var chunk = List[Byte](capacity=n)
     for i in range(n):
         chunk.append(ptr[].send_state.backend_recv_buf[i])
     ptr[].backend_tls.receive_data(Span(chunk))
@@ -742,7 +742,7 @@ def h3_handle_backend_recv(
         resp_headers.add(name, value)
     resp_headers.add("via", _VIA_H3)
 
-    var resp_body = List[UInt8]()
+    var resp_body = List[Byte]()
     for i in range(len(response.body)):
         var frame = response.body[i].copy()
         if frame.is_data():
@@ -784,14 +784,14 @@ def h3_handle_backend_send(
         registry.free_backend(backend_conn_id)
         return out^
 
-    ptr[].send_state.backend_send_buf = List[UInt8]()
+    ptr[].send_state.backend_send_buf = List[Byte]()
 
     if len(ptr[].send_state.backend_send_pending) > 0:
         var n_pending = len(ptr[].send_state.backend_send_pending)
-        var pending = List[UInt8](capacity=n_pending)
+        var pending = List[Byte](capacity=n_pending)
         for i in range(n_pending):
             pending.append(ptr[].send_state.backend_send_pending[i])
-        ptr[].send_state.backend_send_pending = List[UInt8]()
+        ptr[].send_state.backend_send_pending = List[Byte]()
         ptr[].send_state.backend_send_buf = pending^
         queue_backend_send(ptr[].send_state, out, backend_fd, backend_conn_id)
         return out^

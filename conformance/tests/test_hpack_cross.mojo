@@ -29,7 +29,7 @@ from oracle.stateful_vectors import load_states, py_has_key
 from std.python import Python, PythonObject
 
 
-def _wire_to_hex(wire: List[UInt8]) -> String:
+def _wire_to_hex(wire: List[Byte]) -> String:
     return hex_encode(wire)
 
 

@@ -30,7 +30,7 @@ struct BodyFrame(Copyable, Movable):
     Use data() / trailers() / error() accessors to read the payload.
     """
     var _tag: Int
-    var _data: List[UInt8]
+    var _data: List[Byte]
     var _headers: Headers
     var _error: Optional[StreamError]
 
@@ -40,7 +40,7 @@ struct BodyFrame(Copyable, Movable):
         out self,
         *,
         _tag: Int,
-        var _data: List[UInt8],
+        var _data: List[Byte],
         var _headers: Headers,
         var _error: Optional[StreamError],
     ):
@@ -69,7 +69,7 @@ struct BodyFrame(Copyable, Movable):
     # --- Factory methods ---
 
     @staticmethod
-    def data(var bytes: List[UInt8]) -> Self:
+    def data(var bytes: List[Byte]) -> Self:
         """Construct a Data body frame from a byte buffer."""
         return Self(
             _tag=_TAG_DATA,
@@ -83,7 +83,7 @@ struct BodyFrame(Copyable, Movable):
         """Construct a Trailers body frame from trailing headers."""
         return Self(
             _tag=_TAG_TRAILERS,
-            _data=List[UInt8](),
+            _data=List[Byte](),
             _headers=headers^,
             _error=Optional[StreamError](),
         )
@@ -93,7 +93,7 @@ struct BodyFrame(Copyable, Movable):
         """Construct an End terminal body frame."""
         return Self(
             _tag=_TAG_END,
-            _data=List[UInt8](),
+            _data=List[Byte](),
             _headers=Headers(),
             _error=Optional[StreamError](),
         )
@@ -103,7 +103,7 @@ struct BodyFrame(Copyable, Movable):
         """Construct an Error terminal body frame."""
         return Self(
             _tag=_TAG_ERROR,
-            _data=List[UInt8](),
+            _data=List[Byte](),
             _headers=Headers(),
             _error=Optional[StreamError](err^),
         )
@@ -128,7 +128,7 @@ struct BodyFrame(Copyable, Movable):
 
     # --- Accessors ---
 
-    def data(ref self) -> ref [self._data] List[UInt8]:
+    def data(ref self) -> ref [self._data] List[Byte]:
         """Access the data bytes. Only valid when is_data() is True."""
         return self._data
 

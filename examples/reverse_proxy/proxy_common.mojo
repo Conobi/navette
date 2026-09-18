@@ -128,28 +128,28 @@ struct ConnSendState(Movable):
     instead of ~10 individual `mut` parameters for the same fields.
     """
 
-    var client_recv_buf: List[UInt8]
-    var backend_recv_buf: List[UInt8]
-    var client_send_buf: List[UInt8]
-    var backend_send_buf: List[UInt8]
-    var client_send_pending: List[UInt8]
-    var backend_send_pending: List[UInt8]
+    var client_recv_buf: List[Byte]
+    var backend_recv_buf: List[Byte]
+    var client_send_buf: List[Byte]
+    var backend_send_buf: List[Byte]
+    var client_send_pending: List[Byte]
+    var backend_send_pending: List[Byte]
     var client_send_in_flight: Bool
     var backend_send_in_flight: Bool
     var client_recv_in_flight: Bool
     var backend_recv_in_flight: Bool
 
     def __init__(out self):
-        self.client_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
+        self.client_recv_buf = List[Byte](capacity=_RECV_BUF_SIZE)
         for _ in range(_RECV_BUF_SIZE):
             self.client_recv_buf.append(0)
-        self.backend_recv_buf = List[UInt8](capacity=_RECV_BUF_SIZE)
+        self.backend_recv_buf = List[Byte](capacity=_RECV_BUF_SIZE)
         for _ in range(_RECV_BUF_SIZE):
             self.backend_recv_buf.append(0)
-        self.client_send_buf = List[UInt8]()
-        self.backend_send_buf = List[UInt8]()
-        self.client_send_pending = List[UInt8]()
-        self.backend_send_pending = List[UInt8]()
+        self.client_send_buf = List[Byte]()
+        self.backend_send_buf = List[Byte]()
+        self.client_send_pending = List[Byte]()
+        self.backend_send_pending = List[Byte]()
         self.client_send_in_flight = False
         self.backend_send_in_flight = False
         self.client_recv_in_flight = False
@@ -268,7 +268,7 @@ def stage_client_send(
     mut out_submits: List[PendingSubmit],
     client_fd: Int32,
     conn_id: UInt64,
-    var ct: List[UInt8],
+    var ct: List[Byte],
 ):
     """Stage `ct` to be sent to the client.
 
@@ -292,7 +292,7 @@ def stage_backend_send(
     mut out_submits: List[PendingSubmit],
     backend_fd: Int32,
     conn_id: UInt64,
-    var ct: List[UInt8],
+    var ct: List[Byte],
 ):
     """Stage `ct` to be sent to the backend (see `stage_client_send`)."""
     if len(ct) == 0:
@@ -310,7 +310,7 @@ def stage_backend_send(
 # ---------------------------------------------------------------------------
 
 
-def _read_file(path: String) raises -> List[UInt8]:
+def _read_file(path: String) raises -> List[Byte]:
     var fh = FileHandle(path, "r")
     var bytes = fh.read_bytes()
     fh.close()
@@ -390,7 +390,7 @@ def make_error_response(code: Int, reason: String, body_text: String) -> Respons
     headers.add("content-type", "text/plain; charset=utf-8")
     headers.add("content-length", String(len(body_bytes)))
     headers.add("connection", "close")
-    var body_bytes_list = List[UInt8]()
+    var body_bytes_list = List[Byte]()
     for i in range(len(body_bytes)):
         body_bytes_list.append(body_bytes[i])
     var body = List[BodyFrame]()

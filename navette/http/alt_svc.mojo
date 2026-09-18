@@ -393,7 +393,7 @@ struct AltSvcCache(Movable):
 
     def _load_one_line(
         mut self,
-        b: Span[UInt8, _],
+        b: Span[Byte, _],
         start: Int,
         end: Int,
         now: UInt,

@@ -49,7 +49,7 @@ struct _ClientCtx(Movable):
     var handle_id: UInt64
     var status_code: Int
     var headers: Headers
-    var body_data: List[UInt8]
+    var body_data: List[Byte]
     var complete: Bool
     var errored: Bool
     var error_code: UInt32
@@ -58,7 +58,7 @@ struct _ClientCtx(Movable):
         self.handle_id = handle_id
         self.status_code = -1
         self.headers = Headers()
-        self.body_data = List[UInt8]()
+        self.body_data = List[Byte]()
         self.complete = False
         self.errored = False
         self.error_code = UInt32(0)
@@ -84,7 +84,7 @@ struct H2Session(Session):
     concurrent streams (multiplexed)."""
 
     var _conn: H2Connection
-    var _outbuf: List[UInt8]
+    var _outbuf: List[Byte]
     var _next_handle_id: UInt64
     var _stream_ctxs: Dict[Int, PtrBox[_ClientCtx]]
     var _handle_to_stream: Dict[Int, Int]
@@ -98,7 +98,7 @@ struct H2Session(Session):
             config=h2_production_config(client_side=True),
         )
         self._conn.initiate_connection()
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._next_handle_id = UInt64(0)
         self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
@@ -108,7 +108,7 @@ struct H2Session(Session):
         """Create with a custom H2Config (client-side)."""
         self._conn = H2Connection(client_side=True, config=config^)
         self._conn.initiate_connection()
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._next_handle_id = UInt64(0)
         self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
@@ -214,7 +214,7 @@ struct H2Session(Session):
             if len(ctx.body_data) > 0:
                 var body_copy = ctx.body_data^
                 resp.body.append(BodyFrame.data(body_copy^))
-                ctx.body_data = List[UInt8]()
+                ctx.body_data = List[Byte]()
             ctx.headers = Headers()
             handle._set_response(resp^)
             handle._mark_complete()
@@ -280,24 +280,24 @@ struct H2Session(Session):
             self._conn.send_data(stream_id, bytes_copy^, end_stream=False)
             self._flush_outbound()
         elif frame.is_end():
-            self._conn.send_data(stream_id, List[UInt8](), end_stream=True)
+            self._conn.send_data(stream_id, List[Byte](), end_stream=True)
             self._flush_outbound()
 
     # --- Transport bridging API ---------------------------------------------
 
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         """Feed inbound transport bytes, dispatch events."""
-        var data_list = List[UInt8]()
+        var data_list = List[Byte]()
         for ref byte in data:
             data_list.append(byte)
         var events = self._conn.receive_data(data_list)
         self._dispatch_client_events(events)
         self._flush_outbound()
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         """Drain queued outbound bytes for the transport to write."""
         var out = self._outbuf^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         return out^
 
     # --- Internal -----------------------------------------------------------

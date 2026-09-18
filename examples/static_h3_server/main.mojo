@@ -42,7 +42,7 @@ from boucle import WatchLoop
 struct StaticHandler(StreamHandler):
     """Responds 200 with a pre-allocated payload on every request."""
 
-    var payload: List[UInt8]
+    var payload: List[Byte]
 
     def __init__(out self):
         var size = 1024
@@ -52,7 +52,7 @@ struct StaticHandler(StreamHandler):
                 size = atol(size_str)
         except:
             pass
-        self.payload = List[UInt8](capacity=size)
+        self.payload = List[Byte](capacity=size)
         for _ in range(size):
             self.payload.append(UInt8(0x41))
 
@@ -69,7 +69,7 @@ struct StaticHandler(StreamHandler):
         var hdrs = Headers()
         hdrs.set(String("content-type"), String("application/octet-stream"))
         resp.send_status(StatusCode(200), hdrs^)
-        var data = List[UInt8](copy=self.payload)
+        var data = List[Byte](copy=self.payload)
         _ = resp.try_send_body(BodyFrame.data(data^))
         _ = resp.try_send_body(BodyFrame.end())
 

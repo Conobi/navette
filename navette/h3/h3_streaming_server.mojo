@@ -253,7 +253,7 @@ def next_chunk(
 def write_chunk(
     ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_],
     mut yld: H3StreamingYielder,
-    var bytes: List[UInt8],
+    var bytes: List[Byte],
 ) raises:
     """Buffer a body chunk for the adapter to send. Does NOT suspend on
     backpressure — H3's send_data does not surface WouldBlock; QUIC's
@@ -447,7 +447,7 @@ struct H3StreamingServer(Movable):
     var _h3: H3Connection
     var _handler_fn: H3StreamingHandlerFn
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
-    var _outbuf: List[List[UInt8]]
+    var _outbuf: List[List[Byte]]
     var _streams: Dict[Int, PtrBox[H3StreamingCtx]]
     var _ctx_pool: H3StreamingCtxPool
     var _coro_pool: StackPool
@@ -488,7 +488,7 @@ struct H3StreamingServer(Movable):
         self._h3 = H3Connection.server(quic^)
         self._handler_fn = handler_fn
         self._extra_data = extra_data
-        self._outbuf = List[List[UInt8]]()
+        self._outbuf = List[List[Byte]]()
         self._streams = Dict[Int, PtrBox[H3StreamingCtx]]()
         self._ctx_pool = H3StreamingCtxPool(capacity=4)
         self._coro_pool = StackPool(capacity=4)
@@ -528,7 +528,7 @@ struct H3StreamingServer(Movable):
             self._drain_responses(now)
         self._flush_outbound(now)
 
-    def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
+    def feed_datagram(mut self, data: Span[Byte, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram. Dispatches H3 events and drains
         pending response data."""
         self._h3.feed_datagram(data, now)
@@ -537,10 +537,10 @@ struct H3StreamingServer(Movable):
             self._drain_responses(now)
         self._flush_outbound(now)
 
-    def drain(mut self) -> List[List[UInt8]]:
+    def drain(mut self) -> List[List[Byte]]:
         """Drain queued outbound QUIC datagrams for the transport to write."""
         var out = self._outbuf^
-        self._outbuf = List[List[UInt8]]()
+        self._outbuf = List[List[Byte]]()
         return out^
 
     def should_close(self) -> Bool:
@@ -813,7 +813,7 @@ struct H3StreamingServer(Movable):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
-        var data_copy = List[UInt8](copy=ev.data)
+        var data_copy = List[Byte](copy=ev.data)
         ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
         ctx_ptr.unsafe_write(ctx^)
         self._resume_stream(sid)
@@ -928,7 +928,7 @@ struct H3StreamingServer(Movable):
                         pass
                 elif f.is_end():
                     try:
-                        self._h3.send_data(UInt64(sid), List[UInt8](), True)
+                        self._h3.send_data(UInt64(sid), List[Byte](), True)
                     except:
                         pass
                     ctx.response_ended = True

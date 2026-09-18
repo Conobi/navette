@@ -169,7 +169,7 @@ def _connect_udp_resolved(host: String, port: Int) raises -> OwnedHandle:
     return udp_connect(addrs[len(addrs) - 1])
 
 
-def _udp_send(fd: Int32, data: List[UInt8]) raises:
+def _udp_send(fd: Int32, data: List[Byte]) raises:
     """Send a single UDP datagram."""
     if len(data) == 0:
         return
@@ -182,11 +182,11 @@ def _udp_send(fd: Int32, data: List[UInt8]) raises:
         raise "send(UDP) returned " + String(rc)
 
 
-def _udp_recv(fd: Int32) raises -> List[UInt8]:
+def _udp_recv(fd: Int32) raises -> List[Byte]:
     """Receive a single UDP datagram (non-blocking attempt with MSG_DONTWAIT)."""
     var buf = _heap_alloc[UInt8](65536)
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0x40))  # MSG_DONTWAIT
-    var result = List[UInt8]()
+    var result = List[Byte]()
     if rc > 0:
         for i in range(rc):
             result.append(buf[i])
@@ -194,7 +194,7 @@ def _udp_recv(fd: Int32) raises -> List[UInt8]:
     return result^
 
 
-def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
+def _udp_recv_blocking(fd: Int32) raises -> List[Byte]:
     """Receive a single UDP datagram.
 
     Blocks for up to the socket's `SO_RCVTIMEO` (set per-call site via
@@ -207,7 +207,7 @@ def _udp_recv_blocking(fd: Int32) raises -> List[UInt8]:
     """
     var buf = _heap_alloc[UInt8](65536)
     var rc = external_call["recv", Int](fd, buf, 65536, Int32(0))
-    var result = List[UInt8]()
+    var result = List[Byte]()
     if rc > 0:
         for i in range(rc):
             result.append(buf[i])
@@ -243,8 +243,8 @@ def _set_recv_timeout_ms(fd: Int32, ms: Int) raises:
         raise "setsockopt(SO_RCVTIMEO) failed: rc=" + String(Int(rc))
 
 
-def _send_all(fd: Int32, data: List[UInt8]) raises:
-    var remaining = List[UInt8]()
+def _send_all(fd: Int32, data: List[Byte]) raises:
+    var remaining = List[Byte]()
     for i in range(len(data)):
         remaining.append(data[i])
     while len(remaining) > 0:
@@ -256,16 +256,16 @@ def _send_all(fd: Int32, data: List[UInt8]) raises:
         buf.free()
         if rc <= 0:
             raise "send() returned " + String(rc)
-        var next = List[UInt8]()
+        var next = List[Byte]()
         for i in range(rc, m):
             next.append(remaining[i])
         remaining = next^
 
 
-def _recv_some(fd: Int32) raises -> List[UInt8]:
+def _recv_some(fd: Int32) raises -> List[Byte]:
     var buf = _heap_alloc[UInt8](_RECV_BUF)
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
-    var result = List[UInt8]()
+    var result = List[Byte]()
     if rc > 0:
         for i in range(rc):
             result.append(buf[i])
@@ -286,10 +286,10 @@ def _tls_send(fd: Int32, mut tls: TlsConnection) raises:
         _send_all(fd, ct)
 
 
-def _tls_recv(fd: Int32, mut tls: TlsConnection) raises -> List[UInt8]:
+def _tls_recv(fd: Int32, mut tls: TlsConnection) raises -> List[Byte]:
     var raw = _recv_some(fd)
     if len(raw) == 0:
-        return List[UInt8]()
+        return List[Byte]()
     tls.receive_data(Span(raw))
     _tls_send(fd, tls)
     return tls.drain_plaintext()
@@ -532,7 +532,7 @@ def _build_request(args: CliArgs, parsed: ParsedUrl) raises -> Request:
 
     var body: RequestBody
     if args.body:
-        var body_bytes = List[UInt8]()
+        var body_bytes = List[Byte]()
         body_bytes.extend(args.body.as_bytes())
         body = RequestBody.buffered(body_bytes^)
     else:
@@ -718,7 +718,7 @@ def _request_via_h3(
     # The QUIC stack handles its own PTO-driven retransmits as long as
     # we keep calling send(now) with the current clock each iteration.
     var hs_deadline = _monotonic_ms() + UInt64(3000)
-    var send_buf = List[List[UInt8]](capacity=1)
+    var send_buf = List[List[Byte]](capacity=1)
     while not quic.is_established():
         if _monotonic_ms() > hs_deadline:
             raise (
@@ -1026,7 +1026,7 @@ def main() raises:
     var t_total = result.t_total
 
     # 6. Content-Encoding decoding
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     for i in range(len(resp.body)):
         var frame = BodyFrame(copy=resp.body[i])
         if frame.is_data():

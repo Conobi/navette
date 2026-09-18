@@ -113,7 +113,7 @@ def test_cross_data_flow_controlled_length(states: PythonObject) raises:
     headers.append(Header(":authority", "example.com"))
     client.send_headers(UInt32(1), headers^, end_stream=False)
     _ = client.data_to_send()
-    var body = List[UInt8]()
+    var body = List[Byte]()
     for _ in range(100):
         body.append(UInt8(0x41))
     client.send_data(UInt32(1), body, end_stream=True)
@@ -174,7 +174,7 @@ def test_cross_response_round_trip(states: PythonObject) raises:
     resp_headers.append(Header(":status", "200"))
     resp_headers.append(Header("content-type", "text/plain"))
     server.send_headers(UInt32(1), resp_headers^, end_stream=False)
-    var resp_body = List[UInt8]()
+    var resp_body = List[Byte]()
     resp_body.append(UInt8(0x68))
     resp_body.append(UInt8(0x65))
     resp_body.append(UInt8(0x6C))

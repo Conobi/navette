@@ -14,15 +14,15 @@ comptime MAX_PENDING_FRAGMENTS: Int = 8
 
 struct CryptoFragment(Copyable, Movable):
     var offset: UInt64
-    var data: List[UInt8]
+    var data: List[Byte]
 
-    def __init__(out self, offset: UInt64, data: List[UInt8]):
+    def __init__(out self, offset: UInt64, data: List[Byte]):
         self.offset = offset
-        self.data = List[UInt8](copy=data)
+        self.data = List[Byte](copy=data)
 
     def __init__(out self, *, copy: Self):
         self.offset = copy.offset
-        self.data = List[UInt8](copy=copy.data)
+        self.data = List[Byte](copy=copy.data)
 
     def __init__(out self, *, deinit move: Self):
         self.offset = move.offset
@@ -39,35 +39,35 @@ struct CryptoStream(Copyable, Movable):
     the buffer per frame.
     """
     var recv_offset: UInt64
-    var recv_buf: List[UInt8]
+    var recv_buf: List[Byte]
     # Out-of-order fragments awaiting a contiguous predecessor, fixed
     # capacity; `pending_fragments_len` tracks the valid prefix.
     var pending_fragments: InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS]
     var pending_fragments_len: Int
     var send_offset: UInt64
-    var send_buf: List[UInt8]
+    var send_buf: List[Byte]
     var sent_cursor: Int
 
     def __init__(out self):
         self.recv_offset = UInt64(0)
-        self.recv_buf = List[UInt8]()
+        self.recv_buf = List[Byte]()
         self.pending_fragments = InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS](
-            fill=CryptoFragment(UInt64(0), List[UInt8]())
+            fill=CryptoFragment(UInt64(0), List[Byte]())
         )
         self.pending_fragments_len = 0
         self.send_offset = UInt64(0)
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
         self.sent_cursor = 0
 
     def __init__(out self, *, copy: Self):
         self.recv_offset = copy.recv_offset
-        self.recv_buf = List[UInt8](copy=copy.recv_buf)
+        self.recv_buf = List[Byte](copy=copy.recv_buf)
         self.pending_fragments = InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS](
             copy=copy.pending_fragments
         )
         self.pending_fragments_len = copy.pending_fragments_len
         self.send_offset = copy.send_offset
-        self.send_buf = List[UInt8](copy=copy.send_buf)
+        self.send_buf = List[Byte](copy=copy.send_buf)
         self.sent_cursor = copy.sent_cursor
 
     def __init__(out self, *, deinit move: Self):
@@ -79,7 +79,7 @@ struct CryptoStream(Copyable, Movable):
         self.send_buf = move.send_buf^
         self.sent_cursor = move.sent_cursor
 
-    def receive(mut self, offset: UInt64, data: Span[UInt8, _]) raises:
+    def receive(mut self, offset: UInt64, data: Span[Byte, _]) raises:
         """Reassemble incoming CRYPTO frame data at the given offset."""
         var data_len = UInt64(len(data))
         if data_len == 0:
@@ -108,7 +108,7 @@ struct CryptoStream(Copyable, Movable):
         # Out-of-order: store as pending fragment.
         if self.pending_fragments_len >= MAX_PENDING_FRAGMENTS:
             raise "CRYPTO pending fragment buffer full"
-        var frag_data = List[UInt8](capacity=len(data))
+        var frag_data = List[Byte](capacity=len(data))
         for ref byte in data:
             frag_data.append(byte)
         self.pending_fragments[self.pending_fragments_len] = CryptoFragment(offset, frag_data^)
@@ -138,10 +138,10 @@ struct CryptoStream(Copyable, Movable):
             if not merged:
                 break
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         """Return and consume contiguous bytes from recv_buf."""
         var result = self.recv_buf^
-        self.recv_buf = List[UInt8]()
+        self.recv_buf = List[Byte]()
         self.recv_offset += UInt64(len(result))
         return result^
 
@@ -149,7 +149,7 @@ struct CryptoStream(Copyable, Movable):
         """True if there are contiguous bytes ready to drain."""
         return len(self.recv_buf) > 0
 
-    def write(mut self, data: Span[UInt8, _]):
+    def write(mut self, data: Span[Byte, _]):
         """Append data to the outgoing send buffer for CRYPTO frames."""
         for ref byte in data:
             self.send_buf.append(byte)
@@ -159,7 +159,7 @@ struct CryptoStream(Copyable, Movable):
         if self.sent_cursor == 0:
             return
         var remaining = len(self.send_buf) - self.sent_cursor
-        var new_buf = List[UInt8](capacity=remaining)
+        var new_buf = List[Byte](capacity=remaining)
         for i in range(self.sent_cursor, len(self.send_buf)):
             new_buf.append(self.send_buf[i])
         self.send_buf = new_buf^
@@ -181,18 +181,18 @@ struct CryptoStream(Copyable, Movable):
             return None
         var avail = len(self.send_buf) - self.sent_cursor
         var chunk_size = avail if avail < max_data else max_data
-        var chunk = List[UInt8](capacity=chunk_size)
+        var chunk = List[Byte](capacity=chunk_size)
         for i in range(chunk_size):
             chunk.append(self.send_buf[self.sent_cursor + i])
         var frame = CryptoFrame(self.send_offset + UInt64(self.sent_cursor), chunk^)
         self.sent_cursor += chunk_size
         if self.sent_cursor == len(self.send_buf):
             self.send_offset += UInt64(self.sent_cursor)
-            self.send_buf = List[UInt8]()
+            self.send_buf = List[Byte]()
             self.sent_cursor = 0
         return frame^
 
-    def requeue(mut self, offset: UInt64, data: Span[UInt8, _]):
+    def requeue(mut self, offset: UInt64, data: Span[Byte, _]):
         """Re-queue CRYPTO data for retransmission at its original offset.
 
         Compacts the emitted prefix first. If send_buf is then empty, sets
@@ -203,7 +203,7 @@ struct CryptoStream(Copyable, Movable):
         self._compact_sent()
         if len(self.send_buf) == 0:
             self.send_offset = offset
-            self.send_buf = List[UInt8](capacity=len(data))
+            self.send_buf = List[Byte](capacity=len(data))
             for ref byte in data:
                 self.send_buf.append(byte)
             return
@@ -214,7 +214,7 @@ struct CryptoStream(Copyable, Movable):
         if offset < self.send_offset:
             # New data starts earlier -- replace entirely.
             self.send_offset = offset
-            self.send_buf = List[UInt8](capacity=len(data))
+            self.send_buf = List[Byte](capacity=len(data))
             for ref byte in data:
                 self.send_buf.append(byte)
         elif offset <= current_end:
@@ -233,7 +233,7 @@ struct CryptoStream(Copyable, Movable):
             var chunk_size = len(self.send_buf) - pos
             if chunk_size > max_frame_size:
                 chunk_size = max_frame_size
-            var chunk = List[UInt8](capacity=chunk_size)
+            var chunk = List[Byte](capacity=chunk_size)
             for i in range(chunk_size):
                 chunk.append(self.send_buf[pos + i])
             frames.append(CryptoFrame(offset, chunk^))
@@ -247,7 +247,7 @@ struct CryptoStream(Copyable, Movable):
         var advance = Int(bytes)
         if advance > len(self.send_buf):
             advance = len(self.send_buf)
-        var new_buf = List[UInt8](capacity=len(self.send_buf) - advance)
+        var new_buf = List[Byte](capacity=len(self.send_buf) - advance)
         for i in range(advance, len(self.send_buf)):
             new_buf.append(self.send_buf[i])
         self.send_buf = new_buf^

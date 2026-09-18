@@ -104,14 +104,14 @@ struct RecvBuf(Copyable, Movable):
     # seg_data[i] is the assembled bytes for that contiguous run.
     # Segments are kept sorted by seg_offsets and never overlap.
     var seg_offsets: List[UInt64]
-    var seg_data: List[List[UInt8]]
+    var seg_data: List[List[Byte]]
     var read_offset: UInt64             # next byte to deliver
     var max_gaps: UInt64                # gap count limit
     var total_received: UInt64          # total distinct bytes received (no gaps)
 
     def __init__(out self, recv_window: UInt64):
         self.seg_offsets = List[UInt64]()
-        self.seg_data = List[List[UInt8]]()
+        self.seg_data = List[List[Byte]]()
         self.read_offset = UInt64(0)
         self.total_received = UInt64(0)
         # max_gaps = max(64, recv_window // 512)
@@ -123,7 +123,7 @@ struct RecvBuf(Copyable, Movable):
 
     def __init__(out self, *, copy: Self):
         self.seg_offsets = List[UInt64](copy=copy.seg_offsets)
-        self.seg_data = List[List[UInt8]](copy=copy.seg_data)
+        self.seg_data = List[List[Byte]](copy=copy.seg_data)
         self.read_offset = copy.read_offset
         self.max_gaps = copy.max_gaps
         self.total_received = copy.total_received
@@ -157,7 +157,7 @@ struct RecvBuf(Copyable, Movable):
     def write(
         mut self,
         offset: UInt64,
-        data: Span[UInt8, _],
+        data: Span[Byte, _],
         fin: Bool,
         mut fin_offset: Optional[UInt64],
     ) raises -> UInt64:
@@ -256,7 +256,7 @@ struct RecvBuf(Copyable, Movable):
             return False
         return True
 
-    def _insert(mut self, offset: UInt64, data: Span[UInt8, _]):
+    def _insert(mut self, offset: UInt64, data: Span[Byte, _]):
         """Insert [offset, offset+len(data)) with accept-first-copy semantics.
 
         Merges overlapping and adjacent segments, preserving existing data.
@@ -299,7 +299,7 @@ struct RecvBuf(Copyable, Movable):
                     return
         elif len(self.seg_offsets) == 0:
             # Empty buffer — first segment
-            var new_seg = List[UInt8](capacity=len(clamped))
+            var new_seg = List[Byte](capacity=len(clamped))
             new_seg.extend(clamped)
             self.seg_offsets.append(new_start)
             self.seg_data.append(new_seg^)
@@ -321,9 +321,9 @@ struct RecvBuf(Copyable, Movable):
         else:
             self._insert_merge(new_start, new_end, clamped, first_affected, last_affected)
 
-    def _insert_gap(mut self, new_start: UInt64, data: Span[UInt8, _]):
+    def _insert_gap(mut self, new_start: UInt64, data: Span[Byte, _]):
         """Insert non-overlapping segment at sorted position."""
-        var new_seg = List[UInt8](capacity=len(data))
+        var new_seg = List[Byte](capacity=len(data))
         new_seg.extend(data)
         var insert_pos = len(self.seg_offsets)
         for i in range(len(self.seg_offsets)):
@@ -331,14 +331,14 @@ struct RecvBuf(Copyable, Movable):
                 insert_pos = i
                 break
         var new_offsets = List[UInt64]()
-        var new_segs = List[List[UInt8]]()
+        var new_segs = List[List[Byte]]()
         for i in range(len(self.seg_offsets)):
             if i == insert_pos:
                 new_offsets.append(new_start)
                 new_segs.append(new_seg^)
-                new_seg = List[UInt8]()
+                new_seg = List[Byte]()
             new_offsets.append(self.seg_offsets[i])
-            new_segs.append(List[UInt8](copy=self.seg_data[i]))
+            new_segs.append(List[Byte](copy=self.seg_data[i]))
         if insert_pos == len(self.seg_offsets):
             new_offsets.append(new_start)
             new_segs.append(new_seg^)
@@ -349,7 +349,7 @@ struct RecvBuf(Copyable, Movable):
         mut self,
         new_start: UInt64,
         new_end: UInt64,
-        data: Span[UInt8, _],
+        data: Span[Byte, _],
         first_affected: Int,
         last_affected: Int,
     ):
@@ -362,9 +362,9 @@ struct RecvBuf(Copyable, Movable):
             merged_end = self._seg_end(last_affected)
 
         var merged_len = Int(merged_end - merged_start)
-        var merged = List[UInt8](capacity=merged_len)
+        var merged = List[Byte](capacity=merged_len)
         for _ in range(merged_len):
-            merged.append(UInt8(0))
+            merged.append(Byte(0))
 
         # Lay down new data as the base.
         var dst_base = Int(new_start - merged_start)
@@ -382,28 +382,28 @@ struct RecvBuf(Copyable, Movable):
 
         # Rebuild seg lists replacing first..last with the merged segment.
         var new_offsets = List[UInt64]()
-        var new_segs = List[List[UInt8]]()
+        var new_segs = List[List[Byte]]()
         for i in range(len(self.seg_offsets)):
             if i < first_affected:
                 new_offsets.append(self.seg_offsets[i])
-                new_segs.append(List[UInt8](copy=self.seg_data[i]))
+                new_segs.append(List[Byte](copy=self.seg_data[i]))
             elif i == first_affected:
                 new_offsets.append(merged_start)
                 new_segs.append(merged^)
-                merged = List[UInt8]()
+                merged = List[Byte]()
             elif i > last_affected:
                 new_offsets.append(self.seg_offsets[i])
-                new_segs.append(List[UInt8](copy=self.seg_data[i]))
+                new_segs.append(List[Byte](copy=self.seg_data[i]))
         self.seg_offsets = new_offsets^
         self.seg_data = new_segs^
 
-    def read(mut self, fin_offset: Optional[UInt64]) -> Tuple[List[UInt8], Bool]:
+    def read(mut self, fin_offset: Optional[UInt64]) -> Tuple[List[Byte], Bool]:
         """Drain contiguous bytes starting from read_offset.
 
         Returns (bytes, fin_reached). fin_reached is True when all bytes up to
         fin_offset have been delivered and read_offset == fin_offset.
         """
-        var result = List[UInt8]()
+        var result = List[Byte]()
 
         if len(self.seg_offsets) == 0:
             if fin_offset:
@@ -423,7 +423,7 @@ struct RecvBuf(Copyable, Movable):
         var skip = Int(self.read_offset - self.seg_offsets[0])
         var n = Int(deliver_end - self.read_offset)
 
-        result = List[UInt8](capacity=n)
+        result = List[Byte](capacity=n)
         for i in range(skip, skip + n):
             result.append(self.seg_data[0][i])
 
@@ -470,7 +470,7 @@ struct SendBuf(Copyable, Movable):
     Tracks outgoing data, framing progress, and acknowledgement.
     """
 
-    var data: List[UInt8]
+    var data: List[Byte]
     var offset: UInt64              # byte offset of data[0] in the stream
     var unsent_offset: UInt64       # first unsent byte (absolute)
     var acked_offset: UInt64        # contiguous ACKed bytes from stream start
@@ -480,7 +480,7 @@ struct SendBuf(Copyable, Movable):
     var read_cursor: Int
 
     def __init__(out self):
-        self.data = List[UInt8]()
+        self.data = List[Byte]()
         self.offset = UInt64(0)
         self.unsent_offset = UInt64(0)
         self.acked_offset = UInt64(0)
@@ -490,7 +490,7 @@ struct SendBuf(Copyable, Movable):
         self.read_cursor = 0
 
     def __init__(out self, *, copy: Self):
-        self.data = List[UInt8](copy=copy.data)
+        self.data = List[Byte](copy=copy.data)
         self.offset = copy.offset
         self.unsent_offset = copy.unsent_offset
         self.acked_offset = copy.acked_offset
@@ -509,7 +509,7 @@ struct SendBuf(Copyable, Movable):
         self.fin_acked = move.fin_acked
         self.read_cursor = move.read_cursor
 
-    def write(mut self, new_data: Span[UInt8, _], set_fin: Bool) raises:
+    def write(mut self, new_data: Span[Byte, _], set_fin: Bool) raises:
         """Append data to the outgoing buffer and optionally set the FIN flag."""
         if self.fin and len(new_data) > 0:
             raise "STREAM_STATE_ERROR: write after FIN queued"
@@ -550,7 +550,7 @@ struct SendBuf(Copyable, Movable):
         var include_fin = t[2]
 
         var buf_start = self.read_cursor + Int(frame_start - self.offset)
-        var frame_data = List[UInt8](capacity=chunk_size)
+        var frame_data = List[Byte](capacity=chunk_size)
         frame_data.extend(Span(self.data)[buf_start : buf_start + chunk_size])
 
         var frame = StreamFrame(stream_id, frame_start, frame_data^, include_fin)
@@ -587,7 +587,7 @@ struct SendBuf(Copyable, Movable):
 
         return Tuple(frame_start, chunk_size, include_fin)
 
-    def data_span(self, frame_offset: UInt64, chunk_size: Int) -> Span[UInt8, origin_of(self.data)]:
+    def data_span(self, frame_offset: UInt64, chunk_size: Int) -> Span[Byte, origin_of(self.data)]:
         """Return a view of the send buffer for the given frame region.
 
         Call after prepare_frame to read data without copying.

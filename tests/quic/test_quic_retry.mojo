@@ -20,25 +20,25 @@ from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 # --- Helpers ---
 
 
-def _make_secret() -> List[UInt8]:
+def _make_secret() -> List[Byte]:
     """16-byte server secret for tests."""
-    var s = List[UInt8](capacity=16)
+    var s = List[Byte](capacity=16)
     for _ in range(16):
         s.append(UInt8(0xAA))
     return s^
 
 
-def _make_addr_hash_zeros() -> List[UInt8]:
+def _make_addr_hash_zeros() -> List[Byte]:
     """32-byte client address hash (all zeros)."""
-    var h = List[UInt8](capacity=32)
+    var h = List[Byte](capacity=32)
     for _ in range(32):
         h.append(UInt8(0x00))
     return h^
 
 
-def _make_addr_hash_ones() -> List[UInt8]:
+def _make_addr_hash_ones() -> List[Byte]:
     """32-byte client address hash (all ones)."""
-    var h = List[UInt8](capacity=32)
+    var h = List[Byte](capacity=32)
     for _ in range(32):
         h.append(UInt8(0x01))
     return h^

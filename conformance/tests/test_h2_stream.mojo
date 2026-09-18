@@ -79,7 +79,7 @@ def _server_conn_after_preface() raises -> H2Connection:
     return server^
 
 
-def _build_hpack_headers_frame(stream_id: Int, headers: List[Header], end_headers: Bool = True, end_stream: Bool = False) -> List[UInt8]:
+def _build_hpack_headers_frame(stream_id: Int, headers: List[Header], end_headers: Bool = True, end_stream: Bool = False) -> List[Byte]:
     """Build a HEADERS frame with HPACK-encoded header block."""
     var encoder = HpackEncoder(HpackConfig(use_huffman=False))
     var block = encoder.encode(headers)
@@ -137,7 +137,7 @@ def test_hpack_decode_compression_error() raises:
     """Invalid HPACK block triggers COMPRESSION_ERROR."""
     var server = _server_conn_after_preface()
     # Invalid HPACK: overlong integer that never terminates
-    var bad_block = List[UInt8]()
+    var bad_block = List[Byte]()
     bad_block.append(UInt8(0xFF))
     bad_block.append(UInt8(0xFF))
     bad_block.append(UInt8(0xFF))
@@ -168,10 +168,10 @@ def test_hpack_decode_continuation_assembly() raises:
     var block = encoder.encode(req_headers)
     # Split block: first 3 bytes in HEADERS, rest in CONTINUATION
     var split_point = 3
-    var first_part = List[UInt8]()
+    var first_part = List[Byte]()
     for i in range(split_point):
         first_part.append(block[i])
-    var second_part = List[UInt8]()
+    var second_part = List[Byte]()
     for i in range(split_point, len(block)):
         second_part.append(block[i])
     # HEADERS without END_HEADERS
@@ -326,7 +326,7 @@ def test_inbound_data_received() raises:
     _ = server.receive_data(headers_wire)
     _ = server.data_to_send()
     # Send DATA with body "hello"
-    var body = List[UInt8]()
+    var body = List[Byte]()
     body.append(UInt8(0x68))  # h
     body.append(UInt8(0x65))  # e
     body.append(UInt8(0x6C))  # l
@@ -357,7 +357,7 @@ def test_inbound_data_end_stream() raises:
     var headers_wire = _build_hpack_headers_frame(1, req_headers)
     _ = server.receive_data(headers_wire)
     _ = server.data_to_send()
-    var body = List[UInt8]()
+    var body = List[Byte]()
     body.append(UInt8(0x68))
     var data_frame = Frame(len(body), FRAME_DATA, FLAG_END_STREAM, 1, body)
     var data_wire = encode_frame(data_frame)
@@ -388,7 +388,7 @@ def test_send_data() raises:
     headers.append(Header(":authority", "example.com"))
     client.send_headers(UInt32(1), headers^, end_stream=False)
     _ = client.data_to_send()
-    var body = List[UInt8]()
+    var body = List[Byte]()
     for i in range(5):
         body.append(UInt8(0x41 + i))  # ABCDE
     client.send_data(UInt32(1), body^, end_stream=True)
@@ -403,7 +403,7 @@ def test_send_data() raises:
     assert_equal(state, STREAM_HALF_CLOSED_LOCAL, "half-closed local")
 
 
-def _count_data_payload_bytes(buf: List[UInt8]) -> Int:
+def _count_data_payload_bytes(buf: List[Byte]) -> Int:
     """Sum payload lengths of all DATA frames in a wire-format buffer."""
     var total = 0
     var i = 0
@@ -416,7 +416,7 @@ def _count_data_payload_bytes(buf: List[UInt8]) -> Int:
     return total
 
 
-def _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
+def _count_end_stream_data_frames(buf: List[Byte]) -> Int:
     """Count DATA frames whose END_STREAM flag is set."""
     var count = 0
     var i = 0
@@ -430,16 +430,16 @@ def _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
     return count
 
 
-def _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[UInt8]:
+def _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[Byte]:
     """Hand-build a wire-format WINDOW_UPDATE frame."""
-    var b = List[UInt8]()
+    var b = List[Byte]()
     # Length = 4
-    b.append(UInt8(0))
-    b.append(UInt8(0))
+    b.append(Byte(0))
+    b.append(Byte(0))
     b.append(UInt8(4))
     # Type = 0x08 (WINDOW_UPDATE), Flags = 0
     b.append(UInt8(0x08))
-    b.append(UInt8(0))
+    b.append(Byte(0))
     # Stream ID (R bit = 0)
     var sid = Int(stream_id)
     b.append(UInt8((sid >> 24) & 0x7F))
@@ -482,7 +482,7 @@ def test_send_data_window_exhaustion() raises:
     _ = client.data_to_send()
 
     # Fill connection window (65535 bytes default). MUST NOT raise.
-    var body = List[UInt8]()
+    var body = List[Byte]()
     for _ in range(65535):
         body.append(UInt8(0x42))
     client.send_data(UInt32(1), body^, end_stream=False)
@@ -492,7 +492,7 @@ def test_send_data_window_exhaustion() raises:
     assert_equal(first_data_bytes, 65535, "first drain emits exactly 65535 DATA bytes")
 
     # Next 1-byte send should NOT raise — it must queue into _pending_data.
-    var small_body = List[UInt8]()
+    var small_body = List[Byte]()
     small_body.append(UInt8(0x43))
     client.send_data(UInt32(1), small_body^, end_stream=True)
 
@@ -519,7 +519,7 @@ def test_send_data_window_exhaustion() raises:
 def test_inbound_data_on_unknown_stream() raises:
     """DATA on unknown stream triggers connection error."""
     var server = _server_conn_after_preface()
-    var body = List[UInt8]()
+    var body = List[Byte]()
     body.append(UInt8(0x00))
     var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
     var data_wire = encode_frame(data_frame)
@@ -549,7 +549,7 @@ def test_stream_flow_control_window_update() raises:
         var this_chunk = chunk_size
         if total_sent + this_chunk > 40000:
             this_chunk = 40000 - total_sent
-        var body = List[UInt8]()
+        var body = List[Byte]()
         for _ in range(this_chunk):
             body.append(UInt8(0x41))
         var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
@@ -592,7 +592,7 @@ def test_inbound_trailers() raises:
     _ = server.receive_data(headers_wire)
     _ = server.data_to_send()
     # DATA
-    var body = List[UInt8]()
+    var body = List[Byte]()
     body.append(UInt8(0x68))
     var data_frame = Frame(len(body), FRAME_DATA, 0, 1, body)
     var data_wire = encode_frame(data_frame)
@@ -630,7 +630,7 @@ def test_inbound_rst_stream() raises:
     _ = server.data_to_send()
     assert_equal(server.open_stream_count(), 1, "1 active before RST")
     # Send RST_STREAM for stream 1 with CANCEL (error code 8)
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x00))
     payload.append(UInt8(0x00))
     payload.append(UInt8(0x00))
@@ -653,7 +653,7 @@ def test_inbound_rst_stream() raises:
 def test_rst_stream_on_idle() raises:
     """RST_STREAM on idle stream triggers connection error."""
     var server = _server_conn_after_preface()
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x00))
     payload.append(UInt8(0x00))
     payload.append(UInt8(0x00))
@@ -710,7 +710,7 @@ def test_settings_initial_window_size_adjusts_streams() raises:
     client.send_headers(UInt32(1), headers^, end_stream=False)
     _ = client.data_to_send()
     # Feed SETTINGS from server with smaller INITIAL_WINDOW_SIZE (100)
-    var settings_payload = List[UInt8]()
+    var settings_payload = List[Byte]()
     _append_setting(settings_payload, SETTINGS_INITIAL_WINDOW_SIZE, 100)
     var settings_frame = Frame(len(settings_payload), FRAME_SETTINGS, 0, 0, settings_payload)
     var settings_wire = encode_frame(settings_frame)
@@ -721,7 +721,7 @@ def test_settings_initial_window_size_adjusts_streams() raises:
     # Try sending 101 bytes — under the queue-and-drain contract, send_data
     # must NOT raise: it emits 100 bytes on the wire and queues the 1
     # remaining byte until a WINDOW_UPDATE arrives.
-    var body_101 = List[UInt8]()
+    var body_101 = List[Byte]()
     for _ in range(101):
         body_101.append(UInt8(0x41))
     client.send_data(UInt32(1), body_101, end_stream=False)
@@ -734,7 +734,7 @@ def test_settings_max_frame_size_invalid() raises:
     """SETTINGS MAX_FRAME_SIZE outside valid range triggers PROTOCOL_ERROR."""
     var server = _server_conn_after_preface()
     # Send MAX_FRAME_SIZE = 100 (below 16384 minimum)
-    var settings_payload = List[UInt8]()
+    var settings_payload = List[Byte]()
     _append_setting(settings_payload, 5, 100)  # SETTINGS_MAX_FRAME_SIZE = id 5
     var settings_frame = Frame(len(settings_payload), FRAME_SETTINGS, 0, 0, settings_payload)
     var settings_wire = encode_frame(settings_frame)

@@ -49,7 +49,7 @@ comptime QuicEventPayload = Variant[
     UInt64,                    # STREAM_READABLE, STREAM_WRITABLE, STREAM_OPENED (stream_id)
     StreamResetPayload,        # STREAM_RESET
     StreamStoppedPayload,      # STREAM_STOPPED
-    List[UInt8],               # DATAGRAM_RECEIVED
+    List[Byte],               # DATAGRAM_RECEIVED
 ]
 
 
@@ -126,6 +126,6 @@ struct QuicEvent(Copyable, Movable):
         return QuicEvent(QuicEvent.STREAM_OPENED, QuicEventPayload(stream_id))
 
     @staticmethod
-    def datagram_received(var payload: List[UInt8]) -> QuicEvent:
+    def datagram_received(var payload: List[Byte]) -> QuicEvent:
         """Surface a received DATAGRAM to the application (RFC 9221)."""
         return QuicEvent(QuicEvent.DATAGRAM_RECEIVED, QuicEventPayload(payload^))

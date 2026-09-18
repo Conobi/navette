@@ -53,7 +53,7 @@ def test_varint_overflow() raises:
 
 
 def test_varint_truncation() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(UInt8(0x40))
     var r = ByteReader(Span(data))
     var caught = False
@@ -83,7 +83,7 @@ def test_byte_reader_writer_roundtrip() raises:
 
 
 def test_byte_reader_underflow() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(UInt8(0x01))
     var r = ByteReader(Span(data))
     _ = r.read_u8()
@@ -99,7 +99,7 @@ def test_byte_reader_underflow() raises:
 
 def test_byte_writer_bytes() raises:
     var w = ByteWriter()
-    var src = List[UInt8]()
+    var src = List[Byte]()
     src.append(UInt8(1))
     src.append(UInt8(2))
     src.append(UInt8(3))
@@ -112,8 +112,8 @@ def test_byte_writer_bytes() raises:
 
 def test_is_long_header_initial_5_cases() raises:
     # Helper: build a 1-byte payload from a single hex value.
-    def one_byte(b: UInt8) -> List[UInt8]:
-        var out = List[UInt8]()
+    def one_byte(b: UInt8) -> List[Byte]:
+        var out = List[Byte]()
         out.append(b)
         return out^
 
@@ -138,7 +138,7 @@ def test_is_long_header_initial_5_cases() raises:
     if is_long_header_initial(Span(shrt)):
         raise "expected short-header to be NOT long-header-Initial"
     # Empty payload: defensive case.
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     if is_long_header_initial(Span(empty)):
         raise "expected empty payload to be NOT long-header-Initial"
     print("PASS: test_is_long_header_initial_5_cases")
@@ -151,8 +151,8 @@ def test_is_long_header_zero_rtt_5_cases() raises:
     long-header packet types plus the short-header form, asserting the
     helper fires iff the first byte's top bit is set AND bits 5-4 == 0b01.
     """
-    def one_byte(b: UInt8) -> List[UInt8]:
-        var out = List[UInt8]()
+    def one_byte(b: UInt8) -> List[Byte]:
+        var out = List[Byte]()
         out.append(b)
         return out^
 
@@ -177,7 +177,7 @@ def test_is_long_header_zero_rtt_5_cases() raises:
     if is_long_header_zero_rtt(Span(shrt)):
         raise "expected short-header to be NOT long-header-0RTT"
     # Empty payload: defensive — must be False.
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     if is_long_header_zero_rtt(Span(empty)):
         raise "expected empty payload to be NOT long-header-0RTT"
     # 0-RTT with reserved bits set (lower nibble varies): 1101_1111.

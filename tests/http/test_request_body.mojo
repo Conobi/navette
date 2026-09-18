@@ -8,7 +8,7 @@ from tests._test_util import assert_true, assert_false, assert_equal_int
 
 
 def test_buffered_factory() raises:
-    var bytes: List[UInt8] = [UInt8(1), UInt8(2), UInt8(3)]
+    var bytes: List[Byte] = [UInt8(1), UInt8(2), UInt8(3)]
     var rb = RequestBody.buffered(bytes^)
     assert_true(rb.is_buffered(), "buffered.is_buffered")
     assert_false(rb.is_stream(), "buffered.is_stream")

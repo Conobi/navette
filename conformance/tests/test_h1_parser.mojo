@@ -398,7 +398,7 @@ def main() raises:
         tv = tv // 26 + ri + 1
 
     # Build wire: GET / HTTP/1.1\r\nHost: example.com\r\nX-Rand: <rand_val>\r\n\r\n
-    var rt_wire = List[UInt8]()
+    var rt_wire = List[Byte]()
     var rt_str = "GET / HTTP/1.1\r\nHost: example.com\r\nX-Rand: " + rand_val + "\r\n\r\n"
     var rt_bytes = rt_str.as_bytes()
     for ri2 in range(len(rt_bytes)):

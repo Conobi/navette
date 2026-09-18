@@ -16,7 +16,7 @@ from navette.tls.lib import SharedLibrary
 
 
 def _copy_span_to_ptr(
-    src: Span[UInt8, _],
+    src: Span[Byte, _],
     dst: Pointer[mut=True, T=UInt8, origin=_],
     offset: Int,
 ) -> Int:
@@ -59,11 +59,11 @@ def _read_u64_be(
 
 def generate_retry_token(
     lib: SharedLibrary,
-    server_secret: Span[UInt8, _],
-    orig_dcid: Span[UInt8, _],
-    client_addr_hash: Span[UInt8, _],
+    server_secret: Span[Byte, _],
+    orig_dcid: Span[Byte, _],
+    client_addr_hash: Span[Byte, _],
     now: UInt64,
-) raises -> List[UInt8]:
+) raises -> List[Byte]:
     """Generate an encrypted Retry token.
 
     Token format: nonce (12) || ciphertext+tag
@@ -135,7 +135,7 @@ def generate_retry_token(
     var ct_len = Int(out_len_ptr[unsafe_offset=0])
 
     # Build token: nonce (12) || ciphertext+tag
-    var token = List[UInt8](capacity=12 + ct_len)
+    var token = List[Byte](capacity=12 + ct_len)
     for i in range(12):
         token.append(nonce_ptr[unsafe_offset=i])
     for i in range(ct_len):
@@ -151,12 +151,12 @@ def generate_retry_token(
 
 def validate_retry_token(
     lib: SharedLibrary,
-    server_secret: Span[UInt8, _],
-    token: Span[UInt8, _],
-    client_addr_hash: Span[UInt8, _],
+    server_secret: Span[Byte, _],
+    token: Span[Byte, _],
+    client_addr_hash: Span[Byte, _],
     now: UInt64,
     max_age: UInt64 = 5,
-) raises -> List[UInt8]:
+) raises -> List[Byte]:
     """Validate a Retry token and return the original DCID.
 
     Raises on authentication failure, address mismatch, or expiration.
@@ -237,7 +237,7 @@ def validate_retry_token(
         raise "token plaintext length mismatch"
 
     # Extract orig_dcid
-    var orig_dcid = List[UInt8](capacity=dcid_len)
+    var orig_dcid = List[Byte](capacity=dcid_len)
     for i in range(dcid_len):
         orig_dcid.append(out_ptr[unsafe_offset=1 + i])
 
@@ -262,9 +262,9 @@ def validate_retry_token(
 
 def compute_retry_integrity_tag(
     lib: SharedLibrary,
-    orig_dcid: Span[UInt8, _],
-    retry_packet_without_tag: Span[UInt8, _],
-) raises -> List[UInt8]:
+    orig_dcid: Span[Byte, _],
+    retry_packet_without_tag: Span[Byte, _],
+) raises -> List[Byte]:
     """Compute the 16-byte Retry Integrity Tag per RFC 9001 Section 5.8.
 
     Uses fixed key/nonce from the spec, with the pseudo-Retry packet as AAD
@@ -347,7 +347,7 @@ def compute_retry_integrity_tag(
     if tag_len != 16:
         raise "expected 16-byte tag, got " + String(tag_len)
 
-    var tag = List[UInt8](capacity=16)
+    var tag = List[Byte](capacity=16)
     for i in range(16):
         tag.append(out_ptr[unsafe_offset=i])
 

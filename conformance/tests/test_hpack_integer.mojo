@@ -137,14 +137,14 @@ def main() raises:
 
     # ---- 4. Additional truncation tests ----
     # Empty wire
-    var empty_result = decode_integer(List[UInt8](), 0, 5)
+    var empty_result = decode_integer(List[Byte](), 0, 5)
     assert_true(
         Bool(empty_result[2]),
         "expected error for empty wire",
     )
 
     # Truncated continuation: first byte indicates multi-byte, no continuation
-    var trunc_wire = List[UInt8]()
+    var trunc_wire = List[Byte]()
     trunc_wire.append(UInt8(0x1F))  # max_prefix for 5-bit
     var trunc_result = decode_integer(trunc_wire, 0, 5)
     assert_true(
@@ -153,7 +153,7 @@ def main() raises:
     )
 
     # Truncated continuation: continuation byte with high bit set, no next byte
-    var trunc_wire2 = List[UInt8]()
+    var trunc_wire2 = List[Byte]()
     trunc_wire2.append(UInt8(0x1F))
     trunc_wire2.append(UInt8(0x80))  # continuation bit set, no next byte
     var trunc_result2 = decode_integer(trunc_wire2, 0, 5)

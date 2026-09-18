@@ -20,19 +20,19 @@ from navette.quic.cid import (
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_cid(b: UInt8) -> List[UInt8]:
+def _make_cid(b: UInt8) -> List[Byte]:
     """Create a fixed 8-byte CID filled with the given byte value."""
-    var cid = List[UInt8](capacity=8)
+    var cid = List[Byte](capacity=8)
     for _ in range(8):
         cid.append(b)
     return cid^
 
 
-def _make_token() -> List[UInt8]:
+def _make_token() -> List[Byte]:
     """Create a fixed 16-byte reset token filled with zeros."""
-    var tok = List[UInt8](capacity=16)
+    var tok = List[Byte](capacity=16)
     for _ in range(16):
-        tok.append(UInt8(0))
+        tok.append(Byte(0))
     return tok^
 
 
@@ -79,7 +79,7 @@ def test_cid_generation(lib: SharedLibrary) raises:
     assert_equal_int(len(cid0), 8, "CID should be 8 bytes")
 
     # Generate 10 CIDs and verify uniqueness
-    var cids = List[List[UInt8]]()
+    var cids = List[List[Byte]]()
     for _ in range(10):
         cids.append(mgr.generate_cid())
 

@@ -107,19 +107,19 @@ struct AckFrame(Copyable, Movable):
 
 struct CryptoFrame(Copyable, Movable):
     var offset: UInt64
-    var data: List[UInt8]
+    var data: List[Byte]
 
     def __init__(out self):
         self.offset = UInt64(0)
-        self.data = List[UInt8]()
+        self.data = List[Byte]()
 
-    def __init__(out self, offset: UInt64, data: List[UInt8]):
+    def __init__(out self, offset: UInt64, data: List[Byte]):
         self.offset = offset
-        self.data = List[UInt8](copy=data)
+        self.data = List[Byte](copy=data)
 
     def __init__(out self, *, other: Self):
         self.offset = other.offset
-        self.data = List[UInt8](copy=other.data)
+        self.data = List[Byte](copy=other.data)
 
     def __init__(out self, *, deinit move: Self):
         self.offset = move.offset
@@ -129,25 +129,25 @@ struct CryptoFrame(Copyable, Movable):
 struct StreamFrame(Copyable, Movable):
     var stream_id: UInt64
     var offset: UInt64
-    var data: List[UInt8]
+    var data: List[Byte]
     var fin: Bool
 
     def __init__(out self):
         self.stream_id = UInt64(0)
         self.offset = UInt64(0)
-        self.data = List[UInt8]()
+        self.data = List[Byte]()
         self.fin = False
 
-    def __init__(out self, stream_id: UInt64, offset: UInt64, data: List[UInt8], fin: Bool):
+    def __init__(out self, stream_id: UInt64, offset: UInt64, data: List[Byte], fin: Bool):
         self.stream_id = stream_id
         self.offset = offset
-        self.data = List[UInt8](copy=data)
+        self.data = List[Byte](copy=data)
         self.fin = fin
 
     def __init__(out self, *, other: Self):
         self.stream_id = other.stream_id
         self.offset = other.offset
-        self.data = List[UInt8](copy=other.data)
+        self.data = List[Byte](copy=other.data)
         self.fin = other.fin
 
     def __init__(out self, *, deinit move: Self):
@@ -267,19 +267,19 @@ struct NewConnectionIdFrame(Copyable, Movable):
     var sequence: UInt64
     var retire_prior_to: UInt64
     var cid: CidBuf
-    var stateless_reset_token: List[UInt8]
+    var stateless_reset_token: List[Byte]
 
     def __init__(out self):
         self.sequence = UInt64(0)
         self.retire_prior_to = UInt64(0)
         self.cid = CidBuf.empty()
-        self.stateless_reset_token = List[UInt8]()
+        self.stateless_reset_token = List[Byte]()
 
     def __init__(out self, *, other: Self):
         self.sequence = other.sequence
         self.retire_prior_to = other.retire_prior_to
         self.cid = CidBuf(copy=other.cid)
-        self.stateless_reset_token = List[UInt8](copy=other.stateless_reset_token)
+        self.stateless_reset_token = List[Byte](copy=other.stateless_reset_token)
 
     def __init__(out self, *, deinit move: Self):
         self.sequence = move.sequence
@@ -292,19 +292,19 @@ struct ConnectionCloseFrame(Copyable, Movable):
     var is_transport: Bool
     var error_code: UInt64
     var frame_type: UInt64
-    var reason: List[UInt8]
+    var reason: List[Byte]
 
     def __init__(out self):
         self.is_transport = True
         self.error_code = UInt64(0)
         self.frame_type = UInt64(0)
-        self.reason = List[UInt8]()
+        self.reason = List[Byte]()
 
     def __init__(out self, *, other: Self):
         self.is_transport = other.is_transport
         self.error_code = other.error_code
         self.frame_type = other.frame_type
-        self.reason = List[UInt8](copy=other.reason)
+        self.reason = List[Byte](copy=other.reason)
 
     def __init__(out self, *, deinit move: Self):
         self.is_transport = move.is_transport
@@ -327,7 +327,7 @@ comptime FramePayload = Variant[
     MaxStreamsFrame,        # MAX_STREAMS_*, STREAMS_BLOCKED_*
     NewConnectionIdFrame,  # NEW_CONNECTION_ID
     ConnectionCloseFrame,  # CONNECTION_CLOSE_TRANSPORT/APP
-    List[UInt8],           # NEW_TOKEN, PATH_CHALLENGE, PATH_RESPONSE, DATAGRAM, DATAGRAM_LEN
+    List[Byte],           # NEW_TOKEN, PATH_CHALLENGE, PATH_RESPONSE, DATAGRAM, DATAGRAM_LEN
 ]
 
 
@@ -437,38 +437,38 @@ struct Frame(Copyable, Movable):
         )
 
     @staticmethod
-    def new_token(token: List[UInt8]) -> Frame:
-        return Frame(FRAME_NEW_TOKEN, FramePayload(List[UInt8](copy=token)))
+    def new_token(token: List[Byte]) -> Frame:
+        return Frame(FRAME_NEW_TOKEN, FramePayload(List[Byte](copy=token)))
 
     @staticmethod
-    def path_challenge(data: List[UInt8]) -> Frame:
-        return Frame(FRAME_PATH_CHALLENGE, FramePayload(List[UInt8](copy=data)))
+    def path_challenge(data: List[Byte]) -> Frame:
+        return Frame(FRAME_PATH_CHALLENGE, FramePayload(List[Byte](copy=data)))
 
     @staticmethod
-    def path_response(data: List[UInt8]) -> Frame:
-        return Frame(FRAME_PATH_RESPONSE, FramePayload(List[UInt8](copy=data)))
+    def path_response(data: List[Byte]) -> Frame:
+        return Frame(FRAME_PATH_RESPONSE, FramePayload(List[Byte](copy=data)))
 
     @staticmethod
     def handshake_done() -> Frame:
         return Frame(FRAME_HANDSHAKE_DONE, FramePayload(NoneType()))
 
     @staticmethod
-    def datagram(payload: List[UInt8]) -> Frame:
+    def datagram(payload: List[Byte]) -> Frame:
         """RFC 9221 DATAGRAM (0x30, no length prefix).
 
         Payload extends to end of QUIC packet. Not subject to congestion
         control, flow control, or retransmission.
         """
-        return Frame(FRAME_DATAGRAM, FramePayload(List[UInt8](copy=payload)))
+        return Frame(FRAME_DATAGRAM, FramePayload(List[Byte](copy=payload)))
 
     @staticmethod
-    def datagram_with_len(payload: List[UInt8]) -> Frame:
+    def datagram_with_len(payload: List[Byte]) -> Frame:
         """RFC 9221 DATAGRAM_LEN (0x31, varint length prefix).
 
         Allows multiplexing with other frames in the same packet.
         Not subject to congestion control, flow control, or retransmission.
         """
-        return Frame(FRAME_DATAGRAM_LEN, FramePayload(List[UInt8](copy=payload)))
+        return Frame(FRAME_DATAGRAM_LEN, FramePayload(List[Byte](copy=payload)))
 
     @staticmethod
     def unknown(type_id: UInt64) -> Frame:
@@ -590,7 +590,7 @@ struct Frame(Copyable, Movable):
             ref cf = self.payload.unsafe_get[CryptoFrame]()
             return 1 + varint_len(cf.offset) + varint_len(UInt64(len(cf.data))) + len(cf.data)
         if tid == FRAME_NEW_TOKEN:
-            var token_len = len(self.payload.unsafe_get[List[UInt8]]())
+            var token_len = len(self.payload.unsafe_get[List[Byte]]())
             return 1 + varint_len(UInt64(token_len)) + token_len
         if (tid & UInt64(0xF8)) == FRAME_STREAM_BASE:
             ref sf = self.payload.unsafe_get[StreamFrame]()
@@ -613,7 +613,7 @@ struct Frame(Copyable, Movable):
         if tid == FRAME_RETIRE_CONNECTION_ID:
             return 1 + varint_len(self.payload.unsafe_get[UInt64]())
         if tid == FRAME_PATH_CHALLENGE or tid == FRAME_PATH_RESPONSE:
-            return 1 + len(self.payload.unsafe_get[List[UInt8]]())
+            return 1 + len(self.payload.unsafe_get[List[Byte]]())
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
             ref cc = self.payload.unsafe_get[ConnectionCloseFrame]()
             var n = 1 + varint_len(cc.error_code)
@@ -621,9 +621,9 @@ struct Frame(Copyable, Movable):
                 n += varint_len(cc.frame_type)
             return n + varint_len(UInt64(len(cc.reason))) + len(cc.reason)
         if tid == FRAME_DATAGRAM:
-            return 1 + len(self.payload.unsafe_get[List[UInt8]]())
+            return 1 + len(self.payload.unsafe_get[List[Byte]]())
         if tid == FRAME_DATAGRAM_LEN:
-            var dl = len(self.payload.unsafe_get[List[UInt8]]())
+            var dl = len(self.payload.unsafe_get[List[Byte]]())
             return 1 + varint_len(UInt64(dl)) + dl
         return 0
 
@@ -694,21 +694,21 @@ struct Frame(Copyable, Movable):
             raise "Frame is not a CONNECTION_CLOSE frame"
         return self.payload.unsafe_get[ConnectionCloseFrame]()
 
-    def as_new_token(self) raises -> ref [self.payload] List[UInt8]:
-        if not self.payload.isa[List[UInt8]]():
+    def as_new_token(self) raises -> ref [self.payload] List[Byte]:
+        if not self.payload.isa[List[Byte]]():
             raise "Frame is not a NEW_TOKEN frame"
-        return self.payload.unsafe_get[List[UInt8]]()
+        return self.payload.unsafe_get[List[Byte]]()
 
-    def as_path_data(self) raises -> ref [self.payload] List[UInt8]:
-        if not self.payload.isa[List[UInt8]]():
+    def as_path_data(self) raises -> ref [self.payload] List[Byte]:
+        if not self.payload.isa[List[Byte]]():
             raise "Frame is not a PATH_CHALLENGE/PATH_RESPONSE frame"
-        return self.payload.unsafe_get[List[UInt8]]()
+        return self.payload.unsafe_get[List[Byte]]()
 
-    def as_datagram_payload(self) raises -> ref [self.payload] List[UInt8]:
+    def as_datagram_payload(self) raises -> ref [self.payload] List[Byte]:
         """Both DATAGRAM wire variants (0x30 and 0x31) share this accessor."""
-        if not self.payload.isa[List[UInt8]]():
+        if not self.payload.isa[List[Byte]]():
             raise "Frame is not a DATAGRAM frame"
-        return self.payload.unsafe_get[List[UInt8]]()
+        return self.payload.unsafe_get[List[Byte]]()
 
 
 # ── Parse functions ───────────────────────────────────────────────────
@@ -806,7 +806,7 @@ def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_
         var offset = UInt64(0)
         if has_off:
             offset = varint_decode(reader)
-        var data: List[UInt8]
+        var data: List[Byte]
         if has_len:
             var length = varint_decode(reader)
             data = reader.read_bytes(Int(length))
@@ -994,7 +994,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         varint_encode(writer, FRAME_CRYPTO)
         varint_encode(writer, cf.offset)
         varint_encode(writer, UInt64(len(cf.data)))
-        writer.write_bytes(Span[UInt8, origin_of(cf.data)](cf.data))
+        writer.write_bytes(Span[Byte, origin_of(cf.data)](cf.data))
         return
 
     # NEW_TOKEN
@@ -1002,7 +1002,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         ref token = frame.as_new_token()
         varint_encode(writer, FRAME_NEW_TOKEN)
         varint_encode(writer, UInt64(len(token)))
-        writer.write_bytes(Span[UInt8, origin_of(token)](token))
+        writer.write_bytes(Span[Byte, origin_of(token)](token))
         return
 
     # STREAM (0x08-0x0F): always set LEN bit
@@ -1019,7 +1019,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         if sf.offset != UInt64(0):
             varint_encode(writer, sf.offset)
         varint_encode(writer, UInt64(len(sf.data)))
-        writer.write_bytes(Span[UInt8, origin_of(sf.data)](sf.data))
+        writer.write_bytes(Span[Byte, origin_of(sf.data)](sf.data))
         return
 
     # MAX_DATA
@@ -1072,7 +1072,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         varint_encode(writer, ncid.retire_prior_to)
         writer.write_u8(UInt8(len(ncid.cid)))
         writer.write_bytes(ncid.cid.as_span())
-        writer.write_bytes(Span[UInt8, origin_of(ncid.stateless_reset_token)](ncid.stateless_reset_token))
+        writer.write_bytes(Span[Byte, origin_of(ncid.stateless_reset_token)](ncid.stateless_reset_token))
         return
 
     # RETIRE_CONNECTION_ID
@@ -1085,14 +1085,14 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
     if tid == FRAME_PATH_CHALLENGE:
         ref data = frame.as_path_data()
         varint_encode(writer, FRAME_PATH_CHALLENGE)
-        writer.write_bytes(Span[UInt8, origin_of(data)](data))
+        writer.write_bytes(Span[Byte, origin_of(data)](data))
         return
 
     # PATH_RESPONSE
     if tid == FRAME_PATH_RESPONSE:
         ref data = frame.as_path_data()
         varint_encode(writer, FRAME_PATH_RESPONSE)
-        writer.write_bytes(Span[UInt8, origin_of(data)](data))
+        writer.write_bytes(Span[Byte, origin_of(data)](data))
         return
 
     # CONNECTION_CLOSE
@@ -1103,7 +1103,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         if cc.is_transport:
             varint_encode(writer, cc.frame_type)
         varint_encode(writer, UInt64(len(cc.reason)))
-        writer.write_bytes(Span[UInt8, origin_of(cc.reason)](cc.reason))
+        writer.write_bytes(Span[Byte, origin_of(cc.reason)](cc.reason))
         return
 
     # HANDSHAKE_DONE
@@ -1115,7 +1115,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
     if tid == FRAME_DATAGRAM:
         ref data = frame.as_datagram_payload()
         varint_encode(writer, FRAME_DATAGRAM)
-        writer.write_bytes(Span[UInt8, origin_of(data)](data))
+        writer.write_bytes(Span[Byte, origin_of(data)](data))
         return
 
     # DATAGRAM_LEN (0x31) — RFC 9221 §4. Length-prefixed payload.
@@ -1123,7 +1123,7 @@ def serialize_frame(frame: Frame, mut writer: ByteWriter) raises:
         ref data = frame.as_datagram_payload()
         varint_encode(writer, FRAME_DATAGRAM_LEN)
         varint_encode(writer, UInt64(len(data)))
-        writer.write_bytes(Span[UInt8, origin_of(data)](data))
+        writer.write_bytes(Span[Byte, origin_of(data)](data))
         return
 
     raise "serialize_frame: unknown frame type: " + String(Int(tid))
@@ -1222,12 +1222,12 @@ struct FrameCursor[origin: Origin]:
     (read via byte_data_span()), borrowing directly from the packet buffer.
     """
 
-    var _buf: Span[UInt8, Self.origin]
+    var _buf: Span[Byte, Self.origin]
     var _pos: Int
     var _count: Int
     var _ack_buf: InlineArray[AckRange, MAX_ACK_RANGES]
     var _ack_buf_len: Int
-    var _byte_data: Span[UInt8, Self.origin]
+    var _byte_data: Span[Byte, Self.origin]
     var type_id: UInt64
     var stream_id: UInt64
     var offset: UInt64
@@ -1248,14 +1248,14 @@ struct FrameCursor[origin: Origin]:
     var ecn_ect1: UInt64
     var ecn_ce: UInt64
 
-    def __init__(out self, buf: Span[UInt8, Self.origin]):
+    def __init__(out self, buf: Span[Byte, Self.origin]):
         """Create a cursor over the given payload bytes."""
         self._buf = buf
         self._pos = 0
         self._count = 0
         self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](uninitialized=True)
         self._ack_buf_len = 0
-        self._byte_data = Span[UInt8, Self.origin]()
+        self._byte_data = Span[Byte, Self.origin]()
         self.type_id = UInt64(0)
         self.stream_id = UInt64(0)
         self.offset = UInt64(0)
@@ -1285,7 +1285,7 @@ struct FrameCursor[origin: Origin]:
         if self._pos >= len(self._buf):
             return None
         self._ack_buf_len = 0
-        self._byte_data = Span[UInt8, Self.origin]()
+        self._byte_data = Span[Byte, Self.origin]()
         var reader = ByteReader(self._buf)
         reader.pos = self._pos
         var frame_type = varint_decode(reader)
@@ -1542,7 +1542,7 @@ struct FrameCursor[origin: Origin]:
         """Span view of ACK ranges decoded by the last next() call."""
         return Span(unsafe_ptr=self._ack_buf.unsafe_ptr(), length=self._ack_buf_len)
 
-    def byte_data_span(self) -> Span[UInt8, Self.origin]:
+    def byte_data_span(self) -> Span[Byte, Self.origin]:
         """Span view of CC reason / STREAM data / CRYPTO data from the
         last next() call. Empty for non-data-carrying frame types."""
         return self._byte_data
@@ -1559,11 +1559,11 @@ struct FrameCursor[origin: Origin]:
 
 
 def write_stream_frame_direct(
-    mut pkt_buf: List[UInt8],
+    mut pkt_buf: List[Byte],
     budget: Int,
     stream_id: UInt64,
     offset: UInt64,
-    data: Span[UInt8, _],
+    data: Span[Byte, _],
     fin: Bool,
 ) -> Int:
     """Write a STREAM frame directly into pkt_buf, bypassing Frame allocation.
@@ -1597,7 +1597,7 @@ def write_stream_frame_direct(
         if has_off:
             stype = stype | UInt8(0x04)
         var base = len(pkt_buf)
-        pkt_buf.resize(base + total, UInt8(0))
+        pkt_buf.resize(base + total, Byte(0))
         var pos = base
         pos += write_u8_at(pkt_buf, pos, stype)
         pos += varint_encode_at(pkt_buf, pos, stream_id)
@@ -1646,7 +1646,7 @@ def write_stream_frame_direct(
 
     var hdr_size = fixed_hdr + len_vl
     var base = len(pkt_buf)
-    pkt_buf.resize(base + hdr_size, UInt8(0))
+    pkt_buf.resize(base + hdr_size, Byte(0))
     var pos = base
     pos += write_u8_at(pkt_buf, pos, stype)
     pos += varint_encode_at(pkt_buf, pos, stream_id)
@@ -1662,7 +1662,7 @@ def write_stream_frame_direct(
 
 
 def write_ack_frame_direct(
-    mut payload: List[UInt8],
+    mut payload: List[Byte],
     budget: Int,
     ref ack: AckFrame,
 ) -> Int:
@@ -1682,7 +1682,7 @@ def write_ack_frame_direct(
         return 0
 
     var base = len(payload)
-    payload.resize(base + size, UInt8(0))
+    payload.resize(base + size, Byte(0))
     var pos = base
     pos += varint_encode_at(payload, pos, tid)
     pos += varint_encode_at(payload, pos, ack.largest_ack)
@@ -1704,10 +1704,10 @@ def write_ack_frame_direct(
 
 
 def write_crypto_frame_direct(
-    mut payload: List[UInt8],
+    mut payload: List[Byte],
     budget: Int,
     offset: UInt64,
-    data: Span[UInt8, _],
+    data: Span[Byte, _],
 ) -> Int:
     """Write a CRYPTO frame directly into a payload buffer.
 
@@ -1747,7 +1747,7 @@ def write_crypto_frame_direct(
 
     var hdr_size = fixed_hdr + len_vl
     var base = len(payload)
-    payload.resize(base + hdr_size, UInt8(0))
+    payload.resize(base + hdr_size, Byte(0))
     var pos = base
     pos += varint_encode_at(payload, pos, FRAME_CRYPTO)
     pos += varint_encode_at(payload, pos, offset)

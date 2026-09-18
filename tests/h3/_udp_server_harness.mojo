@@ -63,14 +63,14 @@ struct HarnessClient(Movable):
     """
     var sock: Socket
     var h3: H3Connection
-    var last_recv: List[List[UInt8]]
+    var last_recv: List[List[Byte]]
     var recv_total: Int
     var recv_bytes: Int
 
     def __init__(out self, var sock: Socket, var h3: H3Connection):
         self.sock = sock^
         self.h3 = h3^
-        self.last_recv = List[List[UInt8]]()
+        self.last_recv = List[List[Byte]]()
         self.recv_total = 0
         self.recv_bytes = 0
 
@@ -193,9 +193,9 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         """The per-connection adapter behind slot `i` (no bounds check)."""
         return self.srv[].conn_slots[i].h3
 
-    def server_addr(self, i: Int) -> List[UInt8]:
+    def server_addr(self, i: Int) -> List[Byte]:
         """Copy of slot `i`'s raw sockaddr blob."""
-        return List[UInt8](copy=self.srv[].conn_slots[i].addr)
+        return List[Byte](copy=self.srv[].conn_slots[i].addr)
 
     # ── Client side ───────────────────────────────────────────────
 
@@ -228,19 +228,19 @@ struct UdpServerHarness[H: StreamHandler](Movable):
             _ = client.sock.send(Span(dgs[i]))
         return len(dgs)
 
-    def send_raw(self, ref sock: Socket, dg: List[UInt8]) raises:
+    def send_raw(self, ref sock: Socket, dg: List[Byte]) raises:
         """Write one prebuilt datagram on an arbitrary socket."""
         _ = sock.send(Span(dg))
 
-    def recv_raw(self, ref sock: Socket, timeout_ms: Int) raises -> List[List[UInt8]]:
+    def recv_raw(self, ref sock: Socket, timeout_ms: Int) raises -> List[List[Byte]]:
         """Datagrams readable on `sock` within `timeout_ms` (empty on timeout)."""
-        var out = List[List[UInt8]]()
+        var out = List[List[Byte]]()
         var fd = Int32(Int(sock.raw()))
         if not _poll_readable(fd, timeout_ms):
             return out^
-        var buf = List[UInt8](capacity=_RECV_BUF)
+        var buf = List[Byte](capacity=_RECV_BUF)
         for _ in range(_RECV_BUF):
-            buf.append(UInt8(0))
+            buf.append(Byte(0))
         while True:
             var n: Int
             try:
@@ -249,7 +249,7 @@ struct UdpServerHarness[H: StreamHandler](Movable):
                 break  # EAGAIN: drained.
             if n <= 0:
                 break
-            var dg = List[UInt8](capacity=n)
+            var dg = List[Byte](capacity=n)
             for i in range(n):
                 dg.append(buf[i])
             out.append(dg^)

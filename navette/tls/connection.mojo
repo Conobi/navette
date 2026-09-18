@@ -46,7 +46,7 @@ struct TlsConnection(Movable):
 
     var _lib: SharedLibrary
     var _handle: Int32
-    var _ciphertext_out: List[UInt8]
+    var _ciphertext_out: List[Byte]
     var _ct_drain_buf: Pointer[UInt8, MutUntrackedOrigin]
     var _pt_drain_buf: Pointer[UInt8, MutUntrackedOrigin]
     var _handshake_complete: Bool
@@ -58,7 +58,7 @@ struct TlsConnection(Movable):
         *,
         _lib: SharedLibrary,
         _handle: Int32,
-        var _ciphertext_out: List[UInt8],
+        var _ciphertext_out: List[Byte],
         _ct_drain_buf: Pointer[UInt8, MutUntrackedOrigin],
         _pt_drain_buf: Pointer[UInt8, MutUntrackedOrigin],
         _handshake_complete: Bool,
@@ -149,7 +149,7 @@ struct TlsConnection(Movable):
         # Drain the ClientHello immediately so the caller can send it.
         # We allocate the ciphertext drain buffer here and reuse it as the
         # struct's pre-allocated buffer (no double allocation).
-        var ct_out = List[UInt8]()
+        var ct_out = List[Byte]()
         var init_ct_buf = _heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE)
         try:
             while True:
@@ -195,7 +195,7 @@ struct TlsConnection(Movable):
         return Self(
             _lib=lib,
             _handle=handle,
-            _ciphertext_out=List[UInt8](),
+            _ciphertext_out=List[Byte](),
             _ct_drain_buf=_heap_alloc[UInt8](_CIPHERTEXT_DRAIN_BUF_SIZE),
             _pt_drain_buf=_heap_alloc[UInt8](_IO_BUF_SIZE),
             _handshake_complete=False,
@@ -203,7 +203,7 @@ struct TlsConnection(Movable):
 
     # -- Inbound: ciphertext -> plaintext --------------------------------------
 
-    def receive_data(mut self, ciphertext: Span[UInt8, _]) raises:
+    def receive_data(mut self, ciphertext: Span[Byte, _]) raises:
         """Feed received ciphertext into the TLS state machine.
 
         Any handshake replies / encrypted alerts that rustls produces in
@@ -238,7 +238,7 @@ struct TlsConnection(Movable):
             if hs == Int32(0):
                 self._handshake_complete = True
 
-    def drain_plaintext(mut self) raises -> List[UInt8]:
+    def drain_plaintext(mut self) raises -> List[Byte]:
         """Return any decrypted plaintext available after `receive_data`.
 
         Loops `rlsm_tls_conn_read_plaintext` until it returns 0 (no more
@@ -247,7 +247,7 @@ struct TlsConnection(Movable):
         data. Raises on FFI errors so close_notify / fatal alerts surface
         rather than being indistinguishable from "no data yet".
         """
-        var result = List[UInt8]()
+        var result = List[Byte]()
         while True:
             var n = self._lib.inner_ptr()[].tls_conn_read_plaintext(
                 self._handle, self._pt_drain_buf, Int32(_IO_BUF_SIZE)
@@ -265,7 +265,7 @@ struct TlsConnection(Movable):
 
     # -- Outbound: plaintext -> ciphertext -------------------------------------
 
-    def send_data(mut self, plaintext: Span[UInt8, _]) raises:
+    def send_data(mut self, plaintext: Span[Byte, _]) raises:
         """Encrypt plaintext. The resulting ciphertext is buffered
         internally; retrieve it with `drain_ciphertext`.
         """
@@ -286,13 +286,13 @@ struct TlsConnection(Movable):
 
         self._drain_write_tls()
 
-    def drain_ciphertext(mut self) -> List[UInt8]:
+    def drain_ciphertext(mut self) -> List[Byte]:
         """Return all buffered ciphertext, clearing the internal buffer.
 
         This is the data that must be sent to the peer over the network.
         """
         var out = self._ciphertext_out^
-        self._ciphertext_out = List[UInt8]()
+        self._ciphertext_out = List[Byte]()
         return out^
 
     # -- State -----------------------------------------------------------------

@@ -28,7 +28,7 @@ mirrors, byte for byte, what the HTTP/1.1 parser has always done.
 from std.collections import Span
 
 
-def bytes_to_string(var data: List[UInt8]) -> String:
+def bytes_to_string(var data: List[Byte]) -> String:
     """Adopt `data` as a String, transcoding any high bytes as Latin-1.
 
     Args:
@@ -51,7 +51,7 @@ def bytes_to_string(var data: List[UInt8]) -> String:
     return String(unsafe_from_utf8=data^)
 
 
-def string_to_bytes(s: String) -> List[UInt8]:
+def string_to_bytes(s: String) -> List[Byte]:
     """Recover the original octets from a String built by `bytes_to_string`.
 
     Args:
@@ -62,7 +62,7 @@ def string_to_bytes(s: String) -> List[UInt8]:
         folded back to their single-byte value; everything else is copied as
         its UTF-8 bytes.
     """
-    var out = List[UInt8]()
+    var out = List[Byte]()
     for cp in s.codepoints():
         var v = Int(cp)
         if v <= 0xFF:

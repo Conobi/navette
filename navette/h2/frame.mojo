@@ -129,7 +129,7 @@ struct Frame(Copyable, Movable):
     var frame_type: Int
     var flags: Int
     var stream_id: Int
-    var payload: List[UInt8]
+    var payload: List[Byte]
     var error: String
     var error_code: Int
     var error_scope: Int
@@ -139,7 +139,7 @@ struct Frame(Copyable, Movable):
         self.frame_type = 0
         self.flags = 0
         self.stream_id = 0
-        self.payload = List[UInt8]()
+        self.payload = List[Byte]()
         self.error = String("")
         self.error_code = H2_NO_ERROR
         self.error_scope = SCOPE_NONE
@@ -150,7 +150,7 @@ struct Frame(Copyable, Movable):
         frame_type: Int,
         flags: Int,
         stream_id: Int,
-        payload: List[UInt8],
+        payload: List[Byte],
     ):
         self.length = length
         self.frame_type = frame_type
@@ -194,7 +194,7 @@ def _make_error_frame(
     frame_type: Int,
     flags: Int,
     stream_id: Int,
-    payload: List[UInt8],
+    payload: List[Byte],
     error: String,
     error_code: Int,
     error_scope: Int,
@@ -228,7 +228,7 @@ def _requires_zero_stream(ft: Int) -> Bool:
 # decode_frame
 # ---------------------------------------------------------------------------
 def decode_frame(
-    wire: List[UInt8],
+    wire: List[Byte],
     pos: Int = 0,
     config: H2FrameConfig = H2FrameConfig(),
 ) -> Tuple[Frame, Int, String]:
@@ -284,7 +284,7 @@ def decode_frame(
 
     # --- Check max_frame_size ---
     if not config.allow_oversized_frame and length > config.max_frame_size:
-        var payload = List[UInt8](capacity=length)
+        var payload = List[Byte](capacity=length)
         payload.extend(Span(wire)[pos + 9 : pos + 9 + length])
         var f = _make_error_frame(
             length,
@@ -302,7 +302,7 @@ def decode_frame(
         return (f^, 9 + length, f.error)
 
     # --- Copy payload ---
-    var payload = List[UInt8](capacity=length)
+    var payload = List[Byte](capacity=length)
     payload.extend(Span(wire)[pos + 9 : pos + 9 + length])
 
     var consumed = 9 + length
@@ -604,11 +604,11 @@ def decode_frame(
 # ---------------------------------------------------------------------------
 # encode_frame
 # ---------------------------------------------------------------------------
-def encode_frame(frame: Frame) -> List[UInt8]:
+def encode_frame(frame: Frame) -> List[Byte]:
     """Encode a Frame into wire bytes (9-byte header + payload)."""
     var payload_len = len(frame.payload)
-    var result = List[UInt8](capacity=9 + payload_len)
-    result.resize(9, UInt8(0))
+    var result = List[Byte](capacity=9 + payload_len)
+    result.resize(9, Byte(0))
 
     # 3-byte length + 1-byte type + 1-byte flags via _at writes
     var pos = 0

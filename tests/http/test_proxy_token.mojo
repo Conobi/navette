@@ -58,7 +58,7 @@ def test_listener_accept_token() raises:
 
 def test_roundtrip_all_ops() raises:
     """Every op kind round-trips through encode -> decode."""
-    var ops = List[UInt8]()
+    var ops = List[Byte]()
     ops.append(OP_ACCEPT)
     ops.append(OP_CLIENT_RECV)
     ops.append(OP_CLIENT_SEND)

@@ -34,7 +34,7 @@ def _has_key(obj: PythonObject, key: String) -> Bool:
         return False
 
 
-def _bytes_equal(a: List[UInt8], b: List[UInt8]) -> Bool:
+def _bytes_equal(a: List[Byte], b: List[Byte]) -> Bool:
     if len(a) != len(b):
         return False
     for i in range(len(a)):
@@ -43,7 +43,7 @@ def _bytes_equal(a: List[UInt8], b: List[UInt8]) -> Bool:
     return True
 
 
-def _assert_bytes_equal(got: List[UInt8], expected: List[UInt8], msg: String) raises:
+def _assert_bytes_equal(got: List[Byte], expected: List[Byte], msg: String) raises:
     if not _bytes_equal(got, expected):
         print(
             "ASSERTION FAILED ["
@@ -296,12 +296,12 @@ def test_roundtrip_full() raises:
     orig.disable_active_migration = True
 
     # 8-byte CIDs.
-    var dcid = List[UInt8]()
+    var dcid = List[Byte]()
     for i in range(8):
         dcid.append(UInt8(0x10 + i))
     orig.original_dcid = dcid^
 
-    var scid = List[UInt8]()
+    var scid = List[Byte]()
     for i in range(8):
         scid.append(UInt8(0x20 + i))
     orig.initial_scid = scid^
@@ -383,7 +383,7 @@ def test_roundtrip_defaults() raises:
 def test_roundtrip_unknown_param() raises:
     """Unknown parameter preserved through serialize -> parse."""
     var orig = TransportParams()
-    var value = List[UInt8]()
+    var value = List[Byte]()
     value.append(UInt8(0xDE))
     value.append(UInt8(0xAD))
     value.append(UInt8(0xBE))

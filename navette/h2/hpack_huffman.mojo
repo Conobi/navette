@@ -44,13 +44,13 @@ struct HuffmanCodec(Movable):
     """
 
     var codes: List[UInt32]  # 257 entries: code bits for each symbol
-    var code_lengths: List[UInt8]  # 257 entries: bit length of each code
+    var code_lengths: List[Byte]  # 257 entries: bit length of each code
     var _trie: List[_TrieNode]  # flat trie for decoding
 
     def __init__(out self):
         """Build the codec: populate codes and construct the decode trie."""
         self.codes = List[UInt32]()
-        self.code_lengths = List[UInt8]()
+        self.code_lengths = List[Byte]()
         self._trie = List[_TrieNode]()
 
         self._init_codes()
@@ -66,7 +66,7 @@ struct HuffmanCodec(Movable):
         # Pre-size lists
         for _ in range(257):
             self.codes.append(UInt32(0))
-            self.code_lengths.append(UInt8(0))
+            self.code_lengths.append(Byte(0))
 
         # Symbol 0-31 (control characters)
         self.codes[0] = 0x1FF8;       self.code_lengths[0] = 13
@@ -362,9 +362,9 @@ struct HuffmanCodec(Movable):
 
             self._trie[node_idx].symbol = sym
 
-    def encode(self, data: List[UInt8]) -> List[UInt8]:
+    def encode(self, data: List[Byte]) -> List[Byte]:
         """Encode a byte sequence using HPACK Huffman coding."""
-        var result = List[UInt8]()
+        var result = List[Byte]()
         var current = UInt64(0)
         var bits = 0
 
@@ -387,9 +387,9 @@ struct HuffmanCodec(Movable):
 
         return result^
 
-    def decode(self, data: List[UInt8]) -> Tuple[List[UInt8], String]:
+    def decode(self, data: List[Byte]) -> Tuple[List[Byte], String]:
         """Decode Huffman-compressed bytes back to raw bytes."""
-        var result = List[UInt8]()
+        var result = List[Byte]()
 
         if len(data) == 0:
             return (result^, String())

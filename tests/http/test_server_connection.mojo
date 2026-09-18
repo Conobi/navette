@@ -22,15 +22,15 @@ from tests._test_util import assert_true, assert_equal_int, assert_equal_str
 # --- Helpers ---
 
 
-def _str_to_bytes(s: String) -> List[UInt8]:
+def _str_to_bytes(s: String) -> List[Byte]:
     var b = s.as_bytes()
-    var result = List[UInt8]()
+    var result = List[Byte]()
     for i in range(len(b)):
         result.append(b[i])
     return result^
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
+def _bytes_to_string(data: List[Byte]) -> String:
     var result = String()
     for i in range(len(data)):
         result += chr(Int(data[i]))

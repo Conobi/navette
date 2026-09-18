@@ -2,11 +2,11 @@
 
 
 struct ByteWriter:
-    var _buf: List[UInt8]
+    var _buf: List[Byte]
     var position: Int
 
     def __init__(out self, *, capacity: Int = 1500):
-        self._buf = List[UInt8](capacity=capacity)
+        self._buf = List[Byte](capacity=capacity)
         self.position = 0
 
     def write_u8(mut self, value: UInt8) raises:
@@ -27,20 +27,20 @@ struct ByteWriter:
         self.write_u32_be(UInt32((Int(value) >> 32) & 0xFFFFFFFF))
         self.write_u32_be(UInt32(Int(value) & 0xFFFFFFFF))
 
-    def write_bytes(mut self, data: List[UInt8]) raises:
+    def write_bytes(mut self, data: List[Byte]) raises:
         for i in range(len(data)):
             self._buf.append(data[i])
         self.position += len(data)
 
-    def finish(self) -> List[UInt8]:
+    def finish(self) -> List[Byte]:
         return self._buf.copy()
 
 
 struct ByteReader:
-    var _buf: List[UInt8]
+    var _buf: List[Byte]
     var position: Int
 
-    def __init__(out self, data: List[UInt8]):
+    def __init__(out self, data: List[Byte]):
         self._buf = data.copy()
         self.position = 0
 
@@ -78,10 +78,10 @@ struct ByteReader:
         var lo = UInt64(self.read_u32_be())
         return (hi << 32) | lo
 
-    def read_bytes(mut self, n: Int) raises -> List[UInt8]:
+    def read_bytes(mut self, n: Int) raises -> List[Byte]:
         if self.remaining() < n:
             raise "ByteReader: underflow reading " + String(n) + " bytes"
-        var result = List[UInt8]()
+        var result = List[Byte]()
         for i in range(n):
             result.append(self._buf[self.position + i])
         self.position += n

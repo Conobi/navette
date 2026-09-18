@@ -43,8 +43,8 @@ def _hex_val(b: UInt8) -> Int:
     return 0
 
 
-def _hex_to_bytes(hex_str: String) -> List[UInt8]:
-    var result = List[UInt8]()
+def _hex_to_bytes(hex_str: String) -> List[Byte]:
+    var result = List[Byte]()
     var b = hex_str.as_bytes()
     var i = 0
     while i < hex_str.byte_length():
@@ -121,7 +121,7 @@ def test_cross_ping(states: PythonObject) raises:
     _ = server.receive_data(client_preface)
     _ = server.data_to_send()
 
-    var ping_payload = List[UInt8]()
+    var ping_payload = List[Byte]()
     ping_payload.append(UInt8(0x10))
     ping_payload.append(UInt8(0x20))
     ping_payload.append(UInt8(0x30))

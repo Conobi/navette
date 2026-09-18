@@ -46,7 +46,7 @@ def _do_preface(
     var server_resp = server.drain()  # server SETTINGS + SETTINGS ACK
 
     # Feed server output to client
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(server_initial)):
         combined.append(server_initial[i])
     for i in range(len(server_resp)):

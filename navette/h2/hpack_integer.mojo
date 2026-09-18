@@ -4,7 +4,7 @@
 
 
 def decode_integer(
-    wire: List[UInt8], pos: Int, prefix_bits: Int
+    wire: List[Byte], pos: Int, prefix_bits: Int
 ) -> Tuple[Int, Int, String]:
     """Decode an HPACK prefix-encoded integer from wire bytes.
 

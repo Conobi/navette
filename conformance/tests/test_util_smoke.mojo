@@ -22,7 +22,7 @@ def main() raises:
 
     # hex edge cases
     assert_equal(len(hex_decode("")), 0, "empty hex")
-    assert_true(hex_encode(List[UInt8]()) == "", "empty encode")
+    assert_true(hex_encode(List[Byte]()) == "", "empty encode")
 
     # Explicit known-value tests — proves hex_decode isn't silently mangling bytes
     assert_equal(Int(hex_decode("00")[0]), 0x00, "hex 00 -> byte 0x00")

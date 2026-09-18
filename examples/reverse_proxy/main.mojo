@@ -1132,7 +1132,7 @@ struct ProxyHandler(Movable):
                 ptr[].closed = True
                 return
             var n = Int(result)
-            var chunk = List[UInt8](capacity=n)
+            var chunk = List[Byte](capacity=n)
             for i in range(n):
                 chunk.append(ptr[].send_state.client_recv_buf[i])
             ptr[].client_tls.receive_data(Span(chunk))
@@ -1159,13 +1159,13 @@ struct ProxyHandler(Movable):
             if result < 0:
                 ptr[].closed = True
                 return
-            ptr[].send_state.client_send_buf = List[UInt8]()
+            ptr[].send_state.client_send_buf = List[Byte]()
             if len(ptr[].send_state.client_send_pending) > 0:
                 var n_pending = len(ptr[].send_state.client_send_pending)
-                var pending = List[UInt8](capacity=n_pending)
+                var pending = List[Byte](capacity=n_pending)
                 for i in range(n_pending):
                     pending.append(ptr[].send_state.client_send_pending[i])
-                ptr[].send_state.client_send_pending = List[UInt8]()
+                ptr[].send_state.client_send_pending = List[Byte]()
                 ptr[].send_state.client_send_buf = pending^
                 # Re-queue another client send.
                 if not ptr[].send_state.client_send_in_flight:

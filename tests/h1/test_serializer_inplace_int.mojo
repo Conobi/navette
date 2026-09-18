@@ -10,7 +10,7 @@ from navette.h1.serializer import _append_decimal, _append_hex_lower
 from tests._test_util import assert_equal_str
 
 
-def _buf_to_str(data: List[UInt8]) -> String:
+def _buf_to_str(data: List[Byte]) -> String:
     var s = String()
     for i in range(len(data)):
         s += chr(Int(data[i]))
@@ -20,7 +20,7 @@ def _buf_to_str(data: List[UInt8]) -> String:
 def _ref_decimal(value: Int) -> String:
     if value == 0:
         return String("0")
-    var digits = List[UInt8]()
+    var digits = List[Byte]()
     var v = value
     while v > 0:
         digits.append(UInt8(v % 10 + 48))
@@ -34,7 +34,7 @@ def _ref_decimal(value: Int) -> String:
 
 
 def _check_decimal(value: Int) raises:
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     _append_decimal(buf, value)
     assert_equal_str(_buf_to_str(buf), _ref_decimal(value), "decimal " + String(value))
 
@@ -44,7 +44,7 @@ def test_append_decimal_property() raises:
     for v in [0, 1, 9, 10, 99, 100, 999, 9223372036854775807]:
         _check_decimal(v)
     # Bytes before `start` are untouched (append into a non-empty buffer).
-    var pre = List[UInt8]()
+    var pre = List[Byte]()
     pre.append(UInt8(65))  # 'A'
     _append_decimal(pre, 4096)
     assert_equal_str(_buf_to_str(pre), String("A4096"), "decimal prefix preserved")
@@ -59,7 +59,7 @@ def _ref_hex(value: Int) -> String:
         return String("0")
     var hex_chars = String("0123456789abcdef")
     var hb = hex_chars.as_bytes()
-    var digits = List[UInt8]()
+    var digits = List[Byte]()
     var v = value
     while v > 0:
         digits.append(hb[v & 0xF])
@@ -73,7 +73,7 @@ def _ref_hex(value: Int) -> String:
 
 
 def _check_hex(value: Int) raises:
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     _append_hex_lower(buf, value)
     assert_equal_str(_buf_to_str(buf), _ref_hex(value), "hex " + String(value))
 

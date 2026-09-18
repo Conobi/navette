@@ -28,30 +28,30 @@ comptime CID_RETIRED: UInt8 = 2
 struct CidEntry(Copyable, Movable):
     """A single connection ID entry with associated metadata."""
 
-    var cid: List[UInt8]          # connection ID bytes (8 bytes)
+    var cid: List[Byte]          # connection ID bytes (8 bytes)
     var sequence: UInt64          # sequence number
-    var reset_token: List[UInt8]  # 16-byte stateless reset token
+    var reset_token: List[Byte]  # 16-byte stateless reset token
     var state: UInt8              # CID_ACTIVE / CID_PENDING_RETIRE / CID_RETIRED
     var advertised: Bool          # True once a NEW_CONNECTION_ID frame has been sent
 
     def __init__(
         out self,
-        cid: List[UInt8],
+        cid: List[Byte],
         sequence: UInt64,
-        reset_token: List[UInt8],
+        reset_token: List[Byte],
         state: UInt8,
         advertised: Bool = False,
     ):
-        self.cid = List[UInt8](copy=cid)
+        self.cid = List[Byte](copy=cid)
         self.sequence = sequence
-        self.reset_token = List[UInt8](copy=reset_token)
+        self.reset_token = List[Byte](copy=reset_token)
         self.state = state
         self.advertised = advertised
 
     def __init__(out self, *, copy: Self):
-        self.cid = List[UInt8](copy=copy.cid)
+        self.cid = List[Byte](copy=copy.cid)
         self.sequence = copy.sequence
-        self.reset_token = List[UInt8](copy=copy.reset_token)
+        self.reset_token = List[Byte](copy=copy.reset_token)
         self.state = copy.state
         self.advertised = copy.advertised
 
@@ -84,13 +84,13 @@ struct CidManager(Movable):
     var retire_queue_cap: Int              # max queue depth (peer_active_limit * 8)
     var highest_retire_prior_to: UInt64    # highest retire_prior_to from peer
     var _lib: SharedLibrary                # ref-counted RustlsLibrary for HMAC-SHA256
-    var server_secret: List[UInt8]         # 32-byte key for HMAC-SHA256 reset tokens
+    var server_secret: List[Byte]         # 32-byte key for HMAC-SHA256 reset tokens
 
     def __init__(
         out self,
         lib: SharedLibrary,
-        initial_local_cid: List[UInt8],
-        initial_remote_cid: List[UInt8],
+        initial_local_cid: List[Byte],
+        initial_remote_cid: List[Byte],
         local_active_limit: UInt64,
         peer_active_limit: UInt64,
     ) raises:
@@ -108,7 +108,7 @@ struct CidManager(Movable):
         # Generate 32-byte server_secret via getrandom(2).
         var rbuf = _cid_alloc[UInt8](32)
         _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
-        self.server_secret = List[UInt8](capacity=32)
+        self.server_secret = List[Byte](capacity=32)
         for i in range(32):
             self.server_secret.append(rbuf[unsafe_offset=i])
         rbuf.unsafe_free()
@@ -129,9 +129,9 @@ struct CidManager(Movable):
         self.local_retire_prior_to = UInt64(0)
 
         # Build initial remote CID entry (seq=0, Active, empty token).
-        var empty_token = List[UInt8](capacity=16)
+        var empty_token = List[Byte](capacity=16)
         for _ in range(16):
-            empty_token.append(UInt8(0))
+            empty_token.append(Byte(0))
         var remote_entry = CidEntry(
             initial_remote_cid, UInt64(0), empty_token, CID_ACTIVE
         )
@@ -162,17 +162,17 @@ struct CidManager(Movable):
 
     # ── CID generation ────────────────────────────────────────────────────────
 
-    def generate_cid(mut self) raises -> List[UInt8]:
+    def generate_cid(mut self) raises -> List[Byte]:
         """Generate an 8-byte random connection ID via getrandom(2)."""
         var buf = _cid_alloc[UInt8](8)
         _ = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
-        var cid = List[UInt8](capacity=8)
+        var cid = List[Byte](capacity=8)
         for i in range(8):
             cid.append(buf[unsafe_offset=i])
         buf.unsafe_free()
         return cid^
 
-    def generate_reset_token(self, cid: Span[UInt8, _]) raises -> List[UInt8]:
+    def generate_reset_token(self, cid: Span[Byte, _]) raises -> List[Byte]:
         """Compute HMAC-SHA256(server_secret, cid)[:16] as the reset token."""
         return _hmac_sha256_truncate16(self._lib, Span(self.server_secret), cid)
 
@@ -201,8 +201,8 @@ struct CidManager(Movable):
         mut self,
         seq: UInt64,
         retire_prior_to: UInt64,
-        cid: List[UInt8],
-        reset_token: List[UInt8],
+        cid: List[Byte],
+        reset_token: List[Byte],
     ) raises:
         """Process an incoming NEW_CONNECTION_ID frame from the peer.
 
@@ -242,7 +242,7 @@ struct CidManager(Movable):
 
         # Step 4: store the new CID.
         var entry = CidEntry(
-            List[UInt8](copy=cid), seq, List[UInt8](copy=reset_token), state
+            List[Byte](copy=cid), seq, List[Byte](copy=reset_token), state
         )
         self.remote_cids.append(entry^)
 
@@ -356,8 +356,8 @@ struct CidManager(Movable):
 
 
 def _hmac_sha256_truncate16(
-    lib: SharedLibrary, key: Span[UInt8, _], msg: Span[UInt8, _]
-) raises -> List[UInt8]:
+    lib: SharedLibrary, key: Span[Byte, _], msg: Span[Byte, _]
+) raises -> List[Byte]:
     """Derive a 16-byte reset token via HMAC-SHA256(key, msg)[:16].
 
     Uses the Rust FFI bridge (aws-lc-rs) for a proper cryptographic MAC.
@@ -388,7 +388,7 @@ def _hmac_sha256_truncate16(
         raise "HMAC-SHA256 failed: " + err
 
     # Truncate to first 16 bytes for the reset token.
-    var token = List[UInt8](capacity=16)
+    var token = List[Byte](capacity=16)
     for i in range(16):
         token.append(out_ptr[unsafe_offset=i])
 
@@ -401,7 +401,7 @@ def _hmac_sha256_truncate16(
 # ── 8-byte DCID → UInt64 packing (server demux helper) ────────────────────────
 
 
-def dcid_to_u64(bytes: Span[UInt8, _]) -> UInt64:
+def dcid_to_u64(bytes: Span[Byte, _]) -> UInt64:
     """Pack 8 bytes (big-endian) into a UInt64 for use as a Dict[UInt64, Int]
     key. Server demux fast path — replaces String/hex-keyed lookup.
 

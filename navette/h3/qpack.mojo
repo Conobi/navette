@@ -594,10 +594,10 @@ def _build_huffman_fast(trie: List[_HuffTrieNode]) -> List[_HuffFast]:
     return fast^
 
 
-def huffman_encode(s: String) raises -> List[UInt8]:
+def huffman_encode(s: String) raises -> List[Byte]:
     """Huffman-encode a string per RFC 7541 §5.2."""
     var table = _huffman_encode_table()
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var acc: UInt64 = 0   # bit accumulator
     var bits: Int = 0     # bits in accumulator
     var sbytes = s.as_bytes()
@@ -625,13 +625,13 @@ def huffman_encode(s: String) raises -> List[UInt8]:
     return result^
 
 
-def huffman_encode_into(mut buf: List[UInt8], s: String) raises:
+def huffman_encode_into(mut buf: List[Byte], s: String) raises:
     """Huffman-encode a string, appending directly to buf."""
     var table = _huffman_encode_table()
     _huffman_encode_into_with_table(buf, s, table)
 
 
-def _huffman_encode_into_with_table(mut buf: List[UInt8], s: String, ref table: List[HuffmanEntry]) raises:
+def _huffman_encode_into_with_table(mut buf: List[Byte], s: String, ref table: List[HuffmanEntry]) raises:
     """Huffman-encode using a pre-built table."""
     var acc: UInt64 = 0
     var bits: Int = 0
@@ -673,7 +673,7 @@ def _huffman_encoded_len_with_table(s: String, ref table: List[HuffmanEntry]) ra
 
 
 def _huffman_decode_with_tables(
-    ref data: List[UInt8],
+    ref data: List[Byte],
     ref trie: List[_HuffTrieNode],
     ref fast: List[_HuffFast],
 ) raises -> String:
@@ -683,7 +683,7 @@ def _huffman_decode_with_tables(
     """
     if len(data) == 0:
         return String("")
-    var buf = List[UInt8](capacity=len(data) * 2)
+    var buf = List[Byte](capacity=len(data) * 2)
 
     # 64-bit sliding accumulator; valid bits live in the LOW `acc_bits`
     # positions of `acc`. We extract from the top via shift.
@@ -750,7 +750,7 @@ def _huffman_decode_with_tables(
             all_ones_since_root = True
 
 
-def huffman_decode(data: List[UInt8]) raises -> String:
+def huffman_decode(data: List[Byte]) raises -> String:
     """Huffman-decode bytes per RFC 7541 §5.2.
 
     Algorithm:
@@ -796,7 +796,7 @@ struct _IntDecodeResult(Copyable, Movable):
         self.new_offset = copy_from.new_offset
 
 
-def qpack_decode_int(data: List[UInt8], offset: Int, prefix_bits: UInt8) raises -> _IntDecodeResult:
+def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -> _IntDecodeResult:
     """Decode a prefix integer per RFC 7541 §5.1."""
     var max_first = UInt64((1 << Int(prefix_bits)) - 1)
     var first = UInt64(data[offset]) & max_first
@@ -828,33 +828,33 @@ struct _StrDecodeResult(Copyable, Movable):
         self.new_offset = copy_from.new_offset
 
 
-def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[UInt8]:
+def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[Byte]:
     """Encode a string literal per RFC 7541 §5.2 / RFC 9204 §4.1.2."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     _qpack_encode_string_into(result, s, use_huffman)
     return result^
 
 
-def _qpack_encode_string_into(mut buf: List[UInt8], s: String, use_huffman: Bool) raises:
+def _qpack_encode_string_into(mut buf: List[Byte], s: String, use_huffman: Bool) raises:
     """Append a QPACK string literal encoding directly to buf."""
     if use_huffman:
         var huff_len = huffman_encoded_len(s)
         var idx = len(buf)
-        buf.resize(idx + 6, UInt8(0))
+        buf.resize(idx + 6, Byte(0))
         buf[idx] = UInt8(0x80)
         var n = hpack_encode_int_at(buf, idx, huff_len, 7)
-        buf.resize(idx + n, UInt8(0))
+        buf.resize(idx + n, Byte(0))
         huffman_encode_into(buf, s)
     else:
         var raw = s.as_bytes()
         var idx = len(buf)
-        buf.resize(idx + 6, UInt8(0))
+        buf.resize(idx + 6, Byte(0))
         var n = hpack_encode_int_at(buf, idx, len(raw), 7)
-        buf.resize(idx + n, UInt8(0))
+        buf.resize(idx + n, Byte(0))
         buf.extend(Span(raw))
 
 
-def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
+def _qpack_decode_string(data: List[Byte], offset: Int) raises -> _StrDecodeResult:
     """Decode a QPACK/HPACK string literal from data at offset.
 
     Convenience wrapper that builds Huffman decode tables on every call.
@@ -869,7 +869,7 @@ def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeRes
     var pos = ir.new_offset
     if pos + length > len(data):
         raise "QPACK: string data truncated"
-    var raw = List[UInt8]()
+    var raw = List[Byte]()
     for i in range(length):
         raw.append(data[pos + i])
     pos += length
@@ -881,7 +881,7 @@ def _qpack_decode_string(data: List[UInt8], offset: Int) raises -> _StrDecodeRes
 
 
 def _qpack_decode_string_with_tables(
-    data: List[UInt8],
+    data: List[Byte],
     offset: Int,
     trie: List[_HuffTrieNode],
     fast: List[_HuffFast],
@@ -903,13 +903,13 @@ def _qpack_decode_string_with_tables(
     var end = pos + length
     if h_bit:
         # Pass slice to Huffman decoder to avoid copy.
-        var slice = List[UInt8](capacity=length)
+        var slice = List[Byte](capacity=length)
         for i in range(pos, end):
             slice.append(data[i])
         pos = end
         return _StrDecodeResult(_huffman_decode_with_tables(slice, trie, fast), pos)
     else:
-        var raw = List[UInt8](capacity=length)
+        var raw = List[Byte](capacity=length)
         for i in range(pos, end):
             raw.append(data[i])
         pos = end
@@ -942,7 +942,7 @@ struct QpackEncoder(Copyable, Movable):
         self._huff_encode = List[HuffmanEntry](copy=copy_from._huff_encode)
         self._static_index = copy_from._static_index.copy()
 
-    def encode(self, headers: List[QpackHeaderField]) raises -> List[UInt8]:
+    def encode(self, headers: List[QpackHeaderField]) raises -> List[Byte]:
         """Encode a header list as a QPACK field section block.
 
         Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
@@ -951,7 +951,7 @@ struct QpackEncoder(Copyable, Movable):
           - Literal Field Line With Name Reference (§4.5.4): 0 1 N T xxxx (N=0, T=1, 4-bit index)
           - Literal Field Line Without Name Reference (§4.5.6): 0 0 1 N H nnn | name | value
         """
-        var result = List[UInt8](capacity=128)
+        var result = List[Byte](capacity=128)
         result.append(0x00)  # Required Insert Count = 0
         result.append(0x00)  # S bit = 0, Delta Base = 0
 
@@ -960,7 +960,7 @@ struct QpackEncoder(Copyable, Movable):
 
         return result^
 
-    def _encode_field_into(self, mut buf: List[UInt8], name: String, value: String) raises:
+    def _encode_field_into(self, mut buf: List[Byte], name: String, value: String) raises:
         """Append one encoded header field directly to buf."""
         var result = self._static_index.find(name, value)
         var match_idx = result[0]
@@ -969,19 +969,19 @@ struct QpackEncoder(Copyable, Movable):
         # 1. Exact static match -> Indexed Static Field Line
         if match_idx >= 0 and is_exact:
             var idx = len(buf)
-            buf.resize(idx + 6, UInt8(0))
+            buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0xC0)
             var n = hpack_encode_int_at(buf, idx, match_idx, 6)
-            buf.resize(idx + n, UInt8(0))
+            buf.resize(idx + n, Byte(0))
             return
 
         # 2. Name-only match -> Literal With Static Name Reference
         if match_idx >= 0:
             var idx = len(buf)
-            buf.resize(idx + 6, UInt8(0))
+            buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x50)
             var n = hpack_encode_int_at(buf, idx, match_idx, 4)
-            buf.resize(idx + n, UInt8(0))
+            buf.resize(idx + n, Byte(0))
             self._qpack_encode_string_into_cached(buf, value)
             return
 
@@ -989,37 +989,37 @@ struct QpackEncoder(Copyable, Movable):
         if self.use_huffman:
             var name_huff_len = _huffman_encoded_len_with_table(name, self._huff_encode)
             var idx = len(buf)
-            buf.resize(idx + 6, UInt8(0))
+            buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x20 | 0x08)
             var n = hpack_encode_int_at(buf, idx, name_huff_len, 3)
-            buf.resize(idx + n, UInt8(0))
+            buf.resize(idx + n, Byte(0))
             _huffman_encode_into_with_table(buf, name, self._huff_encode)
         else:
             var name_span = name.as_bytes()
             var idx = len(buf)
-            buf.resize(idx + 6, UInt8(0))
+            buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x20)
             var n = hpack_encode_int_at(buf, idx, len(name_span), 3)
-            buf.resize(idx + n, UInt8(0))
+            buf.resize(idx + n, Byte(0))
             buf.extend(Span(name_span))
         self._qpack_encode_string_into_cached(buf, value)
 
-    def _qpack_encode_string_into_cached(self, mut buf: List[UInt8], s: String) raises:
+    def _qpack_encode_string_into_cached(self, mut buf: List[Byte], s: String) raises:
         """Encode string using cached Huffman table."""
         if self.use_huffman:
             var huff_len = _huffman_encoded_len_with_table(s, self._huff_encode)
             var idx = len(buf)
-            buf.resize(idx + 6, UInt8(0))
+            buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x80)
             var n = hpack_encode_int_at(buf, idx, huff_len, 7)
-            buf.resize(idx + n, UInt8(0))
+            buf.resize(idx + n, Byte(0))
             _huffman_encode_into_with_table(buf, s, self._huff_encode)
         else:
             var raw = s.as_bytes()
             var idx = len(buf)
-            buf.resize(idx + 6, UInt8(0))
+            buf.resize(idx + 6, Byte(0))
             var n = hpack_encode_int_at(buf, idx, len(raw), 7)
-            buf.resize(idx + n, UInt8(0))
+            buf.resize(idx + n, Byte(0))
             buf.extend(Span(raw))
 
 
@@ -1061,7 +1061,7 @@ struct QpackDecoder(Copyable, Movable):
         self._huff_fast = copy_from._huff_fast.copy()
         self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
 
-    def _decode_string(mut self, ref data: List[UInt8], offset: Int) raises -> _StrDecodeResult:
+    def _decode_string(mut self, ref data: List[Byte], offset: Int) raises -> _StrDecodeResult:
         """Decode a QPACK string literal, reusing scratch decode buffer."""
         if offset >= len(data):
             raise "QPACK: truncated string at offset " + String(offset)
@@ -1073,7 +1073,7 @@ struct QpackDecoder(Copyable, Movable):
             raise "QPACK: string data truncated"
         var end = pos + length
         if h_bit:
-            var raw = List[UInt8](capacity=length)
+            var raw = List[Byte](capacity=length)
             for i in range(pos, end):
                 raw.append(data[i])
             pos = end
@@ -1082,14 +1082,14 @@ struct QpackDecoder(Copyable, Movable):
                 pos,
             )
         else:
-            var raw = List[UInt8](capacity=length)
+            var raw = List[Byte](capacity=length)
             for i in range(pos, end):
                 raw.append(data[i])
             pos = end
             var s = bytes_to_string(raw^)
             return _StrDecodeResult(s, pos)
 
-    def decode(mut self, data: List[UInt8]) raises -> List[QpackHeaderField]:
+    def decode(mut self, data: List[Byte]) raises -> List[QpackHeaderField]:
         """Decode a QPACK field section block.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
@@ -1163,7 +1163,7 @@ struct QpackDecoder(Copyable, Movable):
                 var name_len = Int(name_len_r.value)
                 if pos + name_len > len(data):
                     raise "QPACK: §4.5.6 name data truncated"
-                var name_raw = List[UInt8](capacity=name_len)
+                var name_raw = List[Byte](capacity=name_len)
                 for j in range(name_len):
                     name_raw.append(data[pos + j])
                 pos += name_len

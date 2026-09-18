@@ -193,13 +193,13 @@ struct ContentDecoder(Movable):
 
     # -- public API ------------------------------------------------------------
 
-    def feed(self, data: List[UInt8]) raises -> List[UInt8]:
+    def feed(self, data: List[Byte]) raises -> List[Byte]:
         """Feed compressed bytes and return whatever can be decompressed now.
 
         For identity encoding, returns a copy of the input.
         """
         if self._encoding._tag == _ENC_IDENTITY:
-            var out = List[UInt8](capacity=len(data))
+            var out = List[Byte](capacity=len(data))
             out.extend(Span(data))
             return out^
 
@@ -231,20 +231,20 @@ struct ContentDecoder(Movable):
         if n < 0:
             raise "ContentDecoder.feed: decompression error (" + String(n) + ")"
 
-        var result = List[UInt8](capacity=Int(n))
-        result.resize(Int(n), UInt8(0))
+        var result = List[Byte](capacity=Int(n))
+        result.resize(Int(n), Byte(0))
         for i in range(Int(n)):
             result[i] = out_buf[unsafe_offset=i]
         return result^
 
-    def finish(self) raises -> List[UInt8]:
+    def finish(self) raises -> List[Byte]:
         """Flush any remaining decompressed bytes.
 
         Must be called once after all data has been fed. For identity
         encoding, returns an empty list.
         """
         if self._encoding._tag == _ENC_IDENTITY:
-            return List[UInt8]()
+            return List[Byte]()
 
         var out_buf_owner = Owned[UInt8](_OUT_CAP)
         var out_buf = out_buf_owner.ptr()
@@ -265,8 +265,8 @@ struct ContentDecoder(Movable):
         if n < 0:
             raise "ContentDecoder.finish: decompression error (" + String(n) + ")"
 
-        var result = List[UInt8](capacity=Int(n))
-        result.resize(Int(n), UInt8(0))
+        var result = List[Byte](capacity=Int(n))
+        result.resize(Int(n), Byte(0))
         for i in range(Int(n)):
             result[i] = out_buf[unsafe_offset=i]
         return result^

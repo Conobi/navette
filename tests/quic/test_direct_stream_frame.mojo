@@ -34,7 +34,7 @@ def _assert_false(cond: Bool, msg: String) raises:
         raise msg
 
 
-def _assert_bytes_eq(got: List[UInt8], expected: List[UInt8], msg: String) raises:
+def _assert_bytes_eq(got: List[Byte], expected: List[Byte], msg: String) raises:
     if len(got) != len(expected):
         raise msg + ": length mismatch, got " + String(len(got)) + " expected " + String(len(expected))
     for i in range(len(got)):
@@ -47,10 +47,10 @@ def _assert_bytes_eq(got: List[UInt8], expected: List[UInt8], msg: String) raise
 
 def test_direct_stream_roundtrip() raises:
     """Write a STREAM frame with offset via direct writer, parse it back."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(50):
         data.append(UInt8(i))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -77,10 +77,10 @@ def test_direct_stream_roundtrip() raises:
 
 def test_direct_stream_zero_offset() raises:
     """Direct write at offset 0 omits the OFF bit."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for _ in range(10):
         data.append(UInt8(0xAA))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -102,10 +102,10 @@ def test_direct_stream_zero_offset() raises:
 
 def test_direct_stream_fin_with_data() raises:
     """Direct write with FIN flag and data."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(0x48 + i))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -127,8 +127,8 @@ def test_direct_stream_fin_with_data() raises:
 
 def test_direct_stream_fin_only() raises:
     """Direct write with FIN and empty data."""
-    var data = List[UInt8]()
-    var buf = List[UInt8]()
+    var data = List[Byte]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -150,12 +150,12 @@ def test_direct_stream_fin_only() raises:
 
 def test_direct_stream_budget_truncation() raises:
     """Budget truncates data to fit; output is still a valid frame."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(200):
         data.append(UInt8(i & 0xFF))
     # Budget 20: 1 (type) + 1 (stream_id=4) + 2 (offset=100) + 1 (len varint)
     # = 5 header bytes, leaving 15 bytes for data.
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=20,
@@ -181,9 +181,9 @@ def test_direct_stream_budget_truncation() raises:
 
 def test_direct_stream_budget_too_small() raises:
     """Budget too small for even a minimal header returns 0."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(UInt8(0x42))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=2,
@@ -199,7 +199,7 @@ def test_direct_stream_budget_too_small() raises:
 
 def test_direct_stream_matches_serialize() raises:
     """Direct writer produces byte-identical output to serialize_frame."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(50):
         data.append(UInt8(i))
 
@@ -211,7 +211,7 @@ def test_direct_stream_matches_serialize() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -227,8 +227,8 @@ def test_direct_stream_matches_serialize() raises:
 
 def test_direct_stream_no_data_no_fin() raises:
     """Empty data without FIN returns 0 (nothing to emit)."""
-    var data = List[UInt8]()
-    var buf = List[UInt8]()
+    var data = List[Byte]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -243,10 +243,10 @@ def test_direct_stream_no_data_no_fin() raises:
 
 def test_direct_stream_large_offset() raises:
     """Large stream_id and offset use multi-byte varints correctly."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for _ in range(100):
         data.append(UInt8(0xBB))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=500,

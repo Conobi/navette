@@ -97,7 +97,7 @@ def test_encode_decode_roundtrip() raises:
 
 def test_encode_decode_roundtrip_large() raises:
     """Roundtrip with larger data and various chunk sizes."""
-    var original = List[UInt8]()
+    var original = List[Byte]()
     for i in range(500):
         original.append(UInt8(i % 256))
 

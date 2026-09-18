@@ -48,15 +48,15 @@ struct H1HandlerServer[H: StreamHandler](Movable):
     # --- Transport bridging API ---
 
     @always_inline
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         """Feed inbound transport bytes and dispatch any complete requests."""
         self._conn.receive_data(data)
         self._dispatch_pending()
 
     @always_inline
-    def drain(mut self) raises -> List[UInt8]:
+    def drain(mut self) raises -> List[Byte]:
         """Drain queued outbound bytes for the transport to write."""
-        var out = List[UInt8]()
+        var out = List[Byte]()
         self._conn.drain_into(out)
         return out^
 

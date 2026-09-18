@@ -22,7 +22,7 @@ from tests._test_util import assert_true, assert_false, assert_equal_int, load_t
 # ── Helpers (copy/adapt from tests/test_quic_connection.mojo) ────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -44,8 +44,8 @@ def _establish_handshake(
     mut now: UInt64,
 ) raises -> UInt64:
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -125,8 +125,8 @@ def test_pacer_bypassed_during_handshake() raises:
     # server connection with bytes_received=0 and asserting _can_send is
     # False even though the pacer would now allow (server hasn't sent
     # anything yet).
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -159,8 +159,8 @@ def test_pacer_active_after_handshake() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -211,7 +211,7 @@ def test_handshake_padding_still_works() raises:
     )
 
     # Drive one round of send: client should emit a padded Initial datagram.
-    var dgrams = List[List[UInt8]](capacity=1)
+    var dgrams = List[List[Byte]](capacity=1)
     _ = client.send(now, dgrams)
     assert_true(len(dgrams) >= 1, "client must emit at least one datagram on first send")
 

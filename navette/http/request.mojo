@@ -25,14 +25,14 @@ struct RequestBody(Movable):
     DetachedBody, or empty."""
 
     var _tag: Int
-    var _bytes: List[UInt8]
+    var _bytes: List[Byte]
     var _stream: Optional[DetachedBody]
 
     def __init__(
         out self,
         *,
         _tag: Int,
-        var _bytes: List[UInt8],
+        var _bytes: List[Byte],
         var _stream: Optional[DetachedBody],
     ):
         self._tag = _tag
@@ -45,20 +45,20 @@ struct RequestBody(Movable):
         self._stream = move._stream^
 
     @staticmethod
-    def buffered(var bytes: List[UInt8]) -> Self:
+    def buffered(var bytes: List[Byte]) -> Self:
         return Self(_tag=_REQ_BODY_BUFFERED, _bytes=bytes^, _stream=Optional[DetachedBody]())
 
     @staticmethod
     def stream(var detached: DetachedBody) -> Self:
         return Self(
             _tag=_REQ_BODY_STREAM,
-            _bytes=List[UInt8](),
+            _bytes=List[Byte](),
             _stream=Optional[DetachedBody](detached^),
         )
 
     @staticmethod
     def empty() -> Self:
-        return Self(_tag=_REQ_BODY_EMPTY, _bytes=List[UInt8](), _stream=Optional[DetachedBody]())
+        return Self(_tag=_REQ_BODY_EMPTY, _bytes=List[Byte](), _stream=Optional[DetachedBody]())
 
     def is_buffered(self) -> Bool:
         return self._tag == _REQ_BODY_BUFFERED
@@ -69,7 +69,7 @@ struct RequestBody(Movable):
     def is_empty(self) -> Bool:
         return self._tag == _REQ_BODY_EMPTY
 
-    def bytes(ref self) -> ref [self._bytes] List[UInt8]:
+    def bytes(ref self) -> ref [self._bytes] List[Byte]:
         """Borrowed view of the buffered bytes. Only valid when is_buffered()."""
         return self._bytes
 
@@ -88,7 +88,7 @@ struct RequestBody(Movable):
         )
 
     def _clone_empty(self) -> Self:
-        return Self(_tag=_REQ_BODY_EMPTY, _bytes=List[UInt8](), _stream=Optional[DetachedBody]())
+        return Self(_tag=_REQ_BODY_EMPTY, _bytes=List[Byte](), _stream=Optional[DetachedBody]())
 
 
 struct Request(Movable):

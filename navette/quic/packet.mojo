@@ -118,13 +118,13 @@ struct PacketHeader(Copyable, Movable):
         self.version = UInt32(0)
         self.dcid = CidBuf.empty()
         self.scid = CidBuf.empty()
-        self.token = InlineArray[UInt8, MAX_TOKEN_LEN](fill=UInt8(0))
+        self.token = InlineArray[UInt8, MAX_TOKEN_LEN](fill=Byte(0))
         self.token_len = UInt8(0)
         self.payload_length = UInt64(0)
         self.pn_offset = 0
         self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](fill=UInt32(0))
         self.versions_len = UInt8(0)
-        self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](fill=UInt8(0))
+        self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](fill=Byte(0))
 
     def __init__(out self, *, copy: Self):
         self.is_long_header = copy.is_long_header
@@ -154,11 +154,11 @@ struct PacketHeader(Copyable, Movable):
         self.versions_len = move.versions_len
         self.retry_integrity_tag = move.retry_integrity_tag^
 
-    def token_span(self) -> Span[UInt8, origin_of(self.token)]:
+    def token_span(self) -> Span[Byte, origin_of(self.token)]:
         """Borrow the active token bytes (length `token_len`, not the full backing capacity)."""
         return Span(unsafe_ptr=self.token.unsafe_ptr(), length=Int(self.token_len))
 
-    def retry_integrity_tag_span(self) -> Span[UInt8, origin_of(self.retry_integrity_tag)]:
+    def retry_integrity_tag_span(self) -> Span[Byte, origin_of(self.retry_integrity_tag)]:
         """Borrow the 16-byte AEAD integrity tag (always fully populated for Retry packets)."""
         return Span(unsafe_ptr=self.retry_integrity_tag.unsafe_ptr(), length=RETRY_INTEGRITY_TAG_LEN)
 
@@ -173,7 +173,7 @@ def _check_packet_header_size():
 # --- Fast-path DCID inspection (server demux helpers) ---
 
 
-def is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
+def is_long_header_initial(payload: Span[Byte, _]) -> Bool:
     """True iff the QUIC packet's first byte indicates a long-header Initial.
 
     First byte (RFC 9000 v1):
@@ -195,7 +195,7 @@ def is_long_header_initial(payload: Span[UInt8, _]) -> Bool:
     return (first & 0x30) == 0x00
 
 
-def is_long_header_zero_rtt(payload: Span[UInt8, _]) -> Bool:
+def is_long_header_zero_rtt(payload: Span[Byte, _]) -> Bool:
     """True iff the QUIC packet's first byte indicates a long-header 0-RTT.
 
     Uses the same v1 layout as `is_long_header_initial` (RFC 9000 §17.2 +
@@ -217,7 +217,7 @@ def is_long_header_zero_rtt(payload: Span[UInt8, _]) -> Bool:
     return (first & 0x30) == 0x10
 
 
-def extract_dcid(data: Span[UInt8, _]) raises -> CidBuf:
+def extract_dcid(data: Span[Byte, _]) raises -> CidBuf:
     """Extract the DCID from an incoming QUIC packet.
 
     The long-header branch reads the DCID length directly off the wire
@@ -246,7 +246,7 @@ def extract_dcid(data: Span[UInt8, _]) raises -> CidBuf:
 
 def parse_packet_header[
     origin: Origin
-](buf: Span[UInt8, origin], local_cid_len: Int) raises -> Tuple[PacketHeader, Int]:
+](buf: Span[Byte, origin], local_cid_len: Int) raises -> Tuple[PacketHeader, Int]:
     if len(buf) < 1:
         raise "packet too short"
 
@@ -392,13 +392,13 @@ def serialize_long_header(header: PacketHeader, mut writer: ByteWriter) raises:
         varint_encode(writer, header.payload_length)
 
 
-def serialize_short_header(dcid: Span[UInt8, _], mut writer: ByteWriter):
+def serialize_short_header(dcid: Span[Byte, _], mut writer: ByteWriter):
     # First byte: form=0, fixed bit=1 -> 0x40. Spin, reserved, key phase, PN len TBD by caller.
     writer.write_u8(UInt8(0x40))
     writer.write_bytes(dcid)
 
 
-def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raises:
+def serialize_long_header_into(header: PacketHeader, mut buf: List[Byte]) raises:
     """Write a long header directly into a pre-allocated buffer.
 
     Same layout as serialize_long_header but bypasses ByteWriter indirection.
@@ -417,7 +417,7 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
 
     # First byte + version (5 fixed bytes).
     var base = len(buf)
-    buf.resize(base + 5, UInt8(0))
+    buf.resize(base + 5, Byte(0))
     var pos = base
     pos += write_u8_at(buf, pos, first_byte)
     pos += write_u32_be_at(buf, pos, header.version)
@@ -434,7 +434,7 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
         # Token length + token.
         var tl_len = varint_len(UInt64(header.token_len))
         var tl_base = len(buf)
-        buf.resize(tl_base + tl_len, UInt8(0))
+        buf.resize(tl_base + tl_len, Byte(0))
         _ = varint_encode_at(buf, tl_base, UInt64(header.token_len))
         if Int(header.token_len) > 0:
             buf.extend(header.token_span())
@@ -443,11 +443,11 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[UInt8]) raise
         # Payload length.
         var pl_len = varint_len(header.payload_length)
         var pl_base = len(buf)
-        buf.resize(pl_base + pl_len, UInt8(0))
+        buf.resize(pl_base + pl_len, Byte(0))
         _ = varint_encode_at(buf, pl_base, header.payload_length)
 
 
-def serialize_short_header_into(dcid: Span[UInt8, _], mut buf: List[UInt8]):
+def serialize_short_header_into(dcid: Span[Byte, _], mut buf: List[Byte]):
     """Write a 1-RTT short header directly into a pre-allocated buffer.
 
     Writes the fixed-bit flag byte (0x40) followed by the DCID.
@@ -459,10 +459,10 @@ def serialize_short_header_into(dcid: Span[UInt8, _], mut buf: List[UInt8]):
 
 def serialize_retry_packet(
     version: UInt32,
-    dcid: Span[UInt8, _],
-    scid: Span[UInt8, _],
-    token: Span[UInt8, _],
-    integrity_tag: Span[UInt8, _],
+    dcid: Span[Byte, _],
+    scid: Span[Byte, _],
+    token: Span[Byte, _],
+    integrity_tag: Span[Byte, _],
     mut writer: ByteWriter,
 ) raises:
     if len(dcid) > 20:
@@ -484,8 +484,8 @@ def serialize_retry_packet(
 
 
 def serialize_version_negotiation(
-    dcid: Span[UInt8, _],
-    scid: Span[UInt8, _],
+    dcid: Span[Byte, _],
+    scid: Span[Byte, _],
     versions: List[UInt32],
     mut writer: ByteWriter,
 ):

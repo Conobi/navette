@@ -432,7 +432,7 @@ def main() raises:
     # Build wire: HTTP/1.1 200 OK\r\nContent-Length: <cl>\r\nX-Rand: <rand_val>\r\n\r\n<body>
     var rt_str = "HTTP/1.1 200 OK\r\nContent-Length: " + rand_cl + "\r\nX-Rand: " + rand_val + "\r\n\r\n" + rand_body
     var rt_bytes = rt_str.as_bytes()
-    var rt_wire = List[UInt8]()
+    var rt_wire = List[Byte]()
     for ri2 in range(len(rt_bytes)):
         rt_wire.append(rt_bytes[ri2])
 
@@ -452,7 +452,7 @@ def main() raises:
     )
     # Verify body roundtrips
     var exp_body_bytes = rand_body.as_bytes()
-    var exp_body_list = List[UInt8]()
+    var exp_body_list = List[Byte]()
     for ebi in range(len(exp_body_bytes)):
         exp_body_list.append(exp_body_bytes[ebi])
     assert_bytes_equal(rt_result.body, exp_body_list, "runtime vector: body")

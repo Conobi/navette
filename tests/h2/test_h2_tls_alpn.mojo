@@ -11,7 +11,7 @@ from std.collections import Span
 from std.io.file import FileHandle
 
 
-def _read_file(path: String) raises -> List[UInt8]:
+def _read_file(path: String) raises -> List[Byte]:
     """Read a file into a byte list using native Mojo file I/O."""
     var fh = FileHandle(path, "r")
     var bytes = fh.read_bytes()

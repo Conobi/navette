@@ -77,17 +77,17 @@ def test_factory_variant_consistency() raises:
     var cc = ConnectionCloseFrame()
     _assert(Frame.connection_close(cc).payload.isa[ConnectionCloseFrame](), "conn_close")
 
-    # List[UInt8]-payload frames
-    var bytes = List[UInt8]()
-    _assert(Frame.new_token(bytes).payload.isa[List[UInt8]](), "new_token")
-    var path_bytes = List[UInt8]()
+    # List[Byte]-payload frames
+    var bytes = List[Byte]()
+    _assert(Frame.new_token(bytes).payload.isa[List[Byte]](), "new_token")
+    var path_bytes = List[Byte]()
     for i in range(8):
         path_bytes.append(UInt8(i))
-    _assert(Frame.path_challenge(path_bytes).payload.isa[List[UInt8]](), "path_challenge")
-    _assert(Frame.path_response(path_bytes).payload.isa[List[UInt8]](), "path_response")
-    var dg = List[UInt8]()
-    _assert(Frame.datagram(dg).payload.isa[List[UInt8]](), "datagram")
-    _assert(Frame.datagram_with_len(dg).payload.isa[List[UInt8]](), "datagram_with_len")
+    _assert(Frame.path_challenge(path_bytes).payload.isa[List[Byte]](), "path_challenge")
+    _assert(Frame.path_response(path_bytes).payload.isa[List[Byte]](), "path_response")
+    var dg = List[Byte]()
+    _assert(Frame.datagram(dg).payload.isa[List[Byte]](), "datagram")
+    _assert(Frame.datagram_with_len(dg).payload.isa[List[Byte]](), "datagram_with_len")
 
 
 def test_frame_copy_independence() raises:

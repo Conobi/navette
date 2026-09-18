@@ -38,7 +38,7 @@ struct _H3ClientCtx(Movable):
     var handle_id:  UInt64
     var status_code: Int
     var headers:    Headers
-    var body_data:  List[UInt8]
+    var body_data:  List[Byte]
     var complete:   Bool
     var errored:    Bool
     var error_code: UInt64
@@ -47,7 +47,7 @@ struct _H3ClientCtx(Movable):
         self.handle_id = handle_id
         self.status_code = -1
         self.headers = Headers()
-        self.body_data = List[UInt8]()
+        self.body_data = List[Byte]()
         self.complete = False
         self.errored = False
         self.error_code = UInt64(0)
@@ -109,12 +109,12 @@ struct H3Session(Session):
 
     # --- Transport API (called by test pumps) --------------------------------
 
-    def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
+    def feed_datagram(mut self, data: Span[Byte, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram; dispatches resulting H3Events."""
         self._h3.feed_datagram(data, now)
         self._dispatch_events()
 
-    def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
+    def drain_datagrams(mut self, now: UInt64) raises -> List[List[Byte]]:
         """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`."""
         return self._h3.drain_datagrams(now)
 
@@ -222,7 +222,7 @@ struct H3Session(Session):
             var resp_headers = ctx.headers^
             ctx.headers = Headers()
             var body_data = ctx.body_data^
-            ctx.body_data = List[UInt8]()
+            ctx.body_data = List[Byte]()
             var status_code = ctx.status_code
             # Build response
             var body_frames = List[BodyFrame]()
@@ -296,7 +296,7 @@ struct H3Session(Session):
             var bytes_copy = frame.data().copy()
             self._h3.send_data(stream_id, bytes_copy^, False)
         elif frame.is_end():
-            self._h3.send_data(stream_id, List[UInt8](), True)
+            self._h3.send_data(stream_id, List[Byte](), True)
 
     # --- Internal: event dispatch --------------------------------------------
 

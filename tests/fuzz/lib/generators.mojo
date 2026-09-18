@@ -6,7 +6,7 @@
 from tests.fuzz.lib.prng import SplitMix64
 
 
-def random_bytes_geom(mut rng: SplitMix64, mean_len: Int, cap_len: Int) -> List[UInt8]:
+def random_bytes_geom(mut rng: SplitMix64, mean_len: Int, cap_len: Int) -> List[Byte]:
     """Generate a random byte sequence with geometric length distribution.
 
     Length is drawn from a geometric distribution with mean = `mean_len`,
@@ -22,18 +22,18 @@ def random_bytes_geom(mut rng: SplitMix64, mean_len: Int, cap_len: Int) -> List[
         if u == 0:
             break
         length += 1
-    var out = List[UInt8](capacity=length)
+    var out = List[Byte](capacity=length)
     for _ in range(length):
         out.append(rng.next_u8())
     return out^
 
 
-def mutate(mut rng: SplitMix64, seed: List[UInt8]) -> List[UInt8]:
+def mutate(mut rng: SplitMix64, seed: List[Byte]) -> List[Byte]:
     """Apply 1-3 random mutations to `seed`.
 
     Mutation ops: bitflip, byte-flip, chunk-splice, insert, delete, dup.
     """
-    var out = List[UInt8](capacity=len(seed))
+    var out = List[Byte](capacity=len(seed))
     for i in range(len(seed)):
         out.append(seed[i])
     var n_mutations = Int(rng.next_below(UInt64(3))) + 1
@@ -57,7 +57,7 @@ def mutate(mut rng: SplitMix64, seed: List[UInt8]) -> List[UInt8]:
         elif op == 3:  # insert random byte
             var idx = Int(rng.next_below(UInt64(len(out) + 1)))
             var b = rng.next_u8()
-            var new_out = List[UInt8](capacity=len(out) + 1)
+            var new_out = List[Byte](capacity=len(out) + 1)
             for j in range(idx):
                 new_out.append(out[j])
             new_out.append(b)
@@ -67,7 +67,7 @@ def mutate(mut rng: SplitMix64, seed: List[UInt8]) -> List[UInt8]:
         elif op == 4:  # delete random byte
             if len(out) > 0:
                 var idx = Int(rng.next_below(UInt64(len(out))))
-                var new_out = List[UInt8](capacity=len(out) - 1)
+                var new_out = List[Byte](capacity=len(out) - 1)
                 for j in range(len(out)):
                     if j != idx:
                         new_out.append(out[j])

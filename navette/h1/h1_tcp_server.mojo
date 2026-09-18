@@ -129,7 +129,7 @@ def _peer_addr_from_fd(fd: Int32) -> String:
             if seg == 0:
                 result += "0"
             else:
-                var hex_buf = List[UInt8]()
+                var hex_buf = List[Byte]()
                 var v = seg
                 while v > 0:
                     var nyb = v & 0xF
@@ -173,8 +173,8 @@ struct H1TcpConn[H: StreamHandler](Movable):
 
     var socket: Socket
     var http: H1HandlerServer[Self.H]
-    var send_buf: List[UInt8]
-    var send_pending: List[UInt8]
+    var send_buf: List[Byte]
+    var send_pending: List[Byte]
     var _closing: Bool
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
@@ -195,8 +195,8 @@ struct H1TcpConn[H: StreamHandler](Movable):
         """
         self.socket = socket^
         self.http = http^
-        self.send_buf = List[UInt8]()
-        self.send_pending = List[UInt8]()
+        self.send_buf = List[Byte]()
+        self.send_pending = List[Byte]()
         self._closing = False
         self._recv_future = Optional[RecvFuture](None)
         self._send_future = Optional[SendFuture](None)
@@ -230,7 +230,7 @@ struct H1TcpConn[H: StreamHandler](Movable):
         if self._recv_future is not None or self._closing:
             return
         var loop = self._loop_ptr
-        var buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
+        var buf = List[Byte](length=_RECV_BUF_SIZE, fill=0)
         self._recv_future = Optional(loop[].recv(self.socket, buf^))
 
     def _submit_send(mut self) raises:
@@ -246,10 +246,10 @@ struct H1TcpConn[H: StreamHandler](Movable):
             return
         var loop = self._loop_ptr
         var buf = self.send_buf^
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
         self._send_future = Optional(loop[].send(self.socket, buf^))
 
-    def _stage_send(mut self, var data: List[UInt8]) raises:
+    def _stage_send(mut self, var data: List[Byte]) raises:
         """Stage data for sending -- submit directly or queue as pending.
 
         If no send is currently in flight, moves the data into send_buf
@@ -318,14 +318,14 @@ struct H1TcpConn[H: StreamHandler](Movable):
         # while processing code raises generic Error. Mixing them in
         # one try block is a Mojo typed-raises error.
         var count = 0
-        var chunk = List[UInt8]()
+        var chunk = List[Byte]()
         try:
             var result = future^.result()
             count = result.count
             # Copy received bytes; result (and its buffer) drops at
             # the end of this try block.
             var span = result.transferred()
-            chunk = List[UInt8](capacity=count)
+            chunk = List[Byte](capacity=count)
             for i in range(count):
                 chunk.append(span[i])
         except e:
@@ -387,7 +387,7 @@ struct H1TcpConn[H: StreamHandler](Movable):
 
             # Partial send — keep the unsent tail and re-queue.
             if count < buf_len:
-                var remaining = List[UInt8](capacity=buf_len - count)
+                var remaining = List[Byte](capacity=buf_len - count)
                 var i = count
                 while i < buf_len:
                     remaining.append(self.send_buf[i])
@@ -397,15 +397,15 @@ struct H1TcpConn[H: StreamHandler](Movable):
                 return
 
             # Full send completed.
-            self.send_buf = List[UInt8]()
+            self.send_buf = List[Byte]()
 
             # Promote any pending data.
             if len(self.send_pending) > 0:
                 var n_pending = len(self.send_pending)
-                var pending = List[UInt8](capacity=n_pending)
+                var pending = List[Byte](capacity=n_pending)
                 for i in range(n_pending):
                     pending.append(self.send_pending[i])
-                self.send_pending = List[UInt8]()
+                self.send_pending = List[Byte]()
                 self.send_buf = pending^
                 self._submit_send()
                 return

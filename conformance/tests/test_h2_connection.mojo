@@ -50,9 +50,9 @@ from oracle.http2.frame import (
 )
 
 
-def _build_headers_frame(stream_id: Int, end_headers: Bool = True, end_stream: Bool = False) -> List[UInt8]:
+def _build_headers_frame(stream_id: Int, end_headers: Bool = True, end_stream: Bool = False) -> List[Byte]:
     """Build a minimal HEADERS frame with a dummy header block."""
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x82))  # indexed: :method GET (static table index 2)
     var flags = 0
     if end_headers:
@@ -120,7 +120,7 @@ def test_h2event_factory_methods() raises:
     var e2 = H2Event.settings_changed()
     assert_equal(e2.kind, H2_EVT_SETTINGS_CHANGED, "settings_changed kind")
 
-    var ping_data = List[UInt8]()
+    var ping_data = List[Byte]()
     ping_data.append(UInt8(1))
     ping_data.append(UInt8(2))
     ping_data.append(UInt8(3))
@@ -133,7 +133,7 @@ def test_h2event_factory_methods() raises:
     assert_equal(e3.kind, H2_EVT_PING_RECEIVED, "ping_received kind")
     assert_equal(len(e3.as_ping_data()), 8, "ping_received data length")
 
-    var e4 = H2Event.goaway_received(UInt32(3), UInt32(0), List[UInt8]())
+    var e4 = H2Event.goaway_received(UInt32(3), UInt32(0), List[Byte]())
     assert_equal(e4.kind, H2_EVT_GOAWAY_RECEIVED, "goaway_received kind")
     assert_equal(Int(e4.as_goaway().last_stream_id), 3, "goaway last_stream_id")
 
@@ -226,9 +226,9 @@ def test_server_rejects_bad_magic() raises:
     var server = H2Connection(client_side=False)
     server.initiate_connection()
     _ = server.data_to_send()
-    var bad_magic = List[UInt8]()
+    var bad_magic = List[Byte]()
     for i in range(24):
-        bad_magic.append(UInt8(0))
+        bad_magic.append(Byte(0))
     var events = server.receive_data(bad_magic)
     assert_true(len(events) >= 1, "server emitted event")
     assert_equal(events[0].kind, H2_EVT_CONNECTION_TERMINATED, "CONNECTION_TERMINATED")
@@ -280,7 +280,7 @@ def test_settings_invalid_initial_window() raises:
     _ = server.receive_data(good_preface)
     _ = server.data_to_send()
     # Now send a SETTINGS with bad INITIAL_WINDOW_SIZE (2^31 = 2147483648)
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     _append_setting(payload, SETTINGS_INITIAL_WINDOW_SIZE, 2147483648)
     var frame = Frame(len(payload), FRAME_SETTINGS, 0, 0, payload)
     var wire = encode_frame(frame)
@@ -307,7 +307,7 @@ def test_ping_roundtrip() raises:
     _ = server.receive_data(c_ack)
 
     # Client sends PING
-    var ping_data = List[UInt8]()
+    var ping_data = List[Byte]()
     ping_data.append(UInt8(1))
     ping_data.append(UInt8(2))
     ping_data.append(UInt8(3))
@@ -481,7 +481,7 @@ def test_continuation_assembly() raises:
     _ = server.receive_data(client.data_to_send())
 
     # HEADERS without END_HEADERS on stream 1
-    var h_payload = List[UInt8]()
+    var h_payload = List[Byte]()
     h_payload.append(UInt8(0x82))
     h_payload.append(UInt8(0x84))
     var h_frame = Frame(len(h_payload), FRAME_HEADERS, 0, 1, h_payload)
@@ -491,7 +491,7 @@ def test_continuation_assembly() raises:
     assert_equal(state, STREAM_OPEN, "stream 1 OPEN while awaiting CONTINUATION")
 
     # CONTINUATION with END_HEADERS
-    var c_payload = List[UInt8]()
+    var c_payload = List[Byte]()
     c_payload.append(UInt8(0x86))
     var c_frame = Frame(len(c_payload), FRAME_CONTINUATION, FLAG_END_HEADERS, 1, c_payload)
     var c_wire = encode_frame(c_frame)
@@ -515,16 +515,16 @@ def test_continuation_interleave_rejected() raises:
     _ = server.receive_data(client.data_to_send())
 
     # HEADERS without END_HEADERS
-    var h_payload = List[UInt8]()
+    var h_payload = List[Byte]()
     h_payload.append(UInt8(0x82))
     var h_frame = Frame(len(h_payload), FRAME_HEADERS, 0, 1, h_payload)
     var h_wire = encode_frame(h_frame)
     _ = server.receive_data(h_wire)
 
     # PING interleaves → PROTOCOL_ERROR (the interleave check is in receive_data loop)
-    var ping_payload = List[UInt8]()
+    var ping_payload = List[Byte]()
     for _ in range(8):
-        ping_payload.append(UInt8(0))
+        ping_payload.append(Byte(0))
     var ping_frame = Frame(8, FRAME_PING, 0, 0, ping_payload)
     var ping_wire = encode_frame(ping_frame)
     var events = server.receive_data(ping_wire)
@@ -549,9 +549,9 @@ def test_window_update_connection() raises:
     _ = server.receive_data(client.data_to_send())
 
     # Build WINDOW_UPDATE on stream 0 with increment=1024
-    var payload = List[UInt8]()
-    payload.append(UInt8(0))
-    payload.append(UInt8(0))
+    var payload = List[Byte]()
+    payload.append(Byte(0))
+    payload.append(Byte(0))
     payload.append(UInt8(0x04))
     payload.append(UInt8(0x00))  # increment = 1024
     var wu_frame = Frame(4, FRAME_WINDOW_UPDATE, 0, 0, payload)
@@ -580,7 +580,7 @@ def test_window_update_overflow() raises:
 
     # Current window = 65535. Send increment = 2^31 - 1 → would overflow
     var overflow_inc = 2147483647
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8((overflow_inc >> 24) & 0x7F))
     payload.append(UInt8((overflow_inc >> 16) & 0xFF))
     payload.append(UInt8((overflow_inc >> 8) & 0xFF))

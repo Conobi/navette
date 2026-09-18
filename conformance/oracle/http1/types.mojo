@@ -228,7 +228,7 @@ struct ParsedRequest(Copyable, Movable):
     var version: String
     var headers: List[Header]
     var trailers: List[Header]
-    var body: List[UInt8]
+    var body: List[Byte]
     var error: String
     var bytes_consumed: Int
 
@@ -239,7 +239,7 @@ struct ParsedRequest(Copyable, Movable):
         self.version = String("")
         self.headers = List[Header]()
         self.trailers = List[Header]()
-        self.body = List[UInt8]()
+        self.body = List[Byte]()
         self.error = String("")
         self.bytes_consumed = 0
 
@@ -275,7 +275,7 @@ struct ParsedResponse(Copyable, Movable):
     var version: String
     var headers: List[Header]
     var trailers: List[Header]
-    var body: List[UInt8]
+    var body: List[Byte]
     var error: String
     var body_terminated_by_close: Bool
     var upgrade: Bool
@@ -287,7 +287,7 @@ struct ParsedResponse(Copyable, Movable):
         self.version = String("")
         self.headers = List[Header]()
         self.trailers = List[Header]()
-        self.body = List[UInt8]()
+        self.body = List[Byte]()
         self.error = String("")
         self.body_terminated_by_close = False
         self.upgrade = False
@@ -323,13 +323,13 @@ struct ParsedResponse(Copyable, Movable):
 
 struct ChunkedResult(Movable):
     """Result of decoding a chunked transfer-encoded body."""
-    var body: List[UInt8]
+    var body: List[Byte]
     var trailers: List[Header]
     var error: String
     var bytes_consumed: Int
 
     def __init__(out self):
-        self.body = List[UInt8]()
+        self.body = List[Byte]()
         self.trailers = List[Header]()
         self.error = String("")
         self.bytes_consumed = 0
@@ -382,14 +382,14 @@ struct ConnectionResult(Movable):
     var request_messages: List[ParsedRequest]
     var response_messages: List[ParsedResponse]
     var state: ConnectionState
-    var trailing_data: List[UInt8]
+    var trailing_data: List[Byte]
     var error: String
 
     def __init__(out self):
         self.request_messages = List[ParsedRequest]()
         self.response_messages = List[ParsedResponse]()
         self.state = ConnectionState()
-        self.trailing_data = List[UInt8]()
+        self.trailing_data = List[Byte]()
         self.error = String("")
 
     def __init__(out self, *, deinit move: Self):

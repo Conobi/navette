@@ -10,9 +10,9 @@ from tests._test_util import assert_true, assert_equal_int
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_data(size: Int, seed: Int = 0) -> List[UInt8]:
+def _make_data(size: Int, seed: Int = 0) -> List[Byte]:
     """Build a deterministic byte list of the given size."""
-    var result = List[UInt8](capacity=size)
+    var result = List[Byte](capacity=size)
     for i in range(size):
         result.append(UInt8((i + seed) % 256))
     return result^
@@ -56,7 +56,7 @@ def test_mkdir_p() raises:
     mkdir_p(dir)
     # Write a file inside the nested directory
     var path = "/tmp/mojo_test_mkdir_p_a/b/c/hello.bin"
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0xAB); data.append(0xCD)
     write_file(path, Span(data))
     var got = read_file(path)
@@ -73,7 +73,7 @@ def test_list_dir() raises:
     var dir = "/tmp/mojo_test_listdir2"
     mkdir_p(dir)
     # Create two known files
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_file(dir + "/alpha.txt", Span(empty))
     write_file(dir + "/beta.txt", Span(empty))
     var names = list_dir(dir)

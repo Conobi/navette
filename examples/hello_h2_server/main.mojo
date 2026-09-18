@@ -66,7 +66,7 @@ def _getenv_opt(name: String) -> Optional[String]:
     return Optional(s^)
 
 
-def _read_file(path: String) raises -> List[UInt8]:
+def _read_file(path: String) raises -> List[Byte]:
     """Read entire file via open/fstat64/pread64/close (Linux x86_64)."""
     var pbuf = _heap_alloc[UInt8](path.byte_length() + 1)
     var path_bytes = path.as_bytes()
@@ -87,7 +87,7 @@ def _read_file(path: String) raises -> List[UInt8]:
     for i in range(8):
         file_size |= Int(statbuf[unsafe_offset= 48 + i]) << (i * 8)
     statbuf.unsafe_free()
-    var result = List[UInt8](capacity=file_size)
+    var result = List[Byte](capacity=file_size)
     var chunk_size = 65536
     var buf = _heap_alloc[UInt8](chunk_size)
     var offset = 0
@@ -128,7 +128,7 @@ struct HelloHandler(StreamHandler):
 
         var msg = String("Hello, H2!\n")
         var msg_bytes = msg.as_bytes()
-        var body_bytes = List[UInt8](capacity=len(msg_bytes))
+        var body_bytes = List[Byte](capacity=len(msg_bytes))
         for i in range(len(msg_bytes)):
             body_bytes.append(msg_bytes[i])
         _ = resp.try_send_body(BodyFrame.data(body_bytes^))

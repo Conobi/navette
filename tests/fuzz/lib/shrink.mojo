@@ -4,10 +4,10 @@
 
 
 def minimize(
-    input: List[UInt8],
-    property_fn: def(List[UInt8]) raises thin -> Bool,
+    input: List[Byte],
+    property_fn: def(List[Byte]) raises thin -> Bool,
     max_calls: Int = 200,
-) raises -> List[UInt8]:
+) raises -> List[Byte]:
     """Minimize `input` while preserving the property that `property_fn(input) == True`.
 
     Strategy:
@@ -17,7 +17,7 @@ def minimize(
     `property_fn` returns True when the input still triggers the disagreement.
     Bounded to `max_calls` property_fn invocations to keep CI budget tight.
     """
-    var current = List[UInt8](capacity=len(input))
+    var current = List[Byte](capacity=len(input))
     for i in range(len(input)):
         current.append(input[i])
     var calls = 0
@@ -32,7 +32,7 @@ def minimize(
             break
         var half = len(current) // 2
         # Try keeping first half
-        var first = List[UInt8](capacity=half)
+        var first = List[Byte](capacity=half)
         for i in range(half):
             first.append(current[i])
         calls += 1
@@ -41,7 +41,7 @@ def minimize(
             changed = True
             continue
         # Try keeping second half
-        var second = List[UInt8](capacity=len(current) - half)
+        var second = List[Byte](capacity=len(current) - half)
         for i in range(half, len(current)):
             second.append(current[i])
         calls += 1
@@ -55,7 +55,7 @@ def minimize(
         var i = 0
         var made_progress = False
         while i + chunk_size <= len(current) and calls < max_calls:
-            var trial = List[UInt8](capacity=len(current) - chunk_size)
+            var trial = List[Byte](capacity=len(current) - chunk_size)
             for j in range(i):
                 trial.append(current[j])
             for j in range(i + chunk_size, len(current)):

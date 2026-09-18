@@ -13,10 +13,10 @@ from std.python import Python
 
 
 struct CorpusEntry(Copyable, Movable):
-    var bytes: List[UInt8]
+    var bytes: List[Byte]
     var name: String
 
-    def __init__(out self, var bytes: List[UInt8], name: String):
+    def __init__(out self, var bytes: List[Byte], name: String):
         self.bytes = bytes^
         self.name = name
 
@@ -25,19 +25,19 @@ struct CorpusEntry(Copyable, Movable):
         self.name = move.name^
 
 
-def _read_bytes(path: String) raises -> List[UInt8]:
+def _read_bytes(path: String) raises -> List[Byte]:
     var builtins = Python.import_module("builtins")
     var f = builtins.open(path, "rb")
     var py_data = f.read()
     f.close()
     var n = Int(py=builtins.len(py_data))
-    var out = List[UInt8](capacity=n)
+    var out = List[Byte](capacity=n)
     for i in range(n):
         out.append(UInt8(Int(py=py_data[i])))
     return out^
 
 
-def _write_bytes(path: String, b: List[UInt8]) raises:
+def _write_bytes(path: String, b: List[Byte]) raises:
     var builtins = Python.import_module("builtins")
     var f = builtins.open(path, "wb")
     # Build a Python bytes object byte-by-byte.
@@ -60,7 +60,7 @@ def _ensure_dir(path: String) raises:
     os.makedirs(path, exist_ok=True)
 
 
-def _sha256_hex12(b: List[UInt8]) raises -> String:
+def _sha256_hex12(b: List[Byte]) raises -> String:
     var hashlib = Python.import_module("hashlib")
     var builtins = Python.import_module("builtins")
     var py_list = builtins.bytearray()
@@ -98,7 +98,7 @@ def load_corpus_dir(path: String) raises -> List[CorpusEntry]:
 def save_disagreement(
     harness: String,
     seed: UInt64,
-    input: List[UInt8],
+    input: List[Byte],
     observed_a: String,
     observed_b: String,
 ) raises -> String:

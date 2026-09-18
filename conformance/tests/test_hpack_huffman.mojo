@@ -15,21 +15,21 @@ from oracle.http2.hpack_huffman import HuffmanCodec
 from std.time import perf_counter_ns
 
 
-def _string_to_bytes(s: String) -> List[UInt8]:
-    """Convert a String to a List[UInt8]."""
-    var result = List[UInt8]()
+def _string_to_bytes(s: String) -> List[Byte]:
+    """Convert a String to a List[Byte]."""
+    var result = List[Byte]()
     var raw = s.as_bytes()
     for i in range(len(raw)):
         result.append(raw[i])
     return result^
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
-    """Convert a List[UInt8] to a String (ASCII only)."""
+def _bytes_to_string(data: List[Byte]) -> String:
+    """Convert a List[Byte] to a String (ASCII only)."""
     var result = String()
     for i in range(len(data)):
         # Build one-char string via chr-like approach
-        var buf = List[UInt8]()
+        var buf = List[Byte]()
         buf.append(data[i])
         buf.append(0)  # null terminator
         result += String(buf^)
@@ -53,7 +53,7 @@ def main() raises:
     # ================================================================
     var single_pass = 0
     for byte_val in range(256):
-        var input_data = List[UInt8]()
+        var input_data = List[Byte]()
         input_data.append(UInt8(byte_val))
 
         var encoded = codec.encode(input_data)
@@ -177,7 +177,7 @@ def main() raises:
     # ================================================================
     # 3. Empty input: encode/decode empty -> empty
     # ================================================================
-    var empty_input = List[UInt8]()
+    var empty_input = List[Byte]()
     var empty_encoded = codec.encode(empty_input)
     assert_equal(len(empty_encoded), 0, "encode empty length")
     var empty_dec = codec.decode(empty_encoded)
@@ -193,7 +193,7 @@ def main() raises:
     # Take a valid encoding and corrupt the padding.
     # Encode "a" (code 0x3, 5 bits) -> 0x1f (00011|111) with 3 bits of 1-padding.
     # If we change padding to 0s: 0x18 (00011|000)
-    var bad_pad_data = List[UInt8]()
+    var bad_pad_data = List[Byte]()
     bad_pad_data.append(UInt8(0x18))  # 'a' code with zero padding
     var bad_pad_result = codec.decode(bad_pad_data)
     assert_true(
@@ -216,7 +216,7 @@ def main() raises:
     # the all-1s path from the root depends on the table.
     # Actually, since the EOS code is 30 all-1 bits, 24 bits of 1s
     # won't reach any symbol. So bits_since_last_symbol=24 > 7 -> error.
-    var long_pad = List[UInt8]()
+    var long_pad = List[Byte]()
     long_pad.append(UInt8(0xFF))
     long_pad.append(UInt8(0xFF))
     long_pad.append(UInt8(0xFF))
@@ -229,7 +229,7 @@ def main() raises:
 
     # 4c. Verify valid padding is accepted.
     # "a" encodes to 0x1f (00011|111) - 5 data bits, 3 padding bits of 1.
-    var valid_a = List[UInt8]()
+    var valid_a = List[Byte]()
     valid_a.append(UInt8(0x1F))  # 'a' with proper 1-padding
     var valid_a_result = codec.decode(valid_a)
     assert_true(
@@ -254,7 +254,7 @@ def main() raises:
         var length = (seed % 50) + 1
 
         # Generate pseudo-random bytes
-        var rand_data = List[UInt8]()
+        var rand_data = List[Byte]()
         for bi in range(length):
             var bseed = seed ^ (bi * 2039 + ri * 3571)
             if bseed < 0:

@@ -89,8 +89,8 @@ def _make_server_conn_for_tagging(
     _handle_stream_frame drive. The handshake is NOT driven; tests set
     `_current_space_idx` manually before calling the frame handler."""
     var tp = default_transport_params()
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))
@@ -362,7 +362,7 @@ def test_stream_is_zero_rtt_set_on_creation_from_0rtt_packet() raises:
     conn._current_space_idx = ZERO_RTT_SPACE_IDX
 
     # Client-initiated bidi stream id 0 (peer-initiated for a server).
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x41))
     var sf = StreamFrame(UInt64(0), UInt64(0), payload, False)
     conn._handle_stream_frame(sf, Span(payload))
@@ -395,7 +395,7 @@ def test_stream_is_zero_rtt_false_from_1rtt_packet() raises:
     var conn = _make_server_conn_for_tagging(lib, cfg)
 
     conn._current_space_idx = 2  # APPLICATION_SPACE_IDX (1-RTT)
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x41))
     var sf = StreamFrame(UInt64(4), UInt64(0), payload, False)
     conn._handle_stream_frame(sf, Span(payload))
@@ -430,7 +430,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
 
     # First frame in 0-RTT — tags the stream.
     conn._current_space_idx = ZERO_RTT_SPACE_IDX
-    var p1 = List[UInt8]()
+    var p1 = List[Byte]()
     p1.append(UInt8(0x41))
     var sf1 = StreamFrame(UInt64(8), UInt64(0), p1, False)
     conn._handle_stream_frame(sf1, Span(p1))
@@ -440,7 +440,7 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
 
     # Subsequent frame on the SAME stream in 1-RTT — must NOT clear.
     conn._current_space_idx = 2  # APPLICATION_SPACE_IDX
-    var p2 = List[UInt8]()
+    var p2 = List[Byte]()
     p2.append(UInt8(0x42))
     var sf2 = StreamFrame(UInt64(8), UInt64(1), p2, False)
     conn._handle_stream_frame(sf2, Span(p2))
@@ -696,7 +696,7 @@ def test_send_425_emits_status_only_fin() raises:
     # tag matches a real 0-RTT-arrived request (the field is reset
     # between packets by the dispatch loop in production).
     h3._quic._current_space_idx = ZERO_RTT_SPACE_IDX
-    var probe = List[UInt8]()
+    var probe = List[Byte]()
     probe.append(UInt8(0x00))  # arbitrary
     var sf = StreamFrame(UInt64(0), UInt64(0), probe, False)
     h3._quic._handle_stream_frame(sf, Span(probe))

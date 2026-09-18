@@ -74,8 +74,8 @@ def test_h1_session_roundtrips_via_in_memory_loopback() raises:
     assert_equal_int(Int(resp.status.code()), 200, "status_200")
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
-    """Convert a List[UInt8] to a String for assertion checking."""
+def _bytes_to_string(data: List[Byte]) -> String:
+    """Convert a List[Byte] to a String for assertion checking."""
     var result = String()
     for i in range(len(data)):
         result += chr(Int(data[i]))
@@ -100,13 +100,13 @@ def test_h1_session_chunked_streaming_body() raises:
 
     # Feed two data chunks and an end frame.
     var hello_bytes = String("hello").as_bytes()
-    var chunk1 = List[UInt8]()
+    var chunk1 = List[Byte]()
     for i in range(len(hello_bytes)):
         chunk1.append(hello_bytes[i])
     session.feed_body(handle_id, BodyFrame.data(chunk1^))
 
     var world_bytes = String(" world").as_bytes()
-    var chunk2 = List[UInt8]()
+    var chunk2 = List[Byte]()
     for i in range(len(world_bytes)):
         chunk2.append(world_bytes[i])
     session.feed_body(handle_id, BodyFrame.data(chunk2^))

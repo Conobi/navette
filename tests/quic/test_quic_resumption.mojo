@@ -105,14 +105,14 @@ def test_quic_handshake_kind_client_returns_minus_two() raises:
     _ = conn_handle_owned
 
 
-def _read_file_bytes(path: String) raises -> List[UInt8]:
-    """Local helper: read a small text file (PEM) into List[UInt8].
+def _read_file_bytes(path: String) raises -> List[Byte]:
+    """Local helper: read a small text file (PEM) into List[Byte].
     Mirrors patterns in existing tests under tests/ — keep self-contained."""
     var f = open(path, "r")
     var s = f.read()
     f.close()
     var bytes = s.as_bytes()
-    var out = List[UInt8](capacity=len(bytes))
+    var out = List[Byte](capacity=len(bytes))
     for i in range(len(bytes)):
         out.append(bytes[i])
     return out^
@@ -136,7 +136,7 @@ def test_quic_server_config_new_accepts_max_early_data_param() raises:
 # ── T4 helpers ───────────────────────────────────────────────────────────
 
 
-def _generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def _generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -194,16 +194,16 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var client1 = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid1_a = List[UInt8](client1.initial_dcid.as_span())
-    var dcid1_b = List[UInt8](client1.initial_dcid.as_span())
+    var dcid1_a = List[Byte](client1.initial_dcid.as_span())
+    var dcid1_b = List[Byte](client1.initial_dcid.as_span())
     var server1 = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid1_a), Span(dcid1_b), now,
         p_ptr,
     )
 
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     var established1 = False
     for _ in range(30):
         now += UInt64(10_000)
@@ -254,16 +254,16 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var client2 = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid2_a = List[UInt8](client2.initial_dcid.as_span())
-    var dcid2_b = List[UInt8](client2.initial_dcid.as_span())
+    var dcid2_a = List[Byte](client2.initial_dcid.as_span())
+    var dcid2_b = List[Byte](client2.initial_dcid.as_span())
     var server2 = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid2_a), Span(dcid2_b), now,
         p_ptr,
     )
 
-    var c2_dg = List[List[UInt8]](capacity=1)
-    var s2_dg = List[List[UInt8]](capacity=1)
+    var c2_dg = List[List[Byte]](capacity=1)
+    var s2_dg = List[List[Byte]](capacity=1)
     var established2 = False
     for _ in range(30):
         now += UInt64(10_000)
@@ -331,8 +331,8 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid_a = List[UInt8](client.initial_dcid.as_span())
-    var dcid_b = List[UInt8](client.initial_dcid.as_span())
+    var dcid_a = List[Byte](client.initial_dcid.as_span())
+    var dcid_b = List[Byte](client.initial_dcid.as_span())
     # Attach profile before driving the handshake so the server connection
     # has a live profile_ptr when _on_handshake_complete fires.
     var server = QuicConnection.server(
@@ -342,8 +342,8 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     )
 
     # Inline handshake loop — no helper with mut QuicConnection.
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     var established = False
     for _ in range(30):
         now += UInt64(10_000)
@@ -423,8 +423,8 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var dcid_a = List[UInt8](client.initial_dcid.as_span())
-    var dcid_b = List[UInt8](client.initial_dcid.as_span())
+    var dcid_a = List[Byte](client.initial_dcid.as_span())
+    var dcid_b = List[Byte](client.initial_dcid.as_span())
     # Attach profile so server can accumulate fresh_conn_ffi_us_total.
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
@@ -433,8 +433,8 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     )
 
     # Drive the handshake to completion (inline — no helper with mut params).
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     var established = False
     for _ in range(30):
         now += UInt64(10_000)

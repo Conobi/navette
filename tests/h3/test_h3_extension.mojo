@@ -22,7 +22,7 @@ def test_h3_context_starts_with_no_datagrams() raises:
 
 def test_try_send_datagram_returns_closed_in_v1() raises:
     var ctx = H3Context(stream_id=UInt64(1))
-    var bytes: List[UInt8] = [UInt8(1)]
+    var bytes: List[Byte] = [UInt8(1)]
     var r = ctx.try_send_datagram(Span(bytes))
     assert_true(r.is_closed(), "datagram.closed_in_v1")
 

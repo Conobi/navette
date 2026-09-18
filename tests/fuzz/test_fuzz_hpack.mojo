@@ -36,7 +36,7 @@ def _starts_with(s: String, prefix: String) -> Bool:
     return True
 
 
-def _check_byte_property(b: List[UInt8]) raises -> ObserveResult:
+def _check_byte_property(b: List[Byte]) raises -> ObserveResult:
     var oracle = HpackOracleDecoder()
     var prod = ProdHpackDecoder()
     var oracle_result = oracle.decode(b.copy())
@@ -182,14 +182,14 @@ def main() raises:
         if (not soak) and report.disagreements >= max_reports:
             break
         var strategy = Int(rng.next_below(UInt64(100)))
-        var b: List[UInt8]
+        var b: List[Byte]
         if strategy < 40:
             b = random_bytes_geom(rng, mean_len=32, cap_len=4096)
         elif strategy < 80:
             # Grammar-aware: random representation tag + payload
             var first_byte = rng.next_u8()
             var len_byte = rng.next_u8() % UInt8(64)
-            b = List[UInt8]()
+            b = List[Byte]()
             b.append(first_byte)
             b.append(len_byte)
             for _ in range(Int(len_byte)):

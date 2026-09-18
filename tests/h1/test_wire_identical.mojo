@@ -14,22 +14,22 @@ from navette.h1 import ParseConfig
 from tests._test_util import assert_true
 
 
-def _buf_to_str(data: List[UInt8]) -> String:
+def _buf_to_str(data: List[Byte]) -> String:
     var s = String()
     for i in range(len(data)):
         s += chr(Int(data[i]))
     return s^
 
 
-def _str_to_bytes(s: String) -> List[UInt8]:
+def _str_to_bytes(s: String) -> List[Byte]:
     var b = s.as_bytes()
-    var r = List[UInt8]()
+    var r = List[Byte]()
     for i in range(len(b)):
         r.append(b[i])
     return r^
 
 
-def _assert_bytes_eq_lists(a: List[UInt8], b: List[UInt8], msg: String) raises:
+def _assert_bytes_eq_lists(a: List[Byte], b: List[Byte], msg: String) raises:
     if len(a) != len(b):
         print("DIVERGENCE [" + msg + "] len " + String(len(a)) + " vs " + String(len(b)))
         print("  opt=[" + _buf_to_str(a) + "]")
@@ -44,10 +44,10 @@ def _assert_bytes_eq_lists(a: List[UInt8], b: List[UInt8], msg: String) raises:
 
 # --- independent golden oracle ---
 
-def _gappend(mut out: List[UInt8], s: String):
+def _gappend(mut out: List[Byte], s: String):
     out.extend(s.as_bytes())
 
-def _gcrlf(mut out: List[UInt8]):
+def _gcrlf(mut out: List[Byte]):
     out.append(UInt8(0x0D))
     out.append(UInt8(0x0A))
 
@@ -56,7 +56,7 @@ def _ghex_lower(value: Int) -> String:
         return String("0")
     var hex_chars = String("0123456789abcdef")
     var hb = hex_chars.as_bytes()
-    var digits = List[UInt8]()
+    var digits = List[Byte]()
     var v = value
     while v > 0:
         digits.append(hb[v & 0xF])
@@ -68,14 +68,14 @@ def _ghex_lower(value: Int) -> String:
         i -= 1
     return result^
 
-def _gheaders(mut out: List[UInt8], headers: Headers):
+def _gheaders(mut out: List[Byte], headers: Headers):
     for i in range(len(headers)):
         _gappend(out, headers.name_at(i))
         out.append(UInt8(0x3A)); out.append(UInt8(0x20))
         _gappend(out, headers.value_at(i))
         _gcrlf(out)
 
-def _gframing(mut out: List[UInt8], name: String, value: String):
+def _gframing(mut out: List[Byte], name: String, value: String):
     _gappend(out, name)
     out.append(UInt8(0x3A)); out.append(UInt8(0x20))
     _gappend(out, value)
@@ -94,13 +94,13 @@ def _gdata_len(body: List[BodyFrame]) -> Int:
             total += len(body[i].data())
     return total
 
-def _gdata(mut out: List[UInt8], body: List[BodyFrame]):
+def _gdata(mut out: List[Byte], body: List[BodyFrame]):
     for i in range(len(body)):
         if body[i].is_data():
             ref chunk = body[i].data()
             out.extend(Span(chunk))
 
-def _gchunked(mut out: List[UInt8], body: List[BodyFrame]):
+def _gchunked(mut out: List[Byte], body: List[BodyFrame]):
     for i in range(len(body)):
         if body[i].is_data():
             ref chunk = body[i].data()
@@ -120,8 +120,8 @@ def _gchunked(mut out: List[UInt8], body: List[BodyFrame]):
 def _expected_wire(
     status_int: Int, reason: String, is_11: Bool,
     headers: Headers, body: List[BodyFrame]
-) -> List[UInt8]:
-    var out = List[UInt8]()
+) -> List[Byte]:
+    var out = List[Byte]()
     if is_11:
         _gappend(out, String("HTTP/1.1"))
     else:
@@ -160,7 +160,7 @@ def _make_headers(count: Int) -> Headers:
     return h^
 
 def _small_body() -> List[BodyFrame]:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     var msg = String("Hello, World!")
     var mb = msg.as_bytes()
     for i in range(len(mb)):
@@ -172,7 +172,7 @@ def _small_body() -> List[BodyFrame]:
 def _chunked_body() -> List[BodyFrame]:
     var b = List[BodyFrame]()
     for c in range(3):
-        var data = List[UInt8]()
+        var data = List[Byte]()
         var msg = String("chunk") + String(c)
         var mb = msg.as_bytes()
         for i in range(len(mb)):

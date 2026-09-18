@@ -259,7 +259,7 @@ def next_chunk(
 def write_chunk(
     ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_],
     mut yld: H2StreamingYielder,
-    var bytes: List[UInt8],
+    var bytes: List[Byte],
 ) raises:
     """Buffer a body chunk for the adapter to send. Does NOT suspend on
     backpressure — H2Connection.send_data queues oversized writes internally
@@ -448,7 +448,7 @@ struct H2StreamingServer(Movable):
     var _conn: H2Connection
     var _handler_fn: H2StreamingHandlerFn
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
-    var _outbuf: List[UInt8]
+    var _outbuf: List[Byte]
     var _streams: Dict[Int, PtrBox[H2StreamingCtx]]
     var _ctx_pool: H2StreamingCtxPool
     var _coro_pool: StackPool
@@ -472,7 +472,7 @@ struct H2StreamingServer(Movable):
         self._conn.initiate_connection()
         self._handler_fn = handler_fn
         self._extra_data = extra_data
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[H2StreamingCtx]]()
         self._ctx_pool = H2StreamingCtxPool(capacity=4)
         self._coro_pool = StackPool(capacity=4)
@@ -493,7 +493,7 @@ struct H2StreamingServer(Movable):
         self._conn.initiate_connection()
         self._handler_fn = handler_fn
         self._extra_data = extra_data
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[H2StreamingCtx]]()
         self._ctx_pool = H2StreamingCtxPool(capacity=4)
         self._coro_pool = StackPool(capacity=4)
@@ -518,9 +518,9 @@ struct H2StreamingServer(Movable):
 
     # --- Transport bridging API ---------------------------------------------
 
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         """Feed inbound TCP bytes. Dispatches H2 events, drains responses."""
-        var data_list = List[UInt8]()
+        var data_list = List[Byte]()
         for ref byte in data:
             data_list.append(byte)
         var events = self._conn.receive_data(data_list)
@@ -528,10 +528,10 @@ struct H2StreamingServer(Movable):
         self._drain_responses()
         self._flush_outbound()
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         """Drain queued outbound TCP bytes for the transport to write."""
         var out = self._outbuf^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         return out^
 
     def should_close(self) -> Bool:
@@ -747,7 +747,7 @@ struct H2StreamingServer(Movable):
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
         if len(evt.data) > 0:
-            var data_copy = List[UInt8](copy=evt.data)
+            var data_copy = List[Byte](copy=evt.data)
             ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
         ctx_ptr.unsafe_write(ctx^)
         # Acknowledge flow control bytes
@@ -871,7 +871,7 @@ struct H2StreamingServer(Movable):
             # Drain body frames written by write_chunk / finish.
             # Buffer data frames so we can fold END_STREAM onto the last
             # DATA payload instead of emitting a 0-byte trailer frame.
-            var pending_data = List[List[UInt8]]()
+            var pending_data = List[List[Byte]]()
             while True:
                 var f_opt = ctx.resp_writer._pop_body_frame()
                 if not Bool(f_opt):
@@ -884,7 +884,7 @@ struct H2StreamingServer(Movable):
                     if len(pending_data) == 0:
                         try:
                             self._conn.send_data(
-                                UInt32(sid), List[UInt8](), end_stream=True
+                                UInt32(sid), List[Byte](), end_stream=True
                             )
                         except:
                             pass
@@ -903,7 +903,7 @@ struct H2StreamingServer(Movable):
                             )
                         except:
                             pass
-                        pending_data = List[List[UInt8]]()
+                        pending_data = List[List[Byte]]()
                     ctx.response_ended = True
                     made_progress = True
                     break
@@ -915,7 +915,7 @@ struct H2StreamingServer(Movable):
                             )
                         except:
                             pass
-                    pending_data = List[List[UInt8]]()
+                    pending_data = List[List[Byte]]()
                     var trailer_h2 = headers_to_h2(f.trailers())
                     try:
                         self._conn.send_headers(

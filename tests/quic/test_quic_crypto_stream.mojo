@@ -2,18 +2,18 @@ from tests._test_util import assert_true, assert_equal_int
 from navette.quic.crypto_stream import CryptoStream
 
 
-def _str_bytes(s: String) -> List[UInt8]:
-    """Convert a string to a List[UInt8]."""
+def _str_bytes(s: String) -> List[Byte]:
+    """Convert a string to a List[Byte]."""
     var b = s.as_bytes()
-    var result = List[UInt8](capacity=len(b))
+    var result = List[Byte](capacity=len(b))
     for i in range(len(b)):
         result.append(b[i])
     return result^
 
 
-def _make_byte(val: UInt8) -> List[UInt8]:
+def _make_byte(val: UInt8) -> List[Byte]:
     """Create a single-byte list."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     result.append(val)
     return result^
 
@@ -59,10 +59,10 @@ def test_out_of_order_receive() raises:
 def test_overlap_receive() raises:
     """Receive(0, 10 bytes), receive(5, 10 bytes); drain() length is 15."""
     var cs = CryptoStream()
-    var data1 = List[UInt8](capacity=10)
+    var data1 = List[Byte](capacity=10)
     for i in range(10):
         data1.append(UInt8(i))
-    var data2 = List[UInt8](capacity=10)
+    var data2 = List[Byte](capacity=10)
     for i in range(10):
         data2.append(UInt8(100 + i))
     cs.receive(UInt64(0), Span(data1))
@@ -102,7 +102,7 @@ def test_16k_cap() raises:
 def test_duplicate_rejection() raises:
     """Receive(0, 5 bytes) twice; drain() length is 5."""
     var cs = CryptoStream()
-    var data = List[UInt8](capacity=5)
+    var data = List[Byte](capacity=5)
     for i in range(5):
         data.append(UInt8(i))
     cs.receive(UInt64(0), Span(data))
@@ -115,7 +115,7 @@ def test_duplicate_rejection() raises:
 def test_send_fragmentation() raises:
     """Write 5000 bytes, pending_crypto_frames(1000); verify 5 frames."""
     var cs = CryptoStream()
-    var data = List[UInt8](capacity=5000)
+    var data = List[Byte](capacity=5000)
     for i in range(5000):
         data.append(UInt8(i % 256))
     cs.write(Span(data))
@@ -152,14 +152,14 @@ def test_next_crypto_frame_cursor() raises:
     capacity is stable until the cursor reaches the end) and has_unsent()
     tracks the cursor."""
     var cs = CryptoStream()
-    var data = List[UInt8](capacity=3000)
+    var data = List[Byte](capacity=3000)
     for i in range(3000):
         data.append(UInt8((i * 7) % 256))
     cs.requeue(UInt64(100), Span(data))
     assert_true(cs.has_unsent(), "queued data is unsent")
     var cap_before = cs.send_buf.capacity()
     var expected_offset = UInt64(100)
-    var out = List[UInt8]()
+    var out = List[Byte]()
     var budgets = List[Int]()
     budgets.append(1100)
     budgets.append(900)

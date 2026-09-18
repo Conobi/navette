@@ -13,7 +13,7 @@ from std.collections import Span
 from std.io.file import FileHandle
 
 
-def _read_file(path: String) raises -> List[UInt8]:
+def _read_file(path: String) raises -> List[Byte]:
     """Read a file into a byte list using native Mojo file I/O."""
     var fh = FileHandle(path, "r")
     var bytes = fh.read_bytes()
@@ -21,8 +21,8 @@ def _read_file(path: String) raises -> List[UInt8]:
     return bytes^
 
 
-def _bytes_to_string(bytes: List[UInt8]) -> String:
-    """Convert a List[UInt8] to a String (assumes ASCII content)."""
+def _bytes_to_string(bytes: List[Byte]) -> String:
+    """Convert a List[Byte] to a String (assumes ASCII content)."""
     var s = String()
     for i in range(len(bytes)):
         s += chr(Int(bytes[i]))

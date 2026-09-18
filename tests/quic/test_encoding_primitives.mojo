@@ -5,10 +5,10 @@ from navette.quic.codec import (
 )
 
 
-def _zeroed(n: Int) -> List[UInt8]:
+def _zeroed(n: Int) -> List[Byte]:
     """Return an n-byte list initialised to zero."""
-    var buf = List[UInt8]()
-    buf.resize(n, UInt8(0))
+    var buf = List[Byte]()
+    buf.resize(n, Byte(0))
     return buf^
 
 
@@ -121,8 +121,8 @@ def test_varint_roundtrip_via_at() raises:
     for i in range(len(values)):
         var v = values[i]
         var size = varint_len(v)
-        var buf = List[UInt8]()
-        buf.resize(size, UInt8(0))
+        var buf = List[Byte]()
+        buf.resize(size, Byte(0))
         var n = varint_encode_at(buf, 0, v)
         if n != size:
             raise "varint_encode_at returned " + String(n) + " for " + String(v) + ", expected " + String(size)

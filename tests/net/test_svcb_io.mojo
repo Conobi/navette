@@ -70,7 +70,7 @@ def _bind_loopback() raises -> _Bound:
     return _Bound(ufd, tfd, port)
 
 
-def _serve_udp_once(udp_fd: Int32, answer: List[UInt8]) raises:
+def _serve_udp_once(udp_fd: Int32, answer: List[Byte]) raises:
     """recvfrom one query, sendto the canned answer back to the sender."""
     var rbuf = Owned[UInt8](65536)
     var sa = Owned[UInt8](16)
@@ -101,10 +101,10 @@ def _kill(pid: Int32):
     _ = external_call["kill", Int32](pid, Int32(9))
 
 
-def _canned_h3_answer() -> List[UInt8]:
+def _canned_h3_answer() -> List[Byte]:
     # Reuse the question/answer shape: example.com, prio 1, alpn=h3, ttl=60.
     # (Mirror of test_svcb._mk_answer; inlined to keep this file standalone.)
-    var a = List[UInt8]()
+    var a = List[Byte]()
     a.append(UInt8(0x12)); a.append(UInt8(0x34))
     a.append(UInt8(0x80)); a.append(UInt8(0x80))
     a.append(UInt8(0x00)); a.append(UInt8(0x01))
@@ -118,7 +118,7 @@ def _canned_h3_answer() -> List[UInt8]:
         a.append(UInt8(len(t)))
         for k in range(len(t)):
             a.append(t[k])
-    a.append(UInt8(0))
+    a.append(Byte(0))
     a.append(UInt8(0x00)); a.append(UInt8(65))
     a.append(UInt8(0x00)); a.append(UInt8(1))
     a.append(UInt8(0xC0)); a.append(UInt8(0x0C))
@@ -170,7 +170,7 @@ def test_udp_timeout_returns_none() raises:
     assert_true(not rec)
 
 
-def _serve_udp_tc_then_tcp(b: _Bound, tcp_answer: List[UInt8]) raises:
+def _serve_udp_tc_then_tcp(b: _Bound, tcp_answer: List[Byte]) raises:
     """Reply TC=1 to the UDP query, then serve the full answer over TCP."""
     # UDP: receive the query and echo it back with TC=1 set.
     var rbuf = Owned[UInt8](65536)
@@ -182,7 +182,7 @@ def _serve_udp_tc_then_tcp(b: _Bound, tcp_answer: List[UInt8]) raises:
     )
     _ = n
     # copy the query bytes and force TC=1 (QR=1 | TC=1), RA=1 in flags
-    var tc = List[UInt8]()
+    var tc = List[Byte]()
     for i in range(Int(n)):
         tc.append(rbuf.ptr()[i])
     tc[2] = UInt8(0x80 | 0x02)   # QR=1, TC=1
@@ -205,7 +205,7 @@ def _serve_udp_tc_then_tcp(b: _Bound, tcp_answer: List[UInt8]) raises:
     var qlen = Int(hdr.ptr()[0]) * 256 + Int(hdr.ptr()[1])
     var qb = Owned[UInt8](qlen if qlen > 0 else 1)
     _ = external_call["recv", Int](cfd, qb.ptr(), qlen, Int32(0))
-    var framed = List[UInt8]()
+    var framed = List[Byte]()
     framed.append(UInt8((len(tcp_answer) >> 8) & 0xFF))
     framed.append(UInt8(len(tcp_answer) & 0xFF))
     for i in range(len(tcp_answer)):
@@ -258,7 +258,7 @@ def _serve_udp_tc_then_stall_tcp(b: _Bound, hold_us: UInt32 = UInt32(1_000_000))
         b.udp_fd, rbuf.ptr(), 65536, Int32(0), sa.ptr(), sl.ptr()
     )
     # Echo the query back with TC=1 + QR=1 set.
-    var tc = List[UInt8]()
+    var tc = List[Byte]()
     for i in range(Int(n)):
         tc.append(rbuf.ptr()[i])
     tc[2] = UInt8(0x80 | 0x02)   # QR=1, TC=1

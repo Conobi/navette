@@ -26,7 +26,7 @@ from .frame import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _read_u32(payload: List[UInt8], offset: Int) -> Int:
+def _read_u32(payload: List[Byte], offset: Int) -> Int:
     """Read a 4-byte big-endian unsigned integer."""
     return (
         (Int(payload[offset]) << 24)
@@ -36,7 +36,7 @@ def _read_u32(payload: List[UInt8], offset: Int) -> Int:
     )
 
 
-def _read_u31(payload: List[UInt8], offset: Int) -> Int:
+def _read_u31(payload: List[Byte], offset: Int) -> Int:
     """Read a 31-bit value (mask high bit) from 4 bytes big-endian."""
     return (
         ((Int(payload[offset]) & 0x7F) << 24)
@@ -46,14 +46,14 @@ def _read_u31(payload: List[UInt8], offset: Int) -> Int:
     )
 
 
-def _read_u16(payload: List[UInt8], offset: Int) -> Int:
+def _read_u16(payload: List[Byte], offset: Int) -> Int:
     """Read a 2-byte big-endian unsigned integer."""
     return (Int(payload[offset]) << 8) | Int(payload[offset + 1])
 
 
-def _slice_payload(payload: List[UInt8], start: Int, end: Int) -> List[UInt8]:
+def _slice_payload(payload: List[Byte], start: Int, end: Int) -> List[Byte]:
     """Copy a slice of payload bytes [start, end)."""
-    var result = List[UInt8](capacity=end - start)
+    var result = List[Byte](capacity=end - start)
     result.extend(Span(payload)[start:end])
     return result^
 
@@ -64,12 +64,12 @@ def _slice_payload(payload: List[UInt8], start: Int, end: Int) -> List[UInt8]:
 struct DataPayload(Movable):
     """Decoded DATA frame payload (RFC 9113 Section 6.1)."""
 
-    var data: List[UInt8]
+    var data: List[Byte]
     var padding_length: Int
     var error: String
 
     def __init__(out self):
-        self.data = List[UInt8]()
+        self.data = List[Byte]()
         self.padding_length = 0
         self.error = String("")
 
@@ -118,7 +118,7 @@ def decode_data_payload(frame: Frame) -> DataPayload:
 struct HeadersPayload(Movable):
     """Decoded HEADERS frame payload (RFC 9113 Section 6.2)."""
 
-    var headers_block: List[UInt8]
+    var headers_block: List[Byte]
     var padding_length: Int
     var priority_present: Bool
     var exclusive: Bool
@@ -127,7 +127,7 @@ struct HeadersPayload(Movable):
     var error: String
 
     def __init__(out self):
-        self.headers_block = List[UInt8]()
+        self.headers_block = List[Byte]()
         self.padding_length = 0
         self.priority_present = False
         self.exclusive = False
@@ -370,13 +370,13 @@ struct PushPromisePayload(Movable):
     """Decoded PUSH_PROMISE frame payload (RFC 9113 Section 6.6)."""
 
     var promised_stream_id: Int
-    var headers_block: List[UInt8]
+    var headers_block: List[Byte]
     var padding_length: Int
     var error: String
 
     def __init__(out self):
         self.promised_stream_id = 0
-        self.headers_block = List[UInt8]()
+        self.headers_block = List[Byte]()
         self.padding_length = 0
         self.error = String("")
 
@@ -439,12 +439,12 @@ def decode_push_promise_payload(frame: Frame) -> PushPromisePayload:
 struct PingPayload(Movable):
     """Decoded PING frame payload (RFC 9113 Section 6.7)."""
 
-    var opaque_data: List[UInt8]
+    var opaque_data: List[Byte]
     var ack: Bool
     var error: String
 
     def __init__(out self):
-        self.opaque_data = List[UInt8]()
+        self.opaque_data = List[Byte]()
         self.ack = False
         self.error = String("")
 
@@ -486,13 +486,13 @@ struct GoawayPayload(Movable):
 
     var last_stream_id: Int
     var error_code: Int
-    var debug_data: List[UInt8]
+    var debug_data: List[Byte]
     var error: String
 
     def __init__(out self):
         self.last_stream_id = 0
         self.error_code = 0
-        self.debug_data = List[UInt8]()
+        self.debug_data = List[Byte]()
         self.error = String("")
 
     def __init__(out self, *, deinit move: Self):
@@ -577,11 +577,11 @@ def decode_window_update_payload(frame: Frame) -> WindowUpdatePayload:
 struct ContinuationPayload(Movable):
     """Decoded CONTINUATION frame payload (RFC 9113 Section 6.10)."""
 
-    var headers_block: List[UInt8]
+    var headers_block: List[Byte]
     var error: String
 
     def __init__(out self):
-        self.headers_block = List[UInt8]()
+        self.headers_block = List[Byte]()
         self.error = String("")
 
     def __init__(out self, *, deinit move: Self):

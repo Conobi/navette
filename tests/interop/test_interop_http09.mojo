@@ -23,7 +23,7 @@ from interop.file_io import read_file, write_file, mkdir_p
 # ── Helpers (mirrors test_quic_connection.mojo) ───────────────────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -48,8 +48,8 @@ def _establish_handshake(
     mut now: UInt64,
 ) raises -> UInt64:
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -77,8 +77,8 @@ def _pump(
     mut now: UInt64,
     rounds: Int = 3,
 ) raises -> UInt64:
-    var a_dg = List[List[UInt8]](capacity=1)
-    var b_dg = List[List[UInt8]](capacity=1)
+    var a_dg = List[List[Byte]](capacity=1)
+    var b_dg = List[List[Byte]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
         var a_n = a.send(now, a_dg)
@@ -129,7 +129,7 @@ def test_http09_loopback() raises:
     # ── Set up the test file ──────────────────────────────────────────────
     var www_dir = "/tmp/interop_test_www"
     mkdir_p(www_dir)
-    var test_data = List[UInt8](capacity=1024)
+    var test_data = List[Byte](capacity=1024)
     for i in range(1024):
         test_data.append(UInt8(i % 256))
     write_file(www_dir + "/test1k.bin", Span(test_data))
@@ -147,8 +147,8 @@ def test_http09_loopback() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now,
     )

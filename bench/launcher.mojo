@@ -292,7 +292,7 @@ def main() raises:
         while proto_ptr[unsafe_offset=pf_len] != 0 and pf_len < 10:
             pf_len += 1
         if pf_len > 0:
-            var pf_bytes = List[UInt8]()
+            var pf_bytes = List[Byte]()
             for i in range(pf_len):
                 pf_bytes.append(proto_ptr[unsafe_offset=i])
             protocol_filter = String(from_utf8=pf_bytes^)

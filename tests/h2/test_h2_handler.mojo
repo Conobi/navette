@@ -250,7 +250,7 @@ def test_should_close_initially_false() raises:
     print("PASS test_should_close_initially_false")
 
 
-def _feed(mut target: H2Connection, data: List[UInt8]) raises -> List[UInt8]:
+def _feed(mut target: H2Connection, data: List[Byte]) raises -> List[Byte]:
     """Feed data into a connection, return its data_to_send()."""
     _ = target.receive_data(data)
     return target.data_to_send()
@@ -277,7 +277,7 @@ def test_basic_get_dispatch() raises:
 
     # 2. Feed server's initial output + response to client
     #    (server_initial = server SETTINGS, server_resp = SETTINGS ACK for client)
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(server_initial)):
         combined.append(server_initial[i])
     for i in range(len(server_resp)):
@@ -338,7 +338,7 @@ def _do_preface_exchange(
     var server_resp = server.drain()
 
     # Feed server output to client
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(server_initial)):
         combined.append(server_initial[i])
     for i in range(len(server_resp)):
@@ -379,7 +379,7 @@ def test_post_with_body() raises:
     _ = server.drain()
 
     # --- Send DATA with END_STREAM ---
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var hello = String("hello")
     for i in range(len(hello.as_bytes())):
         body_bytes.append(hello.as_bytes()[i])
@@ -446,7 +446,7 @@ def test_trailers() raises:
     _ = server.drain()
 
     # --- Send DATA (no END_STREAM) ---
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var body_str = String("data")
     for i in range(len(body_str.as_bytes())):
         body_bytes.append(body_str.as_bytes()[i])
@@ -519,7 +519,7 @@ struct _RespondingHandler(StreamHandler):
     ) raises:
         self.request_end_count += 1
         # Send body data and end
-        var body_bytes = List[UInt8]()
+        var body_bytes = List[Byte]()
         var msg = String("ok")
         for i in range(len(msg.as_bytes())):
             body_bytes.append(msg.as_bytes()[i])
@@ -612,7 +612,7 @@ def _do_preface_exchange_responding(
     server.feed(Span(client_preface))
     var server_resp = server.drain()
 
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(server_initial)):
         combined.append(server_initial[i])
     for i in range(len(server_resp)):
@@ -636,7 +636,7 @@ def _do_preface_exchange_reset(
     server.feed(Span(client_preface))
     var server_resp = server.drain()
 
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(server_initial)):
         combined.append(server_initial[i])
     for i in range(len(server_resp)):

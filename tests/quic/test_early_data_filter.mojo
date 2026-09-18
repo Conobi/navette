@@ -290,7 +290,7 @@ def _draw_method(mut state: UInt64) -> String:
 
     # Random 1-20 byte ASCII printable string (bytes 0x20..0x7E).
     var nlen = Int(((_splitmix64(state)) % UInt64(20)) + UInt64(1))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     for _ in range(nlen):
         var byte = UInt8(((_splitmix64(state)) % UInt64(95)) + UInt64(32))
         buf.append(byte)

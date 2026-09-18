@@ -41,7 +41,7 @@ def takes_store[S: EarlyDataStore](mut s: S) raises -> Bool:
     rather than `var s` (own) because `EarlyDataStore` is not declared
     `ImplicitlyDestructible`; consuming the store inside a generic
     function would leave Mojo 1.0.0b1 with no way to drop it."""
-    var auth = List[UInt8]()
+    var auth = List[Byte]()
     for _ in range(32):
         auth.append(UInt8(0x42))
     var decision = s.check_and_record(Span(auth), UInt64(1_000))

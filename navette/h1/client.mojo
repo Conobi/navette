@@ -31,12 +31,12 @@ struct ClientConnection(Movable):
     def send_request(mut self, var request: Request) raises:
         self._inner.send_request(request^)
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         return self._inner.drain()
 
     # --- Inbound API (client reads responses) ---
 
-    def receive_data(mut self, data: Span[UInt8, _]) raises:
+    def receive_data(mut self, data: Span[Byte, _]) raises:
         self._inner.receive_data(data)
 
     def next_response(mut self, var request_method: Method) -> Optional[Response]:

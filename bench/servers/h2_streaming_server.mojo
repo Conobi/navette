@@ -74,9 +74,9 @@ struct H2StreamingConn(Movable):
     var tls: TlsConnection
     var h2: H2StreamingServer
     var phase: UInt8
-    var recv_buf: List[UInt8]
-    var send_buf: List[UInt8]
-    var send_pending: List[UInt8]
+    var recv_buf: List[Byte]
+    var send_buf: List[Byte]
+    var send_pending: List[Byte]
     var _closing: Bool
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
@@ -101,9 +101,9 @@ struct H2StreamingConn(Movable):
         self.tls = tls^
         self.h2 = h2^
         self.phase = _PHASE_TLS_HANDSHAKE
-        self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=UInt8(0))
-        self.send_buf = List[UInt8]()
-        self.send_pending = List[UInt8]()
+        self.recv_buf = List[Byte](length=_RECV_BUF_SIZE, fill=Byte(0))
+        self.send_buf = List[Byte]()
+        self.send_pending = List[Byte]()
         self._closing = False
         self._recv_future = Optional[RecvFuture]()
         self._send_future = Optional[SendFuture]()
@@ -144,7 +144,7 @@ struct H2StreamingConn(Movable):
             unsafe_from_address=Int(self._loop_ptr)
         )
         var buf = self.recv_buf^
-        self.recv_buf = List[UInt8]()
+        self.recv_buf = List[Byte]()
         try:
             self._recv_future = loop[].recv(self.socket, buf^)
         except e:
@@ -152,7 +152,7 @@ struct H2StreamingConn(Movable):
             if Bool(opt_buf):
                 self.recv_buf = opt_buf.unsafe_take()
             else:
-                self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=UInt8(0))
+                self.recv_buf = List[Byte](length=_RECV_BUF_SIZE, fill=Byte(0))
             raise Error("recv submit failed")
 
     def _submit_send(mut self) raises:
@@ -169,7 +169,7 @@ struct H2StreamingConn(Movable):
             unsafe_from_address=Int(self._loop_ptr)
         )
         var buf = self.send_buf^
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
         try:
             self._send_future = loop[].send(self.socket, buf^)
         except e:
@@ -177,10 +177,10 @@ struct H2StreamingConn(Movable):
             if Bool(opt_buf):
                 self.send_buf = opt_buf.unsafe_take()
             else:
-                self.send_buf = List[UInt8]()
+                self.send_buf = List[Byte]()
             raise Error("send submit failed")
 
-    def _stage_send(mut self, var data: List[UInt8]) raises:
+    def _stage_send(mut self, var data: List[Byte]) raises:
         """Send data now, or queue it behind an in-flight send.
 
         Args:
@@ -222,7 +222,7 @@ struct H2StreamingConn(Movable):
             return
 
         var n = Int(result)
-        var chunk = List[UInt8](capacity=n)
+        var chunk = List[Byte](capacity=n)
         for i in range(n):
             chunk.append(self.recv_buf[i])
 
@@ -285,19 +285,19 @@ struct H2StreamingConn(Movable):
         var sent = Int(result)
         var buf_len = len(self.send_buf)
         if sent < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - sent)
+            var remaining = List[Byte](capacity=buf_len - sent)
             remaining.extend(Span(self.send_buf)[sent:buf_len])
             self.send_buf = remaining^
             self._submit_send()
             return
 
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
 
         if len(self.send_pending) > 0:
             var n = len(self.send_pending)
-            var fresh = List[UInt8](capacity=n)
+            var fresh = List[Byte](capacity=n)
             fresh.extend(Span(self.send_pending))
-            self.send_pending = List[UInt8]()
+            self.send_pending = List[Byte]()
             self.send_buf = fresh^
             self._submit_send()
             return

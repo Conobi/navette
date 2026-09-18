@@ -65,7 +65,7 @@ comptime DEFAULT_PORT: Int = 8444
 comptime _HEX_DIGITS: String = "0123456789abcdef"
 
 
-def _addr_to_key(addr: Span[UInt8, _]) -> String:
+def _addr_to_key(addr: Span[Byte, _]) -> String:
     """Convert raw sockaddr bytes to a hex string key for connection demux."""
     var key = String()
     var hex_bytes = _HEX_DIGITS.as_bytes()
@@ -76,7 +76,7 @@ def _addr_to_key(addr: Span[UInt8, _]) -> String:
     return key^
 
 
-def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
+def _set_msg_peer_raw(mut msg: Message, addr: List[Byte]):
     """Set a Message's peer from raw sockaddr bytes (Linux layout)."""
     if len(addr) < 4:
         return
@@ -130,7 +130,7 @@ struct H3StreamingUdpHandler(Movable):
     var udp_socket: Socket
     var conn_map: Dict[String, Int]
     var conn_h3s: List[Pointer[H3StreamingServer, MutUntrackedOrigin]]
-    var conn_addrs: List[List[UInt8]]
+    var conn_addrs: List[List[Byte]]
     var tls_lib: SharedLibrary
     var server_config: QuicServerConfig
     var _recv_pool: Optional[BufferPool]
@@ -154,7 +154,7 @@ struct H3StreamingUdpHandler(Movable):
         self.udp_socket = Socket(udp_handle^)
         self.conn_map = Dict[String, Int]()
         self.conn_h3s = List[Pointer[H3StreamingServer, MutUntrackedOrigin]]()
-        self.conn_addrs = List[List[UInt8]]()
+        self.conn_addrs = List[List[Byte]]()
         self.tls_lib = tls_lib^
         self.server_config = server_config^
         self._recv_pool = Optional[BufferPool](None)
@@ -239,14 +239,14 @@ struct H3StreamingUdpHandler(Movable):
                 var name = dgram_opt.value()._header().name()
                 var addr_key = _addr_to_key(name)
 
-                var addr_bytes = List[UInt8](capacity=len(name))
+                var addr_bytes = List[Byte](capacity=len(name))
                 for j in range(len(name)):
                     addr_bytes.append(name[j])
 
                 var conn_idx = self._find_conn(addr_key)
                 if conn_idx < 0:
                     var tp = default_transport_params()
-                    var dcid_copy = List[UInt8](capacity=Int(dcid.len))
+                    var dcid_copy = List[Byte](capacity=Int(dcid.len))
                     var _ds = dcid.as_span()
                     for _i in range(len(_ds)):
                         dcid_copy.append(_ds[_i])
@@ -315,7 +315,7 @@ struct H3StreamingUdpHandler(Movable):
         """Drain a connection's outbound datagrams and send via WatchLoop."""
         var datagrams = self.conn_h3s[conn_idx][].drain()
         for i in range(len(datagrams)):
-            var pkt = List[UInt8](copy=datagrams[i])
+            var pkt = List[Byte](copy=datagrams[i])
             if len(pkt) == 0:
                 continue
             var msg = Message(pkt^)
@@ -348,7 +348,7 @@ struct H3StreamingUdpHandler(Movable):
                 var last = len(self.conn_h3s) - 1
                 if i != last:
                     self.conn_h3s[i] = self.conn_h3s[last]
-                    self.conn_addrs[i] = List[UInt8](copy=self.conn_addrs[last])
+                    self.conn_addrs[i] = List[Byte](copy=self.conn_addrs[last])
                     for entry in self.conn_map.items():
                         if entry.value == last:
                             self.conn_map[entry.key] = i

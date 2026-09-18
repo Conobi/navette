@@ -46,7 +46,7 @@ def _accept_blocking(listener_fd: Int32) raises -> Int32:
     return cfd
 
 
-def _send_bytes(fd: Int32, data: List[UInt8]) raises:
+def _send_bytes(fd: Int32, data: List[Byte]) raises:
     var buf_owned = Owned[UInt8](len(data))
     var buf = buf_owned.ptr()
     for i in range(len(data)):
@@ -57,11 +57,11 @@ def _send_bytes(fd: Int32, data: List[UInt8]) raises:
         raise "send() returned " + String(rc)
 
 
-def _recv_bytes(fd: Int32, max_n: Int) raises -> List[UInt8]:
+def _recv_bytes(fd: Int32, max_n: Int) raises -> List[Byte]:
     var buf_owned = Owned[UInt8](max_n)
     var buf = buf_owned.ptr()
     var rc = external_call["recv", Int](fd, buf, max_n, Int32(0))
-    var out = List[UInt8]()
+    var out = List[Byte]()
     if rc > 0:
         for i in range(rc):
             out.append(buf[i])
@@ -71,15 +71,15 @@ def _recv_bytes(fd: Int32, max_n: Int) raises -> List[UInt8]:
     return out^
 
 
-def _bytes_of(s: String) -> List[UInt8]:
+def _bytes_of(s: String) -> List[Byte]:
     var sb = s.as_bytes()
-    var out = List[UInt8](capacity=len(sb))
+    var out = List[Byte](capacity=len(sb))
     for i in range(len(sb)):
         out.append(sb[i])
     return out^
 
 
-def _string_of(bytes: List[UInt8]) -> String:
+def _string_of(bytes: List[Byte]) -> String:
     var s = String()
     for i in range(len(bytes)):
         s += chr(Int(bytes[i]))

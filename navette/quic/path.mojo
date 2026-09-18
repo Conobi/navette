@@ -81,7 +81,7 @@ struct PathKey(Copyable, Movable):
         seen always triggers the address-change branch unless the caller
         has already promoted the validated path.
         """
-        return Self(Int32(0), InlineArray[UInt8, 16](fill=UInt8(0)), UInt16(0))
+        return Self(Int32(0), InlineArray[UInt8, 16](fill=Byte(0)), UInt16(0))
 
     @staticmethod
     def from_v4(a: UInt8, b: UInt8, c: UInt8, d: UInt8, port: UInt16) -> Self:
@@ -90,7 +90,7 @@ struct PathKey(Copyable, Movable):
         The 4 octets occupy the last four bytes of the 16-byte buffer; the
         high 12 bytes are zero. Family is AF_INET (2).
         """
-        var buf = InlineArray[UInt8, 16](fill=UInt8(0))
+        var buf = InlineArray[UInt8, 16](fill=Byte(0))
         buf[12] = a
         buf[13] = b
         buf[14] = c
@@ -108,7 +108,7 @@ struct PathChallenge(Copyable, Movable):
     each pending challenge tracks its own bytes_received / bytes_sent.
     """
 
-    var token: List[UInt8]       # exactly 8 random bytes
+    var token: List[Byte]       # exactly 8 random bytes
     var target: PathKey          # address being validated
     var sent_at_ns: UInt64       # monotonic timestamp the challenge was queued
     var attempts: UInt8          # PATH_CHALLENGE retransmits (≤ MAX_CHALLENGE_ATTEMPTS)
@@ -117,7 +117,7 @@ struct PathChallenge(Copyable, Movable):
 
     def __init__(
         out self,
-        var token: List[UInt8],
+        var token: List[Byte],
         var target: PathKey,
         sent_at_ns: UInt64,
     ):
@@ -135,7 +135,7 @@ struct PathChallenge(Copyable, Movable):
 
     def __init__(out self, *, copy: Self):
         """Copy constructor — deep-copies the token + target buffers."""
-        self.token = List[UInt8](copy=copy.token)
+        self.token = List[Byte](copy=copy.token)
         self.target = PathKey(copy=copy.target)
         self.sent_at_ns = copy.sent_at_ns
         self.attempts = copy.attempts
@@ -210,7 +210,7 @@ struct PathValidator(Movable):
         mut self,
         var target: PathKey,
         now_ns: UInt64,
-    ) raises -> List[UInt8]:
+    ) raises -> List[Byte]:
         """Generate an 8-byte random token, queue a PathChallenge, return the token.
 
         Returns the 8-byte token so the caller can wrap it in a
@@ -219,18 +219,18 @@ struct PathValidator(Movable):
         """
         var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN)
         _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
-        var token = List[UInt8](capacity=PATH_TOKEN_LEN)
+        var token = List[Byte](capacity=PATH_TOKEN_LEN)
         for i in range(PATH_TOKEN_LEN):
             token.append(buf[unsafe_offset=i])
         buf.unsafe_free()
-        var token_copy = List[UInt8](copy=token)
+        var token_copy = List[Byte](copy=token)
         var chal = PathChallenge(token_copy^, target^, now_ns)
         self.pending.append(chal^)
         return token^
 
     def on_response(
         mut self,
-        token: Span[UInt8, _],
+        token: Span[Byte, _],
         from_addr: PathKey,
         now_ns: UInt64,
     ) -> Optional[ValidatedPath]:
@@ -344,13 +344,13 @@ struct PathState(Movable):
     """Per-connection path validation and address tracking state."""
 
     var validator: PathValidator
-    var pending_responses: List[List[UInt8]]
+    var pending_responses: List[List[Byte]]
     var peer_addr: PathKey
     var current_recv_addr: PathKey
 
-    def on_challenge_received(mut self, data: Span[UInt8, _]):
+    def on_challenge_received(mut self, data: Span[Byte, _]):
         """Stash an 8-byte PATH_CHALLENGE token for echo as PATH_RESPONSE."""
-        var copy = List[UInt8](capacity=len(data))
+        var copy = List[Byte](capacity=len(data))
         for ref byte in data:
             copy.append(byte)
         self.pending_responses.append(copy^)
@@ -359,16 +359,16 @@ struct PathState(Movable):
         """Drain pending PATH_RESPONSE frames."""
         var out = List[Frame]()
         for ref resp in self.pending_responses:
-            var data = List[UInt8](copy=resp)
+            var data = List[Byte](copy=resp)
             out.append(Frame.path_response(data^))
-        self.pending_responses = List[List[UInt8]]()
+        self.pending_responses = List[List[Byte]]()
         return out^
 
     def emit_challenge_frames(mut self) raises -> List[Frame]:
         """Build PATH_CHALLENGE frames for every pending challenge."""
         var out = List[Frame]()
         for ref chal in self.validator.pending:
-            var token = List[UInt8](copy=chal.token)
+            var token = List[Byte](copy=chal.token)
             out.append(Frame.path_challenge(token^))
         return out^
 

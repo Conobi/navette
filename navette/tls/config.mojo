@@ -118,7 +118,7 @@ struct TlsClientConfig(Movable):
         Encoded to length-prefixed wire format for the Rust FFI.
         """
         # Encode to length-prefixed wire format
-        var buf = List[UInt8]()
+        var buf = List[Byte]()
         for ref proto in protocols:
             var proto_bytes = proto.as_bytes()
             var proto_len = len(proto_bytes)
@@ -145,8 +145,8 @@ struct TlsServerConfig(Movable):
     def __init__(
         out self,
         lib: SharedLibrary,
-        cert_pem: Span[UInt8, _],
-        key_pem: Span[UInt8, _],
+        cert_pem: Span[Byte, _],
+        key_pem: Span[Byte, _],
     ) raises:
         """Create a server config from PEM certificate chain + private key.
 
@@ -225,7 +225,7 @@ struct TlsServerConfig(Movable):
         Encoded to length-prefixed wire format for the Rust FFI.
         """
         # Encode to length-prefixed wire format
-        var buf = List[UInt8]()
+        var buf = List[Byte]()
         for ref proto in protocols:
             var proto_bytes = proto.as_bytes()
             var proto_len = len(proto_bytes)
@@ -257,8 +257,8 @@ struct QuicServerConfig(Movable):
     def __init__(
         out self,
         lib: SharedLibrary,
-        cert_pem: Span[UInt8, _],
-        key_pem: Span[UInt8, _],
+        cert_pem: Span[Byte, _],
+        key_pem: Span[Byte, _],
         alpn: String = "h3",
         max_early_data: Optional[UInt32] = None,
         policy: Optional[EarlyDataPolicy] = None,
@@ -564,7 +564,7 @@ struct QuicClientConfig(Movable):
     @staticmethod
     def with_ca(
         lib: SharedLibrary,
-        ca_pem: Span[UInt8, _],
+        ca_pem: Span[Byte, _],
         alpn: String = "h3",
     ) raises -> QuicClientConfig:
         """Create a QUIC client config trusting a specific CA certificate.

@@ -12,11 +12,11 @@ from navette.h3.qpack import QpackDecoder, QpackEncoder, QpackHeaderField
 from oracle.test_util import assert_true, assert_equal
 
 
-def hex_to_bytes(h: String) raises -> List[UInt8]:
+def hex_to_bytes(h: String) raises -> List[Byte]:
     """Convert a hex string to bytes."""
     if h.byte_length() % 2 != 0:
         raise "hex_to_bytes: odd-length hex string"
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var bv = h.as_bytes()
     for i in range(0, h.byte_length(), 2):
         var hi = bv[i]
@@ -42,7 +42,7 @@ def hex_to_bytes(h: String) raises -> List[UInt8]:
     return result^
 
 
-def assert_bytes_equal(actual: List[UInt8], expected: List[UInt8], label: String) raises:
+def assert_bytes_equal(actual: List[Byte], expected: List[Byte], label: String) raises:
     """Assert two byte sequences are identical."""
     assert_equal(len(actual), len(expected), label + " length")
     for i in range(len(expected)):

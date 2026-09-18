@@ -30,9 +30,9 @@ def test_event_populated() raises:
     assert_equal_int(Int(e.retry.value()), 5000, "populated.retry")
 
 
-def _bytes_from_str(s: String) -> List[UInt8]:
+def _bytes_from_str(s: String) -> List[Byte]:
     var b = s.as_bytes()
-    var out = List[UInt8]()
+    var out = List[Byte]()
     var i = 0
     while i < len(b):
         out.append(b[i])

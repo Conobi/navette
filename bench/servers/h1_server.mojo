@@ -72,9 +72,9 @@ struct H1Conn(Movable):
     var http: H1HandlerServer[BenchHandler]
     var tls: Optional[TlsConnection]
     var phase: UInt8
-    var recv_buf: List[UInt8]
-    var send_buf: List[UInt8]
-    var send_pending: List[UInt8]
+    var recv_buf: List[Byte]
+    var send_buf: List[Byte]
+    var send_pending: List[Byte]
     var _closing: Bool
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
@@ -99,9 +99,9 @@ struct H1Conn(Movable):
         self.http = http^
         self.tls = tls^
         self.phase = _PHASE_TLS_HANDSHAKE if Bool(self.tls) else _PHASE_READY
-        self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=UInt8(0))
-        self.send_buf = List[UInt8]()
-        self.send_pending = List[UInt8]()
+        self.recv_buf = List[Byte](length=_RECV_BUF_SIZE, fill=Byte(0))
+        self.send_buf = List[Byte]()
+        self.send_pending = List[Byte]()
         self._closing = False
         self._recv_future = Optional[RecvFuture]()
         self._send_future = Optional[SendFuture]()
@@ -141,7 +141,7 @@ struct H1Conn(Movable):
             unsafe_from_address=Int(self._loop_ptr)
         )
         var buf = self.recv_buf^
-        self.recv_buf = List[UInt8]()
+        self.recv_buf = List[Byte]()
         try:
             self._recv_future = loop[].recv(self.socket, buf^)
         except e:
@@ -149,7 +149,7 @@ struct H1Conn(Movable):
             if Bool(opt_buf):
                 self.recv_buf = opt_buf.unsafe_take()
             else:
-                self.recv_buf = List[UInt8](length=_RECV_BUF_SIZE, fill=0)
+                self.recv_buf = List[Byte](length=_RECV_BUF_SIZE, fill=0)
             raise Error("recv submit failed")
 
     def _submit_send(mut self) raises:
@@ -165,7 +165,7 @@ struct H1Conn(Movable):
             unsafe_from_address=Int(self._loop_ptr)
         )
         var buf = self.send_buf^
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
         try:
             self._send_future = loop[].send(self.socket, buf^)
         except e:
@@ -173,10 +173,10 @@ struct H1Conn(Movable):
             if Bool(opt_buf):
                 self.send_buf = opt_buf.unsafe_take()
             else:
-                self.send_buf = List[UInt8]()
+                self.send_buf = List[Byte]()
             raise Error("send submit failed")
 
-    def _stage_send(mut self, var data: List[UInt8]) raises:
+    def _stage_send(mut self, var data: List[Byte]) raises:
         """Send `data` now, or append it to the pending tail if busy.
 
         Args:
@@ -226,12 +226,12 @@ struct H1Conn(Movable):
         var future = opt.unsafe_take()
 
         var count = 0
-        var chunk = List[UInt8]()
+        var chunk = List[Byte]()
         try:
             var result = future^.result()
             count = result.count
             var span = result.transferred()
-            chunk = List[UInt8](capacity=count)
+            chunk = List[Byte](capacity=count)
             for i in range(count):
                 chunk.append(span[i])
         except:
@@ -270,7 +270,7 @@ struct H1Conn(Movable):
 
     # --- Recv handling ---
 
-    def _handle_recv_result(mut self, count: Int, chunk: List[UInt8]) raises:
+    def _handle_recv_result(mut self, count: Int, chunk: List[Byte]) raises:
         """Process received bytes through plaintext or TLS+H1 pipeline.
 
         Args:
@@ -295,7 +295,7 @@ struct H1Conn(Movable):
                 if not self.http.should_close():
                     self._submit_recv()
 
-    def _handle_recv_tls(mut self, chunk: Span[UInt8, _]) raises:
+    def _handle_recv_tls(mut self, chunk: Span[Byte, _]) raises:
         """Drive the rustls handshake, then the H1 codec, over one chunk.
 
         Args:
@@ -344,19 +344,19 @@ struct H1Conn(Movable):
 
         var buf_len = len(self.send_buf)
         if count < buf_len:
-            var remaining = List[UInt8](capacity=buf_len - count)
+            var remaining = List[Byte](capacity=buf_len - count)
             remaining.extend(Span(self.send_buf)[count:buf_len])
             self.send_buf = remaining^
             self._submit_send()
             return
 
-        self.send_buf = List[UInt8]()
+        self.send_buf = List[Byte]()
 
         if len(self.send_pending) > 0:
             var pending_view = Span(self.send_pending)
-            var pending = List[UInt8](capacity=len(pending_view))
+            var pending = List[Byte](capacity=len(pending_view))
             pending.extend(pending_view)
-            self.send_pending = List[UInt8]()
+            self.send_pending = List[Byte]()
             self.send_buf = pending^
             self._submit_send()
             return

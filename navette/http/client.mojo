@@ -215,7 +215,7 @@ struct HttpClient(Movable):
     # --- Convenience API ---
 
     def _build_request(
-        self, var method: Method, var parsed: ParsedUrl, var body_bytes: List[UInt8]
+        self, var method: Method, var parsed: ParsedUrl, var body_bytes: List[Byte]
     ) -> Request:
         """Build a Request from parsed URL components + optional body."""
         var hdrs = Headers()
@@ -268,16 +268,16 @@ struct HttpClient(Movable):
     def get(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.get(), parsed^, List[UInt8]())
+        var req = self._build_request(Method.get(), parsed^, List[Byte]())
         return self.submit(origin^, req^)
 
-    def post(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+    def post(mut self, url: String, var body: List[Byte]) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
         var req = self._build_request(Method.post(), parsed^, body^)
         return self.submit(origin^, req^)
 
-    def put(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+    def put(mut self, url: String, var body: List[Byte]) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
         var req = self._build_request(Method.put(), parsed^, body^)
@@ -286,16 +286,16 @@ struct HttpClient(Movable):
     def delete(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.delete(), parsed^, List[UInt8]())
+        var req = self._build_request(Method.delete(), parsed^, List[Byte]())
         return self.submit(origin^, req^)
 
     def head(mut self, url: String) raises -> RequestHandle:
         var parsed = parse_url(url)
         var origin = parsed.to_origin()
-        var req = self._build_request(Method.head(), parsed^, List[UInt8]())
+        var req = self._build_request(Method.head(), parsed^, List[Byte]())
         return self.submit(origin^, req^)
 
-    def query(mut self, url: String, var body: List[UInt8]) raises -> RequestHandle:
+    def query(mut self, url: String, var body: List[Byte]) raises -> RequestHandle:
         """Submit a QUERY request (RFC 10008).
 
         QUERY is a safe, idempotent, body-carrying method. The body

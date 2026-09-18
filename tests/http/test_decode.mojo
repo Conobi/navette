@@ -5,17 +5,17 @@ from navette.http.decode import ContentDecoder, ContentEncoding
 from tests._test_util import assert_true, assert_equal_str, assert_equal_int
 
 
-def _bytes_to_string(data: List[UInt8]) -> String:
-    """Convert a List[UInt8] to a String."""
+def _bytes_to_string(data: List[Byte]) -> String:
+    """Convert a List[Byte] to a String."""
     var s = String()
     for i in range(len(data)):
         s += chr(Int(data[i]))
     return s^
 
 
-def _make_gzip_hello_world() -> List[UInt8]:
+def _make_gzip_hello_world() -> List[Byte]:
     """gzip.compress(b'hello world') with mtime=0."""
-    var b = List[UInt8]()
+    var b = List[Byte]()
     b.append(31); b.append(139); b.append(8); b.append(0)
     b.append(0); b.append(0); b.append(0); b.append(0)
     b.append(2); b.append(255); b.append(203); b.append(72)
@@ -27,9 +27,9 @@ def _make_gzip_hello_world() -> List[UInt8]:
     return b^
 
 
-def _make_brotli_hello_world() -> List[UInt8]:
+def _make_brotli_hello_world() -> List[Byte]:
     """brotli.compress(b'hello world')."""
-    var b = List[UInt8]()
+    var b = List[Byte]()
     b.append(11); b.append(5); b.append(128); b.append(104)
     b.append(101); b.append(108); b.append(108); b.append(111)
     b.append(32); b.append(119); b.append(111); b.append(114)
@@ -41,7 +41,7 @@ def _make_brotli_hello_world() -> List[UInt8]:
 
 def test_identity_passthrough() raises:
     var dec = ContentDecoder(ContentEncoding.identity())
-    var input = List[UInt8]()
+    var input = List[Byte]()
     var msg = String("hello world")
     var b = msg.as_bytes()
     for i in range(len(b)):

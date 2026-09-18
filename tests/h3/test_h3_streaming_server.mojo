@@ -47,7 +47,7 @@ from tests._test_util import assert_true, assert_equal_int, load_test_cert, load
 # ── Shared loopback helpers ──────────────────────────────────────────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -139,7 +139,7 @@ def _echo_body_streaming(mut yld: H3StreamingYielder) raises:
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
 
     # Empty body
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_chunk(ctx_ptr, yld, empty^)
     finish(ctx_ptr, yld)
 
@@ -164,7 +164,7 @@ def _trailer_check_streaming(mut yld: H3StreamingYielder) raises:
     # Send minimal 200 response
     var hdrs = Headers()
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_chunk(ctx_ptr, yld, empty^)
     finish(ctx_ptr, yld)
 
@@ -199,7 +199,7 @@ def _multi_chunk_concat_body(mut yld: H3StreamingYielder) raises:
     var hdrs = Headers()
     hdrs.add("x-chunks-len", String(written))
     ctx_ptr[].resp_writer.send_status(StatusCode.ok(), hdrs^)
-    var empty = List[UInt8]()
+    var empty = List[Byte]()
     write_chunk(ctx_ptr, yld, empty^)
     finish(ctx_ptr, yld)
 
@@ -232,8 +232,8 @@ def test_h3_streaming_post_with_body() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -250,7 +250,7 @@ def test_h3_streaming_post_with_body() raises:
     req_fields.append(QpackHeaderField(":authority", "localhost"))
     client.send_headers(stream_id, req_fields, False)  # no fin yet
 
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     var src = String("hello world").as_bytes()
     for i in range(len(src)):
         body_data.append(src[i])
@@ -290,8 +290,8 @@ def test_h3_streaming_trailers() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -308,7 +308,7 @@ def test_h3_streaming_trailers() raises:
     req_fields.append(QpackHeaderField(":authority", "localhost"))
     client.send_headers(stream_id, req_fields, False)
 
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     body_data.append(UInt8(65))  # 'A'
     client.send_data(stream_id, body_data^, False)
 
@@ -339,8 +339,8 @@ def test_h3_streaming_rst_stream() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -398,8 +398,8 @@ def test_h3_streaming_cancel_via_rst_stream() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -473,8 +473,8 @@ def test_h3_streaming_multi_chunk_body_fifo_order() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -495,19 +495,19 @@ def test_h3_streaming_multi_chunk_body_fifo_order() raises:
     # before draining to the server so multiple frames coexist in the
     # body_frame_ring when the handler runs next_chunk. Coupled with the
     # pre-drain yields in the handler, this exposes any LIFO pop bug.
-    var c1 = List[UInt8]()
+    var c1 = List[Byte]()
     c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A"))); c1.append(UInt8(ord("A")))
     client.send_data(stream_id, c1^, False)
-    var c2 = List[UInt8]()
+    var c2 = List[Byte]()
     c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B"))); c2.append(UInt8(ord("B")))
     client.send_data(stream_id, c2^, False)
-    var c3 = List[UInt8]()
+    var c3 = List[Byte]()
     c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C"))); c3.append(UInt8(ord("C")))
     client.send_data(stream_id, c3^, True)  # fin
     now = _pump_streaming_client(server, client, now, 30)
 
     # Read sink and free
-    var observed = List[UInt8]()
+    var observed = List[Byte]()
     for i in range(9):
         observed.append(sink_ptr[i])
     sink_ptr.free()
@@ -538,8 +538,8 @@ def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
     var tc = _TestConfigs()
     var params = _h3_default_params()
     var now = UInt64(1_000_000)
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))
@@ -551,7 +551,7 @@ def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
     )
 
     server._h3._quic._current_space_idx = ZERO_RTT_SPACE_IDX
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x00))
     var sf = StreamFrame(UInt64(0), UInt64(0), payload, False)
     try:

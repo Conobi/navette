@@ -22,7 +22,7 @@ from tests.fuzz.lib.report import FuzzReport, ObserveResult
 from navette.h2.frame import Frame, decode_frame, encode_frame, H2FrameConfig
 
 
-def _check_byte_property(b: List[UInt8]) -> ObserveResult:
+def _check_byte_property(b: List[Byte]) -> ObserveResult:
     var cfg = H2FrameConfig()
     var frame: Frame
     try:
@@ -70,7 +70,7 @@ def _gen_frame(mut rng: SplitMix64) -> Frame:
     var payload_len = Int(rng.next_below(UInt64(256)))
     if f.frame_type == 3:  # RST_STREAM payload must be exactly 4 bytes
         payload_len = 4
-    f.payload = List[UInt8](capacity=payload_len)
+    f.payload = List[Byte](capacity=payload_len)
     for _ in range(payload_len):
         f.payload.append(rng.next_u8())
     f.length = payload_len

@@ -108,8 +108,8 @@ def _make_server_quic(
     tests only exercise the H3 adapter ctor's field assignment.
     """
     var tp = default_transport_params()
-    var dcid_a = List[UInt8]()
-    var dcid_b = List[UInt8]()
+    var dcid_a = List[Byte]()
+    var dcid_b = List[Byte]()
     for _ in range(8):
         dcid_a.append(UInt8(0xab))
         dcid_b.append(UInt8(0xcd))

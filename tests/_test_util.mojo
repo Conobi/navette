@@ -3,7 +3,7 @@
 # Shared helpers for the production test suite (`tests/`).
 # Imported by every test file in tests/ to avoid drift across files.
 
-def load_test_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def load_test_cert() raises -> Tuple[List[Byte], List[Byte]]:
     """Load the baked P-256 server leaf cert + key from `tests/fixtures/tls/`.
 
     Returns `(leaf_cert_pem, leaf_key_pem)` — the leaf signed by the test
@@ -22,7 +22,7 @@ def load_test_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
     return (cert_bytes^, key_bytes^)
 
 
-def load_test_ca() raises -> List[UInt8]:
+def load_test_ca() raises -> List[Byte]:
     """Load the baked test CA cert from `tests/fixtures/tls/ca.crt`.
 
     Pass these bytes to `quic_client_config_with_ca` (or any client trust

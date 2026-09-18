@@ -21,7 +21,7 @@ from tests.fuzz.lib.report import FuzzReport, ObserveResult
 from navette.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField
 
 
-def _check_byte_property(b: List[UInt8]) -> ObserveResult:
+def _check_byte_property(b: List[Byte]) -> ObserveResult:
     var dec = QpackDecoder()
     try:
         _ = dec.decode(b.copy())
@@ -49,7 +49,7 @@ def _gen_headers(mut rng: SplitMix64) -> List[QpackHeaderField]:
 def _check_roundtrip_property(mut rng: SplitMix64) -> ObserveResult:
     var headers = _gen_headers(rng)
     var enc = QpackEncoder()
-    var wire: List[UInt8]
+    var wire: List[Byte]
     try:
         wire = enc.encode(headers.copy())
     except e:

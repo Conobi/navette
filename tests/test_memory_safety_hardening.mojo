@@ -122,7 +122,7 @@ def _push_fake_slot(
     """
     var slot = ConnSlot[StubHandler](
         null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
-        List[UInt8](),
+        List[Byte](),
         dcids.copy(),
         generation,
     )

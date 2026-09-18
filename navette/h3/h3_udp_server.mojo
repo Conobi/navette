@@ -196,7 +196,7 @@ def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
 
 
 def _sockaddr_matches(
-    addr: List[UInt8],
+    addr: List[Byte],
     name_ptr: Pointer[UInt8, MutUntrackedOrigin],
     name_len: Int,
 ) -> Bool:
@@ -264,7 +264,7 @@ def _sockaddr_to_path_key(
         # AF_INET6 — 16-octet address at offset+8.
         if addr_len < 24:
             return PathKey.zero()
-        var addr = InlineArray[UInt8, 16](fill=UInt8(0))
+        var addr = InlineArray[UInt8, 16](fill=Byte(0))
         for i in range(16):
             addr[i] = buf_ptr[unsafe_offset=addr_offset + 8 + i]
         return PathKey(Int32(10), addr^, port)
@@ -272,7 +272,7 @@ def _sockaddr_to_path_key(
         return PathKey.zero()
 
 
-def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
+def _set_msg_peer_raw(mut msg: Message, addr: List[Byte]):
     """Set a Message's peer from raw sockaddr bytes (Linux layout).
 
     Parses sa_family (LE on x86_64) to choose between AF_INET and
@@ -320,7 +320,7 @@ def _set_msg_peer_raw(mut msg: Message, addr: List[UInt8]):
         ))
 
 
-def _egress_addrs_eq(a: List[UInt8], b: List[UInt8]) -> Bool:
+def _egress_addrs_eq(a: List[Byte], b: List[Byte]) -> Bool:
     """Byte-compare two raw sockaddr blobs for GSO grouping."""
     if len(a) != len(b):
         return False
@@ -398,15 +398,15 @@ struct EgressPacket(Movable):
     flush()'s _submit_egress phase.
     """
 
-    var data: List[UInt8]
-    var addr: List[UInt8]
+    var data: List[Byte]
+    var addr: List[Byte]
     var conn_idx: Int
     var ecn_mark: UInt8
 
     def __init__(
         out self,
-        var data: List[UInt8],
-        var addr: List[UInt8],
+        var data: List[Byte],
+        var addr: List[Byte],
         conn_idx: Int,
         ecn_mark: UInt8,
     ):
@@ -476,7 +476,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     when the list grew).
     """
     var h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
-    var addr: List[UInt8]
+    var addr: List[Byte]
     var dcids: List[UInt64]
     var generation: UInt64
     var next_deadline_us: UInt64
@@ -485,7 +485,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     def __init__(
         out self,
         h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin],
-        var addr: List[UInt8],
+        var addr: List[Byte],
         var dcids: List[UInt64],
         generation: UInt64,
     ):
@@ -498,7 +498,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
 
     def __init__(out self, *, copy: Self):
         self.h3 = copy.h3
-        self.addr = List[UInt8](copy=copy.addr)
+        self.addr = List[Byte](copy=copy.addr)
         self.dcids = List[UInt64](copy=copy.dcids)
         self.generation = copy.generation
         self.next_deadline_us = copy.next_deadline_us
@@ -1111,7 +1111,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 var run_len = run_end - i
                 if run_len > 1:
                     # Pack payloads contiguously into one super-buffer.
-                    var combined = List[UInt8](
+                    var combined = List[Byte](
                         capacity=seg_size * run_len,
                     )
                     for j in range(i, run_end):
@@ -1154,8 +1154,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
                         break
 
             # ── Single-packet path (no GSO cmsg) ────────────
-            var data = List[UInt8]()
-            var addr = List[UInt8]()
+            var data = List[Byte]()
+            var addr = List[Byte]()
             swap(data, self._egress_backlog[i].data)
             swap(addr, self._egress_backlog[i].addr)
             var conn_idx = self._egress_backlog[i].conn_idx
@@ -1196,8 +1196,8 @@ struct H3UdpServer[H: StreamHandler](Movable):
         with fresh empties is the O(1) equivalent. The husk is discarded
         when the backlog is replaced at the end of `_submit_egress`.
         """
-        var data = List[UInt8]()
-        var addr = List[UInt8]()
+        var data = List[Byte]()
+        var addr = List[Byte]()
         swap(data, self._egress_backlog[j].data)
         swap(addr, self._egress_backlog[j].addr)
         return EgressPacket(
@@ -1282,7 +1282,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     # Each GRO segment needs its own DCID extraction
                     # (different connections may be coalesced, though
                     # GRO groups by source tuple so this is unlikely).
-                    var seg_span = Span[UInt8, MutUntrackedOrigin](
+                    var seg_span = Span[Byte, MutUntrackedOrigin](
                         unsafe_ptr=seg_ptr, length=seg_len,
                     )
                     var dcid: CidBuf
@@ -1333,7 +1333,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # ── Per-connection construction ──────────────────────────────
 
     def _construct_conn_handler(
-        mut self, dcid: Span[UInt8, _], now: UInt64
+        mut self, dcid: Span[Byte, _], now: UInt64
     ) raises -> Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]:
         """Build a fresh per-connection `H3HandlerServer[H]` on the heap.
 
@@ -1384,7 +1384,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             these per-datagram and releases the inbound buffer rather than
             aborting the whole flush.
         """
-        var dcid_copy = List[UInt8](capacity=len(dcid))
+        var dcid_copy = List[Byte](capacity=len(dcid))
         for ref byte in dcid:
             dcid_copy.append(byte)
 
@@ -1462,7 +1462,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # RFC 9000 §12.4: only long-header Initial packets create new
             # conns. All other DCID-misses are dropped silently.
             if conn_idx < 0:
-                var first_byte_span = Span[UInt8, MutUntrackedOrigin](
+                var first_byte_span = Span[Byte, MutUntrackedOrigin](
                     unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
@@ -1499,7 +1499,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 # Build peer address from the delivery header name region
                 # for sendmsg routing. Stored as a raw sockaddr blob (16 or
                 # 28 bytes) — _set_msg_peer_raw() parses this layout.
-                var addr = List[UInt8](capacity=pd.name_len)
+                var addr = List[Byte](capacity=pd.name_len)
                 for j in range(pd.name_len):
                     addr.append(pd.name_ptr[unsafe_offset=j])
 
@@ -1589,7 +1589,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 if not _sockaddr_matches(
                     self.conn_slots[conn_idx].addr, pd.name_ptr, pd.name_len
                 ):
-                    var addr_update = List[UInt8](capacity=pd.name_len)
+                    var addr_update = List[Byte](capacity=pd.name_len)
                     for j in range(pd.name_len):
                         addr_update.append(pd.name_ptr[unsafe_offset=j])
                     self.conn_slots[conn_idx].addr = addr_update^
@@ -1646,7 +1646,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             for i in range(len(datagrams)):
                 # Move the payload out of the drained list (swap with an
                 # empty husk) rather than copying 1200 bytes per datagram.
-                var pkt = List[UInt8]()
+                var pkt = List[Byte]()
                 swap(pkt, datagrams[i])
                 if len(pkt) == 0:
                     continue
@@ -1666,7 +1666,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     continue
 
                 var pkt_len = len(pkt)
-                var addr_copy = List[UInt8](
+                var addr_copy = List[Byte](
                     copy=self.conn_slots[conn_idx].addr
                 )
 
@@ -1706,7 +1706,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         sid: Int,
         var status: StatusCode,
         var headers: Headers,
-        var body: List[UInt8],
+        var body: List[Byte],
         end: Bool,
     ) raises:
         """Write a response into an open H3 stream from OUTSIDE the inbound
@@ -1751,11 +1751,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
             )
             var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
             for i in range(len(datagrams)):
-                var pkt = List[UInt8]()
+                var pkt = List[Byte]()
                 swap(pkt, datagrams[i])
                 if len(pkt) == 0:
                     continue
-                var addr_copy = List[UInt8](
+                var addr_copy = List[Byte](
                     copy=self.conn_slots[conn_idx].addr
                 )
                 self._inject_egress.append(

@@ -83,7 +83,7 @@ def _assert_false(cond: Bool, msg: String) raises:
         raise msg
 
 
-def _assert_bytes_eq(got: List[UInt8], expected: List[UInt8], msg: String) raises:
+def _assert_bytes_eq(got: List[Byte], expected: List[Byte], msg: String) raises:
     if len(got) != len(expected):
         raise msg + ": length mismatch, got " + String(len(got)) + " expected " + String(len(expected))
     for i in range(len(got)):
@@ -102,9 +102,9 @@ def _hex_byte_value(b: UInt8) raises -> Int:
     raise "invalid hex byte"
 
 
-def _hex_decode(hex_str: String) raises -> List[UInt8]:
+def _hex_decode(hex_str: String) raises -> List[Byte]:
     """Decode a hex string to bytes."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     if hex_str.byte_length() % 2 != 0:
         raise "hex string has odd length"
     var bs = hex_str.as_bytes()
@@ -117,7 +117,7 @@ def _hex_decode(hex_str: String) raises -> List[UInt8]:
     return result^
 
 
-def _bytes_to_hex(data: List[UInt8]) -> String:
+def _bytes_to_hex(data: List[Byte]) -> String:
     """Convert bytes to lowercase hex string."""
     var chars = String("0123456789abcdef")
     var result = String()
@@ -141,9 +141,9 @@ def _bytes_to_hex(data: List[UInt8]) -> String:
     return result^
 
 
-def _string_to_bytes(s: String) -> List[UInt8]:
+def _string_to_bytes(s: String) -> List[Byte]:
     """Convert a string to a list of bytes (ASCII only)."""
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var bs = s.as_bytes()
     for i in range(len(bs)):
         result.append(bs[i])
@@ -228,7 +228,7 @@ def test_roundtrip_ack_ecn() raises:
 
 
 def test_roundtrip_crypto() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(UInt8(0x01))
     data.append(UInt8(0x02))
     data.append(UInt8(0x03))
@@ -245,7 +245,7 @@ def test_roundtrip_crypto() raises:
 
 def test_roundtrip_stream_base() raises:
     """STREAM with offset=0, no FIN -- serializer emits LEN bit."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(0x48 + i))  # H, I, J, K, L
     var sf = StreamFrame(UInt64(4), UInt64(0), data, False)
@@ -263,7 +263,7 @@ def test_roundtrip_stream_base() raises:
 
 def test_roundtrip_stream_off_len() raises:
     """STREAM with OFF+LEN flags."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(0x48 + i))
     var sf = StreamFrame(UInt64(4), UInt64(300), data, False)
@@ -280,7 +280,7 @@ def test_roundtrip_stream_off_len() raises:
 
 def test_roundtrip_stream_off_len_fin() raises:
     """STREAM with OFF+LEN+FIN flags."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(0x48 + i))
     var sf = StreamFrame(UInt64(4), UInt64(400), data, True)
@@ -297,7 +297,7 @@ def test_roundtrip_stream_off_len_fin() raises:
 
 def test_roundtrip_stream_empty_fin() raises:
     """STREAM with empty data + FIN (legal edge case)."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     var sf = StreamFrame(UInt64(4), UInt64(500), data, True)
     var frame = Frame.stream(sf)
     var rt = _serialize_and_parse_back(frame)
@@ -381,7 +381,7 @@ def test_roundtrip_new_connection_id() raises:
     ncid.sequence = UInt64(5)
     ncid.retire_prior_to = UInt64(3)
     # 8-byte CID
-    var cid_bytes = List[UInt8]()
+    var cid_bytes = List[Byte]()
     for i in range(8):
         cid_bytes.append(UInt8(i + 1))
     ncid.cid = CidBuf.from_span(Span(cid_bytes))
@@ -395,7 +395,7 @@ def test_roundtrip_new_connection_id() raises:
     _assert_eq(rn.sequence, UInt64(5), "sequence")
     _assert_eq(rn.retire_prior_to, UInt64(3), "retire_prior_to")
     _assert_eq_int(len(rn.cid), 8, "cid length")
-    _assert_bytes_eq(List[UInt8](rn.cid.as_span()), List[UInt8](ncid.cid.as_span()), "cid")
+    _assert_bytes_eq(List[Byte](rn.cid.as_span()), List[Byte](ncid.cid.as_span()), "cid")
     _assert_eq_int(len(rn.stateless_reset_token), 16, "token length")
     _assert_bytes_eq(rn.stateless_reset_token, ncid.stateless_reset_token, "reset token")
     print("  roundtrip_new_connection_id: PASS")
@@ -450,9 +450,9 @@ def test_roundtrip_connection_close_app() raises:
 
 
 def test_roundtrip_new_token() raises:
-    var token = List[UInt8]()
+    var token = List[Byte]()
     for _ in range(16):
-        token.append(UInt8(0))
+        token.append(Byte(0))
     var frame = Frame.new_token(token)
     var rt = _serialize_and_parse_back(frame)
     _assert_true(rt.is_new_token(), "should be NEW_TOKEN")
@@ -463,7 +463,7 @@ def test_roundtrip_new_token() raises:
 
 
 def test_roundtrip_path_challenge() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(8):
         data.append(UInt8(i + 1))
     var frame = Frame.path_challenge(data)
@@ -476,7 +476,7 @@ def test_roundtrip_path_challenge() raises:
 
 
 def test_roundtrip_path_response() raises:
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(8):
         data.append(UInt8(i + 1))
     var frame = Frame.path_response(data)
@@ -533,7 +533,7 @@ def test_roundtrip_streams_blocked_uni() raises:
 
 def test_roundtrip_datagram_with_len() raises:
     """RFC 9221 §4 — DATAGRAM_LEN (0x31) round-trip with a 7-byte payload."""
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     for i in range(7):
         payload.append(UInt8(i + 1))
     var frame = Frame.datagram_with_len(payload)
@@ -551,7 +551,7 @@ def test_roundtrip_datagram_with_len() raises:
 
 def test_roundtrip_datagram_no_length() raises:
     """RFC 9221 §4 — DATAGRAM (0x30) round-trip; payload extends to end of packet."""
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     for i in range(11):
         payload.append(UInt8(0xA0 + i))
     var frame = Frame.datagram(payload)
@@ -864,7 +864,7 @@ def test_vectors() raises:
                 pass
             try:
                 var cid_hex = String(expected["connection_id_hex"])
-                var actual_cid_hex = _bytes_to_hex(List[UInt8](ncid.cid.as_span()))
+                var actual_cid_hex = _bytes_to_hex(List[Byte](ncid.cid.as_span()))
                 if actual_cid_hex != cid_hex:
                     raise "vector " + vec_id + " connection_id_hex: got " + actual_cid_hex + " expected " + cid_hex
             except e:
@@ -983,7 +983,7 @@ def test_error_unknown_frame_type() raises:
 
 def test_error_truncated_ack() raises:
     """Truncated ACK: just the type byte 0x02, no fields."""
-    var wire = List[UInt8]()
+    var wire = List[Byte]()
     wire.append(UInt8(0x02))
     var r = ByteReader(Span(wire))
     var caught = False
@@ -1152,9 +1152,9 @@ def test_is_ack_eliciting() raises:
 
     # ACK-eliciting: PING, STREAM, CRYPTO
     _assert_true(Frame.ping().is_ack_eliciting(), "PING is ack-eliciting")
-    var sf = StreamFrame(UInt64(0), UInt64(0), List[UInt8](), False)
+    var sf = StreamFrame(UInt64(0), UInt64(0), List[Byte](), False)
     _assert_true(Frame.stream(sf).is_ack_eliciting(), "STREAM is ack-eliciting")
-    var cf = CryptoFrame(UInt64(0), List[UInt8]())
+    var cf = CryptoFrame(UInt64(0), List[Byte]())
     _assert_true(Frame.crypto(cf).is_ack_eliciting(), "CRYPTO is ack-eliciting")
     print("  is_ack_eliciting: PASS")
 
@@ -1169,8 +1169,8 @@ def _check_wire_len(frame: Frame, label: String) raises:
     _assert_eq_int(frame.wire_len(), len(buf), "wire_len mismatch for " + label)
 
 
-def _fill(n: Int, seed: UInt64) -> List[UInt8]:
-    var out = List[UInt8](capacity=n)
+def _fill(n: Int, seed: UInt64) -> List[Byte]:
+    var out = List[Byte](capacity=n)
     for i in range(n):
         out.append(UInt8((seed + UInt64(i) * UInt64(31)) & UInt64(0xFF)))
     return out^
@@ -1266,10 +1266,10 @@ def test_wire_len_exact() raises:
 
 def test_direct_stream_roundtrip() raises:
     """Write a STREAM frame with offset via direct writer, parse it back."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(50):
         data.append(UInt8(i))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -1297,10 +1297,10 @@ def test_direct_stream_roundtrip() raises:
 
 def test_direct_stream_zero_offset() raises:
     """Direct write at offset 0 omits the OFF bit."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(10):
         data.append(UInt8(0xAA))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -1322,10 +1322,10 @@ def test_direct_stream_zero_offset() raises:
 
 def test_direct_stream_fin_with_data() raises:
     """Direct write with FIN flag and data."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(5):
         data.append(UInt8(0x48 + i))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -1347,8 +1347,8 @@ def test_direct_stream_fin_with_data() raises:
 
 def test_direct_stream_fin_only() raises:
     """Direct write with FIN and empty data."""
-    var data = List[UInt8]()
-    var buf = List[UInt8]()
+    var data = List[Byte]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -1370,12 +1370,12 @@ def test_direct_stream_fin_only() raises:
 
 def test_direct_stream_budget_truncation() raises:
     """Budget truncates data to fit; output is still a valid frame."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(200):
         data.append(UInt8(i & 0xFF))
     # Budget 20: 1 (type) + 1 (stream_id=4) + 2 (offset=100) + 1 (len varint)
     # = 5 header bytes, leaving 15 bytes for data.
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=20,
@@ -1402,9 +1402,9 @@ def test_direct_stream_budget_truncation() raises:
 
 def test_direct_stream_budget_too_small() raises:
     """Budget too small for even a minimal header returns 0."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(UInt8(0x42))
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=2,  # Can't fit type + stream_id varint + len varint + 1 byte
@@ -1420,7 +1420,7 @@ def test_direct_stream_budget_too_small() raises:
 
 def test_direct_stream_matches_serialize() raises:
     """Direct writer produces byte-identical output to serialize_frame."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(50):
         data.append(UInt8(i))
 
@@ -1432,7 +1432,7 @@ def test_direct_stream_matches_serialize() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -1448,8 +1448,8 @@ def test_direct_stream_matches_serialize() raises:
 
 def test_direct_stream_no_data_no_fin() raises:
     """Empty data without FIN returns 0 (nothing to emit)."""
-    var data = List[UInt8]()
-    var buf = List[UInt8]()
+    var data = List[Byte]()
+    var buf = List[Byte]()
     var written = write_stream_frame_direct(
         buf,
         budget=200,
@@ -1480,7 +1480,7 @@ def test_write_ack_frame_direct_matches_serialize() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_ack_frame_direct(direct, 1000, ack)
     _assert_eq_int(written, len(expected), "written length should match")
     _assert_bytes_eq(direct, expected, "direct vs serialize_frame bytes")
@@ -1507,7 +1507,7 @@ def test_write_ack_frame_direct_ecn_matches_serialize() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_ack_frame_direct(direct, 1000, ack)
     _assert_eq_int(written, len(expected), "ECN written length should match")
     _assert_bytes_eq(direct, expected, "ECN direct vs serialize_frame bytes")
@@ -1522,7 +1522,7 @@ def test_write_ack_frame_direct_budget_exceeded() raises:
     ack.first_ack_range = UInt64(5)
     ack.ranges = List[AckRange]()
 
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_ack_frame_direct(direct, 1, ack)
     _assert_eq_int(written, 0, "should return 0 when budget is too small")
     _assert_eq_int(len(direct), 0, "should not write anything when budget exceeded")
@@ -1543,7 +1543,7 @@ def test_write_ack_frame_direct_no_ranges() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_ack_frame_direct(direct, 1000, ack)
     _assert_eq_int(written, len(expected), "no-ranges written length should match")
     _assert_bytes_eq(direct, expected, "no-ranges direct vs serialize_frame bytes")
@@ -1555,7 +1555,7 @@ def test_write_ack_frame_direct_no_ranges() raises:
 
 def test_write_crypto_frame_direct_matches_serialize() raises:
     """Direct-write CRYPTO produces byte-identical output to serialize_frame."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(20):
         data.append(UInt8(i))
 
@@ -1565,7 +1565,7 @@ def test_write_crypto_frame_direct_matches_serialize() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_crypto_frame_direct(direct, 1000, UInt64(100), Span(data))
     _assert_eq_int(written, len(expected), "written length should match")
     _assert_bytes_eq(direct, expected, "direct vs serialize_frame bytes")
@@ -1574,7 +1574,7 @@ def test_write_crypto_frame_direct_matches_serialize() raises:
 
 def test_write_crypto_frame_direct_zero_offset() raises:
     """Direct-write CRYPTO with zero offset matches serialize_frame."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(10):
         data.append(UInt8(i + 0x40))
 
@@ -1584,7 +1584,7 @@ def test_write_crypto_frame_direct_zero_offset() raises:
     var expected = w.finish()
 
     # Via direct writer.
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_crypto_frame_direct(direct, 1000, UInt64(0), Span(data))
     _assert_eq_int(written, len(expected), "zero-offset written length should match")
     _assert_bytes_eq(direct, expected, "zero-offset direct vs serialize_frame bytes")
@@ -1593,11 +1593,11 @@ def test_write_crypto_frame_direct_zero_offset() raises:
 
 def test_write_crypto_frame_direct_budget_exceeded() raises:
     """Returns 0 when budget is too small for even header + 1 byte."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(10):
         data.append(UInt8(i))
 
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_crypto_frame_direct(direct, 2, UInt64(100), Span(data))
     _assert_eq_int(written, 0, "should return 0 when budget too small")
     _assert_eq_int(len(direct), 0, "should not write anything when budget exceeded")
@@ -1606,14 +1606,14 @@ def test_write_crypto_frame_direct_budget_exceeded() raises:
 
 def test_write_crypto_frame_direct_budget_truncation() raises:
     """Truncates data to fit the budget, producing valid wire bytes."""
-    var data = List[UInt8]()
+    var data = List[Byte]()
     for i in range(100):
         data.append(UInt8(i))
 
     # Budget allows header + only 10 data bytes.
     # Header for offset=0: type(1) + offset(1) + length_varint(1) = 3 bytes.
     var budget = 13
-    var direct = List[UInt8]()
+    var direct = List[Byte]()
     var written = write_crypto_frame_direct(direct, budget, UInt64(0), Span(data))
 
     _assert_true(written > 0, "should write truncated frame")
@@ -1664,7 +1664,7 @@ def test_frame_cursor_yields_all_frames() raises:
 
 def test_frame_cursor_empty_payload() raises:
     """FrameCursor on an empty buffer yields None immediately."""
-    var buf = List[UInt8]()
+    var buf = List[Byte]()
     var cursor = FrameCursor(Span(buf))
 
     var f1 = cursor.next()

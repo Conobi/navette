@@ -26,13 +26,13 @@ from tests._test_util import (
 )
 
 
-def _synth_dcid() -> List[UInt8]:
+def _synth_dcid() -> List[Byte]:
     """Return the canonical RFC 9001 §A test DCID for synthetic key derivation.
 
     Returns:
         An 8-byte List with the canonical sample DCID.
     """
-    var dcid: List[UInt8] = [
+    var dcid: List[Byte] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
@@ -299,7 +299,7 @@ def test_discard_clears_slot_3_and_frees_handle() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var protect = PacketProtect(tls.shared())
 
-    var dcid: List[UInt8] = [
+    var dcid: List[Byte] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
@@ -342,7 +342,7 @@ def test_del_frees_slot_3_handle_exactly_once() raises:
     __del__ frees the slot-3 handle exactly once (counter delta = 1)."""
     var tls = TlsBackend("lib/librustls_mojo.so")
 
-    var dcid: List[UInt8] = [
+    var dcid: List[Byte] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]

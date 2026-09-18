@@ -56,7 +56,7 @@ def _build_config(v: PythonObject) -> H2FrameConfig:
 
 
 def check_cross_accept(
-    wire: List[UInt8], vid: String, expected: PythonObject, config: H2FrameConfig,
+    wire: List[Byte], vid: String, expected: PythonObject, config: H2FrameConfig,
 ) raises -> Int:
     """Cross-validate an accept vector against the pre-materialized oracle.
 
@@ -115,7 +115,7 @@ def check_cross_accept(
 
 
 def check_cross_reject(
-    wire: List[UInt8], vid: String, config: H2FrameConfig,
+    wire: List[Byte], vid: String, config: H2FrameConfig,
 ) raises:
     """Cross-validate a reject vector. Our parser must reject."""
     var result = decode_frame(wire, 0, config)
@@ -123,7 +123,7 @@ def check_cross_reject(
     assert_true(not frame.ok(), vid + ": our parser accepted but expected reject")
 
 
-def check_roundtrip(wire: List[UInt8], vid: String, config: H2FrameConfig) raises:
+def check_roundtrip(wire: List[Byte], vid: String, config: H2FrameConfig) raises:
     """Roundtrip: decode, re-encode, compare bytes."""
     var result = decode_frame(wire, 0, config)
     var frame = result[0].copy()

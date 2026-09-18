@@ -21,7 +21,7 @@ from ._helpers import (
 
 
 def parse_response(
-    wire: List[UInt8],
+    wire: List[Byte],
     request_method: String = "GET",
     config: ParseConfig = ParseConfig(),
 ) -> ParsedResponse:
@@ -257,7 +257,7 @@ def parse_response(
                     return result^
 
             # Decode chunked body
-            var remaining = List[UInt8]()
+            var remaining = List[Byte]()
             var ri = body_start
             while ri < data_len:
                 remaining.append(wire[ri])

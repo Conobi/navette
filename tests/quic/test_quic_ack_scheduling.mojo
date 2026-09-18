@@ -57,7 +57,7 @@ struct _Rng:
 
 def _deliver(
     mut src: QuicConnection, mut dst: QuicConnection, now: UInt64,
-    mut buf: List[List[UInt8]],
+    mut buf: List[List[Byte]],
 ) raises -> Int:
     """One send() on src fed to dst; returns the number of datagrams moved."""
     var n = src.send(now, buf)
@@ -73,7 +73,7 @@ def _deliver(
 def _drain_to(mut src: QuicConnection, mut dst: QuicConnection, now: UInt64) raises -> Int:
     """Call send() on src until empty (cap 64), each datagram fed to dst."""
     var total = 0
-    var buf = List[List[UInt8]](capacity=1)
+    var buf = List[List[Byte]](capacity=1)
     for _ in range(64):
         var n = _deliver(src, dst, now, buf)
         if n == 0:
@@ -117,7 +117,7 @@ def _warm_ae(mut client: QuicConnection, mut server: QuicConnection, sid: UInt64
     var d = _bytes(3)
     client.send_stream_data(sid, Span(d), False)
     now += UInt64(1_000)
-    var buf = List[List[UInt8]](capacity=1)
+    var buf = List[List[Byte]](capacity=1)
     _ = _deliver(client, server, now, buf)
     now += UInt64(26_000)
     _ = _drain_to(server, client, now)
@@ -131,7 +131,7 @@ def _client_with_handshake_keys(mut p: _Pair, mut now: UInt64) raises -> UInt64:
     spans two datagrams); flush whatever the client then owes."""
     now += UInt64(10_000)
     _ = _drain_to(p.client, p.server, now)
-    var s = List[List[UInt8]](capacity=1)
+    var s = List[List[Byte]](capacity=1)
     for _ in range(8):
         _ = p.server.send(now, s)
         assert_true(len(s) > 0, "server keeps emitting its flight")
@@ -145,7 +145,7 @@ def _client_with_handshake_keys(mut p: _Pair, mut now: UInt64) raises -> UInt64:
     # Flush what the client owes without delivering it: the server must keep
     # its Handshake keys so it can still decrypt what the tests send next.
     now += UInt64(1_000)
-    var c = List[List[UInt8]](capacity=1)
+    var c = List[List[Byte]](capacity=1)
     for _ in range(8):
         if p.client.send(now, c) == 0:
             break
@@ -202,8 +202,8 @@ def _pn_has_stream_data(conn: QuicConnection, pn: Int) raises -> Bool:
     return False
 
 
-def _bytes(n: Int, seed: UInt8 = UInt8(0x41)) -> List[UInt8]:
-    var out = List[UInt8](capacity=n)
+def _bytes(n: Int, seed: UInt8 = UInt8(0x41)) -> List[Byte]:
+    var out = List[Byte](capacity=n)
     for i in range(n):
         out.append(UInt8((Int(seed) + i) & 0xFF))
     return out^
@@ -237,8 +237,8 @@ struct _Pair:
         self.client = QuicConnection.client(
             self.tls.shared(), client_config, "localhost", client_params, now,
         )
-        var orig_dcid = List[UInt8](self.client.initial_dcid.as_span())
-        var client_dcid = List[UInt8](self.client.initial_dcid.as_span())
+        var orig_dcid = List[Byte](self.client.initial_dcid.as_span())
+        var client_dcid = List[Byte](self.client.initial_dcid.as_span())
         self.server = QuicConnection.server(
             self.tls.shared(), server_config, server_params,
             Span(orig_dcid), Span(client_dcid), now,
@@ -265,7 +265,7 @@ def test_ack_bundled_on_send() raises:
     var req = _bytes(40)
     p.client.send_stream_data(sid, Span(req), True)
     now += UInt64(1_000)
-    var deliver_buf = List[List[UInt8]](capacity=1)
+    var deliver_buf = List[List[Byte]](capacity=1)
     var n = _deliver(p.client, p.server, now, deliver_buf)
     assert_equal_int(n, 1, "one request datagram")
     var req_pn = _last_sent_pn(p.client, 2)
@@ -276,7 +276,7 @@ def test_ack_bundled_on_send() raises:
     var resp = _bytes(50)
     p.server.send_stream_data(UInt64(sid), Span(resp), True)
     now += UInt64(500)
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.server.send(now, dgs)
     assert_equal_int(len(dgs), 1, "one response datagram")
     var resp_pn = _last_sent_pn(p.server, 2)
@@ -337,13 +337,13 @@ def test_ack_within_max_ack_delay() raises:
     var data = _bytes(10)
     p.client.send_stream_data(sid, Span(data), False)
     now += UInt64(1_000)
-    var deliver_buf = List[List[UInt8]](capacity=1)
+    var deliver_buf = List[List[Byte]](capacity=1)
     _ = _deliver(p.client, p.server, now, deliver_buf)
     var pn = _last_sent_pn(p.client, 2)
     var deadline = p.server.timeout(now)
     assert_true(Bool(deadline), "server reports a deadline")
     assert_true(deadline.value() == now + mad, "ack deadline = receipt + max_ack_delay")
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     assert_equal_int(p.server.send(now + UInt64(1), dgs), 0, "nothing owed before the deadline")
     now = deadline.value()
     _ = p.server.send(now, dgs)
@@ -367,7 +367,7 @@ def test_ack_only_bypasses_cc() raises:
 
     # Two ack-eliciting packets -> server owes an immediate ACK.
     var sid = p.client.open_stream(True)
-    var deliver_buf = List[List[UInt8]](capacity=1)
+    var deliver_buf = List[List[Byte]](capacity=1)
     for _ in range(2):
         var d = _bytes(5)
         p.client.send_stream_data(sid, Span(d), False)
@@ -384,7 +384,7 @@ def test_ack_only_bypasses_cc() raises:
     p.server.recovery.pacer.enabled = False
     var bif_before = p.server.recovery.bytes_in_flight
     now += UInt64(100)
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.server.send(now, dgs)
     assert_equal_int(len(dgs), 1, "ACK-only datagram despite closed gate")
     var pn = _last_sent_pn(p.server, 2)
@@ -430,10 +430,10 @@ def test_no_past_deadline_after_send() raises:
         var sid = p.client.open_stream(True)
         var ssid = p.server.open_stream(True)
         var closed_at = -1
-        var cd = List[List[UInt8]](capacity=1)
-        var sd = List[List[UInt8]](capacity=1)
-        var _dg = List[List[UInt8]](capacity=1)
-        var _dg2 = List[List[UInt8]](capacity=1)
+        var cd = List[List[Byte]](capacity=1)
+        var sd = List[List[Byte]](capacity=1)
+        var _dg = List[List[Byte]](capacity=1)
+        var _dg2 = List[List[Byte]](capacity=1)
         for step in range(120):
             var op = rng.below(10)
             if op < 3:
@@ -498,7 +498,7 @@ def test_pto_armed_only_with_ae_in_flight() raises:
     assert_false(p.server.spaces[2].has_ack_eliciting_in_flight(), "settled: nothing in flight")
     assert_false(Bool(p.server.timeout(now)), "idle server reports no deadline")
     var pings = 0
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     for _ in range(10):
         now += p.server._pto_interval() + UInt64(1)
         _ = p.server.send(now, dgs)
@@ -519,7 +519,7 @@ def test_pto_armed_only_with_ae_in_flight() raises:
     assert_true(sent >= 1, "server emitted its first flight")
     assert_true((q.server.state & CONN_ADDR_VALIDATED) == 0, "server still amplification-limited")
     var idle_deadline = q.server.idle_timer + UInt64(30_000_000)
-    var q_buf = List[List[UInt8]](capacity=1)
+    var q_buf = List[List[Byte]](capacity=1)
     for _ in range(10):
         now2 += q.server._pto_interval() + UInt64(1)
         assert_equal_int(q.server.send(now2, q_buf), 0, "amp-limited server sends nothing more")
@@ -568,7 +568,7 @@ def test_pto_fires_once_per_expiry() raises:
     var again = p.client.recovery.pto_count
     p.client._check_timers(now)
     assert_equal_int(p.client.recovery.pto_count, again, "a pending space is not re-fired")
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "probes coalesce into one datagram")
     for i in range(len(keyed)):
@@ -599,7 +599,7 @@ def test_pto_probe_emits_ping() raises:
     assert_true(Bool(d), "Handshake PTO armed")
     now = d.value() + UInt64(1)
     var before = p.server.spaces[1].largest_recv_pn
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "probe datagram emitted")
     assert_equal_int(len(dgs[0]), MAX_DATAGRAM_SIZE, "client handshake datagram padded to 1200")
@@ -624,7 +624,7 @@ def test_close_sent_once_per_trigger() raises:
 
     now += UInt64(1_000)
     p.client.close_transport(UInt64(0), String("done"), now)
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "exactly one CLOSE datagram on transition")
     assert_true(_has_kind(_frames_of(p.client, 2, _last_sent_pn(p.client, 2)), "close"), "it carries CONNECTION_CLOSE")
@@ -636,8 +636,8 @@ def test_close_sent_once_per_trigger() raises:
     for _ in range(10):
         p.server.send_stream_data(ssid, Span(chunk), False)
     var closes = 0
-    var sd = List[List[UInt8]](capacity=1)
-    var close_check = List[List[UInt8]](capacity=1)
+    var sd = List[List[Byte]](capacity=1)
+    var close_check = List[List[Byte]](capacity=1)
     for _ in range(10):
         now += UInt64(100)
         _ = p.server.send(now, sd)
@@ -649,11 +649,11 @@ def test_close_sent_once_per_trigger() raises:
     # After a PTO, one more peer datagram re-owes exactly one CLOSE.
     now += p.client._pto_interval() + UInt64(1)
     p.server.send_stream_data(ssid, Span(chunk), False)
-    var sd2 = List[List[UInt8]](capacity=1)
+    var sd2 = List[List[Byte]](capacity=1)
     _ = p.server.send(now, sd2)
     assert_equal_int(len(sd2), 1, "server datagram after PTO")
     p.client.recv(Span(sd2[0]), now)
-    var final_dg = List[List[UInt8]](capacity=1)
+    var final_dg = List[List[Byte]](capacity=1)
     assert_equal_int(p.client.send(now, final_dg), 1, "one CLOSE after a PTO-spaced trigger")
     assert_equal_int(p.client.send(now, final_dg), 0, "then empty again")
     print("  test_close_sent_once_per_trigger: PASS")
@@ -671,7 +671,7 @@ def test_close_reason_bounded() raises:
         reason += "x"
     p.client.close_app(UInt64(0x0100), reason, now)
     assert_equal_int(len(p.client.close.pending.value().reason), MAX_CLOSE_REASON_BYTES, "reason truncated")
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "one datagram")
     assert_true(len(dgs[0]) <= MAX_DATAGRAM_SIZE, "within budget")
@@ -682,7 +682,7 @@ def test_close_reason_bounded() raises:
     now2 = _client_with_handshake_keys(q, now2)
     assert_false(q.client.is_established(), "not established yet")
     q.client.close_transport(UInt64(0x0A), String("early"), now2)
-    var cds = List[List[UInt8]](capacity=1)
+    var cds = List[List[Byte]](capacity=1)
     _ = q.client.send(now2, cds)
     assert_equal_int(len(cds), 1, "one handshake-time CLOSE datagram")
     assert_equal_int(len(cds[0]), MAX_DATAGRAM_SIZE, "client handshake datagram padded to 1200")
@@ -691,7 +691,7 @@ def test_close_reason_bounded() raises:
             assert_true(_has_kind(_frames_of(q.client, s, _last_sent_pn(q.client, s)), "close"),
                         "CLOSE in keyed space " + String(s))
     assert_true(_has_kind(_frames_of(q.client, 1, _last_sent_pn(q.client, 1)), "close"), "CLOSE in Handshake")
-    var cds2 = List[List[UInt8]](capacity=1)
+    var cds2 = List[List[Byte]](capacity=1)
     assert_equal_int(q.client.send(now2, cds2), 0, "second send empty")
     q.server.recv(Span(cds[0]), now2)
     assert_true(q.server.is_draining(), "server entered draining on the handshake-time CLOSE")
@@ -713,8 +713,8 @@ def test_send_returns_empty_when_idle() raises:
     var resp = _bytes(3000)
     p.server.send_stream_data(UInt64(sid), Span(resp), True)
     now = _settle(p.client, p.server, now)
-    var client_buf = List[List[UInt8]](capacity=1)
-    var server_buf = List[List[UInt8]](capacity=1)
+    var client_buf = List[List[Byte]](capacity=1)
+    var server_buf = List[List[Byte]](capacity=1)
     assert_equal_int(p.client.send(now, client_buf), 0, "client idle: empty")
     assert_equal_int(p.client.send(now, client_buf), 0, "client idle: empty again")
     assert_equal_int(p.server.send(now, server_buf), 0, "server idle: empty")
@@ -738,7 +738,7 @@ def test_bundle_predicate_sound() raises:
     var rng = _Rng(UInt64(0xB0B))
     var ssid = p.server.open_stream(True)
     var false_cases = 0
-    var send_buf = List[List[UInt8]](capacity=1)
+    var send_buf = List[List[Byte]](capacity=1)
     for it in range(300):
         # Randomly perturb state.
         var k = rng.below(9)
@@ -763,7 +763,7 @@ def test_bundle_predicate_sound() raises:
         var may = p.server._space_has_other_sendable(2)
         var frames = List[Frame]()
         var records = List[SentStreamFrame]()
-        var stream_payload = List[UInt8]()
+        var stream_payload = List[Byte]()
         p.server._build_frames_for_space(2, now, frames, records, stream_payload, 1100)
         if p.server.spaces[2].probe_pending and len(frames) == 0:
             frames.append(Frame.ping())
@@ -793,8 +793,8 @@ def test_datagram_never_exceeds_budget() raises:
         sids.append(p.server.open_stream(True))
     var csid = p.client.open_stream(True)
     var total = 0
-    var deliver_buf = List[List[UInt8]](capacity=1)
-    var dgs = List[List[UInt8]](capacity=1)
+    var deliver_buf = List[List[Byte]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     for _ in range(120):
         var n_streams = 1 + rng.below(8)
         for i in range(n_streams):
@@ -847,7 +847,7 @@ def test_crypto_split_lossless() raises:
     p.server.crypto_streams[2].requeue(UInt64(0), Span(data))
     var dg_count = 0
     var pns = List[Int]()
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     for _ in range(16):
         now += UInt64(1_000)
         _ = p.server.send(now, dgs)
@@ -857,7 +857,7 @@ def test_crypto_split_lossless() raises:
         assert_true(len(dgs[0]) <= MAX_DATAGRAM_SIZE, "within budget")
         pns.append(_last_sent_pn(p.server, 2))
     assert_true(dg_count >= 3, "at least three datagrams; got " + String(dg_count))
-    var out = List[UInt8]()
+    var out = List[Byte]()
     var expected_offset = UInt64(0)
     for i in range(len(pns)):
         var frames = _frames_of(p.server, 2, pns[i])
@@ -899,8 +899,8 @@ def test_pto_deadline_single_source() raises:
         var sid = -1
         if p.client.is_established():
             sid = Int(p.client.open_stream(True))
-        var cd = List[List[UInt8]](capacity=1)
-        var sd = List[List[UInt8]](capacity=1)
+        var cd = List[List[Byte]](capacity=1)
+        var sd = List[List[Byte]](capacity=1)
         for step in range(150):
             var op = rng.below(6)
             if op == 0 and sid >= 0:
@@ -963,7 +963,7 @@ def test_pto_uses_peer_max_ack_delay() raises:
     var d = _bytes(20)
     p.client.send_stream_data(sid, Span(d), False)
     now += UInt64(1_000)
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "one data packet")
     var expected = now + p.client.recovery.pto_timeout(UInt64(200_000))
@@ -980,7 +980,7 @@ def _client_flight_checked(mut p: _Pair, now: UInt64, mut checked: Int, mut ack_
     """Drain the client to the server, asserting every pre-establishment
     datagram is exactly 1200 bytes and that a padded ACK-only packet is
     recorded in flight."""
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     for _ in range(64):
         var was_established = p.client.is_established()
         _ = p.client.send(now, dgs)
@@ -1011,7 +1011,7 @@ def test_client_pads_all_initial_datagrams() raises:
     var p = _Pair(_default_params(), _default_params(), now)
     var checked = 0
     var ack_only_seen = False
-    var sd = List[List[UInt8]](capacity=1)
+    var sd = List[List[Byte]](capacity=1)
     for _ in range(40):
         now += UInt64(10_000)
         _client_flight_checked(p, now, checked, ack_only_seen)
@@ -1047,7 +1047,7 @@ def test_server_pads_initial_datagrams() raises:
     # Allowance 800: 3*300 - 100.
     var real_received = p.server.bytes_received
     p.server.bytes_received = UInt64(300)
-    var dgs = List[List[UInt8]](capacity=1)
+    var dgs = List[List[Byte]](capacity=1)
     _ = p.server.send(now, dgs)
     if len(dgs) > 0:
         # Only an ACK-only Initial may leave; nothing ack-eliciting.
@@ -1062,15 +1062,15 @@ def test_server_pads_initial_datagrams() raises:
 
     p.server.bytes_received = real_received
     now += UInt64(1_000)
-    var first = List[List[UInt8]](capacity=1)
+    var first = List[List[Byte]](capacity=1)
     _ = p.server.send(now, first)
     assert_equal_int(len(first), 1, "flight resumes")
     assert_equal_int(len(first[0]), MAX_DATAGRAM_SIZE, "ack-eliciting server Initial datagram padded to 1200")
     assert_true(_has_kind(_frames_of(p.server, 0, _last_sent_pn(p.server, 0)), "crypto"), "ServerHello sent")
     # Contiguous Handshake CRYPTO offsets across the flight.
-    var all_dgs = List[List[UInt8]]()
+    var all_dgs = List[List[Byte]]()
     all_dgs.append(first[0].copy())
-    var more = List[List[UInt8]](capacity=1)
+    var more = List[List[Byte]](capacity=1)
     for _ in range(8):
         _ = p.server.send(now, more)
         if len(more) == 0:
@@ -1112,14 +1112,14 @@ def test_ack_scheduling_suspended_in_closing() raises:
     _open_gate(p.server)
     var ssid = p.server.open_stream(True)
     p.client.close_transport(UInt64(0), String("bye"), now)
-    var close_dg = List[List[UInt8]](capacity=1)
+    var close_dg = List[List[Byte]](capacity=1)
     _ = p.client.send(now, close_dg)
     assert_equal_int(len(close_dg), 1, "CLOSE emitted")
     var idle_before = p.client.idle_timer
     var largest_before = p.client.spaces[2].largest_recv_pn
     # Two PTO-spaced triggers fit inside the 3*PTO closing period.
-    var sd = List[List[UInt8]](capacity=1)
-    var out = List[List[UInt8]](capacity=1)
+    var sd = List[List[Byte]](capacity=1)
+    var out = List[List[Byte]](capacity=1)
     for _ in range(2):
         var d = _bytes(100)
         p.server.send_stream_data(ssid, Span(d), False)
@@ -1146,13 +1146,13 @@ def test_ack_scheduling_suspended_in_closing() raises:
     # Craft one more client datagram by reopening the client's send path.
     var sid = p.client.open_stream(True)
     p.client.send_stream_data(sid, Span(d2), False)
-    var cd = List[List[UInt8]](capacity=1)
+    var cd = List[List[Byte]](capacity=1)
     _ = p.client.send(now, cd)
     if len(cd) > 0:
         p.server.recv(Span(cd[0]), now)
         assert_true(p.server.bytes_received > rec_before, "bytes credited")
         assert_true(_fingerprint(p.server) == fp, "draining: no state change on receipt")
-        var _dg = List[List[UInt8]](capacity=1)
+        var _dg = List[List[Byte]](capacity=1)
         assert_equal_int(p.server.send(now, _dg), 0, "draining: nothing sent")
     print("  test_ack_scheduling_suspended_in_closing: PASS")
 

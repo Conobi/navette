@@ -67,17 +67,17 @@ struct HpackEncoder(Movable):
         self.config = move.config^
         self._pending_table_size = move._pending_table_size
 
-    def encode(mut self, headers: List[Header]) -> List[UInt8]:
+    def encode(mut self, headers: List[Header]) -> List[Byte]:
         """Encode headers into HPACK wire bytes. Updates dynamic table."""
-        var wire = List[UInt8]()
+        var wire = List[Byte]()
 
         # Emit pending table size update
         if self._pending_table_size >= 0:
             var idx = len(wire)
-            wire.resize(idx + 6, UInt8(0))
+            wire.resize(idx + 6, Byte(0))
             wire[idx] = UInt8(0x20)
             var n = hpack_encode_int_at(wire, idx, self._pending_table_size, 5)
-            wire.resize(idx + n, UInt8(0))
+            wire.resize(idx + n, Byte(0))
             self.dynamic_table.set_max_size(self._pending_table_size)
             self._pending_table_size = -1
 
@@ -116,52 +116,52 @@ struct HpackEncoder(Movable):
         """Queue table size update for next encode call."""
         self._pending_table_size = new_max
 
-    def _emit_indexed(self, mut wire: List[UInt8], index: Int):
+    def _emit_indexed(self, mut wire: List[Byte], index: Int):
         """Emit indexed header field: 1XXXXXXX."""
         var idx = len(wire)
-        wire.resize(idx + 6, UInt8(0))
+        wire.resize(idx + 6, Byte(0))
         wire[idx] = UInt8(0x80)
         var n = hpack_encode_int_at(wire, idx, index, 7)
-        wire.resize(idx + n, UInt8(0))
+        wire.resize(idx + n, Byte(0))
 
     def _emit_literal_indexed(
         self,
-        mut wire: List[UInt8],
+        mut wire: List[Byte],
         name_idx: Int,
         name: String,
         value: String,
     ):
         """Emit literal with incremental indexing: 01XXXXXX."""
         var idx = len(wire)
-        wire.resize(idx + 6, UInt8(0))
+        wire.resize(idx + 6, Byte(0))
         wire[idx] = UInt8(0x40)
         var n = hpack_encode_int_at(wire, idx, name_idx, 6)
-        wire.resize(idx + n, UInt8(0))
+        wire.resize(idx + n, Byte(0))
 
         if name_idx == 0:
             self._emit_string(wire, name)
 
         self._emit_string(wire, value)
 
-    def _emit_string(self, mut wire: List[UInt8], s: String):
+    def _emit_string(self, mut wire: List[Byte], s: String):
         """Emit HPACK string literal (with optional Huffman)."""
         var s_bytes = s.as_bytes()
-        var raw = List[UInt8](capacity=len(s_bytes))
+        var raw = List[Byte](capacity=len(s_bytes))
         raw.extend(s_bytes)
 
         if self.config.use_huffman:
             var encoded = self.huffman.encode(raw)
             var idx = len(wire)
-            wire.resize(idx + 6, UInt8(0))
+            wire.resize(idx + 6, Byte(0))
             wire[idx] = UInt8(0x80)
             var n = hpack_encode_int_at(wire, idx, len(encoded), 7)
-            wire.resize(idx + n, UInt8(0))
+            wire.resize(idx + n, Byte(0))
             wire.extend(Span(encoded))
         else:
             var idx = len(wire)
-            wire.resize(idx + 6, UInt8(0))
+            wire.resize(idx + 6, Byte(0))
             var n = hpack_encode_int_at(wire, idx, len(raw), 7)
-            wire.resize(idx + n, UInt8(0))
+            wire.resize(idx + n, Byte(0))
             wire.extend(Span(raw))
 
 
@@ -186,7 +186,7 @@ struct HpackDecoder(Movable):
         self.config = move.config^
 
     def decode(
-        mut self, wire: List[UInt8]
+        mut self, wire: List[Byte]
     ) -> Tuple[List[Header], String]:
         """Decode one HPACK header block. Updates dynamic table.
 
@@ -299,7 +299,7 @@ struct HpackDecoder(Movable):
 
     def _decode_literal(
         mut self,
-        wire: List[UInt8],
+        wire: List[Byte],
         pos: Int,
         prefix_bits: Int,
     ) -> Tuple[String, String, Int, String]:
@@ -335,7 +335,7 @@ struct HpackDecoder(Movable):
         return (name^, value^, consumed, String(""))
 
     def _decode_string(
-        self, wire: List[UInt8], pos: Int
+        self, wire: List[Byte], pos: Int
     ) -> Tuple[String, Int, String]:
         """Decode an HPACK string literal (RFC 7541 Section 5.2)."""
         if pos >= len(wire):
@@ -357,7 +357,7 @@ struct HpackDecoder(Movable):
         consumed += str_len
 
         if huffman_flag:
-            var raw = List[UInt8](capacity=str_len)
+            var raw = List[Byte](capacity=str_len)
             raw.extend(Span(wire)[data_start:data_end])
             var huff_result = self.huffman.decode(raw)
             if huff_result[1].byte_length() > 0:
@@ -365,7 +365,7 @@ struct HpackDecoder(Movable):
             var s = bytes_to_string(huff_result[0].copy())
             return (s^, consumed, String(""))
         else:
-            var raw = List[UInt8](capacity=str_len)
+            var raw = List[Byte](capacity=str_len)
             raw.extend(Span(wire)[data_start:data_end])
             var s = bytes_to_string(raw^)
             return (s^, consumed, String(""))

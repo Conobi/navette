@@ -23,14 +23,14 @@ from navette.h2.h2_session import H2Session
 # ---------------------------------------------------------------------------
 
 
-def _make_payload(size: Int, byte_val: Int) -> List[UInt8]:
-    var data = List[UInt8]()
+def _make_payload(size: Int, byte_val: Int) -> List[Byte]:
+    var data = List[Byte]()
     for _ in range(size):
         data.append(UInt8(byte_val & 0xFF))
     return data^
 
 
-def _count_data_bytes(buf: List[UInt8]) -> Int:
+def _count_data_bytes(buf: List[Byte]) -> Int:
     """Sum payload lengths of all DATA frames in a wire-format buffer."""
     var total = 0
     var i = 0
@@ -43,7 +43,7 @@ def _count_data_bytes(buf: List[UInt8]) -> Int:
     return total
 
 
-def _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
+def _count_end_stream_data_frames(buf: List[Byte]) -> Int:
     """Count DATA frames whose END_STREAM flag is set."""
     var count = 0
     var i = 0
@@ -57,16 +57,16 @@ def _count_end_stream_data_frames(buf: List[UInt8]) -> Int:
     return count
 
 
-def _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[UInt8]:
+def _wire_window_update(stream_id: UInt32, increment: UInt32) -> List[Byte]:
     """Hand-build a wire-format WINDOW_UPDATE frame."""
-    var b = List[UInt8]()
+    var b = List[Byte]()
     # Length = 4
-    b.append(UInt8(0))
-    b.append(UInt8(0))
+    b.append(Byte(0))
+    b.append(Byte(0))
     b.append(UInt8(4))
     # Type = 0x08 (WINDOW_UPDATE), Flags = 0
     b.append(UInt8(0x08))
-    b.append(UInt8(0))
+    b.append(Byte(0))
     # Stream ID (R bit = 0)
     var sid = Int(stream_id)
     b.append(UInt8((sid >> 24) & 0x7F))

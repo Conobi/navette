@@ -9,9 +9,9 @@ from navette.compress.lib import DecoderLimits
 from tests._test_util import assert_true, assert_equal_int
 
 
-def _make_gzip_hello_world() -> List[UInt8]:
+def _make_gzip_hello_world() -> List[Byte]:
     """Shared fixture: gzip.compress(b'hello world') with mtime=0."""
-    var b = List[UInt8]()
+    var b = List[Byte]()
     b.append(31); b.append(139); b.append(8); b.append(0)
     b.append(0); b.append(0); b.append(0); b.append(0)
     b.append(2); b.append(255); b.append(203); b.append(72)
@@ -23,9 +23,9 @@ def _make_gzip_hello_world() -> List[UInt8]:
     return b^
 
 
-def _make_brotli_hello_world() -> List[UInt8]:
+def _make_brotli_hello_world() -> List[Byte]:
     """Shared fixture: brotli.compress(b'hello world')."""
-    var b = List[UInt8]()
+    var b = List[Byte]()
     b.append(11); b.append(5); b.append(128); b.append(104)
     b.append(101); b.append(108); b.append(108); b.append(111)
     b.append(32); b.append(119); b.append(111); b.append(114)

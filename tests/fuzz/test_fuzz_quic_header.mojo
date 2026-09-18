@@ -25,7 +25,7 @@ from navette.quic.packet import parse_packet_header
 alias _SCID_LEN_PIN: Int = 8
 
 
-def _check_property(b: List[UInt8]) -> ObserveResult:
+def _check_property(b: List[Byte]) -> ObserveResult:
     try:
         var span = Span(b)
         var result = parse_packet_header(span, _SCID_LEN_PIN)
@@ -81,12 +81,12 @@ def main() raises:
     for _ in range(iters):
         if (not soak) and report.disagreements >= 50: break
         var strategy = Int(rng.next_below(UInt64(100)))
-        var b: List[UInt8]
+        var b: List[Byte]
         if strategy < 40:
             b = random_bytes_geom(rng, mean_len=64, cap_len=1500)
         else:
             # Grammar-aware: random first-byte + plausible DCID-len byte + payload
-            b = List[UInt8]()
+            b = List[Byte]()
             b.append(rng.next_u8())  # first byte (header form, type, etc.)
             # Long-header: version (4 bytes) + dcid_len + dcid + scid_len + scid + ...
             if Int(b[0]) & 0x80 != 0:

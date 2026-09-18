@@ -205,7 +205,7 @@ def _parse_ipv6_segments(s: String) -> Optional[List[UInt16]]:
 
 
 def _validate_question(
-    dg: List[UInt8], host: String, expected_qtype: Int,
+    dg: List[Byte], host: String, expected_qtype: Int,
 ) -> Bool:
     """Validate QDCOUNT, echoed QNAME, QTYPE, and QCLASS of a DNS response.
 
@@ -235,7 +235,7 @@ def _validate_question(
 
 
 def _parse_a_aaaa_answer(
-    m: List[UInt8], qid: UInt16, host: String, expected_qtype: Int,
+    m: List[Byte], qid: UInt16, host: String, expected_qtype: Int,
 ) -> List[ResolvedAddr]:
     """Parse an A or AAAA DNS answer; returns an empty list on any failure.
 
@@ -249,7 +249,7 @@ def _parse_a_aaaa_answer(
 
 
 def _parse_a_aaaa_answer_inner(
-    m: List[UInt8], qid: UInt16, host: String, expected_qtype: Int,
+    m: List[Byte], qid: UInt16, host: String, expected_qtype: Int,
 ) raises -> List[ResolvedAddr]:
     """Validate header/question and extract A or AAAA address records.
 
@@ -374,7 +374,7 @@ def _query_a_aaaa_tcp(
     rem = deadline.remaining_ms()
     _set_rcvtimeo(fd, Int(rem) if rem > UInt64(0) else 1)
     # Length-frame the query.
-    var framed = List[UInt8]()
+    var framed = List[Byte]()
     framed.append(UInt8((len(q) >> 8) & 0xFF))
     framed.append(UInt8(len(q) & 0xFF))
     for ref byte in q:

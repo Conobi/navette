@@ -37,7 +37,7 @@ comptime _MAX_SAFE_INT = 9007199254740992
 
 
 def _find_header_end(
-    buf: List[UInt8], start: Int, last_scanned: Int
+    buf: List[Byte], start: Int, last_scanned: Int
 ) -> Int:
     """Scan for CRLF CRLF starting at max(start, last_scanned).
 
@@ -65,7 +65,7 @@ def _find_header_end(
 
 
 def _find_header_end_lf(
-    buf: List[UInt8], start: Int, last_scanned: Int
+    buf: List[Byte], start: Int, last_scanned: Int
 ) -> Tuple[Int, Bool]:
     """Scan for the header terminator allowing bare LF.
 
@@ -126,13 +126,13 @@ def _to_lower(b: UInt8) -> UInt8:
     return b
 
 
-def _bytes_to_string(data: List[UInt8], start: Int, end: Int) -> String:
+def _bytes_to_string(data: List[Byte], start: Int, end: Int) -> String:
     """Build a String from ``data[start:end]``.
 
     SECURITY INVARIANT (resolve-non-ascii, §7): ``unsafe_from_utf8`` is reached
     ONLY for all-ASCII ranges. We first scan for any byte ``>= 0x80``:
       * none present (the common case) -> bulk-copy the bytes into a sized
-        ``List[UInt8]`` and adopt them via ``String(unsafe_from_utf8=...)``;
+        ``List[Byte]`` and adopt them via ``String(unsafe_from_utf8=...)``;
         equivalent to per-byte ``chr()`` for 0x00-0x7F but without per-character
         String growth.
       * any high byte present -> fall back to the per-byte ``chr()`` loop.
@@ -158,7 +158,7 @@ def _bytes_to_string(data: List[UInt8], start: Int, end: Int) -> String:
             result += chr(Int(data[j]))
             j += 1
         return result^
-    var out = List[UInt8](capacity=end - start)
+    var out = List[Byte](capacity=end - start)
     out.extend(Span(data)[start:end])
     return String(unsafe_from_utf8=out^)
 
@@ -216,7 +216,7 @@ def _parse_int(s: String) -> Int:
     return result
 
 
-def _find_line_end(data: List[UInt8], start: Int, allow_lf: Bool) -> Tuple[Int, Int]:
+def _find_line_end(data: List[Byte], start: Int, allow_lf: Bool) -> Tuple[Int, Int]:
     """Find the next line terminator.
 
     Returns ``(position, skip_bytes)`` where ``skip_bytes`` is 2 for CRLF and 1
@@ -234,7 +234,7 @@ def _find_line_end(data: List[UInt8], start: Int, allow_lf: Bool) -> Tuple[Int, 
     return (-1, 0)
 
 
-def _strip_ows_bounds(data: List[UInt8], start: Int, end: Int) -> Tuple[Int, Int]:
+def _strip_ows_bounds(data: List[Byte], start: Int, end: Int) -> Tuple[Int, Int]:
     """Strip leading and trailing OWS (SP / HTAB) from a byte range."""
     var s = start
     var e = end
@@ -245,7 +245,7 @@ def _strip_ows_bounds(data: List[UInt8], start: Int, end: Int) -> Tuple[Int, Int
     return (s, e)
 
 
-def _contains_nul(data: List[UInt8], start: Int, end: Int) -> Bool:
+def _contains_nul(data: List[Byte], start: Int, end: Int) -> Bool:
     """Return True if any byte in ``data[start:end]`` is NUL."""
     var i = start
     while i < end:
@@ -256,7 +256,7 @@ def _contains_nul(data: List[UInt8], start: Int, end: Int) -> Bool:
 
 
 def _contains_ctl_in_value(
-    data: List[UInt8], start: Int, end: Int, skip_cr: Bool = False
+    data: List[Byte], start: Int, end: Int, skip_cr: Bool = False
 ) -> Bool:
     """Return True if a non-HTAB control character is present in a header value.
 
@@ -282,7 +282,7 @@ def _contains_ctl_in_value(
 
 
 def _parse_headers(
-    wire: List[UInt8], start_pos: Int, config: ParseConfig
+    wire: List[Byte], start_pos: Int, config: ParseConfig
 ) -> Tuple[Headers, Int, String]:
     """Parse the header block beginning at ``start_pos``.
 
@@ -437,8 +437,8 @@ def _hex_char_value(b: UInt8) -> Int:
 
 
 def _decode_chunked(
-    data: List[UInt8], start: Int, config: ParseConfig
-) -> Tuple[List[UInt8], Headers, Int, String]:
+    data: List[Byte], start: Int, config: ParseConfig
+) -> Tuple[List[Byte], Headers, Int, String]:
     """Decode a chunked body starting at ``start``.
 
     Returns ``(body, trailers, bytes_consumed, error)``. The error string uses
@@ -450,7 +450,7 @@ def _decode_chunked(
       * "missing CRLF after chunk data"
       * "missing CRLF in trailer"
     """
-    var body = List[UInt8]()
+    var body = List[Byte]()
     var trailers = Headers()
     var pos = start
     var data_len = len(data)
@@ -632,7 +632,7 @@ struct ParseResult(Movable):
 
 
 def try_parse_request(
-    buf: List[UInt8],
+    buf: List[Byte],
     cursor: Int,
     last_scanned: Int,
     config: ParseConfig,
@@ -845,7 +845,7 @@ def try_parse_request(
     # Request.body is a RequestBody (buffered bytes or empty). Trailers
     # on the request side are dropped here. The streaming variant
     # is only produced by H1Session.
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var msg_end: Int
 
     if te_count > 0:
@@ -913,7 +913,7 @@ def try_parse_request(
 
 
 def try_parse_response(
-    buf: List[UInt8],
+    buf: List[Byte],
     cursor: Int,
     last_scanned: Int,
     request_method: Method,
@@ -1186,7 +1186,7 @@ def try_parse_response(
             # In M2's fully-buffered model the caller hands us the entire wire,
             # so we consume everything that remains.
             var body_close = List[BodyFrame]()
-            var body_bytes = List[UInt8]()
+            var body_bytes = List[Byte]()
             var ri = body_start
             while ri < buf_len:
                 body_bytes.append(buf[ri])
@@ -1234,7 +1234,7 @@ def try_parse_response(
 
         var body_cl = List[BodyFrame]()
         if cl_int > 0:
-            var body_bytes = List[UInt8]()
+            var body_bytes = List[Byte]()
             var bi = 0
             while bi < cl_int:
                 body_bytes.append(buf[body_start + bi])
@@ -1255,7 +1255,7 @@ def try_parse_response(
 
     # Rule 9: response with neither TE nor CL -- close-delimited.
     var body_def = List[BodyFrame]()
-    var body_bytes_def = List[UInt8]()
+    var body_bytes_def = List[Byte]()
     var ri = body_start
     while ri < buf_len:
         body_bytes_def.append(buf[ri])

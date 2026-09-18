@@ -10,8 +10,8 @@ from navette.net._dns_wire import (
 from navette.net.svcb import _parse_alpn, _parse_https_answer
 
 
-def _bytes(s: String) -> List[UInt8]:
-    var out = List[UInt8]()
+def _bytes(s: String) -> List[Byte]:
+    var out = List[Byte]()
     var b = s.as_bytes()
     for i in range(len(b)):
         out.append(b[i])
@@ -89,7 +89,7 @@ def test_query_golden_bytes() raises:
 
 def test_name_decompression_resolves_pointer() raises:
     # bytes: [0..]: 07 example 03 com 00 (offset 0), then a pointer 0xC000.
-    var m = List[UInt8]()
+    var m = List[Byte]()
     var qn = _encode_qname(String("example.com"))   # 13 bytes at offset 0
     for i in range(len(qn)):
         m.append(qn[i])
@@ -101,9 +101,9 @@ def test_name_decompression_resolves_pointer() raises:
 
 def test_name_pointer_cycle_rejected() raises:
     # A self-pointer at offset 12 (→ 12) violates strictly-decreasing → raises.
-    var m = List[UInt8]()
+    var m = List[Byte]()
     for _k in range(12):
-        m.append(UInt8(0))
+        m.append(Byte(0))
     m.append(UInt8(0xC0)); m.append(UInt8(0x0C))     # pointer → 12 (itself)
     with assert_raises():
         _ = _decode_name(m, 12)
@@ -111,7 +111,7 @@ def test_name_pointer_cycle_rejected() raises:
 
 def test_name_forward_pointer_rejected() raises:
     # pointer at 0 → 4 (forward) must be rejected (kills cycles).
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(0xC0)); m.append(UInt8(0x04))
     m.append(UInt8(0x00)); m.append(UInt8(0x00))
     m.append(UInt8(0x00))
@@ -126,7 +126,7 @@ def test_name_pure_pointer_ladder_rejected_by_indirection_cap() raises:
     # indirection cap can terminate the loop before the chain bottoms out.
     # Layout: m[0]=0x00 (null at chain bottom), m[1]=padding,
     #         m[2i+2..2i+3] = pointer to 2*i  (i = 0..199).
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(0x00))   # offset 0: null label — chain bottom
     m.append(UInt8(0x00))   # offset 1: padding
     for i in range(200):
@@ -144,7 +144,7 @@ def test_name_label_pointer_ratchet_terminated_by_cap() raises:
     # 0 < 2, so the strictly-decreasing guard passes on every iteration and
     # cannot stop the loop by itself.  It is the 255-octet cap that must
     # terminate the cycle.  Asserts it raises quickly (no hang).
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(0x01))   # label length 1
     m.append(UInt8(65))     # 'A'
     m.append(UInt8(0xC0))   # pointer high byte (0b11xxxxxx)
@@ -157,12 +157,12 @@ def test_name_exceeds_255_octet_cap() raises:
     # Four 63-byte labels produce total = 4 × (63 + 1) = 256 > 255 → cap raises.
     # The root terminator is appended but never reached; the cap fires on the
     # fourth label.
-    var m = List[UInt8]()
+    var m = List[Byte]()
     for _i in range(4):
         m.append(UInt8(63))
         for _j in range(63):
             m.append(UInt8(65))   # 'A'
-    m.append(UInt8(0))   # root terminator (unreachable; cap fires first)
+    m.append(Byte(0))   # root terminator (unreachable; cap fires first)
     with assert_raises():
         _ = _decode_name(m, 0)
 
@@ -171,7 +171,7 @@ def test_name_label_over_read_rejected() raises:
     # Label length byte claims 5 octets of content but the buffer holds only 2
     # bytes after the length byte; label_end (= 0 + 1 + 5 = 6) exceeds len(m)
     # (= 3) → raises before any out-of-range read.
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(5))    # label length 5
     m.append(UInt8(65))   # 'A' — only two content bytes present
     m.append(UInt8(66))   # 'B'
@@ -182,13 +182,13 @@ def test_name_label_over_read_rejected() raises:
 def test_name_reserved_label_flags_rejected() raises:
     # High bits 0b10 (0x80) are reserved by RFC 1035; the decoder must raise
     # "bad label flags" rather than mis-parsing the byte as a label length.
-    var m80 = List[UInt8]()
+    var m80 = List[Byte]()
     m80.append(UInt8(0x80))
     m80.append(UInt8(0x00))
     with assert_raises():
         _ = _decode_name(m80, 0)
     # High bits 0b01 (0x40) are equally reserved and must be rejected.
-    var m40 = List[UInt8]()
+    var m40 = List[Byte]()
     m40.append(UInt8(0x40))
     m40.append(UInt8(0x00))
     with assert_raises():
@@ -199,7 +199,7 @@ def test_name_edge_pointer_out_of_bounds_rejected() raises:
     # Pointer at offset 0 targeting offset 2 == len(m) — exactly one past the
     # last valid index.  ptr (2) >= pos (0) → rejected as non-decreasing before
     # any attempt to read at the out-of-range target.
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(0xC0))   # pointer high byte
     m.append(UInt8(0x02))   # pointer low byte → offset 2 == len(m)
     with assert_raises():
@@ -208,7 +208,7 @@ def test_name_edge_pointer_out_of_bounds_rejected() raises:
 
 def test_parse_alpn_token_list() raises:
     # value = 02 'h3' 02 'h2'  (offsets 0..6)
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(2)); m.append(UInt8(0x68)); m.append(UInt8(0x33))  # "h3"
     m.append(UInt8(2)); m.append(UInt8(0x68)); m.append(UInt8(0x32))  # "h2"
     var alpns = _parse_alpn(m, 0, 6)
@@ -219,7 +219,7 @@ def test_parse_alpn_token_list() raises:
 
 def test_parse_alpn_overrun_raises() raises:
     # declared token length 9 overruns the 3-byte value → raise.
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(9)); m.append(UInt8(0x68)); m.append(UInt8(0x33))
     with assert_raises():
         _ = _parse_alpn(m, 0, 3)
@@ -228,12 +228,12 @@ def test_parse_alpn_overrun_raises() raises:
 def _mk_answer(
     host: String, qid: UInt16, priority: Int, var alpns: List[String], ttl: Int,
     *, tc: Bool = False, rcode: Int = 0, an: Int = 1,
-) -> List[UInt8]:
+) -> List[Byte]:
     """Assemble a one-RR HTTPS-RR response. `priority==0` => AliasMode (no alpn).
 
     TargetName is always "." (root). `alpns` empty => no `alpn` SvcParam.
     """
-    var a = List[UInt8]()
+    var a = List[Byte]()
     a.append(UInt8((Int(qid) >> 8) & 0xFF)); a.append(UInt8(Int(qid) & 0xFF))
     var fl2 = 0x80                       # QR=1
     if tc:
@@ -257,11 +257,11 @@ def _mk_answer(
     a.append(UInt8((ttl >> 24) & 0xFF)); a.append(UInt8((ttl >> 16) & 0xFF))
     a.append(UInt8((ttl >> 8) & 0xFF)); a.append(UInt8(ttl & 0xFF))
     # build RDATA: priority(2) + target(.) [+ alpn svcparam]
-    var rd = List[UInt8]()
+    var rd = List[Byte]()
     rd.append(UInt8((priority >> 8) & 0xFF)); rd.append(UInt8(priority & 0xFF))
     rd.append(UInt8(0x00))                        # TargetName = "."
     if priority != 0 and len(alpns) > 0:
-        var val = List[UInt8]()
+        var val = List[Byte]()
         for i in range(len(alpns)):
             var t = alpns[i].as_bytes()
             val.append(UInt8(len(t)))
@@ -386,7 +386,7 @@ def test_parse_alpn_single_zero_length_token_yields_empty_list() raises:
     # A single 0x00 length byte is a zero-length token.  RFC 9460 §7.1.1
     # requires each alpn-id to be non-empty, so the token must be skipped and
     # the returned list must be empty (length 0), not [""].
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(0x00))
     var alpns = _parse_alpn(m, 0, 1)
     assert_equal(len(alpns), 0)
@@ -396,7 +396,7 @@ def test_parse_alpn_zero_length_token_in_mixed_list_dropped() raises:
     # Value bytes: 02 'h' '3'  00  02 'h' '2'  (h3, empty token, h2).
     # The zero-length token must be dropped; real tokens must be preserved
     # in order: ["h3", "h2"].
-    var m = List[UInt8]()
+    var m = List[Byte]()
     m.append(UInt8(0x02)); m.append(UInt8(0x68)); m.append(UInt8(0x33))  # "h3"
     m.append(UInt8(0x00))                                                  # empty token
     m.append(UInt8(0x02)); m.append(UInt8(0x68)); m.append(UInt8(0x32))  # "h2"

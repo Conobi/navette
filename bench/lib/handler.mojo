@@ -30,10 +30,10 @@ from bench.lib.json_writer import (
 )
 
 
-def _str_to_bytes(s: String) -> List[UInt8]:
-    """Convert a String to List[UInt8] for BodyFrame.data()."""
+def _str_to_bytes(s: String) -> List[Byte]:
+    """Convert a String to List[Byte] for BodyFrame.data()."""
     var b = s.as_bytes()
-    var out = List[UInt8](capacity=len(b))
+    var out = List[Byte](capacity=len(b))
     out.extend(b)
     return out^
 
@@ -201,16 +201,16 @@ def _get_extension(path: String) -> String:
 struct StaticEntry(Copyable, Movable, Deinitable):
     """Holds a static file's original bytes plus optional brotli/gzip variants."""
 
-    var data: List[UInt8]
-    var br_data: List[UInt8]
-    var gz_data: List[UInt8]
+    var data: List[Byte]
+    var br_data: List[Byte]
+    var gz_data: List[Byte]
     var content_type: String
 
     def __init__(
         out self,
-        var data: List[UInt8],
-        var br_data: List[UInt8],
-        var gz_data: List[UInt8],
+        var data: List[Byte],
+        var br_data: List[Byte],
+        var gz_data: List[Byte],
         var content_type: String,
     ):
         self.data = data^
@@ -235,12 +235,12 @@ struct StaticEntry(Copyable, Movable, Deinitable):
 # Static file loader
 # ---------------------------------------------------------------------------
 
-def _try_read_file(path: String) -> List[UInt8]:
+def _try_read_file(path: String) -> List[Byte]:
     """Try to read a file; return empty list on failure."""
     try:
         return read_file(path)
     except:
-        return List[UInt8]()
+        return List[Byte]()
 
 
 def _load_one_static(
@@ -315,10 +315,10 @@ struct DatasetItem(Copyable, Movable, Deinitable):
     var active: Bool
     # Each *_quoted fragment includes its surrounding " or [ ] or { }
     # so the renderer can splat it directly between commas / colons.
-    var name_quoted: List[UInt8]
-    var category_quoted: List[UInt8]
-    var tags_array: List[UInt8]
-    var rating_object: List[UInt8]
+    var name_quoted: List[Byte]
+    var category_quoted: List[Byte]
+    var tags_array: List[Byte]
+    var rating_object: List[Byte]
 
     def __init__(
         out self,
@@ -326,10 +326,10 @@ struct DatasetItem(Copyable, Movable, Deinitable):
         price: UInt64,
         quantity: UInt64,
         active: Bool,
-        var name_quoted: List[UInt8],
-        var category_quoted: List[UInt8],
-        var tags_array: List[UInt8],
-        var rating_object: List[UInt8],
+        var name_quoted: List[Byte],
+        var category_quoted: List[Byte],
+        var tags_array: List[Byte],
+        var rating_object: List[Byte],
     ):
         self.id = id
         self.price = price
@@ -366,16 +366,16 @@ struct DatasetItem(Copyable, Movable, Deinitable):
 # ---------------------------------------------------------------------------
 
 
-def _build_quoted_string(s: String) raises -> List[UInt8]:
+def _build_quoted_string(s: String) raises -> List[Byte]:
     """Render a JSON string as an escaped, double-quoted byte fragment."""
-    var out = List[UInt8]()
+    var out = List[Byte]()
     write_str_escaped(out, s.as_bytes())
     return out^
 
 
-def _build_tags_array(tags: List[String]) raises -> List[UInt8]:
+def _build_tags_array(tags: List[String]) raises -> List[Byte]:
     """Render a list of strings as a single pre-escaped JSON-array byte fragment."""
-    var out = List[UInt8]()
+    var out = List[Byte]()
     out.append(UInt8(ord("[")))
     for i in range(len(tags)):
         if i > 0:
@@ -385,9 +385,9 @@ def _build_tags_array(tags: List[String]) raises -> List[UInt8]:
     return out^
 
 
-def _build_rating_object(score: UInt64, count: UInt64) raises -> List[UInt8]:
+def _build_rating_object(score: UInt64, count: UInt64) raises -> List[Byte]:
     """Render the rating object {score, count} as a pre-escaped byte fragment."""
-    var out = List[UInt8]()
+    var out = List[Byte]()
     write_bytes(out, String('{"score":').as_bytes())
     write_uint(out, score)
     write_bytes(out, String(',"count":').as_bytes())
@@ -403,7 +403,7 @@ def _load_dataset(path: String) -> List[DatasetItem]:
     data mount is absent.
     """
     var items = List[DatasetItem]()
-    var raw: List[UInt8]
+    var raw: List[Byte]
     try:
         raw = read_file(path)
     except:
@@ -585,7 +585,7 @@ def handle_static(
     var use_br = _accepts_encoding(headers, String("br")) and len(entry.br_data) > 0
     var use_gz = (not use_br) and _accepts_encoding(headers, String("gzip")) and len(entry.gz_data) > 0
 
-    var body_data: List[UInt8]
+    var body_data: List[Byte]
     var hdrs = Headers()
     hdrs.add("content-type", entry.content_type)
     hdrs.add("vary", "Accept-Encoding")
@@ -661,7 +661,7 @@ def handle_json(
     if count < 0:
         count = 0
 
-    var body = List[UInt8]()
+    var body = List[Byte]()
     write_bytes(body, String('{"items":[').as_bytes())
 
     var i = 0

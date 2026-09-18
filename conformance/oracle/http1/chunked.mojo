@@ -16,10 +16,10 @@ def _hex_char_value(b: UInt8) -> Int:
     return -1
 
 
-def _int_to_hex(value: Int) -> List[UInt8]:
+def _int_to_hex(value: Int) -> List[Byte]:
     """Convert a non-negative integer to lowercase hex ASCII bytes."""
     if value == 0:
-        var out = List[UInt8]()
+        var out = List[Byte]()
         out.append(UInt8(ord("0")))
         return out^
 
@@ -27,7 +27,7 @@ def _int_to_hex(value: Int) -> List[UInt8]:
     var hex_bytes = hex_chars.as_bytes()
 
     # Build digits in reverse order.
-    var digits = List[UInt8]()
+    var digits = List[Byte]()
     var v = value
     while v > 0:
         var nibble = v & 0xF
@@ -35,7 +35,7 @@ def _int_to_hex(value: Int) -> List[UInt8]:
         v >>= 4
 
     # Reverse into output.
-    var out = List[UInt8]()
+    var out = List[Byte]()
     var i = len(digits) - 1
     while i >= 0:
         out.append(digits[i])
@@ -44,7 +44,7 @@ def _int_to_hex(value: Int) -> List[UInt8]:
 
 
 def decode_chunked(
-    data: List[UInt8], config: ParseConfig = ParseConfig()
+    data: List[Byte], config: ParseConfig = ParseConfig()
 ) -> ChunkedResult:
     """Decode a chunked transfer-encoded body per RFC 9112 section 7.
 
@@ -217,14 +217,14 @@ def decode_chunked(
         # ---- Step 9: Loop back for next chunk ----
 
 
-def encode_chunked(data: List[UInt8], chunk_size: Int = 1024) -> List[UInt8]:
+def encode_chunked(data: List[Byte], chunk_size: Int = 1024) -> List[Byte]:
     """Encode data using chunked transfer encoding.
 
     Each slice of *chunk_size* bytes is emitted as:
         hex(len) CRLF data CRLF
     followed by the last-chunk marker "0\\r\\n\\r\\n".
     """
-    var result = List[UInt8]()
+    var result = List[Byte]()
     var data_len = len(data)
     var offset = 0
 

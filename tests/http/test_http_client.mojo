@@ -293,7 +293,7 @@ def test_build_redirect_request_301() raises:
     var hdrs = Headers()
     hdrs.add("Host", "example.com")
     hdrs.add("Authorization", "Bearer token123")
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     body_data.extend(String("data").as_bytes())
     var req = Request(
         method=Method.post(), target=String("/submit"),
@@ -309,7 +309,7 @@ def test_build_redirect_request_301() raises:
 def test_build_redirect_request_307() raises:
     """307 preserves method and body."""
     var client = HttpClient.default()
-    var body_data = List[UInt8]()
+    var body_data = List[Byte]()
     body_data.extend(String("payload").as_bytes())
     var req = Request(
         method=Method.post(), target=String("/api"),

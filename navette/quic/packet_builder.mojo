@@ -89,7 +89,7 @@ struct PacketPlan(Copyable, Movable):
     var space_idx: Int
     var frames: List[Frame]
     var sent_records: List[SentStreamFrame]
-    var payload: List[UInt8]
+    var payload: List[Byte]
     var ack_committed: Bool
     var has_stream_data: Bool
 
@@ -98,7 +98,7 @@ struct PacketPlan(Copyable, Movable):
         space_idx: Int,
         var frames: List[Frame],
         var sent_records: List[SentStreamFrame],
-        var payload: List[UInt8],
+        var payload: List[Byte],
         ack_committed: Bool,
         has_stream_data: Bool = False,
     ):
@@ -140,14 +140,14 @@ def header_len(space_idx: Int, local_cid_len: Int, peer_cid_len: Int) -> Int:
 
 
 def build_packet(
-    mut pkt_buf: List[UInt8],
+    mut pkt_buf: List[Byte],
     mut protect: PacketProtect,
-    peer_cid: Span[UInt8, _],
-    local_cid: Span[UInt8, _],
+    peer_cid: Span[Byte, _],
+    local_cid: Span[Byte, _],
     space_idx: Int,
     pn: UInt64,
     pn_len: Int,
-    payload: List[UInt8],
+    payload: List[Byte],
     header_budget: Int,
     padding: Int = 0,
 ) raises:
@@ -182,13 +182,13 @@ def build_packet(
 
 
 def seal_packet(
-    mut pkt_buf: List[UInt8],
+    mut pkt_buf: List[Byte],
     mut protect: PacketProtect,
     header_budget: Int,
     space_idx: Int,
     pn: UInt64,
     pn_len: Int,
-    payload: List[UInt8],
+    payload: List[Byte],
     plaintext_len: Int,
 ) raises:
     """Encode PN, append payload, encrypt and apply header protection."""
@@ -202,14 +202,14 @@ def seal_packet(
 
     var truncated = pn_truncate(pn, pn_len)
     var pn_base = len(pkt_buf)
-    pkt_buf.resize(pn_base + pn_len, UInt8(0))
+    pkt_buf.resize(pn_base + pn_len, Byte(0))
     for i in range(pn_len):
         var shift = UInt64((pn_len - 1 - i) * 8)
         pkt_buf[pn_base + i] = UInt8((truncated >> shift) & 0xFF)
 
     pkt_buf.extend(Span(payload))
     var pad_len = plaintext_len - len(payload) + AEAD_TAG_LEN
-    pkt_buf.resize(len(pkt_buf) + pad_len, UInt8(0))
+    pkt_buf.resize(len(pkt_buf) + pad_len, Byte(0))
 
     var total_len = len(pkt_buf)
     var pkt_ptr = pkt_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin()
@@ -233,7 +233,7 @@ def emit_one_stream_frame(
     ss: SendState,
     limit: Int,
     mut sent_records: List[SentStreamFrame],
-    mut stream_payload: List[UInt8],
+    mut stream_payload: List[Byte],
     budget: Int,
     used: Int,
 ) raises -> Optional[Tuple[Int, UInt64]]:
@@ -407,7 +407,7 @@ def drain_stop_sending_frames(
 def emit_stream_frames(
     mut stream_map: StreamMap,
     mut sent_records: List[SentStreamFrame],
-    mut stream_payload: List[UInt8],
+    mut stream_payload: List[Byte],
     budget: Int,
     mut used: Int,
 ) raises:

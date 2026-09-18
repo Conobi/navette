@@ -1,7 +1,7 @@
 # src/h2/connection.mojo
 #
 # HTTP/2 connection state machine.
-# Sans-I/O: receive_data(bytes) -> List[H2Event], data_to_send() -> List[UInt8].
+# Sans-I/O: receive_data(bytes) -> List[H2Event], data_to_send() -> List[Byte].
 
 from std.collections import Dict
 from std.memory import unsafe_memmove
@@ -212,7 +212,7 @@ struct H2Event(Copyable, Movable):
     var kind: Int
     var stream_id: UInt32
     var headers: List[Header]
-    var data: List[UInt8]
+    var data: List[Byte]
     var error_code: UInt32
     var stream_ended: Bool
     var last_stream_id: UInt32
@@ -224,7 +224,7 @@ struct H2Event(Copyable, Movable):
         self.kind = 0
         self.stream_id = UInt32(0)
         self.headers = List[Header]()
-        self.data = List[UInt8]()
+        self.data = List[Byte]()
         self.error_code = UInt32(0)
         self.stream_ended = False
         self.last_stream_id = UInt32(0)
@@ -269,21 +269,21 @@ struct H2Event(Copyable, Movable):
         return e^
 
     @staticmethod
-    def ping_received(opaque_data: List[UInt8]) -> Self:
+    def ping_received(opaque_data: List[Byte]) -> Self:
         var e = Self()
         e.kind = H2_EVT_PING_RECEIVED
         e.data = opaque_data.copy()
         return e^
 
     @staticmethod
-    def ping_acknowledged(opaque_data: List[UInt8]) -> Self:
+    def ping_acknowledged(opaque_data: List[Byte]) -> Self:
         var e = Self()
         e.kind = H2_EVT_PING_ACKNOWLEDGED
         e.data = opaque_data.copy()
         return e^
 
     @staticmethod
-    def goaway_received(last_stream_id: UInt32, error_code: UInt32, debug_data: List[UInt8]) -> Self:
+    def goaway_received(last_stream_id: UInt32, error_code: UInt32, debug_data: List[Byte]) -> Self:
         var e = Self()
         e.kind = H2_EVT_GOAWAY_RECEIVED
         e.last_stream_id = last_stream_id
@@ -327,7 +327,7 @@ struct H2Event(Copyable, Movable):
         return e^
 
     @staticmethod
-    def data_received(stream_id: UInt32, data: List[UInt8], flow_controlled_length: Int, stream_ended: Bool) -> Self:
+    def data_received(stream_id: UInt32, data: List[Byte], flow_controlled_length: Int, stream_ended: Bool) -> Self:
         var e = Self()
         e.kind = H2_EVT_DATA_RECEIVED
         e.stream_id = stream_id
@@ -384,9 +384,9 @@ comptime STREAM_CLOSED = 4
 comptime H2_CLIENT_MAGIC_LEN = 24
 
 
-def _client_magic() -> List[UInt8]:
+def _client_magic() -> List[Byte]:
     """'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n' — 24 bytes."""
-    var m = List[UInt8]()
+    var m = List[Byte]()
     var s = String("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
     var b = s.as_bytes()
     for i in range(s.byte_length()):
@@ -403,7 +403,7 @@ struct StreamState(Copyable, Movable):
     var recv_window: Int
     var recv_window_consumed: Int
     var expects_continuation: Bool
-    var header_block_buffer: List[UInt8]
+    var header_block_buffer: List[Byte]
     var headers_end_stream: Bool
     var data_received: Bool
 
@@ -413,7 +413,7 @@ struct StreamState(Copyable, Movable):
         self.recv_window = recv_window
         self.recv_window_consumed = 0
         self.expects_continuation = False
-        self.header_block_buffer = List[UInt8]()
+        self.header_block_buffer = List[Byte]()
         self.headers_end_stream = False
         self.data_received = False
 
@@ -443,10 +443,10 @@ struct StreamState(Copyable, Movable):
 # `send_data` was called and are queued until WINDOW_UPDATE arrives.
 # ---------------------------------------------------------------------------
 struct PendingDataChunk(Copyable, Movable):
-    var data: List[UInt8]
+    var data: List[Byte]
     var end_stream: Bool
 
-    def __init__(out self, var data: List[UInt8], end_stream: Bool):
+    def __init__(out self, var data: List[Byte], end_stream: Bool):
         self.data = data^
         self.end_stream = end_stream
 
@@ -462,10 +462,10 @@ struct PendingDataChunk(Copyable, Movable):
 # ---------------------------------------------------------------------------
 # Helper: append a 6-byte SETTINGS entry to a payload
 # ---------------------------------------------------------------------------
-def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[UInt8]:
+def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[Byte]:
     """Build an 8-byte GOAWAY payload (4-byte last-stream-id + 4-byte error code)."""
-    var payload = List[UInt8](capacity=8)
-    payload.resize(8, UInt8(0))
+    var payload = List[Byte](capacity=8)
+    payload.resize(8, Byte(0))
     # last_stream_id: clear reserved bit in high byte
     payload[0] = UInt8((last_stream_id >> 24) & 0x7F)
     payload[1] = UInt8((last_stream_id >> 16) & 0xFF)
@@ -475,10 +475,10 @@ def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[UInt8]:
     return payload^
 
 
-def _append_setting(mut payload: List[UInt8], id: Int, value: Int):
+def _append_setting(mut payload: List[Byte], id: Int, value: Int):
     """Append a 6-byte SETTINGS entry (2-byte id + 4-byte value)."""
     var base = len(payload)
-    payload.resize(base + 6, UInt8(0))
+    payload.resize(base + 6, Byte(0))
     _ = write_u16_be_at(payload, base, UInt16(id))
     _ = write_u32_be_at(payload, base + 2, UInt32(value))
 
@@ -493,8 +493,8 @@ struct H2Connection(Movable):
     var _local_settings: H2Settings
     var _remote_settings: H2Settings
     var _settings_acked: Bool
-    var _inbuf: List[UInt8]
-    var _outbuf: List[UInt8]
+    var _inbuf: List[Byte]
+    var _outbuf: List[Byte]
     var _streams: Dict[Int, StreamState]
     var _next_stream_id: UInt32
     var _last_recv_stream_id: UInt32
@@ -519,8 +519,8 @@ struct H2Connection(Movable):
         self._settings_acked = False
         # Pre-size to one default H2 max-frame-size + frame header so the
         # common path lands in one allocation per connection.
-        self._inbuf = List[UInt8](capacity=16 * 1024)
-        self._outbuf = List[UInt8](capacity=16 * 1024)
+        self._inbuf = List[Byte](capacity=16 * 1024)
+        self._outbuf = List[Byte](capacity=16 * 1024)
         self._streams = Dict[Int, StreamState]()
         self._next_stream_id = UInt32(1) if client_side else UInt32(2)
         self._last_recv_stream_id = UInt32(0)
@@ -572,10 +572,10 @@ struct H2Connection(Movable):
         self._queue_settings_frame()
         self._state = CONN_OPEN
 
-    def data_to_send(mut self) -> List[UInt8]:
+    def data_to_send(mut self) -> List[Byte]:
         """Drain outbound buffer."""
         var data = self._outbuf^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         return data^
 
     def is_closed(self) -> Bool:
@@ -608,7 +608,7 @@ struct H2Connection(Movable):
 
     def _queue_settings_frame(mut self):
         """Build and queue initial SETTINGS frame."""
-        var payload = List[UInt8]()
+        var payload = List[Byte]()
         _append_setting(payload, SETTINGS_ENABLE_PUSH, 0)
         _append_setting(payload, SETTINGS_MAX_CONCURRENT_STREAMS, Int(self._config.max_concurrent_streams))
         _append_setting(payload, SETTINGS_MAX_HEADER_LIST_SIZE, Int(self._config.max_header_list_size))
@@ -665,7 +665,7 @@ struct H2Connection(Movable):
         ))
         self._state = CONN_CLOSED
 
-    def receive_data(mut self, data: List[UInt8]) raises -> List[H2Event]:
+    def receive_data(mut self, data: List[Byte]) raises -> List[H2Event]:
         """Feed wire bytes, decode frames, return events."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
@@ -768,7 +768,7 @@ struct H2Connection(Movable):
             elif s.id == SETTINGS_ENABLE_CONNECT_PROTOCOL:
                 self._remote_settings.enable_connect_protocol = s.value != 0
         # Send ACK
-        var ack = Frame(0, FRAME_SETTINGS, FLAG_ACK, 0, List[UInt8]())
+        var ack = Frame(0, FRAME_SETTINGS, FLAG_ACK, 0, List[Byte]())
         self._queue_frame(ack)
         events.append(H2Event.settings_changed())
 
@@ -800,7 +800,7 @@ struct H2Connection(Movable):
         self._queue_frame(ack_frame)
         events.append(H2Event.ping_received(pp.opaque_data.copy()))
 
-    def send_ping(mut self, opaque_data: List[UInt8]) raises:
+    def send_ping(mut self, opaque_data: List[Byte]) raises:
         """Send a PING frame with the given 8-byte opaque data."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
@@ -862,7 +862,7 @@ struct H2Connection(Movable):
             self._queue_frame(hdr_frame)
         else:
             # Split: HEADERS (first chunk) + CONTINUATION frames
-            var first_chunk = List[UInt8]()
+            var first_chunk = List[Byte]()
             for i in range(max_size):
                 first_chunk.append(block[i])
             var flags = 0
@@ -875,7 +875,7 @@ struct H2Connection(Movable):
                 var end = offset + max_size
                 if end > len(block):
                     end = len(block)
-                var chunk = List[UInt8]()
+                var chunk = List[Byte]()
                 for i in range(offset, end):
                     chunk.append(block[i])
                 var cont_flags = 0
@@ -885,7 +885,7 @@ struct H2Connection(Movable):
                 self._queue_frame(cont_frame)
                 offset = end
 
-    def send_data(mut self, stream_id: UInt32, data: List[UInt8], *, end_stream: Bool = False) raises:
+    def send_data(mut self, stream_id: UInt32, data: List[Byte], *, end_stream: Bool = False) raises:
         """Send DATA frame(s). Fragments by max_frame_size. Bytes that
         exceed the connection or stream send window are queued in
         `_pending_data` and emitted when an inbound WINDOW_UPDATE
@@ -920,7 +920,7 @@ struct H2Connection(Movable):
                     self._pending_data[sid][qsz - 1].end_stream = True
                     self._streams[sid] = stream^
                     return
-            var frame0 = Frame(0, FRAME_DATA, FLAG_END_STREAM, sid, List[UInt8]())
+            var frame0 = Frame(0, FRAME_DATA, FLAG_END_STREAM, sid, List[Byte]())
             self._queue_frame(frame0)
             if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
                 stream.lifecycle = STREAM_CLOSED
@@ -935,7 +935,7 @@ struct H2Connection(Movable):
         if sid in self._pending_data:
             var qsize = len(self._pending_data[sid])
             if qsize > 0:
-                var copy_buf = List[UInt8]()
+                var copy_buf = List[Byte]()
                 for i in range(total):
                     copy_buf.append(data[i])
                 var pc = PendingDataChunk(copy_buf^, end_stream)
@@ -958,7 +958,7 @@ struct H2Connection(Movable):
                 var end = offset + max_size
                 if end > sendable:
                     end = sendable
-                var chunk_bytes = List[UInt8]()
+                var chunk_bytes = List[Byte]()
                 for i in range(offset, end):
                     chunk_bytes.append(data[i])
                 var is_last = (end >= sendable)
@@ -970,7 +970,7 @@ struct H2Connection(Movable):
             stream.send_window -= sendable
 
         if sendable < total:
-            var remainder = List[UInt8]()
+            var remainder = List[Byte]()
             for i in range(sendable, total):
                 remainder.append(data[i])
             var pchunk = PendingDataChunk(remainder^, end_stream)
@@ -1036,7 +1036,7 @@ struct H2Connection(Movable):
         var max_size = Int(self._remote_settings.max_frame_size)
         var idx = 0
         var stalled = False
-        var stall_remainder = List[UInt8]()
+        var stall_remainder = List[Byte]()
         var stall_end_stream = False
 
         while idx < len(queue):
@@ -1059,7 +1059,7 @@ struct H2Connection(Movable):
                     var end = offset + max_size
                     if end > sendable:
                         end = sendable
-                    var frame_bytes = List[UInt8]()
+                    var frame_bytes = List[Byte]()
                     for j in range(offset, end):
                         frame_bytes.append(data_bytes[j])
                     var is_last_part = (end >= sendable)
@@ -1079,7 +1079,7 @@ struct H2Connection(Movable):
                         stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
                 idx += 1
             else:
-                var rem = List[UInt8]()
+                var rem = List[Byte]()
                 for j in range(sendable, data_len):
                     rem.append(data_bytes[j])
                 stall_remainder = rem^
@@ -1122,8 +1122,8 @@ struct H2Connection(Movable):
         """Send RST_STREAM frame for the given stream."""
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
-        var payload = List[UInt8](capacity=4)
-        payload.resize(4, UInt8(0))
+        var payload = List[Byte](capacity=4)
+        payload.resize(4, Byte(0))
         _ = write_u32_be_at(payload, 0, UInt32(error_code))
         var sid = Int(stream_id)
         var frame = Frame(4, FRAME_RST_STREAM, 0, sid, payload)
@@ -1173,8 +1173,8 @@ struct H2Connection(Movable):
     def _send_window_update_frame(mut self, stream_id: UInt32, increment: UInt32):
         """Queue a WINDOW_UPDATE frame."""
         var inc = Int(increment)
-        var payload = List[UInt8](capacity=4)
-        payload.resize(4, UInt8(0))
+        var payload = List[Byte](capacity=4)
+        payload.resize(4, Byte(0))
         payload[0] = UInt8((inc >> 24) & 0x7F)
         payload[1] = UInt8((inc >> 16) & 0xFF)
         payload[2] = UInt8((inc >> 8) & 0xFF)
@@ -1391,7 +1391,7 @@ struct H2Connection(Movable):
                         self._active_stream_count -= 1
                     else:
                         stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
-                stream.header_block_buffer = List[UInt8]()  # clear buffer
+                stream.header_block_buffer = List[Byte]()  # clear buffer
                 if stream.data_received:
                     # Trailers
                     self._streams[stream_id] = stream^
@@ -1409,8 +1409,8 @@ struct H2Connection(Movable):
 
     def _stream_error(mut self, mut events: List[H2Event], stream_id: Int, error_code: Int):
         """Send RST_STREAM and emit StreamReset event for a single stream."""
-        var payload = List[UInt8](capacity=4)
-        payload.resize(4, UInt8(0))
+        var payload = List[Byte](capacity=4)
+        payload.resize(4, Byte(0))
         _ = write_u32_be_at(payload, 0, UInt32(error_code))
         var frame = Frame(4, FRAME_RST_STREAM, 0, stream_id, payload)
         self._queue_frame(frame)

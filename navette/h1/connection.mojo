@@ -49,7 +49,7 @@ comptime PHASE_UPGRADED = 3
 comptime PHASE_ERROR = 4
 
 
-def _compact_forward(mut buf: List[UInt8], cursor: Int):
+def _compact_forward(mut buf: List[Byte], cursor: Int):
     """In-place left-shift: drop ``buf[0:cursor]``, keeping ``buf[cursor:len]``
     at ``[0:keep]`` (``keep = len - cursor``). Reuses the backing allocation —
     ``clear()``/shrinking ``resize`` preserve capacity AND the backing
@@ -77,7 +77,7 @@ def _compact_forward(mut buf: List[UInt8], cursor: Int):
     var p = buf.unsafe_ptr()
     for i in range(keep):
         p[unsafe_offset=i] = p[unsafe_offset=i + cursor]
-    buf.resize(keep, UInt8(0))
+    buf.resize(keep, Byte(0))
 
 
 struct H1Connection(Movable):
@@ -89,8 +89,8 @@ struct H1Connection(Movable):
     serialized wire bytes with ``drain``.
     """
 
-    var _inbound_buf: List[UInt8]
-    var _outbound_buf: List[UInt8]
+    var _inbound_buf: List[Byte]
+    var _outbound_buf: List[Byte]
     var _phase: Int
     var _keep_alive: Bool
     var _config: ParseConfig
@@ -107,8 +107,8 @@ struct H1Connection(Movable):
 
     def __init__(out self, var config: ParseConfig):
         """Build a fresh state machine in the IDLE phase."""
-        self._inbound_buf = List[UInt8]()
-        self._outbound_buf = List[UInt8]()
+        self._inbound_buf = List[Byte]()
+        self._outbound_buf = List[Byte]()
         self._phase = PHASE_IDLE
         self._keep_alive = True  # HTTP/1.1 default.
         self._config = config^
@@ -135,7 +135,7 @@ struct H1Connection(Movable):
 
     # --- Inbound API ---
 
-    def receive_data(mut self, data: Span[UInt8, _]) raises:
+    def receive_data(mut self, data: Span[Byte, _]) raises:
         """Append received bytes to the inbound buffer.
 
         Raises if the unconsumed inbound buffer would exceed the configured
@@ -322,13 +322,13 @@ struct H1Connection(Movable):
         var wire = serialize_request(request^)
         self._outbound_buf.extend(Span(wire))
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         """Remove and return all bytes currently in the outbound buffer."""
         var out = self._outbound_buf^
-        self._outbound_buf = List[UInt8]()
+        self._outbound_buf = List[Byte]()
         return out^
 
-    def drain_into(mut self, mut sink: List[UInt8]):
+    def drain_into(mut self, mut sink: List[Byte]):
         """Append the outbound buffer into ``sink`` and clear it in place.
 
         Unlike ``drain()`` (which moves the buffer out and reallocates a fresh
@@ -428,6 +428,6 @@ struct H1Connection(Movable):
             ):
                 var end = i + 4
                 # Drop everything from `end` to the buffer's tail.
-                self._outbound_buf.resize(end, UInt8(0))
+                self._outbound_buf.resize(end, Byte(0))
                 return
             i += 1

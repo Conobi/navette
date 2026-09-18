@@ -79,7 +79,7 @@ from tests._test_util import assert_true, assert_false, assert_equal_int, load_t
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -108,8 +108,8 @@ def _establish_handshake(
     events produced by their own actions.
     """
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -142,8 +142,8 @@ def _pump(
     Used after the handshake to propagate application-level frames (STREAM,
     RESET_STREAM, STOP_SENDING, NEW_CONNECTION_ID …) in both directions.
     """
-    var a_dg = List[List[UInt8]](capacity=1)
-    var b_dg = List[List[UInt8]](capacity=1)
+    var a_dg = List[List[Byte]](capacity=1)
+    var b_dg = List[List[Byte]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
         var a_n = a.send(now, a_dg)
@@ -169,7 +169,7 @@ def _drain_events(mut conn: QuicConnection):
             break
 
 
-def _bytes_equal(data: List[UInt8], expected: String) -> Bool:
+def _bytes_equal(data: List[Byte], expected: String) -> Bool:
     """Compare a byte list against an ASCII string literal."""
     var exp_bytes = expected.as_bytes()
     if len(data) != len(exp_bytes):
@@ -180,10 +180,10 @@ def _bytes_equal(data: List[UInt8], expected: String) -> Bool:
     return True
 
 
-def _to_bytes(s: String) -> List[UInt8]:
-    """Encode an ASCII string as List[UInt8]."""
+def _to_bytes(s: String) -> List[Byte]:
+    """Encode an ASCII string as List[Byte]."""
     var src = s.as_bytes()
-    var out = List[UInt8](capacity=len(src))
+    var out = List[Byte](capacity=len(src))
     for i in range(len(src)):
         out.append(src[i])
     return out^
@@ -223,8 +223,8 @@ def test_loopback_handshake() raises:
     )
 
     # Two copies of DCID to avoid aliasing.
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
 
     # Create server.
     var server = QuicConnection.server(
@@ -235,8 +235,8 @@ def test_loopback_handshake() raises:
     # Drive handshake to completion.
     var max_rounds = 20
     var established = False
-    var client_dgrams = List[List[UInt8]](capacity=1)
-    var server_dgrams = List[List[UInt8]](capacity=1)
+    var client_dgrams = List[List[Byte]](capacity=1)
+    var server_dgrams = List[List[Byte]](capacity=1)
     for round_idx in range(max_rounds):
         now += UInt64(10_000)
         var client_n = client.send(now, client_dgrams)
@@ -307,16 +307,16 @@ def test_connection_close() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
     # Complete handshake.
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -350,8 +350,8 @@ def test_connection_close() raises:
     client.close_transport(UInt64(0), String("done"), now)
 
     # Pump a few rounds so the server receives CONNECTION_CLOSE.
-    var client_dgrams = List[List[UInt8]](capacity=1)
-    var server_dgrams = List[List[UInt8]](capacity=1)
+    var client_dgrams = List[List[Byte]](capacity=1)
+    var server_dgrams = List[List[Byte]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
         var client_n = client.send(now, client_dgrams)
@@ -383,7 +383,7 @@ def test_connection_close() raises:
 
     # Advance time past drain timer.
     now += UInt64(10_000_000)
-    var _dg = List[List[UInt8]](capacity=1)
+    var _dg = List[List[Byte]](capacity=1)
     _ = server.send(now, _dg)
     assert_true(server.is_closed(), "server not closed after drain timeout")
 
@@ -409,16 +409,16 @@ def test_idle_timeout() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
     )
 
     # Complete handshake.
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -451,7 +451,7 @@ def test_idle_timeout() raises:
     now += UInt64(10_000_000)
 
     # Trigger idle timeout check.
-    var _dg = List[List[UInt8]](capacity=1)
+    var _dg = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg)
 
     assert_true(client.is_closed(), "client not closed after idle timeout")
@@ -491,8 +491,8 @@ def test_handshake_with_loss() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
 
     # Create server.
     var server = QuicConnection.server(
@@ -502,7 +502,7 @@ def test_handshake_with_loss() raises:
 
     # Round 1: client sends Initial (ClientHello) -> server receives it.
     now += UInt64(10_000)
-    var client_dgrams_r1 = List[List[UInt8]](capacity=1)
+    var client_dgrams_r1 = List[List[Byte]](capacity=1)
     var client_n_r1 = client.send(now, client_dgrams_r1)
     assert_true(client_n_r1 > 0, "client should send Initial")
     for i in range(client_n_r1):
@@ -510,7 +510,7 @@ def test_handshake_with_loss() raises:
 
     # Server sends response (ServerHello + certs) -> DROPPED (not fed to client).
     now += UInt64(10_000)
-    var server_dgrams_r1 = List[List[UInt8]](capacity=1)
+    var server_dgrams_r1 = List[List[Byte]](capacity=1)
     var server_n_r1 = server.send(now, server_dgrams_r1)
     assert_true(server_n_r1 > 0, "server should send response")
     # Intentionally NOT feeding server_dgrams_r1 to client.
@@ -521,7 +521,7 @@ def test_handshake_with_loss() raises:
     now = client_deadline.value() + UInt64(1)
 
     # Round 2: client PTO fires, should retransmit Initial CRYPTO.
-    var client_dgrams_r2 = List[List[UInt8]](capacity=1)
+    var client_dgrams_r2 = List[List[Byte]](capacity=1)
     var client_n_r2 = client.send(now, client_dgrams_r2)
     assert_true(client_n_r2 > 0, "client should retransmit after PTO")
 
@@ -534,8 +534,8 @@ def test_handshake_with_loss() raises:
 
     # Continue normal handshake loop to completion.
     var established = False
-    var s_dg = List[List[UInt8]](capacity=1)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
         var s_n = server.send(now, s_dg)
@@ -579,13 +579,13 @@ def test_handshake_with_retry() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var client_initial_dcid = List[UInt8](client.initial_dcid.as_span())
+    var client_initial_dcid = List[Byte](client.initial_dcid.as_span())
 
     # 2. Simulate server-side Retry token generation.
     #    server_secret: 16 random bytes.
     var os = Python.import_module("os")
     var py_secret = os.urandom(16)
-    var server_secret = List[UInt8](capacity=16)
+    var server_secret = List[Byte](capacity=16)
     for i in range(16):
         server_secret.append(UInt8(Int(py=py_secret[i])))
 
@@ -593,7 +593,7 @@ def test_handshake_with_retry() raises:
     var hashlib = Python.import_module("hashlib")
     var builtins = Python.import_module("builtins")
     var py_hash = hashlib.sha256(builtins.bytes("127.0.0.1:12345", "utf-8")).digest()
-    var client_addr_hash = List[UInt8](capacity=32)
+    var client_addr_hash = List[Byte](capacity=32)
     for i in range(32):
         client_addr_hash.append(UInt8(Int(py=py_hash[i])))
 
@@ -623,8 +623,8 @@ def test_handshake_with_retry() raises:
         )
 
     # 4. Create server with the original DCID from token validation.
-    var orig_dcid = List[UInt8](copy=recovered_dcid)
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](copy=recovered_dcid)
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -632,8 +632,8 @@ def test_handshake_with_retry() raises:
 
     # 5. Complete handshake normally.
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -674,8 +674,8 @@ def test_coalesced_packets() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -684,7 +684,7 @@ def test_coalesced_packets() raises:
     # Client sends its Initial flight (the ClientHello spans two 1200-byte
     # datagrams; each send() returns at most one).
     now += UInt64(10_000)
-    var client_dgrams = List[List[UInt8]](capacity=1)
+    var client_dgrams = List[List[Byte]](capacity=1)
     var client_n = client.send(now, client_dgrams)
     assert_true(client_n > 0, "client should send Initial")
     for _ in range(8):
@@ -696,7 +696,7 @@ def test_coalesced_packets() raises:
 
     # Server sends response -- should contain coalesced data.
     now += UInt64(10_000)
-    var server_dgrams = List[List[UInt8]](capacity=1)
+    var server_dgrams = List[List[Byte]](capacity=1)
     var server_n = server.send(now, server_dgrams)
     assert_true(server_n > 0, "server should send response")
 
@@ -717,8 +717,8 @@ def test_coalesced_packets() raises:
 
     # Continue handshake to completion.
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -759,8 +759,8 @@ def test_anti_amplification() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -768,7 +768,7 @@ def test_anti_amplification() raises:
 
     # Client sends Initial (padded to 1200 bytes).
     now += UInt64(10_000)
-    var client_dgrams = List[List[UInt8]](capacity=1)
+    var client_dgrams = List[List[Byte]](capacity=1)
     _ = client.send(now, client_dgrams)
     assert_true(len(client_dgrams) > 0, "client should send Initial")
 
@@ -783,7 +783,7 @@ def test_anti_amplification() raises:
 
     # Server sends response -- measure total bytes.
     now += UInt64(10_000)
-    var server_dgrams = List[List[UInt8]](capacity=1)
+    var server_dgrams = List[List[Byte]](capacity=1)
     _ = server.send(now, server_dgrams)
 
     var server_bytes = 0
@@ -813,8 +813,8 @@ def test_anti_amplification() raises:
             pass
 
     var established = False
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -855,8 +855,8 @@ def test_stream_data_transfer() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -915,9 +915,9 @@ def test_stream_data_transfer() raises:
     print("  test_stream_data_transfer: PASS")
 
 
-def _pattern_bytes(n: Int, seed: Int) -> List[UInt8]:
+def _pattern_bytes(n: Int, seed: Int) -> List[Byte]:
     """Deterministic non-repeating-per-chunk body: byte i = (i + seed) % 251."""
-    var out = List[UInt8](capacity=n)
+    var out = List[Byte](capacity=n)
     for i in range(n):
         out.append(UInt8((i + seed) % 251))
     return out^
@@ -929,17 +929,17 @@ def _drive_response(
     sid: UInt64,
     mut now: UInt64,
     max_rounds: Int,
-) raises -> Tuple[List[UInt8], Int]:
+) raises -> Tuple[List[Byte], Int]:
     """Pump server -> client until the client reads FIN on `sid`.
 
     Returns the reassembled response bytes and the number of datagrams the
     server emitted while delivering it (ACK-only ones included).
     """
-    var body = List[UInt8]()
+    var body = List[Byte]()
     var server_dgs = 0
     var fin_seen = False
-    var s_dg = List[List[UInt8]](capacity=1)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     for _ in range(max_rounds):
         now += UInt64(10_000)
         var s_n = server.send(now, s_dg)
@@ -956,7 +956,7 @@ def _drive_response(
         for i in range(c_n):
             server.recv(Span(c_dg[i]), now)
     assert_true(fin_seen, "client never saw FIN on the response stream")
-    return Tuple[List[UInt8], Int](body^, server_dgs)
+    return Tuple[List[Byte], Int](body^, server_dgs)
 
 
 # Server datagrams emitted for the scripted 5 kB exchange below, measured
@@ -979,8 +979,8 @@ def test_response_5kb_wire_unchanged() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1029,8 +1029,8 @@ def test_64kb_body_across_sends_intact() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1048,12 +1048,12 @@ def test_64kb_body_across_sends_intact() raises:
 
     comptime CHUNK: Int = 16 * 1024
     var expected = _pattern_bytes(4 * CHUNK, 3)
-    var body = List[UInt8]()
+    var body = List[Byte]()
     var fin_seen = False
-    var s_dg = List[List[UInt8]](capacity=1)
-    var c_dg = List[List[UInt8]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
     for c in range(4):
-        var chunk = List[UInt8](capacity=CHUNK)
+        var chunk = List[Byte](capacity=CHUNK)
         for i in range(CHUNK):
             chunk.append(expected[c * CHUNK + i])
         server.send_stream_data(sid, Span(chunk), c == 3)
@@ -1110,8 +1110,8 @@ def test_multi_stream() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1169,8 +1169,8 @@ def test_unidirectional_stream() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1232,8 +1232,8 @@ def test_reset_stream() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1296,8 +1296,8 @@ def test_stop_sending() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1386,8 +1386,8 @@ def test_cid_issuance() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1438,8 +1438,8 @@ def test_flow_control_error_on_overflow() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1454,11 +1454,11 @@ def test_flow_control_error_on_overflow() raises:
     # We directly call server._handle_stream_frame so the FC check fires
     # before any packet-layer silencing.
     var sid = UInt64(0)  # client-initiated bidi stream id 0 (peer stream from server's POV)
-    var data = List[UInt8](capacity=70_000)
+    var data = List[Byte](capacity=70_000)
     for _ in range(70_000):
         data.append(UInt8(0x41))
 
-    var sf = StreamFrame(sid, UInt64(0), List[UInt8](), False)
+    var sf = StreamFrame(sid, UInt64(0), List[Byte](), False)
     server._handle_stream_frame(sf, Span(data))
     assert_true(
         Bool(server.close.pending),
@@ -1505,8 +1505,8 @@ def test_conn_flow_control_error_on_overflow() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1519,11 +1519,11 @@ def test_conn_flow_control_error_on_overflow() raises:
     # Build a STREAM frame with 60_000 bytes: above conn limit (50_000) but
     # below stream limit (200_000), so the conn-FC path fires.
     var sid = UInt64(0)  # client-initiated bidi stream id 0 (peer stream from server's POV)
-    var data = List[UInt8](capacity=60_000)
+    var data = List[Byte](capacity=60_000)
     for _ in range(60_000):
         data.append(UInt8(0x41))
 
-    var sf = StreamFrame(sid, UInt64(0), List[UInt8](), False)
+    var sf = StreamFrame(sid, UInt64(0), List[Byte](), False)
     var raised_fc = False
     try:
         server._handle_stream_frame(sf, Span(data))
@@ -1553,8 +1553,8 @@ def test_final_size_error_on_reset_mismatch() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1566,7 +1566,7 @@ def test_final_size_error_on_reset_mismatch() raises:
 
     # Client opens stream and sends 100 bytes (no FIN).
     var sid = client.open_stream(True)
-    var data = List[UInt8](capacity=100)
+    var data = List[Byte](capacity=100)
     for _ in range(100):
         data.append(UInt8(0x41))
     client.send_stream_data(sid, Span(data), False)
@@ -1618,8 +1618,8 @@ def test_max_stream_data_and_max_data_cycle() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1634,7 +1634,7 @@ def test_max_stream_data_and_max_data_cycle() raises:
     assert_equal_int(Int(sid), 0, "first client bidi stream id")
 
     # Client sends 7 KiB (>50% of 10 KiB stream limit → should_update trips on drain).
-    var chunk = List[UInt8](capacity=7 * 1024)
+    var chunk = List[Byte](capacity=7 * 1024)
     for _ in range(7 * 1024):
         chunk.append(UInt8(0x41))
     client.send_stream_data(sid, Span(chunk), False)
@@ -1683,7 +1683,7 @@ def test_max_stream_data_and_max_data_cycle() raises:
     )
 
     # Verify the client can actually write another 5 KiB (within the new limit).
-    var extra = List[UInt8](capacity=5 * 1024)
+    var extra = List[Byte](capacity=5 * 1024)
     for _ in range(5 * 1024):
         extra.append(UInt8(0x42))
     client.send_stream_data(sid, Span(extra), False)  # raises if state error
@@ -1713,8 +1713,8 @@ def test_max_streams_linear_growth() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1733,7 +1733,7 @@ def test_max_streams_linear_growth() raises:
 
     # Open N=50 bidi streams from client, send 1 byte + FIN on each.
     var sids = List[UInt64]()
-    var one_byte = List[UInt8]()
+    var one_byte = List[Byte]()
     one_byte.append(UInt8(0x41))
     for _ in range(50):
         var sid = client.open_stream(True)
@@ -1751,7 +1751,7 @@ def test_max_streams_linear_growth() raises:
     # For a bidi stream, server must also send data+FIN back to fully close.
     # Send 1 byte + FIN (not FIN-only) so the ACK record has non-zero length
     # and the send-side ack tracking advances correctly.
-    var reply_byte = List[UInt8]()
+    var reply_byte = List[Byte]()
     reply_byte.append(UInt8(0x42))
     for i in range(len(sids)):
         var sid = sids[i]
@@ -1834,8 +1834,8 @@ def test_cid_retire_triggers_reissue() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -1954,8 +1954,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var params_a = _default_params()
 
     var client_a = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params_a, now_a)
-    var orig_dcid_a = List[UInt8](client_a.initial_dcid.as_span())
-    var cli_dcid_a = List[UInt8](client_a.initial_dcid.as_span())
+    var orig_dcid_a = List[Byte](client_a.initial_dcid.as_span())
+    var cli_dcid_a = List[Byte](client_a.initial_dcid.as_span())
     var server_a = QuicConnection.server(
         tls.shared(), srv_cfg, params_a, Span(orig_dcid_a), Span(cli_dcid_a), now_a,
     )
@@ -1978,14 +1978,14 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Build outgoing packets from each side (drop datagrams; just track PN).
     now_a += UInt64(10_000)
-    var _dg1 = List[List[UInt8]](capacity=1)
+    var _dg1 = List[List[Byte]](capacity=1)
     _ = client_a.send(now_a, _dg1)
     var c_pn_a = _last_app_pn(client_a)
     assert_true(
         _app_has_kind(client_a, c_pn_a, SSF_RESET_STREAM, Int(sid_a)),
         "client: RESET_STREAM in initial build",
     )
-    var _dg2 = List[List[UInt8]](capacity=1)
+    var _dg2 = List[List[Byte]](capacity=1)
     _ = server_a.send(now_a, _dg2)
     var s_pn_a = _last_app_pn(server_a)
     assert_true(
@@ -1999,7 +1999,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Next build must re-emit both frames.
     now_a += UInt64(10_000)
-    var _dg3 = List[List[UInt8]](capacity=1)
+    var _dg3 = List[List[Byte]](capacity=1)
     _ = client_a.send(now_a, _dg3)
     var c_pn_a2 = _last_app_pn(client_a)
     assert_true(
@@ -2007,7 +2007,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
         "client re-emits RESET_STREAM after loss",
     )
 
-    var _dg4 = List[List[UInt8]](capacity=1)
+    var _dg4 = List[List[Byte]](capacity=1)
     _ = server_a.send(now_a, _dg4)
     var s_pn_a2 = _last_app_pn(server_a)
     assert_true(
@@ -2027,8 +2027,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var client_params_b = _default_params()
 
     var client_b = QuicConnection.client(tls.shared(), cli_cfg, "localhost", client_params_b, now_b)
-    var orig_dcid_b = List[UInt8](client_b.initial_dcid.as_span())
-    var cli_dcid_b = List[UInt8](client_b.initial_dcid.as_span())
+    var orig_dcid_b = List[Byte](client_b.initial_dcid.as_span())
+    var cli_dcid_b = List[Byte](client_b.initial_dcid.as_span())
     var server_b = QuicConnection.server(
         tls.shared(), srv_cfg, server_params_b, Span(orig_dcid_b), Span(cli_dcid_b), now_b,
     )
@@ -2038,7 +2038,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Client sends 7 KiB (>50% of 10 KiB stream window) to the server.
     var sid_b = client_b.open_stream(True)
-    var big_b = List[UInt8](capacity=7168)
+    var big_b = List[Byte](capacity=7168)
     for _ in range(7168):
         big_b.append(UInt8(0x41))
     client_b.send_stream_data(sid_b, Span(big_b), False)
@@ -2050,7 +2050,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Build server packet; it should include MAX_STREAM_DATA and MAX_DATA.
     now_b += UInt64(10_000)
-    var _dg5 = List[List[UInt8]](capacity=1)
+    var _dg5 = List[List[Byte]](capacity=1)
     _ = server_b.send(now_b, _dg5)
     var s_pn_b = _last_app_pn(server_b)
     assert_true(
@@ -2065,7 +2065,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
     # Lose it; next build must re-emit.
     server_b._on_app_pkt_lost(s_pn_b)
     now_b += UInt64(10_000)
-    var _dg6 = List[List[UInt8]](capacity=1)
+    var _dg6 = List[List[Byte]](capacity=1)
     _ = server_b.send(now_b, _dg6)
     var s_pn_b2 = _last_app_pn(server_b)
     assert_true(
@@ -2083,8 +2083,8 @@ def test_m3c_frames_retransmit_on_loss() raises:
     var params_c = _default_params()
 
     var client_c = QuicConnection.client(tls.shared(), cli_cfg, "localhost", params_c, now_c)
-    var orig_dcid_c = List[UInt8](client_c.initial_dcid.as_span())
-    var cli_dcid_c = List[UInt8](client_c.initial_dcid.as_span())
+    var orig_dcid_c = List[Byte](client_c.initial_dcid.as_span())
+    var cli_dcid_c = List[Byte](client_c.initial_dcid.as_span())
     var server_c = QuicConnection.server(
         tls.shared(), srv_cfg, params_c, Span(orig_dcid_c), Span(cli_dcid_c), now_c,
     )
@@ -2100,7 +2100,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Build server packet; should include the NEW_CONNECTION_ID replacement.
     now_c += UInt64(10_000)
-    var _dg7 = List[List[UInt8]](capacity=1)
+    var _dg7 = List[List[Byte]](capacity=1)
     _ = server_c.send(now_c, _dg7)
     var s_pn_c = _last_app_pn(server_c)
     assert_true(
@@ -2111,7 +2111,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
     # Lose the packet; clear_advertised restores the pending state.
     server_c._on_app_pkt_lost(s_pn_c)
     now_c += UInt64(10_000)
-    var _dg8 = List[List[UInt8]](capacity=1)
+    var _dg8 = List[List[Byte]](capacity=1)
     _ = server_c.send(now_c, _dg8)
     var s_pn_c2 = _last_app_pn(server_c)
     assert_true(
@@ -2140,8 +2140,8 @@ def test_anti_amp_ok_extract_parity() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2221,8 +2221,8 @@ def test_persistent_congestion_end_to_end() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2377,8 +2377,8 @@ def test_pacer_delays_burst() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2390,14 +2390,14 @@ def test_pacer_delays_burst() raises:
 
     # Open a bidi stream and send 100 bytes to exercise the pacer.
     var sid = client.open_stream(True)
-    var payload = List[UInt8](capacity=100)
+    var payload = List[Byte](capacity=100)
     for _ in range(100):
         payload.append(UInt8(0x41))
     client.send_stream_data(sid, Span(payload), False)
 
     # Flush one round so the packet is sent and pacer tokens are consumed.
     now += UInt64(10_000)
-    var _dg = List[List[UInt8]](capacity=1)
+    var _dg = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg)
 
     # Call timeout() with the current `now`; some timer (PTO or pacer) must be active.
@@ -2430,8 +2430,8 @@ def test_cubic_cwnd_gates_send_path() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -2472,8 +2472,8 @@ def test_blocked_frames_emitted_on_conn_fc_stall() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2486,7 +2486,7 @@ def test_blocked_frames_emitted_on_conn_fc_stall() raises:
 
     # send() should detect the stall and set blocked_at.
     now += UInt64(10_000)
-    var _dg = List[List[UInt8]](capacity=1)
+    var _dg = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg)
 
     assert_true(
@@ -2511,8 +2511,8 @@ def test_blocked_not_re_emitted_at_same_limit() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2523,13 +2523,13 @@ def test_blocked_not_re_emitted_at_same_limit() raises:
     # Exhaust FC, first send sets blocked_at.
     client.stream_map.conn_fc_send.received = client.stream_map.conn_fc_send.limit
     now += UInt64(10_000)
-    var _dg1 = List[List[UInt8]](capacity=1)
+    var _dg1 = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg1)
     var blocked_after_first = client.stream_map.conn_fc_send.blocked_at
 
     # Second send at the same limit must not change blocked_at.
     now += UInt64(10_000)
-    var _dg2 = List[List[UInt8]](capacity=1)
+    var _dg2 = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg2)
     var blocked_after_second = client.stream_map.conn_fc_send.blocked_at
 
@@ -2555,8 +2555,8 @@ def test_blocked_cleared_on_max_data_increase() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2568,7 +2568,7 @@ def test_blocked_cleared_on_max_data_increase() raises:
     var old_limit = client.stream_map.conn_fc_send.limit
     client.stream_map.conn_fc_send.received = old_limit
     now += UInt64(10_000)
-    var _dg = List[List[UInt8]](capacity=1)
+    var _dg = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg)
     assert_true(
         client.stream_map.conn_fc_send.blocked_at == old_limit,
@@ -2601,8 +2601,8 @@ def test_ecn_disabled_after_probing() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2626,8 +2626,8 @@ def test_ecn_disabled_after_probing() raises:
     client.send_stream_data(sid, Span(hello), False)
 
     # Pump several rounds; server always receives without ECN marks.
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -2665,8 +2665,8 @@ def test_pn_skip_active_after_handshake() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2713,8 +2713,8 @@ def test_pn_skip_next_in_valid_range() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(tls.shared(), server_config, params,
                                        Span(orig_dcid), Span(client_dcid), now)
 
@@ -2746,8 +2746,8 @@ def test_streams_blocked_bidi_emitted() raises:
     var params = _default_params()
     var now = UInt64(1_000_000)
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -2770,7 +2770,7 @@ def test_streams_blocked_bidi_emitted() raises:
         "needs_streams_blocked_bidi must be set after failed open_stream",
     )
 
-    var _dg = List[List[UInt8]](capacity=1)
+    var _dg = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg)
 
     assert_equal_int(
@@ -2795,8 +2795,8 @@ def test_streams_blocked_dedup_no_resend() raises:
     var params = _default_params()
     var now = UInt64(1_000_000)
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -2813,13 +2813,13 @@ def test_streams_blocked_dedup_no_resend() raises:
         pass
 
     # First send → emits STREAMS_BLOCKED, sets dedup field.
-    var _dg1 = List[List[UInt8]](capacity=1)
+    var _dg1 = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg1)
     var after_first = client.stream_map.streams_blocked_at_bidi
 
     # Second send at same limit → dedup: field must not change.
     now += UInt64(10_000)
-    var _dg2 = List[List[UInt8]](capacity=1)
+    var _dg2 = List[List[Byte]](capacity=1)
     _ = client.send(now, _dg2)
     assert_equal_int(
         Int(client.stream_map.streams_blocked_at_bidi),
@@ -2838,7 +2838,7 @@ def test_batch_crypto_roundtrip() raises:
     var client = PacketProtect(tls.shared())
     var server = PacketProtect(tls.shared())
 
-    var dcid: List[UInt8] = [
+    var dcid: List[Byte] = [
         UInt8(0x83), UInt8(0x94), UInt8(0xc8), UInt8(0xf0),
         UInt8(0x3e), UInt8(0x51), UInt8(0x57), UInt8(0x08),
     ]
@@ -2960,28 +2960,28 @@ def test_is_expected_dcid_initial_and_local() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
 
     # Expected DCID #1: matches initial_dcid (== client_dcid in this fixture).
-    var initial = List[UInt8](copy=client_dcid)
+    var initial = List[Byte](copy=client_dcid)
     assert_true(
         server.is_expected_dcid(Span(initial)),
         "is_expected_dcid should match initial_dcid",
     )
 
     # Expected DCID #2: matches local_cid (server-chosen SCID).
-    var local = List[UInt8](server.local_cid.as_span())
+    var local = List[Byte](server.local_cid.as_span())
     assert_true(
         server.is_expected_dcid(Span(local)),
         "is_expected_dcid should match local_cid",
     )
 
     # NOT expected: an arbitrary unrelated DCID.
-    var other = List[UInt8]()
+    var other = List[Byte]()
     for b in InlineArray[UInt8, 8](fill=UInt8(0xCD)):
         other.append(b)
     assert_false(
@@ -3013,8 +3013,8 @@ def test_quic_connection_dcid_lengths_are_8_bytes() raises:
     var now = UInt64(1_000_000)
 
     var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now
     )
@@ -3045,13 +3045,13 @@ def test_dcid_demux_disambiguates_two_conns() raises:
     from bench.servers.h3_server import _bytes_to_hex
 
     # Three distinct 8-byte DCIDs.
-    var dcid_a = List[UInt8]()
+    var dcid_a = List[Byte]()
     for b in InlineArray[UInt8, 8](fill=UInt8(0xAA)):
         dcid_a.append(b)
-    var dcid_b = List[UInt8]()
+    var dcid_b = List[Byte]()
     for b in InlineArray[UInt8, 8](fill=UInt8(0xBB)):
         dcid_b.append(b)
-    var dcid_c = List[UInt8]()
+    var dcid_c = List[Byte]()
     for b in InlineArray[UInt8, 8](fill=UInt8(0xCC)):
         dcid_c.append(b)
 
@@ -3093,15 +3093,15 @@ def test_dcid_to_u64_basic_cases() raises:
     from navette.quic.cid import dcid_to_u64
 
     # Case 1: All-zero bytes → 0.
-    var z = List[UInt8]()
+    var z = List[Byte]()
     for _ in range(8):
-        z.append(UInt8(0))
+        z.append(Byte(0))
     assert_equal_int(
         Int(dcid_to_u64(Span(z))), 0, "all-zero -> 0"
     )
 
     # Case 2: All-0xff bytes → UInt64.MAX.
-    var f = List[UInt8]()
+    var f = List[Byte]()
     for _ in range(8):
         f.append(UInt8(0xFF))
     assert_true(
@@ -3110,7 +3110,7 @@ def test_dcid_to_u64_basic_cases() raises:
     )
 
     # Case 3: Ascending [0x01..0x08] → 0x0102030405060708.
-    var asc = List[UInt8]()
+    var asc = List[Byte]()
     for i in range(8):
         asc.append(UInt8(i + 1))
     assert_true(
@@ -3119,7 +3119,7 @@ def test_dcid_to_u64_basic_cases() raises:
     )
 
     # Case 4: Descending [0x08..0x01] → 0x0807060504030201.
-    var desc = List[UInt8]()
+    var desc = List[Byte]()
     for i in range(8):
         desc.append(UInt8(8 - i))
     assert_true(
@@ -3130,7 +3130,7 @@ def test_dcid_to_u64_basic_cases() raises:
     # Case 5: Random 8-byte vector with a known reference value.
     # bytes = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]
     # expected = 0xDEADBEEFCAFEBABE
-    var r = List[UInt8]()
+    var r = List[Byte]()
     r.append(UInt8(0xDE)); r.append(UInt8(0xAD))
     r.append(UInt8(0xBE)); r.append(UInt8(0xEF))
     r.append(UInt8(0xCA)); r.append(UInt8(0xFE))
@@ -3153,7 +3153,7 @@ def test_dcid_to_u64_injective_on_distinct_inputs() raises:
     var outputs = List[UInt64]()
     for n in range(64):
         # Construct 8 bytes from a deterministic LCG so inputs are distinct.
-        var bytes = List[UInt8]()
+        var bytes = List[Byte]()
         var seed = UInt32(n) * UInt32(2654435761) + UInt32(0xDEADBEEF)
         for _ in range(8):
             seed = seed * UInt32(1103515245) + UInt32(12345)
@@ -3570,9 +3570,9 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     # server-only `original_destination_connection_id` (8 zero bytes is enough
     # to fail the presence check; the value is irrelevant).
     var bad_params = _default_params()
-    var orig_dcid_payload = List[UInt8]()
+    var orig_dcid_payload = List[Byte]()
     for _ in range(8):
-        orig_dcid_payload.append(UInt8(0))
+        orig_dcid_payload.append(Byte(0))
     bad_params.original_dcid = orig_dcid_payload^
 
     var good_params = _default_params()
@@ -3581,8 +3581,8 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", bad_params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, good_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -3590,8 +3590,8 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
 
     # Drive the handshake. The server should reach _on_handshake_complete,
     # decode the peer TPs, detect F03, and queue a CONNECTION_CLOSE.
-    var c_dg = List[List[UInt8]](capacity=1)
-    var s_dg = List[List[UInt8]](capacity=1)
+    var c_dg = List[List[Byte]](capacity=1)
+    var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
         var c_n = client.send(now, c_dg)
@@ -3728,10 +3728,10 @@ def test_drive_handshake_tls_error_emits_crypto_close() raises:
     var now = UInt64(1_000_000)
 
     # Server-only: no client, no ClientHello — we just feed garbage CRYPTO.
-    var orig_dcid = List[UInt8]()
+    var orig_dcid = List[Byte]()
     for _ in range(8):
         orig_dcid.append(UInt8(0xab))
-    var client_dcid = List[UInt8](copy=orig_dcid)
+    var client_dcid = List[Byte](copy=orig_dcid)
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -3742,7 +3742,7 @@ def test_drive_handshake_tls_error_emits_crypto_close() raises:
     # parser would take after AEAD-unprotecting an Initial packet containing
     # a CRYPTO frame; rustls will fail to interpret these as a ClientHello
     # and emit an alert via quic_conn_alert.
-    var garbage = List[UInt8]()
+    var garbage = List[Byte]()
     for i in range(64):
         garbage.append(UInt8((i * 31) & 0xff))
     server.crypto_streams[0].receive(UInt64(0), Span(garbage))
@@ -3805,8 +3805,8 @@ def _build_server_for_rx_test() raises -> QuicConnection:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -3818,7 +3818,7 @@ def _build_server_for_rx_test() raises -> QuicConnection:
 def test_path_challenge_recorded_for_response() raises:
     """RX-side: incoming PATH_CHALLENGE is stashed for later echo."""
     var conn = _build_server_for_rx_test()
-    var data = List[UInt8](capacity=8)
+    var data = List[Byte](capacity=8)
     for i in range(8):
         data.append(UInt8(0x10 + i))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
@@ -3845,7 +3845,7 @@ def test_path_challenge_recorded_for_response() raises:
 def test_path_response_handler_no_op_without_pending_challenge() raises:
     """RX-side: PATH_RESPONSE with no pending challenges is a safe no-op."""
     var conn = _build_server_for_rx_test()
-    var data = List[UInt8](capacity=8)
+    var data = List[Byte](capacity=8)
     for i in range(8):
         data.append(UInt8(0xAB))
     var from_addr = PathKey.from_v4(
@@ -3872,7 +3872,7 @@ def test_path_response_handler_no_op_without_pending_challenge() raises:
 def test_emit_path_response_drains_pending() raises:
     """C3: after on_path_challenge_received, emit drains the queue into a frame."""
     var conn = _build_server_for_rx_test()
-    var data = List[UInt8](capacity=8)
+    var data = List[Byte](capacity=8)
     for i in range(8):
         data.append(UInt8(0x55))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
@@ -3919,7 +3919,7 @@ def test_start_path_challenge_queues_emission() raises:
 def test_path_response_emission_preserves_data() raises:
     """C3: echoed PATH_RESPONSE data matches incoming PATH_CHALLENGE byte-for-byte."""
     var conn = _build_server_for_rx_test()
-    var data = List[UInt8](capacity=8)
+    var data = List[Byte](capacity=8)
     for i in range(8):
         data.append(UInt8(0xA0 + i))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
@@ -3969,7 +3969,7 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
 
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    var stream_payload = List[UInt8]()
+    var stream_payload = List[Byte]()
     server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, stream_payload, 1100)
 
     var n_new_cid = 0
@@ -3993,7 +3993,7 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
     # drained (everything marked advertised) and the guard stays set.
     var sent_records2 = List[SentStreamFrame]()
     var frames2 = List[Frame]()
-    var stream_payload2 = List[UInt8]()
+    var stream_payload2 = List[Byte]()
     server._build_frames_for_space(2, UInt64(1_000_001), frames2, sent_records2, stream_payload2, 1100)
     var n_new_cid2 = 0
     for i in range(len(frames2)):
@@ -4022,7 +4022,7 @@ def test_initial_new_cid_burst_default_limit() raises:
     server.state = server.state | CONN_ESTABLISHED
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    var stream_payload = List[UInt8]()
+    var stream_payload = List[Byte]()
     server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, stream_payload, 1100)
 
     var n_new_cid = 0
@@ -4054,7 +4054,7 @@ def test_initial_burst_skipped_before_handshake_complete() raises:
 
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    var stream_payload = List[UInt8]()
+    var stream_payload = List[Byte]()
     server._build_frames_for_space(2, UInt64(1_000_000), frames, sent_records, stream_payload, 1100)
 
     var n_new_cid = 0
@@ -4091,7 +4091,7 @@ def test_initial_burst_server_only() raises:
 
     var sent_records = List[SentStreamFrame]()
     var frames = List[Frame]()
-    var stream_payload = List[UInt8]()
+    var stream_payload = List[Byte]()
     client._build_frames_for_space(2, now, frames, sent_records, stream_payload, 1100)
     var n_new_cid = 0
     for i in range(len(frames)):
@@ -4124,10 +4124,10 @@ def _seed_spare_remote_cid(mut conn: QuicConnection, seq: UInt64) raises:
     short-circuits via `cid_mgr.on_new_connection_id`, the same code
     path the live RX handler uses (so the invariants stay aligned).
     """
-    var cid = List[UInt8](capacity=8)
+    var cid = List[Byte](capacity=8)
     for i in range(8):
         cid.append(UInt8(0xC0 + i + Int(seq)))
-    var tok = List[UInt8](capacity=16)
+    var tok = List[Byte](capacity=16)
     for i in range(16):
         tok.append(UInt8(0xD0 + i))
     conn.cid_mgr.on_new_connection_id(
@@ -4172,7 +4172,7 @@ def test_path_validation_full_round_trip() raises:
         len(conn.path.validator.pending), 1,
         "challenge queued before response arrives",
     )
-    var token = List[UInt8](copy=conn.path.validator.pending[0].token)
+    var token = List[Byte](copy=conn.path.validator.pending[0].token)
 
     # PATH_RESPONSE with the matching token, arriving from addr_b.
     conn.on_path_response_received(
@@ -4234,7 +4234,7 @@ def test_path_validation_rejects_wrong_addr() raises:
     conn.bootstrap_peer_addr(addr_a^)
 
     conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
-    var token = List[UInt8](copy=conn.path.validator.pending[0].token)
+    var token = List[Byte](copy=conn.path.validator.pending[0].token)
 
     # Response carries the matching token but arrives from a third addr.
     conn.on_path_response_received(
@@ -4287,7 +4287,7 @@ def test_path_validation_defers_without_spare_cid() raises:
     conn.bootstrap_peer_addr(addr_a^)
 
     conn.start_path_challenge(PathKey(copy=addr_b), UInt64(1000))
-    var token = List[UInt8](copy=conn.path.validator.pending[0].token)
+    var token = List[Byte](copy=conn.path.validator.pending[0].token)
 
     conn.on_path_response_received(
         Span(token), PathKey(copy=addr_b), UInt64(2000)
@@ -4535,8 +4535,8 @@ def test_send_datagram_refused_when_peer_disabled() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", client_params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, server_params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4578,8 +4578,8 @@ def test_send_datagram_refused_when_oversize() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4588,7 +4588,7 @@ def test_send_datagram_refused_when_oversize() raises:
     _drain_events(client)
     _drain_events(server)
 
-    var oversize = List[UInt8]()
+    var oversize = List[Byte]()
     for _ in range(2000):
         oversize.append(UInt8(0xAB))
     var ok = client.send_datagram(Span(oversize))
@@ -4634,8 +4634,8 @@ def test_datagram_round_trip_client_to_server() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4672,7 +4672,7 @@ def test_datagram_round_trip_client_to_server() raises:
         var e = ev.value().copy()
         if e.type_id == QuicEvent.DATAGRAM_RECEIVED:
             got_event = True
-            if _bytes_equal(e.payload.unsafe_get[List[UInt8]](), "hello-datagram"):
+            if _bytes_equal(e.payload.unsafe_get[List[Byte]](), "hello-datagram"):
                 got_bytes_match = True
     assert_true(got_event, "server must emit DATAGRAM_RECEIVED")
     assert_true(got_bytes_match, "server datagram payload must match sender's bytes")
@@ -4695,8 +4695,8 @@ def test_timeout_pacer_clause_order() raises:
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
-    var orig_dcid = List[UInt8](client.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(orig_dcid), Span(client_dcid), now,
@@ -4736,7 +4736,7 @@ def test_timeout_pacer_clause_order() raises:
 
     # Make the walk answer True: queued stream data (sendable_set non-empty).
     var sid = client.open_stream(True)
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(UInt8(0x41))
     client.send_stream_data(sid, Span(payload), False)
     assert_true(client._space_has_other_sendable(2), "precondition: stream data waiting")

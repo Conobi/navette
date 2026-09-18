@@ -89,7 +89,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
 
     var _conn: H2Connection
     var handler: Self.H
-    var _outbuf: List[UInt8]
+    var _outbuf: List[Byte]
     var _streams: Dict[Int, PtrBox[_StreamCtx]]
     var _peer_addr: String
 
@@ -103,7 +103,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         )
         self._conn.initiate_connection()
         self.handler = handler^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[_StreamCtx]]()
         self._peer_addr = peer_addr^
         self._flush_outbound()
@@ -113,7 +113,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._conn = H2Connection(client_side=False, config=config)
         self._conn.initiate_connection()
         self.handler = handler^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[_StreamCtx]]()
         self._peer_addr = peer_addr^
         self._flush_outbound()
@@ -140,9 +140,9 @@ struct H2HandlerServer[H: StreamHandler](Movable):
 
     # --- Transport bridging API ---------------------------------------------
 
-    def feed(mut self, data: Span[UInt8, _]) raises:
+    def feed(mut self, data: Span[Byte, _]) raises:
         """Feed inbound transport bytes, dispatch events, drain responses."""
-        var data_list = List[UInt8]()
+        var data_list = List[Byte]()
         for ref byte in data:
             data_list.append(byte)
         var events = self._conn.receive_data(data_list)
@@ -150,10 +150,10 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._drain_responses()
         self._flush_outbound()
 
-    def drain(mut self) -> List[UInt8]:
+    def drain(mut self) -> List[Byte]:
         """Drain queued outbound bytes for the transport to write."""
         var out = self._outbuf^
-        self._outbuf = List[UInt8]()
+        self._outbuf = List[Byte]()
         return out^
 
     def should_close(self) -> Bool:
@@ -392,7 +392,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
                     made_progress = True
                 elif f.is_end():
                     self._conn.send_data(
-                        UInt32(sid), List[UInt8](), end_stream=True
+                        UInt32(sid), List[Byte](), end_stream=True
                     )
                     ctx.response_ended = True
                     made_progress = True

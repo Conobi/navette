@@ -12,8 +12,8 @@ from navette.tls.early_data_store import (
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 
-def _fill_auth(byte: UInt8) -> List[UInt8]:
-    var out = List[UInt8]()
+def _fill_auth(byte: UInt8) -> List[Byte]:
+    var out = List[Byte]()
     for _ in range(32):
         out.append(byte)
     return out^
@@ -124,7 +124,7 @@ def test_key_tag_roundtrip() raises:
     assert_false(ka == kb2, "single-byte diff must compare not-equal")
 
     # wrong length
-    var z0 = List[UInt8]()
+    var z0 = List[Byte]()
     var raised = False
     try:
         var _k = KeyTag.from_span(Span(z0))
@@ -133,9 +133,9 @@ def test_key_tag_roundtrip() raises:
         raised = True
     assert_true(raised, "len 0 must raise")
 
-    var z31 = List[UInt8]()
+    var z31 = List[Byte]()
     for _ in range(31):
-        z31.append(UInt8(0))
+        z31.append(Byte(0))
     raised = False
     try:
         var _k = KeyTag.from_span(Span(z31))
@@ -144,9 +144,9 @@ def test_key_tag_roundtrip() raises:
         raised = True
     assert_true(raised, "len 31 must raise")
 
-    var z33 = List[UInt8]()
+    var z33 = List[Byte]()
     for _ in range(33):
-        z33.append(UInt8(0))
+        z33.append(Byte(0))
     raised = False
     try:
         var _k = KeyTag.from_span(Span(z33))

@@ -86,7 +86,7 @@ struct H3Event(Copyable, Movable):
     var kind:          UInt8
     var stream_id:     UInt64
     var fields:        List[QpackHeaderField]
-    var data:          List[UInt8]
+    var data:          List[Byte]
     var fin:           Bool
     var error_code:    UInt64
     var reason:        String
@@ -96,7 +96,7 @@ struct H3Event(Copyable, Movable):
         self.kind = kind
         self.stream_id = UInt64(0)
         self.fields = List[QpackHeaderField]()
-        self.data = List[UInt8]()
+        self.data = List[Byte]()
         self.fin = False
         self.error_code = UInt64(0)
         self.reason = String("")
@@ -106,7 +106,7 @@ struct H3Event(Copyable, Movable):
         self.kind = copy.kind
         self.stream_id = copy.stream_id
         self.fields = List[QpackHeaderField](copy=copy.fields)
-        self.data = List[UInt8](copy=copy.data)
+        self.data = List[Byte](copy=copy.data)
         self.fin = copy.fin
         self.error_code = copy.error_code
         self.reason = copy.reason
@@ -129,17 +129,17 @@ struct H3Event(Copyable, Movable):
 
 
 struct _H3StreamBuf(Copyable, Movable):
-    var buf:       List[UInt8]
+    var buf:       List[Byte]
     var type_byte: Optional[UInt8]
     var is_uni:    Bool
 
     def __init__(out self):
-        self.buf = List[UInt8]()
+        self.buf = List[Byte]()
         self.type_byte = Optional[UInt8]()
         self.is_uni = False
 
     def __init__(out self, *, copy: Self):
-        self.buf = List[UInt8](copy=copy.buf)
+        self.buf = List[Byte](copy=copy.buf)
         self.type_byte = copy.type_byte.copy()
         self.is_uni = copy.is_uni
 
@@ -196,7 +196,7 @@ struct H3Connection(Movable):
     # each result into its own accumulator, so this buffer amortizes the
     # outer List allocation across every `send()` call instead of just
     # across one `drain_datagrams` invocation.
-    var _send_scratch:               List[List[UInt8]]
+    var _send_scratch:               List[List[Byte]]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
@@ -222,7 +222,7 @@ struct H3Connection(Movable):
         self._local_h3_datagram_enabled = False
         self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
-        self._send_scratch = List[List[UInt8]](capacity=1)
+        self._send_scratch = List[List[Byte]](capacity=1)
 
     def __init__(out self, *, deinit move: Self):
         self._quic = move._quic^
@@ -385,7 +385,7 @@ struct H3Connection(Movable):
 
     # --- Transport API -------------------------------------------------------
 
-    def feed_datagram(mut self, data: Span[UInt8, _], now: UInt64) raises:
+    def feed_datagram(mut self, data: Span[Byte, _], now: UInt64) raises:
         """Feed one inbound QUIC datagram; translate QuicEvents to H3Events."""
         self._quic.recv(data, now)
         self._poll_quic_events(now)
@@ -457,12 +457,12 @@ struct H3Connection(Movable):
                 h3ev.reason = cc.reason
                 self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
-                self._dispatch_quic_datagram(ev.payload.unsafe_get[List[UInt8]]())
+                self._dispatch_quic_datagram(ev.payload.unsafe_get[List[Byte]]())
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].call_tracker.record(CallId.POLL_QUIC_EVENTS, rdtsc() - _ct_start)
 
-    def drain_datagrams(mut self, now: UInt64) raises -> List[List[UInt8]]:
+    def drain_datagrams(mut self, now: UInt64) raises -> List[List[Byte]]:
         """Collect UDP payloads until `send()` runs dry or the drain cap hits.
 
         `QuicConnection.send` emits at most one datagram per call; this
@@ -476,14 +476,14 @@ struct H3Connection(Movable):
         dropped: their packets are recorded in the PN spaces and loss
         detection retransmits them, exactly as a single dropped datagram.
         """
-        var out = List[List[UInt8]](capacity=MAX_DATAGRAMS_PER_DRAIN)
+        var out = List[List[Byte]](capacity=MAX_DATAGRAMS_PER_DRAIN)
         while len(out) < MAX_DATAGRAMS_PER_DRAIN:
             var n = self._quic.send(now, self._send_scratch)
             if n == 0:
                 self.egress_capped = False
                 return out^
             for bi in range(n):
-                var dg = List[UInt8]()
+                var dg = List[Byte]()
                 swap(dg, self._send_scratch[bi])
                 out.append(dg^)
             if self._quic.is_closing():
@@ -505,11 +505,11 @@ struct H3Connection(Movable):
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
     def send_data(
-        mut self, stream_id: UInt64, data: List[UInt8], fin: Bool
+        mut self, stream_id: UInt64, data: List[Byte], fin: Bool
     ) raises:
         """Fuse H3 DATA header with payload in a single QUIC stream write. Empty data + fin=True sends FIN only."""
         if len(data) == 0 and fin:
-            var empty = List[UInt8]()
+            var empty = List[Byte]()
             self._quic.send_stream_data(stream_id, Span(empty), True)
             return
         if len(data) == 0:
@@ -543,7 +543,7 @@ struct H3Connection(Movable):
         return sid
 
     def send_datagram(
-        mut self, stream_id: UInt64, payload: Span[UInt8, _]
+        mut self, stream_id: UInt64, payload: Span[Byte, _]
     ) raises -> Bool:
         """RFC 9297 §2.1 — send an H3 datagram associated with `stream_id`.
 
@@ -570,7 +570,7 @@ struct H3Connection(Movable):
         var prefix = w.finish()
         # Coalesce the quarter-id prefix and the application payload into
         # a single buffer so the QUIC layer sees one DATAGRAM frame.
-        var buf = List[UInt8]()
+        var buf = List[Byte]()
         for ref byte in prefix:
             buf.append(byte)
         for ref byte in payload:
@@ -579,7 +579,7 @@ struct H3Connection(Movable):
 
     # --- Internal: bootstrap -------------------------------------------------
 
-    def _dispatch_quic_datagram(mut self, payload: List[UInt8]):
+    def _dispatch_quic_datagram(mut self, payload: List[Byte]):
         """RFC 9297 §2.1 — decode an H3 datagram from a QUIC DATAGRAM payload.
 
         Each inbound QUIC DATAGRAM carries `varint(quarter_stream_id) + bytes`.
@@ -611,7 +611,7 @@ struct H3Connection(Movable):
         if quarter_id > UInt64(0x3FFFFFFFFFFFFFFF):
             return
         var stream_id = quarter_id * UInt64(4)
-        var rest = List[UInt8]()
+        var rest = List[Byte]()
         for i in range(r.pos, len(payload)):
             rest.append(payload[i])
         var h3ev = H3Event(H3Event.DATAGRAM_RECEIVED)
@@ -629,13 +629,13 @@ struct H3Connection(Movable):
         self._local_qdec_sid = Optional[UInt64](qdec_sid)
 
         # Write stream type varint to each (single byte: 0x00, 0x02, 0x03)
-        var ctrl_type = List[UInt8]()
+        var ctrl_type = List[Byte]()
         ctrl_type.append(UInt8(0x00))
         self._quic.send_stream_data(ctrl_sid, Span(ctrl_type), False)
-        var qenc_type = List[UInt8]()
+        var qenc_type = List[Byte]()
         qenc_type.append(UInt8(0x02))
         self._quic.send_stream_data(qenc_sid, Span(qenc_type), False)
-        var qdec_type = List[UInt8]()
+        var qdec_type = List[Byte]()
         qdec_type.append(UInt8(0x03))
         self._quic.send_stream_data(qdec_sid, Span(qdec_type), False)
 
@@ -724,7 +724,7 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 t_start_buf = monotonic_us()
 
-        var new_bytes = List[UInt8]()
+        var new_bytes = List[Byte]()
         swap(new_bytes, recv_result[0])
         var fin = recv_result[1]
 
@@ -825,7 +825,7 @@ struct H3Connection(Movable):
                 break
             var r = ByteReader(Span(self._stream_bufs[key].buf))
             var ok = True
-            var frame = H3RawFrame(UInt64(0), List[UInt8]())
+            var frame = H3RawFrame(UInt64(0), List[Byte]())
             var consumed = 0
             # B4 entry — wrap parse_h3_frame only.
             comptime if PROFILE_ACCEPT:

@@ -85,7 +85,7 @@ struct HelloHandler(StreamHandler):
 
         var msg = String("Hello, H1!\n")
         var msg_bytes = msg.as_bytes()
-        var body_bytes = List[UInt8](capacity=len(msg_bytes))
+        var body_bytes = List[Byte](capacity=len(msg_bytes))
         for i in range(len(msg_bytes)):
             body_bytes.append(msg_bytes[i])
         _ = resp.try_send_body(BodyFrame.data(body_bytes^))

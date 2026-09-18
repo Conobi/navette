@@ -11,11 +11,11 @@ from std.python import PythonObject
 
 def derive_and_check(
     lib: RustlsLibrary,
-    dcid_bytes: List[UInt8],
+    dcid_bytes: List[Byte],
     is_client: Int32,
-    expected_key: List[UInt8],
-    expected_iv: List[UInt8],
-    expected_hp: List[UInt8],
+    expected_key: List[Byte],
+    expected_iv: List[Byte],
+    expected_hp: List[Byte],
     label: String,
 ) raises:
     """Call rlsm_initial_keys_raw and assert outputs match expected values."""
@@ -59,15 +59,15 @@ def derive_and_check(
     assert_true(Int(rc) == 0, label + ": rlsm_initial_keys_raw failed (rc=" + String(Int(rc)) + ") — " + lib.last_error())
 
     # Copy outputs into Lists for comparison
-    var got_key = List[UInt8]()
+    var got_key = List[Byte]()
     for i in range(Int(out_key_len[])):
         got_key.append(out_key[i])
 
-    var got_iv = List[UInt8]()
+    var got_iv = List[Byte]()
     for i in range(Int(out_iv_len[])):
         got_iv.append(out_iv[i])
 
-    var got_hp = List[UInt8]()
+    var got_hp = List[Byte]()
     for i in range(Int(out_hp_len[])):
         got_hp.append(out_hp[i])
 

@@ -10,7 +10,7 @@ from tests._test_util import assert_true, assert_false, assert_equal_int
 
 
 def test_data_frame_round_trip() raises:
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     payload.append(0x68)  # 'h'
     payload.append(0x69)  # 'i'
     var df = DataFrame(payload^)
@@ -32,7 +32,7 @@ def test_data_frame_round_trip() raises:
 
 
 def test_headers_frame_round_trip() raises:
-    var fields = List[UInt8]()
+    var fields = List[Byte]()
     fields.append(0x00)
     fields.append(0x00)
     fields.append(0xC2)  # fake QPACK indexed field for :method GET
@@ -101,7 +101,7 @@ def test_settings_get_missing() raises:
 
 def test_parse_multiple_frames_sequential() raises:
     # Encode two frames back-to-back and parse them sequentially
-    var df = DataFrame(List[UInt8]())
+    var df = DataFrame(List[Byte]())
     df.data.append(0x41)  # 'A'
     var enc1 = df.encode()
 
@@ -109,7 +109,7 @@ def test_parse_multiple_frames_sequential() raises:
     sf.pairs.append(SettingsPair(SETTINGS_QPACK_BLOCKED_STREAMS, UInt64(0)))
     var enc2 = sf.encode()
 
-    var combined = List[UInt8]()
+    var combined = List[Byte]()
     for i in range(len(enc1)):
         combined.append(enc1[i])
     for i in range(len(enc2)):
@@ -125,7 +125,7 @@ def test_parse_multiple_frames_sequential() raises:
 
 def test_parse_truncated_raises() raises:
     # Only type byte, no length
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x00)
     var r = ByteReader(Span(data))
     var raised = False
@@ -156,7 +156,7 @@ def test_parse_unknown_frame_type_preserved() raises:
 
 def test_frame_large_payload() raises:
     # DATA frame with 300 bytes payload (length varint > 1 byte)
-    var payload = List[UInt8]()
+    var payload = List[Byte]()
     for i in range(300):
         payload.append(UInt8(i & 0xFF))
     var df = DataFrame(payload^)

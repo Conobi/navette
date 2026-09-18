@@ -7,7 +7,7 @@ from tests._test_util import assert_true, assert_equal_int
 
 def test_data_frame() raises:
     """BodyFrame.data() creates a data variant."""
-    var bytes = List[UInt8]()
+    var bytes = List[Byte]()
     bytes.append(0x48)  # H
     bytes.append(0x69)  # i
     var frame = BodyFrame.data(bytes^)
@@ -31,7 +31,7 @@ def test_trailers_frame() raises:
 
 def test_empty_data_frame() raises:
     """Empty data frame is valid."""
-    var frame = BodyFrame.data(List[UInt8]())
+    var frame = BodyFrame.data(List[Byte]())
     assert_true(frame.is_data(), "is_data")
     assert_equal_int(len(frame.data()), 0, "empty data")
 
@@ -47,11 +47,11 @@ def test_body_frame_list() raises:
     """Body frames can be stored in a List."""
     var frames = List[BodyFrame]()
 
-    var bytes1 = List[UInt8]()
+    var bytes1 = List[Byte]()
     bytes1.append(0x41)
     frames.append(BodyFrame.data(bytes1^))
 
-    var bytes2 = List[UInt8]()
+    var bytes2 = List[Byte]()
     bytes2.append(0x42)
     frames.append(BodyFrame.data(bytes2^))
 

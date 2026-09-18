@@ -12,7 +12,7 @@ def test_request_construction() raises:
     hdrs.add("Host", "example.com")
     hdrs.add("Accept", "text/html")
 
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x41)
 
     var req = Request(
@@ -62,7 +62,7 @@ def test_response_construction() raises:
     hdrs.add("Content-Type", "text/html")
 
     var body = List[BodyFrame]()
-    var data = List[UInt8]()
+    var data = List[Byte]()
     data.append(0x3C)  # <
     body.append(BodyFrame.data(data^))
 
@@ -116,7 +116,7 @@ def test_informational_response() raises:
 
 def test_request_with_post_body() raises:
     """POST request with body data."""
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     # "name=value"
     var payload = String("name=value")
     var payload_bytes = payload.as_bytes()
@@ -145,7 +145,7 @@ def test_response_with_trailers() raises:
     """Response body with trailers."""
     var body = List[BodyFrame]()
 
-    var chunk = List[UInt8]()
+    var chunk = List[Byte]()
     chunk.append(0x41)
     body.append(BodyFrame.data(chunk^))
 

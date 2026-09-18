@@ -35,7 +35,7 @@ struct EchoHandler(StreamHandler):
         var headers = Headers()
         headers.set(String("content-length"), String("3"))
         resp.send_status(StatusCode(200), headers^)
-        var bytes: List[UInt8] = [UInt8(0x68), UInt8(0x69), UInt8(0x21)]
+        var bytes: List[Byte] = [UInt8(0x68), UInt8(0x69), UInt8(0x21)]
         _ = resp.try_send_body(BodyFrame.data(bytes^))
         resp.end()
 

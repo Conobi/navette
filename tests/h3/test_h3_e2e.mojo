@@ -32,7 +32,7 @@ from tests._test_util import assert_true, assert_equal_int, load_test_cert, load
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def generate_ephemeral_cert() raises -> Tuple[List[UInt8], List[UInt8]]:
+def generate_ephemeral_cert() raises -> Tuple[List[Byte], List[Byte]]:
     # Backed by tests/fixtures/tls/server.{crt,key} (regen via
     # scripts/regen_test_certs.sh). See plans/2026-05-13-deps-enhancement.md §3.1.
     return load_test_cert()
@@ -114,7 +114,7 @@ struct _FixedResponseHandler(StreamHandler):
         mut self, var req: Request, mut body: RecvBody, mut resp: ResponseWriter, caps: Capabilities
     ) raises:
         resp.send_status(StatusCode.ok(), Headers())
-        var body_bytes = List[UInt8]()
+        var body_bytes = List[Byte]()
         var src = self._body.as_bytes()
         for i in range(len(src)):
             body_bytes.append(src[i])
@@ -144,8 +144,8 @@ def test_h3_simple_get() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -171,7 +171,7 @@ def test_h3_simple_get() raises:
 
     # Collect client events: expect HEADERS_RECEIVED + DATA_RECEIVED
     var got_200 = False
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     while True:
         var ev = client.poll_event()
         if not ev:
@@ -198,8 +198,8 @@ def test_h3_post_with_body() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -218,7 +218,7 @@ def test_h3_post_with_body() raises:
     req_fields.append(QpackHeaderField(":scheme", "https"))
     req_fields.append(QpackHeaderField(":authority", "localhost"))
     client.send_headers(stream_id, req_fields, False)
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     var src = "data".as_bytes()
     for i in range(len(src)):
         body_bytes.append(src[i])
@@ -273,8 +273,8 @@ def test_h3_session_get() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -323,8 +323,8 @@ def test_h3_multi_request() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -372,8 +372,8 @@ def test_h3_goaway() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -413,7 +413,7 @@ struct _BigResponseHandler(StreamHandler):
         mut self, var req: Request, mut body: RecvBody, mut resp: ResponseWriter, caps: Capabilities
     ) raises:
         resp.send_status(StatusCode.ok(), Headers())
-        var body_bytes = List[UInt8](capacity=self._size)
+        var body_bytes = List[Byte](capacity=self._size)
         for _ in range(self._size):
             body_bytes.append(UInt8(120))
         _ = resp.try_send_body(BodyFrame.data(body_bytes^))
@@ -473,8 +473,8 @@ def test_h3_drain_terminates() raises:
     var now = UInt64(1_000_000)
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )
@@ -522,8 +522,8 @@ def test_h3_drain_cap_is_observable() raises:
     var body_size = 200_000
 
     var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[UInt8](client_quic.initial_dcid.as_span())
-    var client_dcid = List[UInt8](client_quic.initial_dcid.as_span())
+    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
+    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
     var server_quic = QuicConnection.server(
         tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
     )

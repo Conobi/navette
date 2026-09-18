@@ -178,7 +178,7 @@ struct PacketProtect(Movable):
             var err = rlib[].last_error()
             raise "install_zero_rtt_read_keys failed: " + err
 
-    def derive_initial_keys(mut self, dcid: Span[UInt8, _], is_client: Bool) raises:
+    def derive_initial_keys(mut self, dcid: Span[Byte, _], is_client: Bool) raises:
         """Derive QUIC v1 Initial keys from a destination connection ID.
 
         Stores the resulting keys handle at level 0 (Initial). Raises if
@@ -259,7 +259,7 @@ struct PacketProtect(Movable):
         return Tuple[UInt8, Int](fb, pn_length)
 
     def unprotect_header(
-        self, level: Int, mut packet_buf: List[UInt8], pn_offset: Int
+        self, level: Int, mut packet_buf: List[Byte], pn_offset: Int
     ) raises -> Tuple[UInt8, Int]:
         """Remove header protection (List convenience wrapper)."""
         return self.unprotect_header_ptr(
@@ -323,8 +323,8 @@ struct PacketProtect(Movable):
         level: Int,
         pn: UInt64,
         header_len: Int,
-        mut packet_buf: List[UInt8],
-    ) raises -> List[UInt8]:
+        mut packet_buf: List[Byte],
+    ) raises -> List[Byte]:
         """Decrypt payload (List convenience wrapper — copies result out)."""
         var plaintext_len = self.decrypt_payload_in_place(
             level, pn, header_len,
@@ -332,7 +332,7 @@ struct PacketProtect(Movable):
             len(packet_buf),
         )
         # Copy plaintext out of the buffer for backward compatibility.
-        var result = List[UInt8](capacity=plaintext_len)
+        var result = List[Byte](capacity=plaintext_len)
         for i in range(plaintext_len):
             result.append(packet_buf[header_len + i])
         return result^
@@ -392,9 +392,9 @@ struct PacketProtect(Movable):
         self,
         level: Int,
         pn: UInt64,
-        header: Span[UInt8, _],
-        plaintext: Span[UInt8, _],
-    ) raises -> List[UInt8]:
+        header: Span[Byte, _],
+        plaintext: Span[Byte, _],
+    ) raises -> List[Byte]:
         """Encrypt payload (Span convenience wrapper — returns new List)."""
         var header_len = len(header)
         var pt_len = len(plaintext)
@@ -415,7 +415,7 @@ struct PacketProtect(Movable):
         )
 
         # Copy ciphertext (without header) to result.
-        var result = List[UInt8](capacity=ct_len)
+        var result = List[Byte](capacity=ct_len)
         for i in range(ct_len):
             result.append(buf[unsafe_offset=header_len + i])
 
@@ -464,7 +464,7 @@ struct PacketProtect(Movable):
     def protect_header(
         self,
         level: Int,
-        mut packet_buf: List[UInt8],
+        mut packet_buf: List[Byte],
         pn_offset: Int,
         pn_length: Int,
     ) raises:

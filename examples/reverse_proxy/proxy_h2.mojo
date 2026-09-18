@@ -215,7 +215,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
     var stream_id = Int(ctx_ptr[].stream_id)
 
     # --- Step 1: drain the client request body ---
-    var body_bytes = List[UInt8]()
+    var body_bytes = List[Byte]()
     while True:
         var frame_opt = next_chunk(ctx_ptr, yielder)
         if not Bool(frame_opt):
@@ -281,7 +281,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
                 "502 Bad Gateway: upstream connect failed\n"
             )
             var err_bytes = err_text.as_bytes()
-            var err_body = List[UInt8]()
+            var err_body = List[Byte]()
             for i in range(len(err_bytes)):
                 err_body.append(err_bytes[i])
             var ctx_err = ctx_ptr.take_pointee()
@@ -327,7 +327,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
         resp_headers.add(name, value)
     resp_headers.add("via", _VIA_H2)
 
-    var resp_body = List[UInt8]()
+    var resp_body = List[Byte]()
     for i in range(len(response.body)):
         var frame = response.body[i].copy()
         if frame.is_data():
@@ -563,7 +563,7 @@ def h2_handle_client_recv(
         return out^
 
     var n = Int(result)
-    var chunk = List[UInt8](capacity=n)
+    var chunk = List[Byte](capacity=n)
     for i in range(n):
         chunk.append(send_state.client_recv_buf[i])
     client_tls.receive_data(Span(chunk))
@@ -746,7 +746,7 @@ def h2_handle_backend_recv(
         return out^
 
     var n = Int(result)
-    var chunk = List[UInt8](capacity=n)
+    var chunk = List[Byte](capacity=n)
     for i in range(n):
         chunk.append(send_state.backend_recv_buf[i])
     backend_tls.receive_data(Span(chunk))
@@ -846,14 +846,14 @@ def h2_handle_backend_send(
         closed = True
         return out^
 
-    send_state.backend_send_buf = List[UInt8]()
+    send_state.backend_send_buf = List[Byte]()
 
     if len(send_state.backend_send_pending) > 0:
         var n_pending = len(send_state.backend_send_pending)
-        var pending = List[UInt8](capacity=n_pending)
+        var pending = List[Byte](capacity=n_pending)
         for i in range(n_pending):
             pending.append(send_state.backend_send_pending[i])
-        send_state.backend_send_pending = List[UInt8]()
+        send_state.backend_send_pending = List[Byte]()
         send_state.backend_send_buf = pending^
         queue_backend_send(send_state, out, backend_fd, conn_id)
         return out^
@@ -900,14 +900,14 @@ def h2_handle_client_send(
         closed = True
         return out^
 
-    send_state.client_send_buf = List[UInt8]()
+    send_state.client_send_buf = List[Byte]()
 
     if len(send_state.client_send_pending) > 0:
         var n_pending = len(send_state.client_send_pending)
-        var pending = List[UInt8](capacity=n_pending)
+        var pending = List[Byte](capacity=n_pending)
         for i in range(n_pending):
             pending.append(send_state.client_send_pending[i])
-        send_state.client_send_pending = List[UInt8]()
+        send_state.client_send_pending = List[Byte]()
         send_state.client_send_buf = pending^
         queue_client_send(send_state, out, client_fd, conn_id)
         return out^
