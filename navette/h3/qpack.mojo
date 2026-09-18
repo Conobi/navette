@@ -595,33 +595,9 @@ def _build_huffman_fast(trie: List[_HuffTrieNode]) -> List[_HuffFast]:
 
 
 def huffman_encode(s: String) raises -> List[Byte]:
-    """Huffman-encode a string per RFC 7541 §5.2."""
-    var table = _huffman_encode_table()
+    """Huffman-encode a string. Delegates to huffman_encode_into."""
     var result = List[Byte]()
-    var acc: UInt64 = 0   # bit accumulator
-    var bits: Int = 0     # bits in accumulator
-    var sbytes = s.as_bytes()
-
-    for ref byte in sbytes:
-        var sym = Int(byte)
-        if sym >= len(table):
-            raise "Huffman: symbol out of range: " + String(sym)
-        var entry = table[sym].copy()
-        acc = (acc << UInt64(entry.nbits)) | UInt64(entry.code)
-        bits += Int(entry.nbits)
-        while bits >= 8:
-            bits -= 8
-            result.append(UInt8((acc >> UInt64(bits)) & 0xFF))
-
-    # Pad with EOS prefix (all-1s) to fill the last byte
-    # `bits` pending bits live in the low bits of acc; shift them to high bits
-    # and fill the remaining (8 - bits) low bits with 1s.
-    if bits > 0:
-        var pad_bits_count = 8 - bits
-        var pad = UInt8(((UInt32(1) << UInt32(pad_bits_count)) - 1) & 0xFF)
-        var last_byte = UInt8((acc << UInt64(pad_bits_count)) & 0xFF) | pad
-        result.append(last_byte)
-
+    huffman_encode_into(result, s)
     return result^
 
 
@@ -943,7 +919,13 @@ struct QpackEncoder(Copyable, Movable):
         self._static_index = copy_from._static_index.copy()
 
     def encode(self, headers: List[QpackHeaderField]) raises -> List[Byte]:
-        """Encode a header list as a QPACK field section block.
+        """Encode a header list as a QPACK field section block. Delegates to encode_into."""
+        var result = List[Byte](capacity=128)
+        self.encode_into(result, headers)
+        return result^
+
+    def encode_into(self, mut buf: List[Byte], headers: List[QpackHeaderField]) raises:
+        """Append a QPACK field section block directly to buf.
 
         Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
         Each field:
@@ -951,14 +933,11 @@ struct QpackEncoder(Copyable, Movable):
           - Literal Field Line With Name Reference (§4.5.4): 0 1 N T xxxx (N=0, T=1, 4-bit index)
           - Literal Field Line Without Name Reference (§4.5.6): 0 0 1 N H nnn | name | value
         """
-        var result = List[Byte](capacity=128)
-        result.append(0x00)  # Required Insert Count = 0
-        result.append(0x00)  # S bit = 0, Delta Base = 0
+        buf.append(0x00)  # Required Insert Count = 0
+        buf.append(0x00)  # S bit = 0, Delta Base = 0
 
         for ref hdr in headers:
-            self._encode_field_into(result, hdr.name, hdr.value)
-
-        return result^
+            self._encode_field_into(buf, hdr.name, hdr.value)
 
     def _encode_field_into(self, mut buf: List[Byte], name: String, value: String) raises:
         """Append one encoded header field directly to buf."""
