@@ -197,6 +197,9 @@ struct H3Connection(Movable):
     # outer List allocation across every `send()` call instead of just
     # across one `drain_datagrams` invocation.
     var _send_scratch:               List[List[Byte]]
+    # Reusable scratch buffer for frame encoding in send_headers / send_goaway /
+    # _bootstrap_local_streams — avoids a fresh allocation per call.
+    var _wire_scratch:               List[Byte]
 
     def __init__(out self, var quic: QuicConnection, is_server: Bool):
         self._quic = quic^
@@ -223,6 +226,7 @@ struct H3Connection(Movable):
         self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
         self._send_scratch = List[List[Byte]](capacity=1)
+        self._wire_scratch = List[Byte](capacity=256)
 
     def __init__(out self, *, deinit move: Self):
         self._quic = move._quic^
@@ -249,6 +253,7 @@ struct H3Connection(Movable):
         self._h3_events_head = move._h3_events_head
         self.egress_capped = move.egress_capped
         self._send_scratch = move._send_scratch^
+        self._wire_scratch = move._wire_scratch^
 
     @staticmethod
     def server(var quic: QuicConnection) raises -> H3Connection:
@@ -502,9 +507,9 @@ struct H3Connection(Movable):
         var encoded = List[Byte]()
         self._enc.encode(encoded, fields)
         var hf = HeadersFrame(encoded^)
-        var wire = List[Byte]()
-        hf.encode(wire)
-        self._quic.send_stream_data(stream_id, Span(wire), fin)
+        self._wire_scratch.clear()
+        hf.encode(self._wire_scratch)
+        self._quic.send_stream_data(stream_id, Span(self._wire_scratch), fin)
 
     def send_data(
         mut self, stream_id: UInt64, data: List[Byte], fin: Bool
@@ -528,9 +533,9 @@ struct H3Connection(Movable):
         varint_encode(w, last_stream_id)
         var payload = w.finish()
         var raw = H3RawFrame(H3_FRAME_GOAWAY, payload^)
-        var wire = List[Byte]()
-        raw.encode(wire)
-        self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(wire), False)
+        self._wire_scratch.clear()
+        raw.encode(self._wire_scratch)
+        self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(self._wire_scratch), False)
         self._goaway_sent = Optional[UInt64](last_stream_id)
 
     def reset_stream(mut self, stream_id: UInt64, error_code: UInt64) raises:
@@ -652,9 +657,9 @@ struct H3Connection(Movable):
         if self._local_h3_datagram_enabled:
             pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
         var sf = SettingsFrame(pairs^)
-        var settings_wire = List[Byte]()
-        sf.encode(settings_wire)
-        self._quic.send_stream_data(ctrl_sid, Span(settings_wire), False)
+        self._wire_scratch.clear()
+        sf.encode(self._wire_scratch)
+        self._quic.send_stream_data(ctrl_sid, Span(self._wire_scratch), False)
 
     # --- Internal: stream drain + frame parse --------------------------------
 
