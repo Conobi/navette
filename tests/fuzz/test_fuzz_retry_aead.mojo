@@ -40,14 +40,14 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     var now_g = rng.next_u64() % UInt64(1000000)
 
     # P1: inverse identity
-    var token: List[Byte]
+    var token = List[Byte]()
     try:
-        token = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
+        generate_retry_token(token, lib, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
     except e:
         return ObserveResult(False, String("P1: generate_retry_token raised: ") + String(e))
-    var recovered: List[Byte]
+    var recovered = List[Byte]()
     try:
-        recovered = validate_retry_token(lib, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(recovered, lib, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except e:
         return ObserveResult(False, String("P1: validate raised on its own token: ") + String(e))
     if len(recovered) != dcid_len:
@@ -64,7 +64,8 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
         tampered[byte_idx] = tampered[byte_idx] ^ UInt8(1 << bit)
         var raised = False
         try:
-            _ = validate_retry_token(lib, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
+            var _p2 = List[Byte]()
+            validate_retry_token(_p2, lib, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
         except:
             raised = True
         if not raised:
@@ -77,7 +78,8 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     nonce_tampered[nbyte] = nonce_tampered[nbyte] ^ UInt8(1 << nbit)
     var raised_2b = False
     try:
-        _ = validate_retry_token(lib, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
+        var _p2b = List[Byte]()
+        validate_retry_token(_p2b, lib, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
     except:
         raised_2b = True
     if not raised_2b:
@@ -90,7 +92,8 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
         secret2[0] = secret2[0] ^ UInt8(0xFF)
     var raised_3 = False
     try:
-        _ = validate_retry_token(lib, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        var _p3 = List[Byte]()
+        validate_retry_token(_p3, lib, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except:
         raised_3 = True
     if not raised_3:
@@ -102,7 +105,8 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
         hash2[0] = hash2[0] ^ UInt8(0xFF)
     var raised_4 = False
     try:
-        _ = validate_retry_token(lib, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
+        var _p4 = List[Byte]()
+        validate_retry_token(_p4, lib, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
     except:
         raised_4 = True
     if not raised_4:
@@ -112,7 +116,8 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     var now_v = now_g + UInt64(100)
     var raised_5 = False
     try:
-        _ = validate_retry_token(lib, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
+        var _p5 = List[Byte]()
+        validate_retry_token(_p5, lib, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
     except:
         raised_5 = True
     if not raised_5:
@@ -132,8 +137,10 @@ def _check_p6(lib: SharedLibrary) raises -> ObserveResult:
     var addr_hash = List[Byte]()
     for i in range(32):
         addr_hash.append(UInt8(i))
-    var t1 = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
-    var t2 = generate_retry_token(lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    var t1 = List[Byte]()
+    generate_retry_token(t1, lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    var t2 = List[Byte]()
+    generate_retry_token(t2, lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
     var same = True
     for i in range(12):
         if t1[i] != t2[i]:

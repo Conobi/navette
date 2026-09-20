@@ -58,21 +58,6 @@ def _read_u64_be(
 
 
 def generate_retry_token(
-    lib: SharedLibrary,
-    server_secret: Span[Byte, _],
-    orig_dcid: Span[Byte, _],
-    client_addr_hash: Span[Byte, _],
-    now: UInt64,
-) raises -> List[Byte]:
-    """Generate an encrypted Retry token. Delegates to generate_retry_token_into."""
-    var result = List[Byte]()
-    generate_retry_token_into(
-        result, lib, server_secret, orig_dcid, client_addr_hash, now
-    )
-    return result^
-
-
-def generate_retry_token_into(
     mut buf: List[Byte],
     lib: SharedLibrary,
     server_secret: Span[Byte, _],
@@ -163,25 +148,6 @@ def generate_retry_token_into(
 
 
 def validate_retry_token(
-    lib: SharedLibrary,
-    server_secret: Span[Byte, _],
-    token: Span[Byte, _],
-    client_addr_hash: Span[Byte, _],
-    now: UInt64,
-    max_age: UInt64 = 5,
-) raises -> List[Byte]:
-    """Validate a Retry token and return the original DCID.
-
-    Delegates to validate_retry_token_into.
-    """
-    var result = List[Byte]()
-    validate_retry_token_into(
-        result, lib, server_secret, token, client_addr_hash, now, max_age
-    )
-    return result^
-
-
-def validate_retry_token_into(
     mut buf: List[Byte],
     lib: SharedLibrary,
     server_secret: Span[Byte, _],
@@ -293,19 +259,6 @@ def validate_retry_token_into(
 
 
 def compute_retry_integrity_tag(
-    lib: SharedLibrary,
-    orig_dcid: Span[Byte, _],
-    retry_packet_without_tag: Span[Byte, _],
-) raises -> List[Byte]:
-    """Compute the 16-byte Retry Integrity Tag. Delegates to compute_retry_integrity_tag_into."""
-    var result = List[Byte]()
-    compute_retry_integrity_tag_into(
-        result, lib, orig_dcid, retry_packet_without_tag
-    )
-    return result^
-
-
-def compute_retry_integrity_tag_into(
     mut buf: List[Byte],
     lib: SharedLibrary,
     orig_dcid: Span[Byte, _],

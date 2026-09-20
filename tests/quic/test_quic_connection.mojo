@@ -597,7 +597,9 @@ def test_handshake_with_retry() raises:
     for i in range(32):
         client_addr_hash.append(UInt8(Int(py=py_hash[i])))
 
-    var token = generate_retry_token(
+    var token = List[Byte]()
+    generate_retry_token(
+        token,
         tls.shared(),
         Span(server_secret),
         Span(client_initial_dcid),
@@ -606,7 +608,9 @@ def test_handshake_with_retry() raises:
     )
 
     # 3. Validate the token (proving the round-trip works).
-    var recovered_dcid = validate_retry_token(
+    var recovered_dcid = List[Byte]()
+    validate_retry_token(
+        recovered_dcid,
         tls.shared(),
         Span(server_secret),
         Span(token),

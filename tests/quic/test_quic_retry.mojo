@@ -54,7 +54,9 @@ def test_token_round_trip(lib: SharedLibrary) raises:
     var addr_hash = _make_addr_hash_zeros()
     var now = UInt64(1000)
 
-    var token = generate_retry_token(
+    var token = List[Byte]()
+    generate_retry_token(
+        token,
         lib,
         Span(secret),
         Span(dcid),
@@ -65,7 +67,9 @@ def test_token_round_trip(lib: SharedLibrary) raises:
     # Token should be at least 28 bytes (12 nonce + 16 tag)
     assert_true(len(token) >= 28, "token too short: " + String(len(token)))
 
-    var recovered_dcid = validate_retry_token(
+    var recovered_dcid = List[Byte]()
+    validate_retry_token(
+        recovered_dcid,
         lib,
         Span(secret),
         Span(token),
@@ -91,7 +95,9 @@ def test_token_expired(lib: SharedLibrary) raises:
     var dcid = hex_decode("aabbccdd")
     var addr_hash = _make_addr_hash_zeros()
 
-    var token = generate_retry_token(
+    var token = List[Byte]()
+    generate_retry_token(
+        token,
         lib,
         Span(secret),
         Span(dcid),
@@ -101,7 +107,9 @@ def test_token_expired(lib: SharedLibrary) raises:
 
     var caught = False
     try:
-        _ = validate_retry_token(
+        var _discard = List[Byte]()
+        validate_retry_token(
+            _discard,
             lib,
             Span(secret),
             Span(token),
@@ -129,7 +137,9 @@ def test_token_wrong_address(lib: SharedLibrary) raises:
     var addr_a = _make_addr_hash_zeros()
     var addr_b = _make_addr_hash_ones()
 
-    var token = generate_retry_token(
+    var token = List[Byte]()
+    generate_retry_token(
+        token,
         lib,
         Span(secret),
         Span(dcid),
@@ -139,7 +149,9 @@ def test_token_wrong_address(lib: SharedLibrary) raises:
 
     var caught = False
     try:
-        _ = validate_retry_token(
+        var _discard = List[Byte]()
+        validate_retry_token(
+            _discard,
             lib,
             Span(secret),
             Span(token),
@@ -166,7 +178,9 @@ def test_token_tampered(lib: SharedLibrary) raises:
     var dcid = hex_decode("0102030405")
     var addr_hash = _make_addr_hash_zeros()
 
-    var token = generate_retry_token(
+    var token = List[Byte]()
+    generate_retry_token(
+        token,
         lib,
         Span(secret),
         Span(dcid),
@@ -179,7 +193,9 @@ def test_token_tampered(lib: SharedLibrary) raises:
 
     var caught = False
     try:
-        _ = validate_retry_token(
+        var _discard = List[Byte]()
+        validate_retry_token(
+            _discard,
             lib,
             Span(secret),
             Span(token),
@@ -223,7 +239,9 @@ def test_integrity_tag_known_vector(lib: SharedLibrary) raises:
     )
     var expected_tag_hex = "04a265ba2eff4d829058fb3f0f2496ba"
 
-    var computed_tag = compute_retry_integrity_tag(
+    var computed_tag = List[Byte]()
+    compute_retry_integrity_tag(
+        computed_tag,
         lib,
         Span(orig_dcid),
         Span(packet_without_tag),
@@ -248,12 +266,16 @@ def test_integrity_tag_deterministic(lib: SharedLibrary) raises:
         "ff0000000108aabbccdd0102030405060708cafebabe"
     )
 
-    var tag1 = compute_retry_integrity_tag(
+    var tag1 = List[Byte]()
+    compute_retry_integrity_tag(
+        tag1,
         lib,
         Span(orig_dcid),
         Span(retry_packet),
     )
-    var tag2 = compute_retry_integrity_tag(
+    var tag2 = List[Byte]()
+    compute_retry_integrity_tag(
+        tag2,
         lib,
         Span(orig_dcid),
         Span(retry_packet),
