@@ -293,13 +293,13 @@ struct ConnectionCloseFrame(Copyable, Movable):
     var is_transport: Bool
     var error_code: UInt64
     var frame_type: UInt64
-    var reason: ByteVec[256]
+    var reason: ByteVec[32]
 
     def __init__(out self):
         self.is_transport = True
         self.error_code = UInt64(0)
         self.frame_type = UInt64(0)
-        self.reason = ByteVec[256]()
+        self.reason = ByteVec[32]()
 
     def __init__(out self, *, other: Self):
         self.is_transport = other.is_transport
@@ -899,7 +899,8 @@ def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_
             cc.frame_type = varint_decode(reader)
         var reason_length = varint_decode(reader)
         var reason_span = reader.read_span(Int(reason_length))
-        cc.reason.extend(reason_span)
+        var copy_len = min(Int(reason_length), 32)
+        cc.reason.extend(reason_span[:copy_len])
         return Frame(
             FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
             FramePayload(cc^),

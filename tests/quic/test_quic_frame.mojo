@@ -1249,10 +1249,10 @@ def test_wire_len_exact() raises:
             cc.is_transport = (si % 2) == 0
             cc.error_code = m
             cc.frame_type = m
-            # ConnectionCloseFrame.reason is bounded to 256 bytes; clip the shared
+            # ConnectionCloseFrame.reason is bounded to 32 bytes; clip the shared
             # `sizes` fixture rather than skip the larger magnitudes so the
             # wire_len invariant is still exercised at every `si`.
-            cc.reason.extend(Span(_fill(min(n, 256), m)))
+            cc.reason.extend(Span(_fill(min(n, 32), m)))
             _check_wire_len(Frame.connection_close(cc), "CONNECTION_CLOSE")
             checked += 7
     _check_wire_len(Frame.path_challenge(_fill(8, UInt64(1))), "PATH_CHALLENGE")
