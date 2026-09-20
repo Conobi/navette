@@ -138,13 +138,14 @@ struct CryptoStream(Copyable, Movable):
             if not merged:
                 break
 
-    def drain(mut self) -> List[Byte]:
-        """Return and consume contiguous bytes from recv_buf."""
-        var result = List[Byte]()
-        self.drain_into(result)
+    def drain_move(mut self) -> List[Byte]:
+        """Move-drain: transfer recv_buf ownership to the caller."""
+        var result = self.recv_buf^
+        self.recv_buf = List[Byte]()
+        self.recv_offset += UInt64(len(result))
         return result^
 
-    def drain_into(mut self, mut sink: List[Byte]):
+    def drain(mut self, mut sink: List[Byte]):
         """Append and consume contiguous bytes from recv_buf into sink.
 
         Lets a caller reuse one scratch buffer across multiple drains

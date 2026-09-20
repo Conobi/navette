@@ -25,7 +25,7 @@ def test_in_order_receive() raises:
     var world = _str_bytes("world")
     cs.receive(UInt64(0), Span(hello))
     cs.receive(UInt64(5), Span(world))
-    var result = cs.drain()
+    var result = cs.drain_move()
     assert_equal_int(len(result), 10, "in_order: length should be 10")
     var expected = _str_bytes("helloworld")
     for i in range(len(expected)):
@@ -45,7 +45,7 @@ def test_out_of_order_receive() raises:
     # "world" is out-of-order, nothing drainable yet.
     assert_true(not cs.has_pending(), "ooo: no contiguous data before hello")
     cs.receive(UInt64(0), Span(hello))
-    var result = cs.drain()
+    var result = cs.drain_move()
     assert_equal_int(len(result), 10, "ooo: length should be 10")
     var expected = _str_bytes("helloworld")
     for i in range(len(expected)):
@@ -67,7 +67,7 @@ def test_overlap_receive() raises:
         data2.append(UInt8(100 + i))
     cs.receive(UInt64(0), Span(data1))
     cs.receive(UInt64(5), Span(data2))
-    var result = cs.drain()
+    var result = cs.drain_move()
     assert_equal_int(len(result), 15, "overlap: length should be 15")
     # First 10 bytes from data1 (0..9).
     for i in range(10):
@@ -107,7 +107,7 @@ def test_duplicate_rejection() raises:
         data.append(UInt8(i))
     cs.receive(UInt64(0), Span(data))
     cs.receive(UInt64(0), Span(data))
-    var result = cs.drain()
+    var result = cs.drain_move()
     assert_equal_int(len(result), 5, "dup: length should be 5")
     print("  test_duplicate_rejection: PASS")
 
@@ -141,7 +141,7 @@ def test_drain_clears_buffer() raises:
     var data = _str_bytes("abc")
     cs.receive(UInt64(0), Span(data))
     assert_true(cs.has_pending(), "drain_clear: should have pending before drain")
-    _ = cs.drain()
+    _ = cs.drain_move()
     assert_true(not cs.has_pending(), "drain_clear: should not have pending after drain")
     print("  test_drain_clears_buffer: PASS")
 

@@ -2167,7 +2167,7 @@ struct QuicConnection(Movable):
             if not self.crypto_streams[level].has_pending():
                 continue
             crypto_data.clear()
-            self.crypto_streams[level].drain_into(crypto_data)
+            self.crypto_streams[level].drain(crypto_data)
             if len(crypto_data) == 0:
                 continue
             var t_input_start = self.prof.stamp()
