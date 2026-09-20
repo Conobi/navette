@@ -502,7 +502,7 @@ struct H3Connection(Movable):
         var encoded = self._enc.encode(fields)
         var hf = HeadersFrame(encoded^)
         var wire = List[Byte]()
-        hf.encode_into(wire)
+        hf.encode(wire)
         self._quic.send_stream_data(stream_id, Span(wire), fin)
 
     def send_data(
@@ -528,7 +528,7 @@ struct H3Connection(Movable):
         var payload = w.finish()
         var raw = H3RawFrame(H3_FRAME_GOAWAY, payload^)
         var wire = List[Byte]()
-        raw.encode_into(wire)
+        raw.encode(wire)
         self._quic.send_stream_data(self._local_ctrl_sid.value(), Span(wire), False)
         self._goaway_sent = Optional[UInt64](last_stream_id)
 
@@ -652,7 +652,7 @@ struct H3Connection(Movable):
             pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
         var sf = SettingsFrame(pairs^)
         var settings_wire = List[Byte]()
-        sf.encode_into(settings_wire)
+        sf.encode(settings_wire)
         self._quic.send_stream_data(ctrl_sid, Span(settings_wire), False)
 
     # --- Internal: stream drain + frame parse --------------------------------
