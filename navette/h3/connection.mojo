@@ -499,7 +499,8 @@ struct H3Connection(Movable):
         mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool
     ) raises:
         """QPACK-encode fields → HeadersFrame → send_stream_data."""
-        var encoded = self._enc.encode(fields)
+        var encoded = List[Byte]()
+        self._enc.encode(encoded, fields)
         var hf = HeadersFrame(encoded^)
         var wire = List[Byte]()
         hf.encode(wire)

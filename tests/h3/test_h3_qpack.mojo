@@ -67,7 +67,8 @@ def test_static_find_name_no_match() raises:
 
 def test_huffman_encode_decode_roundtrip() raises:
     var original = String("www.example.com")
-    var encoded = huffman_encode(original)
+    var encoded = List[Byte]()
+    huffman_encode(encoded, original)
     var decoded = huffman_decode(encoded)
     assert_true(decoded == original, "roundtrip should reproduce original string")
     print("  test_huffman_encode_decode_roundtrip: PASS")
@@ -75,7 +76,8 @@ def test_huffman_encode_decode_roundtrip() raises:
 
 def test_huffman_encode_known_vector() raises:
     # RFC 7541 C.4.1: Huffman encoding of "custom-key" = 0x25a849e95ba97d7f (8 bytes)
-    var encoded = huffman_encode(String("custom-key"))
+    var encoded = List[Byte]()
+    huffman_encode(encoded, String("custom-key"))
     assert_equal_int(len(encoded), 8, "custom-key should Huffman-encode to 8 bytes")
     assert_equal_int(Int(encoded[0]), 0x25, "byte 0")
     assert_equal_int(Int(encoded[1]), 0xa8, "byte 1")
@@ -89,7 +91,8 @@ def test_huffman_encode_known_vector() raises:
 
 
 def test_huffman_encode_empty() raises:
-    var encoded = huffman_encode(String(""))
+    var encoded = List[Byte]()
+    huffman_encode(encoded, String(""))
     assert_equal_int(len(encoded), 0, "empty string should encode to zero bytes")
     var decoded = huffman_decode(encoded)
     assert_true(decoded == "", "empty encoded should decode to empty string")
@@ -163,7 +166,8 @@ def test_huffman_decode_long_code() raises:
     # Per RFC 7541 Appendix B: '!' (33) = 10 bits, '#' (35) = 12 bits,
     # '$' (36) = 13 bits. All are valid UTF-8 (printable ASCII).
     var s = String("a!#$a")
-    var encoded = huffman_encode(s)
+    var encoded = List[Byte]()
+    huffman_encode(encoded, s)
     var decoded = huffman_decode(encoded)
     assert_true(decoded == s, "long-code roundtrip should match")
     print("  test_huffman_decode_long_code: PASS")
@@ -173,7 +177,8 @@ def test_huffman_decode_all_ascii_fast_path() raises:
     # All chars in this string have Huffman code length ≤8 bits, so every byte
     # resolves via the Tier-1 256-entry root fast-path.
     var s = String("abcdefghijklmnopqrstuvwxyz0123456789")
-    var encoded = huffman_encode(s)
+    var encoded = List[Byte]()
+    huffman_encode(encoded, s)
     var decoded = huffman_decode(encoded)
     assert_true(decoded == s, "all-ASCII fast-path roundtrip should match")
     print("  test_huffman_decode_all_ascii_fast_path: PASS")
@@ -184,7 +189,8 @@ def test_encode_prefix_two_zero_bytes() raises:
     var enc = QpackEncoder(False)
     var headers = List[QpackHeaderField]()
     headers.append(QpackHeaderField(":method", "GET"))
-    var out = enc.encode(headers)
+    var out = List[Byte]()
+    enc.encode(out, headers)
     assert_equal_int(Int(out[0]), 0x00, "first byte should be 0x00")
     assert_equal_int(Int(out[1]), 0x00, "second byte should be 0x00")
     print("  test_encode_prefix_two_zero_bytes: PASS")
@@ -195,7 +201,8 @@ def test_encode_indexed_static_method_get() raises:
     var enc = QpackEncoder(False)
     var headers = List[QpackHeaderField]()
     headers.append(QpackHeaderField(":method", "GET"))
-    var out = enc.encode(headers)
+    var out = List[Byte]()
+    enc.encode(out, headers)
     # prefix [0x00, 0x00] + indexed byte 0xD1
     assert_equal_int(len(out), 3, "output should be 3 bytes")
     assert_equal_int(Int(out[2]), 0xD1, "indexed :method GET should be 0xD1")
@@ -211,7 +218,8 @@ def test_encode_literal_name_ref() raises:
     var enc = QpackEncoder(False)
     var headers = List[QpackHeaderField]()
     headers.append(QpackHeaderField(":method", "PATCH"))
-    var out = enc.encode(headers)
+    var out = List[Byte]()
+    enc.encode(out, headers)
     assert_equal_int(len(out), 10, "wire length should be 10 bytes")
     assert_equal_int(Int(out[0]), 0x00, "prefix byte 0")
     assert_equal_int(Int(out[1]), 0x00, "prefix byte 1")
@@ -231,7 +239,8 @@ def test_encode_literal_no_name_ref() raises:
     var enc = QpackEncoder(False)
     var headers = List[QpackHeaderField]()
     headers.append(QpackHeaderField("x-custom", "myval"))
-    var out = enc.encode(headers)
+    var out = List[Byte]()
+    enc.encode(out, headers)
     var dec = QpackDecoder()
     var decoded = dec.decode(out)
     assert_equal_int(len(decoded), 1, "should decode 1 header")
@@ -247,7 +256,8 @@ def test_encode_multi_headers() raises:
     headers.append(QpackHeaderField(":path", "/"))
     headers.append(QpackHeaderField(":scheme", "https"))
     headers.append(QpackHeaderField(":authority", "example.com"))
-    var out = enc.encode(headers)
+    var out = List[Byte]()
+    enc.encode(out, headers)
     var dec = QpackDecoder()
     var decoded = dec.decode(out)
     assert_equal_int(len(decoded), 4, "should decode 4 headers")
@@ -267,7 +277,8 @@ def test_encode_huffman_disabled() raises:
     var enc = QpackEncoder(False)
     var headers = List[QpackHeaderField]()
     headers.append(QpackHeaderField("x-test", "hello"))
-    var out = enc.encode(headers)
+    var out = List[Byte]()
+    enc.encode(out, headers)
     # Find "hello" in raw bytes (should appear as-is since no huffman)
     var found = False
     for i in range(len(out) - 4):
@@ -319,7 +330,8 @@ def test_decode_literal_no_name_ref() raises:
     var enc = QpackEncoder(False)
     var fields = List[QpackHeaderField]()
     fields.append(QpackHeaderField("x-custom", "hello"))
-    var encoded = enc.encode(fields)
+    var encoded = List[Byte]()
+    enc.encode(encoded, fields)
     var dec = QpackDecoder()
     var headers = dec.decode(encoded)
     assert_equal_int(len(headers), 1, "should decode 1 header")
@@ -333,7 +345,8 @@ def test_decode_huffman_value() raises:
     var enc = QpackEncoder(True)
     var fields = List[QpackHeaderField]()
     fields.append(QpackHeaderField("x-custom", "world"))
-    var encoded = enc.encode(fields)
+    var encoded = List[Byte]()
+    enc.encode(encoded, fields)
     var dec = QpackDecoder()
     var headers = dec.decode(encoded)
     assert_equal_int(len(headers), 1, "should decode 1 header")
@@ -361,7 +374,8 @@ def test_decode_truncated_raises() raises:
     var enc2 = QpackEncoder(False)
     var f2 = List[QpackHeaderField]()
     f2.append(QpackHeaderField("x-header", "longvalue"))
-    var e2 = enc2.encode(f2)
+    var e2 = List[Byte]()
+    enc2.encode(e2, f2)
     # Take only first half (truncated)
     var half = List[Byte]()
     for i in range(len(e2) // 2):
@@ -382,7 +396,8 @@ def test_decode_multi_fields() raises:
     fields.append(QpackHeaderField(":method", "GET"))
     fields.append(QpackHeaderField(":path", "/"))
     fields.append(QpackHeaderField(":scheme", "https"))
-    var encoded = enc.encode(fields)
+    var encoded = List[Byte]()
+    enc.encode(encoded, fields)
     var dec = QpackDecoder()
     var headers = dec.decode(encoded)
     assert_equal_int(len(headers), 3, "should decode 3 headers")
@@ -419,20 +434,23 @@ def test_encode_field_all_three_paths() raises:
     # Exact static match: (:method, GET) = index 17
     var exact_hdrs = List[QpackHeaderField]()
     exact_hdrs.append(QpackHeaderField(":method", "GET"))
-    var exact_bytes = enc.encode(exact_hdrs)
+    var exact_bytes = List[Byte]()
+    enc.encode(exact_bytes, exact_hdrs)
     assert_true(len(exact_bytes) == 3, "exact: 2-byte prefix + 1 indexed")
     assert_true(Int(exact_bytes[2]) == 0xD1, "exact: 0xC0 | 17")
 
     # Name-only: (:authority, example.com) — name at index 0, value literal
     var name_hdrs = List[QpackHeaderField]()
     name_hdrs.append(QpackHeaderField(":authority", "example.com"))
-    var name_bytes = enc.encode(name_hdrs)
+    var name_bytes = List[Byte]()
+    enc.encode(name_bytes, name_hdrs)
     assert_true(Int(name_bytes[2]) == 0x50, "name-ref: 0x50 | 0")
 
     # Literal: (x-custom, val) — no match
     var lit_hdrs = List[QpackHeaderField]()
     lit_hdrs.append(QpackHeaderField("x-custom", "val"))
-    var lit_bytes = enc.encode(lit_hdrs)
+    var lit_bytes = List[Byte]()
+    enc.encode(lit_bytes, lit_hdrs)
     assert_true(Int(lit_bytes[2]) & 0xE0 == 0x20, "literal: starts with 001xxxxx")
 
     print("  test_encode_field_all_three_paths: PASS")

@@ -49,9 +49,9 @@ def _gen_headers(mut rng: SplitMix64) -> List[QpackHeaderField]:
 def _check_roundtrip_property(mut rng: SplitMix64) -> ObserveResult:
     var headers = _gen_headers(rng)
     var enc = QpackEncoder()
-    var wire: List[Byte]
+    var wire = List[Byte](capacity=128)
     try:
-        wire = enc.encode(headers.copy())
+        enc.encode(wire, headers.copy())
     except e:
         return ObserveResult(False, String("encode raised: ") + String(e))
     var dec = QpackDecoder()

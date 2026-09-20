@@ -594,14 +594,7 @@ def _build_huffman_fast(trie: List[_HuffTrieNode]) -> List[_HuffFast]:
     return fast^
 
 
-def huffman_encode(s: String) raises -> List[Byte]:
-    """Huffman-encode a string. Delegates to huffman_encode_into."""
-    var result = List[Byte]()
-    huffman_encode_into(result, s)
-    return result^
-
-
-def huffman_encode_into(mut buf: List[Byte], s: String) raises:
+def huffman_encode(mut buf: List[Byte], s: String) raises:
     """Huffman-encode a string, appending directly to buf."""
     var table = _huffman_encode_table()
     _huffman_encode_into_with_table(buf, s, table)
@@ -804,15 +797,8 @@ struct _StrDecodeResult(Copyable, Movable):
         self.new_offset = copy_from.new_offset
 
 
-def _qpack_encode_string(s: String, use_huffman: Bool) raises -> List[Byte]:
-    """Encode a string literal per RFC 7541 §5.2 / RFC 9204 §4.1.2."""
-    var result = List[Byte]()
-    _qpack_encode_string_into(result, s, use_huffman)
-    return result^
-
-
-def _qpack_encode_string_into(mut buf: List[Byte], s: String, use_huffman: Bool) raises:
-    """Append a QPACK string literal encoding directly to buf."""
+def _qpack_encode_string(mut buf: List[Byte], s: String, use_huffman: Bool) raises:
+    """Encode a string literal (HPACK/QPACK), appending directly to buf."""
     if use_huffman:
         var huff_len = huffman_encoded_len(s)
         var idx = len(buf)
@@ -820,7 +806,7 @@ def _qpack_encode_string_into(mut buf: List[Byte], s: String, use_huffman: Bool)
         buf[idx] = UInt8(0x80)
         var n = hpack_encode_int_at(buf, idx, huff_len, 7)
         buf.resize(idx + n, Byte(0))
-        huffman_encode_into(buf, s)
+        huffman_encode(buf, s)
     else:
         var raw = s.as_bytes()
         var idx = len(buf)
@@ -918,14 +904,8 @@ struct QpackEncoder(Copyable, Movable):
         self._huff_encode = List[HuffmanEntry](copy=copy_from._huff_encode)
         self._static_index = copy_from._static_index.copy()
 
-    def encode(self, headers: List[QpackHeaderField]) raises -> List[Byte]:
-        """Encode a header list as a QPACK field section block. Delegates to encode_into."""
-        var result = List[Byte](capacity=128)
-        self.encode_into(result, headers)
-        return result^
-
-    def encode_into(self, mut buf: List[Byte], headers: List[QpackHeaderField]) raises:
-        """Append a QPACK field section block directly to buf.
+    def encode(self, mut buf: List[Byte], headers: List[QpackHeaderField]) raises:
+        """Encode a header list as a QPACK field section block, appending directly to buf.
 
         Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
         Each field:
@@ -937,10 +917,10 @@ struct QpackEncoder(Copyable, Movable):
         buf.append(0x00)  # S bit = 0, Delta Base = 0
 
         for ref hdr in headers:
-            self._encode_field_into(buf, hdr.name, hdr.value)
+            self._encode_field(buf, hdr.name, hdr.value)
 
-    def _encode_field_into(self, mut buf: List[Byte], name: String, value: String) raises:
-        """Append one encoded header field directly to buf."""
+    def _encode_field(self, mut buf: List[Byte], name: String, value: String) raises:
+        """Encode one header field, appending directly to buf."""
         var result = self._static_index.find(name, value)
         var match_idx = result[0]
         var is_exact = result[1]
