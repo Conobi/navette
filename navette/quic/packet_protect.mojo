@@ -320,18 +320,6 @@ struct PacketProtect(Movable):
 
     def decrypt_payload(
         self,
-        level: Int,
-        pn: UInt64,
-        header_len: Int,
-        mut packet_buf: List[Byte],
-    ) raises -> List[Byte]:
-        """Decrypt payload (List convenience wrapper — copies result out)."""
-        var result = List[Byte]()
-        self.decrypt_payload_into(result, level, pn, header_len, packet_buf)
-        return result^
-
-    def decrypt_payload_into(
-        self,
         mut buf: List[Byte],
         level: Int,
         pn: UInt64,
@@ -399,18 +387,6 @@ struct PacketProtect(Movable):
         return Int(rc)
 
     def encrypt_payload(
-        self,
-        level: Int,
-        pn: UInt64,
-        header: Span[Byte, _],
-        plaintext: Span[Byte, _],
-    ) raises -> List[Byte]:
-        """Encrypt payload (Span convenience wrapper — returns new List)."""
-        var result = List[Byte]()
-        self.encrypt_payload_into(result, level, pn, header, plaintext)
-        return result^
-
-    def encrypt_payload_into(
         self,
         mut buf: List[Byte],
         level: Int,
