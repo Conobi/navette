@@ -41,7 +41,7 @@ from navette.h3.error import (
     H3_FRAME_UNEXPECTED,
     H3_STREAM_CREATION_ERROR,
 )
-from navette.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField
+from navette.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField, QpackCodecTables
 from navette.h3.guard_predicates import (
     H3StreamCtx,
     predicate_f31_data_before_headers,
@@ -201,7 +201,12 @@ struct H3Connection(Movable):
     # _bootstrap_local_streams — avoids a fresh allocation per call.
     var _wire_scratch:               List[Byte]
 
-    def __init__(out self, var quic: QuicConnection, is_server: Bool):
+    def __init__(
+        out self,
+        var quic: QuicConnection,
+        is_server: Bool,
+        codec_tables: Optional[Pointer[QpackCodecTables, MutUntrackedOrigin]] = None,
+    ):
         self._quic = quic^
         self._is_server = is_server
         self._stream_bufs = Dict[Int, _H3StreamBuf]()
@@ -219,8 +224,12 @@ struct H3Connection(Movable):
         self._peer_ctrl_settings = False
         self._goaway_sent = Optional[UInt64]()
         self._peer_goaway_sid = Optional[UInt64]()
-        self._enc = QpackEncoder(False)
-        self._dec = QpackDecoder()
+        if codec_tables:
+            self._enc = QpackEncoder(False, codec_tables.value())
+            self._dec = QpackDecoder(codec_tables.value())
+        else:
+            self._enc = QpackEncoder(False)
+            self._dec = QpackDecoder()
         self._request_headers_seen = Dict[Int, Bool]()
         self._local_h3_datagram_enabled = False
         self._peer_h3_datagram_enabled = False
@@ -256,14 +265,20 @@ struct H3Connection(Movable):
         self._wire_scratch = move._wire_scratch^
 
     @staticmethod
-    def server(var quic: QuicConnection) raises -> H3Connection:
+    def server(
+        var quic: QuicConnection,
+        codec_tables: Optional[Pointer[QpackCodecTables, MutUntrackedOrigin]] = None,
+    ) raises -> H3Connection:
         """Wrap a server-side QuicConnection."""
-        return H3Connection(quic^, True)
+        return H3Connection(quic^, True, codec_tables)
 
     @staticmethod
-    def client(var quic: QuicConnection) raises -> H3Connection:
+    def client(
+        var quic: QuicConnection,
+        codec_tables: Optional[Pointer[QpackCodecTables, MutUntrackedOrigin]] = None,
+    ) raises -> H3Connection:
         """Wrap a client-side QuicConnection."""
-        return H3Connection(quic^, False)
+        return H3Connection(quic^, False, codec_tables)
 
     def is_established(self) -> Bool:
         return self._quic.is_established()

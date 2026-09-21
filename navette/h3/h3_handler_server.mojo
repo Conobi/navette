@@ -17,7 +17,7 @@ from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import QpackHeaderField, QpackCodecTables
 from navette.http.handler import (
     StreamHandler,
     Capabilities,
@@ -157,13 +157,14 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         *,
         var quic: QuicConnection,
         var handler: Self.H,
+        codec_tables: Optional[Pointer[QpackCodecTables, MutUntrackedOrigin]] = None,
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         early_data_filter_ptr: Optional[
             Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
         ] = None,
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
-        self._h3 = H3Connection.server(quic^)
+        self._h3 = H3Connection.server(quic^, codec_tables)
         self.handler = handler^
         self._streams = Dict[Int, PtrBox[_H3StreamCtx]]()
         self.profile_ptr = profile_ptr

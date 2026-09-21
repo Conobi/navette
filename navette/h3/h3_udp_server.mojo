@@ -106,6 +106,7 @@ from navette.http.handler import StreamHandler
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
+from navette.h3.qpack import QpackCodecTables
 from navette.quic.cid import dcid_to_u64
 from navette.quic.cid_buf import CidBuf
 from navette.quic.connection import QuicConnection
@@ -641,6 +642,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # Test-only clock override consulted by `_now()`; None in production.
     var _clock_override_us: Optional[UInt64]
 
+    # RFC-static QPACK/Huffman tables built once, shared by pointer
+    # across all connections — eliminates per-connection rebuild cost.
+    var _codec_tables: QpackCodecTables
+
     # PROFILE_ACCEPT counters (always present; dead-stripped when
     # PROFILE_ACCEPT=False at compile time).
     var profile: AcceptProfile
@@ -706,6 +711,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._deadline_refresh_count = 0
         self._clock_override_us = Optional[UInt64](None)
 
+        self._codec_tables = QpackCodecTables()
         self.profile = AcceptProfile()
 
     def __init__(out self, *, deinit move: Self):
@@ -735,6 +741,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._timeout_count = move._timeout_count
         self._deadline_refresh_count = move._deadline_refresh_count
         self._clock_override_us = move._clock_override_us^
+        self._codec_tables = move._codec_tables^
         self.profile = move.profile^
 
     def __deinit__(deinit self):
@@ -1441,6 +1448,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         var h3 = H3HandlerServer[Self.H](
             quic=quic^,
             handler=handler^,
+            codec_tables=Optional(Pointer(to=self._codec_tables).unsafe_origin_cast[MutUntrackedOrigin]()),
             profile_ptr=Pointer(to=self.profile).unsafe_origin_cast[
                 MutUntrackedOrigin
             ](),

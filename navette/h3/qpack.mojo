@@ -4,7 +4,9 @@
 
 
 from std.collections import Span
+from std.memory.alloc import unsafe_alloc, unsafe_free
 from navette.util.byte_string import bytes_to_string
+from navette.util.null_ptr import null_ptr
 from navette.http.header_table_index import StaticTableIndex
 from navette.quic.codec import hpack_encode_int_at
 
@@ -880,29 +882,70 @@ def _qpack_decode_string_with_tables(
 
 
 # ---------------------------------------------------------------------------
+# QpackCodecTables — RFC-static tables shared across connections
+# ---------------------------------------------------------------------------
+
+struct QpackCodecTables(Movable):
+    """Pre-built RFC-static codec tables for QPACK/Huffman.
+
+    Built once per server and shared by pointer across all connections,
+    avoiding per-connection rebuild of the ~790-node Huffman trie,
+    256-entry fast table, 99-entry static table, and StaticTableIndex.
+    """
+
+    var static_table: List[QpackStaticEntry]
+    var huff_encode: List[HuffmanEntry]
+    var huff_trie: List[_HuffTrieNode]
+    var huff_fast: List[_HuffFast]
+    var static_index: StaticTableIndex
+
+    def __init__(out self):
+        self.static_table = _qpack_static_table()
+        self.huff_encode = _huffman_encode_table()
+        try:
+            self.huff_trie = _build_huffman_trie()
+            self.huff_fast = _build_huffman_fast(self.huff_trie)
+        except:
+            self.huff_trie = List[_HuffTrieNode]()
+            self.huff_fast = List[_HuffFast]()
+        var pairs = List[Tuple[String, String]]()
+        for i in range(len(self.static_table)):
+            pairs.append(Tuple(self.static_table[i].name, self.static_table[i].value))
+        self.static_index = StaticTableIndex(pairs, start_index=0)
+
+
+# ---------------------------------------------------------------------------
 # QpackEncoder (static table only; no dynamic table)
 # ---------------------------------------------------------------------------
 
-struct QpackEncoder(Copyable, Movable):
+struct QpackEncoder(Movable):
+    """QPACK encoder using shared or owned codec tables.
+
+    In production, tables are shared via pointer from the server.
+    The standalone constructor heap-allocates its own tables for tests.
+    """
+
     var use_huffman: Bool
-    var _static_table: List[QpackStaticEntry]
-    var _huff_encode: List[HuffmanEntry]
-    var _static_index: StaticTableIndex
+    var _tables: Pointer[QpackCodecTables, MutUntrackedOrigin]
+    var _owns_tables: Bool
 
     def __init__(out self, use_huffman: Bool = True):
+        """Standalone constructor — builds and owns tables internally."""
         self.use_huffman = use_huffman
-        self._static_table = _qpack_static_table()
-        self._huff_encode = _huffman_encode_table()
-        var pairs = List[Tuple[String, String]]()
-        for i in range(len(self._static_table)):
-            pairs.append(Tuple(self._static_table[i].name, self._static_table[i].value))
-        self._static_index = StaticTableIndex(pairs, start_index=0)
+        self._tables = unsafe_alloc[QpackCodecTables](1)
+        self._tables.unsafe_write(QpackCodecTables())
+        self._owns_tables = True
 
-    def __init__(out self, *, copy_from: Self):
-        self.use_huffman = copy_from.use_huffman
-        self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
-        self._huff_encode = List[HuffmanEntry](copy=copy_from._huff_encode)
-        self._static_index = copy_from._static_index.copy()
+    def __init__(out self, use_huffman: Bool, tables: Pointer[QpackCodecTables, MutUntrackedOrigin]):
+        """Shared-tables constructor — borrows pre-built tables from caller."""
+        self.use_huffman = use_huffman
+        self._tables = tables
+        self._owns_tables = False
+
+    def __deinit__(deinit self):
+        if self._owns_tables:
+            self._tables.unsafe_deinit_pointee()
+            self._tables.unsafe_free()
 
     def encode(self, mut buf: List[Byte], headers: List[QpackHeaderField]) raises:
         """Encode a header list as a QPACK field section block, appending directly to buf.
@@ -921,7 +964,7 @@ struct QpackEncoder(Copyable, Movable):
 
     def _encode_field(self, mut buf: List[Byte], name: String, value: String) raises:
         """Encode one header field, appending directly to buf."""
-        var result = self._static_index.find(name, value)
+        var result = self._tables[].static_index.find(name, value)
         var match_idx = result[0]
         var is_exact = result[1]
 
@@ -946,13 +989,13 @@ struct QpackEncoder(Copyable, Movable):
 
         # 3. Literal Without Name Reference (§4.5.6)
         if self.use_huffman:
-            var name_huff_len = _huffman_encoded_len_with_table(name, self._huff_encode)
+            var name_huff_len = _huffman_encoded_len_with_table(name, self._tables[].huff_encode)
             var idx = len(buf)
             buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x20 | 0x08)
             var n = hpack_encode_int_at(buf, idx, name_huff_len, 3)
             buf.resize(idx + n, Byte(0))
-            _huffman_encode_into_with_table(buf, name, self._huff_encode)
+            _huffman_encode_into_with_table(buf, name, self._tables[].huff_encode)
         else:
             var name_span = name.as_bytes()
             var idx = len(buf)
@@ -966,13 +1009,13 @@ struct QpackEncoder(Copyable, Movable):
     def _qpack_encode_string_into_cached(self, mut buf: List[Byte], s: String) raises:
         """Encode string using cached Huffman table."""
         if self.use_huffman:
-            var huff_len = _huffman_encoded_len_with_table(s, self._huff_encode)
+            var huff_len = _huffman_encoded_len_with_table(s, self._tables[].huff_encode)
             var idx = len(buf)
             buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x80)
             var n = hpack_encode_int_at(buf, idx, huff_len, 7)
             buf.resize(idx + n, Byte(0))
-            _huffman_encode_into_with_table(buf, s, self._huff_encode)
+            _huffman_encode_into_with_table(buf, s, self._tables[].huff_encode)
         else:
             var raw = s.as_bytes()
             var idx = len(buf)
@@ -986,39 +1029,31 @@ struct QpackEncoder(Copyable, Movable):
 # QpackDecoder (static table only; no dynamic table)
 # ---------------------------------------------------------------------------
 
-struct QpackDecoder(Copyable, Movable):
-    """QPACK decoder — static table only (RFC 9204 §3.2.4).
+struct QpackDecoder(Movable):
+    """QPACK decoder using shared or owned codec tables.
 
-    Caches the Huffman decode trie (~513 nodes) and 256-entry fast-path
-    table at construction time. Production callers (`H3Connection`) hold
-    one `QpackDecoder` per connection, so the ~13 µs build cost amortizes
-    across every QPACK field section the connection ever sees.
+    In production, tables are shared via pointer from the server.
+    The standalone constructor heap-allocates its own tables for tests.
     """
 
-    var _huff_trie: List[_HuffTrieNode]
-    var _huff_fast: List[_HuffFast]
-    var _static_table: List[QpackStaticEntry]
+    var _tables: Pointer[QpackCodecTables, MutUntrackedOrigin]
+    var _owns_tables: Bool
 
     def __init__(out self):
-        # The trie/fast-table builders only raise on a malformed encode table,
-        # which is a static RFC 7541 Appendix B constant — never raises in
-        # practice. We wrap in `try` so this `__init__` is non-raising and
-        # can be called from non-raising callers (e.g. `H3Connection.__init__`).
-        try:
-            self._huff_trie = _build_huffman_trie()
-            self._huff_fast = _build_huffman_fast(self._huff_trie)
-        except:
-            # Unreachable: would mean the RFC 7541 Appendix B encode table is
-            # malformed at compile time. Fall back to empty tables; any actual
-            # decode will raise via the normal error path.
-            self._huff_trie = List[_HuffTrieNode]()
-            self._huff_fast = List[_HuffFast]()
-        self._static_table = _qpack_static_table()
+        """Standalone constructor — builds and owns tables internally."""
+        self._tables = unsafe_alloc[QpackCodecTables](1)
+        self._tables.unsafe_write(QpackCodecTables())
+        self._owns_tables = True
 
-    def __init__(out self, *, copy_from: Self):
-        self._huff_trie = copy_from._huff_trie.copy()
-        self._huff_fast = copy_from._huff_fast.copy()
-        self._static_table = List[QpackStaticEntry](copy=copy_from._static_table)
+    def __init__(out self, tables: Pointer[QpackCodecTables, MutUntrackedOrigin]):
+        """Shared-tables constructor — borrows pre-built tables from caller."""
+        self._tables = tables
+        self._owns_tables = False
+
+    def __deinit__(deinit self):
+        if self._owns_tables:
+            self._tables.unsafe_deinit_pointee()
+            self._tables.unsafe_free()
 
     def _decode_string(mut self, ref data: List[Byte], offset: Int) raises -> _StrDecodeResult:
         """Decode a QPACK string literal, reusing scratch decode buffer."""
@@ -1037,7 +1072,7 @@ struct QpackDecoder(Copyable, Movable):
                 raw.append(data[i])
             pos = end
             return _StrDecodeResult(
-                _huffman_decode_with_tables(raw, self._huff_trie, self._huff_fast),
+                _huffman_decode_with_tables(raw, self._tables[].huff_trie, self._tables[].huff_fast),
                 pos,
             )
         else:
@@ -1074,9 +1109,8 @@ struct QpackDecoder(Copyable, Movable):
             raise "QPACK: non-zero Delta Base not supported; dynamic table required"
         var pos = base_result.new_offset
 
-        # Reuse the cached Huffman decode tables (built once in __init__).
-        ref trie = self._huff_trie
-        ref fast = self._huff_fast
+        ref trie = self._tables[].huff_trie
+        ref fast = self._tables[].huff_fast
 
         while pos < len(data):
             var b = data[pos]
@@ -1090,9 +1124,9 @@ struct QpackDecoder(Copyable, Movable):
                 pos = ir.new_offset
                 if t_bit:
                     # Static table reference
-                    if idx < 0 or idx >= len(self._static_table):
+                    if idx < 0 or idx >= len(self._tables[].static_table):
                         raise "QPACK: invalid static table index"
-                    result.append(QpackHeaderField(self._static_table[idx].name, self._static_table[idx].value))
+                    result.append(QpackHeaderField(self._tables[].static_table[idx].name, self._tables[].static_table[idx].value))
                 else:
                     raise "QPACK: dynamic table not supported (indexed)"
 
@@ -1107,9 +1141,9 @@ struct QpackDecoder(Copyable, Movable):
                 var value = sr.value
                 pos = sr.new_offset
                 if t_bit:
-                    if idx < 0 or idx >= len(self._static_table):
+                    if idx < 0 or idx >= len(self._tables[].static_table):
                         raise "QPACK: invalid static table index"
-                    result.append(QpackHeaderField(self._static_table[idx].name, value))
+                    result.append(QpackHeaderField(self._tables[].static_table[idx].name, value))
                 else:
                     raise "QPACK: dynamic table not supported (literal name ref)"
 
