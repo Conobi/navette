@@ -140,5 +140,5 @@ pythonpath = ["."]
 prerelease = "allow"
 
 [tool.uv.sources]
-bouclette = { git = "https://github.com/Conobi/bouclette", rev = "ce958d6" }
+bouclette = { git = "https://github.com/Conobi/bouclette", rev = "020957e" }
 

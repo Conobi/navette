@@ -2,7 +2,7 @@
 
 Drives multiple H3 connections off a single UDP socket using
 WatchLoop for both ingress (multishot recvmsg via DatagramStream)
-and egress (send_msg with ECN cmsgs).
+and egress (DatagramSink with batched sendmmsg + ECN/GSO cmsgs).
 
 # Architecture
 
@@ -14,8 +14,8 @@ and egress (send_msg with ECN cmsgs).
     │                                        │
     │  DatagramStream (multishot recvmsg) ──┘  (BufferPool leases)
     │  ├─ drained in flush() into pending_rx
-    │  WatchLoop.send_msg ─────────────────┘   (per-datagram sendmsg)
-    │  ├─ fire-and-forget; WatchLoop owns slab
+    │  DatagramSink (batched sendmmsg) ─────┘   (pre-allocated slots)
+    │  ├─ push_msg per GSO batch, one flush() per tick
     │
     │  WatchLoop (owns one TimerFuture armed to the earliest
     │  │          connection deadline, 1 ms floor, 1000 ms ceiling)
@@ -29,7 +29,7 @@ and egress (send_msg with ECN cmsgs).
     │  └─ timer pass (when the timer fired or a deadline passed):
     │                     drain only the expired slots, reap closed ones
     │  └─ _rearm_timer: re-arm to the new minimum deadline
-    │  └─ _submit_egress: build Message + ECN cmsg, send_msg
+    │  └─ _submit_egress: build Message + ECN/GSO cmsg, push_msg + flush
     │  └─ release buffer leases (_live_datagrams.clear)
     │
     └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + dcids + generation)
@@ -95,6 +95,7 @@ from bouclette import (
     SocketAddrV4,
     SocketAddrV6,
 )
+from bouclette.watch import DatagramSink
 from bouclette.handle import OwnedHandle
 
 from navette.runtime.udp_socket_state import UdpSocketState
@@ -137,6 +138,10 @@ comptime _SEND_CONTROL_CAPACITY: Int = 24
 # Control capacity for GSO-batched egress Messages. 48 bytes holds one
 # ECN cmsg (24 B) plus one SOL_UDP/UDP_SEGMENT record (24 B).
 comptime _SEND_CONTROL_CAPACITY_GSO: Int = 48
+
+# Pre-allocated send slots in the DatagramSink. 256 slots covers
+# 100+ connections with GSO batching (one slot per GSO group).
+comptime _SINK_CAPACITY: Int = 256
 
 
 # ── Timer policy ─────────────────────────────────────────────────────────────
@@ -394,7 +399,7 @@ struct EgressPacket(Movable):
     """A queued egress datagram — payload + destination address + ECN mark.
 
     Buffered during CQE callbacks (timeout drains) and injected
-    cross-transport responses. Submitted via WatchLoop.send_msg in
+    cross-transport responses. Submitted via DatagramSink in
     flush()'s _submit_egress phase.
     """
 
@@ -525,9 +530,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     Both ingress and egress use WatchLoop: ingress via a
     `DatagramStream` (multishot recvmsg backed by a `BufferPool`),
-    egress via `WatchLoop.send_msg` with ECN marks written as cmsgs.
+    egress via `DatagramSink` with ECN/GSO marks written as cmsgs.
     An explicit `flush()` method drains the stream, processes buffered
-    packets through QUIC, submits egress via send_msg, and releases
+    packets through QUIC, submits egress via DatagramSink, and releases
     buffer leases.
 
     `make_handler` is a user-provided factory function called once per
@@ -607,6 +612,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
     var _recv_pool: Optional[BufferPool]
     var _recv_stream: Optional[DatagramStream]
 
+    # WatchLoop send infrastructure. _send_sink batches outgoing
+    # datagrams via push_msg + flush (sendmmsg on epoll, SQE batching
+    # on io_uring). Created in start().
+    var _send_sink: Optional[DatagramSink]
+
     # WatchLoop-based timer for QUIC loss detection / idle close.
     # _timer holds the in-flight TimerFuture; _loop_ptr points at the
     # caller's WatchLoop so flush() can re-arm after each expiry.
@@ -681,9 +691,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._gso_max_segments = 1
         self._socket_state = Optional[UdpSocketState](None)
 
-        # Recv pool + stream — created in start() via WatchLoop.
+        # Recv pool + stream + send sink — created in start() via WatchLoop.
         self._recv_pool = Optional[BufferPool](None)
         self._recv_stream = Optional[DatagramStream](None)
+        self._send_sink = Optional[DatagramSink](None)
 
         # Timer — armed in start() via _rearm_timer().
         self._timer = Optional[TimerFuture](None)
@@ -715,6 +726,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._socket_state = move._socket_state^
         self._recv_pool = move._recv_pool^
         self._recv_stream = move._recv_stream^
+        self._send_sink = move._send_sink^
         self._timer = move._timer^
         self._loop_ptr = move._loop_ptr
         self._armed_deadline_us = move._armed_deadline_us^
@@ -762,7 +774,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """No-op kept for lifecycle compatibility.
 
         Previously wired SendSlabPool context pointers; egress now uses
-        WatchLoop.send_msg which manages its own slab internally. Callers
+        DatagramSink which manages its own slot pool internally. Callers
         may still call this between heap-allocation and start() — it
         does nothing.
         """
@@ -819,6 +831,16 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 self.udp_socket,
                 self._recv_pool.value(),
                 control_capacity=_RECV_CONTROL_CAPACITY,
+            )
+        )
+
+        # Create the send-side sink for batched egress (sendmmsg).
+        self._send_sink = Optional(
+            loop.datagram_sink(
+                self.udp_socket,
+                capacity=256,
+                max_payload=1500,
+                control_capacity=_SEND_CONTROL_CAPACITY_GSO,
             )
         )
 
@@ -880,7 +902,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         # 5. Re-arm the timer to the new minimum deadline.
         self._rearm_timer()
 
-        # 6. Submit egress from backlog via WatchLoop.send_msg.
+        # 6. Submit egress from backlog via DatagramSink.
         self._submit_egress()
 
         # 7. Release buffer leases whose refcount reached 0.
@@ -1065,7 +1087,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             _ = self.conn_slots.pop()
 
     def _submit_egress(mut self) raises:
-        """Submit queued egress packets via WatchLoop.send_msg.
+        """Submit queued egress packets via DatagramSink (batched sendmmsg).
 
         When GSO is available (`_gso_max_segments > 1`), consecutive
         packets sharing the same peer address and payload size are
@@ -1073,17 +1095,13 @@ struct H3UdpServer[H: StreamHandler](Movable):
         cmsg. The kernel splits the buffer back into individual
         datagrams at the segment boundary, cutting syscall overhead.
 
-        If a GSO sendmsg fails, segmentation offload is permanently
+        If a GSO push fails, segmentation offload is permanently
         downgraded to one datagram per syscall and the unsent packets
         are re-queued for the next flush cycle.
 
-        When the loop's send slab is full, remaining packets stay in
-        the backlog for the next flush cycle.
-
-        Payloads are moved, never copied: single datagrams move straight
-        into their `Message` (and back out of the `MessageFailed` when
-        the slab refuses them); the GSO super-buffer is the one copy by
-        construction, and its sources stay in place until it is accepted.
+        All accepted datagrams are submitted in one flush() call
+        (sendmmsg on epoll, batched SQEs on io_uring) instead of
+        one sendmsg syscall per datagram.
         """
         var n = len(self._egress_backlog)
         if n == 0:
@@ -1110,7 +1128,6 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
                 var run_len = run_end - i
                 if run_len > 1:
-                    # Pack payloads contiguously into one super-buffer.
                     var combined = List[Byte](
                         capacity=seg_size * run_len,
                     )
@@ -1138,27 +1155,33 @@ struct H3UdpServer[H: StreamHandler](Movable):
                         pass
 
                     try:
-                        _ = self._loop_ptr[].send_msg(
-                            self.udp_socket, msg^
-                        )
+                        self._send_sink.value().push_msg(msg^)
                         i = run_end
                         continue
                     except:
-                        # GSO send failed — permanently downgrade.
+                        # GSO push failed — permanently downgrade.
                         self._gso_max_segments = 1
                         if self._socket_state is not None:
                             self._socket_state.value().downgrade_send_segments()
-                        # Re-queue everything from i onward (moved).
                         for j in range(i, n):
                             unsent.append(self._take_backlog_entry(j))
                         break
 
             # ── Single-packet path (no GSO cmsg) ────────────
+            # Check sink capacity before moving data into a Message,
+            # because push_msg consumes the Message on both success and
+            # failure — we can't recover the payload from a raised IOError.
+            if (self._send_sink.value().pending()
+                    + self._send_sink.value().in_flight()
+                    >= _SINK_CAPACITY):
+                for j in range(i, n):
+                    unsent.append(self._take_backlog_entry(j))
+                break
+
             var data = List[Byte]()
             var addr = List[Byte]()
             swap(data, self._egress_backlog[i].data)
             swap(addr, self._egress_backlog[i].addr)
-            var conn_idx = self._egress_backlog[i].conn_idx
             var ecn_mark = self._egress_backlog[i].ecn_mark
             var msg = Message(
                 data^,
@@ -1170,22 +1193,15 @@ struct H3UdpServer[H: StreamHandler](Movable):
             except:
                 pass
 
-            try:
-                _ = self._loop_ptr[].send_msg(self.udp_socket, msg^)
-            except e:
-                # Slab full — re-queue this and everything after. The
-                # refused message comes back with the failure; its
-                # payload is moved back into the packet.
-                var back = e^.take_message()
-                if back is not None:
-                    var refused = back.take()
-                    unsent.append(EgressPacket(
-                        refused^.take_payload(), addr^, conn_idx, ecn_mark,
-                    ))
-                for j in range(i + 1, n):
-                    unsent.append(self._take_backlog_entry(j))
-                break
+            self._send_sink.value().push_msg(msg^)
             i += 1
+
+        # One batched send for all queued datagrams.
+        if self._send_sink.value().pending() > 0:
+            try:
+                _ = self._send_sink.value().flush()
+            except:
+                pass
 
         self._egress_backlog = unsent^
 
