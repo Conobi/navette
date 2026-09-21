@@ -12,6 +12,7 @@
 #   --duration N      Measurement duration in seconds (default: 15)
 #   --warmup N        Warmup duration in seconds (default: 3)
 #   --freq N          Perf sampling frequency in Hz (default: 999)
+#   --scenario S      long-conn (default) or short-conn
 #   --skip-build      Skip building the server binary
 #   --skip-icache     Skip i-cache miss recording (faster)
 #   --hot-roots F,G   Pass through to perf-analyze.py
@@ -31,6 +32,7 @@ BODY_SIZE=5120
 DURATION=15
 WARMUP=3
 FREQ=999
+SCENARIO=long-conn
 SKIP_BUILD=false
 SKIP_ICACHE=false
 HOT_ROOTS=""
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --duration)    DURATION="$2"; shift 2 ;;
         --warmup)      WARMUP="$2"; shift 2 ;;
         --freq)        FREQ="$2"; shift 2 ;;
+        --scenario)    SCENARIO="$2"; shift 2 ;;
         --skip-build)  SKIP_BUILD=true; shift ;;
         --skip-icache) SKIP_ICACHE=true; shift ;;
         --hot-roots)   HOT_ROOTS="$2"; shift 2 ;;
@@ -51,6 +54,18 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+case "$SCENARIO" in
+    long-conn)
+        MAX_REQUESTS_PER_CONN=0
+        MAX_CONCURRENT_REQUESTS=10
+        ;;
+    short-conn)
+        MAX_REQUESTS_PER_CONN=1
+        MAX_CONCURRENT_REQUESTS=1
+        ;;
+    *) echo "unknown scenario: $SCENARIO (use long-conn or short-conn)" >&2; exit 2 ;;
+esac
 
 # ---- Analyze-only mode ----
 if [[ -n "$ANALYZE_ONLY" ]]; then
@@ -86,6 +101,7 @@ mkdir -p "$OUT"
 echo "=== NAVETTE PERF DIAGNOSIS ==="
 echo "Output:    $OUT"
 echo "Binary:    $BINARY"
+echo "Scenario:  $SCENARIO"
 echo "Body size: $BODY_SIZE bytes"
 echo "Duration:  ${DURATION}s (warmup ${WARMUP}s)"
 echo "SHA:       $GIT_SHA"
@@ -132,8 +148,8 @@ run_client() {
         --entrypoint /usr/local/bin/tquic_client tquic-bench:latest \
         --threads 4 \
         --max-concurrent-conns 25 \
-        --max-requests-per-conn 0 \
-        --max-concurrent-requests 10 \
+        --max-requests-per-conn "$MAX_REQUESTS_PER_CONN" \
+        --max-concurrent-requests "$MAX_CONCURRENT_REQUESTS" \
         --total-requests-per-thread 0 \
         --send-udp-payload-size 1350 \
         --duration "$dur" \
@@ -177,7 +193,7 @@ wait "$PERF_PID" 2>/dev/null || true
 perf script -i "$OUT/perf-cpu.data" > "$OUT/perf-cpu-script.txt" 2>/dev/null || true
 "$FLAMEGRAPH/stackcollapse-perf.pl" "$OUT/perf-cpu-script.txt" > "$OUT/perf-cpu-folded.txt" 2>/dev/null
 "$FLAMEGRAPH/flamegraph.pl" \
-    --title "navette CPU ($GIT_SHA, ${BODY_SIZE}B body)" \
+    --title "navette CPU ($GIT_SHA, $SCENARIO, ${BODY_SIZE}B body)" \
     "$OUT/perf-cpu-folded.txt" > "$OUT/cpu-flamegraph.svg" 2>/dev/null
 
 echo "[phase 2] CPU flamegraph: $OUT/cpu-flamegraph.svg"
